@@ -11,6 +11,12 @@ virtual-key issuance/teardown as Temporal activity middleware around every LLM-c
 WorkGraph node, breach policy (soft-warn / hard-kill / escalate), and an append-only
 spend ledger.
 
+## Clarifications
+
+### Session 2026-07-24
+
+- Q: Ledger storage medium given concurrent teardown writers? → A: SQLite database file (stdlib `sqlite3`, no new dependency); JSONL export as a convenience.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Key lifecycle around a node (Priority: P1)
@@ -160,7 +166,9 @@ entries and totals.
   payloads (it is capped, constrained, TTL'd, and revoked).
 - **FR-010**: The ledger MUST be append-only, one row per node teardown, recording
   epic, node, persona, alias, budget, final spend, termination class, and timestamps;
-  it MUST support per-epic filtering and totals.
+  it MUST support per-epic filtering and totals. Storage is a SQLite database file
+  (Python stdlib `sqlite3` — no new dependency) and MUST remain correct under
+  concurrent teardown writers; a JSONL export MAY be provided as a convenience.
 
 ### Key Entities
 
