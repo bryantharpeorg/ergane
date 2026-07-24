@@ -20,6 +20,7 @@ enforcement**: caps, breach policy, and escalation are deferred to spec
 - Q: Ledger storage medium given concurrent teardown writers? → A: SQLite database file (stdlib `sqlite3`, no new dependency); JSONL export as a convenience.
 - Q: Enforce per-node budgets in this component? → A: No — track spend only. Token detail (input/output/cache) per persona and total, attributable to a piece of work. Enforcement (caps, breach policy, escalation) deferred to spec 004.
 - Q: Final usage when the proxy is unreadable at teardown? → A: Record the last-known heartbeat snapshot with an explicit unconfirmed flag; NULL only if no snapshot was ever taken. Never fabricate zeros. (Resolved as low-stakes under tracking-only scope.)
+- Q: Usage granularity when a node retries (component 2 loop)? → A: One key + one ledger row per attempt, with an `attempt` number on the row; node-level totals via rollup.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -79,9 +80,10 @@ personas; assert per-persona, per-epic, per-spec-ref, and grand-total aggregatio
 1. **Given** completed teardowns across epics, **When** I query by persona, **Then** I
    get token breakdown and USD totals per persona, within an epic and across all
    epics.
-2. **Given** several nodes that worked on the same requirement (retries, debugger
-   handoffs), **When** I query by spec ref, **Then** I get the combined cost of that
-   piece of work across all its nodes.
+2. **Given** several attempts and nodes that worked on the same requirement (retries,
+   debugger handoffs), **When** I query by spec ref, **Then** I get the combined cost
+   of that piece of work across all its attempts and nodes — and by attempt ordinal,
+   the cost of retries specifically.
 3. **Given** an epic, **When** I query its total, **Then** I get tokens + USD summed
    over all its nodes, with unconfirmed rows included but flagged in the result.
 
@@ -128,26 +130,29 @@ reflects proxy state; assert no side effects on the node.
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST mint one dedicated LiteLLM virtual key per LLM-consuming
-  node at dispatch — the attribution primitive — carrying alias `<epic_id>:<node_id>`,
-  metadata `{node_id, epic_id, persona, spec_ref}`, the persona's allowed model list,
-  and an expiry TTL backstop. The key MUST NOT carry a spend cap (`max_budget` unset).
+- **FR-001**: The system MUST mint one dedicated LiteLLM virtual key per **node
+  attempt** at dispatch — the attribution primitive — carrying alias
+  `<epic_id>:<node_id>:<attempt>`, metadata `{node_id, epic_id, persona, spec_ref,
+  attempt}`, the persona's allowed model list, and an expiry TTL backstop. The key
+  MUST NOT carry a spend cap (`max_budget` unset). Each retry of a node is a new
+  attempt with its own key.
 - **FR-002**: The system MUST revoke the node's key and write exactly one ledger row on
   every terminal path; teardown MUST be idempotent and MUST NOT fail when the key is
   already gone or the proxy is unreachable.
-- **FR-003**: Each ledger row MUST record: epic, node, persona, spec ref, key alias,
-  input tokens, output tokens, cache-read tokens, cache-write tokens, request count,
-  USD cost where priced, termination class, issue/teardown timestamps, and a
-  `final_usage_confirmed` flag.
+- **FR-003**: Each ledger row MUST record: epic, node, **attempt number**, persona,
+  spec ref, key alias, input tokens, output tokens, cache-read tokens, cache-write
+  tokens, request count, USD cost where priced, termination class, issue/teardown
+  timestamps, and a `final_usage_confirmed` flag. One row per attempt teardown.
 - **FR-004**: Token-level detail MUST come from the proxy's per-request spend logs for
   the node's key (not from agent self-reporting), aggregated at teardown; where the
   backend omits a cache metric, the row records it as absent, not zero.
 - **FR-005**: When the final read fails, the row MUST carry the last heartbeat snapshot
   flagged unconfirmed; NULL only if no snapshot was ever taken. Fabricated zeros are
   prohibited.
-- **FR-006**: The ledger MUST support rollups: by persona (per-epic and global), by
-  epic, by spec ref (across epics), and grand totals — token breakdown and USD in each,
-  with unconfirmed rows included and flagged.
+- **FR-006**: The ledger MUST support rollups: by node (attempts aggregated), by
+  persona (per-epic and global), by epic, by spec ref (across epics), by attempt
+  ordinal (e.g. cost of attempt ≥2 = the price of retries), and grand totals — token
+  breakdown and USD in each, with unconfirmed rows included and flagged.
 - **FR-007**: The system MUST poll usage during node execution (heartbeat cadence,
   ~30s) for live visibility and snapshot retention only; polling MUST trigger no
   enforcement action. Polling MUST NOT require reconfiguring the deployed proxy.
@@ -172,8 +177,8 @@ reflects proxy state; assert no side effects on the node.
   implementer, verifier, judge, debugger, researcher; verifier is deterministic (no
   agent, no model, no key). Model values are operator-supplied LiteLLM aliases.
   (Budget-default and breach-policy attributes belong to deferred spec 004.)
-- **KeyLease**: the live binding of one virtual key to one node — key, alias, node,
-  epic, persona, spec ref, issue time.
+- **KeyLease**: the live binding of one virtual key to one node attempt — key, alias,
+  node, epic, attempt, persona, spec ref, issue time.
 - **UsageSnapshot**: point-in-time usage for a key — spend USD and token counts as
   available — retained per heartbeat as latest-known state.
 - **Termination**: enum COMPLETED | AGENT_ERROR | TIMEOUT | KILLED.
