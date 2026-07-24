@@ -68,7 +68,7 @@ unlocking.
    the verdict is FAIL, the judge is not consulted (cheapest-first), and gate output is
    preserved for the retry prompt.
 3. **Given** all deterministic gates pass, **When** the judge runs, **Then** it is the
-   `judge` persona (cheap tier, read-only, own budget key per component 1), receives
+   `judge` persona (cheap tier, read-only, own attribution key per component 1), receives
    the diff plus the parsed scenarios for the node's requirement(s), and returns
    pass / retry-with-feedback / fail with per-scenario reasoning.
 4. **Given** a non-no-op node whose diff is empty, **When** verification runs, **Then**
@@ -100,8 +100,8 @@ feedback injection, and escalation firing.
    capped at 2 (bounded judge spend); gate-fail retries are capped at a configured
    limit.
 3. **Given** the retry cap is exhausted, **When** the next failure occurs, **Then**
-   the node is handed to the `debugger` persona (fresh budget key, same worktree) for
-   one diagnosis-and-fix cycle before any human escalation.
+   the node is handed to the `debugger` persona (fresh attribution key, same worktree)
+   for one diagnosis-and-fix cycle before any human escalation.
 4. **Given** the debugger cycle also fails verification, **When** that verdict lands,
    **Then** a Telegram escalation fires with the failure history and choices
    [retry once more | kill node | pause epic], each mapped to an orchestration signal;
@@ -115,9 +115,9 @@ feedback injection, and escalation firing.
   with a configuration error (never "pass by default").
 - A gate command hangs → per-gate timeout, recorded as TIMEOUT, verdict FAIL.
 - Judge response is malformed/unparseable → counts as a judge retry, not a pass.
-- Judge budget key breaches mid-judgment → component 1 policy (hard-kill) applies;
-  verification records the judge as unavailable and the verdict falls back to
-  deterministic-gates-only with an operator notification.
+- Judge model/backend unavailable mid-judgment → verification records the judge as
+  unavailable and the verdict falls back to deterministic-gates-only with an operator
+  notification. (Budget-breach handling deferred with spec 004.)
 - Scenario text changed between dispatch and verify (spec edited mid-flight) → verify
   against the criteria snapshot taken at dispatch, and flag the drift in the result.
 - REMOVED requirements → verified by absence: gates still run; judge confirms no
@@ -137,7 +137,7 @@ feedback injection, and escalation firing.
   (test/lint/typecheck from committed `factory.yaml`) in the node's sandboxed worktree
   with exit-code semantics and per-gate timeout, recording per-gate results.
 - **FR-003**: The LLM judge MUST run only after all deterministic gates pass, as the
-  `judge` persona on its own budget key, scoring the node's diff against the parsed
+  `judge` persona on its own attribution key, scoring the node's diff against the parsed
   scenarios and returning pass / retry-with-feedback / fail with per-scenario
   reasoning.
 - **FR-004**: A non-no-op node with an empty diff MUST fail verification regardless of
@@ -186,8 +186,10 @@ feedback injection, and escalation firing.
 
 ## Assumptions
 
-- Component 1 (per-node budgets) is complete: verifier/judge/debugger nodes get keys,
-  breach policies, and ledger rows through it.
+- Component 1 (per-node usage tracking, `001-usage-tracking`) is complete: judge and
+  debugger nodes get attribution keys and ledger rows through it. Budget caps and
+  breach policy are deferred (spec 004) — "own budget key" phrases in this spec mean
+  the node's own usage-tracked key, with no cap.
 - Target repos are prepared with a committed `factory.yaml`; its schema is owned by
   this component.
 - The Telegram notifier (long-polling, inline buttons → signals) is built as part of

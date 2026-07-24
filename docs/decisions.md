@@ -182,3 +182,18 @@ implementation scaffolded during the design session was reverted in favor of spe
 no implementation code exists until its spec's plan/tasks are approved. This does
 **not** touch D-001: OpenSpec remains the runtime intent layer the factory consumes;
 Spec Kit governs how the factory itself gets built.
+
+## D-021 · Component 1 pivots to usage tracking; budget enforcement deferred (decided)
+
+Supersedes the enforcement scope of D-013/D-015/D-016 (their design is preserved, not
+discarded). The operator wants spend **tracked, not enforced**: per-node token detail
+(input, output, cache read, cache write), rolled up by persona and epic, and
+attributable to a piece of work (the node's OpenSpec requirement ref). Component 1 is
+now `specs/001-usage-tracking/` — per-node virtual keys survive as the attribution
+primitive but are minted **without** `max_budget`; polling is observability-only; the
+SQLite ledger records token breakdowns and USD-when-priced. Caps, breach policy
+(soft-warn / hard-kill / escalate), and the bump/reroute/kill escalation flow are
+parked fully-designed in `specs/004-budget-enforcement/` (Status: Deferred,
+unscheduled) with a reactivation checklist. Synthetic local-model pricing (D-013)
+becomes optional until enforcement is reactivated. Constitution amended accordingly
+(v2.0.0).

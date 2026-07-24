@@ -68,7 +68,7 @@ the loser is detected, re-driven, and either lands after repair or escalates.
    2) re-run, and the PR re-enqueued on pass.
 2. **Given** a PR that cannot be rebased (merge conflict), **When** detected, **Then**
    the `debugger` persona gets one bounded cycle in the node's worktree to resolve the
-   conflict (fresh budget key, conflict context in prompt), after which the branch is
+   conflict (fresh attribution key, conflict context in prompt), after which the branch is
    re-verified and re-enqueued.
 3. **Given** the recovery cycle fails again, **When** that outcome lands, **Then** a
    Telegram escalation fires with the queue history and choices [retry | kill node |
@@ -177,7 +177,7 @@ queue configured; assert pass/fail with actionable findings.
   plan (D-007); private-on-Free targets are out of scope (would reopen the
   custom-queue decision).
 - The `gh` CLI is present on worker hosts and authenticated for the target repos.
-- Components 1 and 2 are complete: budgets wrap the debugger cycles; verification
+- Components 1 and 2 are complete: usage tracking attributes the debugger cycles; verification
   produces the PASS verdicts and re-runs during recovery.
 - The first target is the dedicated sample repo (D-010), created and
   onboarding-validated before this component's E2E tests.

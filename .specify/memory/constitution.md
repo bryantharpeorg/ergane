@@ -3,7 +3,7 @@
 Ergane is an agentic software factory: it turns OpenSpec change proposals into merged,
 verified code by dispatching headless coding agents through an orchestrated DAG, with
 hard per-node budgets, mechanical acceptance-criteria verification, and merge-queue
-discipline. The full decision log lives in `docs/decisions.md` (D-001…D-019); this
+discipline. The full decision log lives in `docs/decisions.md` (D-001…D-021); this
 constitution distills the non-negotiables that every spec, plan, and implementation
 must honor.
 
@@ -11,9 +11,11 @@ must honor.
 
 ### I. Strict Build Order, Vertical Slices (NON-NEGOTIABLE)
 
-Components are built in this order: (1) per-node budgets, (2) verification gating,
-(3) merge queue. Each component ships as a small vertical slice with tests **before**
-work on the next begins. No component starts while its predecessor lacks passing tests.
+Components are built in this order: (1) per-node usage tracking, (2) verification
+gating, (3) merge queue. Budget enforcement (spec 004) is deferred and unscheduled —
+it re-enters the order only by explicit operator decision. Each component ships as a
+small vertical slice with tests **before** work on the next begins. No component
+starts while its predecessor lacks passing tests.
 
 ### II. Test-First
 
@@ -34,13 +36,15 @@ deterministic code operating on graph data — never LLM calls. Workflow code ma
 decisions; all side effects live in activities (plan-then-apply). LLM judgment is
 bounded, opt-in, and confined to designated nodes (agent work, judge scoring).
 
-### V. Budgets Are Enforced, Not Advisory
+### V. Spend Is Attributed, Never Anonymous
 
-Every LLM-consuming node runs on its own budget-capped, model-constrained, TTL'd
-virtual key, issued at dispatch and revoked at teardown. All budgets are denominated in
-USD uniformly (local models carry registered synthetic pricing). Every teardown writes a
-ledger row. The proxy master key lives only in the worker host environment and never
-enters orchestration state, payloads, or logs.
+Every LLM-consuming node runs on its own model-constrained, TTL'd virtual key, issued
+at dispatch and revoked at teardown — the attribution primitive that ties every token
+(input, output, cache read/write) and dollar to a node, persona, epic, and piece of
+work without agent cooperation. Every teardown writes a ledger row; recorded usage is
+never fabricated (unknown is flagged, not zeroed). Budget *enforcement* (caps, breach
+policy) is deferred per D-021. The proxy master key lives only in the worker host
+environment and never enters orchestration state, payloads, or logs.
 
 ### VI. No Work Is Ever Lost
 
@@ -93,4 +97,6 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24
+**Version**: 2.0.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24 (D-021:
+Principle V redefined from budget enforcement to spend attribution; Principle I build
+order updated — budget enforcement deferred to spec 004)
