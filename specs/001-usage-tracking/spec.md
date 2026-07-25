@@ -21,6 +21,7 @@ enforcement**: caps, breach policy, and escalation are deferred to spec
 - Q: Enforce per-node budgets in this component? → A: No — track spend only. Token detail (input/output/cache) per persona and total, attributable to a piece of work. Enforcement (caps, breach policy, escalation) deferred to spec 004.
 - Q: Final usage when the proxy is unreadable at teardown? → A: Record the last-known heartbeat snapshot with an explicit unconfirmed flag; NULL only if no snapshot was ever taken. Never fabricate zeros. (Resolved as low-stakes under tracking-only scope.)
 - Q: Usage granularity when a node retries (component 2 loop)? → A: One key + one ledger row per attempt, with an `attempt` number on the row; node-level totals via rollup.
+- Q: Rely on LiteLLM's own storage/reporting instead of a factory ledger? → A: No — keep the factory-owned SQLite ledger (insulation from LiteLLM schema/upgrades/licensing). LiteLLM spend logs remain the upstream source aggregated at teardown; only genuinely OSS-tier LiteLLM features may be used (key_alias, /spend/logs/v2, daily-activity endpoints) — enterprise-labeled features (per-key tags, spend_logs_metadata) are prohibited even where upstream license checks are currently missing.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -144,8 +145,11 @@ reflects proxy state; assert no side effects on the node.
   tokens, request count, USD cost where priced, termination class, issue/teardown
   timestamps, and a `final_usage_confirmed` flag. One row per attempt teardown.
 - **FR-004**: Token-level detail MUST come from the proxy's per-request spend logs for
-  the node's key (not from agent self-reporting), aggregated at teardown; where the
-  backend omits a cache metric, the row records it as absent, not zero.
+  the attempt's key (not from agent self-reporting), aggregated at teardown; where the
+  backend omits a cache metric, the row records it as absent, not zero. Only
+  genuinely OSS-tier proxy features may be used for this (key alias, spend-log query
+  endpoints); enterprise-labeled features MUST NOT be relied on, including where
+  upstream license enforcement is currently missing.
 - **FR-005**: When the final read fails, the row MUST carry the last heartbeat snapshot
   flagged unconfirmed; NULL only if no snapshot was ever taken. Fabricated zeros are
   prohibited.
@@ -211,7 +215,14 @@ reflects proxy state; assert no side effects on the node.
   Claude Code through this proxy in daily use.
 - Key management uses the proxy's documented endpoints (`/key/generate`, `/key/info`,
   `/key/delete`); per-request token detail comes from the proxy's spend-log records
-  keyed by the node's virtual key (exact endpoint/fields are plan-level detail).
+  keyed by the attempt's virtual key (exact endpoint/fields are plan-level detail).
+- The proxy runs with its database and spend-log persistence enabled (default when
+  virtual keys are in use, as they are in the operator's daily setup); target-repo-
+  independent setup validation verifies this before first dispatch.
+- The SQLite ledger file lives on a single designated worker host; ledger-writing
+  activities are pinned to that host via a dedicated task queue so the single-writer
+  constraint is enforced by topology, not convention. (Multi-host ledger access is out
+  of scope; the ledger can be rebuilt from proxy spend logs if ever needed.)
 - Cache-read/cache-write token metrics are available for Anthropic-backed calls; other
   backends may omit them (FR-004 covers absence).
 - Node budgets, caps, soft warnings, breach classification, and escalation are all out
