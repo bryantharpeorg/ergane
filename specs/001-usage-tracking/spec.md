@@ -22,6 +22,7 @@ enforcement**: caps, breach policy, and escalation are deferred to spec
 - Q: Final usage when the proxy is unreadable at teardown? → A: Record the last-known heartbeat snapshot with an explicit unconfirmed flag; NULL only if no snapshot was ever taken. Never fabricate zeros. (Resolved as low-stakes under tracking-only scope.)
 - Q: Usage granularity when a node retries (component 2 loop)? → A: One key + one ledger row per attempt, with an `attempt` number on the row; node-level totals via rollup.
 - Q: Rely on LiteLLM's own storage/reporting instead of a factory ledger? → A: No — keep the factory-owned SQLite ledger (insulation from LiteLLM schema/upgrades/licensing). LiteLLM spend logs remain the upstream source aggregated at teardown; only genuinely OSS-tier LiteLLM features may be used (key_alias, /spend/logs/v2, daily-activity endpoints) — enterprise-labeled features (per-key tags, spend_logs_metadata) are prohibited even where upstream license checks are currently missing.
+- Q: Operator query surface for rollups? → A: Minimal read-only CLI (`--by persona/epic/spec-ref/attempt`, `--json`) plus the documented SQLite schema for direct SQL/BI access.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -87,6 +88,10 @@ personas; assert per-persona, per-epic, per-spec-ref, and grand-total aggregatio
    the cost of retries specifically.
 3. **Given** an epic, **When** I query its total, **Then** I get tokens + USD summed
    over all its nodes, with unconfirmed rows included but flagged in the result.
+4. **Given** the read-only usage CLI, **When** I run it with `--by persona` (or
+   `--by spec-ref`, `--by attempt`) and `--json`, **Then** I get the same rollups as
+   machine-readable output suitable for scripting, and no CLI invocation ever writes
+   to the ledger.
 
 ---
 
@@ -173,6 +178,10 @@ reflects proxy state; assert no side effects on the node.
 - **FR-011**: Token counts MUST be recorded for all models regardless of pricing; USD
   is recorded when the proxy prices the model (registering synthetic pricing for local
   models is optional operator setup, not a requirement of this component).
+- **FR-012**: A minimal read-only CLI MUST expose the FR-006 rollups (`--by
+  persona|epic|spec-ref|attempt`, epic/date filters) with human-readable and `--json`
+  output; the ledger schema MUST be documented for direct SQL/BI access. The CLI
+  performs no writes.
 
 ### Key Entities
 
