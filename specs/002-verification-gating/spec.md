@@ -12,6 +12,12 @@ verifier node type, mechanical OpenSpec criteria parser, two-tier verification
 retry-with-feedback, and the Telegram escalation path. Downstream DAG edges unlock only
 on pass.
 
+## Clarifications
+
+### Session 2026-07-24
+
+- Q: Is verification a DAG node or a phase of producing nodes? → A: Both — every producing node has a built-in verify phase (attempt → verify → retry, same worktree, per-attempt keys); an explicit `verifier` node type additionally exists for cross-node/integration checks (e.g. after a fan-in). Downstream edges unlock on verified-PASS in either form.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Mechanical criteria parsing (Priority: P1)
@@ -133,9 +139,13 @@ feedback injection, and escalation firing.
   (identity = trimmed header text; body must contain SHALL/MUST), `#### Scenario:`
   blocks, `- **GIVEN/WHEN/THEN/AND**` steps, `- FROM:`/`- TO:` renames, with code-fence
   masking.
-- **FR-002**: The verifier node type MUST run the target repo's declared gates
-  (test/lint/typecheck from committed `factory.yaml`) in the node's sandboxed worktree
-  with exit-code semantics and per-gate timeout, recording per-gate results.
+- **FR-002**: Verification MUST run the target repo's declared gates (test/lint/
+  typecheck from committed `factory.yaml`) in the node's sandboxed worktree with
+  exit-code semantics and per-gate timeout, recording per-gate results. It runs in two
+  forms: (a) as a built-in phase of every producing node's attempt lifecycle, and
+  (b) as an explicit `verifier` DAG node type for checks spanning multiple upstream
+  nodes (integration/fan-in gates); both forms share the same gate runner and verdict
+  model.
 - **FR-003**: The LLM judge MUST run only after all deterministic gates pass, as the
   `judge` persona on its own attribution key, scoring the node's diff against the parsed
   scenarios and returning pass / retry-with-feedback / fail with per-scenario
