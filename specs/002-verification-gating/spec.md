@@ -17,6 +17,7 @@ on pass.
 ### Session 2026-07-24
 
 - Q: Is verification a DAG node or a phase of producing nodes? → A: Both — every producing node has a built-in verify phase (attempt → verify → retry, same worktree, per-attempt keys); an explicit `verifier` node type additionally exists for cross-node/integration checks (e.g. after a fan-in). Downstream edges unlock on verified-PASS in either form.
+- Q: Judge pass criterion? → A: Strict per-scenario — every acceptance scenario must individually pass; any failing scenario yields retry/fail with that scenario cited in the feedback. Applies to both verification forms.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -149,7 +150,10 @@ feedback injection, and escalation firing.
 - **FR-003**: The LLM judge MUST run only after all deterministic gates pass, as the
   `judge` persona on its own attribution key, scoring the node's diff against the parsed
   scenarios and returning pass / retry-with-feedback / fail with per-scenario
-  reasoning.
+  reasoning. The verdict criterion is strict: PASS requires every scenario to
+  individually pass; any failing scenario forces retry-with-feedback (or fail) and
+  MUST be cited by name in the feedback. Holistic or threshold-based passing is
+  prohibited, in both verification forms.
 - **FR-004**: A non-no-op node with an empty diff MUST fail verification regardless of
   gate and judge results.
 - **FR-005**: Downstream DAG edges MUST unlock only on an overall PASS verdict.
