@@ -20,6 +20,7 @@ on pass.
 - Q: Judge pass criterion? → A: Strict per-scenario — every acceptance scenario must individually pass; any failing scenario yields retry/fail with that scenario cited in the feedback. Applies to both verification forms.
 - Q: Default retry ladder? → A: 3 total attempts per node (initial + 2 retries, any failure mix; judge-initiated retries still capped at 2 within that), then one debugger cycle, then Telegram escalation. Configurable; default is 3.
 - Q: Which nodes may legitimately produce an empty diff? → A: Persona-derived — `write_scope: read` personas (researcher, judge; also verifier nodes) are exempt from the empty-diff check but must produce their declared artifact (report, verdict) to pass; write-scoped personas (implementer, debugger, architect) always require a non-empty diff.
+- Q: Notifier library? → A: `python-telegram-bot` approved (constitution III roster updated); long-polling, inline keyboards, callback handling out of the box.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -214,8 +215,7 @@ feedback injection, and escalation firing.
 - Target repos are prepared with a committed `factory.yaml`; its schema is owned by
   this component.
 - The Telegram notifier (long-polling, inline buttons → signals) is built as part of
-  this component; `python-telegram-bot` requires operator approval before adoption
-  (constitution III).
+  this component using `python-telegram-bot` (approved 2026-07-24, constitution III).
 - The judge rubric consumes parsed scenarios as-is; rubric wording is an implementation
   detail of the plan, not this spec.
 - OpenSpec `--json` output is an acceptable alternative input to markdown parsing if it

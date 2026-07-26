@@ -26,8 +26,7 @@ all implementation work. A feature without tests is not done.
 
 No new dependency — package, service, or tool — is added without explicit operator
 approval first. Approved to date: `uv`, `temporalio`, `httpx`, `pyyaml`, `pytest`
-(+`pytest-asyncio`). `python-telegram-bot` is pre-flagged for the notifier but not yet
-approved.
+(+`pytest-asyncio`), and `python-telegram-bot` (approved 2026-07-24 for the notifier).
 
 ### IV. Determinism at the Core, LLMs at the Edges
 
@@ -97,6 +96,7 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.0.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24 (D-021:
+**Version**: 2.1.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24 (2.1.0:
+`python-telegram-bot` added to the approved-dependency roster, D-022. 2.0.0 — D-021:
 Principle V redefined from budget enforcement to spend attribution; Principle I build
 order updated — budget enforcement deferred to spec 004)

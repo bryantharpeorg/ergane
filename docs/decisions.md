@@ -197,3 +197,10 @@ parked fully-designed in `specs/004-budget-enforcement/` (Status: Deferred,
 unscheduled) with a reactivation checklist. Synthetic local-model pricing (D-013)
 becomes optional until enforcement is reactivated. Constitution amended accordingly
 (v2.0.0).
+
+## D-022 · `python-telegram-bot` approved for the notifier (decided)
+
+Approved during spec 002 clarification (2026-07-24) per constitution III. The Telegram
+notifier (long-polling, inline-button escalations → Temporal signals, built with
+component 2) uses `python-telegram-bot` rather than a hand-rolled Bot API client on
+`httpx`. Constitution roster updated (v2.1.0).
