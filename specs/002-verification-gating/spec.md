@@ -19,6 +19,7 @@ on pass.
 - Q: Is verification a DAG node or a phase of producing nodes? → A: Both — every producing node has a built-in verify phase (attempt → verify → retry, same worktree, per-attempt keys); an explicit `verifier` node type additionally exists for cross-node/integration checks (e.g. after a fan-in). Downstream edges unlock on verified-PASS in either form.
 - Q: Judge pass criterion? → A: Strict per-scenario — every acceptance scenario must individually pass; any failing scenario yields retry/fail with that scenario cited in the feedback. Applies to both verification forms.
 - Q: Default retry ladder? → A: 3 total attempts per node (initial + 2 retries, any failure mix; judge-initiated retries still capped at 2 within that), then one debugger cycle, then Telegram escalation. Configurable; default is 3.
+- Q: Which nodes may legitimately produce an empty diff? → A: Persona-derived — `write_scope: read` personas (researcher, judge; also verifier nodes) are exempt from the empty-diff check but must produce their declared artifact (report, verdict) to pass; write-scoped personas (implementer, debugger, architect) always require a non-empty diff.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -155,8 +156,12 @@ feedback injection, and escalation firing.
   individually pass; any failing scenario forces retry-with-feedback (or fail) and
   MUST be cited by name in the feedback. Holistic or threshold-based passing is
   prohibited, in both verification forms.
-- **FR-004**: A non-no-op node with an empty diff MUST fail verification regardless of
-  gate and judge results.
+- **FR-004**: A node whose persona has write scope (`worktree` or `docs`) MUST fail
+  verification on an empty diff regardless of gate and judge results
+  (anti-rubber-stamp). Nodes whose persona is `write_scope: read` (researcher, judge)
+  and verifier nodes are exempt from the diff check but MUST produce their declared
+  output artifact (report, verdict) to pass — no node passes with neither diff nor
+  artifact.
 - **FR-005**: Downstream DAG edges MUST unlock only on an overall PASS verdict.
 - **FR-006**: Retries MUST inject the failure evidence (gate output, judge feedback)
   verbatim into the retry prompt. Judge-initiated retries MUST be capped at 2; total
