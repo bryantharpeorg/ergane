@@ -18,6 +18,7 @@ on pass.
 
 - Q: Is verification a DAG node or a phase of producing nodes? → A: Both — every producing node has a built-in verify phase (attempt → verify → retry, same worktree, per-attempt keys); an explicit `verifier` node type additionally exists for cross-node/integration checks (e.g. after a fan-in). Downstream edges unlock on verified-PASS in either form.
 - Q: Judge pass criterion? → A: Strict per-scenario — every acceptance scenario must individually pass; any failing scenario yields retry/fail with that scenario cited in the feedback. Applies to both verification forms.
+- Q: Default retry ladder? → A: 3 total attempts per node (initial + 2 retries, any failure mix; judge-initiated retries still capped at 2 within that), then one debugger cycle, then Telegram escalation. Configurable; default is 3.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -104,8 +105,8 @@ feedback injection, and escalation firing.
    prompt contains the failing gate output and/or the judge's feedback verbatim, and
    the attempt counter increments.
 2. **Given** judge-initiated retries, **When** they recur, **Then** judge retries are
-   capped at 2 (bounded judge spend); gate-fail retries are capped at a configured
-   limit.
+   capped at 2 (bounded judge spend) within a default total of 3 attempts per node
+   (initial + 2 retries, from any mix of gate and judge failures; configurable).
 3. **Given** the retry cap is exhausted, **When** the next failure occurs, **Then**
    the node is handed to the `debugger` persona (fresh attribution key, same worktree)
    for one diagnosis-and-fix cycle before any human escalation.
@@ -159,7 +160,8 @@ feedback injection, and escalation firing.
 - **FR-005**: Downstream DAG edges MUST unlock only on an overall PASS verdict.
 - **FR-006**: Retries MUST inject the failure evidence (gate output, judge feedback)
   verbatim into the retry prompt. Judge-initiated retries MUST be capped at 2; total
-  retries at a configured cap.
+  attempts per node default to 3 (initial + 2 retries, any failure mix),
+  configurable per deployment.
 - **FR-007**: After retry exhaustion the node MUST be routed to the `debugger` persona
   for one bounded cycle before human escalation.
 - **FR-008**: Escalations MUST be delivered via Telegram with inline-button choices
