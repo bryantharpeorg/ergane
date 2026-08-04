@@ -1,0 +1,66 @@
+# Persona registry (D-012, trimmed per D-021 / research R8).
+#
+# Nodes are routed by persona, never by model tier. This registry is the only
+# place a model name appears — code never hardcodes one. The `model` and
+# `fallback` values below are CHANGEME placeholders: replace them with your own
+# LiteLLM aliases. The issued virtual key's `models` list is derived from these,
+# so the binding is enforceable, not advisory.
+#
+# Fields per persona:
+#   agent          adapter name (D-018); "none" = deterministic persona, no key
+#   model          LiteLLM alias; required iff agent != "none", null iff "none"
+#   fallback       LiteLLM alias used on primary-model failure; optional (null)
+#   skills         backing skills; may be empty
+#   write_scope    worktree | docs | read  (drives component 2's diff exemption)
+#   needs_worktree whether the node runs against an isolated git worktree
+#
+# `budget_usd` and `breach_policy` are intentionally absent — budget enforcement
+# is deferred to spec 004 and those fields return with it.
+
+architect:
+  agent: claude-code
+  model: anthropic/CHANGEME
+  fallback: local/CHANGEME
+  skills: [codebase-design, design-an-interface, domain-modeling]
+  write_scope: docs
+  needs_worktree: true
+
+implementer:
+  agent: claude-code
+  model: anthropic/CHANGEME
+  fallback: local/CHANGEME
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+
+verifier:
+  agent: none
+  model: null
+  fallback: null
+  skills: []
+  write_scope: read
+  needs_worktree: true
+
+judge:
+  agent: claude-code
+  model: anthropic/CHANGEME
+  fallback: local/CHANGEME
+  skills: [code-review]
+  write_scope: read
+  needs_worktree: false
+
+debugger:
+  agent: claude-code
+  model: anthropic/CHANGEME
+  fallback: local/CHANGEME
+  skills: [diagnosing-bugs]
+  write_scope: worktree
+  needs_worktree: true
+
+researcher:
+  agent: claude-code
+  model: anthropic/CHANGEME
+  fallback: local/CHANGEME
+  skills: [research, grill-with-docs]
+  write_scope: read
+  needs_worktree: false

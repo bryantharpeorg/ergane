@@ -21,7 +21,7 @@ and testable.
 
 - [X] T001 Create `pyproject.toml` (uv project; deps: temporalio, httpx, pyyaml; dev: pytest, pytest-asyncio; `factory-usage` console-script entry point; hatchling build with `factory` package; pytest `asyncio_mode=auto` and `live_proxy` marker)
 - [X] T002 [P] Create package skeleton: `factory/__init__.py`, `factory/usage/__init__.py`, `factory/activities/__init__.py`, empty `tests/__init__.py` placeholder files
-- [ ] T003 [P] Restore `personas.yaml` at repo root per research R8 (six personas; `{agent, model, fallback, skills, write_scope, needs_worktree}`; CHANGEME model placeholders; NO budget/breach fields)
+- [X] T003 [P] Restore `personas.yaml` at repo root per research R8 (six personas; `{agent, model, fallback, skills, write_scope, needs_worktree}`; CHANGEME model placeholders; NO budget/breach fields)
 - [ ] T004 [P] Extend `.gitignore` for `.factory/` ledger artifacts and `.venv/`, `__pycache__/`, `.pytest_cache/`, `.temporal/` (keep existing entries)
 - [ ] T005 Run `uv sync` and verify `uv run pytest -q` collects zero tests successfully (toolchain sanity)
 
