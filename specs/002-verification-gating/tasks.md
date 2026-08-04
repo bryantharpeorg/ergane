@@ -57,7 +57,7 @@ grammar; assert extracted requirement/scenario structures and validation errors.
 
 - [X] T009 [US1] Implement `factory/verify/criteria.py` (pure parser: fence-masked header scan `/^(#{1,6})\s+(.+)$/`, Spec Kit template grammar per architecture §2, validation rules per data-model.md, requirement filtering by key) until T008 passes
 - [X] T010 [US1] Write `snapshot_criteria` activity tests FIRST in `tests/test_verify_activities.py` (ActivityEnvironment): returns `CriteriaSet` for the node's requirement keys with hash + timestamp; `CRITERIA_PARSE_FAILED` application error carries the validation message; `CRITERIA_FILE_MISSING` on absent spec.md — must fail
-- [ ] T011 [US1] Create `factory/activities/verify_activities.py` with `snapshot_criteria` per `contracts/activities.md` until T010 passes
+- [X] T011 [US1] Create `factory/activities/verify_activities.py` with `snapshot_criteria` per `contracts/activities.md` until T010 passes
 
 **Checkpoint**: criteria parsing shippable and grammar-complete on its own
 
