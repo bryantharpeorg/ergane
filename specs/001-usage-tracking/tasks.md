@@ -64,7 +64,7 @@ fallback paths.
 ### Implementation for User Story 1
 
 - [X] T016 [P] [US1] Implement `factory/usage/aggregate.py` (pure function `aggregate_rows(rows) -> AggregatedUsage` incl. cache-absence rule) until T014 passes
-- [ ] T017 [US1] Implement `factory/activities/usage_activities.py`: `issue_attempt_key` (raises typed `KEY_ISSUANCE_FAILED` per R4), `teardown_attempt` (strict R3 ordering, snapshot fallback, upsert, tolerant deletion) per `contracts/activities.md`, env-only credentials, until T015 passes
+- [X] T017 [US1] Implement `factory/activities/usage_activities.py`: `issue_attempt_key` (raises typed `KEY_ISSUANCE_FAILED` per R4), `teardown_attempt` (strict R3 ordering, snapshot fallback, upsert, tolerant deletion) per `contracts/activities.md`, env-only credentials, until T015 passes
 - [ ] T018 [US1] Add attribution-completeness guard in `teardown_attempt` + test case in `tests/test_usage_activities.py`: reject (raise, don't write) a `UsageRecord` with empty node/epic/persona/spec_ref (SC-003)
 
 **Checkpoint**: MVP — attempts produce correct, attributed ledger rows on all paths
