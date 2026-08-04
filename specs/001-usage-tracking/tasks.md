@@ -41,7 +41,7 @@ story consumes these
 - [X] T010 Write `tests/test_litellm_client.py` FIRST: issue key sends alias `epic:node:attempt`, metadata dims, models list, ttl, and NO `max_budget`; get_spend parses info; revoke idempotent on 404; spend-log pagination drains all pages; 401 error carries status but never the master key string — must fail (no client yet)
 - [X] T011 Implement `factory/usage/litellm_client.py` (async httpx client: `issue_key`, `get_spend`, `fetch_spend_log_rows` with pagination, `revoke_key`; credential-free `LiteLLMError`) until T010 passes
 - [X] T012 Write `tests/test_ledger_schema.py` FIRST: creating a ledger applies `contracts/ledger-schema.sql` DDL (WAL mode on, `usage_records` table + indexes + CHECK constraints present, `schema_version` = 1); upsert-by-`key_alias` uniqueness holds — must fail
-- [ ] T013 Implement `factory/usage/ledger.py` (connection factory with WAL + busy_timeout per research R6, schema bootstrap from embedded DDL matching `contracts/ledger-schema.sql`, `upsert_record(UsageRecord)`) until T012 passes
+- [X] T013 Implement `factory/usage/ledger.py` (connection factory with WAL + busy_timeout per research R6, schema bootstrap from embedded DDL matching `contracts/ledger-schema.sql`, `upsert_record(UsageRecord)`) until T012 passes
 
 **Checkpoint**: foundation ready — user stories can proceed (in parallel if desired)
 
