@@ -15,6 +15,13 @@ handling here are the design rather than an implementation detail:
   dollar figure, `NULL` tokens, `final_usage_confirmed = 0`. Mixing a confirmed
   spend with absent token detail would publish a row that looks measured and is
   not (FR-005).
+- **An anonymous row is worse than no row.** The one thing teardown will not
+  degrade to is a row it cannot attribute. Every rollup groups by epic, node,
+  persona or spec_ref (FR-006), so a row missing one of them does not merely
+  lack detail — it lands in no group and makes the totals an operator reads
+  quietly too small. `ATTRIBUTION_INCOMPLETE` raises before the write, and
+  therefore before the revocation, so the attempt's usage survives on a live key
+  until the dispatch that dropped the dimension is fixed (SC-003).
 - **Only the ledger's own failure is fatal.** An unreadable proxy costs the
   detail; a failed revocation costs nothing the 24h TTL does not already cover
   (R5). Both still write the row. A failed *write* propagates unwrapped, because
@@ -61,6 +68,16 @@ from factory.usage.models import (
 #: (R4). Distinct from agent failure so infrastructure blips stay out of
 #: agent-quality statistics.
 KEY_ISSUANCE_FAILED = "KEY_ISSUANCE_FAILED"
+
+#: The activity error type for a teardown whose lease cannot say whose usage it
+#: is (SC-003). Non-retryable by construction: the dimensions arrive with the
+#: dispatch, so a rerun rebuilds exactly the same unattributable row.
+ATTRIBUTION_INCOMPLETE = "ATTRIBUTION_INCOMPLETE"
+
+#: The dimensions every rollup groups by (FR-006) — the ones whose absence a
+#: reader of the ledger cannot detect, because the row simply is not in the
+#: answer. The remaining columns may legitimately be unknown; these may not.
+_ATTRIBUTION_FIELDS = ("epic_id", "node_id", "persona", "spec_ref")
 
 #: Where the ledger lives when the worker does not say otherwise; the CLI
 #: resolves the same default, or an operator's `factory-usage` reads an empty
@@ -200,6 +217,7 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
     try:
         confirmed = await _read_final_usage(client, request.lease)
         record = _record_for(request, confirmed)
+        _require_attribution(record)
 
         # Before the key dies, so a ledger that refuses the row leaves the
         # attempt's usage still readable from the proxy (R3).
@@ -283,6 +301,37 @@ def _record_for(
         torn_down_at=_now_iso(),
         **usage,
     )
+
+
+def _require_attribution(record: UsageRecord) -> None:
+    """Refuse a row that no rollup could ever account for (SC-003).
+
+    This is the one failure teardown does not absorb into a flagged row. A
+    fallback row is a real measurement with unknown detail, and an operator can
+    see it is unconfirmed; a row with no persona is invisible in exactly the
+    query that would have revealed the gap. Raising leaves the caller — the only
+    party that knows the attempt's dimensions — to fix the dispatch, and because
+    nothing has been written or deleted yet, the usage is still there to record
+    when they do.
+
+    Blank counts as absent: the ledger's `NOT NULL` constraints would accept
+    `""` and every rollup would then report a nameless group.
+    """
+    missing = [name for name in _ATTRIBUTION_FIELDS if _is_blank(getattr(record, name))]
+    if not missing:
+        return
+
+    raise ApplicationError(
+        f"unattributable usage record for key alias {record.key_alias!r}: "
+        f"missing {', '.join(missing)}",
+        type=ATTRIBUTION_INCOMPLETE,
+        # The dispatch is wrong, not the moment: retrying reproduces it exactly.
+        non_retryable=True,
+    )
+
+
+def _is_blank(value: object) -> bool:
+    return not isinstance(value, str) or not value.strip()
 
 
 async def _revoke_quietly(client: LiteLLMClient, key: str) -> None:

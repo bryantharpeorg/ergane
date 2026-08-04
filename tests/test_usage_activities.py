@@ -18,6 +18,11 @@ component's promises stop being module-local and become the factory's behaviour:
 - **Idempotency is exercised, not assumed.** Temporal runs teardown at least
   once; the second run finds the key gone, takes the fallback, and upserts onto
   the first run's row (SC-001).
+- **An unattributable row is refused, not written.** Every other failure here
+  degrades to a flagged row, but a row missing epic, node, persona or spec_ref
+  belongs to no rollup group and quietly shrinks the totals it should have been
+  part of. Teardown raises instead — before the write, so the usage is still
+  sitting on a live key when the dispatch bug is fixed (SC-003).
 - **The master key stays on the worker host.** It reaches the activities through
   the process environment only, and appears in no lease, no record, no error and
   no byte of the ledger file (FR-009, SC-004).
@@ -36,6 +41,7 @@ T017): until the module lands, every test here fails at import.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -47,6 +53,7 @@ from temporalio.testing import ActivityEnvironment
 
 from factory.activities import usage_activities
 from factory.activities.usage_activities import (
+    ATTRIBUTION_INCOMPLETE,
     DEFAULT_LEDGER_PATH,
     KEY_ISSUANCE_FAILED,
     LEDGER_PATH_ENV,
@@ -613,6 +620,78 @@ async def test_the_ledger_path_defaults_to_the_documented_location(
     # `factory-usage` reads an empty database (contracts/cli.md).
     assert DEFAULT_LEDGER_PATH == ".factory/ledger.db"
     assert only_row(tmp_path / DEFAULT_LEDGER_PATH)["key_alias"] == ALIAS
+
+
+# --- attribution ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+@pytest.mark.parametrize("dimension", ["epic_id", "node_id", "persona", "spec_ref"])
+async def test_an_unattributable_row_is_refused_rather_than_written(
+    env: ActivityEnvironment,
+    proxy: FakeLiteLLM,
+    ledger_path: Path,
+    dimension: str,
+    blank: str,
+) -> None:
+    lease = replace(await issue(env), **{dimension: blank})
+    spend_rows_for(proxy, lease.key)
+
+    with pytest.raises(ApplicationError) as excinfo:
+        await tear_down(env, lease)
+
+    # SC-003: these four are what every rollup groups by (FR-006). A row missing
+    # one is not a weaker measurement — it falls out of the group it belonged to
+    # and makes the operator's totals quietly too small. A whitespace persona is
+    # as absent as an empty one.
+    assert excinfo.value.type == ATTRIBUTION_INCOMPLETE
+    # The dimensions come from the dispatch, so a rerun rebuilds the same
+    # unattributable row; only the caller can fix this.
+    assert excinfo.value.non_retryable is True
+    # The message names the field, because the operator's next move is to find
+    # where the dispatch dropped it.
+    assert dimension in str(excinfo.value)
+    assert_credential_free(excinfo.value, proxy.master_key)
+
+
+@pytest.mark.parametrize("dimension", ["epic_id", "node_id", "persona", "spec_ref"])
+async def test_a_refused_row_leaves_the_usage_recoverable(
+    env: ActivityEnvironment, proxy: FakeLiteLLM, ledger_path: Path, dimension: str
+) -> None:
+    lease = replace(await issue(env), **{dimension: ""})
+    spend_rows_for(proxy, lease.key)
+
+    with pytest.raises(ApplicationError):
+        await tear_down(env, lease)
+
+    # Refused before the write, and the write is before the revocation (R3): the
+    # attempt's usage is still readable from a live key, so a corrected
+    # re-dispatch can still record it. No half-row, no partial ledger file.
+    assert not ledger_path.exists()
+    assert "POST /key/delete" not in proxy.routes
+    assert lease.key in proxy.keys
+    assert proxy.rows_for(lease.key) != []
+
+
+async def test_a_fully_attributed_row_is_written_on_the_fallback_path_too(
+    env: ActivityEnvironment, proxy: FakeLiteLLM, ledger_path: Path
+) -> None:
+    lease = await issue(env)
+    proxy.fail_next("/key/info", status=503)
+
+    record = await tear_down(env, lease)
+
+    # The guard is about attribution, not about the reading: a flagged row is
+    # still a row, and it still carries all four dimensions (FR-005, SC-003).
+    assert record.final_usage_confirmed is False
+    stored = only_row(ledger_path)
+    for dimension, expected in (
+        ("epic_id", EPIC),
+        ("node_id", NODE),
+        ("persona", PERSONA),
+        ("spec_ref", SPEC_REF),
+    ):
+        assert stored[dimension] == expected
 
 
 # --- credentials ------------------------------------------------------------
