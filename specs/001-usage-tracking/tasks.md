@@ -58,7 +58,7 @@ fallback paths.
 
 ### Tests for User Story 1 (write FIRST, must fail)
 
-- [ ] T014 [P] [US1] Write `tests/test_aggregate.py`: spend-log rows → `AggregatedUsage` (sums, request count); cache fields absent from ALL rows → None (never 0); cache fields present on some rows → sum of present values; empty row set → zero-request aggregate (per research R2 / FR-004)
+- [X] T014 [P] [US1] Write `tests/test_aggregate.py`: spend-log rows → `AggregatedUsage` (sums, request count); cache fields absent from ALL rows → None (never 0); cache fields present on some rows → sum of present values; empty row set → zero-request aggregate (per research R2 / FR-004)
 - [ ] T015 [P] [US1] Write `tests/test_usage_activities.py` (ActivityEnvironment + FakeLiteLLM + tmp ledger): issue→key exists with correct shape and no cap; teardown happy path follows R3 order (info → spend logs → ledger row → delete LAST, assert via request log) and row matches proxy data with `final_usage_confirmed=1`; teardown with key already gone → snapshot-fallback row `final_usage_confirmed=0`, spend from snapshot, tokens NULL; teardown with no snapshot ever → NULLs, never zeros; re-run teardown → still exactly one row (upsert); master key never in lease/record/error strings (SC-004); `KEY_ISSUANCE_FAILED` application error surfaces when proxy 500s persist (R4)
 
 ### Implementation for User Story 1
