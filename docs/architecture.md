@@ -7,11 +7,12 @@ mechanical acceptance-criteria verification, and GitHub's native merge queue for
 This document describes the target architecture. The decision log with rationale is in
 [decisions.md](decisions.md). Build order is strict: **usage tracking → verification → merge**
 (D-017), with component 1 pivoted from budget enforcement to usage tracking (D-021).
-No components exist in code yet: each is specified first under `specs/` (GitHub Spec
-Kit, D-020) — [001-usage-tracking](../specs/001-usage-tracking/spec.md),
+Each component is specified first under `specs/` (GitHub Spec Kit, D-020) —
+[001-usage-tracking](../specs/001-usage-tracking/spec.md) (**implemented**, §5),
 [002-verification-gating](../specs/002-verification-gating/spec.md),
 [003-merge-queue](../specs/003-merge-queue/spec.md), plus the deferred
-[004-budget-enforcement](../specs/004-budget-enforcement/spec.md).
+[004-budget-enforcement](../specs/004-budget-enforcement/spec.md). Components 2 and 3
+do not exist in code yet.
 
 ## 1. System overview
 
@@ -128,18 +129,34 @@ actually call, making the persona's model binding enforceable, not advisory.
 ## 5. Component 1 — per-node usage tracking (spec: `specs/001-usage-tracking/`)
 
 First in build order. Pivoted by D-021 from budget *enforcement* to usage *attribution*:
-track every token and dollar per node, enforce nothing. Target shape: package
-`factory/usage/` + Temporal activity surface in `factory/activities/usage_activities.py`.
+track every token and dollar per node attempt, enforce nothing. **Implemented** — the
+shipped layout is:
 
-### 5.1 Key lifecycle (attribution middleware around every agent node)
+```text
+factory/
+├── config.py                    # persona registry loader/validation (personas.yaml)
+├── usage/
+│   ├── models.py                # KeyLease, UsageSnapshot, AggregatedUsage, UsageRecord, Termination
+│   ├── litellm_client.py        # async admin client: /key/generate|info|delete, spend logs
+│   ├── aggregate.py             # pure: spend-log rows -> AggregatedUsage (cache handling)
+│   ├── ledger.py                # SQLite ledger: schema bootstrap, upsert, rollup queries
+│   └── cli.py                   # read-only `factory-usage` CLI (argparse, --json)
+└── activities/
+    └── usage_activities.py      # issue_attempt_key / poll_usage / teardown_attempt
+```
+
+Env inputs: `LITELLM_PROXY_URL` + `LITELLM_MASTER_KEY` (activities only),
+`FACTORY_LEDGER_PATH` (ledger location, shared by the activities and the CLI).
+
+### 5.1 Key lifecycle (attribution middleware around every agent node attempt)
 
 ```
-issue_node_key ─▶ [agent runs, usage polled on heartbeat] ─▶ teardown_node_key
+issue_attempt_key ─▶ [agent runs, poll_usage on heartbeat] ─▶ teardown_attempt
      │                                                            │
      └─ POST /key/generate                                        └─ read final usage + spend logs
-        NO max_budget, duration=TTL,                                 POST /key/delete
-        key_alias="epic:node",                                       write ledger row
-        metadata={node_id,epic_id,persona,spec_ref},
+        NO max_budget, duration=TTL,                                 write ledger row
+        key_alias="epic:node:attempt",                               POST /key/delete LAST
+        metadata={node_id,epic_id,attempt,persona,spec_ref},
         models=[persona's allowed]
 ```
 
@@ -161,15 +178,22 @@ no warnings, no kills. No proxy-side config changes (D-016).
 
 ### 5.3 Ledger (SQLite)
 
-One row per node teardown in a SQLite database (stdlib `sqlite3`, concurrent-writer
-safe; clarified 2026-07-24): epic, node, persona, spec ref, key alias, **input /
-output / cache-read / cache-write tokens**, request count, USD where the model is
-priced, termination class (`COMPLETED | AGENT_ERROR | TIMEOUT | KILLED`),
-issue/teardown timestamps, and a `final_usage_confirmed` flag (last-known snapshot is
-recorded when the proxy is unreadable — never a fabricated zero). Token detail is
-aggregated from the proxy's per-request spend logs for the key, not agent
-self-reporting. Rollups: by persona (per-epic and global), by epic, by spec ref across
-epics, and grand totals.
+One row per attempt teardown in a SQLite database (stdlib `sqlite3`, WAL mode,
+concurrent-writer safe; clarified 2026-07-24): epic, node, attempt, persona, spec ref,
+key alias, **input / output / cache-read / cache-write tokens**, request count, USD
+where the model is priced, termination class (`COMPLETED | AGENT_ERROR | TIMEOUT |
+KILLED`), issue/teardown timestamps, and a `final_usage_confirmed` flag (last-known
+snapshot is recorded when the proxy is unreadable — never a fabricated zero; unknown
+metrics stay NULL). Token detail is aggregated from the proxy's per-request spend logs
+for the key, not agent self-reporting. Teardown upserts on `key_alias`, so re-running it
+never duplicates a row.
+
+Rollups (`factory.usage.ledger.rollup`, surfaced by the read-only `factory-usage` CLI
+with `--by`, `--epic`, `--since`, `--json`): by **persona**, **epic**, **spec-ref**
+across epics, **attempt** ordinal (attempt ≥ 2 is retry cost), and **node** (attempts
+aggregated) — each with grand totals and an `unconfirmed_rows` count. The DDL is
+documented in `specs/001-usage-tracking/contracts/ledger-schema.sql`; direct SQL against
+the ledger is a supported read surface.
 
 ### 5.4 Dollars are optional, tokens are not
 
