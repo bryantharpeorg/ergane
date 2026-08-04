@@ -1,21 +1,23 @@
 # Ergane Constitution
 
-Ergane is an agentic software factory: it turns OpenSpec change proposals into merged,
+Ergane is an agentic software factory: it turns Spec Kit feature specs into merged,
 verified code by dispatching headless coding agents through an orchestrated DAG, with
-hard per-node budgets, mechanical acceptance-criteria verification, and merge-queue
-discipline. The full decision log lives in `docs/decisions.md` (D-001…D-021); this
-constitution distills the non-negotiables that every spec, plan, and implementation
-must honor.
+attributed per-node spend, mechanical acceptance-criteria verification, and
+merge-queue discipline. The full decision log lives in `docs/decisions.md`
+(D-001…D-024); this constitution distills the non-negotiables that every spec, plan,
+and implementation must honor.
 
 ## Core Principles
 
 ### I. Strict Build Order, Vertical Slices (NON-NEGOTIABLE)
 
 Components are built in this order: (1) per-node usage tracking, (2) verification
-gating, (3) merge queue. Budget enforcement (spec 004) is deferred and unscheduled —
-it re-enters the order only by explicit operator decision. Each component ships as a
-small vertical slice with tests **before** work on the next begins. No component
-starts while its predecessor lacks passing tests.
+gating, (3) minimal WorkGraph interpreter (spec 005), (4) merge queue (spec 003) —
+the last built by the factory itself dispatching its own spec, with the human
+operator as merge queue until it lands (D-024). Budget enforcement (spec 004) is
+deferred and unscheduled — it re-enters the order only by explicit operator decision.
+Each component ships as a small vertical slice with tests **before** work on the next
+begins. No component starts while its predecessor lacks passing tests.
 
 ### II. Test-First
 
@@ -60,9 +62,10 @@ model name.
 
 ## Environment Constraints
 
-- **Intent layer**: vanilla OpenSpec is the system of record for runtime intent;
-  acceptance criteria are parsed mechanically from its stock grammar (no LLM parsing).
-  A later fork adds a `workgraph.json` artifact requiring tasks + design.
+- **Intent layer**: Spec Kit feature specs (`specs/<feature>/spec.md`) are the system
+  of record for runtime intent (D-023); acceptance criteria are parsed mechanically
+  from the template grammar (no LLM parsing). A later extension may add a
+  `workgraph.json` artifact for explicit DAG declarations.
 - **Orchestration**: self-hosted Temporal; one generic WorkGraph interpreter workflow
   per epic reading a JSON DAG; no codegen'd workflows.
 - **Model access**: exclusively through the already-deployed LiteLLM proxy (vLLM/DGX
@@ -76,9 +79,10 @@ model name.
   deterministic only — the LLM judge runs in the inner loop, pre-CI, never in CI.
 - **Escalation**: Telegram with inline-button approvals bridged to orchestration
   signals; Temporal Web UI is the operational dashboard for now.
-- **Targets**: the factory never operates on its own repository; first E2E target is a
-  separate trivial public sample repo. Each target repo declares runtime and
-  test/lint/typecheck commands in a committed `factory.yaml`.
+- **Targets**: the factory's first self-hosted target is this repository — epic 003
+  is dispatched by the factory against Ergane itself, human-merged until 003 lands
+  (D-024, superseding the earlier never-self-target constraint). Each target repo
+  declares runtime and test/lint/typecheck commands in a committed `factory.yaml`.
 
 ## Development Workflow
 
@@ -96,7 +100,10 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.1.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-07-24 (2.1.0:
+**Version**: 2.2.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-04 (2.2.0 —
+D-023/D-024: intent layer is Spec Kit feature specs; build order gains minimal 005
+before 003; 003 is built by the factory against this repository, superseding the
+never-self-target constraint; preamble updated to spend attribution. 2.1.0:
 `python-telegram-bot` added to the approved-dependency roster, D-022. 2.0.0 — D-021:
 Principle V redefined from budget enforcement to spend attribution; Principle I build
 order updated — budget enforcement deferred to spec 004)

@@ -1,12 +1,13 @@
 # Ergane — Agentic Software Factory
 
-Ergane turns OpenSpec change proposals into merged, verified code by dispatching headless
+Ergane turns Spec Kit feature specs into merged, verified code by dispatching headless
 coding agents through a Temporal-orchestrated DAG, with per-node usage attribution,
 mechanical acceptance-criteria verification, and GitHub's native merge queue for landing.
 
 This document describes the target architecture. The decision log with rationale is in
-[decisions.md](decisions.md). Build order is strict: **usage tracking → verification → merge**
-(D-017), with component 1 pivoted from budget enforcement to usage tracking (D-021).
+[decisions.md](decisions.md). Build order is strict: **usage tracking → verification →
+minimal interpreter (005) → merge, built by the factory itself** (D-017 as amended by
+D-024), with component 1 pivoted from budget enforcement to usage tracking (D-021).
 Each component is specified first under `specs/` (GitHub Spec Kit, D-020) —
 [001-usage-tracking](../specs/001-usage-tracking/spec.md) (**implemented**, §5),
 [002-verification-gating](../specs/002-verification-gating/spec.md),
@@ -18,8 +19,8 @@ do not exist in code yet.
 
 ```mermaid
 flowchart TB
-    subgraph intent [Intent layer — OpenSpec]
-        OS["openspec/changes/&lt;name&gt;/<br/>proposal.md · tasks.md · design.md<br/>specs/&lt;cap&gt;/spec.md (delta)"]
+    subgraph intent [Intent layer — Spec Kit]
+        OS["specs/&lt;feature&gt;/<br/>spec.md · plan.md · tasks.md"]
         WG["workgraph.json<br/>(DAG: nodes + edges)"]
         OS --> WG
     end
@@ -65,28 +66,32 @@ flowchart TB
 state tears down the key and writes the usage ledger. (A `BUDGET_BREACH` state joins
 the lifecycle only if deferred spec 004 is reactivated.)
 
-## 2. Intent layer: OpenSpec (vanilla)
+## 2. Intent layer: Spec Kit feature specs (D-023)
 
-The system of record is a stock OpenSpec workspace (D-001). The factory consumes:
+The system of record is the target repo's `specs/` directory of Spec Kit feature specs
+(D-023 — the intent-layer *role* of D-001 survives; the grammar is now Spec Kit,
+superseding vanilla OpenSpec deltas). The factory consumes:
 
-- `openspec/changes/<name>/specs/<capability>/spec.md` — **delta specs**, the source of
-  acceptance criteria.
-- `tasks.md` / `design.md` — context handed to agent prompts.
-- Later: a forked schema adds `workgraph.json` making tasks + design required.
+- `specs/<feature>/spec.md` — **feature specs**, the source of acceptance criteria.
+- `specs/<feature>/plan.md` / `tasks.md` — context handed to agent prompts.
+- Later: an optional `workgraph.json` making the DAG explicit.
 
-Criteria parsing is mechanical (no LLM). Grammar the parser keys on:
+Criteria parsing is mechanical (no LLM). Grammar the parser keys on (the Spec Kit
+template):
 
 | token | meaning |
 |---|---|
-| `## ADDED\|MODIFIED\|REMOVED\|RENAMED Requirements` | delta operation bucket (level-2, case-insensitive) |
-| `### Requirement: <name>` | requirement; trimmed header text is the identity key; body MUST contain `SHALL` or `MUST` |
-| `#### Scenario: <desc>` | one acceptance criterion; body captured to next same/higher header |
-| `- **GIVEN\|WHEN\|THEN\|AND** ...` | scenario steps |
-| `- FROM:`/`- TO:` backticked headers | RENAMED mapping |
+| `### User Story <n> - <title> (Priority: P<m>)` | story requirement (level-3); key = `US<n>`; title and priority captured |
+| `**Acceptance Scenarios**:` | introduces the story's numbered scenario list |
+| `<k>. **Given** … **When** … **Then** …` | one acceptance criterion; scenario id `US<n>-S<k>`; the bold **Given/When/Then/And** segments are the steps, captured verbatim in order |
+| `- **FR-###**: <body>` | functional requirement (bullets under `### Functional Requirements`); key = `FR-###`; body must contain `MUST` or `SHALL` |
 
-Headers match `/^(#{1,6})\s+(.+)$/` with code fences masked. `openspec change show <id>
---json` provides the same as structured JSON (Zod-validated upstream) if markdown parsing
-ever gets brittle.
+Headers match `/^(#{1,6})\s+(.+)$/` with code fences masked. Validation errors name the
+exact offender: a user story with zero acceptance scenarios, an FR without MUST/SHALL, a
+scenario item with no bold keyword steps, duplicate requirement keys, or a requested
+requirement key absent from the spec. Spec Kit has no CLI/JSON emitter — the markdown
+parser is the sole mechanical path — and Ergane's own `specs/` corpus doubles as
+real-world fixture material (D-024).
 
 ## 3. Orchestration: the WorkGraph interpreter
 
@@ -94,7 +99,7 @@ One **generic** Temporal workflow interprets a JSON DAG per epic (D-002). No cod
 the workflow's logic is fixed; graph *data* varies. This keeps Temporal replay
 deterministic and sidesteps per-epic versioning.
 
-A node carries: `id`, `persona`, `spec_ref` (change + capability + requirement — also
+A node carries: `id`, `persona`, `spec_ref` (feature + requirement keys — also
 the work-attribution key for usage tracking), `acceptance` (parsed scenarios), and
 `depends_on` edges. The interpreter releases a node when all its dependency edges report
 `PASSED`, runs it through the pipeline in §5–§7, and signals/awaits Telegram on
@@ -164,7 +169,7 @@ issue_attempt_key ─▶ [agent runs, poll_usage on heartbeat] ─▶ teardown_a
   cooperation** — it is handed to the agent as its API credential
   (`ANTHROPIC_BASE_URL=<proxy>`, auth = virtual key), the operator's proven daily setup.
 - `metadata.spec_ref` ties the key — and therefore every token spent on it — to the
-  piece of work (OpenSpec change/capability/requirement) the node was dispatched for.
+  piece of work (Spec Kit feature + requirement keys) the node was dispatched for.
 - `LITELLM_MASTER_KEY` is read from env **inside activities only**; it never enters
   workflow state, payloads, or logs.
 - Teardown is idempotent and runs on every terminal state (pass, fail, kill, timeout).
@@ -216,7 +221,7 @@ Two-tier, inner-loop, pre-CI (D-008, D-019):
 1. **Deterministic gates** — `test` / `lint` / `typecheck` commands from the target repo's
    committed `factory.yaml` (D-009), exit-code semantics, run in the node's sandbox.
 2. **LLM judge** — `judge` persona (cheap tier, own attribution key, read-only), scoring the
-   diff against the parsed `#### Scenario:` criteria. Bounded: truncated diff input,
+   diff against the parsed acceptance scenarios. Bounded: truncated diff input,
    capped response, **max 2 judge retries**; on `retry` verdict the judge's feedback is
    handed **verbatim** to the retry attempt (Bernstein's highest-value pattern).
 3. **Anti-rubber-stamp**: a non-no-op node with an empty diff fails regardless of gates.
@@ -268,8 +273,10 @@ conflict/red (§7). Built alongside component 2; until then, escalations log + f
   (hard block), `soft_budget` alerts-only, cost computed only for priced models — synthetic
   pricing required for vLLM/Ollama. (docs.litellm.ai: virtual_keys, users, cost_tracking,
   custom_pricing)
-- **OpenSpec**: parser grammar and Zod schemas from `Fission-AI/OpenSpec` source
-  (`change-parser.ts`, `markdown-parser.ts`, `base.schema.ts`); `--json` CLI output.
+- **OpenSpec** (historical): parser grammar and Zod schemas from `Fission-AI/OpenSpec`
+  source (`change-parser.ts`, `markdown-parser.ts`, `base.schema.ts`). Superseded as
+  the input grammar by Spec Kit (D-023); the fence-masked header-scan technique
+  carries over.
 - **Bernstein** (`chernistry/bernstein`): narrow adapter with process-only outputs;
   two-tier verify (deterministic signals + bounded opt-in judge, cap 2, verbatim
   feedback); anti-rubber-stamp diff attribution; worktree-per-task with graveyard refs;

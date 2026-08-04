@@ -204,3 +204,33 @@ Approved during spec 002 clarification (2026-07-24) per constitution III. The Te
 notifier (long-polling, inline-button escalations → Temporal signals, built with
 component 2) uses `python-telegram-bot` rather than a hand-rolled Bot API client on
 `httpx`. Constitution roster updated (v2.1.0).
+
+## D-023 · Input grammar: Spec Kit feature specs replace OpenSpec deltas (decided)
+
+Supersedes D-001's choice of intent format (the intent-layer *role* survives; the
+grammar changes). The factory consumes Spec Kit feature specs
+(`specs/<feature>/spec.md`) instead of vanilla OpenSpec change deltas. Rationale:
+the factory's own development already speaks Spec Kit (D-020); one grammar for both
+the factory and its targets removes a format boundary, and — decisive for D-024 —
+makes Ergane's own `specs/` backlog directly parseable as factory input. The parser
+keys on the Spec Kit template grammar (user stories with priorities, numbered
+**Given/When/Then** acceptance scenarios, `FR-###` functional requirements); there
+is no upstream CLI/JSON emitter, so the in-factory markdown parser is the sole
+mechanical path, and Ergane's own specs double as real-world fixtures. Blast
+radius: 002 US1 (parser, fixture corpus, `DeltaOperation`/rename machinery
+removed), architecture §2, judge rubric's REMOVED-by-absence rule. Everything
+downstream of the `CriteriaSet` normalization seam is untouched.
+
+## D-024 · Self-hosting: Ergane builds itself after a minimal bootstrap (decided)
+
+The end goal is stated: after a small hand-built kernel, Ergane is its own factory.
+The bootstrap kernel — 001 usage tracking, 002 verification gating (amended per
+D-023), and a minimal 005 WorkGraph interpreter — is built by a ralph loop (fresh
+headless session per task, tasks.md checkboxes + git as the only durable state),
+which is the hand-cranked prototype of the node loop the factory industrializes.
+First self-hosted epic: `specs/003-merge-queue/`, dispatched by the factory against
+this repository, with the human operator acting as the merge queue until 003 itself
+lands. Crossover milestone: a verified 003 branch with zero human-written code.
+Supersedes the "factory never operates on its own repository" constraint and the
+D-017 build order: (1) 001 ✅ → (2) 002 → (3) minimal 005 → (4) 003 via the factory.
+Constitution amended (v2.2.0).
