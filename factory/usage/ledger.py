@@ -26,7 +26,11 @@ Three decisions carry the weight here:
   performs are the two the storage layer forces — `bool` to the DDL's 0/1 flag,
   and `Termination` to its lowercase value.
 
-Rollup queries (FR-006) arrive with T021; this module is bootstrap plus write.
+Reading is the other half. `rollup` answers FR-006's five questions with one
+grouped aggregate over this one table, and returns `contracts/cli.md`'s JSON
+shape directly so the CLI renders rather than recomputes — which keeps the
+never-fabricate rule in exactly one place, the SQL, where `SUM` over all-NULL
+already means "nobody reported this".
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from factory.usage.models import Termination, UsageRecord
 
@@ -159,3 +164,110 @@ def upsert_record(conn: sqlite3.Connection, record: UsageRecord) -> UsageRecord:
     conn.commit()
 
     return replace(record, id=row[0])
+
+
+#: The dimensions FR-006 names, and the only values `--by` accepts: the CLI's
+#: argparse choices are this tuple, so a dimension cannot exist in SQL but be
+#: unreachable from the command line. Order is the order they are offered in.
+ROLLUP_DIMENSIONS = ("persona", "epic", "spec-ref", "attempt", "node")
+
+#: Each dimension's grouping expression. These are interpolated into SQL, which
+#: is why `rollup` looks `by` up here rather than trusting it — the lookup *is*
+#: the validation.
+_GROUP_EXPRESSIONS = {
+    "persona": "persona",
+    "epic": "epic_id",
+    "spec-ref": "spec_ref",
+    "attempt": "attempt",
+    # A node is only identified within its epic (cli.md), so two epics' `impl`
+    # nodes stay apart while one node's attempts merge.
+    "node": "epic_id || ':' || node_id",
+}
+
+#: The metric block of `contracts/cli.md`, as output field -> aggregate.
+#:
+#: The token sums are deliberately bare `SUM`s: SQLite returns NULL when every
+#: input row was NULL, which is precisely FR-004/FR-005's "not measured" — a
+#: `COALESCE(..., 0)` here would quietly convert an unanswered question into an
+#: answer of zero. Row counts are the exception, because a count of nothing is
+#: genuinely 0; `final_usage_confirmed` is NOT NULL, so its sum is only ever
+#: NULL for an empty scope.
+_METRICS = (
+    ("prompt_tokens", "SUM(prompt_tokens)"),
+    ("completion_tokens", "SUM(completion_tokens)"),
+    ("cache_read_tokens", "SUM(cache_read_tokens)"),
+    ("cache_write_tokens", "SUM(cache_write_tokens)"),
+    ("requests", "SUM(request_count)"),
+    ("spend_usd", "SUM(spend_usd)"),
+    ("rows", "COUNT(*)"),
+    ("unconfirmed_rows", "COALESCE(SUM(1 - final_usage_confirmed), 0)"),
+)
+
+_METRIC_FIELDS = tuple(field for field, _ in _METRICS)
+_METRIC_SELECT = ", ".join(expression for _, expression in _METRICS)
+
+
+def rollup(
+    conn: sqlite3.Connection,
+    *,
+    by: str,
+    epic: str | None = None,
+    since: str | None = None,
+) -> dict[str, Any]:
+    """Aggregate the ledger along one dimension (FR-006).
+
+    Returns `contracts/cli.md`'s stable JSON shape — `by`, the echoed `filters`,
+    `groups` ordered by key, and `totals` over the same filtered scope. Totals
+    are queried, not summed from the groups, so a metric that is NULL in every
+    group stays NULL instead of collapsing to 0.
+
+    `since` compares against `torn_down_at`, both ISO 8601 UTC: a `YYYY-MM-DD`
+    argument sorts at the start of that day, so the named day is included.
+
+    Raises `ValueError` if `by` is not one of `ROLLUP_DIMENSIONS`.
+    """
+    if by not in _GROUP_EXPRESSIONS:
+        raise ValueError(
+            f"unknown rollup dimension {by!r}; expected one of {', '.join(ROLLUP_DIMENSIONS)}"
+        )
+
+    where, params = _filter_clause(epic=epic, since=since)
+    group_expression = _GROUP_EXPRESSIONS[by]
+
+    groups = conn.execute(
+        f"SELECT {group_expression}, {_METRIC_SELECT} FROM usage_records{where} "
+        f"GROUP BY {group_expression} ORDER BY {group_expression}",
+        params,
+    ).fetchall()
+    totals = conn.execute(
+        f"SELECT {_METRIC_SELECT} FROM usage_records{where}", params
+    ).fetchone()
+
+    return {
+        "by": by,
+        "filters": {"epic": epic, "since": since},
+        "groups": [{"key": row[0], **_metrics(row[1:])} for row in groups],
+        "totals": _metrics(totals),
+    }
+
+
+def _filter_clause(
+    *, epic: str | None, since: str | None
+) -> tuple[str, dict[str, Any]]:
+    """Build the shared WHERE clause; both queries must see the same scope."""
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+
+    if epic is not None:
+        conditions.append("epic_id = :epic")
+        params["epic"] = epic
+    if since is not None:
+        conditions.append("torn_down_at >= :since")
+        params["since"] = since
+
+    return (f" WHERE {' AND '.join(conditions)}" if conditions else ""), params
+
+
+def _metrics(values: tuple[Any, ...]) -> dict[str, Any]:
+    """Name one aggregate row's columns, in `_METRICS` order."""
+    return dict(zip(_METRIC_FIELDS, values))
