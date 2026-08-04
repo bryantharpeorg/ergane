@@ -1,14 +1,14 @@
-# Ralph iteration — implement 001-usage-tracking
+# Ralph iteration — implement one task of specs/{{SPEC}}/
 
 You are ONE iteration of an autonomous loop. The only durable state is
-`specs/001-usage-tracking/tasks.md` and git history — your context is disposable.
+`specs/{{SPEC}}/tasks.md` and git history — your context is disposable.
 Complete exactly ONE task, then stop.
 
-1. **Select**: Read `specs/001-usage-tracking/tasks.md`. Pick the FIRST task whose
+1. **Select**: Read `specs/{{SPEC}}/tasks.md`. Pick the FIRST task whose
    checkbox is `[ ]` and whose dependencies (per the Dependencies section and phase
    ordering) are all `[X]`. Selection is mechanical — no judgment, no skipping ahead.
    If every task is `[X]`, print `RALPH_DONE` and stop immediately.
-2. **Load context for that task only**: `specs/001-usage-tracking/plan.md` always;
+2. **Load context for that task only**: `specs/{{SPEC}}/plan.md` always;
    `data-model.md`, `research.md`, or files under `contracts/` only if the task
    touches what they describe. Read `.specify/memory/constitution.md` once and obey
    it (test-first is non-negotiable; no dependencies beyond the approved roster;
@@ -26,5 +26,5 @@ Complete exactly ONE task, then stop.
 
 If the selected task cannot be completed: revert your changes
 (`git checkout -- . && git clean -fd` on anything you created), append one line to
-`specs/001-usage-tracking/BLOCKED.md` (`T0NN — reason — recommended fix`), leave the
+`specs/{{SPEC}}/BLOCKED.md` (`T0NN — reason — recommended fix`), leave the
 checkbox unchecked, print `RALPH_BLOCKED T0NN`, and stop.
