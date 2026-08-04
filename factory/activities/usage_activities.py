@@ -1,10 +1,18 @@
-"""The two activities the orchestrator calls: mint the attempt's key, and record
-what it spent.
+"""The three activities the orchestrator calls: mint the attempt's key, watch
+what it is spending, and record what it spent.
 
 Everything else in this component is a library; this module is where the
 promises become the factory's behaviour, so the ordering and the failure
 handling here are the design rather than an implementation detail:
 
+- **A poll is a read with no consequence.** `poll_usage` is the only activity
+  here that runs while an attempt is alive, which makes it the only place a
+  budget could accidentally be enforced. It does one `/key/info` read per beat
+  (R9) and returns the number; nothing branches on the number, at any
+  magnitude, because enforcement is deferred (D-021) and SC-005 asks for its
+  absence to be observable rather than asserted. A failed poll raises the
+  client's own error rather than a typed one, since the caller's only correct
+  response is to skip the beat (contracts/activities.md).
 - **Teardown's deliverable is the ledger row, not the proxy call.** The order is
   fixed (R3): read `/key/info`, page the spend logs, write the row, delete the
   key LAST. Deleting last removes any dependence on how the proxy's spend-log
@@ -197,6 +205,33 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         spec_ref=request.spec_ref,
         issued_at=_now_iso(),
     )
+
+
+@activity.defn
+async def poll_usage(lease: KeyLease) -> UsageSnapshot:
+    """Read what the attempt has spent so far (FR-007, R9).
+
+    Called on the agent activity's heartbeat, roughly every 30s per live
+    attempt, which makes it the most-executed proxy call in the component and
+    the reason it stays this small: one `/key/info`, no spend-log paging, no
+    write. Token detail is aggregated once, at teardown (R2).
+
+    The returned snapshot is the attempt's latest-known state and teardown's
+    fallback, so it carries the moment it was true — a value the ledger may
+    record hours later is only honest if its staleness is visible.
+
+    Raises `LiteLLMError` on any failure, deliberately untyped and unwrapped: a
+    missed beat is the caller's to skip, and failing an attempt over an
+    unreadable observability endpoint would be exactly the enforcement side
+    effect SC-005 forbids. Nothing here inspects `spend_usd`.
+    """
+    client = open_client()
+    try:
+        spend_usd = await client.get_spend(lease.key)
+    finally:
+        await client.aclose()
+
+    return UsageSnapshot(spend_usd=spend_usd, captured_at=_now_iso())
 
 
 @activity.defn

@@ -108,7 +108,7 @@ usage level.
 
 ### Implementation for User Story 3
 
-- [ ] T024 [US3] Implement `poll_usage` activity in `factory/activities/usage_activities.py` per `contracts/activities.md` until T023 passes; snapshot feeds `teardown_attempt`'s fallback input (already exercised by T015)
+- [X] T024 [US3] Implement `poll_usage` activity in `factory/activities/usage_activities.py` per `contracts/activities.md` until T023 passes; snapshot feeds `teardown_attempt`'s fallback input (already exercised by T015)
 
 **Checkpoint**: all three stories independently functional
 
