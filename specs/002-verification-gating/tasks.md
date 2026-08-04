@@ -114,7 +114,7 @@ scripted verdicts, independent of US2's implementation.
 
 ### Implementation for User Story 3
 
-- [ ] T026 [P] [US3] Implement `factory/verify/ladder.py` (pure `next_action(history, config)`) until T023 passes
+- [X] T026 [P] [US3] Implement `factory/verify/ladder.py` (pure `next_action(history, config)`) until T023 passes
 - [ ] T027 [US3] Implement `factory/notify/messages.py` (pure rendering) and `factory/notify/service.py` (runnable long-polling bridge: parse → store lookup → validate → signal → resolve → answer → edit; stateless across restarts) until T024 passes
 - [ ] T028 [US3] Implement `factory/activities/notify_activities.py` (`send_escalation`, `expire_escalation` per `contracts/activities.md`, env-only credentials) until T025 passes
 - [ ] T029 [US3] Write `tests/test_verification_flow.py` FIRST (`WorkflowEnvironment.start_time_skipping`, reference workflow per `contracts/verification-flow.md` with scripted gate/judge activities): fail → retry prompt contains gate `output_tail` and judge feedback VERBATIM (SC-004); ladder walks retry → debugger → escalate; escalation signal RETRY/KILL/PAUSE_EPIC each honored; 1h silence → `expire_escalation` called then default KILL; `delivered=false` → immediate KILL with no wait; downstream unlock happens on PASS and only on PASS (FR-005); every attempt recorded via `record_verification` before any action (invariant 3) — must fail
