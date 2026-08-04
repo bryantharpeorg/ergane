@@ -13,14 +13,14 @@ uv run pytest -q
 ```
 
 Expected: green. Everything runs against fakes — the parser fixture corpus
-(`tests/fixtures/openspec/`, every grammar production per SC-001), fake proxy
+(`tests/fixtures/speckit/`, every grammar production per SC-001), fake proxy
 (`httpx.MockTransport` serving `/chat/completions`), fake `telegram.Bot`,
 `tmp_path` git worktrees and SQLite files, and Temporal's time-skipping environment
 for the reference flow (the 1h escalation timeout resolves instantly).
 
 Key behaviors to spot-check in the output:
 
-- `test_criteria.py` — grammar coverage incl. fence masking, RENAMED mapping,
+- `test_criteria.py` — grammar coverage incl. fence masking, key filtering,
   SHALL/MUST and zero-scenario validation errors naming the requirement.
 - `test_ladder.py` — 3-attempt default, judge-retry cap inside the total,
   debugger-once, escalate; all pure, no Temporal.

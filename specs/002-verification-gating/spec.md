@@ -6,8 +6,8 @@
 
 **Status**: Draft
 
-**Input**: Component 2 of the Ergane factory (D-001, D-008, D-009, D-011, D-019):
-verifier node type, mechanical OpenSpec criteria parser, two-tier verification
+**Input**: Component 2 of the Ergane factory (D-001, D-008, D-009, D-011, D-019,
+D-023): verifier node type, mechanical Spec Kit criteria parser, two-tier verification
 (deterministic gates + bounded LLM judge) running in the inner loop before any PR,
 retry-with-feedback, and the Telegram escalation path. Downstream DAG edges unlock only
 on pass.
@@ -22,35 +22,43 @@ on pass.
 - Q: Which nodes may legitimately produce an empty diff? → A: Persona-derived — `write_scope: read` personas (researcher, judge; also verifier nodes) are exempt from the empty-diff check but must produce their declared artifact (report, verdict) to pass; write-scoped personas (implementer, debugger, architect) always require a non-empty diff.
 - Q: Notifier library? → A: `python-telegram-bot` approved (constitution III roster updated); long-polling, inline keyboards, callback handling out of the box.
 
+### Session 2026-08-04
+
+- Q: Input grammar still OpenSpec deltas? → A: No — Spec Kit feature specs (D-023). US1, FR-001, SC-001, the data model's criteria entities, and the judge rubric are re-scoped to the Spec Kit template grammar; delta operations (ADDED/MODIFIED/REMOVED/RENAMED) and rename mapping are removed entirely.
+- Q: How are FR-keyed nodes judged, given FRs carry no scenarios? → A: Nodes dispatched on functional-requirement keys only are verified by deterministic gates + output check (no judge — nothing scenario-shaped to score); the judge runs whenever the node's CriteriaSet contains story (`US<n>`) scenarios. This is the existing "judge is None when the node has no scenarios" rule, now load-bearing.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Mechanical criteria parsing (Priority: P1)
 
-As the factory, I extract acceptance criteria from a vanilla OpenSpec change delta
-without any LLM involvement, so verification is grounded in exactly what the spec says
-and parsing is deterministic and testable.
+As the factory, I extract acceptance criteria from a Spec Kit feature spec
+(`specs/<feature>/spec.md`, D-023) without any LLM involvement, so verification is
+grounded in exactly what the spec says and parsing is deterministic and testable.
 
 **Why this priority**: Everything downstream (gates, judge, unlocking) consumes parsed
 criteria; wrong parsing poisons the whole component.
 
-**Independent Test**: Feed fixture delta files exercising the full grammar; assert the
-extracted requirement/scenario structures.
+**Independent Test**: Feed fixture spec files exercising the full template grammar;
+assert the extracted requirement/scenario structures.
 
 **Acceptance Scenarios**:
 
-1. **Given** a delta spec at `openspec/changes/<name>/specs/<capability>/spec.md`,
-   **When** parsed, **Then** each `## ADDED|MODIFIED|REMOVED|RENAMED Requirements`
-   section yields its operation bucket, each `### Requirement: <name>` yields a
-   requirement keyed by its trimmed header text, and each `#### Scenario: <desc>` under
-   it yields one acceptance criterion with its `- **GIVEN/WHEN/THEN/AND**` steps
-   captured verbatim.
-2. **Given** a requirement body lacking `SHALL`/`MUST`, or a requirement with zero
-   scenarios, **When** parsed, **Then** a validation error identifies the exact
-   requirement (mirroring upstream OpenSpec validation).
-3. **Given** markdown headers inside fenced code blocks, **When** parsed, **Then** they
-   are ignored (fence masking).
-4. **Given** `- FROM:`/`- TO:` lines in a RENAMED section, **When** parsed, **Then**
-   the rename mapping is extracted.
+1. **Given** a feature spec at `specs/<feature>/spec.md`, **When** parsed, **Then**
+   each `### User Story <n> - <title> (Priority: P<m>)` header yields a story
+   requirement keyed `US<n>` with its title and priority, each numbered item under
+   its `**Acceptance Scenarios**:` list yields one acceptance criterion with scenario
+   id `US<n>-S<k>` and its bold **Given/When/Then/And** segments captured verbatim in
+   order, and each `- **FR-###**:` bullet under `### Functional Requirements` yields
+   a functional requirement keyed `FR-###`.
+2. **Given** an FR body lacking `SHALL`/`MUST`, a user story with zero acceptance
+   scenarios, a scenario item with no bold keyword steps, or duplicate requirement
+   keys, **When** parsed, **Then** a validation error identifies the exact
+   requirement.
+3. **Given** markdown headers or FR-like bullets inside fenced code blocks, **When**
+   parsed, **Then** they are ignored (fence masking).
+4. **Given** requirement keys requested at node dispatch (e.g. `US2`, `FR-007`),
+   **When** the spec lacks one of them, **Then** parsing fails naming the missing
+   key; otherwise the CriteriaSet contains exactly the requested requirements.
 
 ---
 
@@ -130,19 +138,21 @@ feedback injection, and escalation firing.
   notification. (Budget-breach handling deferred with spec 004.)
 - Scenario text changed between dispatch and verify (spec edited mid-flight) → verify
   against the criteria snapshot taken at dispatch, and flag the drift in the result.
-- REMOVED requirements → verified by absence: gates still run; judge confirms no
-  surviving behavior contradicts the removal.
+- Node dispatched on FR keys only (no scenarios anywhere in its CriteriaSet) → gates +
+  output check decide; the judge is not invoked (nothing scenario-shaped to score).
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST parse acceptance criteria from vanilla OpenSpec delta
-  files mechanically (no LLM), keying on the stock grammar: operation sections
-  (`## ADDED|MODIFIED|REMOVED|RENAMED Requirements`), `### Requirement:` headers
-  (identity = trimmed header text; body must contain SHALL/MUST), `#### Scenario:`
-  blocks, `- **GIVEN/WHEN/THEN/AND**` steps, `- FROM:`/`- TO:` renames, with code-fence
-  masking.
+- **FR-001**: The system MUST parse acceptance criteria from Spec Kit feature specs
+  (`specs/<feature>/spec.md`) mechanically (no LLM), keying on the template grammar
+  (D-023, architecture §2): `### User Story <n> - <title> (Priority: P<m>)` story
+  headers (key = `US<n>`), numbered acceptance-scenario items whose bold
+  **Given/When/Then/And** segments are the steps (scenario id `US<n>-S<k>`, steps
+  verbatim in order), and `- **FR-###**:` functional-requirement bullets (key =
+  `FR-###`; body must contain SHALL/MUST), with code-fence masking, duplicate-key
+  rejection, and requirement filtering by requested keys.
 - **FR-002**: Verification MUST run the target repo's declared gates (test/lint/
   typecheck from committed `factory.yaml`) in the node's sandboxed worktree with
   exit-code semantics and per-gate timeout, recording per-gate results. It runs in two
@@ -179,8 +189,8 @@ feedback injection, and escalation firing.
 
 ### Key Entities
 
-- **CriteriaSet**: parsed requirements/scenarios for one node — operation, requirement
-  key, scenario descriptions and steps; snapshotted at dispatch.
+- **CriteriaSet**: parsed requirements/scenarios for one node — requirement kind
+  (story/functional) and key, scenario ids and steps; snapshotted at dispatch.
 - **GateResult**: one deterministic gate execution — name, command, exit status,
   duration, output tail, pass/fail/timeout.
 - **JudgeVerdict**: pass | retry (with feedback text) | fail, plus per-scenario
@@ -195,8 +205,9 @@ feedback injection, and escalation firing.
 
 ### Measurable Outcomes
 
-- **SC-001**: Criteria parsing matches upstream OpenSpec semantics on a fixture corpus
-  covering every grammar production (100% of fixtures).
+- **SC-001**: Criteria parsing matches Spec Kit template semantics on a fixture corpus
+  covering every grammar production, including at least one of Ergane's own feature
+  specs verbatim (100% of fixtures).
 - **SC-002**: Zero verdicts of PASS ever issued while any deterministic gate fails or
   the diff is empty on a non-no-op node.
 - **SC-003**: Judge cost per node is bounded: at most (1 + 2 retries) judge invocations
@@ -218,5 +229,6 @@ feedback injection, and escalation firing.
   this component using `python-telegram-bot` (approved 2026-07-24, constitution III).
 - The judge rubric consumes parsed scenarios as-is; rubric wording is an implementation
   detail of the plan, not this spec.
-- OpenSpec `--json` output is an acceptable alternative input to markdown parsing if it
-  proves more stable; either way FR-001's semantics hold.
+- The input grammar is the Spec Kit feature-spec template (D-023). Spec Kit has no
+  CLI/JSON emitter, so the markdown parser is the sole mechanical path; Ergane's own
+  `specs/` directory provides real-world fixture material (D-024).

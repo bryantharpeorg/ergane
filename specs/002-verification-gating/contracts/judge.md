@@ -24,15 +24,14 @@ fronts. The model alias comes from `personas.yaml`; code never names a model.
 
 **System message** (fixed template): you are a verification judge; score the diff
 against each acceptance scenario **individually**; a scenario passes only if the
-diff demonstrably satisfies every GIVEN/WHEN/THEN step; REMOVED requirements are
-verified by absence (no surviving behavior contradicting the removal); respond with
-ONLY the JSON object described below.
+diff demonstrably satisfies every Given/When/Then step; respond with ONLY the JSON
+object described below.
 
 **User message**, in order:
 
-1. Requirement header(s) + full requirement body (verbatim, never truncated).
-2. Every `#### Scenario:` with its steps, verbatim, each tagged with its exact
-   description string (the response must echo these strings).
+1. Requirement key(s), title, and full requirement body (verbatim, never truncated).
+2. Every acceptance scenario with its steps, verbatim, each tagged with its exact
+   `scenario_id` (`US<n>-S<k>`; the response must echo these ids).
 3. `prior_feedback` when this is a judge-initiated retry (verbatim, FR-006).
 4. The diff: unified format, capped at 60 KiB with proportional per-file head+tail
    truncation and explicit `[... N lines truncated ...]` markers (research R6);
@@ -45,7 +44,7 @@ ONLY the JSON object described below.
 {
   "verdict": "pass | retry | fail",
   "scenarios": [
-    {"scenario": "<exact dispatched description>", "pass": true, "reasoning": "..."}
+    {"scenario": "<exact dispatched scenario_id>", "pass": true, "reasoning": "..."}
   ],
   "feedback": "actionable text; MUST name each failing scenario"
 }

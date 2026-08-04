@@ -8,7 +8,7 @@ evidence store). Enums are string-valued.
 
 | Enum | Values | Notes |
 |---|---|---|
-| `DeltaOperation` | `ADDED` \| `MODIFIED` \| `REMOVED` \| `RENAMED` | from `## <OP> Requirements` sections |
+| `RequirementKind` | `STORY` \| `FUNCTIONAL` | user story (`US<n>`, carries scenarios) vs functional requirement (`FR-###`, declarative) — D-023 |
 | `GateStatus` | `PASS` \| `FAIL` \| `TIMEOUT` \| `CONFIG_ERROR` | `CONFIG_ERROR` = missing/malformed `factory.yaml` (never pass-by-default) |
 | `JudgeOutcome` | `PASS` \| `RETRY` \| `FAIL` \| `UNAVAILABLE` | `UNAVAILABLE` = model/backend down after retries (spec edge case) |
 | `OverallVerdict` | `PASS` \| `FAIL` | the only two values that exist for edge unlocking (FR-005) |
@@ -22,36 +22,38 @@ evidence store). Enums are string-valued.
 
 | field | type | rules |
 |---|---|---|
-| `description` | str | trimmed text after `#### Scenario: ` |
-| `steps` | list[str] | `- **GIVEN/WHEN/THEN/AND**` bullets, captured verbatim in order |
-| `raw_body` | str | full body to next same/higher header (fence-masked scan) |
+| `scenario_id` | str | `US<n>-S<k>` — story key + 1-based position in its `**Acceptance Scenarios**:` list; the identity the judge must echo |
+| `steps` | list[str] | the bold **Given/When/Then/And** segments of the numbered item, captured verbatim in order |
+| `raw_text` | str | the full numbered list item, verbatim (fence-masked scan) |
 
 ### `Requirement`
 
 | field | type | rules |
 |---|---|---|
-| `key` | str | trimmed `### Requirement:` header text — the identity key |
-| `operation` | DeltaOperation | owning section bucket |
-| `body` | str | MUST contain `SHALL` or `MUST` (validation error otherwise, naming the requirement) |
-| `scenarios` | list[Scenario] | MUST be non-empty for ADDED/MODIFIED (validation error otherwise); REMOVED may be empty |
-| `renamed_from` | str \| None | only for RENAMED (`- FROM:`/`- TO:` mapping) |
+| `key` | str | `US<n>` (story) or `FR-###` (functional) — the identity key; duplicates → error |
+| `kind` | RequirementKind | STORY from `### User Story <n> - <title> (Priority: P<m>)`; FUNCTIONAL from `- **FR-###**:` bullets |
+| `title` | str \| None | story title text; None for FUNCTIONAL |
+| `priority` | str \| None | `P<m>` from the story header; None for FUNCTIONAL |
+| `body` | str | story narrative, or the FR bullet text — FUNCTIONAL bodies MUST contain `SHALL` or `MUST` (validation error otherwise, naming the requirement) |
+| `scenarios` | list[Scenario] | MUST be non-empty for STORY (validation error otherwise); always empty for FUNCTIONAL |
 
 ### `CriteriaSet`
 
 | field | type | rules |
 |---|---|---|
-| `change_name` | str | OpenSpec change directory name |
-| `capability` | str | capability the delta file belongs to |
+| `feature` | str | spec directory name (e.g. `002-verification-gating`) |
 | `spec_ref` | str | opaque work-attribution key (matches the node's, component 1) |
-| `requirements` | list[Requirement] | filtered to the node's requirement(s) |
-| `source_path` | str | delta file path parsed |
+| `requirements` | list[Requirement] | filtered to the node's requested requirement key(s) |
+| `source_path` | str | the `specs/<feature>/spec.md` path parsed |
 | `source_sha256` | str | hash of raw file bytes at snapshot time (drift detection, R8) |
 | `snapshotted_at` | str (ISO-8601 UTC) | dispatch time |
 
-**Validation rules** (mirror upstream OpenSpec semantics, spec US1): unknown
-operation header → error; requirement without SHALL/MUST → error naming it;
-ADDED/MODIFIED requirement with zero scenarios → error naming it; headers inside
-fenced code blocks ignored; RENAMED without a FROM/TO pair → error.
+**Validation rules** (Spec Kit template semantics, spec US1 / D-023): user story with
+zero acceptance scenarios → error naming it; FUNCTIONAL requirement without
+SHALL/MUST → error naming it; scenario item with no bold keyword steps → error;
+duplicate requirement keys → error; requested requirement key absent from the spec →
+error naming the missing key; headers and FR-like bullets inside fenced code blocks
+ignored.
 
 ## Gate entities
 
@@ -93,7 +95,7 @@ fenced code blocks ignored; RENAMED without a FROM/TO pair → error.
 
 | field | type | rules |
 |---|---|---|
-| `scenario` | str | must match a dispatched scenario description exactly |
+| `scenario` | str | must match a dispatched `scenario_id` exactly |
 | `passed` | bool | strict per-scenario criterion (FR-003) |
 | `reasoning` | str | judge's stated reasoning |
 

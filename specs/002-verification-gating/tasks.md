@@ -22,7 +22,7 @@ neither needs the other's implementation to test).
 
 - [ ] T001 Verify component 1 is implemented and green: `uv run pytest -q` passes and `factory/usage/`, `factory/activities/usage_activities.py`, `personas.yaml` exist per `specs/001-usage-tracking/plan.md` — constitution I gate; STOP if not satisfied
 - [ ] T002 Add `python-telegram-bot` to `pyproject.toml` (approved D-022), add `live_telegram` pytest marker alongside `live_proxy`, run `uv sync`
-- [ ] T003 [P] Create skeletons: `factory/verify/__init__.py`, `factory/notify/__init__.py`, `tests/fixtures/openspec/.gitkeep`, `tests/fixtures/target_repo/.gitkeep`
+- [ ] T003 [P] Create skeletons: `factory/verify/__init__.py`, `factory/notify/__init__.py`, `tests/fixtures/speckit/.gitkeep`, `tests/fixtures/target_repo/.gitkeep`
 
 ---
 
@@ -32,7 +32,7 @@ neither needs the other's implementation to test).
 
 **⚠️ CRITICAL**: No user story work until this phase completes
 
-- [ ] T004 [P] Implement `factory/verify/models.py`: enums (`DeltaOperation`, `GateStatus`, `JudgeOutcome`, `OverallVerdict`, `VerificationForm`, `NextAction`, `EscalationChoice`) and frozen dataclasses (`Scenario`, `Requirement`, `CriteriaSet`, `FactoryConfig`, `GateResult`, `OutputCheck`, `JudgeScenarioFinding`, `JudgeVerdict`, `VerificationResult`, `VerificationConfig`, `AttemptRecord`, `EscalationRecord`) exactly per data-model.md field tables
+- [ ] T004 [P] Implement `factory/verify/models.py`: enums (`RequirementKind`, `GateStatus`, `JudgeOutcome`, `OverallVerdict`, `VerificationForm`, `NextAction`, `EscalationChoice`) and frozen dataclasses (`Scenario`, `Requirement`, `CriteriaSet`, `FactoryConfig`, `GateResult`, `OutputCheck`, `JudgeScenarioFinding`, `JudgeVerdict`, `VerificationResult`, `VerificationConfig`, `AttemptRecord`, `EscalationRecord`) exactly per data-model.md field tables
 - [ ] T005 [P] Write `tests/test_verify_store.py` FIRST: creating a store applies `contracts/verification-store.sql` DDL (WAL on, `schema_version` = 1, both tables + indexes + CHECK constraints); upsert by `(epic_id, node_id, attempt, form)` records once on re-run; escalation state machine allows exactly one terminal transition (`resolved` xor `expired`, later attempts no-op); pending-escalations query returns only unresolved rows — must fail (no store.py yet)
 - [ ] T006 Implement `factory/verify/store.py` (connection factory with WAL + busy_timeout per 001's R6 pattern, schema bootstrap from embedded DDL matching `contracts/verification-store.sql`, `upsert_result`, `insert_escalation`, `resolve_escalation`, `expire_escalation`, `pending_escalations`, per-node history query) until T005 passes
 
@@ -42,21 +42,21 @@ neither needs the other's implementation to test).
 
 ## Phase 3: User Story 1 — Mechanical criteria parsing (Priority: P1) 🎯 MVP
 
-**Goal**: extract acceptance criteria from vanilla OpenSpec deltas with zero LLM
+**Goal**: extract acceptance criteria from Spec Kit feature specs (D-023) with zero LLM
 involvement — deterministic, testable, validation errors naming the offender.
 
-**Independent Test** (spec US1): feed fixture delta files exercising the full
+**Independent Test** (spec US1): feed fixture spec files exercising the full
 grammar; assert extracted requirement/scenario structures and validation errors.
 
 ### Tests for User Story 1 (write FIRST, must fail)
 
-- [ ] T007 [P] [US1] Build fixture corpus under `tests/fixtures/openspec/`: every grammar production — ADDED/MODIFIED/REMOVED/RENAMED sections (case-insensitive), multi-requirement files, `#### Scenario:` blocks with GIVEN/WHEN/THEN/AND steps, `- FROM:`/`- TO:` rename mappings, headers inside fenced code blocks, a requirement missing SHALL/MUST, an ADDED requirement with zero scenarios, RENAMED without a FROM/TO pair (SC-001 coverage)
-- [ ] T008 [US1] Write `tests/test_criteria.py` FIRST against the corpus: correct operation buckets, requirement identity = trimmed header text, scenario steps captured verbatim in order, fence masking, rename mapping; validation errors name the exact requirement (SHALL/MUST missing, zero scenarios, broken rename); `CriteriaSet` carries `source_sha256` of raw bytes and `snapshotted_at` — must fail (no criteria.py yet)
+- [ ] T007 [P] [US1] Build fixture corpus under `tests/fixtures/speckit/`: every grammar production per architecture §2 — multi-story files with `### User Story <n> - <title> (Priority: P<m>)` headers, numbered acceptance scenarios with bold **Given/When/Then/And** steps (incl. multi-And items), `### Functional Requirements` sections with `- **FR-###**:` bullets, headers and FR-like bullets inside fenced code blocks, a story with zero acceptance scenarios, an FR missing SHALL/MUST, a scenario item with no bold keyword steps, duplicate requirement keys, plus a verbatim copy of `specs/001-usage-tracking/spec.md` as the real-world fixture (SC-001 coverage)
+- [ ] T008 [US1] Write `tests/test_criteria.py` FIRST against the corpus: story requirements keyed `US<n>` with title/priority and FUNCTIONAL requirements keyed `FR-###` per data-model.md, scenario ids `US<n>-S<k>` with steps captured verbatim in order, fence masking, requirement filtering by requested keys; validation errors name the exact requirement (SHALL/MUST missing, story with zero scenarios, keyword-less scenario item, duplicate keys, unknown requested key); the real-world fixture (001's spec.md) parses with 3 stories and 12 FRs; `CriteriaSet` carries `feature`, `source_sha256` of raw bytes and `snapshotted_at` — must fail (no criteria.py yet)
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] Implement `factory/verify/criteria.py` (pure parser: fence-masked header scan `/^(#{1,6})\s+(.+)$/`, grammar per architecture §2, validation mirroring upstream OpenSpec semantics, requirement filtering by key) until T008 passes
-- [ ] T010 [US1] Write `snapshot_criteria` activity tests FIRST in `tests/test_verify_activities.py` (ActivityEnvironment): returns `CriteriaSet` for the node's requirement keys with hash + timestamp; `CRITERIA_PARSE_FAILED` application error carries the validation message; `CRITERIA_FILE_MISSING` on absent delta file — must fail
+- [ ] T009 [US1] Implement `factory/verify/criteria.py` (pure parser: fence-masked header scan `/^(#{1,6})\s+(.+)$/`, Spec Kit template grammar per architecture §2, validation rules per data-model.md, requirement filtering by key) until T008 passes
+- [ ] T010 [US1] Write `snapshot_criteria` activity tests FIRST in `tests/test_verify_activities.py` (ActivityEnvironment): returns `CriteriaSet` for the node's requirement keys with hash + timestamp; `CRITERIA_PARSE_FAILED` application error carries the validation message; `CRITERIA_FILE_MISSING` on absent spec.md — must fail
 - [ ] T011 [US1] Create `factory/activities/verify_activities.py` with `snapshot_criteria` per `contracts/activities.md` until T010 passes
 
 **Checkpoint**: criteria parsing shippable and grammar-complete on its own
@@ -88,7 +88,7 @@ US1's parser.
 - [ ] T018 [P] [US2] Implement `factory/verify/gates.py` (bash -c runner behind the `GateExecutor` seam per research R3) until T014 passes
 - [ ] T019 [P] [US2] Implement `factory/verify/diffcheck.py` (`git status --porcelain` + `git diff HEAD`, artifact checks) until T015 passes
 - [ ] T020 [US2] Implement `factory/verify/judge.py` (pure prompt assembly + truncation, strict verdict parsing with cross-check, httpx call per `contracts/judge.md`) until T016 passes
-- [ ] T021 [US2] Write verification-activity tests FIRST in `tests/test_verify_activities.py`: `run_gates`/`check_output`/`run_judge` activity wrappers (incl. `JUDGE_UNAVAILABLE` after HTTP retries); `record_verification` upserts, rejects empty epic/node/attempt with `ATTRIBUTION_INCOMPLETE`, recomputes drift (changed delta file → `criteria_drift=1`); verdict truth table (SC-002): any gate FAIL/TIMEOUT/CONFIG_ERROR → FAIL, output-check fail → FAIL, judge RETRY/FAIL → FAIL, judge UNAVAILABLE with green gates → PASS + `judge_unavailable=1`; judge skipped entirely when a gate fails (cheapest-first, request log proves no proxy call) — must fail
+- [ ] T021 [US2] Write verification-activity tests FIRST in `tests/test_verify_activities.py`: `run_gates`/`check_output`/`run_judge` activity wrappers (incl. `JUDGE_UNAVAILABLE` after HTTP retries); `record_verification` upserts, rejects empty epic/node/attempt with `ATTRIBUTION_INCOMPLETE`, recomputes drift (changed spec file → `criteria_drift=1`); verdict truth table (SC-002): any gate FAIL/TIMEOUT/CONFIG_ERROR → FAIL, output-check fail → FAIL, judge RETRY/FAIL → FAIL, judge UNAVAILABLE with green gates → PASS + `judge_unavailable=1`; judge skipped entirely when a gate fails (cheapest-first, request log proves no proxy call) — must fail
 - [ ] T022 [US2] Implement remaining activities in `factory/activities/verify_activities.py` (`run_gates`, `check_output`, `run_judge`, `record_verification`) and `compose_result` in `factory/verify/models.py` until T021 passes
 
 **Checkpoint**: a prepared worktree gets a correct, recorded verdict end-to-end

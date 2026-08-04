@@ -6,8 +6,9 @@
 
 ## Summary
 
-Make the factory's output trustworthy before any PR exists: a mechanical OpenSpec
-criteria parser (pure Python over the stock delta grammar), a two-tier verifier —
+Make the factory's output trustworthy before any PR exists: a mechanical Spec Kit
+criteria parser (pure Python over the feature-spec template grammar, D-023), a
+two-tier verifier —
 deterministic gates from the target repo's committed `factory.yaml` first, a bounded
 LLM judge (one chat completion on its own component-1 attribution key, strict
 per-scenario verdict) second — plus the anti-rubber-stamp diff/artifact check, a pure
@@ -31,12 +32,12 @@ dependencies.**
 
 **Storage**: SQLite verification-evidence store `.factory/verification.db` (WAL,
 versioned schema, same single-designated-host topology as the 001 ledger); criteria
-snapshots travel as small JSON-able values in workflow state. Upstream inputs: delta
-spec files in the target OpenSpec workspace, `factory.yaml` in the target repo,
-node worktree via `git`.
+snapshots travel as small JSON-able values in workflow state. Upstream inputs: feature
+spec files under the target repo's `specs/` directory (D-023), `factory.yaml` in the
+target repo, node worktree via `git`.
 
 **Testing**: `pytest` + `pytest-asyncio`; parser fixture corpus under
-`tests/fixtures/openspec/` covering every grammar production (SC-001);
+`tests/fixtures/speckit/` covering every grammar production (SC-001);
 `httpx.MockTransport` fake of the proxy's `/chat/completions` for the judge;
 `temporalio.testing.ActivityEnvironment` for activities and
 `WorkflowEnvironment.start_time_skipping()` for the reference retry/escalation
@@ -109,7 +110,7 @@ factory/
 ├── verify/
 │   ├── __init__.py
 │   ├── models.py              # CriteriaSet, GateResult, JudgeVerdict, VerificationResult, enums
-│   ├── criteria.py            # pure: mechanical OpenSpec delta parser (fence masking, grammar)
+│   ├── criteria.py            # pure: mechanical Spec Kit spec parser (fence masking, grammar)
 │   ├── factory_yaml.py        # pure: factory.yaml load/validate (schema v1, R2)
 │   ├── gates.py               # gate runner: bash -c in worktree, timeout, scrubbed env (R3)
 │   ├── diffcheck.py           # pure decision + git-reading runner: empty-diff/artifact (R7)
@@ -125,9 +126,9 @@ factory/
     └── notify_activities.py   # send_escalation / expire_escalation
 
 tests/
-├── fixtures/openspec/         # delta-spec corpus: every grammar production + edge cases
+├── fixtures/speckit/          # feature-spec corpus: every grammar production + edge cases
 ├── fixtures/target_repo/      # tiny repo skeleton with factory.yaml variants
-├── test_criteria.py           # parser vs corpus; validation errors; fence masking; renames
+├── test_criteria.py           # parser vs corpus; validation errors; fence masking; key filtering
 ├── test_factory_yaml.py       # schema v1 acceptance/rejection; CONFIG_ERROR mapping
 ├── test_gates.py              # exit codes, timeout→TIMEOUT, output tail, env scrubbing
 ├── test_diffcheck.py          # write-scope empty-diff FAIL; read-scope artifact rules

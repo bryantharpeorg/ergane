@@ -1,28 +1,32 @@
 # Phase 0 Research: Verification Gating
 
-All unknowns from Technical Context resolved. Sources: OpenSpec grammar research
-already recorded in `docs/architecture.md` §2 (Fission-AI/OpenSpec `change-parser.ts`,
-`markdown-parser.ts`, `base.schema.ts`, 2026-07-24 session); component 1 research
+All unknowns from Technical Context resolved. Sources: the Spec Kit template grammar
+recorded in `docs/architecture.md` §2 (D-023; fence-masked header-scan technique
+inherited from the earlier Fission-AI/OpenSpec research); component 1 research
 (`specs/001-usage-tracking/research.md`) for LiteLLM key/proxy mechanics and SQLite
 patterns; Telegram Bot API documented limits; Temporal Python SDK testing facilities
 validated in this repo's 001 plan.
 
-## R1. Criteria input: parse markdown in-factory, `--json` as cross-check
+## R1. Criteria input: parse Spec Kit feature-spec markdown in-factory (D-023)
 
-**Decision**: Implement the mechanical parser in-factory over the delta spec markdown
-(`openspec/changes/<name>/specs/<capability>/spec.md`), per the grammar in
-architecture §2. `openspec change show <id> --json` is a validation cross-check in
-tests, not a runtime dependency.
+**Decision**: Implement the mechanical parser in-factory over the feature spec
+markdown (`specs/<feature>/spec.md`), per the Spec Kit template grammar in
+architecture §2: user-story headers with priorities, numbered acceptance-scenario
+items with bold Given/When/Then/And steps, and `FR-###` functional-requirement
+bullets.
 
-**Rationale**: The grammar is small, fully specified, and already mirrored from
-upstream source. An in-factory parser is pure Python (testable against a fixture
-corpus, SC-001), imposes no Node/`openspec` CLI requirement on worker hosts, and
-keeps parsing deterministic and versioned with the factory.
+**Rationale**: The grammar is small and template-driven. An in-factory parser is
+pure Python (testable against a fixture corpus, SC-001), imposes no extra toolchain
+on worker hosts, and keeps parsing deterministic and versioned with the factory.
+Spec Kit ships templates and shell scripts only — there is no upstream parser or
+JSON emitter to shell out to — so the in-factory parser is the sole mechanical
+path. Ergane's own `specs/` corpus provides real-world fixtures (D-024): the
+factory's parser is proven against the very specs that describe it.
 
-**Alternatives considered**: shelling out to `openspec ... --json` at dispatch —
-rejected: adds a runtime toolchain dependency to worker hosts and a subprocess to
-the dispatch path for something a ~200-line pure function does; retained as an
-acceptable fallback per spec assumption if upstream grammar drifts.
+**Alternatives considered**: reusing Spec Kit tooling — rejected: no such parser
+exists upstream. Retaining the OpenSpec delta grammar alongside — rejected: two
+grammars means two parsers and two fixture corpora for no consumer; D-023 makes
+Spec Kit the single input format.
 
 ## R2. `factory.yaml` schema (owned by this component)
 
@@ -147,7 +151,7 @@ that file's schema this cycle).
 ## R8. Criteria snapshot & drift: parse at dispatch, hash, re-hash at verify
 
 **Decision**: A `snapshot_criteria` activity runs at node dispatch: parses the
-delta file(s) for the node's spec ref, returns a `CriteriaSet` (with
+feature spec for the node's spec ref, returns a `CriteriaSet` (with
 `source_sha256` of the raw file bytes) into workflow state; every verification of
 that node evaluates against this snapshot (FR-010). At verify time the activity
 re-reads the file, recomputes the hash, and sets `criteria_drift = true` on the

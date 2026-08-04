@@ -15,7 +15,7 @@ Judge/debugger attribution keys are NOT minted here — the caller uses componen
 
 | | |
 |---|---|
-| **Input** | `{openspec_root, change_name, capability, requirement_keys: [str], spec_ref}` |
+| **Input** | `{specs_root, feature, requirement_keys: [str], spec_ref}` — parses `<specs_root>/<feature>/spec.md` (D-023) |
 | **Output** | `CriteriaSet` (with `source_sha256`, `snapshotted_at`) |
 | **Errors** | `CRITERIA_PARSE_FAILED` (application error; validation message names the offending requirement — spec US1); `CRITERIA_FILE_MISSING` |
 | **Idempotency** | Pure read + parse; safe to retry. Called once at node dispatch; the returned snapshot is workflow state for the node's lifetime (FR-010). |
