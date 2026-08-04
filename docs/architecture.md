@@ -10,10 +10,10 @@ minimal interpreter (005) → merge, built by the factory itself** (D-017 as ame
 D-024), with component 1 pivoted from budget enforcement to usage tracking (D-021).
 Each component is specified first under `specs/` (GitHub Spec Kit, D-020) —
 [001-usage-tracking](../specs/001-usage-tracking/spec.md) (**implemented**, §5),
-[002-verification-gating](../specs/002-verification-gating/spec.md),
-[003-merge-queue](../specs/003-merge-queue/spec.md), plus the deferred
-[004-budget-enforcement](../specs/004-budget-enforcement/spec.md). Components 2 and 3
-do not exist in code yet.
+[002-verification-gating](../specs/002-verification-gating/spec.md) (**implemented**,
+§6 and §9), [003-merge-queue](../specs/003-merge-queue/spec.md), plus the deferred
+[004-budget-enforcement](../specs/004-budget-enforcement/spec.md). Component 3 does
+not exist in code yet.
 
 ## 1. System overview
 
@@ -34,10 +34,13 @@ flowchart TB
     subgraph worker [Worker host]
         BM["usage middleware<br/>(key lease / poll / teardown)"]
         AA["agent activity<br/>(adapter: Claude Code, ...)"]
-        VF["verifier activity<br/>(gates + judge)"]
+        VF["verifier activities<br/>(gates + output check + judge)"]
         WT[("git worktree<br/>per node")]
+        FDB[(".factory/<br/>ledger.db · verification.db")]
         BM --> AA --> WT
         WT --> VF
+        BM --> FDB
+        VF --> FDB
     end
 
     subgraph llm [LiteLLM proxy (deployed)]
@@ -52,13 +55,14 @@ flowchart TB
         PR --> MQ
     end
 
-    TG["Telegram notifier<br/>(inline-button approvals → signals)"]
+    TG["Telegram notifier<br/>send activity + callback bridge<br/>(inline-button approvals → signals)"]
 
     WG --> INT
     NQ --> BM
     AA -- "ANTHROPIC_BASE_URL + virtual key" --> VK
     VF -- pass --> PR
     INT <--> TG
+    TG <--> FDB
 ```
 
 **Node lifecycle:** `PENDING → (deps met) → KEY_ISSUED → RUNNING → VERIFYING →
@@ -214,22 +218,83 @@ classification, soft-warn at 80%, salvage-always kill, and the Telegram
 bump/reroute/kill escalation — is parked in spec 004 with a reactivation checklist.
 It layers onto this component's key lifecycle without restructuring.
 
-## 6. Component 2 — verification gating (NEXT)
+## 6. Component 2 — verification gating (spec: `specs/002-verification-gating/`)
 
-Two-tier, inner-loop, pre-CI (D-008, D-019):
+Two-tier, inner-loop, pre-CI (D-008, D-019). **Implemented** — the shipped layout is:
 
-1. **Deterministic gates** — `test` / `lint` / `typecheck` commands from the target repo's
-   committed `factory.yaml` (D-009), exit-code semantics, run in the node's sandbox.
-2. **LLM judge** — `judge` persona (cheap tier, own attribution key, read-only), scoring the
-   diff against the parsed acceptance scenarios. Bounded: truncated diff input,
-   capped response, **max 2 judge retries**; on `retry` verdict the judge's feedback is
-   handed **verbatim** to the retry attempt (Bernstein's highest-value pattern).
-3. **Anti-rubber-stamp**: a non-no-op node with an empty diff fails regardless of gates.
-4. Fail → retry-with-feedback loop (bounded) → `debugger` persona → Telegram escalation.
-5. Downstream DAG edges unlock only on `PASSED`.
+```text
+factory/
+├── verify/
+│   ├── models.py          # enums + frozen records (CriteriaSet … EscalationRecord), compose_result
+│   ├── criteria.py        # pure: mechanical Spec Kit spec parser (fence masking, §2 grammar)
+│   ├── factory_yaml.py    # pure: factory.yaml schema v1 load/validate → CONFIG_ERROR
+│   ├── gates.py           # gate runner: bash -c in the worktree, timeouts, scrubbed env
+│   ├── diffcheck.py       # anti-rubber-stamp: worktree diff / expected artifacts
+│   ├── judge.py           # pure prompt assembly + truncation + strict verdict parse, proxy call
+│   ├── ladder.py          # pure: next_action(history, config) retry-ladder decisions
+│   └── store.py           # SQLite evidence store: schema, upserts, escalation lifecycle
+├── notify/                # Telegram notifier — §9
+└── activities/
+    └── verify_activities.py  # snapshot_criteria / run_gates / check_output / run_judge / record_verification
+```
+
+The pipeline, cheapest signal first:
+
+1. **Criteria snapshot** — `snapshot_criteria` parses the dispatch-time `spec.md` (§2
+   grammar) down to the node's requested requirement keys and hashes the raw bytes.
+   Verification scores against that snapshot; a later edit to the spec surfaces as a
+   `criteria_drift` flag on the evidence row, never as moved goalposts (FR-010).
+2. **Deterministic gates** — `test` / `lint` / `typecheck` commands from the target repo's
+   committed `factory.yaml` (D-009), exit-code semantics, run in the node's worktree in
+   declaration order: per-gate timeout (default 600s, SIGTERM then SIGKILL), 32 KiB output
+   tail retained as evidence, environment scrubbed so no proxy or bot credential is visible
+   to the command. A missing or malformed manifest is a single `CONFIG_ERROR` result —
+   never a pass by default.
+3. **Anti-rubber-stamp** — a write-scope node with an empty worktree diff fails regardless
+   of gates; a read-scope node must instead produce every declared artifact, non-empty.
+4. **LLM judge** — `judge` persona (cheap tier, own attribution key, read-only), scoring the
+   diff strictly per scenario against the parsed acceptance criteria. Bounded: diff
+   truncated to 60 KiB with explicit markers (criteria never truncated), response capped at
+   2000 tokens, **max 2 judge retries**; on `retry` verdict the judge's feedback is
+   handed **verbatim** to the retry attempt (Bernstein's highest-value pattern). Skipped
+   entirely when a gate already failed — a two-second lint failure costs no completion.
+5. **Composed verdict, recorded first** — any failing gate, a failed output check, or a
+   judge `retry`/`fail` makes the attempt FAIL; an unreachable judge behind green gates
+   passes with `judge_unavailable` recorded rather than fabricated. The row is written
+   before any routing decision, and downstream DAG edges unlock only on `PASSED` (FR-005).
+6. **Fail → ladder** — `ladder.next_action(history, config)` is a pure function of the
+   recorded attempts: retry-with-feedback within `max_attempts` (default 3, with the 2
+   judge retries bounded *inside* that total), then the `debugger` persona once, then
+   Telegram escalation (§9). Escalation `RETRY` grants exactly one further attempt;
+   `KILL`, `PAUSE_EPIC`, and the 1h timeout end the node.
+
+### 6.1 Evidence store (SQLite)
+
+`.factory/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 1) —
+the same single-designated-host topology as the 001 ledger, path overridable with
+`FACTORY_VERIFICATION_DB_PATH`. Two tables:
+
+- `verification_results` — one row per attempt per form, upserted on
+  `(epic_id, node_id, attempt, form)` so a redelivered activity lands on the first run's
+  row instead of duplicating evidence: verdict, gate results / output check / judge verdict
+  as JSON evidence bundles, `judge_unavailable` and `criteria_drift` flags, criteria hash,
+  spec ref, timestamps. `judge_verdict` is NULL when the judge never ran — a different fact
+  from a judge that ran and returned FAIL.
+- `escalations` — one row per operator decision, written *before* the message is sent and
+  making exactly one terminal transition (a button resolution *xor* the timeout `EXPIRED`)
+  under a guarded UPDATE, because the press and the workflow's timer race by design.
+
+Evidence round-trips as the frozen records it was written from, because the retry prompt
+quotes gate `output_tail` and judge feedback verbatim and the escalation message carries
+the full failure history. The DDL is documented in
+`specs/002-verification-gating/contracts/verification-store.sql`; direct SQL against the
+store is a supported read surface, deliberately query-friendly for a future operations UI.
 
 The judge never runs in CI — merge-queue checks are deterministic only, so requeues and
-batch bisection never multiply judge spend.
+batch bisection never multiply judge spend. The production loop that drives the ladder
+ships as the documented pattern in
+`specs/002-verification-gating/contracts/verification-flow.md` (exercised by a test-only
+reference workflow under time skipping); the WorkGraph interpreter owns running it.
 
 ## 7. Component 3 — merge (LAST)
 
@@ -250,11 +315,43 @@ Claude Code swappable for pi.dev/OpenCode by writing a new adapter, nothing else
 
 ## 9. Escalation: Telegram notifier
 
-One long-polling service (no public webhook): sends escalation messages with inline
-buttons; button `callback_query` → `answerCallbackQuery` → Temporal signal to the waiting
-workflow. Used by: verify-fail-after-retries (§6), merge
-conflict/red (§7). Built alongside component 2; until then, escalations log + fail safe
-(kill path).
+No public webhook — the notifier ships (with component 2) as a **pair**: an activity that
+sends, and a separate long-polling process that brings the answer back as a signal.
+
+```text
+factory/
+├── notify/
+│   ├── messages.py            # pure: escalation text + inline keyboard + callback_data
+│   └── service.py             # runnable bridge: long-poll → store → Temporal signal
+└── activities/
+    └── notify_activities.py   # send_escalation / expire_escalation
+```
+
+- **Send activity** — `send_escalation` inserts the escalation row *before* it sends, so a
+  crash in between leaves an expirable row rather than an untracked message, and reports
+  delivery as data: a missing `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` or a failed send
+  yields `delivered=false`, and the workflow applies the fail-safe kill immediately instead
+  of waiting out the hour. `expire_escalation` makes the timeout transition and reports
+  whichever terminal state the store actually holds. The bot token is read from the worker
+  environment inside the activity only — never in inputs, results, rows, or logs (001's
+  master-key discipline, extended per D-022).
+- **Callback bridge** — `python -m factory.notify.service`, one long-polling process per
+  deployment (`TELEGRAM_BOT_TOKEN`, `TEMPORAL_ADDRESS`, `TEMPORAL_NAMESPACE`,
+  `FACTORY_VERIFICATION_DB_PATH`), stateless across restarts because every fact it needs is
+  in the escalation row. A press is parsed (`callback_data` = `esc:<12-hex>:<choice>`,
+  within Telegram's 64-byte limit), looked up, validated against the choices that row
+  actually offered, **signalled** to the waiting workflow as
+  `escalation_resolved(escalation_id, choice)`, and only then resolved in the store and
+  answered. Signal-before-resolve is deliberate: a row marked resolved on a signal that
+  never landed strands the workflow for the full hour, whereas a pending row can simply be
+  pressed again. Presses that lose the race with expiry, or arrive on an unknown or
+  already-resolved id, are answered with a notice and change nothing.
+- **Messages** — pure rendering: the full failure history across attempts plus one inline
+  button per offered choice (`RETRY` / `KILL` / `PAUSE_EPIC`).
+
+Escalations expire after 1h and **default to kill** — but only after salvage (principle VI),
+which the node-lifecycle owner performs. Used by: verify-fail-after-retries (§6), and merge
+conflict/red (§7) once component 3 lands.
 
 ## 10. Security notes
 
