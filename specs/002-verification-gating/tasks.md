@@ -84,7 +84,7 @@ US1's parser.
 
 ### Implementation for User Story 2
 
-- [ ] T017 [P] [US2] Implement `factory/verify/factory_yaml.py` until T012 passes
+- [X] T017 [P] [US2] Implement `factory/verify/factory_yaml.py` until T012 passes
 - [ ] T018 [P] [US2] Implement `factory/verify/gates.py` (bash -c runner behind the `GateExecutor` seam per research R3) until T014 passes
 - [ ] T019 [P] [US2] Implement `factory/verify/diffcheck.py` (`git status --porcelain` + `git diff HEAD`, artifact checks) until T015 passes
 - [ ] T020 [US2] Implement `factory/verify/judge.py` (pure prompt assembly + truncation, strict verdict parsing with cross-check, httpx call per `contracts/judge.md`) until T016 passes
