@@ -87,7 +87,7 @@ US1's parser.
 - [X] T017 [P] [US2] Implement `factory/verify/factory_yaml.py` until T012 passes
 - [X] T018 [P] [US2] Implement `factory/verify/gates.py` (bash -c runner behind the `GateExecutor` seam per research R3) until T014 passes
 - [X] T019 [P] [US2] Implement `factory/verify/diffcheck.py` (`git status --porcelain` + `git diff HEAD`, artifact checks) until T015 passes
-- [ ] T020 [US2] Implement `factory/verify/judge.py` (pure prompt assembly + truncation, strict verdict parsing with cross-check, httpx call per `contracts/judge.md`) until T016 passes
+- [X] T020 [US2] Implement `factory/verify/judge.py` (pure prompt assembly + truncation, strict verdict parsing with cross-check, httpx call per `contracts/judge.md`) until T016 passes
 - [ ] T021 [US2] Write verification-activity tests FIRST in `tests/test_verify_activities.py`: `run_gates`/`check_output`/`run_judge` activity wrappers (incl. `JUDGE_UNAVAILABLE` after HTTP retries); `record_verification` upserts, rejects empty epic/node/attempt with `ATTRIBUTION_INCOMPLETE`, recomputes drift (changed spec file → `criteria_drift=1`); verdict truth table (SC-002): any gate FAIL/TIMEOUT/CONFIG_ERROR → FAIL, output-check fail → FAIL, judge RETRY/FAIL → FAIL, judge UNAVAILABLE with green gates → PASS + `judge_unavailable=1`; judge skipped entirely when a gate fails (cheapest-first, request log proves no proxy call) — must fail
 - [ ] T022 [US2] Implement remaining activities in `factory/activities/verify_activities.py` (`run_gates`, `check_output`, `run_judge`, `record_verification`) and `compose_result` in `factory/verify/models.py` until T021 passes
 
