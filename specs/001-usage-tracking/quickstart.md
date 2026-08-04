@@ -6,9 +6,14 @@ run/validation guide only.
 ## Prerequisites
 
 - Python 3.11+, `uv` installed
-- (Full-suite only) Temporal CLI: `temporal server start-dev --db-filename .temporal/dev.db`
-- (Live-proxy smoke only) `LITELLM_PROXY_URL` + `LITELLM_MASTER_KEY` exported; proxy
+- (Live-proxy smoke only, §2) `LITELLM_PROXY_URL` + `LITELLM_MASTER_KEY` exported; proxy
   running with its database (spend-log persistence on — default when virtual keys work)
+- (Topology check only, §4) Temporal CLI:
+  `temporal server start-dev --db-filename .temporal/dev.db`
+
+The test suite needs neither: activity tests run in-process on
+`temporalio.testing.ActivityEnvironment` against a fake proxy, so §1 is green with no
+Temporal server and no LiteLLM reachable.
 
 ## 1. Unit + activity tests (no external services)
 
