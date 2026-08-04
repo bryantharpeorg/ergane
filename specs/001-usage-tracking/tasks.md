@@ -83,7 +83,7 @@ shape; prove CLI cannot write.
 ### Tests for User Story 2 (write FIRST, must fail)
 
 - [X] T019 [P] [US2] Write `tests/test_rollups.py`: seeded rows → rollups by persona (per-epic + global), by epic, by spec_ref across epics, by attempt ordinal (attempt ≥ 2 = retry cost), by node (attempts aggregated), grand totals; group with all-NULL cache metric reports None; `unconfirmed_rows` counts flagged rows (FR-006, SC-006)
-- [ ] T020 [P] [US2] Write `tests/test_cli.py`: `--by` each dimension over a seeded tmp ledger; `--json` output matches `contracts/cli.md` shape exactly (incl. nulls, totals, filters echo); `--epic`/`--since` filters; exit codes 0/2/3; read-only proof — CLI runs against a read-only-mode connection and a mutation attempt via the CLI path raises (US2 scenario 4)
+- [X] T020 [P] [US2] Write `tests/test_cli.py`: `--by` each dimension over a seeded tmp ledger; `--json` output matches `contracts/cli.md` shape exactly (incl. nulls, totals, filters echo); `--epic`/`--since` filters; exit codes 0/2/3; read-only proof — CLI runs against a read-only-mode connection and a mutation attempt via the CLI path raises (US2 scenario 4)
 
 ### Implementation for User Story 2
 
