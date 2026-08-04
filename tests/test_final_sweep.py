@@ -486,9 +486,11 @@ FORBIDDEN_IN_USAGE = frozenset(
     {"signal", "subprocess", "multiprocessing", "ctypes", "temporalio"}
 )
 
-#: Constitution III: the approved roster. Anything else third-party in this
-#: package is a dependency nobody approved.
-APPROVED_THIRD_PARTY = frozenset({"httpx", "temporalio", "yaml"})
+#: Constitution III: the approved roster, by import root. Anything else
+#: third-party in this package is a dependency nobody approved. `telegram` is
+#: `python-telegram-bot`, approved 2026-07-24 (D-022) for the notifier and first
+#: imported by `factory/notify/`.
+APPROVED_THIRD_PARTY = frozenset({"httpx", "telegram", "temporalio", "yaml"})
 
 
 def parse(path: Path) -> ast.Module:
