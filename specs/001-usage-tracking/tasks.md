@@ -23,7 +23,7 @@ and testable.
 - [X] T002 [P] Create package skeleton: `factory/__init__.py`, `factory/usage/__init__.py`, `factory/activities/__init__.py`, empty `tests/__init__.py` placeholder files
 - [X] T003 [P] Restore `personas.yaml` at repo root per research R8 (six personas; `{agent, model, fallback, skills, write_scope, needs_worktree}`; CHANGEME model placeholders; NO budget/breach fields)
 - [X] T004 [P] Extend `.gitignore` for `.factory/` ledger artifacts and `.venv/`, `__pycache__/`, `.pytest_cache/`, `.temporal/` (keep existing entries)
-- [ ] T005 Run `uv sync` and verify `uv run pytest -q` collects zero tests successfully (toolchain sanity)
+- [X] T005 Run `uv sync` and verify `uv run pytest -q` collects zero tests successfully (toolchain sanity)
 
 ---
 
