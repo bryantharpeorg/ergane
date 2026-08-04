@@ -378,9 +378,13 @@ async def test_a_configured_timeout_moves_the_deadline_the_row_advertises(
 
 
 async def test_the_message_carries_the_history_and_one_button_per_choice(
-    env: ActivityEnvironment, telegram_env: None, bot: FakeBot
+    env: ActivityEnvironment, db_path: Path, telegram_env: None, bot: FakeBot
 ) -> None:
-    # SC-005: the operator decides from the message, not from the database.
+    # SC-005: the operator decides from the message, not from the database — but
+    # the row is still written, so `db_path` is taken for its redirection even
+    # though nothing here reads it: without it the activity records into the
+    # repository's own `.factory/verification.db` and the suite leaves phantom
+    # escalations in the store quickstart §5 tells the operator to open.
     result = await send(env)
 
     assert len(bot.sent) == 1

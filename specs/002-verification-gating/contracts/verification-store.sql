@@ -74,8 +74,11 @@ CREATE INDEX IF NOT EXISTS idx_esc_node    ON escalations (epic_id, node_id);
 --   FROM verification_results GROUP BY epic_id;
 
 -- Retry pressure by spec ref (pairs with 001's per-spec-ref cost rollup):
---   SELECT spec_ref, MAX(attempt) AS attempts, MIN(verdict = 'PASS') AS ever_failed
+--   SELECT spec_ref, MAX(attempt) AS attempts, MAX(verdict = 'FAIL') AS ever_failed
 --   FROM verification_results GROUP BY spec_ref;
+-- (MAX over the failing predicate, not MIN over the passing one: MIN(verdict =
+--  'PASS') is 0 exactly when something failed, which reads as the opposite of
+--  the column it names.)
 
 -- Pending escalations (bridge service + operator visibility):
 --   SELECT escalation_id, epic_id, node_id, expires_at
