@@ -1,0 +1,8 @@
+# Variant `unknown-gate`: parses as YAML, fails validation — `build` is not one of
+# the three v1 gate names. The other half of the runner's CONFIG_ERROR path: a
+# manifest that `yaml.safe_load` accepts happily and only the schema rejects.
+version: 1
+runtime: python:3.11-bookworm
+gates:
+  test: "bash gates/test.sh"
+  build: "make all"

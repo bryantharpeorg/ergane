@@ -1,0 +1,11 @@
+# Variant `sigterm-defying-gate`: the same 1s deadline against a process that
+# ignores SIGTERM, so reclaiming it requires the SIGKILL escalation (R3).
+#
+# A test using this fixture is only bounded by the runner's grace period, so it
+# belongs with a shortened grace unless a 10s test is acceptable.
+version: 1
+runtime: python:3.11-bookworm
+gates:
+  test: "bash gates/hang-ignoring-sigterm.sh"
+timeouts:
+  test: 1

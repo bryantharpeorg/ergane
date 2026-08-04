@@ -1,4 +1,4 @@
-"""Shared test fixtures: a stateful fake of the LiteLLM admin API.
+"""Shared test fixtures: a fake LiteLLM admin API, and real fixture git repos.
 
 `FakeLiteLLM` serves the four proxy endpoints this component touches, over an
 `httpx.MockTransport` (plan.md § Testing). It is deliberately strict where the
@@ -18,6 +18,11 @@ assert *ordering* (R3) as well as payload shape.
 
 The fake is the contract-under-test for `factory/usage/litellm_client.py`; the
 real-proxy smoke test (T025) is what proves the contract matches production.
+
+The `target_repo` / `node_worktree` fixtures at the bottom go the other way: no
+fake at all. Gates run real subprocesses and the diff check reads real `git`
+output, so those tests get a real repository built from
+`tests/fixtures/target_repo/` (see `tests/target_repo.py`) under `tmp_path`.
 """
 
 from __future__ import annotations
@@ -25,10 +30,13 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from typing import Any, Iterator
+from pathlib import Path
+from typing import Any, Callable, Iterator
 
 import httpx
 import pytest
+
+from tests.target_repo import add_worktree, build_target_repo
 
 FAKE_PROXY_URL = "http://litellm.test"
 FAKE_MASTER_KEY = "sk-fake-master-do-not-log"
@@ -359,3 +367,36 @@ def litellm_env(
     monkeypatch.setenv("LITELLM_PROXY_URL", fake_litellm.base_url)
     monkeypatch.setenv("LITELLM_MASTER_KEY", fake_litellm.master_key)
     return fake_litellm
+
+
+@pytest.fixture
+def target_repo(tmp_path: Path) -> Callable[..., Path]:
+    """Build a fixture target repo: `target_repo("failing-gate")` → repo path.
+
+    A factory rather than a plain path because several tests need two variants
+    side by side, and because the variant name reads better at the call site than
+    in the fixture list.
+    """
+
+    def build(variant: str = "passing", name: str | None = None) -> Path:
+        return build_target_repo(tmp_path / (name or variant), variant=variant)
+
+    return build
+
+
+@pytest.fixture
+def node_worktree(
+    target_repo: Callable[..., Path], tmp_path: Path
+) -> Callable[..., Path]:
+    """Build a repo variant and attach a node worktree to it, returning the worktree.
+
+    This is the topology the factory actually runs against — gates and diffs see a
+    worktree, never the repo's own checkout — so it is the default a test should
+    reach for.
+    """
+
+    def build(variant: str = "passing", branch: str = "node/work") -> Path:
+        repo = target_repo(variant)
+        return add_worktree(repo, tmp_path / f"{repo.name}-worktree", branch=branch)
+
+    return build
