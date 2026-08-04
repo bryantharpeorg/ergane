@@ -104,7 +104,7 @@ usage level.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T023 [P] [US3] Write `tests/test_poll_usage.py` (ActivityEnvironment): poll returns `UsageSnapshot` matching FakeLiteLLM state with `captured_at`; enormous spend values produce a snapshot and NOTHING else — no exception, no side-effect calls on the fake (assert request log contains only `/key/info`) (SC-005); poll failure raises but is documented-skippable (caller contract)
+- [X] T023 [P] [US3] Write `tests/test_poll_usage.py` (ActivityEnvironment): poll returns `UsageSnapshot` matching FakeLiteLLM state with `captured_at`; enormous spend values produce a snapshot and NOTHING else — no exception, no side-effect calls on the fake (assert request log contains only `/key/info`) (SC-005); poll failure raises but is documented-skippable (caller contract)
 
 ### Implementation for User Story 3
 
