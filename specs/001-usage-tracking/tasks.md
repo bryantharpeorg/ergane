@@ -119,7 +119,7 @@ usage level.
 - [X] T025 [P] Add `tests/test_live_proxy.py` with `@pytest.mark.live_proxy`: real-proxy smoke per quickstart §2 (issue uncapped key → one tiny completion via a cheap/local model → teardown → ledger row reconciles with proxy spend logs, SC-002); auto-skip when `LITELLM_PROXY_URL`/`LITELLM_MASTER_KEY` unset
 - [X] T026 [P] Update `docs/architecture.md` §5 target-shape note to "implemented" state and confirm module names match the shipped layout
 - [X] T027 Run full quickstart.md validation (§1 suite green; §3 CLI + sqlite3 schema inspection outputs match contracts) and fix any drift
-- [ ] T028 Final sweep: grep tests assert no `LITELLM_MASTER_KEY` value appears in any persisted artifact or error path (SC-004); confirm no enforcement branch exists anywhere in `factory/usage/` (SC-005)
+- [X] T028 Final sweep: grep tests assert no `LITELLM_MASTER_KEY` value appears in any persisted artifact or error path (SC-004); confirm no enforcement branch exists anywhere in `factory/usage/` (SC-005)
 
 ---
 
