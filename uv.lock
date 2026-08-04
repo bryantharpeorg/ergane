@@ -1,6 +1,10 @@
 version = 1
 revision = 3
 requires-python = ">=3.11"
+resolution-markers = [
+    "python_full_version >= '3.14'",
+    "python_full_version < '3.14'",
+]
 
 [[package]]
 name = "anyio"
@@ -39,6 +43,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
+    { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "temporalio" },
 ]
@@ -52,6 +57,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx" },
+    { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "temporalio" },
 ]
@@ -198,6 +204,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/43/7c/d36d04db312ecf4298932ef77e6e4a9e8ad017906e24e34f0b0c361a2473/pytest_asyncio-1.4.0.tar.gz", hash = "sha256:c6c0d2259945122819f171a32ecea2c349ead889ee28176caaf492143424be42", size = 58514, upload-time = "2026-05-26T09:56:04.083Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/03/e2/08a497ef684b88559c9cc5f4ad53a37e7b99e727094a86d6ea32536d5d3c/pytest_asyncio-1.4.0-py3-none-any.whl", hash = "sha256:933ca923a23075a87fb7070c0ec272a6848489824d887c85c812670932835aa1", size = 16930, upload-time = "2026-05-26T09:56:02.576Z" },
+]
+
+[[package]]
+name = "python-telegram-bot"
+version = "22.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpcore", marker = "python_full_version >= '3.14'" },
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ba/77/153517bb1ac1bba670c6fb1dbf09e1fd0730494b1705934e715391413a0d/python_telegram_bot-22.8.tar.gz", hash = "sha256:f9d3847fcb23ee603477e442800b33bb4adf851a73e0619d2050be879decf1ef", size = 1551700, upload-time = "2026-06-12T08:10:29.1Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/7c/ed7d4dd94280bd434173cae9f7a7aedaaab9af128ae4f494423a5687c820/python_telegram_bot-22.8-py3-none-any.whl", hash = "sha256:42373918097f1b837cc4e717d588c19ea79651497ec712bb5b0c76e5e63c50e1", size = 769397, upload-time = "2026-06-12T08:10:27.066Z" },
 ]
 
 [[package]]
