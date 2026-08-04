@@ -34,7 +34,7 @@ story consumes these
 
 **⚠️ CRITICAL**: No user story work until this phase completes
 
-- [ ] T006 [P] Write `tests/test_config.py` FIRST: shipped registry parses with six personas; verifier is `agent: none`/`model: null`/keyless; write_scope enum enforced; agent/model consistency rules; missing-field and bad-enum rejection (per data-model.md Persona rules) — tests must fail (no config.py yet)
+- [X] T006 [P] Write `tests/test_config.py` FIRST: shipped registry parses with six personas; verifier is `agent: none`/`model: null`/keyless; write_scope enum enforced; agent/model consistency rules; missing-field and bad-enum rejection (per data-model.md Persona rules) — tests must fail (no config.py yet)
 - [ ] T007 [P] Write `tests/conftest.py`: stateful `FakeLiteLLM` on `httpx.MockTransport` — `/key/generate` (no max_budget expected), `/key/info`, `/key/delete` (404 on missing), paginated `/spend/logs/v2` returning rows with `prompt_tokens`, `completion_tokens`, `spend`, and `metadata.additional_usage_values` cache fields (rows configurable per key, cache fields omittable); records all requests; rejects wrong master key with 401
 - [ ] T008 [P] Implement `factory/usage/models.py`: frozen dataclasses `KeyLease` (incl. `attempt`, `spec_ref`), `UsageSnapshot`, `AggregatedUsage`, `UsageRecord`, enum `Termination` (COMPLETED|AGENT_ERROR|TIMEOUT|KILLED) — exactly per data-model.md field tables
 - [ ] T009 Implement `factory/config.py` (persona registry loader/validation) until T006 passes
