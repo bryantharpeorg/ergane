@@ -432,6 +432,24 @@ def insert_escalation(conn: sqlite3.Connection, record: EscalationRecord) -> Non
     conn.commit()
 
 
+def mark_delivered(conn: sqlite3.Connection, escalation_id: str) -> bool:
+    """Note that the message actually reached Telegram. True if a row was updated.
+
+    Separate from the insert because the insert happens first, on purpose (R11):
+    the row exists before the send, so `delivered` is the one fact about an
+    escalation that can only be known afterwards. It is evidence for a reader —
+    nothing gates on it, since a button press resolves an escalation whether or
+    not the factory ever learned the message landed.
+    """
+    cursor = conn.execute(
+        "UPDATE escalations SET delivered = 1 WHERE escalation_id = ?",
+        (escalation_id,),
+    )
+    conn.commit()
+
+    return cursor.rowcount == 1
+
+
 def get_escalation(
     conn: sqlite3.Connection, escalation_id: str
 ) -> EscalationRecord | None:
