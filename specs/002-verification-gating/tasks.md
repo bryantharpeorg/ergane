@@ -22,7 +22,7 @@ neither needs the other's implementation to test).
 
 - [X] T001 Verify component 1 is implemented and green: `uv run pytest -q` passes and `factory/usage/`, `factory/activities/usage_activities.py`, `personas.yaml` exist per `specs/001-usage-tracking/plan.md` — constitution I gate; STOP if not satisfied
 - [X] T002 Add `python-telegram-bot` to `pyproject.toml` (approved D-022), add `live_telegram` pytest marker alongside `live_proxy`, run `uv sync`
-- [ ] T003 [P] Create skeletons: `factory/verify/__init__.py`, `factory/notify/__init__.py`, `tests/fixtures/speckit/.gitkeep`, `tests/fixtures/target_repo/.gitkeep`
+- [X] T003 [P] Create skeletons: `factory/verify/__init__.py`, `factory/notify/__init__.py`, `tests/fixtures/speckit/.gitkeep`, `tests/fixtures/target_repo/.gitkeep`
 
 ---
 
