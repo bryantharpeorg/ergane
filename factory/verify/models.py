@@ -2,10 +2,14 @@
 
 One dataclass per entity in data-model.md, frozen so a value that crossed an
 activity boundary can never be edited in place, and plain enough that Temporal's
-default JSON converter round-trips them without help. Enums subclass `str` so a
-member serializes as its value in payloads and binds directly as a SQLite TEXT
-parameter; the values are UPPERCASE because that is what the evidence store's
-CHECK constraints accept (contracts/verification-store.sql).
+default JSON converter round-trips them without help. Enums are `StrEnum`
+specifically, not the older `class X(str, Enum)` spelling: both serialize as
+their value and both bind as a SQLite TEXT parameter, but only `StrEnum` is
+recognised by the converter's *deserializer*, which rebuilds a field annotated
+with any other str-subclass enum as a list of one-character strings — a `PASS`
+that silently arrives as `['P', 'A', 'S', 'S']` and compares equal to nothing.
+The values are UPPERCASE because that is what the evidence store's CHECK
+constraints accept (contracts/verification-store.sql).
 
 Three invariants show up here as types rather than as checks:
 
@@ -36,11 +40,11 @@ definitions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Sequence
 
 
-class RequirementKind(str, Enum):
+class RequirementKind(StrEnum):
     """What a parsed requirement is (D-023).
 
     STORY carries acceptance scenarios and is what the judge scores; FUNCTIONAL
@@ -51,7 +55,7 @@ class RequirementKind(str, Enum):
     FUNCTIONAL = "FUNCTIONAL"
 
 
-class GateStatus(str, Enum):
+class GateStatus(StrEnum):
     """Outcome of one deterministic gate command.
 
     `CONFIG_ERROR` covers a missing or malformed `factory.yaml`: it is a status
@@ -65,7 +69,7 @@ class GateStatus(str, Enum):
     CONFIG_ERROR = "CONFIG_ERROR"
 
 
-class JudgeOutcome(str, Enum):
+class JudgeOutcome(StrEnum):
     """The judge's bounded contribution (FR-003).
 
     RETRY and FAIL both compose to an overall FAIL; they differ only in what the
@@ -79,14 +83,14 @@ class JudgeOutcome(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
-class OverallVerdict(str, Enum):
+class OverallVerdict(StrEnum):
     """The composed verdict — the only thing edge unlocking may read (FR-005)."""
 
     PASS = "PASS"
     FAIL = "FAIL"
 
 
-class VerificationForm(str, Enum):
+class VerificationForm(StrEnum):
     """Whether verification ran as a node's built-in phase or as an explicit
     verifier node (FR-002). Part of the evidence store's upsert key, so one
     attempt can carry both without collision."""
@@ -95,7 +99,7 @@ class VerificationForm(str, Enum):
     NODE = "NODE"
 
 
-class NextAction(str, Enum):
+class NextAction(StrEnum):
     """Output of the pure retry ladder — a decision, not a side effect."""
 
     PASSED = "PASSED"
@@ -105,7 +109,7 @@ class NextAction(str, Enum):
     KILLED = "KILLED"
 
 
-class EscalationChoice(str, Enum):
+class EscalationChoice(StrEnum):
     """Operator options on an escalation, 1:1 with the inline buttons (FR-008).
 
     Values stay short because they ride inside `callback_data`

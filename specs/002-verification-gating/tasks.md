@@ -118,7 +118,7 @@ scripted verdicts, independent of US2's implementation.
 - [X] T027 [US3] Implement `factory/notify/messages.py` (pure rendering) and `factory/notify/service.py` (runnable long-polling bridge: parse → store lookup → validate → signal → resolve → answer → edit; stateless across restarts) until T024 passes
 - [X] T028 [US3] Implement `factory/activities/notify_activities.py` (`send_escalation`, `expire_escalation` per `contracts/activities.md`, env-only credentials) until T025 passes
 - [X] T029 [US3] Write `tests/test_verification_flow.py` FIRST (`WorkflowEnvironment.start_time_skipping`, reference workflow per `contracts/verification-flow.md` with scripted gate/judge activities): fail → retry prompt contains gate `output_tail` and judge feedback VERBATIM (SC-004); ladder walks retry → debugger → escalate; escalation signal RETRY/KILL/PAUSE_EPIC each honored; 1h silence → `expire_escalation` called then default KILL; `delivered=false` → immediate KILL with no wait; downstream unlock happens on PASS and only on PASS (FR-005); every attempt recorded via `record_verification` before any action (invariant 3) — must fail
-- [ ] T030 [US3] Implement the test-support reference workflow (in `tests/reference_flow.py`, imported by the test — explicitly NOT production code; the interpreter component owns the production loop) until T029 passes
+- [X] T030 [US3] Implement the test-support reference workflow (in `tests/reference_flow.py`, imported by the test — explicitly NOT production code; the interpreter component owns the production loop) until T029 passes
 
 **Checkpoint**: all three stories independently functional
 
