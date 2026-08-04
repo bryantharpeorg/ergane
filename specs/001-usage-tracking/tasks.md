@@ -88,7 +88,7 @@ shape; prove CLI cannot write.
 ### Implementation for User Story 2
 
 - [X] T021 [US2] Implement rollup queries in `factory/usage/ledger.py` (`rollup(by=..., epic=None, since=None)` returning group metric dicts per the canonical SQL in `contracts/ledger-schema.sql`) until T019 passes
-- [ ] T022 [US2] Implement `factory/usage/cli.py` (argparse, `mode=ro` URI open, table + `--json` renderers, exit codes) + wire `factory-usage` entry point in `pyproject.toml`, until T020 passes
+- [X] T022 [US2] Implement `factory/usage/cli.py` (argparse, `mode=ro` URI open, table + `--json` renderers, exit codes) + wire `factory-usage` entry point in `pyproject.toml`, until T020 passes
 
 **Checkpoint**: US1 + US2 independently green
 

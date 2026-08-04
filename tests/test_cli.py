@@ -340,7 +340,9 @@ def test_the_table_lists_every_group_and_totals_them(
     for key in ("epic-a:node-debug", "epic-a:node-impl", "epic-a:node-plan",
                 "epic-b:node-impl"):
         line_for(result.stdout, key)
-    assert "9000" in re.sub(r"[,_]", "", line_for(result.stdout, "epic-a:node-impl"))
+    # 5000 = attempt 1's 2000 + attempt 2's 3000: the node line is the node's
+    # attempts summed, not either one of them.
+    assert "5000" in re.sub(r"[,_]", "", line_for(result.stdout, "epic-a:node-impl"))
     assert re.search(r"(?i)total", result.stdout)
     assert re.search(r"(?i)unconf", result.stdout)
 
