@@ -127,7 +127,7 @@ scripted verdicts, independent of US2's implementation.
 ## Phase 6: Polish & Cross-Cutting
 
 - [X] T031 [P] Add `tests/test_live_judge.py` with `@pytest.mark.live_proxy`: real-proxy judge smoke per quickstart §3 — mint judge key via component 1, score a fixture diff on the judge persona alias, teardown, assert parsed verdict AND a usage-ledger row with persona=`judge` (constitution V); auto-skip when proxy env unset
-- [ ] T032 [P] Add `tests/test_live_notify.py` with `@pytest.mark.live_telegram`: real escalation message per quickstart §4 with inline buttons and pending store row; auto-skip when Telegram env unset
+- [X] T032 [P] Add `tests/test_live_notify.py` with `@pytest.mark.live_telegram`: real escalation message per quickstart §4 with inline buttons and pending store row; auto-skip when Telegram env unset
 - [ ] T033 [P] Update `docs/architecture.md` §6 and §9 to implemented state: evidence store (`.factory/verification.db`) added to the diagram/description, notifier described as send-activity + bridge pair, module names match shipped layout
 - [ ] T034 Run full quickstart.md validation (§1 suite green, §2 gate-runner demo behaviors, §5 store schema/rollup queries run as-is) and fix any drift
 - [ ] T035 Final sweep: grep-based tests assert no `TELEGRAM_BOT_TOKEN` or `LITELLM_MASTER_KEY` value in any persisted artifact or error path; confirm no judge invocation is reachable outside `run_judge` (FR-009 — nothing exports it toward CI/merge tooling); confirm verdict composition has no path to PASS with a failing gate or empty write-scope diff (SC-002)
