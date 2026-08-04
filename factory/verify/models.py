@@ -23,12 +23,21 @@ Three invariants show up here as types rather than as checks:
 Validation lives where the decision is made, not here: the criteria parser raises
 on grammar violations, `factory_yaml` rejects bad manifests, the store's CHECK
 constraints backstop the persisted shape, and these stay dumb carriers.
+
+The one behaviour that does live here is composition. `compose_result` is where
+those three invariants stop being prose and become the single `OverallVerdict`
+that edge unlocking reads, and `judge_required` is most of the same rule asked one
+step earlier — before the judge has been paid for. Both are pure, and both live
+beside the types rather than in the activity that calls them, because a verdict
+assembled two different ways by two different callers is a verdict with two
+definitions.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Sequence
 
 
 class RequirementKind(str, Enum):
@@ -290,6 +299,114 @@ class VerificationResult:
     spec_ref: str
     started_at: str
     finished_at: str
+
+
+def gates_passed(gate_results: Sequence[GateResult]) -> bool:
+    """Whether the deterministic half of verification is green.
+
+    An empty list is not green. No gates ran means nothing was checked, and
+    "nothing failed" is the exact shape a naive verdict mistakes for a pass
+    (SC-002) — which is also why an unusable `factory.yaml` arrives here as one
+    `CONFIG_ERROR` result rather than as zero results.
+
+    Statuses are compared by value, not by identity: a `GateResult` that crossed
+    a Temporal payload boundary carries the enum's string, and a comparison that
+    only recognised the member would read a serialized PASS as a failure.
+    """
+    return bool(gate_results) and all(
+        gate.status == GateStatus.PASS for gate in gate_results
+    )
+
+
+def has_scenarios(criteria: CriteriaSet) -> bool:
+    """Whether this node was dispatched anything the judge could score.
+
+    A node owing only `FR-###` bullets has no acceptance scenarios, and an empty
+    scenario list would parse back from any response as a unanimous pass — so it
+    is verified on its gates and its output check alone, by design.
+    """
+    return any(requirement.scenarios for requirement in criteria.requirements)
+
+
+def judge_required(
+    gate_results: Sequence[GateResult],
+    output_check: OutputCheck,
+    criteria: CriteriaSet,
+) -> bool:
+    """Whether asking the judge can still change the outcome (flow invariant 2).
+
+    Cheapest-first: the gates and the output check have already decided a FAIL
+    that no judge verdict could lift, so consulting one would cost a completion
+    to learn nothing (FR-003). This is the guard the reference flow puts in front
+    of `run_judge`, and it is the reason `VerificationResult.judge` is None on
+    every failing-gate row — "the judge never ran" is a different fact from "the
+    judge ran and disagreed".
+    """
+    return (
+        gates_passed(gate_results)
+        and output_check.passed
+        and has_scenarios(criteria)
+    )
+
+
+def compose_result(
+    *,
+    epic_id: str,
+    node_id: str,
+    attempt: int,
+    form: VerificationForm,
+    gate_results: list[GateResult],
+    output_check: OutputCheck,
+    judge: JudgeVerdict | None,
+    criteria_sha256: str,
+    spec_ref: str,
+    started_at: str,
+    finished_at: str,
+    criteria_drift: bool = False,
+) -> VerificationResult:
+    """Turn one attempt's evidence into the verdict downstream edges read.
+
+    The truth table is data-model.md's, and it is stated once, here, because this
+    function is the only thing standing between a green-looking attempt and an
+    unlocked downstream edge (FR-005): PASS requires that gates ran and all
+    passed, that the node proved it produced something (FR-004), and that the
+    judge either agreed or never ran. Every other combination is FAIL — a judge
+    RETRY included, since RETRY says what the ladder should do next, not that the
+    attempt was acceptable.
+
+    An unreachable judge is the single asymmetry: it does not block a PASS, but
+    the PASS is flagged `judge_unavailable` so nobody reads it later as judged
+    work. Drift is carried through untouched — it flags a result whose spec moved
+    under it (R8) and never moves the verdict, or the flag would silently become
+    a second, quieter gate.
+
+    Everything else is copied verbatim. The retry prompt and the escalation
+    summary are built from the same evidence this writes to the store (FR-006,
+    SC-004, SC-005), so a bundle edited on its way through would make the record
+    disagree with the prompt.
+    """
+    judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
+    judge_accepts = (
+        judge is None or judge.outcome == JudgeOutcome.PASS or judge_unavailable
+    )
+    passed = gates_passed(gate_results) and output_check.passed and judge_accepts
+
+    return VerificationResult(
+        epic_id=epic_id,
+        node_id=node_id,
+        attempt=attempt,
+        form=form,
+        gate_results=list(gate_results),
+        output_check=output_check,
+        judge=judge,
+        verdict=OverallVerdict.PASS if passed else OverallVerdict.FAIL,
+        judge_unavailable=judge_unavailable,
+        criteria_drift=criteria_drift,
+        criteria_sha256=criteria_sha256,
+        spec_ref=spec_ref,
+        started_at=started_at,
+        finished_at=finished_at,
+    )
 
 
 # Ladder entities (pure) -----------------------------------------------------
