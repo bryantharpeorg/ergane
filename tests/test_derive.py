@@ -63,7 +63,9 @@ from typing import Any
 
 import pytest
 
-from factory.config import Persona, WriteScope
+from factory.config import Persona, WriteScope, load_personas
+from factory.verify.criteria import parse_spec
+from factory.verify.models import RequirementKind
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkNode, validate_workgraph
 
@@ -489,3 +491,133 @@ def test_a_malformed_declaration_is_refused_by_rule(
     assert [(fault.rule, fault.story) for fault in caught.value.rejections] == [
         (rule, "US2")
     ]
+
+
+# The crossover epic, for real (005 T030) -------------------------------------
+#
+# Everything above compiles fixtures written to exercise the grammar. This
+# section compiles the spec the factory is actually going to be handed: 003, the
+# epic it dispatches against this repository with the operator as merge queue
+# (D-024). A fixture proves the deriver reads the grammar; only the real spec
+# proves the grammar can express a real epic — and this is the crossover's input,
+# so a defect here is a defect in the first live run, not in a test.
+
+
+#: The repository root: `tests/` sits directly beneath it.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The epic the factory builds by dispatching itself (constitution I, D-024).
+CROSSOVER = "003-merge-queue"
+
+
+def crossover_graph() -> WorkGraph:
+    """003's spec, compiled as `factory-epic derive` will compile it.
+
+    Read from disk on purpose: this is the one case in the suite whose input is
+    not a fixture the test controls, which is exactly what makes it worth having.
+    Identity is still the caller's — the target repo is this repository, since
+    that is what the crossover builds against.
+    """
+    spec = (REPO_ROOT / "specs" / CROSSOVER / "spec.md").read_text(encoding="utf-8")
+    return derive_workgraph(
+        spec,
+        epic_id=CROSSOVER,
+        feature=CROSSOVER,
+        specs_root=SPECS_ROOT,
+        target_repo=str(REPO_ROOT),
+    )
+
+
+def test_the_crossover_epic_compiles_into_exactly_three_nodes() -> None:
+    """003 derives, and into the graph its stories describe.
+
+    The whole value is asserted rather than sampled, for the same reason the
+    fixture's acceptance case is: these three nodes are three branches, three
+    virtual keys and three agent attempts against this repository, and the
+    `requirement_keys` are what the judge will be handed. The edge is the one the
+    spec argues for in prose — recovery (US2) reads the landing path US1 builds,
+    while onboarding validation (US3) waits on neither.
+    """
+    assert crossover_graph() == WorkGraph(
+        epic_id=CROSSOVER,
+        feature=CROSSOVER,
+        specs_root=SPECS_ROOT,
+        target_repo=str(REPO_ROOT),
+        nodes=[
+            WorkNode(
+                id="us1",
+                story_key="US1",
+                persona=IMPLEMENTER,
+                spec_ref=f"{CROSSOVER}:US1",
+                requirement_keys=[
+                    "US1",
+                    "FR-001",
+                    "FR-002",
+                    "FR-003",
+                    "FR-004",
+                    "FR-009",
+                ],
+                depends_on=[],
+                timeout_override_s=None,
+            ),
+            WorkNode(
+                id="us2",
+                story_key="US2",
+                persona=IMPLEMENTER,
+                spec_ref=f"{CROSSOVER}:US2",
+                requirement_keys=["US2", "FR-005", "FR-006", "FR-007", "FR-008"],
+                depends_on=["us1"],
+                timeout_override_s=None,
+            ),
+            WorkNode(
+                id="us3",
+                story_key="US3",
+                persona=IMPLEMENTER,
+                spec_ref=f"{CROSSOVER}:US3",
+                requirement_keys=["US3", "FR-010"],
+                depends_on=[],
+                timeout_override_s=None,
+            ),
+        ],
+    )
+
+
+def test_every_requirement_003_declares_is_claimed_by_exactly_one_node() -> None:
+    """No FR is orphaned, and none is verified twice.
+
+    `coverage` already guarantees every story is a node; nothing in the grammar
+    guarantees the same of the requirement bullets, because a spec may legitimately
+    declare an FR no single story owns. For *this* epic it would be a hole: an
+    unclaimed FR is a requirement the factory builds nothing for and no node is
+    verified against, and a doubly-claimed one splits the verdict for one
+    requirement across two nodes. Asserting it here also catches the drift case —
+    an FR-011 added to 003 later without a home in the graph.
+    """
+    claimed = [
+        key
+        for node in crossover_graph().nodes
+        for key in node.requirement_keys
+        if key.startswith("FR-")
+    ]
+    declared = [
+        requirement.key
+        for requirement in parse_spec(
+            (REPO_ROOT / "specs" / CROSSOVER / "spec.md").read_text(encoding="utf-8")
+        )
+        if requirement.kind is RequirementKind.FUNCTIONAL
+    ]
+
+    assert sorted(claimed) == declared
+    assert len(claimed) == len(set(claimed))
+
+
+def test_the_crossover_graph_passes_start_time_validation() -> None:
+    """Against the shipped registry, not a stub — `start` will use that one.
+
+    The fixture case validates against a hand-built persona; this one asks
+    whether the graph this repo will actually run resolves in `personas.yaml` as
+    committed, timeout included (R8). A persona rename that broke it would
+    otherwise surface as `GRAPH_INVALID` at the moment an operator starts the
+    crossover epic.
+    """
+    validate_workgraph(crossover_graph(), load_personas())

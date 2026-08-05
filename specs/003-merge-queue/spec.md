@@ -171,6 +171,32 @@ queue configured; assert pass/fail with actionable findings.
 - **SC-004**: Zero node branches deleted on any failure path.
 - **SC-005**: 100% of dispatches occur against onboarding-validated repos.
 
+## Work Graph
+
+One node per story, compiled by `factory-epic derive` into the DAG the interpreter
+runs (005 FR-011). Recovery waits on landing because it re-drives the PR the landing
+path opens — there is nothing to recover before a branch can be enqueued. Onboarding
+validation waits on neither: it inspects a repo's queue and branch-protection
+configuration and blocks dispatch, which is a pre-flight check rather than a step in
+the landing path, so it is a leaf the scheduler may take at any point.
+
+Every functional requirement this spec declares is claimed by exactly one node — an
+unclaimed one would be a requirement the factory builds nothing for and verifies
+against nothing. Attempt timeouts resolve from the persona registry; no story here
+argues for an override.
+
+```yaml
+US1:
+  depends_on: []
+  implements: [FR-001, FR-002, FR-003, FR-004, FR-009]
+US2:
+  depends_on: [US1]
+  implements: [FR-005, FR-006, FR-007, FR-008]
+US3:
+  depends_on: []
+  implements: [FR-010]
+```
+
 ## Assumptions
 
 - Target repos are public GitHub repos, so the native merge queue is available on any
