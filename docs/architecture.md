@@ -11,9 +11,13 @@ D-024), with component 1 pivoted from budget enforcement to usage tracking (D-02
 Each component is specified first under `specs/` (GitHub Spec Kit, D-020) —
 [001-usage-tracking](../specs/001-usage-tracking/spec.md) (**implemented**, §5),
 [002-verification-gating](../specs/002-verification-gating/spec.md) (**implemented**,
-§6 and §9), [003-merge-queue](../specs/003-merge-queue/spec.md), plus the deferred
-[004-budget-enforcement](../specs/004-budget-enforcement/spec.md). Component 3 does
-not exist in code yet.
+§6 and §9),
+[005-workgraph-interpreter](../specs/005-workgraph-interpreter/spec.md)
+(**implemented**, §3 and §8),
+[003-merge-queue](../specs/003-merge-queue/spec.md), plus the deferred
+[004-budget-enforcement](../specs/004-budget-enforcement/spec.md). The merge
+component (§7) does not exist in code yet — it is the first epic the factory
+dispatches against itself (D-024).
 
 ## 1. System overview
 
@@ -97,22 +101,109 @@ requirement key absent from the spec. Spec Kit has no CLI/JSON emitter — the m
 parser is the sole mechanical path — and Ergane's own `specs/` corpus doubles as
 real-world fixture material (D-024).
 
-## 3. Orchestration: the WorkGraph interpreter
+## 3. Orchestration: the WorkGraph interpreter (spec: `specs/005-workgraph-interpreter/`)
 
-One **generic** Temporal workflow interprets a JSON DAG per epic (D-002). No codegen:
-the workflow's logic is fixed; graph *data* varies. This keeps Temporal replay
-deterministic and sidesteps per-epic versioning.
+**Implemented** as the bootstrap kernel's third component (D-024). One **generic**
+Temporal workflow — `EpicWorkflow`, namespace `factory`, task queue `workgraph` —
+interprets a JSON DAG per epic (D-002). No codegen: the workflow's logic is fixed;
+graph *data* varies. This keeps Temporal replay deterministic and sidesteps per-epic
+versioning.
+
+Layout, all under the single `factory` package (D-004):
+
+| module | role |
+|---|---|
+| `factory/workgraph/models.py` | `WorkGraph` / `WorkNode` / `NodeState` / `EpicState` / `AttemptContext` / `AdapterResult`, plus pure start-time graph validation |
+| `factory/workgraph/derive.py` | pure: epic spec text → `WorkGraph` via the `## Work Graph` section (D-025) |
+| `factory/workgraph/prompt.py` | pure two-loop attempt-prompt assembly (inner ralph contract advisory, outer 002 ladder authoritative) |
+| `factory/workgraph/worktree.py` | one worktree per node: ensure / salvage / remove |
+| `factory/workgraph/adapter.py` | the D-018 seam — `AgentAdapter` + `ClaudeCodeAdapter` (§8) |
+| `factory/workgraph/workflow.py` | `EpicWorkflow`: the interpreter itself, pure decisions only |
+| `factory/workgraph/cli.py` | `factory-epic derive \| start \| status` (§3.2) |
+| `factory/activities/agent_activities.py` | `resolve_graph` / `prepare_worktree` / `run_agent_attempt` / `salvage_worktree` / `remove_worktree` |
+| `factory/worker.py` | runnable `python -m factory.worker` — registers `EpicWorkflow` plus all three components' activities |
 
 A node carries: `id`, `persona`, `spec_ref` (feature + requirement keys — also
-the work-attribution key for usage tracking), `acceptance` (parsed scenarios), and
-`depends_on` edges. The interpreter releases a node when all its dependency edges report
-`PASSED`, runs it through the pipeline in §5–§7, and signals/awaits Telegram on
-escalations.
+the work-attribution key for usage tracking), `requirement_keys` (the acceptance
+criteria 002 snapshots), `depends_on` edges, and an optional `timeout` override.
+The graph is validated in full before anything dispatches — duplicate ids, dangling
+edges, cycles, unresolvable personas, and producing nodes whose persona resolves no
+timeout are all start-time rejections.
+
+**Scheduling is sequential.** The interpreter walks ready nodes in declaration order
+and runs them one at a time; a node is ready only when every dependency reports
+`PASSED`. Parallel node execution, verifier nodes, and multi-epic scheduling are
+deferred — the bootstrap runs single-digit node counts, and sequencing keeps
+workflow history small and the one-epic-at-a-time `.factory/` SQLite constraint
+honest.
+
+Per node: `PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED | FAILED`, with
+`KILLED` reachable from any non-terminal state. Every attempt is bracketed by
+component 1's key lifecycle (§5.1) and routed by component 2's ladder (§6) — retry,
+debugger, escalate — with the agent's own self-report never touching node state
+(the adapter yields process outcome and termination class only). Worktree salvage
+runs on every termination path before cleanup (principle VI). Epic states are
+`RUNNING ⇄ PAUSED`, `→ KILLED`, `→ COMPLETED` (every node terminal — which does not
+imply every node passed; the run's result carries the per-node outcomes).
+
+**Signals and query.** `pause_epic` stops new dispatch while the in-flight node
+finishes its full ladder; `resume_epic` continues; `kill_epic` cancels the in-flight
+attempt, salvages, tears down keys, and marks every non-terminal node `KILLED`. The
+notifier's `escalation_resolved` signal (§9) carries a human's answer back into the
+ladder — a `PAUSE_EPIC` resolution parks the node `FAILED` and pauses the epic. The
+`epic_status` query answers with the epic state plus per-node status keyed in
+declaration order, so reading it top to bottom reads the epic in the order it was
+authored to run.
+
+**Transcript archiving.** Every attempt's evidence lands under
+`.factory/transcripts/<epic>/<node>/attempt-<n>/` — the agent's `stdout.log` and its
+session transcript, archived on every path including timeout and kill. Transcripts
+live on the worker host beside the ledger; they are never written into a target
+repo's worktree and never committed. The adapter's pid/pgid handles live alongside
+under `.factory/run/`, so a crashed worker's orphaned process group is reaped before
+the next attempt relaunches.
 
 All side effects live in activities. Workflow code makes pure decisions over graph state —
 the plan-then-apply split (decide in workflow, mutate in activity) mirrors Bernstein's
 `dry_run_merge → should_attempt_merge → build_merge_command` pattern and is what Temporal's
-sandbox wants anyway.
+sandbox wants anyway. The workflow reads worktree diffs, spec text, and usage through
+activities; it parses nothing itself.
+
+### 3.1 The graph is compiled from the spec (D-025)
+
+`workgraph.json` is never hand-authored. The epic's spec carries an additive
+`## Work Graph` section — a fenced YAML block declaring, per user story,
+`depends_on`, `implements`, and an optional `timeout`:
+
+```yaml
+US1:
+  depends_on: []
+  implements: [FR-001, FR-002, FR-003, FR-004, FR-009]
+US2:
+  depends_on: [US1]
+  implements: [FR-005, FR-006, FR-007, FR-008]
+```
+
+Derivation is pure and cross-validated against the same criteria parser the verifier
+uses (§2): one node per story, id = lowercased story key, `requirement_keys` = the
+story key plus its `implements` FRs. A story with no declaration, a declaration for
+a story the spec lacks, an unknown FR, an unknown or self-referential dependency, a
+cycle, or a malformed block each fail by name and emit nothing. The Spec Kit
+templates under `.specify/templates/` are **not** forked — the convention is
+enforced by validation, which keeps the operator on the upstream upgrade path.
+
+### 3.2 Operator surface: `factory-epic`
+
+- `derive <spec-dir>` — compile the spec's `## Work Graph` into `workgraph.json`
+  next to the spec (or `-o`); on failure print every collected error and write
+  nothing.
+- `start <workgraph.json>` — start the epic as workflow id `epic-<epic_id>`, which
+  is what makes a run findable without anyone writing down a run id; Temporal's id
+  uniqueness *is* the one-epic-at-a-time rule.
+- `status <epic-id>` — the `epic_status` query, human-readable or `--json`.
+
+`TEMPORAL_ADDRESS` / `TEMPORAL_NAMESPACE` are honored throughout. Temporal's Web UI
+remains the dashboard for anything deeper.
 
 ## 4. Personas (`personas.yaml`)
 
@@ -127,6 +218,7 @@ implementer:
   skills: [implement, tdd]
   write_scope: worktree         # worktree | docs | read
   needs_worktree: true
+  timeout: 14400                # attempt wall-clock bound, seconds (D-025)
   # budget_usd / breach_policy attributes return with deferred spec 004
 ```
 
@@ -134,6 +226,13 @@ Six personas ship in v1: `architect`, `implementer`, `verifier`, `judge`, `debug
 `researcher` (full table in D-012). Model names are **placeholders the operator edits** —
 code never hardcodes a model, and `models` on the issued key constrains what the agent can
 actually call, making the persona's model binding enforceable, not advisory.
+
+`timeout` (D-025) is the same shape of operator-owned default: a positive integer of
+seconds bounding one agent attempt, optional on agent-backed personas and forbidden
+on deterministic (`agent: none`) ones, exactly as `model` is. A node's
+`## Work Graph` override wins when declared; otherwise the registry answers. Code
+hardcodes no fallback — a producing node whose persona resolves no timeout fails
+graph validation at epic start rather than silently inheriting a constant.
 
 ## 5. Component 1 — per-node usage tracking (spec: `specs/001-usage-tracking/`)
 

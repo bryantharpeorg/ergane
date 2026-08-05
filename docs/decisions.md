@@ -234,3 +234,48 @@ lands. Crossover milestone: a verified 003 branch with zero human-written code.
 Supersedes the "factory never operates on its own repository" constraint and the
 D-017 build order: (1) 001 ✅ → (2) 002 → (3) minimal 005 → (4) 003 via the factory.
 Constitution amended (v2.2.0).
+
+## D-025 · The DAG is compiled from the spec: `## Work Graph`, plus two config fields (decided)
+
+Settled during spec 005 clarification. Three additive surfaces, no forks and no new
+dependencies.
+
+**`## Work Graph` — an additive grammar extension, not a template fork.** D-002's
+`workgraph.json` is never hand-authored and never inferred: the epic's own spec
+carries an optional `## Work Graph` section whose first fenced YAML block declares,
+per user story, `depends_on` (story ids), `implements` (FR keys), and an optional
+`timeout` override. `factory-epic derive` compiles that section into
+`workgraph.json` — one node per story (D-023's granularity), node id = lowercased
+story key, `requirement_keys` = the story key plus its `implements` FRs, edges from
+`depends_on`. Derivation is a pure function (spec text in, `WorkGraph` out) and
+cross-validates against the same `load_criteria` parser the verifier uses: every
+story needs a declaration and vice versa, every `implements` key must be an FR the
+spec declares, every `depends_on` must be a declared story, and the graph must be
+acyclic — any violation names the offending story and emits nothing. Rationale:
+dependency order between stories is authoring knowledge that only the spec's author
+holds; it is *not* mechanically recoverable from prose, and guessing it is exactly
+the LLM-in-the-orchestrator that principle IV forbids. Forking
+`.specify/templates/` to add the section was explicitly refused — the operator stays
+on the upstream Spec Kit upgrade path, and a spec missing the section fails
+validation rather than the template enforcing it. The compiled artifact stays
+inspectable and diffable next to the spec it came from; specs without the section
+remain valid Spec Kit specs that simply cannot be dispatched yet.
+
+**Persona `timeout` (`personas.yaml`).** An attempt's wall-clock bound is an
+operator-editable registry value (principle VII), not a constant in code: an
+optional positive integer of seconds, forbidden on `agent: none` personas the same
+way `model` is. Resolution is persona-first at dispatch — a node's `## Work Graph`
+override wins when declared, else the registry — and a producing node whose persona
+resolves no timeout fails WorkGraph validation at epic start, before any key is
+issued. Deliberately *not* resolved at derive time, which would bake registry values
+into a compiled artifact that goes stale the moment the operator edits the registry.
+
+**`factory.yaml` `standards` (schema stays v1).** A target repo may name one
+committed standards document (Ergane's own points at
+`.specify/memory/constitution.md`); prompt assembly then carries a read-and-obey
+directive naming the path, and `prepare_worktree` fails the dispatch loudly if a
+declared file is absent from the worktree. It lives in `factory.yaml` because
+standards are a property of the *repo*, not of who works on it, and because a
+committed file is adapter-agnostic — no reliance on `CLAUDE.md` auto-loading. The
+path is referenced rather than inlined: the agent reads it in-worktree, and the
+prompt never drifts from the document the gates see.
