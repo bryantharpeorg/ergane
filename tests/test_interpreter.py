@@ -2184,6 +2184,12 @@ async def test_the_diff_the_judge_scores_is_read_by_an_activity(
 
     [request] = script.diff_requests
     assert request.worktree_path == f"{WORKTREE_ROOT}/{EPIC_ID}/us1"
+    # The diff — and the output check before it — is read against the node's
+    # branch point, never HEAD (D-027): the agent commits as it goes, so HEAD
+    # moves WITH the work and a HEAD-relative diff shows the judge everything
+    # except it. "9" * 40 is the base the scripted prepare_worktree returned.
+    assert request.base_ref == "9" * 40
+    assert {r.base_ref for r in script.output_requests} == {"9" * 40}
 
     [judged] = script.judge_requests
     assert judged.diff_text == DIFF_TEXT

@@ -245,12 +245,18 @@ def salvage(
     return _head(path)
 
 
-def diff(worktree: Path | str, *, limit: int = DIFF_READ_LIMIT) -> str:
+def diff(worktree: Path | str, *, base_ref: str, limit: int = DIFF_READ_LIMIT) -> str:
     """Everything the attempt changed, as one patch — what 002's judge scores.
 
-    Worktree-vs-HEAD (R7's definition, the one the output check already uses),
-    with untracked files rendered as the new files they are and ignored ones
-    left out, so the factory's own leavings never reach the judge as agent work.
+    Worktree-vs-`base_ref` — the ref the node branched from, not HEAD (D-027).
+    R7's original worktree-vs-HEAD definition assumed the agent leaves its work
+    uncommitted for salvage, but 005's prompt hands the agent the inner ralph
+    contract, which says commit as you go — and against a moved HEAD the
+    committed work is exactly what disappears from the patch. Found live
+    2026-08-05: the judge was shown only the gates' leavings and failed a node
+    whose work was green. Against the base, committed, staged and untracked
+    changes are one patch; ignored files stay out, so a target repo's
+    `.gitignore` is what keeps generated noise from reaching the judge.
 
     Read-only where it matters: `git add -A` runs against a scratch index in a
     temporary directory, never the worktree's own, so nothing is staged and the
@@ -267,10 +273,10 @@ def diff(worktree: Path | str, *, limit: int = DIFF_READ_LIMIT) -> str:
     with tempfile.TemporaryDirectory(prefix="ergane-diff-") as scratch:
         # An index git creates from scratch here and throws away with the
         # directory: `add -A` fills it from the worktree, and the comparison
-        # against HEAD is then the whole patch, new files included.
+        # against the base ref is then the whole patch, new files included.
         index = {"GIT_INDEX_FILE": str(Path(scratch) / "index")}
         _git(path, "add", "-A", env_extra=index)
-        patch = _git(path, "diff", "--cached", "HEAD", env_extra=index)
+        patch = _git(path, "diff", "--cached", base_ref, env_extra=index)
 
     return _clip(patch, limit)
 

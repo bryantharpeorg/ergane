@@ -39,12 +39,16 @@ maps to `WORKTREE_MISSING` (contracts/activities.md). The read scope is the
 exception: its personas may run with `needs_worktree: false`, and git's absence
 cannot change a verdict that never consulted git.
 
-"Diff" means worktree-vs-HEAD (R7), so an agent that *committed* inside its
-worktree reads as clean. That is the contract's definition rather than an
-oversight: in the node lifecycle the commit happens at salvage, after
-verification. Untracked files count — new files are the normal shape of agent
-output — and ignored files do not, which is what keeps the factory's own leavings
-from manufacturing the diff FR-004 demands.
+"Diff" means worktree-vs-`base_ref` — the ref the node branched from (D-027,
+amending R7's worktree-vs-HEAD). R7 assumed the commit happens at salvage, after
+verification; 005's prompt hands the agent the inner ralph contract, which says
+commit as you go, and an agent that committed everything read as "no work" under
+HEAD — while committed *out-of-scope* changes escaped this check entirely.
+Callers that have no base (R7's original shape) pass `base_ref=None` and get
+HEAD, which is only correct when nothing commits mid-attempt. Untracked files
+count — new files are the normal shape of agent output — and ignored files do
+not, which is what keeps generated noise from manufacturing the diff FR-004
+demands.
 """
 
 from __future__ import annotations
@@ -103,6 +107,7 @@ def check_output(
     worktree: Path | str,
     write_scope: WriteScope | str,
     expected_artifacts: list[str] | tuple[str, ...] | None = None,
+    base_ref: str | None = None,
 ) -> OutputCheck:
     """Read the worktree and decide whether this node proved it did work.
 
@@ -121,7 +126,9 @@ def check_output(
         raise WorktreeMissingError(f"node worktree does not exist: {worktree}")
 
     scope = _as_scope(write_scope)
-    has_diff = _has_diff(worktree, required=scope not in ARTIFACT_SCOPES)
+    has_diff = _has_diff(
+        worktree, required=scope not in ARTIFACT_SCOPES, base_ref=base_ref
+    )
     artifacts_present = (
         all(_is_artifact(worktree, path) for path in artifacts) if artifacts else None
     )
@@ -147,8 +154,10 @@ def _as_scope(value: WriteScope | str) -> WriteScope | None:
         return None
 
 
-def _has_diff(worktree: Path, *, required: bool) -> bool:
-    """Whether the worktree differs from HEAD, untracked files included (R7).
+def _has_diff(
+    worktree: Path, *, required: bool, base_ref: str | None = None
+) -> bool:
+    """Whether the worktree differs from the base, untracked files included.
 
     `required` says whether git is allowed to fail: for a scope the diff decides,
     an unreadable repository raises rather than reporting the clean worktree it
@@ -165,11 +174,12 @@ def _has_diff(worktree: Path, *, required: bool) -> bool:
     if status.strip():
         return True
 
-    # R7 defines an empty diff as porcelain *and* `git diff HEAD` both empty, so
-    # HEAD is consulted even though porcelain already covers everything it
-    # reports. A failure here can only be an unborn branch — status just
+    # Porcelain covers the uncommitted half; the committed half is everything
+    # the attempt landed on the node branch since its base (D-027) — with no
+    # base to compare against, HEAD, which R7's original semantics called an
+    # empty diff. A failure here can only be an unborn branch — status just
     # succeeded, and it said nothing changed — so it is not fatal either way.
-    committed = _git(worktree, "diff", "HEAD", "--name-only")
+    committed = _git(worktree, "diff", base_ref or "HEAD", "--name-only")
     return bool(committed and committed.strip())
 
 

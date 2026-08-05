@@ -869,7 +869,10 @@ async def test_read_worktree_diff_returns_the_attempts_patch(
     dirty(worktree)
 
     patch = await env.run(
-        read_worktree_diff, ReadWorktreeDiffInput(worktree_path=prepared.path)
+        read_worktree_diff,
+        ReadWorktreeDiffInput(
+            worktree_path=prepared.path, base_ref=prepared.base_ref
+        ),
     )
 
     assert f"b/{TRACKED_FILE}" in patch
@@ -891,7 +894,10 @@ async def test_read_worktree_diff_names_a_worktree_it_cannot_read(
     absent = tmp_path / "worktrees" / EPIC / NODE
 
     with pytest.raises(ApplicationError) as raised:
-        await env.run(read_worktree_diff, ReadWorktreeDiffInput(worktree_path=str(absent)))
+        await env.run(
+            read_worktree_diff,
+            ReadWorktreeDiffInput(worktree_path=str(absent), base_ref="HEAD"),
+        )
 
     assert raised.value.type == WORKTREE_FAILED
     assert str(absent) in str(raised.value)

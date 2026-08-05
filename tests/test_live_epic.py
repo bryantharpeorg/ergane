@@ -94,12 +94,14 @@ Optional knobs, on top of the Tier 1 environment quickstart §4 lists:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import shlex
 import shutil
 import sqlite3
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -412,8 +414,37 @@ def live_epic(
         patch.setenv(FACTORY_ROOT_ENV, str(workspace.factory_root))
         patch.setenv(LEDGER_PATH_ENV, str(workspace.ledger_path))
         patch.setenv(VERIFICATION_DB_PATH_ENV, str(workspace.verification_db))
-        status = asyncio.run(run_epic(live_config, workspace))
-        yield LiveEpic(config=live_config, workspace=workspace, status=status)
+
+        # The worker runs on its own loop in its own thread and STAYS UP while
+        # the tests below read the epic's leavings, because that is the shape
+        # of production: an operator's `python -m factory.worker` outlives any
+        # one epic, and `factory-epic status` serves its query through a live
+        # poller — a worker torn down with the workflow would make the status
+        # test fail with "no poller seen", found live 2026-08-05.
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(
+            target=loop.run_forever, name="live-epic-worker", daemon=True
+        )
+        thread.start()
+        stop = asyncio.Event()
+        ready: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        serving = asyncio.run_coroutine_threadsafe(
+            serve_epic(live_config, workspace, ready, stop), loop
+        )
+        try:
+            # `pytest.skip`/`pytest.fail` raised inside the worker thread land
+            # here and do their job in this one.
+            status = ready.result(timeout=live_config.timeout_s + RUN_GRACE_S + 60)
+            yield LiveEpic(config=live_config, workspace=workspace, status=status)
+        finally:
+            loop.call_soon_threadsafe(stop.set)
+            try:
+                serving.result(timeout=30)
+            except (concurrent.futures.TimeoutError, Exception):
+                pass  # the epic's own outcome was already delivered via `ready`
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=10)
+            loop.close()
 
 
 # --- building the scratch epic -------------------------------------------------
@@ -474,6 +505,10 @@ def build_scratch_repo(path: Path) -> Path:
     path.mkdir(parents=True)
     (path / f"{CHECK_MODULE}.py").write_text(CHECK_SOURCE, encoding="utf-8")
     (path / STANDARDS_FILE).write_text(STANDARDS_SOURCE, encoding="utf-8")
+    # Like any real target repo: generated noise is ignored, and ignored files
+    # stay out of the diff the judge scores. Without this the gate run's
+    # `__pycache__` reached the judge as if it were the attempt's work.
+    (path / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")
     # `sys.executable` rather than `python3`: the gate must fail because the node
     # failed, never because the worker host spells its interpreter differently.
     (path / "factory.yaml").write_text(
@@ -490,37 +525,56 @@ def build_scratch_repo(path: Path) -> Path:
 # --- the live run --------------------------------------------------------------
 
 
-async def run_epic(config: LiveConfig, workspace: Workspace) -> Any:
-    """Start the epic and wait for it, serving it from this process.
+async def serve_epic(
+    config: LiveConfig,
+    workspace: Workspace,
+    ready: concurrent.futures.Future[Any],
+    stop: asyncio.Event,
+) -> None:
+    """Run the epic, deliver its outcome through `ready`, and keep serving.
 
     The registration handed to the worker is `factory/worker.py`'s, imported
     rather than restated: a live run that registered its own convenient subset
-    would prove nothing about the process an operator actually starts.
+    would prove nothing about the process an operator actually starts. The
+    worker outlives the workflow — until `stop` — so the queries the tests
+    make (`factory-epic status` above all) have the live poller they would
+    have in production.
     """
-    client = await connect(config)
-    graph = cli.load_workgraph(workspace.spec_dir / cli.ARTIFACT_NAME)
+    try:
+        client = await connect(config)
+        graph = cli.load_workgraph(workspace.spec_dir / cli.ARTIFACT_NAME)
 
-    async with Worker(
-        client,
-        task_queue=workspace.task_queue,
-        workflows=factory_worker.WORKFLOWS,
-        activities=factory_worker.ACTIVITIES,
-    ):
-        handle = await start(client, config, workspace, graph)
-        try:
-            return await asyncio.wait_for(
-                handle.result(), timeout=config.timeout_s + RUN_GRACE_S
-            )
-        except (asyncio.TimeoutError, TimeoutError):
-            # Leaving it running would go on spending against the operator's
-            # proxy long after the terminal this ran in has closed.
-            await handle.terminate("live-epic smoke exceeded its own deadline")
-            pytest.fail(
-                f"the epic did not finish within "
-                f"{config.timeout_s + RUN_GRACE_S}s and was terminated; the "
-                f"attempt deadline is {config.timeout_s}s (raise it with "
-                f"{TIMEOUT_ENV})"
-            )
+        async with Worker(
+            client,
+            task_queue=workspace.task_queue,
+            workflows=factory_worker.WORKFLOWS,
+            activities=factory_worker.ACTIVITIES,
+        ):
+            handle = await start(client, config, workspace, graph)
+            try:
+                ready.set_result(
+                    await asyncio.wait_for(
+                        handle.result(), timeout=config.timeout_s + RUN_GRACE_S
+                    )
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                # Leaving it running would go on spending against the
+                # operator's proxy long after this terminal has closed.
+                await handle.terminate("live-epic smoke exceeded its own deadline")
+                ready.set_exception(
+                    pytest.fail.Exception(
+                        f"the epic did not finish within "
+                        f"{config.timeout_s + RUN_GRACE_S}s and was terminated; "
+                        f"the attempt deadline is {config.timeout_s}s (raise it "
+                        f"with {TIMEOUT_ENV})"
+                    )
+                )
+                return
+            await stop.wait()
+    except BaseException as error:  # noqa: BLE001 — the fixture re-raises it
+        if not ready.done():
+            ready.set_exception(error)
+        raise
 
 
 async def connect(config: LiveConfig) -> Client:
@@ -567,12 +621,21 @@ def node(live: LiveEpic) -> Any:
     return live.status.nodes[NODE_ID]
 
 
-def ledger_row(live: LiveEpic) -> dict[str, Any] | None:
-    """The attempt's usage row, read the way quickstart §5 reads it: plain SQL."""
+def ledger_row(
+    live: LiveEpic, persona: str = PERSONA
+) -> dict[str, Any] | None:
+    """One persona's usage row, read the way quickstart §5 reads it: plain SQL.
+
+    Persona is part of the selector because it is part of the key's identity
+    (D-026): a scored attempt leaves TWO rows for the same epic/node/attempt —
+    the implementer's and the judge's — and a query without the persona picks
+    one of them by accident.
+    """
     return _row(
         live.workspace.ledger_path,
-        "SELECT * FROM usage_records WHERE epic_id = ? AND node_id = ? AND attempt = ?",
-        (live.workspace.epic_id, NODE_ID, ATTEMPT),
+        "SELECT * FROM usage_records WHERE epic_id = ? AND node_id = ? "
+        "AND attempt = ? AND persona = ?",
+        (live.workspace.epic_id, NODE_ID, ATTEMPT, persona),
     )
 
 
@@ -717,11 +780,22 @@ def test_the_attempt_has_its_ledger_row(live_epic: LiveEpic) -> None:
 
     assert row["persona"] == PERSONA
     assert row["spec_ref"] == f"{live_epic.workspace.epic_id}:{STORY_KEY}"
-    assert row["key_alias"] == f"{live_epic.workspace.epic_id}:{NODE_ID}:{ATTEMPT}"
+    epic_id = live_epic.workspace.epic_id
+    assert row["key_alias"] == f"{epic_id}:{NODE_ID}:{ATTEMPT}:{PERSONA}"
     assert row["termination"] == Termination.COMPLETED.value
     # None would mean no snapshot was ever taken — a poll loop that never read
     # the proxy, or a teardown that could not (R3).
     assert row["spend_usd"] is not None
+
+    # The judge scored this attempt (the spec declares a scenario and the gates
+    # were green), so its spend sits in its OWN row beside the implementer's —
+    # same attempt, its own persona-qualified alias. One alias for both was
+    # D-026's live failure mode: the second mint refused, or one row upserted
+    # over the other.
+    judge = ledger_row(live_epic, persona="judge")
+    assert judge is not None, "the judge's scoring left no ledger row (D-026)"
+    assert judge["key_alias"] == f"{epic_id}:{NODE_ID}:{ATTEMPT}:judge"
+    assert judge["key_alias"] != row["key_alias"]
 
 
 def test_the_attempt_has_its_verification_row(live_epic: LiveEpic) -> None:

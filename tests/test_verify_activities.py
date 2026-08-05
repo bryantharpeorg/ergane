@@ -86,6 +86,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import sqlite3
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -754,8 +755,15 @@ async def test_gates_come_back_one_per_declared_gate_in_declaration_order(
 async def test_a_long_gate_suite_heartbeats_as_it_goes(
     env: ActivityEnvironment, node_worktree: Callable[..., Path]
 ) -> None:
+    loop_thread = threading.current_thread()
     beats: list[tuple[Any, ...]] = []
-    env.on_heartbeat = lambda *args: beats.append(args)
+    beat_threads: list[threading.Thread] = []
+
+    def record(*args: Any) -> None:
+        beats.append(args)
+        beat_threads.append(threading.current_thread())
+
+    env.on_heartbeat = record
 
     await env.run(run_gates, RunGatesInput(worktree_path=str(node_worktree("passing"))))
 
@@ -764,6 +772,16 @@ async def test_a_long_gate_suite_heartbeats_as_it_goes(
     # gate finished would be killed by its own heartbeat timeout long before it
     # had an answer (contracts/activities.md).
     assert [args[0] for args in beats] == ["lint", "test", "typecheck"]
+    # And every beat was DELIVERED from the event-loop thread. The gates run in
+    # `asyncio.to_thread`'s worker thread, and an async activity's heartbeat
+    # called there dies in `asyncio.create_task` under a real worker (found
+    # live 2026-08-05) — while this environment's synchronous heartbeat
+    # happily records it, which is exactly why the thread is asserted and not
+    # just the beat.
+    assert set(beat_threads) == {loop_thread}, (
+        "gate heartbeats must be marshalled onto the event loop, not fired "
+        "from the gate executor's thread"
+    )
 
 
 async def test_a_failing_gate_is_data_and_does_not_cancel_the_gates_after_it(

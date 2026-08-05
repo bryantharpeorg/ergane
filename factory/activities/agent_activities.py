@@ -403,15 +403,21 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
 
 @dataclass(frozen=True)
 class ReadWorktreeDiffInput:
-    """Which worktree to read the attempt's patch out of.
+    """Which worktree to read the attempt's patch out of, and against what.
 
     The path rather than the epic/node pair, because the two callers that read
     this worktree in the same breath — 002's `run_gates` and `check_output` —
     take the path the workflow is already holding, and a second way of naming the
     same directory is a second thing that can disagree.
+
+    `base_ref` is the prepared worktree's branch point (D-027): the judge scores
+    everything the attempt changed since the node began, which an agent
+    following the inner ralph contract has partly *committed* by now — a diff
+    against HEAD would hand the judge everything except that work.
     """
 
     worktree_path: str
+    base_ref: str
 
 
 @activity.defn
@@ -431,7 +437,9 @@ async def read_worktree_diff(request: ReadWorktreeDiffInput) -> str:
     for as long as git takes.
     """
     try:
-        return await asyncio.to_thread(worktrees.diff, request.worktree_path)
+        return await asyncio.to_thread(
+            worktrees.diff, request.worktree_path, base_ref=request.base_ref
+        )
     except WorktreeError as exc:
         raise ApplicationError(str(exc), type=WORKTREE_FAILED) from exc
 

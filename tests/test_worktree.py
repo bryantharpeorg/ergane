@@ -468,12 +468,39 @@ def test_diff_reports_edits_and_new_files_as_one_patch(
     prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
     dirty(Path(prepared.path))
 
-    patch = diff(prepared.path)
+    patch = diff(prepared.path, base_ref=prepared.base_ref)
 
     assert f"b/{TRACKED_FILE}" in patch
     assert "+# edited by the agent" in patch
     assert f"b/{NEW_FILE}" in patch
     assert "+VALUE = 1" in patch
+
+
+def test_diff_survives_the_agent_committing_its_work(
+    repo: Path, factory_root: Path
+) -> None:
+    """The live failure of 2026-08-05, pinned (D-027).
+
+    005's prompt hands the agent the inner ralph contract, which says commit as
+    you go — and Claude Code does. A diff read against HEAD hands the judge
+    everything EXCEPT that committed work: in the live smoke the judge was
+    shown only the gates' `__pycache__` leavings and, reasonably, failed the
+    node for work the agent had done. "The attempt's work" is
+    worktree-vs-base-ref: committed, staged and untracked alike, in one patch.
+    """
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-m", "us1: implement, as the inner contract says")
+    (worktree / "notes.txt").write_text("uncommitted leftover\n", encoding="utf-8")
+
+    patch = diff(worktree, base_ref=prepared.base_ref)
+
+    assert f"b/{TRACKED_FILE}" in patch
+    assert "+# edited by the agent" in patch
+    assert f"b/{NEW_FILE}" in patch
+    assert "b/notes.txt" in patch
 
 
 def test_diff_reads_the_worktree_without_staging_anything(
@@ -491,11 +518,11 @@ def test_diff_reads_the_worktree_without_staging_anything(
     dirty(worktree)
     before = status(worktree)
 
-    patch = diff(worktree)
+    patch = diff(worktree, base_ref=prepared.base_ref)
 
     assert status(worktree) == before
     assert git(worktree, "diff", "--cached", "--name-only").strip() == ""
-    assert diff(worktree) == patch
+    assert diff(worktree, base_ref=prepared.base_ref) == patch
 
 
 def test_a_clean_worktree_diffs_to_nothing(repo: Path, factory_root: Path) -> None:
@@ -504,7 +531,7 @@ def test_a_clean_worktree_diffs_to_nothing(repo: Path, factory_root: Path) -> No
     which has already run by the time the judge is asked."""
     prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
 
-    assert diff(prepared.path) == ""
+    assert diff(prepared.path, base_ref=prepared.base_ref) == ""
 
 
 def test_diff_is_clipped_at_its_limit_and_says_where(
@@ -520,7 +547,7 @@ def test_diff_is_clipped_at_its_limit_and_says_where(
     prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
     (Path(prepared.path) / "generated.txt").write_text("x" * 10_000, encoding="utf-8")
 
-    patch = diff(prepared.path, limit=2_000)
+    patch = diff(prepared.path, base_ref=prepared.base_ref, limit=2_000)
 
     assert len(patch.encode("utf-8")) <= 2_000 + len(DIFF_CLIP_NOTICE)
     assert patch.endswith(DIFF_CLIP_NOTICE)
@@ -533,6 +560,6 @@ def test_diff_raises_when_the_worktree_is_gone(
     """A worktree that vanished is infrastructure, never an empty diff — the same
     line `check_output` draws, for the same reason."""
     with pytest.raises(WorktreeError) as raised:
-        diff(factory_root / "worktrees" / EPIC / NODE)
+        diff(factory_root / "worktrees" / EPIC / NODE, base_ref="HEAD")
 
     assert str(factory_root / "worktrees" / EPIC / NODE) in str(raised.value)

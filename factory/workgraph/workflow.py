@@ -913,6 +913,9 @@ class EpicWorkflow:
             CheckOutputInput(
                 worktree_path=prepared.path,
                 write_scope=resolved.write_scope,
+                # Work is measured from where the node began (D-027): the agent
+                # commits as it goes, so HEAD has moved with the work.
+                base_ref=prepared.base_ref,
                 expected_artifacts=[],
             ),
             **_FAST,
@@ -922,7 +925,9 @@ class EpicWorkflow:
         if judge_required(gate_results, output, criteria):
             diff_text = await workflow.execute_activity(
                 read_worktree_diff,
-                ReadWorktreeDiffInput(worktree_path=prepared.path),
+                ReadWorktreeDiffInput(
+                    worktree_path=prepared.path, base_ref=prepared.base_ref
+                ),
                 **_GIT,
             )
             verdict = await self._judge(

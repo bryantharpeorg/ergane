@@ -219,11 +219,23 @@ class _HeartbeatingExecutor:
     property of running the gates as an activity, not of running them at all.
     """
 
-    def __init__(self, inner: gates.GateExecutor) -> None:
+    def __init__(
+        self, inner: gates.GateExecutor, loop: asyncio.AbstractEventLoop
+    ) -> None:
         self._inner = inner
+        self._loop = loop
 
     def run(self, invocation: gates.GateInvocation) -> gates.ExecutionOutcome:
-        activity.heartbeat(invocation.name)
+        # This runs inside `asyncio.to_thread`'s worker thread. The activity
+        # context rides in on the copied contextvars, but an async activity's
+        # heartbeat must be delivered from the event-loop thread — called here
+        # it dies in `asyncio.create_task` with no running loop (found live
+        # 2026-08-05; the test environment's synchronous heartbeat cannot see
+        # the difference). `call_soon_threadsafe` re-enters the loop carrying
+        # this thread's context, activity context included — and delivers the
+        # beat while the gate below still owns this thread, which is the whole
+        # point of beating per gate.
+        self._loop.call_soon_threadsafe(activity.heartbeat, invocation.name)
         return self._inner.run(invocation)
 
 
@@ -244,7 +256,9 @@ async def run_gates(request: RunGatesInput) -> list[GateResult]:
         gates.run_gates,
         request.worktree_path,
         manifest_path=request.factory_yaml_path,
-        executor=_HeartbeatingExecutor(gates.SubprocessGateExecutor()),
+        executor=_HeartbeatingExecutor(
+            gates.SubprocessGateExecutor(), asyncio.get_running_loop()
+        ),
         timeout_overrides=request.timeout_overrides,
     )
 
@@ -259,10 +273,19 @@ class CheckOutputInput:
     `write_scope` crosses this boundary as a plain string (component 1's
     `WriteScope` value) and decides which half of the evidence is the criterion:
     the diff, or the declared artifacts (R7).
+
+    `base_ref` is the node's branch point (D-027): "did the attempt do work" is
+    answered against where the node began, because an agent following the inner
+    ralph contract commits as it goes — against HEAD, a fully committed attempt
+    reads as no work at all, and committed out-of-scope changes read as none.
+    The default is R7's original semantics, correct only for a caller that
+    knows nothing committed mid-attempt; the epic workflow always passes the
+    prepared worktree's real base, and the interpreter suite asserts it does.
     """
 
     worktree_path: str
     write_scope: str
+    base_ref: str = "HEAD"
     expected_artifacts: list[str] = field(default_factory=list)
 
 
@@ -283,6 +306,7 @@ async def check_output(request: CheckOutputInput) -> OutputCheck:
             request.worktree_path,
             request.write_scope,
             request.expected_artifacts,
+            request.base_ref,
         )
     except diffcheck.WorktreeMissingError as exc:
         # The path travels with the error: by the time an operator reads this

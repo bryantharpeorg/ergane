@@ -295,3 +295,21 @@ one scoring job, so `_judge` mints one key for the whole job instead of one per
 re-ask — one bracket, one ledger row per scoring. The interpreter suite's fake
 proxy now enforces live-alias uniqueness so the guarantee is structural rather
 than scripted; the ledger schema is unchanged (the alias is opaque TEXT).
+
+## D-027 · "The attempt's work" is worktree-vs-base-ref, not worktree-vs-HEAD (decided)
+
+2026-08-05, from the first live epic smoke. 002's R7 defined the diff the judge
+scores — and the output check's "did the node do work" — as worktree-vs-HEAD,
+deliberately: the design assumed the agent leaves its work uncommitted and the
+salvage commit lands after verification. 005's FR-012 prompt then handed the
+agent the inner ralph contract, which says commit as you go — and Claude Code
+does. Live consequence: the committed implementation vanished from the judge's
+diff (HEAD had moved with it), the only visible "work" was the gate run's
+`__pycache__`, and the judge — correctly, on what it was shown — failed a node
+whose gate was green. The same HEAD definition also let a fully-committed
+attempt read as "no work" and let committed out-of-scope changes evade the
+write-scope check. `worktree.diff` and `diffcheck.check_output` now take the
+prepared worktree's `base_ref` (the node's branch point) and measure everything
+since it: committed, staged and untracked alike. Ignored files still stay out —
+a target repo's `.gitignore` is what keeps generated noise from the judge, and
+the smoke's scratch repo now carries one like any real repo.
