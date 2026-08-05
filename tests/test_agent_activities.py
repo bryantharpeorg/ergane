@@ -84,10 +84,13 @@ from factory.activities import agent_activities
 from factory.activities.agent_activities import (
     FACTORY_ROOT_ENV,
     GRAPH_INVALID,
+    PROMPT_SOURCE_MISSING,
     STANDARDS_MISSING,
+    LoadPromptSourcesInput,
     PrepareWorktreeInput,
     RemoveWorktreeInput,
     SalvageWorktreeInput,
+    load_prompt_sources,
     prepare_worktree,
     remove_worktree,
     resolve_graph,
@@ -163,6 +166,17 @@ NEW_FILE = "src/added_by_agent.py"
 
 #: Ceiling for "the activity is not wedged" assertions.
 PATIENCE_S = 20.0
+
+#: The epic's authored text, as `load_prompt_sources` finds it under
+#: `<specs_root>/<feature>/`. Deliberately awkward — trailing whitespace, a
+#: fenced block, no final newline on one of them — because "verbatim" is the
+#: whole contract and a reader that stripped or normalised would pass against
+#: tidy fixtures.
+SOURCE_TEXTS = {
+    "spec.md": "# Spec\n\n## User Story 1 - Do the thing (Priority: P1)\n\nBody.  \n",
+    "plan.md": "# Plan\n\n```yaml\nruntime: python\n```\n",
+    "tasks.md": "# Tasks\n\n## Phase 3: User Story 1\n\n- [ ] T001 Do it",
+}
 
 
 # --- setup -------------------------------------------------------------------
@@ -830,3 +844,87 @@ async def test_removing_a_worktree_that_was_never_prepared_is_success(
     )
 
     assert not (factory_root / "worktrees" / EPIC / NODE).exists()
+
+
+# --- load_prompt_sources (contracts/prompt-assembly.md) -----------------------
+
+
+def write_feature(specs_root: Path, feature: str = FEATURE) -> Path:
+    """An epic's authored text on disk: the three documents a prompt is built from."""
+    directory = specs_root / feature
+    directory.mkdir(parents=True)
+    for name, text in SOURCE_TEXTS.items():
+        (directory / name).write_text(text, encoding="utf-8")
+    return directory
+
+
+async def test_load_prompt_sources_reads_the_epics_text_verbatim(
+    env: ActivityEnvironment, repo: Path, tmp_path: Path
+) -> None:
+    """The read half of FR-006, so assembly itself can be pure (R9).
+
+    Whole files, byte for byte: the story sections and the task slice are cut out
+    of these by pure functions, and an activity that trimmed or normalised
+    anything would put a silent transform underneath a prompt SC-001 requires to
+    be reproducible.
+    """
+    specs_root = tmp_path / "specs"
+    write_feature(specs_root)
+
+    sources = await env.run(
+        load_prompt_sources,
+        LoadPromptSourcesInput(
+            specs_root=str(specs_root), feature=FEATURE, target_repo=str(repo)
+        ),
+    )
+
+    assert sources.spec_text == SOURCE_TEXTS["spec.md"]
+    assert sources.plan_text == SOURCE_TEXTS["plan.md"]
+    assert sources.tasks_text == SOURCE_TEXTS["tasks.md"]
+
+
+async def test_load_prompt_sources_carries_the_repos_declared_standards_path(
+    env: ActivityEnvironment, repo: Path, tmp_path: Path
+) -> None:
+    """R11: the path, not the document — the prompt points the agent at it and
+    the agent reads it in its own worktree, where `prepare_worktree` has already
+    confirmed it exists. Absent from the manifest means nothing to obey, which is
+    what most target repos declare."""
+    specs_root = tmp_path / "specs"
+    write_feature(specs_root)
+    request = LoadPromptSourcesInput(
+        specs_root=str(specs_root), feature=FEATURE, target_repo=str(repo)
+    )
+
+    assert (await env.run(load_prompt_sources, request)).standards is None
+
+    manifest = repo / "factory.yaml"
+    manifest.write_text(
+        f"{manifest.read_text(encoding='utf-8')}\nstandards: {PRESENT_STANDARDS}\n",
+        encoding="utf-8",
+    )
+
+    assert (await env.run(load_prompt_sources, request)).standards == PRESENT_STANDARDS
+
+
+async def test_an_absent_prompt_source_fails_the_dispatch_naming_the_path(
+    env: ActivityEnvironment, repo: Path, tmp_path: Path
+) -> None:
+    """The assembler never invents context (contracts/prompt-assembly.md): an
+    epic missing its plan is a dispatch that fails loudly here, before a key is
+    issued, rather than an agent handed a prompt with a section quietly gone."""
+    specs_root = tmp_path / "specs"
+    (write_feature(specs_root) / "plan.md").unlink()
+
+    with pytest.raises(ApplicationError) as raised:
+        await env.run(
+            load_prompt_sources,
+            LoadPromptSourcesInput(
+                specs_root=str(specs_root), feature=FEATURE, target_repo=str(repo)
+            ),
+        )
+
+    assert raised.value.type == PROMPT_SOURCE_MISSING
+    assert "plan.md" in str(raised.value)
+    # An epic's documents are committed files; a re-run finds the same absence.
+    assert raised.value.non_retryable is True
