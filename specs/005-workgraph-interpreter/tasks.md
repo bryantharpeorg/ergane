@@ -29,7 +29,7 @@
 - [X] T005 [P] Amend `tests/test_factory_yaml.py` FIRST: optional top-level `standards` key — non-empty string accepted onto `FactoryConfig.standards`; absent → `None`; empty/non-string rejected with rule slug `standards`; schema stays `version: 1`; existing rejection table unaffected — must fail
 - [X] T006 Amend `factory/verify/models.py` (`FactoryConfig.standards: str | None = None`) and `factory/verify/factory_yaml.py` (accept + validate `standards` per research R11) until T005 passes
 - [X] T007 Write `tests/test_workgraph_models.py` FIRST per contracts/workgraph-schema.md start-time validation: duplicate node ids, dangling `depends_on`, cycle (error names the cycle's members), blank `epic_id`/`feature`/`target_repo`, unresolvable persona and missing-timeout persona (against an injected registry mapping), valid graph passes and preserves declaration order; `NodeState`/`EpicState` are `StrEnum`s; `WorkGraph`/`WorkNode`/`AttemptContext`/`AdapterResult` round-trip through `dataclasses.asdict` + reconstruction (Temporal JSON converter shape) — must fail (no models.py yet)
-- [ ] T008 Implement `factory/workgraph/models.py` (all entities per data-model.md field tables + pure `validate_workgraph(graph, personas)` raising errors that name the offending node) until T007 passes
+- [X] T008 Implement `factory/workgraph/models.py` (all entities per data-model.md field tables + pure `validate_workgraph(graph, personas)` raising errors that name the offending node) until T007 passes
 
 **Checkpoint**: Types and config surfaces ready — story phases can begin
 
