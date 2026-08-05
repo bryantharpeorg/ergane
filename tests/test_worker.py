@@ -38,6 +38,7 @@ Three claims, in the order a missing registration would bite:
 from __future__ import annotations
 
 import ast
+import asyncio
 import importlib
 import inspect
 from pathlib import Path
@@ -302,4 +303,12 @@ async def test_temporal_accepts_the_registration(env: WorkflowEnvironment) -> No
     built = worker_module.build_worker(env.client)
     assert built.task_queue == TASK_QUEUE
     async with built:
+        # Starting is not synchronous with entering: `__aenter__` schedules the
+        # run task, and the task validates the namespace against the server
+        # before it flips `is_running`. So the claim is "it reaches polling",
+        # waited for — reading the flag on the next line would only ever have
+        # observed a worker that had not been given the loop yet.
+        async with asyncio.timeout(30):
+            while not built.is_running:
+                await asyncio.sleep(0.01)
         assert built.is_running
