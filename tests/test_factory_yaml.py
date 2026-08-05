@@ -35,6 +35,17 @@ Two boundaries are drawn here on purpose:
   with no entry) belong to the runner, not the parser: `timeouts` stays sparse
   exactly as written, so the runner can tell "declared 600" from "not declared".
 
+Amended by 005 (research R11): an optional top-level `standards` key naming the
+repo's coding-standards document, so an agent attempt can be told to read and
+obey it (spec 005 FR-006) without relying on any one agent's auto-loaded context
+file. It is additive and optional, so the schema stays `version: 1` — a version
+bump for one optional key would force every target repo to migrate for nothing.
+The key follows this module's existing rule for optional keys: declared means
+declared, so a blank, null, or non-string value is a defect rather than a
+shrug. Only the *shape* is checked here; whether the file exists is checked at
+dispatch, in `prepare_worktree`, because that is where a worktree exists to look
+in — the parser stays pure.
+
 Written before `factory/verify/factory_yaml.py` exists (T012 precedes T017):
 until the module lands, every test here fails at import.
 """
@@ -89,6 +100,7 @@ CONTRACT_RULES = frozenset(
         "gate_command",  # each gate command a non-empty string
         "timeouts",  # timeouts keys declared, values positive int
         "unknown_key",  # no unknown top-level keys
+        "standards",  # optional; when declared, a non-empty string path (005 R11)
     }
 )
 
@@ -185,6 +197,84 @@ def test_load_reads_the_manifest_from_disk(tmp_path: Path) -> None:
 def test_manifest_name_is_the_committed_filename() -> None:
     """The runner composes `<worktree>/factory.yaml` from this constant."""
     assert MANIFEST_NAME == "factory.yaml"
+
+
+# Standards (005 research R11) -------------------------------------------------
+
+
+def test_standards_is_optional_and_absent_reads_as_none() -> None:
+    """Most repos declare no standards document, and that is not a defect.
+
+    Absent has to be distinguishable from declared, because prompt assembly
+    emits the read-and-obey directive *iff* the key was declared — `None` is the
+    signal that there is nothing to point the agent at.
+    """
+    config = parse_factory_config(CONTRACT_EXAMPLE)
+
+    assert config.standards is None
+
+
+def test_standards_records_the_declared_path() -> None:
+    """The path is recorded verbatim: it is resolved against the worktree later.
+
+    Nothing here touches a filesystem — a declared file that is missing fails
+    the dispatch in `prepare_worktree`, where a worktree exists to look in.
+    """
+    config = parse_factory_config(
+        _yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            standards: .specify/memory/constitution.md
+            """
+        )
+    )
+
+    assert config.standards == ".specify/memory/constitution.md"
+
+
+def test_standards_does_not_bump_the_schema_version() -> None:
+    """Additive and optional, so a repo already on v1 adopts it by adding a line.
+
+    A `version: 2` for one optional key would force every target repo to migrate
+    for nothing — so the manifest that declares `standards` is still a v1
+    manifest, and every other field parses exactly as it did without it.
+    """
+    with_standards = parse_factory_config(
+        CONTRACT_EXAMPLE + "standards: docs/STANDARDS.md\n"
+    )
+    without = parse_factory_config(CONTRACT_EXAMPLE)
+
+    assert with_standards.version == 1
+    assert with_standards.standards == "docs/STANDARDS.md"
+    assert with_standards == FactoryConfig(
+        version=without.version,
+        runtime=without.runtime,
+        gates=without.gates,
+        timeouts=without.timeouts,
+        standards="docs/STANDARDS.md",
+    )
+
+
+def test_standards_survives_a_round_trip_from_disk(tmp_path: Path) -> None:
+    """Ergane's own manifest is this shape (T029), and it is loaded, not parsed."""
+    path = tmp_path / MANIFEST_NAME
+    path.write_text(
+        _yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            standards: .specify/memory/constitution.md
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_factory_config(path).standards == ".specify/memory/constitution.md"
 
 
 # Rejection table (contracts/factory-yaml.md) ---------------------------------
@@ -543,6 +633,77 @@ REJECTIONS: list[Rejection] = [
         ),
         rule="timeouts",
         names=("'test'", "1.5"),
+    ),
+    Rejection(
+        id="standards-empty",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            standards: ""
+            """
+        ),
+        rule="standards",
+        names=("''",),
+    ),
+    Rejection(
+        id="standards-whitespace-only",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            standards: "   "
+            """
+        ),
+        rule="standards",
+    ),
+    Rejection(
+        id="standards-null",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            standards:
+            """
+        ),
+        rule="standards",
+        names=("None",),
+    ),
+    Rejection(
+        id="standards-not-a-string",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            standards: 42
+            """
+        ),
+        rule="standards",
+        names=("42",),
+    ),
+    Rejection(
+        id="standards-is-a-sequence",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            standards:
+              - docs/STANDARDS.md
+              - CONTRIBUTING.md
+            """
+        ),
+        rule="standards",
+        names=("docs/STANDARDS.md",),
     ),
 ]
 
