@@ -1,0 +1,1182 @@
+"""The operator's steering wheel: derive, start, status.
+
+`factory-epic` is the whole human surface of the interpreter (FR-009, US3).
+Everything richer — history, stack traces, per-activity timing — is Temporal's
+Web UI, which is why this CLI is three verbs and why this suite can pin all
+three exactly rather than sampling them.
+
+The three verbs are tested at different depths because they carry different
+risk:
+
+- **`derive` is offline and exact.** It compiles a spec into `workgraph.json`
+  and starts nothing, so it is asserted as a pure pipeline: the whole artifact
+  against the fixture corpus (SC-006), the whole error list on failure, and
+  *nothing written* on any failing path. That last one is the property with
+  teeth: an artifact half-written from a broken spec is an epic that starts,
+  dispatches the stories that parsed, and silently never builds the one that did
+  not. Every rejection case here asserts the file's absence, not just the exit
+  code. Offline is asserted too — a derive with `TEMPORAL_ADDRESS` pointed at a
+  closed port still succeeds, so no operator ever needs a server to compile a
+  spec (contracts/cli.md § derive: "`derive` touches neither").
+
+- **`start` and `status` run against the real time-skipping server**, with the
+  workflow's activities scripted. A CLI tested against a mocked client proves
+  the CLI calls the methods the test expects; this one proves an epic actually
+  starts, actually runs, and actually answers a query — the id convention, the
+  task queue, the compiled graph and the proxy url all arrive at the workflow,
+  and `status` reads the state the workflow is genuinely in.
+
+Four properties of the setup are deliberate:
+
+- **The scripted world is deliberately smaller than the interpreter's.** Every
+  activity `EpicWorkflow` invokes on the happy path is registered under its real
+  name, and nothing else: no escalation, no judge, no failure script. What
+  `tests/test_interpreter.py` proves about the ladder is not re-proved here — a
+  CLI suite that scripted a failure ladder would be testing the workflow through
+  a keyhole. What is scripted is exactly enough for an epic to run to completion
+  and for one node to be caught mid-flight.
+
+- **The test server's namespace is `default`, and the CLI's own default is
+  `factory`.** So every passing `start` and `status` below is itself the proof
+  that `TEMPORAL_NAMESPACE` was read — a CLI that ignored the environment would
+  talk to a namespace this server does not have. The assertion is made explicit
+  rather than left implicit in `test_the_environment_names_the_server`.
+
+- **The CLI is invoked through its real entry point, in a worker thread.**
+  `main` is the console script's function and owns its own `asyncio.run`, which
+  cannot be called from inside the running test loop — so the async tests hand
+  it to `asyncio.to_thread` rather than reaching past it for an async-shaped
+  internal. What the operator runs is what is under test.
+
+- **Node ids are the deriver's `us<n>`, and the order the CLI prints is the
+  order the query hands it.** Temporal's JSON converter serializes a mapping
+  with sorted keys, so declaration order survives the query round trip only
+  because `us1 < us2 < us3` sorts the same way. The CLI's own contribution is
+  that it re-sorts nothing; if declaration order ever has to survive a
+  double-digit story count, the ordering has to become explicit in `EpicStatus`
+  rather than implicit in the node ids, and that is a change to the workflow's
+  query shape, not to this renderer.
+
+Written before `factory/workgraph/cli.py` exists (T023 precedes T024): until the
+module lands, every test here fails at import.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
+
+import pytest
+from temporalio import activity
+from temporalio.service import RPCError
+from temporalio.testing import WorkflowEnvironment
+from temporalio.worker import Worker
+
+from factory.activities.agent_activities import (
+    LoadPromptSourcesInput,
+    PrepareWorktreeInput,
+    PromptSources,
+    RemoveWorktreeInput,
+    SalvageWorktreeInput,
+)
+from factory.activities.usage_activities import IssueKeyInput, TeardownInput
+from factory.activities.verify_activities import (
+    CheckOutputInput,
+    RecordedVerification,
+    RecordVerificationInput,
+    RunGatesInput,
+    SnapshotCriteriaInput,
+)
+from factory.config import Persona, WriteScope
+from factory.notify.service import (
+    DEFAULT_TEMPORAL_ADDRESS,
+    DEFAULT_TEMPORAL_NAMESPACE,
+    TEMPORAL_ADDRESS_ENV,
+    TEMPORAL_NAMESPACE_ENV,
+)
+from factory.usage.litellm_client import PROXY_URL_ENV
+from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
+from factory.verify.models import (
+    CriteriaSet,
+    GateResult,
+    GateStatus,
+    OutputCheck,
+    Requirement,
+    RequirementKind,
+)
+from factory.workgraph.cli import load_workgraph, main
+from factory.workgraph.models import (
+    AdapterResult,
+    AttemptContext,
+    ResolvedNode,
+    WorkGraph,
+    WorkGraphError,
+    validate_workgraph,
+)
+from factory.workgraph.worktree import PreparedWorktree, branch_name
+from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
+
+CORPUS = Path(__file__).resolve().parent / "fixtures" / "workgraph"
+
+#: The accepting fixture: three stories, one edge, one leaf, one `timeout`
+#: override. Copied under `tmp_path` for every test, because `derive` writes its
+#: artifact next to the spec by default and the corpus is not a scratch space.
+VALID = "valid_epic"
+
+#: What the compiled artifact says, and where it came from. `epic_id` and
+#: `feature` are the spec directory's name (contracts/workgraph-schema.md
+#: § Derivation semantics); the CLI is the only thing that knows the directory,
+#: which is why the deriver takes them as arguments.
+EPIC_ID = VALID
+WORKFLOW_ID = f"epic-{EPIC_ID}"
+TARGET_REPO = "/srv/factory/targets/short-links"
+PROXY_URL = "http://litellm.test"
+
+#: An address nothing listens on, for the transport-failure path (exit 2).
+DEAD_ADDRESS = "127.0.0.1:1"
+
+#: The registry the scripted `resolve_graph` resolves against — a real `Persona`,
+#: so the real `validate_workgraph` runs against it unchanged.
+MODEL_ALIAS = "implementer-alias"
+TIMEOUT_S = 5400
+
+#: One FR per story, exactly as `valid_epic`'s `## Work Graph` block declares.
+FR_FOR = {"US1": "FR-001", "US2": "FR-003", "US3": "FR-004"}
+
+NODE_IDS = ["us1", "us2", "us3"]
+
+PERSONAS = {
+    "implementer": Persona(
+        name="implementer",
+        agent="claude-code",
+        model=MODEL_ALIAS,
+        fallback=None,
+        skills=(),
+        write_scope=WriteScope.WORKTREE,
+        needs_worktree=True,
+        timeout_s=TIMEOUT_S,
+    )
+}
+
+#: The compiled artifact `valid_epic` must produce, whole (contracts/…schema.md
+#: § `workgraph.json`). Asserted as one value rather than sampled: every field is
+#: load-bearing downstream, and this JSON is what an operator reads and what
+#: `start` consumes.
+EXPECTED_ARTIFACT: dict[str, Any] = {
+    "epic_id": EPIC_ID,
+    "feature": EPIC_ID,
+    "specs_root": "specs",
+    "target_repo": TARGET_REPO,
+    "nodes": [
+        {
+            "id": "us1",
+            "story_key": "US1",
+            "persona": "implementer",
+            "spec_ref": f"{EPIC_ID}:US1",
+            "requirement_keys": ["US1", "FR-001", "FR-002"],
+            "depends_on": [],
+            "timeout_override_s": None,
+        },
+        {
+            "id": "us2",
+            "story_key": "US2",
+            "persona": "implementer",
+            "spec_ref": f"{EPIC_ID}:US2",
+            "requirement_keys": ["US2", "FR-003"],
+            "depends_on": ["us1"],
+            "timeout_override_s": 7200,
+        },
+        {
+            "id": "us3",
+            "story_key": "US3",
+            "persona": "implementer",
+            "spec_ref": f"{EPIC_ID}:US3",
+            "requirement_keys": ["US3", "FR-004"],
+            "depends_on": [],
+            "timeout_override_s": None,
+        },
+    ],
+}
+
+
+# --- the epic's authored text (what the scripted `load_prompt_sources` reads) --
+
+
+PLAN_TEXT = """# Implementation Plan: Short Links
+
+## Summary
+
+One `links` table is the system of record; the redirect path reads it and never
+caches it.
+"""
+
+TASKS_TEXT = """# Tasks: Short Links
+
+## Phase 1: Setup
+
+- [ ] T001 Create the package skeleton
+
+## Phase 2: User Story 1 - Save a link (Priority: P1)
+
+- [ ] T002 [US1] Write tests/test_save.py FIRST
+- [ ] T003 [US1] Implement links/save.py until T002 passes
+
+## Phase 3: User Story 2 - Follow a short link (Priority: P1)
+
+- [ ] T004 [US2] Write tests/test_follow.py FIRST
+- [ ] T005 [US2] Implement the redirect path until T004 passes
+
+## Phase 4: User Story 3 - List my links (Priority: P2)
+
+- [ ] T006 [US3] Write tests/test_list.py FIRST
+- [ ] T007 [US3] Implement the listing until T006 passes
+"""
+
+
+# --- invoking the CLI the way the console script does -------------------------
+
+
+class Run(NamedTuple):
+    """What an operator (or a script) sees: a status, and two streams."""
+
+    code: int
+    stdout: str
+    stderr: str
+
+    @property
+    def json(self) -> Any:
+        """`--json` output must be the whole of stdout, and nothing but."""
+        return json.loads(self.stdout)
+
+
+def _invoke(argv: tuple[str, ...]) -> int:
+    """Call `main` and normalize the two ways it can report a status."""
+    try:
+        code = main(list(argv))
+    except SystemExit as exit_request:
+        code = exit_request.code
+    return 0 if code is None else int(code)
+
+
+@pytest.fixture
+def run(capsys: pytest.CaptureFixture[str]) -> Callable[..., Run]:
+    """Run one offline invocation (`derive`) in this thread."""
+
+    def invoke(*argv: str) -> Run:
+        code = _invoke(argv)
+        captured = capsys.readouterr()
+        return Run(code, captured.out, captured.err)
+
+    return invoke
+
+
+@pytest.fixture
+def run_async(
+    capsys: pytest.CaptureFixture[str],
+) -> Callable[..., Awaitable[Run]]:
+    """Run one server-touching invocation without blocking the test's loop.
+
+    `main` is the console script's own function and owns its `asyncio.run`, which
+    cannot be called from inside a running loop — so it goes to a worker thread
+    while the Temporal worker keeps serving on the test's loop. The entry point
+    under test is the one the operator runs, not an async-shaped internal.
+    """
+
+    async def invoke(*argv: str) -> Run:
+        code = await asyncio.to_thread(_invoke, argv)
+        captured = capsys.readouterr()
+        return Run(code, captured.out, captured.err)
+
+    return invoke
+
+
+# --- fixture specs on disk ----------------------------------------------------
+
+
+def corpus_text(fixture: str) -> str:
+    return (CORPUS / fixture / "spec.md").read_text(encoding="utf-8")
+
+
+def plant(tmp_path: Path, fixture: str, *, name: str | None = None) -> Path:
+    """Copy one corpus spec into a scratch directory and return that directory.
+
+    `derive` writes `workgraph.json` next to the spec by default, so the corpus
+    itself is never the input: a test run must not leave an artifact in
+    `tests/fixtures/`. The directory name is also the epic id, which is why it is
+    nameable.
+    """
+    return plant_text(tmp_path, corpus_text(fixture), name=name or fixture)
+
+
+def plant_text(tmp_path: Path, text: str, *, name: str = VALID) -> Path:
+    spec_dir = tmp_path / name
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    (spec_dir / "spec.md").write_text(text, encoding="utf-8")
+    return spec_dir
+
+
+def respecified(work_graph: str) -> str:
+    """`valid_epic`'s spec with its `## Work Graph` block swapped for another.
+
+    Every story header, scenario and `FR-###` bullet stays byte-identical, so a
+    variant exercises the graph grammar and nothing else — the discipline the
+    fixture corpus follows on disk, applied to a shape no fixture holds.
+    """
+    head, _, tail = corpus_text(VALID).partition("## Work Graph\n")
+    assert tail, "valid_epic must declare a `## Work Graph` section"
+    _, _, after = tail.partition("## Assumptions")
+    block = work_graph.strip("\n")
+    return f"{head}## Work Graph\n\n```yaml\n{block}\n```\n\n## Assumptions{after}"
+
+
+@pytest.fixture
+def epic_dir(tmp_path: Path) -> Path:
+    """A scratch copy of the accepting fixture, ready to derive."""
+    return plant(tmp_path, VALID)
+
+
+@pytest.fixture
+def workgraph_json(
+    run: Callable[..., Run], epic_dir: Path
+) -> Path:
+    """The compiled artifact, produced by the CLI itself.
+
+    `start` is tested against what `derive` actually wrote rather than against a
+    hand-built graph: the two verbs are the two halves of one operator gesture,
+    and a schema drift between them is exactly the failure this catches.
+    """
+    result = run("derive", str(epic_dir), "--target-repo", TARGET_REPO)
+    assert result.code == 0, result.stderr
+    return epic_dir / "workgraph.json"
+
+
+# --- the scripted world -------------------------------------------------------
+
+
+def gate_pass() -> GateResult:
+    return GateResult(
+        name="test",
+        command="uv run pytest -q",
+        status=GateStatus.PASS,
+        exit_code=0,
+        duration_s=8.0,
+        output_tail="12 passed in 8.01s",
+    )
+
+
+def wrote_something() -> OutputCheck:
+    return OutputCheck(
+        write_scope=WriteScope.WORKTREE.value,
+        has_diff=True,
+        expected_artifacts=[],
+        artifacts_present=None,
+        passed=True,
+    )
+
+
+def criteria_for(spec_ref: str) -> CriteriaSet:
+    """One FR bullet, no acceptance scenarios — so the judge is never consulted.
+
+    `has_scenarios` is false, which is the designed-for shape for a node owing
+    only `FR-###` bullets (002's flow invariant 2). It keeps this suite on the
+    CLI: what the judge branch does is `tests/test_interpreter.py`'s subject.
+    """
+    story_key = spec_ref.rsplit(":", 1)[-1]
+    key = FR_FOR[story_key]
+    return CriteriaSet(
+        feature=EPIC_ID,
+        spec_ref=spec_ref,
+        requirements=[
+            Requirement(
+                key=key,
+                kind=RequirementKind.FUNCTIONAL,
+                title=None,
+                priority=None,
+                body=f"The system MUST satisfy {key}.",
+                scenarios=[],
+            )
+        ],
+        source_path=f"specs/{EPIC_ID}/spec.md",
+        source_sha256="0" * 64,
+        snapshotted_at="2026-08-05T09:00:00Z",
+    )
+
+
+class ScriptedEpic:
+    """Every activity a passing epic calls, answered without touching anything.
+
+    Deliberately narrower than `tests/test_interpreter.py`'s world: no ladder, no
+    escalation, no judge. All this has to do is let a real `EpicWorkflow` run to
+    completion under the real workflow id so the CLI has something to start and
+    something to query.
+
+    `pause_at` parks the named node's agent attempt until `release()`, which is
+    the only moment a mid-flight `status` can be taken — the epic's state while a
+    node is genuinely RUNNING, rather than a terminal snapshot after the fact.
+    """
+
+    def __init__(self, *, spec_text: str, pause_at: str | None = None) -> None:
+        self._spec_text = spec_text
+        self._pause_at = pause_at
+
+        self.graphs: list[WorkGraph] = []
+        self.prompt_source_requests: list[LoadPromptSourcesInput] = []
+        self.attempts: list[AttemptContext] = []
+        self.salvages: list[SalvageWorktreeInput] = []
+
+        self.paused = asyncio.Event()
+        self._released = asyncio.Event()
+
+    # --- test-facing levers -------------------------------------------------
+
+    async def wait_for_pause(self, timeout: float = 30.0) -> None:
+        """Block until the paused node's attempt is genuinely in flight."""
+        await asyncio.wait_for(self.paused.wait(), timeout=timeout)
+
+    def release(self) -> None:
+        self._released.set()
+
+    @property
+    def dispatched(self) -> list[str]:
+        return [context.node_id for context in self.attempts]
+
+    # --- the fakes ----------------------------------------------------------
+
+    def activities(self) -> list[Any]:
+        script = self
+
+        @activity.defn(name="resolve_graph")
+        async def resolve_graph(graph: WorkGraph) -> list[ResolvedNode]:
+            script.graphs.append(graph)
+            # The real validator, against a real registry: what the CLI accepted
+            # the worker accepts too, or the epic fails before it dispatches.
+            validate_workgraph(graph, PERSONAS)
+            persona = PERSONAS["implementer"]
+            return [
+                ResolvedNode(
+                    node=node,
+                    model_alias=MODEL_ALIAS,
+                    models=[MODEL_ALIAS],
+                    write_scope=persona.write_scope.value,
+                    timeout_s=node.timeout_override_s or TIMEOUT_S,
+                )
+                for node in graph.nodes
+            ]
+
+        @activity.defn(name="load_prompt_sources")
+        async def load_prompt_sources(
+            request: LoadPromptSourcesInput,
+        ) -> PromptSources:
+            script.prompt_source_requests.append(request)
+            return PromptSources(
+                spec_text=script._spec_text,
+                plan_text=PLAN_TEXT,
+                tasks_text=TASKS_TEXT,
+                standards=None,
+            )
+
+        @activity.defn(name="snapshot_criteria")
+        async def snapshot_criteria(request: SnapshotCriteriaInput) -> CriteriaSet:
+            return criteria_for(request.spec_ref)
+
+        @activity.defn(name="prepare_worktree")
+        async def prepare_worktree(request: PrepareWorktreeInput) -> PreparedWorktree:
+            return PreparedWorktree(
+                path=f"/srv/factory/.factory/worktrees/{request.epic_id}/{request.node_id}",
+                branch=branch_name(request.epic_id, request.node_id),
+                base_ref="9" * 40,
+            )
+
+        @activity.defn(name="issue_attempt_key")
+        async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
+            return KeyLease(
+                key=f"sk-{request.node_id}-{request.attempt}",
+                key_alias=f"{request.epic_id}:{request.node_id}:{request.attempt}",
+                node_id=request.node_id,
+                epic_id=request.epic_id,
+                attempt=request.attempt,
+                persona=request.persona,
+                spec_ref=request.spec_ref,
+                issued_at="2026-08-05T09:30:00Z",
+            )
+
+        @activity.defn(name="run_agent_attempt")
+        async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
+            script.attempts.append(context)
+            if script._pause_at == context.node_id:
+                script.paused.set()
+                # Bounded, so a test that forgets to release fails on its own
+                # assertion rather than hanging the suite.
+                try:
+                    await asyncio.wait_for(script._released.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass
+            return AdapterResult(
+                termination=Termination.COMPLETED,
+                transcript_path=(
+                    f"/srv/factory/.factory/transcripts/{context.epic_id}/"
+                    f"{context.node_id}/attempt-{context.attempt}"
+                ),
+            )
+
+        @activity.defn(name="poll_usage")
+        async def poll_usage(lease: KeyLease) -> UsageSnapshot:
+            return UsageSnapshot(spend_usd=0.01, captured_at="2026-08-05T09:31:00Z")
+
+        @activity.defn(name="run_gates")
+        async def run_gates(request: RunGatesInput) -> list[GateResult]:
+            return [gate_pass()]
+
+        @activity.defn(name="check_output")
+        async def check_output(request: CheckOutputInput) -> OutputCheck:
+            return wrote_something()
+
+        @activity.defn(name="record_verification")
+        async def record_verification(
+            request: RecordVerificationInput,
+        ) -> RecordedVerification:
+            return RecordedVerification(row_id=1, criteria_drift=False)
+
+        @activity.defn(name="teardown_attempt")
+        async def teardown_attempt(request: TeardownInput) -> UsageRecord:
+            lease = request.lease
+            return UsageRecord(
+                epic_id=lease.epic_id,
+                node_id=lease.node_id,
+                attempt=lease.attempt,
+                persona=lease.persona,
+                spec_ref=lease.spec_ref,
+                key_alias=lease.key_alias,
+                prompt_tokens=900,
+                completion_tokens=120,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                request_count=1,
+                spend_usd=0.003,
+                final_usage_confirmed=True,
+                termination=request.termination,
+                issued_at=lease.issued_at,
+                torn_down_at="2026-08-05T09:32:00Z",
+            )
+
+        @activity.defn(name="salvage_worktree")
+        async def salvage_worktree(request: SalvageWorktreeInput) -> str:
+            script.salvages.append(request)
+            return f"{len(script.salvages):040x}"
+
+        @activity.defn(name="remove_worktree")
+        async def remove_worktree(request: RemoveWorktreeInput) -> None:
+            return None
+
+        return [
+            resolve_graph,
+            load_prompt_sources,
+            snapshot_criteria,
+            prepare_worktree,
+            issue_attempt_key,
+            run_agent_attempt,
+            poll_usage,
+            run_gates,
+            check_output,
+            record_verification,
+            teardown_attempt,
+            salvage_worktree,
+            remove_worktree,
+        ]
+
+
+# --- harness ------------------------------------------------------------------
+
+
+@pytest.fixture
+async def env() -> AsyncIterator[WorkflowEnvironment]:
+    """Temporal with a clock the test owns — an hour of silence costs nothing."""
+    environment = await WorkflowEnvironment.start_time_skipping()
+    try:
+        yield environment
+    finally:
+        await environment.shutdown()
+
+
+@pytest.fixture
+async def temporal_env(
+    env: WorkflowEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> WorkflowEnvironment:
+    """Point the CLI's environment contract at the test server.
+
+    The namespace is the interesting one: the test server serves `default` and
+    the CLI's own default is `factory`, so a CLI that ignored
+    `TEMPORAL_NAMESPACE` could not talk to this server at all.
+    """
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, env.client.service_client.config.target_host)
+    monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, env.client.namespace)
+    monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+    return env
+
+
+def worker_for(env: WorkflowEnvironment, script: ScriptedEpic) -> Worker:
+    return Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[EpicWorkflow],
+        activities=script.activities(),
+    )
+
+
+def node_lines(stdout: str) -> list[str]:
+    """The per-node lines of human `status` output, in the order printed."""
+    return [
+        line
+        for line in stdout.splitlines()
+        if line.split() and line.split()[0] in set(NODE_IDS)
+    ]
+
+
+# --- derive: the compiled artifact (US3-S4, SC-006) ---------------------------
+
+
+def test_derive_writes_the_compiled_artifact_next_to_the_spec(
+    run: Callable[..., Run], epic_dir: Path
+) -> None:
+    """The whole document, at the documented path, and the path printed.
+
+    `workgraph.json` beside the spec is the default because the artifact belongs
+    to the epic, not to whatever directory the operator happened to be standing
+    in. Asserted as one value: every field is what `start` will read back and
+    what the workflow will dispatch from.
+    """
+    result = run("derive", str(epic_dir), "--target-repo", TARGET_REPO)
+
+    artifact = epic_dir / "workgraph.json"
+    assert result.code == 0
+    assert str(artifact) in result.stdout
+    assert json.loads(artifact.read_text(encoding="utf-8")) == EXPECTED_ARTIFACT
+
+
+def test_the_epic_id_is_the_spec_directorys_name(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """The one identity field nobody types twice (contracts/…schema.md).
+
+    The deriver is pure and never sees a path, so the CLI supplies the epic id —
+    and it takes it from the directory rather than from a flag, which is what
+    makes `epic-<epic_id>` predictable from the spec an operator is looking at.
+    """
+    spec_dir = plant(tmp_path, VALID, name="003-merge-queue")
+
+    result = run("derive", str(spec_dir), "--target-repo", TARGET_REPO)
+
+    artifact = json.loads((spec_dir / "workgraph.json").read_text(encoding="utf-8"))
+    assert result.code == 0
+    assert artifact["epic_id"] == "003-merge-queue"
+    assert artifact["feature"] == "003-merge-queue"
+    assert artifact["nodes"][0]["spec_ref"] == "003-merge-queue:US1"
+
+
+def test_the_output_flag_redirects_the_artifact(
+    run: Callable[..., Run], epic_dir: Path, tmp_path: Path
+) -> None:
+    """`-o` writes there and nowhere else — the default path stays untouched."""
+    elsewhere = tmp_path / "compiled" / "graph.json"
+    elsewhere.parent.mkdir()
+
+    result = run(
+        "derive", str(epic_dir), "--target-repo", TARGET_REPO, "-o", str(elsewhere)
+    )
+
+    assert result.code == 0
+    assert json.loads(elsewhere.read_text(encoding="utf-8")) == EXPECTED_ARTIFACT
+    assert not (epic_dir / "workgraph.json").exists()
+
+
+def test_the_specs_root_is_an_argument_with_a_default(
+    run: Callable[..., Run], epic_dir: Path
+) -> None:
+    """`specs` unless told otherwise (contracts/cli.md § derive).
+
+    `specs_root` + `feature` are how the worker later finds the epic's authored
+    text, and the worker's working directory is not the operator's — so it is a
+    declared property of the compiled graph rather than something inferred at
+    dispatch.
+    """
+    result = run(
+        "derive",
+        str(epic_dir),
+        "--target-repo",
+        TARGET_REPO,
+        "--specs-root",
+        "tests/fixtures/workgraph",
+    )
+
+    artifact = json.loads((epic_dir / "workgraph.json").read_text(encoding="utf-8"))
+    assert result.code == 0
+    assert artifact["specs_root"] == "tests/fixtures/workgraph"
+
+
+def test_derive_needs_no_temporal_server(
+    run: Callable[..., Run], epic_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pure pipeline: read, compile, write. `derive` touches no server at all.
+
+    Pointed at a closed port it still succeeds, which is what makes compiling a
+    spec something an author can do anywhere — including before the factory's
+    infrastructure exists.
+    """
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+
+    result = run("derive", str(epic_dir), "--target-repo", TARGET_REPO)
+
+    assert result.code == 0
+    assert (epic_dir / "workgraph.json").exists()
+
+
+# --- derive: refusing loudly, writing nothing (SC-006) ------------------------
+
+
+#: One row per rejection fixture in the corpus: the story (or section rule) the
+#: message must name. A fixture with no row here is a rule the CLI is not known
+#: to report.
+REJECTIONS = [
+    ("missing_story", "US3"),
+    ("unknown_story", "US4"),
+    ("unknown_fr", "FR-404"),
+    ("unknown_dep", "US9"),
+    ("self_dep", "US2"),
+    ("cycle", "US3"),
+    ("no_section", "Work Graph"),
+    ("two_blocks", "Work Graph"),
+    ("non_mapping", "mapping"),
+    ("unknown_key", "persona"),
+    ("bad_timeout", "US2"),
+]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "named"), REJECTIONS, ids=[row[0] for row in REJECTIONS]
+)
+def test_a_spec_that_does_not_compile_is_exit_1_and_writes_nothing(
+    run: Callable[..., Run], tmp_path: Path, fixture: str, named: str
+) -> None:
+    """Every rejection: named on stderr, exit 1, and no artifact on disk.
+
+    The absence of the file is the assertion with teeth. An artifact written
+    from a spec that did not compile is an epic that starts, dispatches the
+    stories that parsed, and silently never builds the one that did not.
+    """
+    spec_dir = plant(tmp_path, fixture)
+
+    result = run("derive", str(spec_dir), "--target-repo", TARGET_REPO)
+
+    assert result.code == 1
+    assert named in result.stderr
+    assert not (spec_dir / "workgraph.json").exists()
+
+
+def test_every_collected_error_is_printed_not_just_the_first(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """Two broken declarations produce two messages in one run (contracts/cli.md).
+
+    An author fixing one typo per invocation, with the next revealed only after
+    the fix, is the failure mode collection exists to avoid — so the CLI prints
+    the deriver's whole list rather than its first element.
+    """
+    spec_dir = plant_text(
+        tmp_path,
+        respecified(
+            """
+US1:
+  depends_on: []
+  implements: [FR-001, FR-002]
+US2:
+  depends_on: [US9]
+  implements: [FR-003]
+US3:
+  depends_on: []
+  implements: [FR-404]
+"""
+        ),
+    )
+
+    result = run("derive", str(spec_dir), "--target-repo", TARGET_REPO)
+
+    assert result.code == 1
+    assert "US9" in result.stderr and "FR-404" in result.stderr
+    assert "US2" in result.stderr and "US3" in result.stderr
+    assert not (spec_dir / "workgraph.json").exists()
+
+
+def test_a_missing_spec_is_a_user_error_not_a_traceback(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """A mistyped directory names the path it looked for, and exits 1."""
+    missing = tmp_path / "no-such-feature"
+
+    result = run("derive", str(missing), "--target-repo", TARGET_REPO)
+
+    assert result.code == 1
+    assert "spec.md" in result.stderr
+    assert not missing.exists()
+
+
+def test_a_failed_derive_says_nothing_on_stdout(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """Errors are stderr's business (contracts/cli.md § Exit codes).
+
+    Nothing on stdout means a caller that pipes the printed artifact path into
+    another command gets an empty string on failure rather than a sentence.
+    """
+    spec_dir = plant(tmp_path, "cycle")
+
+    result = run("derive", str(spec_dir), "--target-repo", TARGET_REPO)
+
+    assert result.code == 1
+    assert result.stdout == ""
+    assert result.stderr != ""
+
+
+# --- start (US3-S1) -----------------------------------------------------------
+
+
+async def test_start_prints_the_workflow_id_and_starts_that_epic(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """`epic-<epic_id>` on task queue `workgraph` (R12, D-002).
+
+    The id convention is what makes `status`, the escalation bridge's
+    `workflow_id` round trip and an operator's Web UI search all agree without
+    anyone recording a run id — and it is what makes a double start collide by
+    construction.
+    """
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 0
+    assert result.stdout.strip() == WORKFLOW_ID
+
+    described = await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+    assert described.workflow_type == "EpicWorkflow"
+    assert described.task_queue == TASK_QUEUE
+
+
+async def test_the_started_epic_carries_the_compiled_graph_and_the_proxy_url(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """What `derive` wrote is what the workflow dispatches from.
+
+    The graph arrives at `resolve_graph` node for node, and the proxy url — the
+    one piece of the epic's input that is a property of the *deployment* rather
+    than of the spec — arrives from the environment the activities already read
+    it from, not from a constant in the CLI.
+    """
+    script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+
+    async with worker_for(temporal_env, script):
+        result = await run_async("start", str(workgraph_json))
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+
+    assert result.code == 0
+    assert len(script.graphs) == 1
+    graph = script.graphs[0]
+    assert graph.epic_id == EPIC_ID
+    assert graph.target_repo == TARGET_REPO
+    assert [node.id for node in graph.nodes] == NODE_IDS
+    assert [node.depends_on for node in graph.nodes] == [[], ["us1"], []]
+    assert script.dispatched == NODE_IDS
+    assert {context.proxy_url for context in script.attempts} == {PROXY_URL}
+
+
+async def test_starting_a_running_epic_twice_is_refused_by_name(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """Temporal's id uniqueness, reported as an operator sentence (contracts/cli.md).
+
+    One epic in flight is the `.factory/` SQLite constraint made structural. The
+    second start must read as "that epic is already running", not as an
+    already-started exception with a stack trace under it.
+    """
+    first = await run_async("start", str(workgraph_json))
+    second = await run_async("start", str(workgraph_json))
+
+    assert first.code == 0
+    assert second.code == 1
+    assert f"'{EPIC_ID}'" in second.stderr
+    assert WORKFLOW_ID in second.stderr
+    assert "already running" in second.stderr
+
+
+async def test_a_hand_edited_graph_is_re_validated_before_anything_starts(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """`workgraph.json` is compiled, and it is also a file on disk (FR-002).
+
+    `derive` writes it, `start` reads it, and an operator's text editor is
+    available in between — so the structural rules run again here, the offending
+    node is named, and no workflow exists afterwards to be killed.
+    """
+    graph = json.loads(workgraph_json.read_text(encoding="utf-8"))
+    graph["nodes"][1]["depends_on"] = ["us7"]
+    workgraph_json.write_text(json.dumps(graph), encoding="utf-8")
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 1
+    assert "us2" in result.stderr and "us7" in result.stderr
+    assert result.stdout == ""
+    with pytest.raises(RPCError):
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+
+
+async def test_start_without_a_proxy_url_refuses_rather_than_dispatching(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The proxy is where the attempt's virtual key is honored — no default.
+
+    An epic started against a guessed proxy url would mint keys the agent cannot
+    use and burn an attempt to find that out, so the missing variable is named
+    and nothing starts (constitution VII: no endpoint hardcoded).
+    """
+    monkeypatch.delenv(PROXY_URL_ENV, raising=False)
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 1
+    assert PROXY_URL_ENV in result.stderr
+    with pytest.raises(RPCError):
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+
+
+# --- status -------------------------------------------------------------------
+
+
+async def test_status_reads_a_live_epic_mid_flight(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """The steering wheel's whole point: what is happening *now*.
+
+    Taken while `us2`'s attempt is genuinely parked in the adapter, so the view
+    is the workflow's live state rather than a terminal snapshot: the dependency
+    already PASSED, the in-flight node RUNNING on its first attempt, and the
+    independent leaf still PENDING with no attempt against it (FR-003).
+    """
+    script = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"), pause_at="us2"
+    )
+
+    async with worker_for(temporal_env, script):
+        start = await run_async("start", str(workgraph_json))
+        await script.wait_for_pause()
+
+        mid_flight = await run_async("status", EPIC_ID, "--json")
+
+        script.release()
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        final = await run_async("status", EPIC_ID, "--json")
+
+    assert start.code == 0
+    assert mid_flight.code == 0
+    assert mid_flight.json == {
+        "epic_state": "RUNNING",
+        "nodes": {
+            "us1": {
+                "attempt": 1,
+                "branch": branch_name(EPIC_ID, "us1"),
+                "state": "PASSED",
+            },
+            "us2": {
+                "attempt": 1,
+                "branch": branch_name(EPIC_ID, "us2"),
+                "state": "RUNNING",
+            },
+            "us3": {
+                "attempt": 0,
+                "branch": branch_name(EPIC_ID, "us3"),
+                "state": "PENDING",
+            },
+        },
+    }
+    assert final.json["epic_state"] == "COMPLETED"
+    assert [node["state"] for node in final.json["nodes"].values()] == [
+        "PASSED",
+        "PASSED",
+        "PASSED",
+    ]
+
+
+async def test_status_json_is_the_query_result_verbatim(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """`--json` is a dump, not a re-assembly (contracts/cli.md § status).
+
+    A renderer that rebuilt the document would be a second place the query's
+    shape is stated, free to drift from `EpicStatus`. So the whole document is
+    asserted, and it is asserted to be the whole of stdout — a `--json` consumer
+    never parses around a header.
+    """
+    script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+
+    async with worker_for(temporal_env, script):
+        await run_async("start", str(workgraph_json))
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        result = await run_async("status", EPIC_ID, "--json")
+
+    assert result.code == 0
+    assert result.json == {
+        "epic_state": "COMPLETED",
+        "nodes": {
+            node_id: {
+                "attempt": 1,
+                "branch": branch_name(EPIC_ID, node_id),
+                "state": "PASSED",
+            }
+            for node_id in NODE_IDS
+        },
+    }
+
+
+async def test_the_human_status_is_an_epic_line_then_one_line_per_node(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """`<node_id>  <state>  attempt <n>  <branch>`, in declaration order.
+
+    The branch is on the line because it is the one thing that survives every
+    sweep: once `.factory/` is cleaned the branch is the whole account of the
+    node's attempts (SC-004), and an operator reading a killed node needs its
+    name without a second command.
+    """
+    script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+
+    async with worker_for(temporal_env, script):
+        await run_async("start", str(workgraph_json))
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        result = await run_async("status", EPIC_ID)
+
+    assert result.code == 0
+    lines = result.stdout.splitlines()
+    assert EPIC_ID in lines[0]
+    assert "COMPLETED" in lines[0]
+
+    printed = node_lines(result.stdout)
+    assert [line.split()[0] for line in printed] == NODE_IDS
+    for node_id, line in zip(NODE_IDS, printed):
+        assert "PASSED" in line
+        assert "attempt 1" in line
+        assert branch_name(EPIC_ID, node_id) in line
+
+
+async def test_status_of_an_epic_nobody_started_is_exit_1(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """A clear sentence naming the epic, not a gRPC status code."""
+    result = await run_async("status", "no-such-epic")
+
+    assert result.code == 1
+    assert "no-such-epic" in result.stderr
+    assert result.stdout == ""
+
+
+# --- the environment contract, and transport (exit 2) -------------------------
+
+
+async def test_the_environment_names_the_server(
+    temporal_env: WorkflowEnvironment,
+) -> None:
+    """`TEMPORAL_ADDRESS`/`TEMPORAL_NAMESPACE`, same as the notify bridge.
+
+    One deployment story for everything that talks to Temporal. This asserts the
+    premise the `start`/`status` tests rest on: the test server's namespace is
+    *not* the CLI's default, so a CLI that ignored the environment could not have
+    reached it — every green test above is that proof.
+    """
+    assert temporal_env.client.namespace != DEFAULT_TEMPORAL_NAMESPACE
+    assert (
+        temporal_env.client.service_client.config.target_host
+        != DEFAULT_TEMPORAL_ADDRESS
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [("status", EPIC_ID), ("status", EPIC_ID, "--json")],
+    ids=["human", "json"],
+)
+async def test_an_unreachable_temporal_is_exit_2_naming_the_address(
+    run_async: Callable[..., Awaitable[Run]],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: tuple[str, ...],
+) -> None:
+    """Exit 2 is "the factory is not answering", distinct from a bad request.
+
+    The address is in the message because the commonest cause is an operator on
+    the wrong host or a dev server that is not up, and the fix is to look at the
+    one string the CLI actually dialed.
+    """
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+    monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, DEFAULT_TEMPORAL_NAMESPACE)
+
+    result = await run_async(*argv)
+
+    assert result.code == 2
+    assert DEAD_ADDRESS in result.stderr
+    assert result.stdout == ""
+
+
+async def test_start_against_an_unreachable_temporal_is_exit_2(
+    run_async: Callable[..., Awaitable[Run]],
+    workgraph_json: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And the graph is still read and validated first — a transport failure is
+    reported about the server, never about the file."""
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+    monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, DEFAULT_TEMPORAL_NAMESPACE)
+    monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 2
+    assert DEAD_ADDRESS in result.stderr
+
+
+def test_the_graph_the_cli_starts_is_the_one_validation_accepts(
+    workgraph_json: Path,
+) -> None:
+    """Belt and braces on the two ends agreeing (FR-002).
+
+    `start`'s re-validation is structural only — persona and timeout resolution
+    belong to `resolve_graph` on the worker, which owns `personas.yaml` — but the
+    artifact it accepts must also survive the full check the workflow runs, or an
+    epic would start and fail at its first step.
+    """
+    graph = load_workgraph(workgraph_json)
+
+    assert isinstance(graph, WorkGraph)
+    assert [node.id for node in graph.nodes] == NODE_IDS
+    try:
+        validate_workgraph(graph, PERSONAS)
+    except WorkGraphError as error:  # pragma: no cover - the assertion is the point
+        pytest.fail(f"a graph the CLI accepted must dispatch: {error}")
