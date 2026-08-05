@@ -277,6 +277,43 @@ def test_standards_survives_a_round_trip_from_disk(tmp_path: Path) -> None:
     assert load_factory_config(path).standards == ".specify/memory/constitution.md"
 
 
+# Ergane's own manifest (005 T029) --------------------------------------------
+
+
+#: The repository root: `tests/` sits directly beneath it.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_erganes_own_manifest_loads() -> None:
+    """This repo is the factory's first target (D-024), so it declares its gates.
+
+    The crossover epic dispatches nodes against Ergane itself, and every one of
+    them asks this file what "green" means and what to obey. A manifest that
+    only *looked* right would surface as a `CONFIG_ERROR` verdict on the first
+    live node, hours in — so the file is loaded here, from disk, exactly as the
+    gate runner will load it out of a worktree.
+    """
+    config = load_factory_config(REPO_ROOT / MANIFEST_NAME)
+
+    assert config.version == 1
+    assert config.runtime
+    assert config.gates["test"] == "uv run pytest -q"
+    assert config.standards == ".specify/memory/constitution.md"
+
+
+def test_erganes_declared_standards_document_exists() -> None:
+    """`prepare_worktree` refuses to dispatch when the declared file is absent.
+
+    The parser checks shape only (R11); existence is a question about a worktree.
+    This repo *is* the worktree the crossover clones, so the one place that can
+    catch a stale path before a live dispatch does is here.
+    """
+    config = load_factory_config(REPO_ROOT / MANIFEST_NAME)
+    assert config.standards is not None
+
+    assert (REPO_ROOT / config.standards).is_file()
+
+
 # Rejection table (contracts/factory-yaml.md) ---------------------------------
 
 

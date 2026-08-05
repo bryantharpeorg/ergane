@@ -1,0 +1,29 @@
+# What "green" means for Ergane itself.
+#
+# This repo is the factory's first target (D-024): epic 003 is dispatched by the
+# factory against this checkout, so every node that works here reads this file to
+# learn which commands decide its fate. Declared, never auto-detected (D-009).
+#
+# Schema v1 — specs/002-verification-gating/contracts/factory-yaml.md.
+
+version: 1
+
+# Reserved: v1 runs gates as subprocesses in the node worktree (002 research R3).
+# It names a uv image rather than a bare `python:` one because the gate command
+# below is `uv run` — the day the sandbox executor honours this field, the image
+# it pulls has to be able to run it.
+runtime: ghcr.io/astral-sh/uv:python3.11-bookworm
+
+# One gate, because one gate is what this repo has: `pytest` is the whole of its
+# green. Declaring `lint`/`typecheck` here would fail every node — ruff and mypy
+# are not on the approved dependency roster (constitution III), and a gate whose
+# command is not installed is a FAIL, not a skip. They arrive together or not at
+# all.
+gates:
+  test: "uv run pytest -q"
+
+# The document every agent attempt in this repo is told to read and obey (005
+# FR-006, research R11) — path relative to the repo root, checked for existence
+# at dispatch in `prepare_worktree`. Ergane's standards are its constitution:
+# test-first, no unapproved dependencies, no credentials in code or logs.
+standards: .specify/memory/constitution.md

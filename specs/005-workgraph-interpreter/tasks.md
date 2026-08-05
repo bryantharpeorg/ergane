@@ -98,7 +98,7 @@
 
 **Purpose**: Live smoke, documentation truth, and the D-024 crossover prerequisites the spec's Assumptions place on this feature.
 
-- [ ] T029 [P] Commit Ergane's own `factory.yaml` at the repo root (`version: 1`, `runtime`, `gates: {test: "uv run pytest -q"}`, `standards: .specify/memory/constitution.md`) and add a `tests/test_factory_yaml.py` case loading the real file successfully (crossover prerequisite)
+- [X] T029 [P] Commit Ergane's own `factory.yaml` at the repo root (`version: 1`, `runtime`, `gates: {test: "uv run pytest -q"}`, `standards: .specify/memory/constitution.md`) and add a `tests/test_factory_yaml.py` case loading the real file successfully (crossover prerequisite)
 - [ ] T030 [P] Add the `## Work Graph` section to `specs/003-merge-queue/spec.md` declaring its stories' `depends_on`/`implements`, and add a `tests/test_derive.py` case deriving `specs/003-merge-queue/spec.md` successfully — the real-world fixture and the crossover's input (crossover prerequisite)
 - [ ] T031 [P] Record decision-log entry D-025 in `docs/decisions.md` (the `## Work Graph` additive grammar extension — spec-compiled WorkGraph, no template fork — plus the persona `timeout` and factory.yaml `standards` config additions) and update `docs/architecture.md` §3 (interpreter implemented: layout, sequential scheduling, signals/query, transcript archiving) and §4 (timeout field)
 - [ ] T032 [P] Add `tests/test_live_epic.py` with `@pytest.mark.live_epic`: one-node epic against a scratch target repo through the real dev server, proxy, and `claude` CLI per quickstart §4 (SC-005 rehearsal); asserts PASSED node, salvage commit on `factory/<epic>/us1`, ledger row, verification row, archived transcript; auto-skips unless Tier 1 env is set
