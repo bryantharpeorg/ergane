@@ -354,16 +354,16 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
 class SalvageWorktreeInput:
     """One terminal attempt, in the terms the salvage commit's subject needs.
 
-    `termination` is annotated `str` rather than `Termination` deliberately:
-    `Termination` is spelled `(str, Enum)` rather than `StrEnum`, and Temporal's
-    JSON *deserializer* rebuilds a field annotated with any other str-subclass
-    enum as a list of one-character strings (see `factory/workgraph/models.py`).
-    A `Termination` member is a `str`, so callers pass one and it arrives intact.
+    `termination` is the adapter's classification, travelling from the workflow
+    to the one commit subject that will outlive `.factory/` (SC-004). It arrives
+    as a `Termination` member rather than as a list of one-character strings
+    because the enum is a `StrEnum` — see `factory/usage/models.py` for why that
+    spelling is load-bearing on any field a workflow hands to an activity.
     """
 
     epic_id: str
     node_id: str
-    termination: str
+    termination: Termination
     attempt: int
 
 

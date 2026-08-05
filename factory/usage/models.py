@@ -21,14 +21,23 @@ persisted shape, and these stay dumb carriers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class Termination(str, Enum):
+class Termination(StrEnum):
     """How an attempt ended (FR-008); persisted as the lowercase value.
 
-    Subclasses `str` so a member serializes as its value in Temporal payloads
-    and binds directly as a SQLite TEXT parameter.
+    A `str` subclass so a member serializes as its value in Temporal payloads and
+    binds directly as a SQLite TEXT parameter. `StrEnum` specifically, not the
+    older `class X(str, Enum)` spelling: both satisfy those two, but only
+    `StrEnum` is recognised by the payload converter's *deserializer*, which
+    rebuilds a field annotated with any other str-subclass enum as a list of
+    one-character strings — a `TIMEOUT` that arrives as `['t', 'i', ...]` and
+    compares equal to nothing. The distinction is invisible until a value crosses
+    a real activity boundary in both directions, which is what the interpreter
+    does with every attempt: the adapter classifies a termination, hands it back
+    to the workflow, and the workflow hands it on to teardown and to the salvage
+    commit's subject.
     """
 
     COMPLETED = "completed"
