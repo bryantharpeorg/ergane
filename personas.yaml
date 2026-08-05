@@ -13,6 +13,11 @@
 #   skills         backing skills; may be empty
 #   write_scope    worktree | docs | read  (drives component 2's diff exemption)
 #   needs_worktree whether the node runs against an isolated git worktree
+#   timeout        attempt wall-clock bound in SECONDS; positive integer, and
+#                  null iff agent is "none". Edit these freely — they are the
+#                  operator's dial, and no timeout is hardcoded anywhere in the
+#                  code (FR-010). A node's `## Work Graph` override wins over
+#                  the value here when one is declared.
 #
 # `budget_usd` and `breach_policy` are intentionally absent — budget enforcement
 # is deferred to spec 004 and those fields return with it.
@@ -24,6 +29,7 @@ architect:
   skills: [codebase-design, design-an-interface, domain-modeling]
   write_scope: docs
   needs_worktree: true
+  timeout: 7200
 
 implementer:
   agent: claude-code
@@ -32,6 +38,7 @@ implementer:
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
+  timeout: 14400
 
 verifier:
   agent: none
@@ -40,6 +47,7 @@ verifier:
   skills: []
   write_scope: read
   needs_worktree: true
+  timeout: null
 
 judge:
   agent: claude-code
@@ -48,6 +56,7 @@ judge:
   skills: [code-review]
   write_scope: read
   needs_worktree: false
+  timeout: 3600
 
 debugger:
   agent: claude-code
@@ -56,6 +65,7 @@ debugger:
   skills: [diagnosing-bugs]
   write_scope: worktree
   needs_worktree: true
+  timeout: 10800
 
 researcher:
   agent: claude-code
@@ -64,3 +74,4 @@ researcher:
   skills: [research, grill-with-docs]
   write_scope: read
   needs_worktree: false
+  timeout: 7200

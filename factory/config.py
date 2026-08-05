@@ -15,6 +15,14 @@ deterministic one must carry neither a model nor a fallback. `verifier` is the
 shipped deterministic persona — it gets no virtual key, which is exactly why it
 must not look like it wants one.
 
+The optional `timeout` field (005, research R8) is the attempt wall-clock
+default in seconds, so no timeout is ever hardcoded (FR-010). It follows the
+same shape as the model rule: forbidden on a deterministic persona, which has
+no attempt to bound. The loader stays lenient about its *absence* — a producing
+node whose persona resolves no timeout fails WorkGraph validation at epic
+start, before anything dispatches, rather than making the field mandatory for
+personas that never run an adapter.
+
 `budget_usd` and `breach_policy` are absent by design (D-021); they return with
 spec 004, and until then unknown-field rejection keeps them from creeping back
 in as dead config.
@@ -36,7 +44,7 @@ DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parents[1] / "personas.yaml"
 DETERMINISTIC_AGENT = "none"
 
 _REQUIRED_FIELDS = ("agent", "model", "write_scope", "needs_worktree")
-_OPTIONAL_FIELDS = ("fallback", "skills")
+_OPTIONAL_FIELDS = ("fallback", "skills", "timeout")
 
 
 class ConfigError(Exception):
@@ -64,6 +72,9 @@ class Persona:
     skills: tuple[str, ...]
     write_scope: WriteScope
     needs_worktree: bool
+    #: Attempt wall-clock bound in seconds; None means the registry resolves
+    #: none for this persona (YAML key: `timeout`).
+    timeout_s: int | None = None
 
     @property
     def is_llm(self) -> bool:
@@ -120,6 +131,7 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
 
     model = _optional_alias(entry["model"], "model", fail)
     fallback = _optional_alias(entry.get("fallback"), "fallback", fail)
+    timeout_s = _optional_timeout(entry.get("timeout"), fail)
 
     # data-model.md § Persona: model required iff agent != "none".
     if agent == DETERMINISTIC_AGENT:
@@ -132,6 +144,12 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
             raise fail(
                 f"field 'fallback' must be null when agent is "
                 f"'{DETERMINISTIC_AGENT}', got {fallback!r}"
+            )
+        # research R8: no agent runs, so there is no attempt to bound.
+        if timeout_s is not None:
+            raise fail(
+                f"field 'timeout' must be null when agent is "
+                f"'{DETERMINISTIC_AGENT}', got {timeout_s!r}"
             )
     elif model is None:
         raise fail(f"field 'model' is required when agent is '{agent}'")
@@ -155,6 +173,7 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
         skills=_skills(entry.get("skills"), fail),
         write_scope=write_scope,
         needs_worktree=needs_worktree,
+        timeout_s=timeout_s,
     )
 
 
@@ -164,6 +183,17 @@ def _optional_alias(value: object, field: str, fail) -> str | None:
         return None
     if not isinstance(value, str) or not value:
         raise fail(f"field '{field}' must be a non-empty string or null, got {value!r}")
+    return value
+
+
+def _optional_timeout(value: object, fail) -> int | None:
+    """Seconds, and a real count of them: a bool or a stringified number is a
+    typo the loader must not coerce into a wall-clock bound.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise fail(f"field 'timeout' must be a positive integer of seconds or null, got {value!r}")
     return value
 
 
