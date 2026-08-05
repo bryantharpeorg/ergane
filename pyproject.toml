@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 factory-usage = "factory.usage.cli:main"
+factory-epic = "factory.workgraph.cli:main"
 
 [dependency-groups]
 dev = [
