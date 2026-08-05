@@ -56,6 +56,15 @@ What this suite pins down, in the order the contract states it:
   replayed against the workflow code with no worker attached; a nondeterministic
   loop fails there, and the scripted world proves no activity ran again.
 
+- **The steering wheel is honored** (FR-008, US3-S2/US3-S3). `pause_epic` stops
+  the *scheduler*, not the attempt: the in-flight node finishes its whole ladder,
+  no next node starts until `resume_epic`, and a `PAUSE_EPIC` press on an
+  escalation parks its node FAILED and pauses the epic by the same route.
+  `kill_epic` is the one signal that interrupts an attempt — the adapter is
+  cancelled, the worktree salvaged, the key torn down, and every node that never
+  ran is recorded KILLED. Both signals are sent by *name*, because the name is
+  the wire contract an operator types and the notify bridge routes.
+
 Three properties of the setup are deliberate:
 
 - **The scripted criteria carry FR bullets and no acceptance scenarios**, so
@@ -83,16 +92,20 @@ Three properties of the setup are deliberate:
   stopping one branch without touching the other.
 
 Written before `factory/workgraph/workflow.py` exists (T018 precedes T019): until
-the module lands, every test here fails at import.
+the module lands, every test here fails at import. The signal tests were written
+the same way one task later (T025 precedes T026): until the handlers exist, an
+unhandled signal is *buffered* rather than rejected, so they fail on a status
+query that never reports the state they are waiting for.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Callable, Sequence
 
 import pytest
 from temporalio import activity
@@ -130,6 +143,7 @@ from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapsh
 from factory.verify.ladder import DEBUGGER_PERSONA
 from factory.verify.models import (
     CriteriaSet,
+    EscalationChoice,
     GateResult,
     GateStatus,
     JudgeOutcome,
@@ -171,6 +185,25 @@ WORKFLOW_ID = f"epic-{EPIC_ID}"
 #: The real task queue name (D-002) — the worker registers on it in production,
 #: and using it here means a typo in either place shows up as a hung test.
 TASK_QUEUE = "workgraph"
+
+#: The operator's steering wheel (contracts/workflow.md § Signals), spelled as
+#: the names go over the wire. Sent as strings rather than through the workflow
+#: class on purpose: `temporal workflow signal --name pause_epic` is the
+#: documented operator surface (R12), so the string *is* the contract, and a
+#: handler renamed under a still-compiling method reference would pass a test
+#: that used one.
+PAUSE_SIGNAL = "pause_epic"
+RESUME_SIGNAL = "resume_epic"
+KILL_SIGNAL = "kill_epic"
+
+#: How long a real-time wait for a workflow state gives up after. Generous
+#: because it is only ever paid in full by a failing test, and short enough that
+#: a missing handler is a failure inside a minute rather than a hung suite.
+WAIT_TIMEOUT_S = 10.0
+
+#: The quiet moment a paused epic is watched through: long enough that a workflow
+#: treating pause as advisory would have dispatched the next node inside it.
+SETTLE_S = 0.5
 
 #: Where the scripted `prepare_worktree` claims the node's worktree is. Nothing
 #: is created on disk; the path is an identity the gates, the output check and
@@ -458,6 +491,8 @@ class ScriptedWorld:
         press: str | None = None,
         expiry_state: str | None = EXPIRED,
         wait_for_poll: bool = False,
+        signal_during: dict[str, str] | None = None,
+        await_cancel: bool = False,
     ) -> None:
         self._script = script
         self._client = client
@@ -465,6 +500,11 @@ class ScriptedWorld:
         self._press = press
         self._expiry_state = expiry_state
         self._wait_for_poll = wait_for_poll
+        #: `{node_id: signal name}` — sent from inside that node's attempt, so
+        #: the operator's hand lands on the wheel while the node is genuinely in
+        #: flight. Any other timing tests a different thing.
+        self._signal_during = signal_during or {}
+        self._await_cancel = await_cancel
 
         #: Activity names in call order, and the same log with the node each call
         #: belonged to — "what happened to us1" is a list rather than an offset
@@ -493,6 +533,12 @@ class ScriptedWorld:
         #: What `epic_status` said while each node's attempt was in flight — the
         #: only place a mid-epic view of the graph can be taken.
         self.observed: dict[str, Any] = {}
+
+        #: Nodes whose attempt was cancelled by the workflow (the adapter's kill
+        #: path, R2). Kept out of the call log because it is recorded by the
+        #: activity worker while the workflow is already salvaging: an ordering
+        #: the call log has no way to be honest about.
+        self.cancellations: list[str] = []
 
         #: The handle of the run in progress, for the replay test.
         self.handle: Any = None
@@ -638,6 +684,28 @@ class ScriptedWorld:
             script.observed[context.node_id] = await handle.query(
                 EpicWorkflow.epic_status
             )
+
+            steer = script._signal_during.get(context.node_id)
+            if steer is not None:
+                # The signal lands in history *before* this activity completes,
+                # which is the only timing under which "the in-flight attempt"
+                # names anything at all (US3-S2, US3-S3).
+                await handle.signal(steer)
+
+            if script._await_cancel and steer is not None:
+                # The adapter's kill path (R2): it waits, heartbeating, and on
+                # cancellation archives the transcript and re-raises. Bounded, so
+                # a workflow that never cancels fails an assertion rather than
+                # hanging the suite — and the overrun is recorded, because
+                # "the attempt ran to completion" is exactly the bug.
+                for _ in range(int(WAIT_TIMEOUT_S / 0.05)):
+                    activity.heartbeat()
+                    try:
+                        await asyncio.sleep(0.05)
+                    except asyncio.CancelledError:
+                        script.cancellations.append(context.node_id)
+                        raise
+                script.calls.append("never_cancelled")
 
             if script._wait_for_poll:
                 # Bounded, so a workflow with no poll loop fails the assertion
@@ -816,14 +884,21 @@ async def env() -> AsyncIterator[WorkflowEnvironment]:
         await environment.shutdown()
 
 
-async def run_epic(
+@asynccontextmanager
+async def start_epic(
     env: WorkflowEnvironment,
     script: ScriptedWorld,
     *,
     graph: WorkGraph | None = None,
     **input_overrides: Any,
-) -> Any:
-    """Run one epic to its terminal state and hand back the final `EpicStatus`."""
+) -> AsyncIterator[Any]:
+    """Start one epic and hold the worker open while the test steers it.
+
+    The worker outlives the block on purpose: a signal test has to observe the
+    epic *between* two of its decisions, and every assertion about what an
+    activity saw has to be made before shutdown cancels whatever is still
+    running.
+    """
     request: dict[str, Any] = {
         "graph": graph if graph is not None else make_graph(),
         "proxy_url": PROXY_URL,
@@ -843,7 +918,56 @@ async def run_epic(
             task_queue=TASK_QUEUE,
         )
         script.handle = handle
+        yield handle
+
+
+async def run_epic(
+    env: WorkflowEnvironment,
+    script: ScriptedWorld,
+    **overrides: Any,
+) -> Any:
+    """Run one epic to its terminal state and hand back the final `EpicStatus`."""
+    async with start_epic(env, script, **overrides) as handle:
         return await handle.result()
+
+
+async def wait_for_status(
+    handle: Any,
+    predicate: Callable[[Any], bool],
+    *,
+    what: str,
+    timeout: float = WAIT_TIMEOUT_S,
+) -> Any:
+    """Poll `epic_status` until it says what the test is waiting for.
+
+    Real seconds, not the workflow's: time skipping only advances while a client
+    awaits the workflow's *result*, so a query loop watches an epic that is
+    running at its own pace — which is what makes an assertion about a paused
+    scheduler mean something.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        status = await handle.query(EpicWorkflow.epic_status)
+        if predicate(status):
+            return status
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"timed out after {timeout}s waiting for {what}; last status: {status}"
+            )
+        await asyncio.sleep(0.05)
+
+
+async def wait_for(
+    predicate: Callable[[], bool], *, what: str, timeout: float = WAIT_TIMEOUT_S
+) -> None:
+    """The same wait, over the scripted world instead of over the query."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+        await asyncio.sleep(0.05)
 
 
 def states(status: Any) -> dict[str, NodeState]:
@@ -1416,3 +1540,255 @@ async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None
     assert script.calls == before
     assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
     assert len(script.attempts) == 4
+
+
+# --- US3-S2: pause stops the scheduler, not the attempt (FR-008) --------------
+
+
+def paused_with(node_id: str, state: NodeState) -> Callable[[Any], bool]:
+    """The epic parked, and the node that parked it in the state it parked in.
+
+    Both halves, because they are not simultaneous: a workflow may raise the
+    paused flag the instant the signal arrives, while the node it interrupted is
+    still working through its ladder. Waiting on the conjunction is what makes
+    "the in-flight node finished first" an assertion rather than a race.
+    """
+
+    def predicate(status: Any) -> bool:
+        return (
+            status.epic_state == EpicState.PAUSED
+            and status.nodes[node_id].state == state
+        )
+
+    return predicate
+
+
+async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
+    env: WorkflowEnvironment,
+) -> None:
+    """`pause_epic` suspends the scheduler; the running node keeps its whole ladder.
+
+    The signal lands while `us1`'s agent is still running, and the clarified
+    reading of "in-flight attempts run to completion" (R10) is the strong one:
+    the node runs its gates, records its verdict, tears down its key and salvages
+    its worktree — the key/worktree lifecycle stays atomic — and only *then* does
+    the epic stop, with `us2` and `us3` untouched.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, signal_during={"us1": PAUSE_SIGNAL}
+    )
+
+    async with start_epic(env, script) as handle:
+        paused = await wait_for_status(
+            handle,
+            paused_with("us1", NodeState.PASSED),
+            what="the epic to park after us1's ladder finished",
+        )
+
+        # The whole ladder, not a suspended half of one: the node the signal
+        # interrupted is verified, recorded, torn down and swept.
+        assert script.sequence("us1") == [
+            "snapshot_criteria",
+            "prepare_worktree",
+            "issue_attempt_key:implementer",
+            "run_agent_attempt",
+            "run_gates",
+            "check_output",
+            "record_verification",
+            "teardown_attempt:implementer",
+            "salvage_worktree",
+            "remove_worktree",
+        ]
+        assert states(paused) == {
+            "us1": NodeState.PASSED,
+            "us2": NodeState.PENDING,
+            "us3": NodeState.PENDING,
+        }
+
+        # A quiet window: an epic that treated pause as advisory would have
+        # dispatched `us2` — ready the moment `us1` passed — inside it.
+        await asyncio.sleep(SETTLE_S)
+        still = await handle.query(EpicWorkflow.epic_status)
+        assert still.epic_state == EpicState.PAUSED
+        assert states(still)["us2"] == NodeState.PENDING
+        assert script.dispatched == ["us1"]
+
+        await handle.signal(RESUME_SIGNAL)
+        status = await handle.result()
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.PASSED,
+        "us2": NodeState.PASSED,
+        "us3": NodeState.PASSED,
+    }
+    assert script.dispatched == ["us1", "us2", "us3"]
+    assert "overrun" not in script.calls
+
+
+async def test_a_paused_epic_survives_replay(env: WorkflowEnvironment) -> None:
+    """R1: pause is durable because a signal is history, and history replays.
+
+    No persistence code exists to test, which is the decision — so what is tested
+    is the mechanism it rests on. Replaying the recorded history rebuilds the
+    paused flag from the same signal event, and a workflow that rebuilt it
+    differently would try to dispatch `us2` during the window the recorded run
+    spent parked, which is a nondeterminism error here rather than a silent
+    divergence in production.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, signal_during={"us1": PAUSE_SIGNAL}
+    )
+
+    async with start_epic(env, script) as handle:
+        await wait_for_status(
+            handle,
+            paused_with("us1", NodeState.PASSED),
+            what="the epic to park after us1's ladder finished",
+        )
+        await handle.signal(RESUME_SIGNAL)
+        status = await handle.result()
+        history = await handle.fetch_history()
+
+    before = list(script.calls)
+
+    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert script.calls == before
+    assert script.dispatched == ["us1", "us2", "us3"]
+
+
+async def test_a_pause_epic_resolution_parks_the_node_and_pauses_the_epic(
+    env: WorkflowEnvironment,
+) -> None:
+    """The third button (contracts/workflow.md § Node lifecycle).
+
+    `PAUSE_EPIC` is neither a grant nor a kill: the ladder ends the node, because
+    parking is the most a per-node decision can say about an epic-level
+    suspension, and the interpreter supplies the rest of the meaning — the node
+    is FAILED rather than KILLED (parked, its branch salvaged and its worktree
+    swept like any terminal path) and the scheduler stops, so the operator can
+    look at what happened before `us3` spends anything.
+    """
+    script = exhausted(EscalationChoice.PAUSE_EPIC.value, env.client)
+
+    async with start_epic(env, script) as handle:
+        paused = await wait_for_status(
+            handle,
+            paused_with("us1", NodeState.FAILED),
+            what="us1 to park FAILED and the epic to pause",
+        )
+
+        assert states(paused) == {
+            # Parked, not killed: the operator stopped the epic rather than
+            # abandoning the node.
+            "us1": NodeState.FAILED,
+            # A dependent of a node that will never pass — killed where it
+            # stands, without a worktree, a key or an attempt (SC-002).
+            "us2": NodeState.KILLED,
+            # Independent, and not dispatched: the pause outranks its readiness.
+            "us3": NodeState.PENDING,
+        }
+        assert attempt_counts(paused) == {"us1": 4, "us2": 0, "us3": 0}
+
+        [escalation] = script.escalation_requests
+        assert escalation.node_id == "us1"
+        assert script.expirations == []
+
+        # Constitution VI holds on the park path too: the work is on the branch
+        # before the tree is swept, and it says which attempt left it there.
+        assert script.sequence("us1")[-2:] == ["salvage_worktree", "remove_worktree"]
+        assert [(s.node_id, s.attempt) for s in script.salvages] == [("us1", 4)]
+
+        await asyncio.sleep(SETTLE_S)
+        assert script.dispatched == ["us1"] * 4
+
+        await handle.signal(RESUME_SIGNAL)
+        status = await handle.result()
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.FAILED,
+        "us2": NodeState.KILLED,
+        "us3": NodeState.PASSED,
+    }
+    assert script.dispatched == ["us1"] * 4 + ["us3"]
+
+
+# --- US3-S3: kill interrupts the attempt and ends the epic --------------------
+
+
+async def test_kill_cancels_the_attempt_salvages_and_kills_every_node(
+    env: WorkflowEnvironment,
+) -> None:
+    """The one signal that interrupts an attempt (contracts/workflow.md § Signals).
+
+    `kill_epic` arrives while `us1`'s agent is running and cancels it: the
+    adapter's KILLED path (R2), which archives the transcript and re-raises
+    rather than reporting a termination the workflow could mistake for an
+    ending. What follows is the ordering constitution VI insists on — teardown
+    closes the bracket carrying KILLED, the worktree is salvaged and only then
+    swept — and every node that never ran is recorded KILLED, so the final status
+    accounts for the whole graph (US3-S3).
+
+    No gates run and no verdict is recorded for the interrupted attempt: the
+    operator asked for the epic to stop, and a two-hour gate suite against a
+    worktree nobody will read is the opposite of stopping. The bracket still
+    closes, which is what FR-004 requires of every attempt that was opened.
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        signal_during={"us1": KILL_SIGNAL},
+        await_cancel=True,
+    )
+
+    async with start_epic(env, script) as handle:
+        status = await handle.result()
+        await wait_for(
+            lambda: bool(script.cancellations),
+            what="the adapter's attempt to be cancelled",
+        )
+
+        assert script.cancellations == ["us1"]
+        assert "never_cancelled" not in script.calls
+
+    assert status.epic_state == EpicState.KILLED
+    assert states(status) == {
+        "us1": NodeState.KILLED,
+        "us2": NodeState.KILLED,
+        "us3": NodeState.KILLED,
+    }
+    # Every node recorded, in declaration order — a kill leaves no node
+    # unaccounted for, dispatched or not.
+    assert list(status.nodes) == ["us1", "us2", "us3"]
+    assert attempt_counts(status) == {"us1": 1, "us2": 0, "us3": 0}
+
+    assert script.dispatched == ["us1"]
+    assert script.sequence("us2") == []
+    assert script.sequence("us3") == []
+
+    sequence = script.sequence("us1")
+    assert sequence[:4] == [
+        "snapshot_criteria",
+        "prepare_worktree",
+        "issue_attempt_key:implementer",
+        "run_agent_attempt",
+    ]
+    assert sequence[-2:] == ["salvage_worktree", "remove_worktree"]
+    assert "teardown_attempt:implementer" in sequence
+    assert "run_gates" not in sequence
+    assert "check_output" not in sequence
+    assert "record_verification" not in sequence
+    assert script.records == []
+
+    # The key the attempt opened is torn down on the adapter's classification of
+    # a kill, and the salvage commit carries the same word (SC-004).
+    assert script.teardown_for("us1", 1).termination == Termination.KILLED
+    assert [(s.node_id, s.attempt, s.termination) for s in script.salvages] == [
+        ("us1", 1, Termination.KILLED)
+    ]
+    assert [(r.node_id, r.target_repo) for r in script.removals] == [
+        ("us1", TARGET_REPO)
+    ]
