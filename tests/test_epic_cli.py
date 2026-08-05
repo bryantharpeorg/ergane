@@ -79,6 +79,7 @@ from factory.activities.agent_activities import (
     PrepareWorktreeInput,
     PromptSources,
     RemoveWorktreeInput,
+    ResolvePersonaInput,
     SalvageWorktreeInput,
 )
 from factory.activities.usage_activities import IssueKeyInput, TeardownInput
@@ -111,6 +112,7 @@ from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
     ResolvedNode,
+    ResolvedPersona,
     WorkGraph,
     WorkGraphError,
     validate_workgraph,
@@ -140,6 +142,10 @@ DEAD_ADDRESS = "127.0.0.1:1"
 #: The registry the scripted `resolve_graph` resolves against — a real `Persona`,
 #: so the real `validate_workgraph` runs against it unchanged.
 MODEL_ALIAS = "implementer-alias"
+
+#: The judge's registry alias — resolved for every epic even when, as here, no
+#: node's criteria give it anything to score (constitution VII).
+JUDGE_ALIAS = "judge-alias"
 TIMEOUT_S = 5400
 
 #: One FR per story, exactly as `valid_epic`'s `## Work Graph` block declares.
@@ -465,6 +471,18 @@ class ScriptedEpic:
                 for node in graph.nodes
             ]
 
+        @activity.defn(name="resolve_persona")
+        async def resolve_persona(request: ResolvePersonaInput) -> ResolvedPersona:
+            # Resolved at epic start beside the graph, for a role no node names
+            # (constitution V). Nothing here reaches the judge — these criteria
+            # carry no scenarios — but an epic that could not resolve it would
+            # never get as far as the CLI surface this file is about.
+            return ResolvedPersona(
+                persona=request.persona,
+                model_alias=JUDGE_ALIAS,
+                models=[JUDGE_ALIAS],
+            )
+
         @activity.defn(name="load_prompt_sources")
         async def load_prompt_sources(
             request: LoadPromptSourcesInput,
@@ -572,6 +590,7 @@ class ScriptedEpic:
 
         return [
             resolve_graph,
+            resolve_persona,
             load_prompt_sources,
             snapshot_criteria,
             prepare_worktree,

@@ -176,6 +176,24 @@ class ResolvedNode:
     timeout_s: int
 
 
+@dataclass(frozen=True)
+class ResolvedPersona:
+    """A registry entry resolved for a role no node is routed to.
+
+    The judge is the whole reason this is separate from `ResolvedNode`: it scores
+    the work another persona produced, so it has an alias and a key of its own
+    (constitution V) but no node, no worktree and no deadline of its own — 002's
+    judge is bounded by its own retry caps rather than by an attempt timeout
+    (R8). Resolved once at epic start alongside the graph, under the same
+    snapshot discipline: an operator editing `personas.yaml` mid-epic changes the
+    *next* epic.
+    """
+
+    persona: str
+    model_alias: str
+    models: list[str]
+
+
 @dataclass
 class NodeRecord:
     """One node's live state in workflow memory, surfaced by `epic_status`.

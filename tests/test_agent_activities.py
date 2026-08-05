@@ -86,14 +86,19 @@ from factory.activities.agent_activities import (
     GRAPH_INVALID,
     PROMPT_SOURCE_MISSING,
     STANDARDS_MISSING,
+    WORKTREE_FAILED,
     LoadPromptSourcesInput,
     PrepareWorktreeInput,
+    ReadWorktreeDiffInput,
     RemoveWorktreeInput,
+    ResolvePersonaInput,
     SalvageWorktreeInput,
     load_prompt_sources,
     prepare_worktree,
+    read_worktree_diff,
     remove_worktree,
     resolve_graph,
+    resolve_persona,
     run_agent_attempt,
     salvage_worktree,
 )
@@ -104,6 +109,7 @@ from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
     ResolvedNode,
+    ResolvedPersona,
     WorkGraph,
     WorkNode,
 )
@@ -413,8 +419,10 @@ def test_the_activities_are_registered_under_their_contract_names() -> None:
     workflow that dispatches into nothing."""
     for fn, name in (
         (resolve_graph, "resolve_graph"),
+        (resolve_persona, "resolve_persona"),
         (prepare_worktree, "prepare_worktree"),
         (run_agent_attempt, "run_agent_attempt"),
+        (read_worktree_diff, "read_worktree_diff"),
         (salvage_worktree, "salvage_worktree"),
         (remove_worktree, "remove_worktree"),
     ):
@@ -539,6 +547,75 @@ async def test_a_structural_defect_is_caught_again_at_epic_start(
 
     assert raised.value.type == GRAPH_INVALID
     assert "us9" in str(raised.value)
+    assert raised.value.non_retryable is True
+
+
+# --- resolve_persona (the roles no node names) --------------------------------
+
+
+async def test_resolve_persona_snapshots_the_entry_for_a_role_no_node_names(
+    env: ActivityEnvironment,
+) -> None:
+    """The judge is the whole reason this exists (002's flow invariant 6).
+
+    Every graph node carries a persona `resolve_graph` resolves; the judge
+    carries none, because no node is routed to it — it scores the node another
+    persona produced, on its own key, under its own alias. So its registry entry
+    is read the same way and at the same moment: once, at epic start, from the
+    shipped registry rather than from a literal here.
+    """
+    persona = load_personas()["judge"]
+
+    resolved = await env.run(resolve_persona, ResolvePersonaInput(persona="judge"))
+
+    assert resolved == ResolvedPersona(
+        persona="judge",
+        model_alias=persona.model,
+        # The issued key's constraint list (001): the judge may call the judge's
+        # aliases and nothing else.
+        models=[alias for alias in (persona.model, persona.fallback) if alias],
+    )
+
+
+async def test_resolve_persona_is_read_only_and_repeatable(
+    env: ActivityEnvironment, factory_root: Path
+) -> None:
+    """Temporal may run it twice; both runs agree and neither touched the host."""
+    first = await env.run(resolve_persona, ResolvePersonaInput(persona="judge"))
+    second = await env.run(resolve_persona, ResolvePersonaInput(persona="judge"))
+
+    assert first == second
+    assert not factory_root.exists()
+
+
+async def test_a_persona_the_registry_lacks_fails_before_the_epic_starts(
+    env: ActivityEnvironment,
+) -> None:
+    """An epic that cannot score anything fails at its first step, named.
+
+    Same error type and same finality as an unroutable node: the registry is a
+    file, reading it again a second later gives the same answer, and discovering
+    four attempts in that there is nobody to judge the work is exactly what
+    resolving everything up front exists to prevent.
+    """
+    with pytest.raises(ApplicationError) as raised:
+        await env.run(resolve_persona, ResolvePersonaInput(persona="adjudicator"))
+
+    assert raised.value.type == GRAPH_INVALID
+    assert "adjudicator" in str(raised.value)
+    assert raised.value.non_retryable is True
+
+
+async def test_a_persona_that_names_no_model_cannot_be_dispatched_to(
+    env: ActivityEnvironment,
+) -> None:
+    """`verifier` runs no agent and names no model (R8), so nothing can call it —
+    the same rule that refuses a producing node routed there (constitution VII)."""
+    with pytest.raises(ApplicationError) as raised:
+        await env.run(resolve_persona, ResolvePersonaInput(persona="verifier"))
+
+    assert raised.value.type == GRAPH_INVALID
+    assert "verifier" in str(raised.value)
     assert raised.value.non_retryable is True
 
 
@@ -772,6 +849,53 @@ async def test_the_factory_root_defaults_to_the_documented_location(
     expected = Path(DEFAULT_FACTORY_ROOT) / "transcripts" / EPIC / NODE / f"attempt-{ATTEMPT}"
     assert result.transcript_path == str(expected)
     assert (tmp_path / expected / STDOUT_LOG_NAME).is_file()
+
+
+# --- read_worktree_diff (what the judge scores) -------------------------------
+
+
+async def test_read_worktree_diff_returns_the_attempts_patch(
+    env: ActivityEnvironment, repo: Path
+) -> None:
+    """The judge's input, read on this side of the activity boundary (FR-001).
+
+    Workflow code makes decisions and touches nothing, so the one place a
+    worktree's patch is read is here — and it reports what the attempt left,
+    new files included, without disturbing the tree the salvage after it will
+    commit.
+    """
+    prepared = await prepare(env, repo)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+
+    patch = await env.run(
+        read_worktree_diff, ReadWorktreeDiffInput(worktree_path=prepared.path)
+    )
+
+    assert f"b/{TRACKED_FILE}" in patch
+    assert f"b/{NEW_FILE}" in patch
+    assert "+VALUE = 1" in patch
+    assert git(worktree, "diff", "--cached", "--name-only").strip() == ""
+
+
+async def test_read_worktree_diff_names_a_worktree_it_cannot_read(
+    env: ActivityEnvironment, tmp_path: Path
+) -> None:
+    """A worktree git refuses is infrastructure, and stays retryable.
+
+    Reporting the empty diff an absent directory resembles would hand the judge
+    "the agent produced nothing" over what is really a lost mount — the same
+    line `check_output` draws (002's `WORKTREE_MISSING`), on this component's
+    own error type.
+    """
+    absent = tmp_path / "worktrees" / EPIC / NODE
+
+    with pytest.raises(ApplicationError) as raised:
+        await env.run(read_worktree_diff, ReadWorktreeDiffInput(worktree_path=str(absent)))
+
+    assert raised.value.type == WORKTREE_FAILED
+    assert str(absent) in str(raised.value)
+    assert raised.value.non_retryable is False
 
 
 # --- salvage_worktree / remove_worktree (constitution VI) ---------------------

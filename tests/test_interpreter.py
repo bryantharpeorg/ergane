@@ -65,20 +65,25 @@ What this suite pins down, in the order the contract states it:
   ran is recorded KILLED. Both signals are sent by *name*, because the name is
   the wire contract an operator types and the notify bridge routes.
 
+- **The judge is consulted exactly when it can still change the outcome**
+  (FR-003, 002's flow invariant 2). The criteria a world hands back are scored
+  (`scenarios=True`) or not, and both shapes are real dispatches: a node owing
+  only `FR-###` bullets is verified on its gates and its output check alone,
+  while a node owing a user story is scored against its scenarios — on a diff
+  read by an activity, by a judge inside its own component-1 key lifecycle, with
+  its feedback quoted into the next attempt. The default is unscored, because
+  most of what this file asserts is about scheduling and the ladder; the judge
+  path has its own section at the end.
+
 Three properties of the setup are deliberate:
 
-- **The scripted criteria carry FR bullets and no acceptance scenarios**, so
-  `judge_required` is false throughout and the judge is never consulted (002's
-  flow invariant 2, asserted). That is a designed-for shape — `has_scenarios`
-  exists precisely to say a node owing only `FR-###` bullets is verified on its
-  gates and its output check alone — and it keeps this suite on the interpreter.
-  The judge's own composition (its key lifecycle, its rewrites, its feedback) is
-  002's contract, proven under time skipping in `tests/test_verification_flow.py`.
-  Wiring the judge into the interpreter still needs two things no shipped
-  activity provides — where the worktree diff is read, and how the `judge`
-  persona's model alias is resolved (`resolve_graph` answers only for graph
-  nodes) — and inventing either shape inside a test is how a test starts
-  designing the system it is supposed to check.
+- **The default scripted criteria carry FR bullets and no acceptance
+  scenarios**, so `judge_required` is false and the judge is never consulted for
+  every test above the judge section. That is a designed-for shape —
+  `has_scenarios` exists precisely to say a node owing only `FR-###` bullets is
+  verified on its gates and its output check alone — and it keeps those tests on
+  the interpreter rather than on 002, whose own composition is proven under time
+  skipping in `tests/test_verification_flow.py`.
 
 - **Time skipping is locked while an activity runs**, which is why the usage-poll
   interval is an input rather than a constant: the poll timer competes with the
@@ -100,11 +105,12 @@ query that never reports the state they are waiting for.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Callable, Sequence
 
 import pytest
@@ -119,7 +125,9 @@ from factory.activities.agent_activities import (
     LoadPromptSourcesInput,
     PrepareWorktreeInput,
     PromptSources,
+    ReadWorktreeDiffInput,
     RemoveWorktreeInput,
+    ResolvePersonaInput,
     SalvageWorktreeInput,
 )
 from factory.activities.notify_activities import (
@@ -130,6 +138,7 @@ from factory.activities.notify_activities import (
 )
 from factory.activities.usage_activities import IssueKeyInput, TeardownInput
 from factory.activities.verify_activities import (
+    JUDGE_UNAVAILABLE,
     CheckOutputInput,
     RecordedVerification,
     RecordVerificationInput,
@@ -153,6 +162,7 @@ from factory.verify.models import (
     OverallVerdict,
     Requirement,
     RequirementKind,
+    Scenario,
     VerificationConfig,
     VerificationResult,
 )
@@ -163,11 +173,13 @@ from factory.workgraph.models import (
     EpicState,
     NodeState,
     ResolvedNode,
+    ResolvedPersona,
     WorkGraph,
     WorkGraphError,
     WorkNode,
     validate_workgraph,
 )
+from factory.workgraph import workflow as workflow_module
 from factory.workgraph.worktree import PreparedWorktree, branch_name
 from factory.workgraph.workflow import EpicInput, EpicWorkflow
 
@@ -217,6 +229,15 @@ MODEL_ALIAS = "implementer-alias"
 FALLBACK_ALIAS = "implementer-fallback"
 TIMEOUT_S = 5400
 DEBUGGER_TIMEOUT_S = 7200
+
+#: The judge's own registry entry, resolved for the epic rather than for a node —
+#: no node names the `judge` persona, and its spend is attributed to itself
+#: (constitution V). Distinct aliases so a judge dispatched under the node's
+#: model cannot pass an assertion here.
+JUDGE_PERSONA = "judge"
+JUDGE_ALIAS = "judge-alias"
+JUDGE_FALLBACK_ALIAS = "judge-fallback"
+JUDGE_TIMEOUT_S = 3600
 
 #: What the standards key of the target repo's `factory.yaml` declares (R11).
 #: `load_prompt_sources` reads it, `prepare_worktree` demands it, and the prompt
@@ -366,6 +387,18 @@ PERSONAS = {
         needs_worktree=True,
         timeout_s=DEBUGGER_TIMEOUT_S,
     ),
+    JUDGE_PERSONA: Persona(
+        name=JUDGE_PERSONA,
+        agent="claude-code",
+        model=JUDGE_ALIAS,
+        fallback=JUDGE_FALLBACK_ALIAS,
+        skills=(),
+        # The judge reads a diff it is handed; it writes nothing and needs no
+        # worktree of its own (the shipped registry's shape).
+        write_scope=WriteScope.READ,
+        needs_worktree=False,
+        timeout_s=JUDGE_TIMEOUT_S,
+    ),
 }
 
 
@@ -404,30 +437,154 @@ def wrote_something() -> OutputCheck:
     )
 
 
-def criteria_for(node: WorkNode) -> CriteriaSet:
-    """What `snapshot_criteria` answers with: the node's FR bullet, no scenarios.
+def criteria_for(node: WorkNode, *, scenarios: bool = False) -> CriteriaSet:
+    """What `snapshot_criteria` answers with, in either of its two real shapes.
 
-    A node owing only `FR-###` bullets is verified on its gates and its output
-    check alone (`has_scenarios`), which is what keeps the judge — and the two
-    unresolved questions its wiring raises — out of this suite.
+    Unscored (the default) is the node's FR bullet alone: a node owing only
+    `FR-###` bullets has nothing the judge could score (`has_scenarios`), so it
+    is verified on its gates and its output check, and `judge_required` is false
+    for the whole of its life. Scored adds the story the node implements, with
+    the one acceptance scenario the judge must echo back by id — which is the
+    shape that opens the judge branch (002's flow invariant 2).
     """
     key = FR_FOR[node.story_key]
+    requirements = [
+        Requirement(
+            key=key,
+            kind=RequirementKind.FUNCTIONAL,
+            title=None,
+            priority=None,
+            body=f"The catalogue MUST satisfy {key}.",
+            scenarios=[],
+        )
+    ]
+    if scenarios:
+        requirements.insert(0, story_requirement(node.story_key))
+
     return CriteriaSet(
         feature=FEATURE,
         spec_ref=node.spec_ref,
-        requirements=[
-            Requirement(
-                key=key,
-                kind=RequirementKind.FUNCTIONAL,
-                title=None,
-                priority=None,
-                body=f"The catalogue MUST satisfy {key}.",
-                scenarios=[],
-            )
-        ],
+        requirements=requirements,
         source_path=f"{SPECS_ROOT}/{FEATURE}/spec.md",
         source_sha256="0" * 64,
         snapshotted_at="2026-08-05T09:00:00Z",
+    )
+
+
+def scenario_id(story_key: str) -> str:
+    """The id the judge must echo character-for-character (002's judge contract)."""
+    return f"{story_key}-S1"
+
+
+def story_requirement(story_key: str) -> Requirement:
+    return Requirement(
+        key=story_key,
+        kind=RequirementKind.STORY,
+        title="Borrow a book",
+        priority="P1",
+        body=f"The member-facing behavior {story_key} describes.",
+        scenarios=[
+            Scenario(
+                scenario_id=scenario_id(story_key),
+                steps=[
+                    "**Given** an available book",
+                    "**When** a member borrows it",
+                    "**Then** the catalogue records the loan against that member",
+                ],
+                raw_text=f"1. **Given** ... ({scenario_id(story_key)})",
+            )
+        ],
+    )
+
+
+#: What `read_worktree_diff` answers with — the attempt's work, as the only
+#: activity allowed to read a worktree's patch reports it. Distinctive because
+#: the judge is asserted to have been handed *this* text: a workflow that read
+#: the diff itself, or passed the wrong worktree's, cannot produce it.
+DIFF_TEXT = (
+    "--- a/library/loans.py\n"
+    "+++ b/library/loans.py\n"
+    "@@\n"
+    "+def borrow(member, book):\n"
+    "+    return Loan(member=member, book=book)\n"
+)
+
+#: The judge's objection, quoted verbatim into the next attempt's prompt
+#: (FR-006, 002 SC-004) — an agent handed a paraphrase debugs the paraphraser.
+JUDGE_FEEDBACK = (
+    "Scenario US1-S1 is unmet: borrow() builds a Loan but nothing records it "
+    "against the member, so the catalogue has no loan to show."
+)
+
+#: What the judge says when its response could not be read at all: a RETRY with
+#: no findings, which is the one verdict worth re-asking within an attempt (R4).
+UNREADABLE_FEEDBACK = "the judge's response was not valid JSON"
+
+
+def judge_pass(model_alias: str = JUDGE_ALIAS, story_key: str = "US1") -> JudgeVerdict:
+    return JudgeVerdict(
+        outcome=JudgeOutcome.PASS,
+        findings=[
+            JudgeScenarioFinding(
+                scenario=scenario_id(story_key),
+                passed=True,
+                reasoning="the loan is recorded against the borrowing member",
+            )
+        ],
+        feedback="",
+        judge_attempt=1,
+        truncated_input=False,
+        model_alias=model_alias,
+    )
+
+
+def judge_retry(
+    feedback: str = JUDGE_FEEDBACK,
+    *,
+    findings: bool = True,
+    story_key: str = "US1",
+) -> JudgeVerdict:
+    """A rewrite request — with findings it is an answer, without one it is noise.
+
+    `findings=False` is what `run_judge` returns for a response the strict parser
+    refused: the same outcome, but nothing was actually scored, so it is worth
+    asking again inside the same attempt rather than spending one.
+    """
+    return JudgeVerdict(
+        outcome=JudgeOutcome.RETRY,
+        findings=(
+            [
+                JudgeScenarioFinding(
+                    scenario=scenario_id(story_key),
+                    passed=False,
+                    reasoning="no write to the loans table appears in the diff",
+                )
+            ]
+            if findings
+            else []
+        ),
+        feedback=feedback,
+        judge_attempt=1,
+        truncated_input=False,
+        model_alias=JUDGE_ALIAS,
+    )
+
+
+def judge_unavailable() -> JudgeVerdict:
+    """Scripted as a verdict, delivered as an outage.
+
+    `run_judge` never *returns* UNAVAILABLE — it raises `JUDGE_UNAVAILABLE` once
+    its own HTTP retries are spent, and composing a gates-only PASS out of that
+    is the caller's decision (002's activity contract). Scripting it as a verdict
+    keeps `Attempt` one vocabulary; the fake turns it back into the raise.
+    """
+    return JudgeVerdict(
+        outcome=JudgeOutcome.UNAVAILABLE,
+        findings=[],
+        feedback="",
+        judge_attempt=1,
+        truncated_input=False,
+        model_alias=JUDGE_ALIAS,
     )
 
 
@@ -438,11 +595,17 @@ class Attempt:
     `termination` is the adapter's classification and travels to teardown and to
     the salvage commit; the gates decide the verdict independently of it, which
     is FR-012 in the shape of a fixture.
+
+    `judge` is what `run_judge` answers, one entry per call *within* this attempt
+    — more than one only when the first response was unreadable and the flow
+    asks again (R4). It is empty for the unscored criteria the default world
+    hands back, where the judge is never reached at all.
     """
 
     gates: list[GateResult] = field(default_factory=lambda: [gate_pass()])
     output: OutputCheck = field(default_factory=wrote_something)
     termination: Termination = Termination.COMPLETED
+    judge: tuple[JudgeVerdict, ...] = ()
 
 
 def passing() -> Attempt:
@@ -452,6 +615,11 @@ def passing() -> Attempt:
 def failing(attempt: int) -> Attempt:
     """A gate failure — the whole verdict, with no judge in the picture."""
     return Attempt(gates=[gate_fail(attempt)])
+
+
+def scored(*judge: JudgeVerdict, gates: list[GateResult] | None = None) -> Attempt:
+    """An attempt whose criteria carry scenarios, and what the judge says about it."""
+    return Attempt(gates=gates if gates is not None else [gate_pass()], judge=judge)
 
 
 def all_passing() -> dict[str, list[Attempt]]:
@@ -493,6 +661,7 @@ class ScriptedWorld:
         wait_for_poll: bool = False,
         signal_during: dict[str, str] | None = None,
         await_cancel: bool = False,
+        scenarios: bool = False,
     ) -> None:
         self._script = script
         self._client = client
@@ -500,6 +669,11 @@ class ScriptedWorld:
         self._press = press
         self._expiry_state = expiry_state
         self._wait_for_poll = wait_for_poll
+        #: Whether `snapshot_criteria` hands back criteria the judge can score.
+        #: False is not "the judge is disabled" — it is a node owing only
+        #: `FR-###` bullets, for which `judge_required` is false by 002's own
+        #: rule and the interpreter must consult nobody.
+        self._scenarios = scenarios
         #: `{node_id: signal name}` — sent from inside that node's attempt, so
         #: the operator's hand lands on the wheel while the node is genuinely in
         #: flight. Any other timing tests a different thing.
@@ -513,6 +687,7 @@ class ScriptedWorld:
         self.node_calls: list[tuple[str, str]] = []
 
         self.graphs: list[WorkGraph] = []
+        self.persona_requests: list[ResolvePersonaInput] = []
         self.prompt_source_requests: list[LoadPromptSourcesInput] = []
         self.criteria_requests: list[SnapshotCriteriaInput] = []
         self.prepare_requests: list[PrepareWorktreeInput] = []
@@ -522,6 +697,7 @@ class ScriptedWorld:
         self.teardowns: list[TeardownInput] = []
         self.gate_requests: list[RunGatesInput] = []
         self.output_requests: list[CheckOutputInput] = []
+        self.diff_requests: list[ReadWorktreeDiffInput] = []
         self.judge_requests: list[RunJudgeInput] = []
         self.records: list[VerificationResult] = []
         self.salvages: list[SalvageWorktreeInput] = []
@@ -623,6 +799,23 @@ class ScriptedWorld:
                 )
             return resolved
 
+        @activity.defn(name="resolve_persona")
+        async def resolve_persona(request: ResolvePersonaInput) -> ResolvedPersona:
+            script._log("resolve_persona")
+            script.persona_requests.append(request)
+            persona = PERSONAS.get(request.persona)
+            if persona is None or persona.model is None:
+                raise ApplicationError(
+                    f"persona '{request.persona}' is not in the registry",
+                    type=GRAPH_INVALID,
+                    non_retryable=True,
+                )
+            return ResolvedPersona(
+                persona=request.persona,
+                model_alias=persona.model,
+                models=[a for a in (persona.model, persona.fallback) if a],
+            )
+
         @activity.defn(name="load_prompt_sources")
         async def load_prompt_sources(
             request: LoadPromptSourcesInput,
@@ -641,7 +834,7 @@ class ScriptedWorld:
             node = _node_of_spec_ref(request.spec_ref)
             script._log("snapshot_criteria", node.id)
             script.criteria_requests.append(request)
-            return criteria_for(node)
+            return criteria_for(node, scenarios=script._scenarios)
 
         @activity.defn(name="prepare_worktree")
         async def prepare_worktree(request: PrepareWorktreeInput) -> PreparedWorktree:
@@ -746,25 +939,35 @@ class ScriptedWorld:
             script.output_requests.append(request)
             return script._current.output
 
+        @activity.defn(name="read_worktree_diff")
+        async def read_worktree_diff(request: ReadWorktreeDiffInput) -> str:
+            script._log("read_worktree_diff", _node_of_worktree(request.worktree_path))
+            script.diff_requests.append(request)
+            return DIFF_TEXT
+
         @activity.defn(name="run_judge")
         async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
-            # Registered so the name alignment is real, and recorded rather than
-            # raised: a judge consulted for criteria with no scenarios is an
-            # assertion failure in the tests, not a hang in the harness.
             script._log("run_judge")
             script.judge_requests.append(request)
-            return JudgeVerdict(
-                outcome=JudgeOutcome.PASS,
-                findings=[
-                    JudgeScenarioFinding(
-                        scenario="none", passed=True, reasoning="nothing to score"
-                    )
-                ],
-                feedback="",
-                judge_attempt=1,
-                truncated_input=False,
-                model_alias=request.model_alias,
-            )
+
+            verdicts = script._current.judge
+            if not verdicts:
+                # A judge consulted for an attempt that scripted no verdict is an
+                # assertion failure in the tests, not a hang in the harness — so
+                # it is recorded and answered rather than raised.
+                script.calls.append("unscripted_judge")
+                return judge_pass(request.model_alias)
+
+            verdict = verdicts[min(request.judge_attempt, len(verdicts)) - 1]
+            if verdict.outcome == JudgeOutcome.UNAVAILABLE:
+                # The activity's real shape: an outage raises once its own HTTP
+                # retries are spent, and it stays retryable, so the workflow's
+                # budget is spent before any fallback is composed.
+                raise ApplicationError(
+                    "judge backend unavailable after 3 attempts",
+                    type=JUDGE_UNAVAILABLE,
+                )
+            return verdict
 
         @activity.defn(name="record_verification")
         async def record_verification(
@@ -842,6 +1045,7 @@ class ScriptedWorld:
 
         return [
             resolve_graph,
+            resolve_persona,
             load_prompt_sources,
             snapshot_criteria,
             prepare_worktree,
@@ -850,6 +1054,7 @@ class ScriptedWorld:
             poll_usage,
             run_gates,
             check_output,
+            read_worktree_diff,
             run_judge,
             record_verification,
             teardown_attempt,
@@ -1009,8 +1214,16 @@ async def test_a_three_node_graph_runs_to_epic_completion(
     assert "unscripted" not in script.calls
 
     # The registry and the epic's authored text are each read once, at the start
-    # — the same snapshot discipline 002 applies to criteria.
-    assert script.calls[:2] == ["resolve_graph", "load_prompt_sources"]
+    # — the same snapshot discipline 002 applies to criteria. The judge's own
+    # entry is resolved there too: no node names it, and discovering four
+    # attempts in that the epic cannot score anything is the failure resolving
+    # the whole graph first exists to prevent.
+    assert script.calls[:3] == [
+        "resolve_graph",
+        "resolve_persona",
+        "load_prompt_sources",
+    ]
+    assert [request.persona for request in script.persona_requests] == [JUDGE_PERSONA]
     assert len(script.prompt_source_requests) == 1
     assert script.prompt_source_requests[0].specs_root == SPECS_ROOT
     assert script.prompt_source_requests[0].feature == FEATURE
@@ -1792,3 +2005,330 @@ async def test_kill_cancels_the_attempt_salvages_and_kills_every_node(
     assert [(r.node_id, r.target_repo) for r in script.removals] == [
         ("us1", TARGET_REPO)
     ]
+
+
+# --- the judge path (002's flow invariant 2, wired) ---------------------------
+
+
+def one_node() -> WorkGraph:
+    """`us1` alone — the graph the judge tests need and no more of one.
+
+    Scheduling is asserted at length above; what these tests are about is one
+    node's verification, and a chain would run the same judge three times to say
+    nothing new.
+    """
+    return make_graph([make_node("us1", "US1")])
+
+
+def scored_world(*attempts: Attempt, client: Any, **overrides: Any) -> ScriptedWorld:
+    """A world whose criteria carry the story's acceptance scenario."""
+    return ScriptedWorld(
+        {"us1": list(attempts)}, client=client, scenarios=True, **overrides
+    )
+
+
+def judge_keys(script: ScriptedWorld) -> list[IssueKeyInput]:
+    return [request for request in script.key_requests if request.persona == JUDGE_PERSONA]
+
+
+async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
+    env: WorkflowEnvironment,
+) -> None:
+    """Green gates, real output, scenarios to score — so the judge is asked.
+
+    The whole of 002's flow invariant 6 in one sequence: the judge's completion
+    is bracketed by its own `issue_attempt_key` / `teardown_attempt`, the key is
+    minted for the `judge` persona rather than for the node's implementer
+    (constitution V), it is constrained to the aliases that persona names, and
+    the judge authenticates with the key that lease returned. The diff it scores
+    is read first, by an activity, and only once the cheaper checks are green
+    (invariant 2) — a node whose lint gate failed must not cost a completion.
+    """
+    script = scored_world(scored(judge_pass()), client=env.client)
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {"us1": NodeState.PASSED}
+    assert attempt_counts(status) == {"us1": 1}
+
+    assert script.sequence("us1") == [
+        "snapshot_criteria",
+        "prepare_worktree",
+        "issue_attempt_key:implementer",
+        "run_agent_attempt",
+        "run_gates",
+        "check_output",
+        "read_worktree_diff",
+        f"issue_attempt_key:{JUDGE_PERSONA}",
+        "run_judge",
+        f"teardown_attempt:{JUDGE_PERSONA}",
+        "record_verification",
+        "teardown_attempt:implementer",
+        "salvage_worktree",
+        "remove_worktree",
+    ]
+    assert "unscripted_judge" not in script.calls
+
+    # The judge's key: its own persona, its own aliases, and the node's attempt
+    # number, so the ledger reads "what the judge spent scoring us1 attempt 1".
+    [key] = judge_keys(script)
+    assert key.epic_id == EPIC_ID
+    assert key.node_id == "us1"
+    assert key.attempt == 1
+    assert key.spec_ref == f"{FEATURE}:US1"
+    assert key.models == [JUDGE_ALIAS, JUDGE_FALLBACK_ALIAS]
+
+    [teardown] = [t for t in script.teardowns if t.lease.persona == JUDGE_PERSONA]
+    assert teardown.lease.key == f"sk-us1-1-{JUDGE_PERSONA}"
+
+    [request] = script.judge_requests
+    assert request.virtual_key == teardown.lease.key
+    assert request.model_alias == JUDGE_ALIAS
+    assert request.proxy_url == PROXY_URL
+    assert request.judge_attempt == 1
+    assert request.prior_feedback is None
+    assert request.max_judge_retries == VerificationConfig().max_judge_retries
+    # The dispatch snapshot's scenarios, not a re-read of the spec (002 FR-010).
+    assert [
+        scenario.scenario_id
+        for requirement in request.criteria.requirements
+        for scenario in requirement.scenarios
+    ] == [scenario_id("US1")]
+
+    # The judge agreed, so the row says so — and says nothing about a judge that
+    # was not there.
+    [record] = script.records
+    assert record.verdict == OverallVerdict.PASS
+    assert record.judge is not None
+    assert record.judge.outcome == JudgeOutcome.PASS
+    assert record.judge_unavailable is False
+
+
+async def test_the_diff_the_judge_scores_is_read_by_an_activity(
+    env: WorkflowEnvironment,
+) -> None:
+    """Where the worktree is read, and where it must not be (constitution IV).
+
+    A workflow that ran git itself would be a workflow with a side effect and a
+    non-deterministic replay, so the diff crosses the activity boundary like
+    every other reading of the world: `read_worktree_diff` names the node's own
+    worktree, and what it returned is what the judge was handed, byte for byte.
+    Asserted structurally as well, because the behavioural half would still pass
+    if a second, unscheduled path appeared beside it.
+    """
+    script = scored_world(scored(judge_pass()), client=env.client)
+
+    await run_epic(env, script, graph=one_node())
+
+    [request] = script.diff_requests
+    assert request.worktree_path == f"{WORKTREE_ROOT}/{EPIC_ID}/us1"
+
+    [judged] = script.judge_requests
+    assert judged.diff_text == DIFF_TEXT
+
+    # `read_worktree_diff` is spelled in the workflow only as the activity being
+    # scheduled — never called, and never wrapped in a helper the epic's history
+    # would not record.
+    tree = ast.parse(Path(workflow_module.__file__).read_text(encoding="utf-8"))
+    scheduled, other = [], []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name) or node.id != "read_worktree_diff":
+            continue
+        (scheduled if _is_scheduled_activity(tree, node) else other).append(node)
+    assert scheduled, "the workflow never schedules read_worktree_diff"
+    assert not other, (
+        "factory/workgraph/workflow.py names read_worktree_diff outside an "
+        "activity invocation; the worktree is read in activities alone (FR-001)"
+    )
+
+
+def _is_scheduled_activity(tree: ast.Module, name: ast.Name) -> bool:
+    """Whether `name` is the first argument of a `workflow.execute_activity` call."""
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("execute_activity", "start_activity")
+        and node.args
+        and node.args[0] is name
+        for node in ast.walk(tree)
+    )
+
+
+async def test_a_judge_retry_spends_an_attempt_and_quotes_its_feedback(
+    env: WorkflowEnvironment,
+) -> None:
+    """The rewrite the judge asks for, and what the next attempt is told (SC-004).
+
+    A judge RETRY composes to FAIL — RETRY says what the ladder should do next,
+    not that the attempt was acceptable — so the node is re-dispatched with the
+    objection quoted verbatim, and the judge itself is handed its own last words
+    as `prior_feedback` so the second scoring answers the first (R4).
+    """
+    script = scored_world(
+        scored(judge_retry()),
+        scored(judge_pass()),
+        client=env.client,
+    )
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.PASSED}
+    assert attempt_counts(status) == {"us1": 2}
+
+    # Two agent attempts, each with its own judge key and its own bracket: the
+    # rewrite is a new attempt, not a second opinion on the old one.
+    assert [c.attempt for c in script.attempts] == [1, 2]
+    assert [key.attempt for key in judge_keys(script)] == [1, 2]
+    assert script.sequence("us1").count("run_judge") == 2
+
+    first, second = script.records
+    assert (first.verdict, first.judge.outcome) == (
+        OverallVerdict.FAIL,
+        JudgeOutcome.RETRY,
+    )
+    assert (second.verdict, second.judge.outcome) == (
+        OverallVerdict.PASS,
+        JudgeOutcome.PASS,
+    )
+
+    # Verbatim into the prompt, and verbatim back to the judge.
+    prompts = script.prompts_for("us1")
+    assert JUDGE_FEEDBACK not in prompts[0]
+    assert JUDGE_FEEDBACK in prompts[1]
+    assert [request.prior_feedback for request in script.judge_requests] == [
+        None,
+        JUDGE_FEEDBACK,
+    ]
+
+
+async def test_the_judges_rewrites_are_bounded_inside_the_attempt_budget(
+    env: WorkflowEnvironment,
+) -> None:
+    """The judge's outcome reaches the ladder, not just the row (002 SC-003).
+
+    `max_judge_retries` bounds judge-driven retries *inside* `max_attempts`
+    rather than on top of it, so with the attempt budget deliberately raised the
+    only thing that can end the retries is the rewrite cap — and the node drops
+    to a debugger cycle with three attempts still unspent. A workflow that
+    recorded the judge's verdict but left `judge_outcome` off the ladder's
+    history would keep retrying here and never call the debugger.
+    """
+    script = scored_world(
+        scored(judge_retry()),
+        scored(judge_retry()),
+        scored(judge_pass()),
+        client=env.client,
+    )
+
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        config=VerificationConfig(max_attempts=6, max_judge_retries=1),
+    )
+
+    assert states(status) == {"us1": NodeState.PASSED}
+    assert attempt_counts(status) == {"us1": 3}
+    assert [key.persona for key in script.key_requests if key.persona != JUDGE_PERSONA] == [
+        "implementer",
+        "implementer",
+        DEBUGGER_PERSONA,
+    ]
+    # The cap the judge is bounded by is the one an operator set, carried into
+    # every scoring rather than assumed.
+    assert [request.max_judge_retries for request in script.judge_requests] == [1, 1, 1]
+
+
+async def test_an_unreadable_judge_response_is_re_asked_inside_the_attempt(
+    env: WorkflowEnvironment,
+) -> None:
+    """A response nobody could parse is not an objection (002's judge contract).
+
+    `run_judge` reports one as a RETRY with no findings, and asking again is the
+    only way to tell a broken model turn from a real disagreement — so it is
+    re-asked inside the same attempt, on a fresh key, carrying the parse failure
+    as its own prior feedback. The node's attempt budget is untouched.
+    """
+    script = scored_world(
+        scored(judge_retry(UNREADABLE_FEEDBACK, findings=False), judge_pass()),
+        client=env.client,
+    )
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.PASSED}
+    assert attempt_counts(status) == {"us1": 1}
+    assert script.dispatched == ["us1"]
+
+    # Two scorings, two keys, two teardowns — no completion in this component is
+    # anonymous, the retried ones included (constitution V).
+    assert [request.judge_attempt for request in script.judge_requests] == [1, 2]
+    assert [key.attempt for key in judge_keys(script)] == [1, 1]
+    assert len([t for t in script.teardowns if t.lease.persona == JUDGE_PERSONA]) == 2
+    assert script.judge_requests[1].prior_feedback == UNREADABLE_FEEDBACK
+
+    # One agent attempt, one row, and the verdict of the judge that answered.
+    [record] = script.records
+    assert record.verdict == OverallVerdict.PASS
+    assert record.judge.outcome == JudgeOutcome.PASS
+
+
+async def test_an_unavailable_judge_passes_a_green_node_and_records_that_it_did(
+    env: WorkflowEnvironment,
+) -> None:
+    """The one asymmetry in the verdict table (002 data-model.md).
+
+    A judge that stayed down does not block a PASS — the deterministic evidence
+    is green and an outage is not a finding — but the row carries
+    `judge_unavailable`, which is the one column that says this PASS was reached
+    without judge agreement. The fallback is composed only after the workflow's
+    own retry budget is spent, and the key the judge never used is still torn
+    down.
+    """
+    script = scored_world(scored(judge_unavailable()), client=env.client)
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.PASSED}
+    assert attempt_counts(status) == {"us1": 1}
+
+    # Retried as an outage, not accepted as a verdict, before anything is
+    # composed from its absence.
+    assert script.sequence("us1").count("run_judge") == 3
+    assert [key.attempt for key in judge_keys(script)] == [1]
+    assert len([t for t in script.teardowns if t.lease.persona == JUDGE_PERSONA]) == 1
+
+    [record] = script.records
+    assert record.verdict == OverallVerdict.PASS
+    assert record.judge_unavailable is True
+    assert record.judge is not None
+    assert record.judge.outcome == JudgeOutcome.UNAVAILABLE
+    assert record.judge.model_alias == JUDGE_ALIAS
+
+
+async def test_a_failed_gate_costs_no_diff_and_no_judge_completion(
+    env: WorkflowEnvironment,
+) -> None:
+    """Cheapest-first, with the judge available and the criteria scorable.
+
+    The guard is `judge_required`'s, and it is asserted here in the shape it
+    actually matters: scenarios present, judge resolved, and still nobody asked —
+    because the gates already decided a FAIL no judge verdict could lift (FR-003).
+    The diff is not read either: reading a worktree nobody will score is work for
+    an answer already known.
+    """
+    script = scored_world(
+        *(scored(judge_pass(), gates=[gate_fail(n)]) for n in (1, 2, 3, 4)),
+        client=env.client,
+        press=EscalationChoice.KILL.value,
+    )
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.KILLED}
+    assert script.judge_requests == []
+    assert script.diff_requests == []
+    assert judge_keys(script) == []
+    assert [record.judge for record in script.records] == [None] * 4
+    assert [record.judge_unavailable for record in script.records] == [False] * 4

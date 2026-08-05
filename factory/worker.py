@@ -18,10 +18,11 @@ than against anyone's memory.
 Three choices worth stating:
 
 **All four surfaces are registered whole**, not the subset today's interpreter
-happens to call. `run_judge` is the live example — 002 ships it, the judge branch
-of the workflow is still unwired (T035), and a worker that had to be edited on
-the day it lands is a worker that will be restarted on that day for no reason.
-Registering a defined activity nobody calls costs one entry in a poller's map.
+happens to call. It cost nothing when `run_judge` was defined and unwired, and it
+cost nothing on the day the judge branch landed and started dispatching it:
+registering a defined activity nobody calls is one entry in a poller's map, and
+a worker that has to be edited the day a branch is wired is a worker that will be
+restarted that day for no reason.
 
 **Import is inert.** The registration is data and `main` is what runs, so
 importing this module dials nothing — which is what lets the test above hand the
@@ -84,9 +85,11 @@ WORKFLOWS = [EpicWorkflow]
 ACTIVITIES = [
     # 005 — the agent seam and the worktree lifecycle.
     agent_activities.resolve_graph,
+    agent_activities.resolve_persona,
     agent_activities.prepare_worktree,
     agent_activities.load_prompt_sources,
     agent_activities.run_agent_attempt,
+    agent_activities.read_worktree_diff,
     agent_activities.salvage_worktree,
     agent_activities.remove_worktree,
     # 001 — the attribution bracket around every attempt.

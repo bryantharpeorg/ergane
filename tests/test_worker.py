@@ -16,19 +16,20 @@ activities the interpreter invokes is never written down in this file. It is rea
 out of `factory/workgraph/workflow.py`'s own syntax tree — every
 `workflow.execute_activity` / `start_activity` call, its first argument resolved
 through the workflow module's namespace to the `@activity.defn` name Temporal will
-actually dispatch on. A future task that wires the judge (T035) or adds an
-activity for reading a worktree diff does not have to remember to update this
-test: the scan finds the new call, and the assertion fails until the worker
-registers it.
+actually dispatch on. Wiring the judge (T035) is what this bought: it added two
+activity invocations — the persona resolution and the worktree diff read — and
+nobody had to remember to update this test, because the scan found the new calls
+and the assertion failed until the worker registered them.
 
 Three claims, in the order a missing registration would bite:
 
 - **Everything the workflow invokes is registered**, by dispatch name, not by
   Python identity — the name is what crosses the wire.
 - **All four activity surfaces are registered whole** (agent, usage, verify,
-  notify), not merely the subset today's workflow happens to call. `run_judge` is
-  the live example: 002 ships it, the interpreter's judge branch is still unwired
-  (T035), and the worker that will have to serve it should already be serving it.
+  notify), not merely the subset today's workflow happens to call. `run_judge`
+  was the standing example — 002 shipped it long before the interpreter's judge
+  branch called it — and the worker needed no edit on the day that branch landed,
+  which is the whole point of registering a surface rather than a subset.
 - **Temporal itself accepts the set** — the registration is handed to a real
   `Worker` against a real (time-skipping) server, so duplicate names, a callable
   that is not an activity, or a workflow class Temporal rejects fail here rather
@@ -228,9 +229,10 @@ def test_every_activity_the_workflow_invokes_is_registered() -> None:
 def test_all_four_activity_surfaces_are_registered_whole() -> None:
     """The worker serves the components, not the subset today's workflow calls.
 
-    `run_judge` is the reason this is stated separately: 002 ships it, the
-    interpreter's judge branch is still unwired (T035), and the worker that will
-    serve it the moment that lands should not also need editing that day.
+    `run_judge` is why this is stated separately from the claim above: 002
+    shipped it while the interpreter's judge branch was still unwired, and
+    because the worker was already serving it, the day that branch landed
+    (T035) took no worker edit at all.
     """
     defined = _defined_activity_names()
     registered = _registered_names()

@@ -13,8 +13,7 @@ loop 002 wrote out and proved under time skipping, here made production and
 wrapped in the two things a per-node loop could not own: scheduling, and the
 worktree lifecycle.
 
-Six orderings and one omission are this module's own contribution, and each is
-load-bearing:
+Seven orderings are this module's own contribution, and each is load-bearing:
 
 1. **Resolve the whole graph before dispatching any of it** (FR-002). A cycle, a
    dangling edge, an unknown persona, a persona with no timeout: all of them fail
@@ -66,17 +65,17 @@ load-bearing:
    distinguishable from the node an operator abandoned — and the epic-level half
    of that answer, stopping the scheduler, is supplied here.
 
-The omission is the judge. 002's flow consults it when the gates are green, the
-output check passed, and the criteria carry acceptance scenarios; this
-interpreter asks the same question (`judge_required`) and cannot yet answer it,
-because two shapes no shipped activity provides are missing — where the
-worktree's diff is read, and how the `judge` persona's model alias resolves
-(`resolve_graph` answers only for graph nodes). Rather than pass unjudged work
-off as judged, an attempt that *would* have been scored is recorded with
-`judge_unavailable` set: the row then says, in the column built for exactly this,
-that this PASS was reached without judge agreement. Wiring the judge is a
-follow-up that owes a test first, and the flag is what will make its absence
-impossible to forget.
+7. **The judge is asked last, and only while it can still change the answer**
+   (FR-003, 002's flow invariant 2). `judge_required` is the guard: gates green,
+   output check passed, criteria carrying acceptance scenarios. Only then is the
+   worktree's patch read — by an activity, because workflow code touches nothing
+   — and only then is a key minted. That key is the judge's own, for persona
+   `judge` and constrained to that persona's aliases, so scoring is spend
+   attributed to the scorer (constitution V); it is torn down whatever the call
+   did, an outage included. A judge that stayed down through the workflow's own
+   retry budget does not block a PASS the deterministic evidence already earned,
+   but the row carries `judge_unavailable` — the one column that says this PASS
+   was reached without judge agreement, so nobody reads it later as judged work.
 
 The debugger cycle runs on the node's own resolved alias and deadline for the
 same reason — the registry snapshot covers graph nodes — but its key is minted
@@ -109,12 +108,16 @@ with workflow.unsafe.imports_passed_through():
         LoadPromptSourcesInput,
         PrepareWorktreeInput,
         PromptSources,
+        ReadWorktreeDiffInput,
         RemoveWorktreeInput,
+        ResolvePersonaInput,
         SalvageWorktreeInput,
         load_prompt_sources,
         prepare_worktree,
+        read_worktree_diff,
         remove_worktree,
         resolve_graph,
+        resolve_persona,
         run_agent_attempt,
         salvage_worktree,
     )
@@ -133,23 +136,28 @@ with workflow.unsafe.imports_passed_through():
         teardown_attempt,
     )
     from factory.activities.verify_activities import (
+        JUDGE_UNAVAILABLE,
         CheckOutputInput,
         RecordVerificationInput,
         RunGatesInput,
+        RunJudgeInput,
         SnapshotCriteriaInput,
         check_output,
         record_verification,
         run_gates,
+        run_judge,
         snapshot_criteria,
     )
     from factory.notify.messages import render_history
     from factory.notify.service import SIGNAL_NAME
-    from factory.usage.models import KeyLease, Termination
+    from factory.usage.models import KeyLease, Termination, UsageSnapshot
     from factory.verify.ladder import DEBUGGER_PERSONA, next_action
     from factory.verify.models import (
         AttemptRecord,
         CriteriaSet,
         EscalationChoice,
+        JudgeOutcome,
+        JudgeVerdict,
         NextAction,
         VerificationConfig,
         VerificationForm,
@@ -164,6 +172,7 @@ with workflow.unsafe.imports_passed_through():
         NodeRecord,
         NodeState,
         ResolvedNode,
+        ResolvedPersona,
         WorkGraph,
         WorkNode,
     )
@@ -174,6 +183,13 @@ with workflow.unsafe.imports_passed_through():
 #: (D-002). Named here rather than in the worker so the worker, the CLI and the
 #: workflow cannot drift apart on a string.
 TASK_QUEUE = "workgraph"
+
+#: The registry entry the judge's own key is minted against — a persona, never a
+#: model (constitution VII). Deliberately not the node's: the judge scores the
+#: work, so the completion is attributed to the judge and constrained to the
+#: aliases that persona names. No node is routed to it, which is why it is
+#: resolved by name at epic start rather than found on a `ResolvedNode`.
+JUDGE_PERSONA = "judge"
 
 #: How often the workflow reads what a live attempt has spent (R3). A poll is a
 #: read with no consequence — enforcement is deferred (D-021) — and its only
@@ -240,6 +256,15 @@ _GIT = {
 #: guessed at it would fail the honest slow suite rather than the wedged one.
 _GATES = {
     "start_to_close_timeout": timedelta(hours=2),
+    "retry_policy": _RETRIES,
+}
+
+#: One bounded chat completion, plus the HTTP retries the judge makes inside it
+#: (002 R4). Longer than a proxy round trip and far shorter than a gate suite: a
+#: judge still thinking after a quarter of an hour is a judge nobody is waiting
+#: for, and the ladder is holding the node open the whole time.
+_JUDGE = {
+    "start_to_close_timeout": timedelta(minutes=15),
     "retry_policy": _RETRIES,
 }
 
@@ -423,6 +448,12 @@ class EpicWorkflow:
         """
         graph = request.graph
         resolved = await self._resolve(graph)
+        # The one persona no node names, read in the same breath as the graph and
+        # under the same snapshot rule: an epic with nobody to score its stories
+        # fails here, not four attempts and one spent key later.
+        judge = await workflow.execute_activity(
+            resolve_persona, ResolvePersonaInput(persona=JUDGE_PERSONA), **_FAST
+        )
 
         self._nodes = {
             item.node.id: NodeRecord(
@@ -465,7 +496,7 @@ class EpicWorkflow:
                 # dependency chain (and would have been picked) or a dead one
                 # (and was killed the moment that dependency died).
                 break
-            await self._run_node(ready, request, sources)
+            await self._run_node(ready, request, sources, judge)
             if self._nodes[ready.node.id].state != NodeState.PASSED:
                 self._lock_out_dependents(resolved)
 
@@ -558,6 +589,7 @@ class EpicWorkflow:
         resolved: ResolvedNode,
         request: EpicInput,
         sources: PromptSources,
+        judge: ResolvedPersona,
     ) -> None:
         """One node from dispatch to terminal state (contracts/workflow.md).
 
@@ -604,6 +636,11 @@ class EpicWorkflow:
         #: The classification the node ends with if a kill lands before any
         #: attempt reports one of its own.
         termination = Termination.KILLED
+        #: The judge's last objection, carried across attempts rather than to
+        #: the next one only: an attempt that failed its gates never reached the
+        #: judge, and what the judge last asked for is still the thing being
+        #: answered (002 R4).
+        prior_feedback: str | None = None
 
         while True:
             if self._kill_requested:
@@ -677,19 +714,22 @@ class EpicWorkflow:
                 # was *opened* — but nothing is verified: a two-hour gate suite
                 # against a worktree nobody will read is the opposite of
                 # stopping, and the node ends KILLED whatever the gates say.
-                await self._teardown(lease, termination, record)
+                await self._teardown(lease, termination, record.last_snapshot)
                 action = NextAction.KILLED
                 break
 
             record.state = NodeState.VERIFYING
-            result = await self._verify(
-                graph.epic_id,
+            result, verdict = await self._verify(
+                request,
                 resolved,
                 criteria,
                 prepared,
                 record.attempt,
-                request.config,
+                judge,
+                prior_feedback,
             )
+            if verdict is not None and verdict.feedback:
+                prior_feedback = verdict.feedback
             results.append(result)
             evidence.append(
                 AttemptEvidence(termination=termination, result=result)
@@ -703,7 +743,7 @@ class EpicWorkflow:
                 )
             )
 
-            await self._teardown(lease, termination, record)
+            await self._teardown(lease, termination, record.last_snapshot)
 
             action = next_action(
                 record.history, request.config, escalations=record.escalations
@@ -810,43 +850,54 @@ class EpicWorkflow:
             pass
 
     async def _teardown(
-        self, lease: KeyLease, termination: Termination, record: NodeRecord
+        self,
+        lease: KeyLease,
+        termination: Termination,
+        last_snapshot: UsageSnapshot | None,
     ) -> None:
-        """Close the attempt's bracket (FR-004).
+        """Close a key's bracket (FR-004).
 
         On the adapter's word about the process, and on the last thing the proxy
         was willing to tell us (R3). Every path that issued a key comes through
-        here — the verified attempt, and the one a kill cut short.
+        here — the verified attempt, the one a kill cut short, and the judge's
+        own call, which nothing polls and which therefore has no fallback figure
+        to fall back to.
         """
         await workflow.execute_activity(
             teardown_attempt,
             TeardownInput(
                 lease=lease,
                 termination=termination,
-                last_snapshot=record.last_snapshot,
+                last_snapshot=last_snapshot,
             ),
             **_PROXY,
         )
 
     async def _verify(
         self,
-        epic_id: str,
+        request: EpicInput,
         resolved: ResolvedNode,
         criteria: CriteriaSet,
         prepared: PreparedWorktree,
         attempt: int,
-        config: VerificationConfig,
-    ) -> VerificationResult:
-        """Gates, then output, then the verdict — and the row before anything else.
+        judge: ResolvedPersona,
+        prior_feedback: str | None,
+    ) -> tuple[VerificationResult, JudgeVerdict | None]:
+        """Gates, then output, then — only if it can still matter — the judge.
 
         Cheapest-first is 002's flow invariant 2 rather than an optimization: a
         node whose lint gate failed in two seconds must not cost a completion to
-        find that out. `judge_required` is the question that guard asks, and this
-        component cannot yet answer it (see the module docstring) — so an attempt
-        that would have been scored is flagged `judge_unavailable`, which is the
-        one column that says "this PASS was reached without judge agreement".
+        find that out. `judge_required` is the question that guard asks, and it
+        gates the worktree read as well as the scoring — reading a patch nobody
+        will score is work for an answer already known.
+
+        The verdict itself is `compose_result`'s, which is also where an
+        unreachable judge becomes a PASS carrying `judge_unavailable` rather than
+        a third kind of answer. The row lands before anything acts on it
+        (invariant 3).
         """
         node = resolved.node
+        config = request.config
         started_at = _now()
 
         gate_results = await workflow.execute_activity(
@@ -867,21 +918,30 @@ class EpicWorkflow:
             **_FAST,
         )
 
+        verdict: JudgeVerdict | None = None
+        if judge_required(gate_results, output, criteria):
+            diff_text = await workflow.execute_activity(
+                read_worktree_diff,
+                ReadWorktreeDiffInput(worktree_path=prepared.path),
+                **_GIT,
+            )
+            verdict = await self._judge(
+                request, node, criteria, diff_text, attempt, judge, prior_feedback
+            )
+
         result = compose_result(
-            epic_id=epic_id,
+            epic_id=request.graph.epic_id,
             node_id=node.id,
             attempt=attempt,
             form=VerificationForm.PHASE,
             gate_results=gate_results,
             output_check=output,
-            judge=None,
+            judge=verdict,
             criteria_sha256=criteria.source_sha256,
             spec_ref=node.spec_ref,
             started_at=started_at,
             finished_at=_now(),
         )
-        if judge_required(gate_results, output, criteria):
-            result = replace(result, judge_unavailable=True)
 
         recorded = await workflow.execute_activity(
             record_verification,
@@ -893,7 +953,115 @@ class EpicWorkflow:
         # The activity re-hashed the spec file and may have found drift the
         # workflow could not see; the retry prompt and the escalation summary are
         # built from this bundle, so they read what the row reads (002 R8).
-        return replace(result, criteria_drift=recorded.criteria_drift)
+        return replace(result, criteria_drift=recorded.criteria_drift), verdict
+
+    async def _judge(
+        self,
+        request: EpicInput,
+        node: WorkNode,
+        criteria: CriteriaSet,
+        diff_text: str,
+        attempt: int,
+        judge: ResolvedPersona,
+        prior_feedback: str | None,
+    ) -> JudgeVerdict:
+        """Score the diff, on a key minted and revoked for this call alone.
+
+        The loop is for responses the strict parser could not read, and for
+        nothing else: `run_judge` reports those as a RETRY with no findings, and
+        asking again is the only way to tell a broken model turn from a real
+        objection. A RETRY that names scenarios is an answer — re-asking it about
+        an unchanged diff would buy the same verdict at twice the price, so it
+        ends the attempt and the ladder takes over.
+
+        An outage is not a verdict and not a failure of the node: once the
+        workflow's own retry budget is spent, `JUDGE_UNAVAILABLE` becomes the
+        UNAVAILABLE verdict `compose_result` reads as "did not block this PASS,
+        and say so in the row". Every other error propagates — a judge that
+        cannot be called for any other reason is a wiring fault, and passing work
+        off as judged because of one is the failure the flag exists to prevent.
+        """
+        verdict: JudgeVerdict | None = None
+
+        for judge_attempt in range(1, request.config.max_judge_retries + 2):
+            lease = await workflow.execute_activity(
+                issue_attempt_key,
+                IssueKeyInput(
+                    node_id=node.id,
+                    epic_id=request.graph.epic_id,
+                    # The node's attempt number: this is the scoring of *that*
+                    # attempt, and the ledger should read it that way.
+                    attempt=attempt,
+                    persona=JUDGE_PERSONA,
+                    spec_ref=node.spec_ref,
+                    # The judge's key may call the judge's aliases and nothing
+                    # else: a key that could call anything is attribution
+                    # without constraint (constitution V).
+                    models=list(judge.models),
+                ),
+                **_PROXY,
+            )
+
+            try:
+                verdict = await self._score(
+                    request, criteria, diff_text, lease, judge, judge_attempt, prior_feedback
+                )
+            finally:
+                # Even when the judge failed outright: a key that outlives its
+                # call is spend nobody is reading, and teardown is what writes
+                # the ledger row (001 R3).
+                await self._teardown(lease, Termination.COMPLETED, None)
+
+            if verdict.outcome != JudgeOutcome.RETRY or verdict.findings:
+                break
+            prior_feedback = verdict.feedback
+
+        assert verdict is not None  # the range above is never empty
+        return verdict
+
+    async def _score(
+        self,
+        request: EpicInput,
+        criteria: CriteriaSet,
+        diff_text: str,
+        lease: KeyLease,
+        judge: ResolvedPersona,
+        judge_attempt: int,
+        prior_feedback: str | None,
+    ) -> JudgeVerdict:
+        """One judge completion, with an outage answered rather than raised."""
+        try:
+            return await workflow.execute_activity(
+                run_judge,
+                RunJudgeInput(
+                    criteria=criteria,
+                    diff_text=diff_text,
+                    virtual_key=lease.key,
+                    proxy_url=request.proxy_url,
+                    model_alias=judge.model_alias,
+                    judge_attempt=judge_attempt,
+                    prior_feedback=prior_feedback,
+                    max_judge_retries=request.config.max_judge_retries,
+                ),
+                **_JUDGE,
+            )
+        except ActivityError as exc:
+            outage = exc.cause
+            if not (
+                isinstance(outage, ApplicationError) and outage.type == JUDGE_UNAVAILABLE
+            ):
+                raise
+            return JudgeVerdict(
+                outcome=JudgeOutcome.UNAVAILABLE,
+                findings=[],
+                # The library scrubbed this message before it was ever an error
+                # (002 FR-009), and the row is the only place it is read: an
+                # UNAVAILABLE behind green gates has no next attempt to tell.
+                feedback=outage.message,
+                judge_attempt=judge_attempt,
+                truncated_input=False,
+                model_alias=judge.model_alias,
+            )
 
     async def _escalate(
         self,

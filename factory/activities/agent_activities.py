@@ -6,13 +6,16 @@ two concerns the library deliberately does not: reading the world at a known
 moment, and turning a library exception into an error the interpreter can branch
 on without reading prose.
 
-The five activities are one node's life, in order. `resolve_graph` reads
+The activities are one node's life, in order. `resolve_graph` reads
 `personas.yaml` once per epic and hands back a snapshot, so an operator editing
 the registry mid-epic changes the *next* epic — the same discipline 002 applies
-to criteria. `prepare_worktree` opens (or re-opens) the node's one worktree.
-`run_agent_attempt` is the only place an agent runs. `salvage_worktree` and
-`remove_worktree` are the terminal pair constitution VI requires on every path
-out, in that order.
+to criteria; `resolve_persona` is that read for the one role no node names, the
+judge, which needs an alias and a key of its own without being routed to.
+`prepare_worktree` opens (or re-opens) the node's one worktree.
+`run_agent_attempt` is the only place an agent runs. `read_worktree_diff` is the
+one place the resulting patch is read, because the workflow that hands it to the
+judge may touch nothing itself. `salvage_worktree` and `remove_worktree` are the
+terminal pair constitution VI requires on every path out, in that order.
 
 Four things decided here rather than in the library:
 
@@ -83,6 +86,7 @@ from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
     ResolvedNode,
+    ResolvedPersona,
     WorkGraph,
     WorkGraphError,
     WorkNode,
@@ -220,6 +224,53 @@ def _graph_invalid(message: str) -> ApplicationError:
     return ApplicationError(message, type=GRAPH_INVALID, non_retryable=True)
 
 
+# --- resolve_persona (the roles no node names) --------------------------------
+
+
+@dataclass(frozen=True)
+class ResolvePersonaInput:
+    """One registry entry to resolve, by name."""
+
+    persona: str
+
+
+@activity.defn
+async def resolve_persona(request: ResolvePersonaInput) -> ResolvedPersona:
+    """Read one persona the graph does not name — the judge (constitution V).
+
+    `resolve_graph` answers for nodes, and no node is routed to the judge: it
+    scores what an implementer produced, on its own key and under its own alias.
+    Called once at epic start for the same reason the graph is resolved there —
+    an epic that cannot score its stories should fail before a key is spent
+    discovering it, not four attempts in.
+
+    Read-only and idempotent. Raises non-retryable `GRAPH_INVALID`, naming the
+    persona, when the registry has no such entry or the entry names no model.
+    """
+    try:
+        registry = load_personas()
+    except ConfigError as exc:
+        raise _graph_invalid(str(exc)) from exc
+
+    persona = registry.get(request.persona)
+    if persona is None:
+        raise _graph_invalid(
+            f"persona '{request.persona}' is not in the registry, so the work "
+            "that needs it cannot be dispatched"
+        )
+    if persona.model is None:
+        raise _graph_invalid(
+            f"persona '{request.persona}' runs no agent and names no model — "
+            "nothing can be dispatched to it (constitution VII)"
+        )
+
+    return ResolvedPersona(
+        persona=request.persona,
+        model_alias=persona.model,
+        models=[alias for alias in (persona.model, persona.fallback) if alias],
+    )
+
+
 # --- prepare_worktree (FR-013, R11) -------------------------------------------
 
 
@@ -345,6 +396,44 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         raise ApplicationError(
             str(exc), type=AGENT_LAUNCH_FAILED, non_retryable=True
         ) from exc
+
+
+# --- read_worktree_diff (what the judge scores) -------------------------------
+
+
+@dataclass(frozen=True)
+class ReadWorktreeDiffInput:
+    """Which worktree to read the attempt's patch out of.
+
+    The path rather than the epic/node pair, because the two callers that read
+    this worktree in the same breath — 002's `run_gates` and `check_output` —
+    take the path the workflow is already holding, and a second way of naming the
+    same directory is a second thing that can disagree.
+    """
+
+    worktree_path: str
+
+
+@activity.defn
+async def read_worktree_diff(request: ReadWorktreeDiffInput) -> str:
+    """Read what the attempt changed, for the judge to score (FR-001).
+
+    The workflow decides and touches nothing, so this is the one place a
+    worktree's patch is read. Read-only — the patch is assembled against a
+    scratch index, never the worktree's own — and safe to retry.
+
+    Raises retryable `WORKTREE_FAILED` when git could not read the worktree: an
+    unreachable directory resembles an empty diff exactly, and handing the judge
+    "the agent produced nothing" over a lost mount charges an infrastructure
+    failure to the attempt.
+
+    Runs in a worker thread: a patch over a large repository owns the wall clock
+    for as long as git takes.
+    """
+    try:
+        return await asyncio.to_thread(worktrees.diff, request.worktree_path)
+    except WorktreeError as exc:
+        raise ApplicationError(str(exc), type=WORKTREE_FAILED) from exc
 
 
 # --- salvage_worktree / remove_worktree (constitution VI) ---------------------

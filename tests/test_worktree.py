@@ -1,7 +1,7 @@
 """The node's one worktree: created once, reused across attempts, salvaged, removed.
 
 This is where constitution VI ("no work is ever lost") stops being a principle and
-becomes four git commands. Three properties are what these tests actually defend:
+becomes five git commands. Four properties are what these tests actually defend:
 
 - **One worktree per node, reused** (FR-013). 002's retry semantics — and the
   debugger persona in particular — assume the next attempt opens the *same* tree
@@ -22,6 +22,12 @@ becomes four git commands. Three properties are what these tests actually defend
 - **Removal is cleanup, never deletion of the record.** `remove` takes the
   directory away; the branch and its salvage commits survive, because they are the
   only thing left of the attempt once `.factory/` is swept.
+
+- **Reading the diff is a read.** `diff` is what 002's judge scores, so it has to
+  include the untracked files that are the normal shape of agent output — and it
+  has to leave the tree exactly as the agent left it, because the output check
+  (FR-004) and the salvage after it both read the same directory. Staging to get
+  the untracked half would change what those two see.
 
 Two deliberate choices in the setup:
 
@@ -56,9 +62,11 @@ import pytest
 
 from factory.usage.models import Termination
 from factory.workgraph.worktree import (
+    DIFF_CLIP_NOTICE,
     PreparedWorktree,
     WorktreeError,
     capture_base_ref,
+    diff,
     ensure,
     remove,
     salvage,
@@ -443,3 +451,88 @@ def test_remove_of_a_worktree_that_never_existed_is_success(
     remove(repo, EPIC, NODE, factory_root=factory_root)
 
     assert not (factory_root / "worktrees" / EPIC / NODE).exists()
+
+
+# --- diff --------------------------------------------------------------------
+
+
+def test_diff_reports_edits_and_new_files_as_one_patch(
+    repo: Path, factory_root: Path
+) -> None:
+    """What the judge is given to score: everything the attempt changed (R7).
+
+    Untracked files are the normal shape of agent output — a new module, a new
+    test — so a diff that only showed tracked edits would hand the judge the
+    smaller half of the work and let it fail a scenario the agent satisfied.
+    """
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    dirty(Path(prepared.path))
+
+    patch = diff(prepared.path)
+
+    assert f"b/{TRACKED_FILE}" in patch
+    assert "+# edited by the agent" in patch
+    assert f"b/{NEW_FILE}" in patch
+    assert "+VALUE = 1" in patch
+
+
+def test_diff_reads_the_worktree_without_staging_anything(
+    repo: Path, factory_root: Path
+) -> None:
+    """A read that changed the tree would change the verdict after it.
+
+    002's output check and this component's salvage both read the same worktree
+    afterwards, and both would read differently against a staged index. So the
+    patch is assembled in a scratch index outside the worktree: the tree is
+    exactly as the agent left it, and a second read answers the same thing.
+    """
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    before = status(worktree)
+
+    patch = diff(worktree)
+
+    assert status(worktree) == before
+    assert git(worktree, "diff", "--cached", "--name-only").strip() == ""
+    assert diff(worktree) == patch
+
+
+def test_a_clean_worktree_diffs_to_nothing(repo: Path, factory_root: Path) -> None:
+    """An attempt that produced nothing produces no patch — and that is a fact,
+    not a failure to look. The empty-diff verdict is the output check's (FR-004),
+    which has already run by the time the judge is asked."""
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert diff(prepared.path) == ""
+
+
+def test_diff_is_clipped_at_its_limit_and_says_where(
+    repo: Path, factory_root: Path
+) -> None:
+    """A runaway diff is bounded before it becomes a workflow-history payload.
+
+    The judge abridges further and discloses it (002 R6); this bound is the one
+    underneath — an agent that committed a vendored tree must not wedge the epic
+    with a payload Temporal refuses. Clipping is disclosed for the same reason
+    the judge's is: an elision nobody is told about reads as work nobody did.
+    """
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    (Path(prepared.path) / "generated.txt").write_text("x" * 10_000, encoding="utf-8")
+
+    patch = diff(prepared.path, limit=2_000)
+
+    assert len(patch.encode("utf-8")) <= 2_000 + len(DIFF_CLIP_NOTICE)
+    assert patch.endswith(DIFF_CLIP_NOTICE)
+    assert "generated.txt" in patch
+
+
+def test_diff_raises_when_the_worktree_is_gone(
+    repo: Path, factory_root: Path
+) -> None:
+    """A worktree that vanished is infrastructure, never an empty diff — the same
+    line `check_output` draws, for the same reason."""
+    with pytest.raises(WorktreeError) as raised:
+        diff(factory_root / "worktrees" / EPIC / NODE)
+
+    assert str(factory_root / "worktrees" / EPIC / NODE) in str(raised.value)

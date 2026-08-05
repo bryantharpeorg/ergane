@@ -1,6 +1,6 @@
 """The node's one worktree: created once, reused across attempts, salvaged, removed.
 
-Four git operations, and the whole of constitution VI's "no work is ever lost"
+Five git operations, and the whole of constitution VI's "no work is ever lost"
 rests on the middle two. Every node gets exactly one worktree at
 `.factory/worktrees/<epic>/<node>` on branch `factory/<epic>/<node>` (FR-013),
 and every attempt of that node opens the same tree the last attempt left behind —
@@ -32,6 +32,14 @@ Three decisions here are load-bearing:
   cleanup; the branch and its salvage commits survive, because once `.factory/` is
   swept they are the only thing left of the attempt.
 
+- **Reading the diff changes nothing.** `diff` is what 002's judge scores, and it
+  has to include untracked files — a new module and a new test are the normal
+  shape of agent output, and a patch showing only tracked edits would hand the
+  judge the smaller half of the work. Git's usual way of doing that stages them;
+  this one assembles the patch in a scratch index outside the worktree instead,
+  so the tree the output check reads and the salvage commits is exactly the tree
+  the agent left.
+
 Salvage carries its own identity rather than borrowing the host's. Reading
 `user.name` from whatever the worker host has configured would attribute the
 factory's automated commits to a person who did not make them, and would produce
@@ -49,6 +57,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -67,6 +76,21 @@ SALVAGE_AUTHOR_EMAIL = "factory@ergane.invalid"
 #: Generous enough for a checkout of a large repository, bounded so a wedged git
 #: cannot hold a node's terminal path open forever.
 GIT_TIMEOUT_S = 300
+
+#: How much of a worktree's patch may cross an activity boundary. The judge
+#: abridges to its own, much smaller, input limit and says so (002 R6); this is
+#: the bound underneath it, and it exists because the diff travels through
+#: workflow history — an agent that committed a vendored tree would otherwise
+#: wedge its epic with a payload Temporal refuses, after its key was spent.
+DIFF_READ_LIMIT = 1024 * 1024
+
+#: Appended when the ceiling above was reached. Disclosed for the same reason the
+#: judge discloses its own elisions: a patch that was quietly cut off reads as
+#: work the agent did not do.
+DIFF_CLIP_NOTICE = (
+    f"\n[... diff truncated at the {DIFF_READ_LIMIT}-byte worktree read limit; "
+    "the remaining files are on the node's branch ...]\n"
+)
 
 
 class WorktreeError(RuntimeError):
@@ -219,6 +243,46 @@ def salvage(
         env_extra=_SALVAGE_IDENTITY,
     )
     return _head(path)
+
+
+def diff(worktree: Path | str, *, limit: int = DIFF_READ_LIMIT) -> str:
+    """Everything the attempt changed, as one patch — what 002's judge scores.
+
+    Worktree-vs-HEAD (R7's definition, the one the output check already uses),
+    with untracked files rendered as the new files they are and ignored ones
+    left out, so the factory's own leavings never reach the judge as agent work.
+
+    Read-only where it matters: `git add -A` runs against a scratch index in a
+    temporary directory, never the worktree's own, so nothing is staged and the
+    tree the salvage commits afterwards is untouched. Safe to call twice.
+
+    Raises `WorktreeError` when the worktree is absent or git refuses it — the
+    empty diff an absent directory resembles would read as "the agent produced
+    nothing", which is a verdict rather than the infrastructure failure it is.
+    """
+    path = Path(worktree)
+    if not path.is_dir():
+        raise WorktreeError(f"node worktree does not exist: {path}")
+
+    with tempfile.TemporaryDirectory(prefix="ergane-diff-") as scratch:
+        # An index git creates from scratch here and throws away with the
+        # directory: `add -A` fills it from the worktree, and the comparison
+        # against HEAD is then the whole patch, new files included.
+        index = {"GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        _git(path, "add", "-A", env_extra=index)
+        patch = _git(path, "diff", "--cached", "HEAD", env_extra=index)
+
+    return _clip(patch, limit)
+
+
+def _clip(patch: str, limit: int) -> str:
+    """Bound the patch at `limit` bytes, saying so when there was more."""
+    encoded = patch.encode("utf-8")
+    if len(encoded) <= limit:
+        return patch
+    # Decoded leniently: the cut can land mid-character, and a patch that is one
+    # byte too long is not worth an exception on the judge's only input.
+    return encoded[:limit].decode("utf-8", errors="ignore") + DIFF_CLIP_NOTICE
 
 
 def remove(

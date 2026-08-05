@@ -116,11 +116,11 @@ Layout, all under the single `factory` package (D-004):
 | `factory/workgraph/models.py` | `WorkGraph` / `WorkNode` / `NodeState` / `EpicState` / `AttemptContext` / `AdapterResult`, plus pure start-time graph validation |
 | `factory/workgraph/derive.py` | pure: epic spec text → `WorkGraph` via the `## Work Graph` section (D-025) |
 | `factory/workgraph/prompt.py` | pure two-loop attempt-prompt assembly (inner ralph contract advisory, outer 002 ladder authoritative) |
-| `factory/workgraph/worktree.py` | one worktree per node: ensure / salvage / remove |
+| `factory/workgraph/worktree.py` | one worktree per node: ensure / salvage / remove / diff |
 | `factory/workgraph/adapter.py` | the D-018 seam — `AgentAdapter` + `ClaudeCodeAdapter` (§8) |
 | `factory/workgraph/workflow.py` | `EpicWorkflow`: the interpreter itself, pure decisions only |
 | `factory/workgraph/cli.py` | `factory-epic derive \| start \| status` (§3.2) |
-| `factory/activities/agent_activities.py` | `resolve_graph` / `prepare_worktree` / `run_agent_attempt` / `salvage_worktree` / `remove_worktree` |
+| `factory/activities/agent_activities.py` | `resolve_graph` / `resolve_persona` / `prepare_worktree` / `run_agent_attempt` / `read_worktree_diff` / `salvage_worktree` / `remove_worktree` |
 | `factory/worker.py` | runnable `python -m factory.worker` — registers `EpicWorkflow` plus all three components' activities |
 
 A node carries: `id`, `persona`, `spec_ref` (feature + requirement keys — also
@@ -141,7 +141,11 @@ Per node: `PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED | FAILED`
 `KILLED` reachable from any non-terminal state. Every attempt is bracketed by
 component 1's key lifecycle (§5.1) and routed by component 2's ladder (§6) — retry,
 debugger, escalate — with the agent's own self-report never touching node state
-(the adapter yields process outcome and termination class only). Worktree salvage
+(the adapter yields process outcome and termination class only). When the gates and
+the output check are green and the node's criteria carry acceptance scenarios, the
+judge is consulted inside a key lifecycle of its own, minted for the `judge` persona
+(resolved once at epic start, since no node names it) and constrained to that
+persona's aliases — so scoring is spend attributed to the scorer. Worktree salvage
 runs on every termination path before cleanup (principle VI). Epic states are
 `RUNNING ⇄ PAUSED`, `→ KILLED`, `→ COMPLETED` (every node terminal — which does not
 imply every node passed; the run's result carries the per-node outcomes).
