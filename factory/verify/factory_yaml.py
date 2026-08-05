@@ -24,6 +24,15 @@ Three things this module deliberately does not do:
   shape would spend a full test run ahead of the lint that would have failed in
   two seconds — the repo's ordering is the repo's choice.
 
+Amended by 005 (research R11) with an optional top-level `standards` key: the
+path to the repo's coding-standards document, which prompt assembly points an
+agent at. It is additive and optional, so the schema stays `version: 1` — a
+bump for one optional key would force every target repo to migrate for nothing.
+Only its *shape* is checked here, because whether the file exists is a question
+about a worktree, and the one activity holding a worktree before the agent does
+(`prepare_worktree`) asks it. Like every optional key in this module, declared
+means declared: a null, blank, or non-string value is a defect, not a shrug.
+
 The messages are written for an operator holding a broken file, so each one names
 the source file, the `.rule` slug that was violated, and the offending value
 `repr`-rendered. The `repr` is load-bearing: YAML's whole family of near-misses
@@ -49,7 +58,7 @@ MANIFEST_NAME = "factory.yaml"
 #: checks to gates 1:1. Arbitrary names are a `version: 2` conversation.
 KNOWN_GATES = ("test", "lint", "typecheck")
 
-_TOP_LEVEL_KEYS = ("version", "runtime", "gates", "timeouts")
+_TOP_LEVEL_KEYS = ("version", "runtime", "gates", "timeouts", "standards")
 
 _SUPPORTED_VERSION = 1
 
@@ -90,9 +99,14 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     runtime = _read_runtime(document, source)
     gates = _read_gates(document, source)
     timeouts = _read_timeouts(document, gates, source)
+    standards = _read_standards(document, source)
 
     return FactoryConfig(
-        version=version, runtime=runtime, gates=gates, timeouts=timeouts
+        version=version,
+        runtime=runtime,
+        gates=gates,
+        timeouts=timeouts,
+        standards=standards,
     )
 
 
@@ -249,6 +263,29 @@ def _read_timeouts(
                 source=source,
             )
     return dict(timeouts)
+
+
+def _read_standards(document: Mapping[Any, Any], source: str) -> str | None:
+    if "standards" not in document:
+        # Absent is not a defect: most repos declare no standards document, and
+        # `None` is what tells prompt assembly there is nothing to point at.
+        return None
+    standards = document["standards"]
+    # Declared means declared. `standards:` with no value parses to None, and a
+    # blank string is the same operator mistake wearing a different hat — both
+    # would otherwise read as "declared" here and as "nothing to obey" there.
+    if not isinstance(standards, str) or not standards.strip():
+        raise FactoryConfigError(
+            "standards",
+            f"declares `standards: {standards!r}`; when declared it must be a "
+            "non-empty path to one document in the repo, e.g. "
+            "`standards: docs/STANDARDS.md`",
+            source=source,
+        )
+    # Recorded verbatim: it is resolved against the node's worktree at dispatch,
+    # where a missing file fails the dispatch loudly (research R11). Normalising
+    # it here would be a filesystem opinion in a pure parser.
+    return standards
 
 
 # Loading ---------------------------------------------------------------------

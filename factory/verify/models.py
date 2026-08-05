@@ -188,12 +188,21 @@ class FactoryConfig:
     worker for now (R3), and keeping the field means the manifest does not have
     to change when containerized execution lands. `timeouts` is sparse: a gate
     with no entry uses `VerificationConfig.gate_timeout_s`.
+
+    `standards` (added by 005, research R11) names the repo's coding-standards
+    document, relative to the repo root, for prompt assembly to point an agent
+    at. It stays a path rather than the document's text because the agent reads
+    it in-worktree — the same committed file the gates see. `None` means the
+    repo declared none, which is why it is nullable rather than empty-string
+    defaulted: prompt assembly emits the read-and-obey directive iff it was
+    declared, and existence is checked at dispatch, not here.
     """
 
     version: int
     runtime: str
     gates: dict[str, str]
     timeouts: dict[str, int] = field(default_factory=dict)
+    standards: str | None = None
 
 
 @dataclass(frozen=True)
