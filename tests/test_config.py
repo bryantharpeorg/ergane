@@ -4,6 +4,11 @@ Covers data-model.md § Persona and research R8: the shipped `personas.yaml`
 parses, the verifier persona is keyless, `write_scope` is a closed enum, and the
 agent/model consistency rules are enforced.
 
+Amended by 005 (research R8): an optional `timeout` field — the attempt
+wall-clock default an agent-backed persona resolves, so no timeout is ever
+hardcoded (FR-010). It mirrors the model rule in both directions: required of
+nothing, forbidden on deterministic personas.
+
 Written before `factory/config.py` exists (T006 precedes T009): until the loader
 lands, every test here fails at import.
 """
@@ -205,3 +210,95 @@ def test_deterministic_persona_with_a_fallback_is_rejected(tmp_path: Path) -> No
         load_personas(_write_registry(tmp_path, registry))
 
     assert "fallback" in str(excinfo.value)
+
+
+# --- timeout (research R8) -------------------------------------------------
+
+
+def test_shipped_agent_backed_personas_declare_a_timeout() -> None:
+    """R8: the registry is where an attempt's wall-clock default lives, so
+    every persona that can run an agent resolves one — and the deterministic
+    persona resolves none.
+    """
+    registry = load_personas(SHIPPED_REGISTRY)
+
+    for persona in registry.values():
+        if persona.is_llm:
+            assert isinstance(persona.timeout_s, int), f"{persona.name} declares no timeout"
+            assert not isinstance(persona.timeout_s, bool)
+            assert persona.timeout_s > 0
+        else:
+            assert persona.timeout_s is None
+
+
+def test_timeout_loads_as_seconds(tmp_path: Path) -> None:
+    persona = load_personas(_write_registry(tmp_path, {"implementer": _entry(timeout=3600)}))[
+        "implementer"
+    ]
+
+    assert persona.timeout_s == 3600
+
+
+def test_timeout_may_be_omitted(tmp_path: Path) -> None:
+    persona = load_personas(_write_registry(tmp_path, {"implementer": _entry()}))["implementer"]
+
+    assert persona.timeout_s is None
+
+
+def test_explicit_null_timeout_reads_as_absent(tmp_path: Path) -> None:
+    """`timeout: null` is how an operator spells "not applicable", exactly as
+    `fallback: null` already does.
+    """
+    registry = {"implementer": _entry(timeout=None)}
+
+    persona = load_personas(_write_registry(tmp_path, registry))["implementer"]
+
+    assert persona.timeout_s is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, -3600, 1.5, "3600", True, [3600], {}])
+def test_non_positive_integer_timeout_is_rejected(tmp_path: Path, bad: object) -> None:
+    """Seconds, and a real count of them: zero and negatives are unrunnable,
+    and a bool or a stringified number is a typo the loader must not coerce.
+    """
+    registry = {"implementer": _entry(timeout=bad)}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_personas(_write_registry(tmp_path, registry))
+
+    assert "timeout" in str(excinfo.value)
+    assert "implementer" in str(excinfo.value)
+
+
+def test_deterministic_persona_with_a_timeout_is_rejected(tmp_path: Path) -> None:
+    """Mirrors the model rule: a persona that runs no agent has no attempt to
+    bound, so a timeout on it is a registry mistake, not a harmless extra.
+    """
+    registry = {
+        "verifier": _entry(
+            agent="none",
+            model=None,
+            timeout=3600,
+            write_scope="read",
+        )
+    }
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_personas(_write_registry(tmp_path, registry))
+
+    assert "timeout" in str(excinfo.value)
+    assert "verifier" in str(excinfo.value)
+
+
+def test_timeout_s_in_yaml_is_rejected_as_an_unknown_field(tmp_path: Path) -> None:
+    """The YAML key is `timeout`; `timeout_s` is the loaded attribute's name.
+    Unknown-field rejection is what keeps the two from silently diverging.
+    """
+    registry = {"implementer": _entry(timeout_s=3600)}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_personas(_write_registry(tmp_path, registry))
+
+    assert "timeout_s" in str(excinfo.value)
+    assert "unknown" in str(excinfo.value)
+    assert "implementer" in str(excinfo.value)

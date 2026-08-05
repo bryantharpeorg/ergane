@@ -24,7 +24,7 @@
 
 **Purpose**: The two config-surface amendments every story reads, and the shared types. No user story work before this phase completes.
 
-- [ ] T003 [P] Amend `tests/test_config.py` FIRST: persona `timeout` field — a positive integer of seconds loads onto `Persona.timeout_s`; absent → `None`; zero/negative/non-int rejected naming the persona; forbidden on `agent: none` personas (error naming the persona, mirroring the model rule); unknown-field rejection still catches typos like `timeout_s` in YAML — must fail (field not implemented)
+- [X] T003 [P] Amend `tests/test_config.py` FIRST: persona `timeout` field — a positive integer of seconds loads onto `Persona.timeout_s`; absent → `None`; zero/negative/non-int rejected naming the persona; forbidden on `agent: none` personas (error naming the persona, mirroring the model rule); unknown-field rejection still catches typos like `timeout_s` in YAML — must fail (field not implemented)
 - [ ] T004 Amend `factory/config.py` (`Persona.timeout_s`, `_OPTIONAL_FIELDS` + validation per research R8) and `personas.yaml` (set `timeout` on every agent-backed persona: architect/implementer/judge/debugger/researcher; operator-editable values, e.g. 3600–14400s) until T003 passes
 - [ ] T005 [P] Amend `tests/test_factory_yaml.py` FIRST: optional top-level `standards` key — non-empty string accepted onto `FactoryConfig.standards`; absent → `None`; empty/non-string rejected with rule slug `standards`; schema stays `version: 1`; existing rejection table unaffected — must fail
 - [ ] T006 Amend `factory/verify/models.py` (`FactoryConfig.standards: str | None = None`) and `factory/verify/factory_yaml.py` (accept + validate `standards` per research R11) until T005 passes
