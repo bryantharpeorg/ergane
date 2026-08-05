@@ -15,7 +15,7 @@
 
 ## Phase 1: Setup
 
-- [ ] T001 Verify components 1 and 2 are implemented and green: `uv run pytest -q` passes and `factory/usage/`, `factory/verify/`, `factory/notify/`, `factory/activities/usage_activities.py`, `factory/activities/verify_activities.py`, `factory/activities/notify_activities.py`, `personas.yaml` exist — constitution I gate; STOP if not satisfied
+- [X] T001 Verify components 1 and 2 are implemented and green: `uv run pytest -q` passes and `factory/usage/`, `factory/verify/`, `factory/notify/`, `factory/activities/usage_activities.py`, `factory/activities/verify_activities.py`, `factory/activities/notify_activities.py`, `personas.yaml` exist — constitution I gate; STOP if not satisfied
 - [ ] T002 Create skeletons and markers: `factory/workgraph/__init__.py`, `tests/fixtures/workgraph/.gitkeep`, `.factory/` present in `.gitignore` (add if missing), and a `live_epic` pytest marker in `pyproject.toml` alongside `live_proxy`/`live_telegram` ("runs a live one-node epic; auto-skips unless Tier 1 env is set")
 
 ---
