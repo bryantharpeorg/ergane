@@ -13,7 +13,7 @@ loop 002 wrote out and proved under time skipping, here made production and
 wrapped in the two things a per-node loop could not own: scheduling, and the
 worktree lifecycle.
 
-Five orderings and one omission are this module's own contribution, and each is
+Six orderings and one omission are this module's own contribution, and each is
 load-bearing:
 
 1. **Resolve the whole graph before dispatching any of it** (FR-002). A cycle, a
@@ -52,6 +52,19 @@ load-bearing:
    worktree may hold salvageable work, and no agent-side signal — an exit code
    included — is allowed to decide a node in either direction. The termination
    travels to teardown and to the salvage subject, and nowhere else.
+
+6. **The steering wheel turns the scheduler, not the node** (FR-008). `pause`
+   stops dispatch and nothing else: the node already in flight keeps its whole
+   ladder, because its key lease and its worktree are one bracket and suspending
+   a node halfway through would leave a key issued against work nobody is doing.
+   `kill` is the single exception and the only path that interrupts an attempt —
+   it cancels the adapter (whose KILLED path archives the transcript first, R2),
+   closes the bracket the attempt opened, salvages and sweeps, and then marks
+   every node the epic never reached KILLED, so a killed epic still accounts for
+   its whole graph. A `PAUSE_EPIC` press is where the two meet: the ladder can
+   only end the node, so the node parks FAILED — terminal, salvaged, swept, and
+   distinguishable from the node an operator abandoned — and the epic-level half
+   of that answer, stopping the scheduler, is supplied here.
 
 The omission is the judge. 002's flow consults it when the gates are green, the
 output check passed, and the criteria carry acceptance scenarios; this
@@ -178,6 +191,11 @@ _UNREACHABLE = frozenset({NodeState.FAILED, NodeState.KILLED})
 #: Ladder actions that end a node.
 _TERMINAL_ACTIONS = frozenset({NextAction.PASSED, NextAction.KILLED})
 
+#: Node states nothing may move a node out of. The kill sequence writes over
+#: every node that is not already in one of these, which is what makes a killed
+#: epic's status an account of the whole graph rather than of the part that ran.
+_TERMINAL_STATES = frozenset({NodeState.PASSED, NodeState.FAILED, NodeState.KILLED})
+
 #: Activities here are idempotent reads, guarded upserts, and sends that mint a
 #: fresh id per call — all safe to retry, none worth retrying for long while the
 #: ladder holds a decision.
@@ -236,10 +254,18 @@ _GATE_HEARTBEAT_GRACE_S = 60
 #: fired first would discard exactly the evidence that path exists to produce.
 _ADAPTER_GRACE_S = 120
 
-#: Missed beats before a live attempt is presumed dead. The adapter beats every
-#: `HEARTBEAT_INTERVAL_S`; a bound of one beat would fail a healthy attempt on a
-#: busy worker, and this is also what makes a cancellation land within a beat.
-_AGENT_HEARTBEAT_TIMEOUT = timedelta(seconds=4 * HEARTBEAT_INTERVAL_S)
+#: Missed beats before a live attempt is presumed dead — and, more sharply, how
+#: long a killed agent goes on spending. Temporal delivers activity cancellation
+#: in a heartbeat's *response*, and batches heartbeats to one round trip per 80%
+#: of this value, so a kill reaches the agent about `0.8 ×` this timeout after
+#: the operator sends it. That is the binding purpose: detecting a dead worker a
+#: minute later costs nothing (the epic is stalled either way), while an agent
+#: that runs on for a minute after "stop" is spending model time nobody wants
+#: and holding the worktree the workflow is about to salvage (US3-S3). Five
+#: beats, at the adapter's `HEARTBEAT_INTERVAL_S`, is the slack a healthy attempt
+#: on a busy worker needs — derived from that constant so the two can never
+#: drift into a bound shorter than the beat it is bounding.
+_AGENT_HEARTBEAT_TIMEOUT = timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
 
 
 @dataclass(frozen=True)
@@ -319,7 +345,46 @@ class EpicWorkflow:
         #: already waiting.
         self._resolutions: dict[str, str] = {}
 
+        #: The steering wheel's whole state (FR-008). Two plain flags and no
+        #: persistence: a signal is a history event, so replay rebuilds both
+        #: exactly where the recorded run had them (R1).
+        self._paused = False
+        self._kill_requested = False
+
     # --- signals and queries -------------------------------------------------
+
+    @workflow.signal
+    def pause_epic(self) -> None:
+        """Stop dispatching; let the node in flight finish (contracts/workflow.md).
+
+        Only the scheduler is suspended. The in-flight node keeps its ladder to
+        the end — verdict recorded, key torn down, worktree salvaged and swept —
+        because the key lease and the worktree are one bracket, and a node parked
+        halfway through would hold an issued key against work nobody is doing
+        (constitution V). Idempotent: pausing a paused epic is what an operator
+        does when they are not sure the first one landed.
+        """
+        self._paused = True
+
+    @workflow.signal
+    def resume_epic(self) -> None:
+        """Release the scheduler. A resume that arrives first simply never pauses."""
+        self._paused = False
+
+    @workflow.signal
+    def kill_epic(self) -> None:
+        """Stop the epic, in-flight attempt included (US3-S3).
+
+        The one signal that interrupts an attempt: the flag is read both by the
+        scheduler and by the running attempt's poll loop, which cancels the
+        adapter within a heartbeat. Nothing here awaits or acts — a signal
+        handler that ran the kill sequence would run it inside whatever workflow
+        task delivered the signal, racing the node lifecycle it is trying to end.
+        A kill is never taken back: no un-kill signal exists, because the keys
+        are torn down and the worktrees swept by the time an operator could
+        change their mind.
+        """
+        self._kill_requested = True
 
     @workflow.signal(name=SIGNAL_NAME)
     def escalation_resolved(self, escalation_id: str, choice: str) -> None:
@@ -381,6 +446,19 @@ class EpicWorkflow:
         )
 
         while True:
+            if self._kill_requested:
+                break
+            if self._paused:
+                # Parked between two nodes, which is the only place a pause can
+                # take effect: the signal may have arrived mid-attempt, and that
+                # attempt has since finished its ladder (R10).
+                self._epic_state = EpicState.PAUSED
+                await workflow.wait_condition(
+                    lambda: not self._paused or self._kill_requested
+                )
+                if not self._kill_requested:
+                    self._epic_state = EpicState.RUNNING
+                continue
             ready = self._next_ready(resolved)
             if ready is None:
                 # Every node is terminal: a non-terminal node either had a ready
@@ -391,7 +469,11 @@ class EpicWorkflow:
             if self._nodes[ready.node.id].state != NodeState.PASSED:
                 self._lock_out_dependents(resolved)
 
-        self._epic_state = EpicState.COMPLETED
+        if self._kill_requested:
+            self._kill_remaining()
+            self._epic_state = EpicState.KILLED
+        else:
+            self._epic_state = EpicState.COMPLETED
         return self.epic_status()
 
     async def _resolve(self, graph: WorkGraph) -> list[ResolvedNode]:
@@ -456,6 +538,19 @@ class EpicWorkflow:
                     record.state = NodeState.KILLED
                     settled = False
 
+    def _kill_remaining(self) -> None:
+        """Account for every node the kill caught short (US3-S3).
+
+        A node that never dispatched has no worktree to salvage and no key to
+        tear down — the node the kill *interrupted* did both on its way out, in
+        its own lifecycle — so this is bookkeeping alone: the status an operator
+        reads after a kill names every node in the graph, and none of them is
+        left claiming to be pending an epic that has stopped.
+        """
+        for record in self._nodes.values():
+            if record.state not in _TERMINAL_STATES:
+                record.state = NodeState.KILLED
+
     # --- one node's life ----------------------------------------------------
 
     async def _run_node(
@@ -501,8 +596,23 @@ class EpicWorkflow:
         results: list[VerificationResult] = []
         evidence: list[AttemptEvidence] = []
         persona = node.persona
+        #: Set by a `PAUSE_EPIC` press: the node ends parked rather than
+        #: abandoned, and the epic stops. Nothing else in the ladder's
+        #: vocabulary distinguishes the two, because nothing else has to — a
+        #: per-node decision cannot say "and stop the epic".
+        parked = False
+        #: The classification the node ends with if a kill lands before any
+        #: attempt reports one of its own.
+        termination = Termination.KILLED
 
         while True:
+            if self._kill_requested:
+                # Between two attempts, with the previous one's bracket already
+                # closed: the kill outranks whatever the ladder was about to
+                # grant, and no key is issued for an attempt nobody will read.
+                action = NextAction.KILLED
+                break
+
             record.attempt += 1
             # Pure, and built from workflow state alone: the same inputs on a
             # replay produce the same bytes, so a replayed attempt is handed the
@@ -555,7 +665,21 @@ class EpicWorkflow:
                 ),
                 poll_interval_s=request.poll_interval_s,
             )
-            termination = adapter_result.termination
+            # `None` is the attempt the kill cancelled: the adapter re-raises on
+            # its KILLED path rather than reporting a termination the workflow
+            # could mistake for an ending (R2), so the classification is the
+            # workflow's own — it is the one that asked.
+            if adapter_result is not None:
+                termination = adapter_result.termination
+
+            if self._kill_requested:
+                # The bracket still closes — FR-004 is about every attempt that
+                # was *opened* — but nothing is verified: a two-hour gate suite
+                # against a worktree nobody will read is the opposite of
+                # stopping, and the node ends KILLED whatever the gates say.
+                await self._teardown(lease, termination, record)
+                action = NextAction.KILLED
+                break
 
             record.state = NodeState.VERIFYING
             result = await self._verify(
@@ -579,17 +703,7 @@ class EpicWorkflow:
                 )
             )
 
-            # The bracket closes on the adapter's word about the process, and on
-            # the last thing the proxy was willing to tell us (FR-004, R3).
-            await workflow.execute_activity(
-                teardown_attempt,
-                TeardownInput(
-                    lease=lease,
-                    termination=termination,
-                    last_snapshot=record.last_snapshot,
-                ),
-                **_PROXY,
-            )
+            await self._teardown(lease, termination, record)
 
             action = next_action(
                 record.history, request.config, escalations=record.escalations
@@ -597,6 +711,13 @@ class EpicWorkflow:
             if action == NextAction.ESCALATE:
                 escalation = await self._escalate(graph, node, results, request.config)
                 record.escalations.append(escalation.resolution)
+                if escalation.resolution == EscalationChoice.PAUSE_EPIC:
+                    # The press the ladder can only half answer: it ends the
+                    # node (as every non-grant does), and the epic-level half —
+                    # park rather than abandon, and stop dispatching — is this
+                    # component's to supply (contracts/workflow.md).
+                    parked = True
+                    self._paused = True
                 action = next_action(
                     record.history, request.config, escalations=record.escalations
                 )
@@ -614,9 +735,13 @@ class EpicWorkflow:
                 DEBUGGER_PERSONA if action == NextAction.DEBUGGER else node.persona
             )
 
-        await self._close_out(
-            graph, node, record, termination, passed=action == NextAction.PASSED
-        )
+        if action == NextAction.PASSED:
+            state = NodeState.PASSED
+        elif parked:
+            state = NodeState.FAILED
+        else:
+            state = NodeState.KILLED
+        await self._close_out(graph, node, record, termination, state=state)
 
     async def _attempt(
         self,
@@ -625,7 +750,7 @@ class EpicWorkflow:
         context: AttemptContext,
         *,
         poll_interval_s: int,
-    ) -> AdapterResult:
+    ) -> AdapterResult | None:
         """Run one agent attempt, reading its spend while it works (R3).
 
         The adapter's output cannot carry usage numbers (D-018), so the workflow
@@ -633,6 +758,12 @@ class EpicWorkflow:
         teardown then records the figure that was true a beat ago rather than
         none at all (constitution V). The poll is a read with no consequence —
         nothing here branches on a dollar figure, at any magnitude (D-021).
+
+        The same loop is where a kill lands: the flag is checked on every beat,
+        so an operator's stop takes effect within one poll interval rather than
+        at the end of an attempt that may be hours long. `None` is returned for
+        the attempt that was cancelled — there is no result, and the caller
+        supplies the classification.
         """
         record.state = NodeState.RUNNING
         agent = workflow.start_activity(
@@ -648,14 +779,54 @@ class EpicWorkflow:
         while True:
             try:
                 await workflow.wait_condition(
-                    agent.done, timeout=timedelta(seconds=poll_interval_s)
+                    lambda: agent.done() or self._kill_requested,
+                    timeout=timedelta(seconds=poll_interval_s),
                 )
             except asyncio.TimeoutError:
                 record.last_snapshot = await workflow.execute_activity(
                     poll_usage, lease, **_FAST
                 )
                 continue
+            if self._kill_requested and not agent.done():
+                await self._cancel(agent)
+                return None
             return await agent
+
+    async def _cancel(self, agent: workflow.ActivityHandle[AdapterResult]) -> None:
+        """Stop the running attempt and wait for the cancellation to be recorded.
+
+        The adapter's KILLED path terminates the process group, archives the
+        transcript (FR-007) and re-raises rather than returning, so a cancelled
+        attempt reaches the workflow as a failure — which is the correct shape
+        and not an error to propagate: this workflow asked for it. However the
+        attempt ended once it was told to stop is not a fact the epic turns on,
+        so every ending is swallowed here and the node is closed out on the
+        operator's decision instead.
+        """
+        agent.cancel()
+        try:
+            await agent
+        except (ActivityError, asyncio.CancelledError):
+            pass
+
+    async def _teardown(
+        self, lease: KeyLease, termination: Termination, record: NodeRecord
+    ) -> None:
+        """Close the attempt's bracket (FR-004).
+
+        On the adapter's word about the process, and on the last thing the proxy
+        was willing to tell us (R3). Every path that issued a key comes through
+        here — the verified attempt, and the one a kill cut short.
+        """
+        await workflow.execute_activity(
+            teardown_attempt,
+            TeardownInput(
+                lease=lease,
+                termination=termination,
+                last_snapshot=record.last_snapshot,
+            ),
+            **_PROXY,
+        )
 
     async def _verify(
         self,
@@ -789,15 +960,17 @@ class EpicWorkflow:
         record: NodeRecord,
         termination: Termination,
         *,
-        passed: bool,
+        state: NodeState,
     ) -> None:
         """Salvage, sweep, then say what the node became (constitution VI).
 
-        In that order on every path out, pass included: the salvage commit
-        carries the attempt number and the termination the adapter classified, so
-        the branch alone accounts for how the node ended once `.factory/` is
-        swept (SC-004). Removal takes the directory and never the record — the
-        branch and its commits outlive it.
+        In that order on every path out — pass, gate failure, kill, and the
+        `PAUSE_EPIC` park alike: the salvage commit carries the attempt number
+        and the termination the adapter classified, so the branch alone accounts
+        for how the node ended once `.factory/` is swept (SC-004). Removal takes
+        the directory and never the record — the branch and its commits outlive
+        it. The terminal state is decided by the caller, because only the caller
+        knows whether a node that did not pass was abandoned or parked.
         """
         await workflow.execute_activity(
             salvage_worktree,
@@ -818,7 +991,7 @@ class EpicWorkflow:
             ),
             **_GIT,
         )
-        record.state = NodeState.PASSED if passed else NodeState.KILLED
+        record.state = state
 
 
 def _now() -> str:

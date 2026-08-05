@@ -83,10 +83,19 @@ DEFAULT_EXECUTABLE = "claude"
 #: what it was doing, short enough that ignoring TERM buys nothing.
 DEFAULT_GRACE_S = 10.0
 
-#: How often the adapter beats while waiting (R2). ~30s is what makes a
-#: multi-hour attempt cancellable within a beat and a dead worker detectable in
-#: minutes rather than at the deadline.
-DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
+#: How often the adapter beats while waiting (R2) — the interval that makes a
+#: multi-hour attempt cancellable in seconds rather than at its deadline.
+#:
+#: One second, not the leisurely half-minute a liveness signal would need,
+#: because the beat is also the *only* channel a kill travels down: Temporal
+#: delivers activity cancellation in a heartbeat's response, and its client
+#: batches beats to one round trip per 80% of the activity's heartbeat timeout.
+#: The interval and that timeout therefore bound how long an agent keeps
+#: spending after an operator says stop (`workflow._AGENT_HEARTBEAT_TIMEOUT`
+#: derives from this constant for exactly that reason). Beating this often costs
+#: nothing — it is an in-process call whose round trips are batched away, and the
+#: monitor loop is already awake to check the deadline.
+DEFAULT_HEARTBEAT_INTERVAL_S = 1.0
 
 _NON_ALNUM = re.compile(r"[^a-zA-Z0-9]")
 
