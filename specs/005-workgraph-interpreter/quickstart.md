@@ -36,13 +36,17 @@ uv run factory-epic derive tests/fixtures/workgraph/unknown_fr    --target-repo 
 uv run factory-epic derive tests/fixtures/workgraph/cycle         --target-repo /tmp/x
 ```
 
-Deriving Ergane's own 005 spec (this directory gains no `## Work Graph`; 003's
-spec does, as the crossover prerequisite) is the real-world check once 003's
-declaration lands:
+Ergane's own 003 spec carries a `## Work Graph` section (the crossover
+prerequisite; this 005 directory deliberately gains none), so deriving it is both
+the real-world check and the crossover's actual input:
 
 ```bash
 uv run factory-epic derive specs/003-merge-queue --target-repo <clone-path>
 ```
+
+Expected: three nodes in spec order — `us1`, `us2` waiting on `us1`, `us3`
+independent — each carrying its story key plus the FRs it implements. Without
+`-o` the artifact lands next to the spec, at `specs/003-merge-queue/workgraph.json`.
 
 ## 3. Interpreter behavior under time skipping
 
@@ -57,26 +61,49 @@ failure and kill (SC-002); RETRY re-dispatches with evidence in the prompt;
 ESCALATE → KILL terminates with salvage ordering intact; `pause_epic` blocks
 dispatch while the in-flight node finishes; replay after simulated worker restart
 double-dispatches nothing (US1-S4); every attempt has its issue/teardown +
-verification pair (SC-003) and terminal salvage commit + transcript (SC-004).
+verification pair (SC-003); every node that ran ends salvage-then-sweep carrying
+the attempt number and the termination the adapter classified.
+
+Those last calls are scripted fakes — this suite proves the interpreter *asks* for
+salvage before cleanup on every terminal path. The commit that lands is proven
+against real git repos in `tests/test_worktree.py`, the per-attempt transcript
+archive against the stub agent in `tests/test_adapter.py`, and both together
+against a real agent by §4's live smoke (SC-004).
 
 ## 4. Live Tier 1 smoke (optional, env-gated)
 
 Prerequisites: LiteLLM proxy + Postgres, Temporal dev server
-(`temporal server start-dev --db-filename .temporal/dev.db`), Telegram bot,
-`claude` CLI on this host; `personas.yaml` aliases set to real proxy aliases.
+(`temporal server start-dev --db-filename .temporal/dev.db`), `claude` CLI on this
+host, and `personas.yaml` aliases set to real proxy aliases. A Telegram bot is
+needed only by the escalation bridge, below — not by the smoke.
 
 ```bash
 export LITELLM_PROXY_URL=... LITELLM_MASTER_KEY=...          # activities only
 export TEMPORAL_ADDRESS=localhost:7233 TEMPORAL_NAMESPACE=factory
-python -m factory.worker &                                    # workflow + all activities, queue `workgraph`
-python -m factory.notify.service &                            # escalation bridge (optional for the smoke)
 uv run pytest -q -m live_epic                                 # one-node epic against a scratch target repo
 ```
 
-Expected: `factory-epic start` prints `epic-<id>`; `factory-epic status <id>`
-tracks PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED; the scratch repo gains
-a `factory/<epic>/us1` branch with real commits. This is the SC-005 rehearsal; the
-003 crossover is the same commands pointed at `specs/003-merge-queue/`.
+That is the whole smoke: it builds its own scratch repo, runs its own in-process
+worker on a per-epic task queue, and starts the epic through the client — so it
+needs no long-running worker of yours, and no notifier (its ladder is capped at
+one attempt, so nothing escalates). It derives and reads status through the real
+CLI. Missing the proxy, the dev server, the `claude` CLI, or real persona aliases,
+it skips naming what it could not find rather than failing.
+
+Expected: `us1` reaches PASSED; the scratch repo gains a `factory/<epic>/us1`
+branch whose tip is a real salvage commit; the ledger, the evidence store and
+`.factory/transcripts/` each hold the attempt. This is the SC-005 rehearsal.
+
+Driving an epic by hand — the shape the 003 crossover takes — is the same
+environment plus the operator's own processes and commands:
+
+```bash
+python -m factory.worker &                                    # workflow + all activities, queue `workgraph`
+python -m factory.notify.service &                            # escalation bridge (Telegram)
+uv run factory-epic derive specs/003-merge-queue --target-repo <clone-path>
+uv run factory-epic start specs/003-merge-queue/workgraph.json   # prints epic-003-merge-queue
+uv run factory-epic status 003-merge-queue                       # PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED
+```
 
 ## 5. Inspect what an epic left behind
 
