@@ -27,11 +27,19 @@ from typing import Any, AsyncIterator
 import httpx
 import pytest
 
-from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient, LiteLLMError
+from factory.usage.litellm_client import (
+    DEFAULT_KEY_TTL,
+    LiteLLMClient,
+    LiteLLMError,
+    hashed_token,
+)
 from tests.conftest import FakeLiteLLM
 
-ALIAS = "epic-7:node-3:2"
+ALIAS = "epic-7:node-3:2:implementer"
 MODELS = ["anthropic/CHANGEME", "local/CHANGEME"]
+
+#: When the standard attempt's key was minted — the spend-log window's anchor.
+ISSUED_AT = "2026-08-05T09:30:00Z"
 
 #: The attribution dimensions mirrored into key metadata (R1). LiteLLM does not
 #: copy these into spend rows — teardown re-supplies them — but they make the
@@ -190,12 +198,20 @@ async def test_fetch_spend_log_rows_filters_to_the_attempts_key(
     fake_litellm.add_spend_row(key, prompt_tokens=10, completion_tokens=5, spend=0.25)
     fake_litellm.add_spend_row(other, prompt_tokens=99, completion_tokens=99, spend=9.99)
 
-    rows = await client.fetch_spend_log_rows(key)
+    rows = await client.fetch_spend_log_rows(key, issued_at=ISSUED_AT)
 
-    assert [row["api_key"] for row in rows] == [key]
+    # Rows come back for OUR key only, and the filter went over the wire as
+    # the token's sha256 — the store matches nothing for a raw `sk-` value
+    # (probed live 2026-08-05), and the fake enforces the same convention.
+    assert [row["api_key"] for row in rows] == [hashed_token(key)]
     (call,) = fake_litellm.calls_to("/spend/logs/v2")
     assert call.method == "GET"
-    assert call.params["api_key"] == key
+    assert call.params["api_key"] == hashed_token(key)
+    # The proxy demands a date window (the fake 400s without one, as the real
+    # one does); the client anchors it a full day before the lease's mint so
+    # no clock skew or midnight boundary can hide a row.
+    assert call.params["start_date"] == "2026-08-04"
+    assert call.params["end_date"] >= "2026-08-05"
 
 
 async def test_fetch_spend_log_rows_pass_cache_metadata_through_untouched(
@@ -214,7 +230,7 @@ async def test_fetch_spend_log_rows_pass_cache_metadata_through_untouched(
         key, prompt_tokens=3, completion_tokens=1, spend=0.01
     )
 
-    rows = await client.fetch_spend_log_rows(key)
+    rows = await client.fetch_spend_log_rows(key, issued_at=ISSUED_AT)
 
     # The client transports rows verbatim; interpreting them — including the
     # absent-vs-zero cache rule — is `aggregate.py`'s job (R2, FR-004).
@@ -240,7 +256,7 @@ async def test_fetch_spend_log_rows_drains_every_page(
         )
     fake_litellm.max_page_size = 100
 
-    rows = await client.fetch_spend_log_rows(key)
+    rows = await client.fetch_spend_log_rows(key, issued_at=ISSUED_AT)
 
     # A client that stops after page one under-reports usage silently — the
     # exact failure FR-005 forbids.
@@ -256,7 +272,7 @@ async def test_fetch_spend_log_rows_is_empty_for_a_key_that_never_spent(
 ) -> None:
     key = await _issue(client)
 
-    assert await client.fetch_spend_log_rows(key) == []
+    assert await client.fetch_spend_log_rows(key, issued_at=ISSUED_AT) == []
     assert len(fake_litellm.calls_to("/spend/logs/v2")) == 1
 
 

@@ -52,7 +52,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +69,11 @@ from factory.activities.usage_activities import (
 )
 from factory.activities.verify_activities import RunJudgeInput, run_judge
 from factory.config import ConfigError, load_personas
-from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
+from factory.usage.litellm_client import (
+    MASTER_KEY_ENV,
+    PROXY_URL_ENV,
+    hashed_token,
+)
 from factory.usage.models import KeyLease, Termination, UsageRecord
 from factory.verify.judge import dispatched_scenario_ids
 from factory.verify.models import (
@@ -378,7 +382,17 @@ async def _spend_log_rows(
         config,
         "GET",
         "/spend/logs/v2",
-        params={"api_key": key, "page": 1, "page_size": 1000},
+        params={
+            # The store keys rows by the token's sha256; a raw key matches nothing.
+            "api_key": hashed_token(key),
+            # The proxy requires the window; +/- a day is the same
+            # generous partition hint the real client sends.
+            "start_date": (date.today() - timedelta(days=1)).isoformat(),
+            "end_date": (date.today() + timedelta(days=1)).isoformat(),
+            "page": 1,
+            # 100 is the proxy's hard cap (422 above it) and plenty for a smoke.
+            "page_size": 100,
+        },
     )
     response.raise_for_status()
     data = response.json().get("data")

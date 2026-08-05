@@ -2,9 +2,16 @@
 #
 # Nodes are routed by persona, never by model tier. This registry is the only
 # place a model name appears — code never hardcodes one. The `model` and
-# `fallback` values below are CHANGEME placeholders: replace them with your own
-# LiteLLM aliases. The issued virtual key's `models` list is derived from these,
-# so the binding is enforceable, not advisory.
+# `fallback` values are LiteLLM aliases from the operator's proxy config; the
+# issued virtual key's `models` list is derived from these, so the binding is
+# enforceable, not advisory.
+#
+# Current wiring (2026-08-05, Tier 1 on the worker host): every agent persona
+# runs `local/qwen3.6-27b` — the host's resident vLLM 27B via the Ergane proxy
+# (~/infra/ergane-tier1) — with no fallback. Interim by intent: when an
+# Anthropic API key lands on the worker host, add `anthropic/*` aliases to the
+# proxy config (instructions in its header) and move `model:` there, keeping
+# the local alias as `fallback:`.
 #
 # Fields per persona:
 #   agent          adapter name (D-018); "none" = deterministic persona, no key
@@ -24,8 +31,8 @@
 
 architect:
   agent: claude-code
-  model: anthropic/CHANGEME
-  fallback: local/CHANGEME
+  model: local/qwen3.6-27b
+  fallback: null
   skills: [codebase-design, design-an-interface, domain-modeling]
   write_scope: docs
   needs_worktree: true
@@ -33,8 +40,8 @@ architect:
 
 implementer:
   agent: claude-code
-  model: anthropic/CHANGEME
-  fallback: local/CHANGEME
+  model: local/qwen3.6-27b
+  fallback: null
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
@@ -51,8 +58,8 @@ verifier:
 
 judge:
   agent: claude-code
-  model: anthropic/CHANGEME
-  fallback: local/CHANGEME
+  model: local/qwen3.6-27b
+  fallback: null
   skills: [code-review]
   write_scope: read
   needs_worktree: false
@@ -60,8 +67,8 @@ judge:
 
 debugger:
   agent: claude-code
-  model: anthropic/CHANGEME
-  fallback: local/CHANGEME
+  model: local/qwen3.6-27b
+  fallback: null
   skills: [diagnosing-bugs]
   write_scope: worktree
   needs_worktree: true
@@ -69,8 +76,8 @@ debugger:
 
 researcher:
   agent: claude-code
-  model: anthropic/CHANGEME
-  fallback: local/CHANGEME
+  model: local/qwen3.6-27b
+  fallback: null
   skills: [research, grill-with-docs]
   write_scope: read
   needs_worktree: false

@@ -25,7 +25,9 @@ workflow's retry policy (R4), so nothing here loops on failure.
 
 from __future__ import annotations
 
+import hashlib
 import os
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import Any, Iterable, Mapping
 
@@ -54,6 +56,34 @@ MASTER_KEY_ENV = "LITELLM_MASTER_KEY"
 _KEY_ALREADY_GONE = frozenset({400, 404})
 
 _REDACTED = "<redacted>"
+
+
+def hashed_token(key: str) -> str:
+    """A virtual key as LiteLLM's spend-log store spells it: sha256 hex.
+
+    Public because the live smokes assert against the store through the same
+    convention; the raw credential never needs to leave the caller for a row
+    lookup, which is its own small win for FR-009.
+    """
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _spend_log_window(issued_at: str) -> tuple[str, str]:
+    """The `/spend/logs/v2` date window for a key minted at `issued_at`.
+
+    Date-only strings (one of the two shapes the proxy accepts), one day of
+    margin on each side. An unparseable `issued_at` widens the start to two
+    days before now rather than raising: teardown is the caller, and a
+    malformed timestamp must degrade to a wider read, never to a lost row.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        issued = datetime.fromisoformat(issued_at.replace("Z", "+00:00"))
+    except ValueError:
+        issued = now - timedelta(days=1)
+    start = min(issued, now) - timedelta(days=1)
+    end = now + timedelta(days=1)
+    return start.date().isoformat(), end.date().isoformat()
 
 
 class LiteLLMError(Exception):
@@ -190,13 +220,29 @@ class LiteLLMClient:
             raise LiteLLMError("/key/info returned no numeric spend for the attempt key")
         return float(spend)
 
-    async def fetch_spend_log_rows(self, key: str) -> list[dict[str, Any]]:
+    async def fetch_spend_log_rows(
+        self, key: str, *, issued_at: str
+    ) -> list[dict[str, Any]]:
         """Every per-request spend row recorded against `key`, verbatim (R2).
 
         Pages are drained to the last one the proxy reports; rows are passed
         through untouched, cache metadata and all, for `aggregate.py` to
         interpret.
+
+        `issued_at` is the lease's ISO-UTC mint time, because the real proxy
+        REQUIRES a `start_date`/`end_date` window on this endpoint (found live
+        2026-08-05: absent dates are a 4xx, not "all time"). The window is a
+        partition hint, not the selector — `api_key` does the selecting — so it
+        is sent deliberately wide: a day before issuance to a day after now,
+        date-only, which absorbs clock skew between worker and proxy and every
+        midnight boundary an attempt can straddle.
+
+        The `api_key` filter is the key's sha256 hex, not the raw credential:
+        the proxy stores spend rows under the hashed token and matches nothing
+        for the raw form (probed live, same date). `/key/info` still takes the
+        raw key — the hashing is this endpoint's convention alone.
         """
+        start_date, end_date = _spend_log_window(issued_at)
         rows: list[dict[str, Any]] = []
 
         for page in range(1, MAX_SPEND_LOG_PAGES + 1):
@@ -204,7 +250,9 @@ class LiteLLMClient:
                 "GET",
                 "/spend/logs/v2",
                 params={
-                    "api_key": key,
+                    "api_key": hashed_token(key),
+                    "start_date": start_date,
+                    "end_date": end_date,
                     "page": page,
                     "page_size": SPEND_LOG_PAGE_SIZE,
                 },

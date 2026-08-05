@@ -27,8 +27,10 @@ output, so those tests get a real repository built from
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -42,6 +44,10 @@ FAKE_PROXY_URL = "http://litellm.test"
 FAKE_MASTER_KEY = "sk-fake-master-do-not-log"
 
 DEFAULT_PAGE_SIZE = 100
+
+#: What `/spend/logs/v2` accepts for `start_date`/`end_date` — the real proxy's
+#: own error message spells these two shapes and rejects everything else.
+_SPEND_LOG_DATE = re.compile(r"\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2})?")
 DEFAULT_MODEL = "fake-provider/CHANGEME"
 
 # Cache detail lives only in the per-row metadata JSON (research R2).
@@ -132,7 +138,10 @@ class FakeLiteLLM:
         row = {
             "request_id": request_id or f"req-{key}-{len(rows) + 1}",
             "call_type": "acompletion",
-            "api_key": key,
+            # The store's convention, not the credential: the real proxy keys
+            # spend rows by the token's sha256 and a row never carries the raw
+            # key (probed live 2026-08-05).
+            "api_key": hashlib.sha256(key.encode()).hexdigest(),
             "model": model,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -288,13 +297,42 @@ class FakeLiteLLM:
         return httpx.Response(200, json={"deleted_keys": list(keys)})
 
     def _spend_logs(self, params: dict[str, str]) -> httpx.Response:
+        # The real proxy REQUIRES the window (probed live 2026-08-05,
+        # `main-stable`): absent dates are an error, not "all time", and the
+        # accepted formats are exactly these two. The fake does not filter by
+        # the window — its rows carry no timestamps and `api_key` is the true
+        # selector — but a client that stopped sending the dates would fail
+        # here the way it fails in production.
+        start_date = params.get("start_date")
+        end_date = params.get("end_date")
+        if not start_date or not end_date:
+            return self._error(400, "Start date and end date are required")
+        for value in (start_date, end_date):
+            if not _SPEND_LOG_DATE.fullmatch(value):
+                return self._error(
+                    400,
+                    f"Invalid date format: {value}. Expected: 'YYYY-MM-DD' "
+                    "or 'YYYY-MM-DD HH:MM:SS'",
+                )
+
         api_key = params.get("api_key")
         alias = params.get("key_alias")
         if not api_key and not alias:
             return self._error(400, "api_key or key_alias filter is required")
 
         if api_key:
-            rows = list(self.spend_rows.get(api_key, []))
+            # Hash-only matching, like the real proxy: a raw `sk-` filter
+            # resolves no rows, so a client that forgot to hash reads an empty
+            # log here exactly as it would in production.
+            match = next(
+                (
+                    key
+                    for key in self.spend_rows
+                    if hashlib.sha256(key.encode()).hexdigest() == api_key
+                ),
+                None,
+            )
+            rows = list(self.spend_rows.get(match, [])) if match else []
         else:
             key = self.key_for_alias(alias or "")
             rows = list(self.spend_rows.get(key, [])) if key else []
@@ -306,6 +344,10 @@ class FakeLiteLLM:
             return self._error(400, "page and page_size must be integers")
         if page < 1 or page_size < 1:
             return self._error(400, "page and page_size must be >= 1")
+        if page_size > 100:
+            # The real proxy 422s above 100 (probed live 2026-08-05); a fake
+            # that honored a bigger page would let a caller drift past it.
+            return self._error(422, "Input should be less than or equal to 100")
         if self.max_page_size is not None:
             page_size = min(page_size, self.max_page_size)
 

@@ -301,7 +301,7 @@ async def test_aggregates_rows_exactly_as_the_client_returns_them(
     )
     fake_litellm.add_spend_row(key, prompt_tokens=300, completion_tokens=30, spend=0.03)
 
-    usage = aggregate_rows(await client.fetch_spend_log_rows(key))
+    usage = aggregate_rows(await client.fetch_spend_log_rows(key, issued_at="2026-08-05T00:00:00Z"))
 
     assert usage.prompt_tokens == 600
     assert usage.completion_tokens == 60
@@ -317,7 +317,7 @@ async def test_attempt_that_never_called_the_proxy_aggregates_to_zero_requests(
     """A key that was issued and never used: no rows, no invented usage."""
     key = await client.issue_key(key_alias="epic-7:node-9:1", models=["fake-provider/CHANGEME"])
 
-    usage = aggregate_rows(await client.fetch_spend_log_rows(key))
+    usage = aggregate_rows(await client.fetch_spend_log_rows(key, issued_at="2026-08-05T00:00:00Z"))
 
     assert usage.request_count == 0
     assert usage.prompt_tokens == 0

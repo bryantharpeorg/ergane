@@ -226,7 +226,7 @@ async def a_rejected_credential_on_poll(worker: Worker) -> object:
 async def a_rejected_credential_on_the_spend_logs(worker: Worker) -> object:
     lease = await worker.issue()
     async with worker.client(master_key=WRONG_SECRET) as client:
-        return await client.fetch_spend_log_rows(lease.key)
+        return await client.fetch_spend_log_rows(lease.key, issued_at=lease.issued_at)
 
 
 async def a_rejected_credential_on_revocation(worker: Worker) -> object:
@@ -250,7 +250,7 @@ async def a_proxy_that_will_not_page_its_spend_logs(worker: Worker) -> object:
     lease = await worker.issue()
     worker.proxy.fail_next("/spend/logs/v2", status=500)
     async with worker.client() as client:
-        return await client.fetch_spend_log_rows(lease.key)
+        return await client.fetch_spend_log_rows(lease.key, issued_at=lease.issued_at)
 
 
 async def a_key_the_proxy_has_forgotten(worker: Worker) -> object:

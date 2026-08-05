@@ -292,7 +292,7 @@ async def _read_final_usage(
         return None
     try:
         spend_usd = await client.get_spend(lease.key)
-        rows = await client.fetch_spend_log_rows(lease.key)
+        rows = await client.fetch_spend_log_rows(lease.key, issued_at=lease.issued_at)
     except LiteLLMError:
         return None
     return _ConfirmedUsage(spend_usd=spend_usd, aggregate=aggregate_rows(rows))
