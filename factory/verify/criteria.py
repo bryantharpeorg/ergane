@@ -58,9 +58,16 @@ from typing import Sequence
 from factory.verify.models import CriteriaSet, Requirement, RequirementKind, Scenario
 
 # Grammar (architecture §2) ---------------------------------------------------
+#
+# `HEADER_RE`, `mask_fences` and `section_end` are public because the same
+# fence-masked header scan reads the other authored documents in the same
+# grammar — 005's prompt assembly cuts a story's task slice out of `tasks.md`
+# with it (R9), and the WorkGraph deriver finds `## Work Graph` with it (R7).
+# One implementation of "what is a heading, and what is quoted text about one"
+# is what keeps those readers agreeing with this one.
 
 #: Any ATX header, at any level; the level decides where a story section ends.
-_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 #: A story header's text, e.g. `User Story 2 - Return a book (Priority: P2)`.
 #: The dash is spelled three ways because specs are written by hand.
@@ -119,7 +126,7 @@ def parse_spec(text: str) -> list[Requirement]:
     wholly usable or not usable at all.
     """
     lines = text.splitlines()
-    in_code = _mask_fences(lines)
+    in_code = mask_fences(lines)
 
     requirements: list[Requirement] = []
     declared_at: dict[str, int] = {}
@@ -129,11 +136,11 @@ def parse_spec(text: str) -> list[Requirement]:
             index += 1
             continue
 
-        header = _HEADER_RE.match(lines[index])
+        header = HEADER_RE.match(lines[index])
         if header:
             story = _STORY_RE.match(header.group(2))
             if story:
-                end = _section_end(lines, in_code, index, level=len(header.group(1)))
+                end = section_end(lines, in_code, index, level=len(header.group(1)))
                 requirement = _parse_story(lines, in_code, index, end, story)
                 _declare(requirements, declared_at, requirement, index + 1)
                 # A story owns its whole section: requirement bullets quoted
@@ -179,7 +186,7 @@ def _declare(
     requirements.append(requirement)
 
 
-def _mask_fences(lines: Sequence[str]) -> list[bool]:
+def mask_fences(lines: Sequence[str]) -> list[bool]:
     """Flag every line inside (or delimiting) a fenced code block.
 
     A fence closes only on the same character at least as long as the one that
@@ -212,7 +219,7 @@ def _mask_fences(lines: Sequence[str]) -> list[bool]:
     return masked
 
 
-def _section_end(
+def section_end(
     lines: Sequence[str], in_code: Sequence[bool], start: int, level: int
 ) -> int:
     """The line index where the section opened at `start` stops.
@@ -223,7 +230,7 @@ def _section_end(
     for index in range(start + 1, len(lines)):
         if in_code[index]:
             continue
-        header = _HEADER_RE.match(lines[index])
+        header = HEADER_RE.match(lines[index])
         if header and len(header.group(1)) <= level:
             return index
     return len(lines)
@@ -301,7 +308,7 @@ def _narrative(
             continue
         if (
             _LABEL_RE.match(line)
-            or _HEADER_RE.match(line)
+            or HEADER_RE.match(line)
             or _ITEM_RE.match(line)
             or stripped.startswith(("-", "*", "---"))
         ):
