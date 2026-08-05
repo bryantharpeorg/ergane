@@ -154,9 +154,17 @@ def open_client() -> LiteLLMClient:
     return LiteLLMClient.from_env()
 
 
-def key_alias_for(epic_id: str, node_id: str, attempt: int) -> str:
-    """The attempt's identity as the proxy and the ledger both spell it (R1)."""
-    return f"{epic_id}:{node_id}:{attempt}"
+def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str:
+    """The key's identity as the proxy and the ledger both spell it (R1).
+
+    All four dimensions, persona included: the judge scores an attempt while
+    the implementer's key is still live (005 closes the agent's bracket only
+    after verification), so two personas' keys coexist on one attempt. The
+    proxy rejects a duplicate alias outright and the ledger upserts on it —
+    an alias without the persona is a failed mint on every scored node, or
+    one persona's row silently overwriting the other's.
+    """
+    return f"{epic_id}:{node_id}:{attempt}:{persona}"
 
 
 @activity.defn
@@ -174,7 +182,9 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         # The worker host itself is misconfigured: no amount of waiting fixes it.
         raise _issuance_failed(exc, permanent=True) from exc
 
-    alias = key_alias_for(request.epic_id, request.node_id, request.attempt)
+    alias = key_alias_for(
+        request.epic_id, request.node_id, request.attempt, request.persona
+    )
     try:
         key = await client.issue_key(
             key_alias=alias,

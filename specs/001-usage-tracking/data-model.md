@@ -26,7 +26,7 @@ The live binding of one virtual key to one node **attempt** (R1).
 | Field | Type | Rules |
 |---|---|---|
 | key | str | the virtual key; capped-scope credential, allowed in payloads (FR-009) |
-| key_alias | str | `"{epic_id}:{node_id}:{attempt}"` — unique per attempt |
+| key_alias | str | `"{epic_id}:{node_id}:{attempt}:{persona}"` — unique per key; persona included because the judge's key is live alongside the implementer's on the same attempt (D-026) |
 | node_id | str | |
 | epic_id | str | |
 | attempt | int | ≥ 1 |

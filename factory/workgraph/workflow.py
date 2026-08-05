@@ -965,7 +965,14 @@ class EpicWorkflow:
         judge: ResolvedPersona,
         prior_feedback: str | None,
     ) -> JudgeVerdict:
-        """Score the diff, on a key minted and revoked for this call alone.
+        """Score the diff, on one key minted and revoked for this scoring alone.
+
+        One key, not one per re-ask: the loop below retries a single scoring
+        job, and each re-ask is the same attribution unit — a fresh mint per
+        re-ask would split one job's spend across ledger rows for no reader's
+        benefit. The mint happens inside the implementer's still-open bracket,
+        which is why the alias carries the persona (001 R1): the proxy refuses
+        a duplicate alias while its key lives.
 
         The loop is for responses the strict parser could not read, and for
         nothing else: `run_judge` reports those as a RETRY with no findings, and
@@ -983,38 +990,36 @@ class EpicWorkflow:
         """
         verdict: JudgeVerdict | None = None
 
-        for judge_attempt in range(1, request.config.max_judge_retries + 2):
-            lease = await workflow.execute_activity(
-                issue_attempt_key,
-                IssueKeyInput(
-                    node_id=node.id,
-                    epic_id=request.graph.epic_id,
-                    # The node's attempt number: this is the scoring of *that*
-                    # attempt, and the ledger should read it that way.
-                    attempt=attempt,
-                    persona=JUDGE_PERSONA,
-                    spec_ref=node.spec_ref,
-                    # The judge's key may call the judge's aliases and nothing
-                    # else: a key that could call anything is attribution
-                    # without constraint (constitution V).
-                    models=list(judge.models),
-                ),
-                **_PROXY,
-            )
-
-            try:
+        lease = await workflow.execute_activity(
+            issue_attempt_key,
+            IssueKeyInput(
+                node_id=node.id,
+                epic_id=request.graph.epic_id,
+                # The node's attempt number: this is the scoring of *that*
+                # attempt, and the ledger should read it that way.
+                attempt=attempt,
+                persona=JUDGE_PERSONA,
+                spec_ref=node.spec_ref,
+                # The judge's key may call the judge's aliases and nothing
+                # else: a key that could call anything is attribution
+                # without constraint (constitution V).
+                models=list(judge.models),
+            ),
+            **_PROXY,
+        )
+        try:
+            for judge_attempt in range(1, request.config.max_judge_retries + 2):
                 verdict = await self._score(
                     request, criteria, diff_text, lease, judge, judge_attempt, prior_feedback
                 )
-            finally:
-                # Even when the judge failed outright: a key that outlives its
-                # call is spend nobody is reading, and teardown is what writes
-                # the ledger row (001 R3).
-                await self._teardown(lease, Termination.COMPLETED, None)
-
-            if verdict.outcome != JudgeOutcome.RETRY or verdict.findings:
-                break
-            prior_feedback = verdict.feedback
+                if verdict.outcome != JudgeOutcome.RETRY or verdict.findings:
+                    break
+                prior_feedback = verdict.feedback
+        finally:
+            # Even when the judge failed outright: a key that outlives its
+            # call is spend nobody is reading, and teardown is what writes
+            # the ledger row (001 R3).
+            await self._teardown(lease, Termination.COMPLETED, None)
 
         assert verdict is not None  # the range above is never empty
         return verdict

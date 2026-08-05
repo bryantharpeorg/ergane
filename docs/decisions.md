@@ -279,3 +279,19 @@ standards are a property of the *repo*, not of who works on it, and because a
 committed file is adapter-agnostic — no reliance on `CLAUDE.md` auto-loading. The
 path is referenced rather than inlined: the agent reads it in-worktree, and the
 prompt never drifts from the document the gates see.
+
+## D-026 · `key_alias` carries the persona; one judge key per scoring job (decided)
+
+2026-08-05, from the operator-side review of ralph run 3. Component 1's alias
+becomes `{epic}:{node}:{attempt}:{persona}` — persona is key *identity*, not
+metadata. The defect was live-only: 005 mints the judge's key inside the
+implementer's still-open bracket (the implementer's termination isn't known until
+verification ends), LiteLLM refuses a duplicate alias while its key lives, and
+the ledger upserts on the alias. A persona-blind alias therefore failed the mint
+on every scored node — and had the ordering differed, the judge's teardown would
+have silently overwritten the implementer's ledger row (SC-003 corrupted rather
+than broken). Same decision, same unit: the judge's parse re-asks are retries of
+one scoring job, so `_judge` mints one key for the whole job instead of one per
+re-ask — one bracket, one ledger row per scoring. The interpreter suite's fake
+proxy now enforces live-alias uniqueness so the guarantee is structural rather
+than scripted; the ledger schema is unchanged (the alias is opaque TEXT).

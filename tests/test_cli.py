@@ -75,7 +75,7 @@ def seed_row(
         attempt=attempt,
         persona=persona,
         spec_ref=spec_ref,
-        key_alias=f"{epic_id}:{node_id}:{attempt}",
+        key_alias=f"{epic_id}:{node_id}:{attempt}:{persona}",
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cache_read_tokens=cache_read_tokens,

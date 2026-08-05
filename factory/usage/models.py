@@ -53,9 +53,12 @@ class KeyLease:
     `key` is a capped-scope credential and is allowed to travel in payloads; the
     proxy master key is not, and never appears on this type (FR-009).
 
-    `(epic_id, node_id, attempt)` is the attempt identity everywhere in this
-    component, and `key_alias` is its `"{epic_id}:{node_id}:{attempt}"` rendering
-    — the ledger's uniqueness key, so re-teardown upserts instead of duplicating.
+    `(epic_id, node_id, attempt, persona)` is the key's identity everywhere in
+    this component, and `key_alias` is its
+    `"{epic_id}:{node_id}:{attempt}:{persona}"` rendering — the ledger's
+    uniqueness key, so re-teardown upserts instead of duplicating. Persona is
+    part of the identity because two personas' keys coexist on one attempt:
+    the judge scores while the implementer's key is still live (D-026).
     """
 
     key: str

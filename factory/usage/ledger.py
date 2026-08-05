@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     attempt                INTEGER NOT NULL CHECK (attempt >= 1),
     persona                TEXT    NOT NULL,
     spec_ref               TEXT    NOT NULL,
-    key_alias              TEXT    NOT NULL UNIQUE,          -- "{epic}:{node}:{attempt}"; idempotency guard
+    key_alias              TEXT    NOT NULL UNIQUE,          -- "{epic}:{node}:{attempt}:{persona}"; idempotency guard
     prompt_tokens          INTEGER,                          -- NULL = unknown (never fabricated 0)
     completion_tokens      INTEGER,
     cache_read_tokens      INTEGER,                          -- NULL = metric absent from backend

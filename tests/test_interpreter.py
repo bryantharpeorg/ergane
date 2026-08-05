@@ -136,7 +136,12 @@ from factory.activities.notify_activities import (
     SendEscalationInput,
     SentEscalation,
 )
-from factory.activities.usage_activities import IssueKeyInput, TeardownInput
+from factory.activities.usage_activities import (
+    KEY_ISSUANCE_FAILED,
+    IssueKeyInput,
+    TeardownInput,
+    key_alias_for,
+)
 from factory.activities.verify_activities import (
     JUDGE_UNAVAILABLE,
     CheckOutputInput,
@@ -724,6 +729,14 @@ class ScriptedWorld:
         self._spend = 0.0
         self._polled = asyncio.Event()
 
+        #: Aliases with a live key behind them, issue-to-teardown. The fake
+        #: enforces what the real proxy enforces — a duplicate alias will not
+        #: mint while the first key lives — because the judge's key is minted
+        #: inside the implementer's still-open bracket: an alias that did not
+        #: carry the persona would collide right here, exactly as it would in
+        #: production (001 R1).
+        self._live_aliases: set[str] = set()
+
     # --- bookkeeping --------------------------------------------------------
 
     def _log(self, name: str, node_id: str | None = None) -> None:
@@ -853,9 +866,23 @@ class ScriptedWorld:
             # The judge's key rides on the node's attempt number; only a node
             # attempt advances the script.
             script._attempt = request.attempt
+            alias = key_alias_for(
+                request.epic_id, request.node_id, request.attempt, request.persona
+            )
+            if alias in script._live_aliases:
+                # LiteLLM's answer to a duplicate alias, surfaced the way the
+                # real activity surfaces it — and non-retryable here, because a
+                # workflow that minted a colliding alias has a wiring bug no
+                # retry budget can spend its way out of.
+                raise ApplicationError(
+                    f"key_alias '{alias}' already names a live key",
+                    type=KEY_ISSUANCE_FAILED,
+                    non_retryable=True,
+                )
+            script._live_aliases.add(alias)
             return KeyLease(
                 key=f"sk-{request.node_id}-{request.attempt}-{request.persona}",
-                key_alias=f"{request.epic_id}:{request.node_id}:{request.attempt}",
+                key_alias=alias,
                 node_id=request.node_id,
                 epic_id=request.epic_id,
                 attempt=request.attempt,
@@ -984,6 +1011,9 @@ class ScriptedWorld:
             lease = request.lease
             script._log(f"teardown_attempt:{lease.persona}", lease.node_id)
             script.teardowns.append(request)
+            # Revoking the key frees its alias; `discard` because a teardown
+            # Temporal re-runs finds it already gone, which is a normal outcome.
+            script._live_aliases.discard(lease.key_alias)
             return UsageRecord(
                 epic_id=lease.epic_id,
                 node_id=lease.node_id,
@@ -2105,6 +2135,37 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
     assert record.judge_unavailable is False
 
 
+async def test_the_judges_alias_never_collides_with_the_live_implementer_key(
+    env: WorkflowEnvironment,
+) -> None:
+    """Persona is part of the key's identity (001 R1), proven where it bites.
+
+    The implementer's bracket stays open through verification — teardown wants
+    the attempt's termination, which verification has not finished deciding — so
+    the judge's key is minted while the implementer's is live. The fake proxy
+    refuses a duplicate live alias exactly as LiteLLM does, which makes the
+    guarantee structural: a run that completes at all is a run whose aliases
+    never collided. And because the ledger upserts on the alias, distinct
+    aliases are also what keeps the judge's row from landing on top of the
+    implementer's.
+    """
+    script = scored_world(
+        scored(judge_retry(UNREADABLE_FEEDBACK, findings=False), judge_pass()),
+        client=env.client,
+    )
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.PASSED}
+
+    # Judge first (its bracket closes inside verification), implementer second —
+    # one row each, four dimensions each, nothing shadowed.
+    assert [t.lease.key_alias for t in script.teardowns] == [
+        f"{EPIC_ID}:us1:1:{JUDGE_PERSONA}",
+        f"{EPIC_ID}:us1:1:implementer",
+    ]
+
+
 async def test_the_diff_the_judge_scores_is_read_by_an_activity(
     env: WorkflowEnvironment,
 ) -> None:
@@ -2247,7 +2308,7 @@ async def test_an_unreadable_judge_response_is_re_asked_inside_the_attempt(
 
     `run_judge` reports one as a RETRY with no findings, and asking again is the
     only way to tell a broken model turn from a real disagreement — so it is
-    re-asked inside the same attempt, on a fresh key, carrying the parse failure
+    re-asked inside the same attempt, on the same key, carrying the parse failure
     as its own prior feedback. The node's attempt budget is untouched.
     """
     script = scored_world(
@@ -2261,11 +2322,14 @@ async def test_an_unreadable_judge_response_is_re_asked_inside_the_attempt(
     assert attempt_counts(status) == {"us1": 1}
     assert script.dispatched == ["us1"]
 
-    # Two scorings, two keys, two teardowns — no completion in this component is
-    # anonymous, the retried ones included (constitution V).
+    # Two scorings on one key, one teardown: the re-ask is a retry of the same
+    # scoring job, not a second attribution unit — a key per re-ask would
+    # re-mint an alias whose first key is still live, and split one job's spend
+    # across ledger rows. No completion is anonymous either way (constitution V).
     assert [request.judge_attempt for request in script.judge_requests] == [1, 2]
-    assert [key.attempt for key in judge_keys(script)] == [1, 1]
-    assert len([t for t in script.teardowns if t.lease.persona == JUDGE_PERSONA]) == 2
+    assert [key.attempt for key in judge_keys(script)] == [1]
+    assert len([t for t in script.teardowns if t.lease.persona == JUDGE_PERSONA]) == 1
+    assert script.judge_requests[0].virtual_key == script.judge_requests[1].virtual_key
     assert script.judge_requests[1].prior_feedback == UNREADABLE_FEEDBACK
 
     # One agent attempt, one row, and the verdict of the judge that answered.

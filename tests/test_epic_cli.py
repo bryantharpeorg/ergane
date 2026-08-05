@@ -511,7 +511,10 @@ class ScriptedEpic:
         async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             return KeyLease(
                 key=f"sk-{request.node_id}-{request.attempt}",
-                key_alias=f"{request.epic_id}:{request.node_id}:{request.attempt}",
+                key_alias=(
+                    f"{request.epic_id}:{request.node_id}"
+                    f":{request.attempt}:{request.persona}"
+                ),
                 node_id=request.node_id,
                 epic_id=request.epic_id,
                 attempt=request.attempt,

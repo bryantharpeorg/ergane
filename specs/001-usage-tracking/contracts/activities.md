@@ -13,7 +13,9 @@ Mints the attempt's attribution key (FR-001, R1).
   `persona: str`, `spec_ref: str`, `models: list[str]`, `ttl: str = "24h"` (R5)
 - **Output**: `KeyLease` (see data-model.md)
 - **Proxy calls**: `POST /key/generate` — `max_budget` OMITTED; alias
-  `{epic}:{node}:{attempt}`; metadata mirrors input dims
+  `{epic}:{node}:{attempt}:{persona}` (persona is identity, not just metadata:
+  the judge's key is minted while the implementer's is live, D-026); metadata
+  mirrors input dims
 - **Retry policy** (workflow-side, R4): initial 2s, ×2 backoff, max 60s interval,
   10min max elapsed; then `KEY_ISSUANCE_FAILED` (non-retryable application error)
 - **Idempotency**: re-execution after a partial success may mint a duplicate key with

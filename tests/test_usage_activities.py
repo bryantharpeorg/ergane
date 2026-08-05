@@ -60,6 +60,7 @@ from factory.activities.usage_activities import (
     IssueKeyInput,
     TeardownInput,
     issue_attempt_key,
+    key_alias_for,
     teardown_attempt,
 )
 from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient
@@ -71,7 +72,7 @@ NODE = "node-3"
 ATTEMPT = 2
 PERSONA = "implementer"
 SPEC_REF = "add-usage-tracking/ledger-row"
-ALIAS = f"{EPIC}:{NODE}:{ATTEMPT}"
+ALIAS = f"{EPIC}:{NODE}:{ATTEMPT}:{PERSONA}"
 MODELS = ["anthropic/CHANGEME", "local/CHANGEME"]
 
 #: The last heartbeat before the attempt ended (R9) — teardown's fallback input.
@@ -247,6 +248,18 @@ async def test_issue_attempt_key_sends_the_dimensions_and_never_a_cap(
     # sends can stop an agent mid-run.
     assert "max_budget" not in call.body
     assert "soft_budget" not in call.body
+
+
+def test_the_alias_spells_all_four_dimensions_including_persona() -> None:
+    # The judge scores an attempt while the implementer's key is still live
+    # (005 keeps the agent bracket open through verification), and the proxy
+    # rejects a duplicate alias while the ledger upserts on it — so a persona
+    # left out of the alias is a live-mint collision and one persona's row
+    # silently overwriting the other's. Persona is identity, not metadata.
+    assert key_alias_for(EPIC, NODE, ATTEMPT, PERSONA) == ALIAS
+    assert key_alias_for(EPIC, NODE, ATTEMPT, "judge") != key_alias_for(
+        EPIC, NODE, ATTEMPT, PERSONA
+    )
 
 
 async def test_issue_attempt_key_applies_the_backstop_ttl(
