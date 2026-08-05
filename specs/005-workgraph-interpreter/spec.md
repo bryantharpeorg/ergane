@@ -4,7 +4,8 @@
 
 **Created**: 2026-08-04
 
-**Status**: Draft — needs `/speckit-clarify` before planning (see Open Questions)
+**Status**: Clarified 2026-08-05 (5 questions, see Clarifications) — ready for
+`/speckit-plan`; one low-impact question deferred (see Open Questions)
 
 **Input**: The bootstrap-minimal interpreter (D-002, D-018, D-024): one generic
 Temporal workflow that reads a WorkGraph JSON DAG for an epic, dispatches nodes to
@@ -13,7 +14,52 @@ key lifecycle and component 2's verification ladder, and unlocks downstream edge
 PASS. "Minimal" is defined by the D-024 crossover: just enough interpreter to take
 `specs/003-merge-queue/` from spec to a verified branch with no human writing code.
 Explicitly deferred: the `verifier` node type for cross-node checks, parallel node
-execution, multi-epic scheduling, workgraph.json authoring tooling.
+execution, multi-epic scheduling. The WorkGraph is never hand-authored: it is
+compiled mechanically from the epic's spec (FR-011).
+
+## Clarifications
+
+### Session 2026-08-05
+
+- Q: Who writes the WorkGraph for epic 003 — hand-authored JSON, or derived
+  mechanically from tasks.md? → A: Neither; spec-to-graph compilation is core
+  Ergane functionality. The spec grammar is extended **additively** (no speckit
+  template fork — vendored `.specify/templates/` are never modified) with a
+  `## Work Graph` section holding a fenced YAML block that declares, per user
+  story, `depends_on` (story ids) and `implements` (FR keys). The deriver
+  compiles this into `workgraph.json` — one node per user story — making the
+  spec the source of truth and the graph a compiled, inspectable artifact.
+  Missing or invalid declarations fail derivation loudly; that validation, not
+  the template, enforces the convention.
+- Q: Prompt assembly (FR-006) — how much plan/tasks context, and is the ralph
+  PROMPT.md contract the template? → A: Two nested loops (Sonar "Agent Centric
+  Development Cycle" pattern). Inner agentic loop: the prompt embeds the
+  ralph-derived contract generalized to the node's task slice — work the story's
+  tasks in order, test-first, run the deterministic gate after each task, commit
+  per task, stop when the slice is done or blocked. Context: the story's spec
+  sections (story, acceptance scenarios, its `implements` FRs), full plan.md,
+  the story's tasks.md slice; retries append verbatim failure evidence. Outer
+  verification loop: the interpreter's attempt → 002 ladder → retry cycle. The
+  inner loop is advisory (agent fast feedback); the outer loop is authoritative —
+  agent self-reported success never marks a node PASSED (FR-012).
+- Q: Worktree lifecycle — one worktree per node reused across attempts, and
+  branch naming? → A: Confirmed. Exactly one worktree per node, created at first
+  dispatch, reused across all attempts (including debugger, per 002), removed
+  only after terminal-state salvage. Branch naming: `factory/<epic-id>/<node-id>`
+  (e.g. `factory/003-merge-queue/us1`) — machine branches namespaced under
+  `factory/`, attributable by ref alone (FR-013).
+- Q: Where does a node's wall-clock timeout (FR-010) come from? → A: Persona
+  registry default — `personas.yaml` gains a `timeout` field per agent-backed
+  persona — overridable per story in the `## Work Graph` YAML declaration for
+  exceptional nodes. Code never hardcodes a timeout (constitution VII pattern:
+  operator-editable registry resolves runtime defaults).
+- Q: How does an agent attempt receive the target repo's coding standards? →
+  A: `factory.yaml` gains an optional `standards` key (path to the repo's
+  standards doc); when declared, the assembled prompt includes a read-and-obey
+  directive for it (FR-006). Adapter-agnostic by construction (D-018) — no
+  reliance on any one agent's native CLAUDE.md auto-loading. Ergane's own
+  `factory.yaml` points at `.specify/memory/constitution.md`, restoring ralph's
+  "read the constitution and obey it" step for the 003 crossover.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -108,6 +154,9 @@ matches workflow state.
 3. **Given** a running epic, **When** I signal `kill_epic`, **Then** in-flight
    attempts are terminated through the adapter, worktrees are salvaged, keys are
    torn down, and the epic reaches a terminal KILLED state with every node recorded.
+4. **Given** an epic spec with a `## Work Graph` section, **When** I run the
+   derive CLI, **Then** `workgraph.json` is emitted (or the specific validation
+   errors are listed and nothing is emitted) without starting any workflow.
 
 ---
 
@@ -115,6 +164,9 @@ matches workflow state.
 
 - WorkGraph fails validation (unknown persona, dependency cycle, missing requirement
   keys, dangling edge) → the workflow rejects it at start; nothing dispatches.
+- The spec's `## Work Graph` section is missing, malformed, or references an
+  unknown story id or FR key → derivation fails with the specific error and emits
+  nothing; the epic cannot start from an undeclared graph.
 - A node's `snapshot_criteria` fails at dispatch (bad spec) → node fails without an
   agent attempt; ladder and escalation apply as for any failure.
 - Worker host restarts mid-attempt → Temporal retries the attempt activity; the
@@ -142,9 +194,15 @@ matches workflow state.
   inputs (prompt, worktree path, env: proxy URL + virtual key + model alias, session
   id), outputs (termination class from the shared enum + transcript/log path) and
   nothing else; diffs come from the worktree, usage from the ledger.
-- **FR-006**: Attempt prompts MUST be assembled from the node's spec context (feature
-  spec, plan/tasks excerpts for its requirement keys) plus, on retries, the verbatim
-  failure evidence per 002 FR-006 — assembly is pure and unit-testable.
+- **FR-006**: Attempt prompts MUST be assembled — purely and unit-testably — from:
+  the node's story sections (story, acceptance scenarios, its `implements` FRs),
+  the epic's full plan.md, the story's tasks.md slice, and, on retries, the
+  verbatim failure evidence per 002 FR-006. The prompt embeds the ralph-derived
+  inner-loop contract scoped to the node: work the slice task-by-task, test-first,
+  run the deterministic gate after each task, commit per task, stop when the
+  slice is done or blocked. When the target repo's `factory.yaml` declares a
+  `standards` path, the prompt MUST include a read-and-obey directive for that
+  document.
 - **FR-007**: Every attempt's full agent transcript MUST be archived on teardown
   under the factory state directory, keyed by epic/node/attempt, on every
   termination path; transcripts stay on the worker host and are never committed to
@@ -157,11 +215,32 @@ matches workflow state.
   out of scope (Temporal Web UI covers it).
 - **FR-010**: Node wall-clock timeouts MUST be enforced through the adapter
   (terminate, classify TIMEOUT, salvage); a hung agent can never wedge the epic.
+  The timeout value resolves persona-first: the persona registry's `timeout`
+  default (new field, agent-backed personas), overridable per story in the
+  `## Work Graph` YAML declaration; code never hardcodes a timeout.
+- **FR-011**: The WorkGraph MUST be compiled mechanically from the epic's spec: a
+  derive step (exposed alongside the FR-009 CLI) parses the spec's `## Work Graph`
+  section — a fenced YAML block mapping each user story to `depends_on` (story
+  ids) and `implements` (FR keys) — and emits one node per user story. Derivation
+  is a pure function (spec text in → WorkGraph out), unit-testable without
+  infrastructure, and MUST fail loudly naming the story when a declaration is
+  missing or references an unknown story id or FR key. The section is an additive
+  authoring convention; vendored speckit templates are never modified.
+- **FR-012**: The agent's inner loop (self-run gates, per-task commits) is
+  advisory only; a node reaches PASSED solely through 002's independent
+  verification ladder after the attempt terminates. Agent self-reported success
+  MUST never influence node state.
+- **FR-013**: Each node MUST have exactly one git worktree, created at first
+  dispatch on branch `factory/<epic-id>/<node-id>` and reused across all of the
+  node's attempts (including debugger attempts, per 002's same-worktree retry
+  semantics); it is removed only after the node reaches a terminal state with
+  its salvage commit (constitution VI) on the branch.
 
 ### Key Entities
 
 - **WorkGraph**: epic id, target repo/specs root, list of nodes with dependency
-  edges; pure data, validated at start.
+  edges; compiled from the epic spec's `## Work Graph` declaration (one node per
+  user story), never hand-authored; pure data, validated at start.
 - **NodeState**: PENDING → KEY_ISSUED → RUNNING → VERIFYING → {PASSED | FAILED →
   ladder → RETRY/DEBUGGER/ESCALATE | KILLED}; the workflow's in-memory record per
   node, queryable.
@@ -186,6 +265,10 @@ matches workflow state.
 - **SC-005**: The end-to-end bootstrap epic — Ergane dispatching
   `specs/003-merge-queue/` against its own repo (D-024) — produces a verified
   branch with zero human-written code, with a human merging manually.
+- **SC-006**: The deriver, run against a fixture spec with a `## Work Graph`
+  section, emits exactly the expected nodes, edges, and requirement keys, and
+  rejects fixtures with a missing story declaration, unknown story id, or unknown
+  FR key — deterministically, with the offending story named in the error.
 
 ## Assumptions
 
@@ -197,15 +280,17 @@ matches workflow state.
   The adapter contract keeps it swappable (D-018).
 - Single worker host, single epic at a time is acceptable for bootstrap (the
   `.factory/` SQLite constraint); concurrency is a post-bootstrap concern.
+- The `## Work Graph` spec-grammar extension is an additive authoring convention
+  enforced by derivation-time validation, not by template changes — keeping this
+  repo off the speckit upgrade path. `specs/003-merge-queue/spec.md` gains its
+  declaration before the crossover epic, and the extension is recorded as a
+  decision-log entry.
+- Ergane's own `factory.yaml` is committed before the crossover epic, declaring
+  its gate commands and `standards: .specify/memory/constitution.md`. The
+  `standards` key is one optional addition to the factory.yaml schema (owned by
+  002's loader); the `timeout` field is one addition to the persona registry.
 
 ## Open Questions (for /speckit-clarify)
 
-- Who writes the WorkGraph for epic 003 — hand-authored JSON (bootstrap-simplest),
-  or derived mechanically from 003's tasks.md phases/dependencies (speckit tasks are
-  nearly a DAG already)?
-- Prompt assembly (FR-006): how much of plan.md/tasks.md context per node, and is
-  the ralph PROMPT.md contract the template?
-- Worktree lifecycle: one worktree per node reused across attempts (002 assumes
-  same-worktree retries) — confirm, and confirm branch naming.
 - Does the pause signal need persistence across worker restarts beyond Temporal's
   own replay (i.e., is a paused epic durable by construction)? Presumed yes.
