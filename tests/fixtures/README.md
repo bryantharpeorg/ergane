@@ -22,6 +22,36 @@ grammar the parser keys on (architecture §2) plus every validation rule.
 Requesting a requirement key that no fixture declares (e.g. `FR-404`) is the
 "unknown requested key" validation case; `010-full-grammar` serves for it.
 
+## `workgraph/` — WorkGraph deriver corpus (005 T020, SC-006)
+
+One directory per fixture spec, mirroring the `speckit/` layout. Every fixture is
+the same feature — "Short Links", three stories (`US1`, `US2`, `US3`) and four
+functional requirements (`FR-001`…`FR-004`) — with **byte-identical** stories and
+requirement bullets. Only the `**Input**:` note and the `## Work Graph` section
+differ, so a fixture that fails has exactly one explanation, and every rejection
+fixture is a spec the criteria parser accepts: what the deriver refuses is the work
+graph, never the spec around it.
+
+| fixture | expectation |
+|---|---|
+| `valid_epic` | Derives. Three nodes in spec order — `us1` (`depends_on: []`, implements FR-001/FR-002), `us2` (depends on `us1`, `timeout: 7200`), `us3` (independent leaf). The one edge, the one independent root, and the one per-story override; the section also carries prose the fence-masked scan reads past. |
+| `missing_story` | Rejected (`coverage`): the block declares `US1` and `US2` only. Error names `US3` — the story that would have become a silent orphan. |
+| `unknown_story` | Rejected (`story_id`): all three stories are declared, plus `US4`, which the spec does not declare. Error names `US4`. |
+| `unknown_fr` | Rejected (`implements`): `US2` implements `FR-404`, which the spec does not declare. Error names `US2`. |
+| `unknown_dep` | Rejected (`depends_on`): `US2` depends on `US9`, which nothing declares. Error names `US2`. |
+| `cycle` | Rejected (`acyclic`): `US2` waits on `US3` and `US3` on `US2`. Error names that cycle's members and *not* `US1`, which is outside it. |
+| `self_dep` | Rejected (`depends_on`): `US2` depends on itself. Error names `US2`. |
+| `no_section` | Rejected (`section_missing`): no `## Work Graph` section. The only header of that name sits inside a four-backtick fence wrapping a three-backtick YAML block — it is masked, so a scan that finds it would derive a graph from quoted prose. Names no story. |
+| `two_blocks` | Rejected (`section_missing`): the section holds two fenced YAML blocks. The **first is the complete valid graph** and the second a leftover earlier revision, so a deriver that silently takes the first cannot be told from a correct one by its output — only the rule can. Names no story. |
+| `non_mapping` | Rejected (`mapping`): the block is a YAML sequence of story ids, not a mapping of story id → declaration. Names no story. |
+| `unknown_key` | Rejected (`unknown_key`): `US2`'s declaration carries `persona: debugger` — post-bootstrap grammar, refused rather than ignored. Error names `US2`. |
+| `bad_timeout` | Rejected (`timeout`): `US2` declares `timeout: 0`. An integer, so a deriver that only type-checks accepts it; zero seconds is no deadline. Error names `US2`. |
+
+Derivation is pure (text in → `WorkGraph` out), so these are read as text: `epic_id`,
+`feature`, `specs_root` and `target_repo` come from the CLI, not from the fixture,
+and the directory name is not parsed. `specs/003-merge-queue/spec.md` is the
+real-world derive fixture (T030), the way `001-usage-tracking` is the parser's.
+
 ## `target_repo/` — gate-runner and diff-check corpus (T013)
 
 A tiny but real target repo: `README.md`, `src/calc.py`, `docs/notes.md`, the
