@@ -66,6 +66,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
 
@@ -148,6 +149,11 @@ EPIC_ID = VALID
 WORKFLOW_ID = f"epic-{EPIC_ID}"
 TARGET_REPO = "/srv/factory/targets/short-links"
 PROXY_URL = "http://litellm.test"
+
+#: The landing-poll beat (`LandingConfig.poll_interval_s`). The time-skipping
+#: harness advances the virtual clock in whole sleeps, so a CLI-run epic settles
+#: by sleeping one beat past it; this must track the workflow's default.
+LANDING_POLL_INTERVAL_S = 60
 
 #: An address nothing listens on, for the transport-failure path (exit 2).
 DEAD_ADDRESS = "127.0.0.1:1"
@@ -702,6 +708,25 @@ def worker_for(env: WorkflowEnvironment, script: ScriptedEpic) -> Worker:
     )
 
 
+async def settle_epic(env: WorkflowEnvironment) -> Any:
+    """Let a CLI-started epic's landings settle, then await its result.
+
+    The CLI's `start` returns only the workflow id — not the `start_workflow`
+    handle the time-skipping harness reclasses. Under `start_time_skipping`,
+    `env.client` is wrapped in an interceptor that unlocks the virtual clock only
+    inside the handle `.result()` of *its own* `start_workflow` return value; a
+    plain `get_workflow_handle(id).result()` never unlocks it, so the landing
+    poll timers (a `wait_condition(timeout=60s)` beat) never fire and an epic
+    whose work is otherwise done parks forever on `_all_landings_terminal()`.
+    `env.sleep` is the harness's own unlock: it advances the virtual clock by a
+    landing-poll interval, letting the merge fakes ride each landing to a
+    terminal state, after which the plain handle's result resolves.
+    """
+    handle = env.client.get_workflow_handle(WORKFLOW_ID)
+    await env.sleep(timedelta(seconds=LANDING_POLL_INTERVAL_S + 1))
+    return await handle.result()
+
+
 def node_lines(stdout: str) -> list[str]:
     """The per-node lines of human `status` output, in the order printed."""
     return [
@@ -957,7 +982,7 @@ async def test_the_started_epic_carries_the_compiled_graph_and_the_proxy_url(
 
     async with worker_for(temporal_env, script):
         result = await run_async("start", str(workgraph_json))
-        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        await settle_epic(temporal_env)
 
     assert result.code == 0
     assert len(script.graphs) == 1
@@ -1064,7 +1089,7 @@ async def test_status_reads_a_live_epic_mid_flight(
         mid_flight = await run_async("status", EPIC_ID, "--json")
 
         script.release()
-        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        await settle_epic(temporal_env)
         final = await run_async("status", EPIC_ID, "--json")
 
     assert start.code == 0
@@ -1078,7 +1103,11 @@ async def test_status_reads_a_live_epic_mid_flight(
                 "state": "ENQUEUED",
                 "verified": True,
                 "landing_state": "ENQUEUED",
-                "pr_number": 387,
+                "pr_number": int(
+                    hashlib.sha1(branch_name(EPIC_ID, "us1").encode()).hexdigest()[:8], 16
+                )
+                % 1000
+                + 1,
             },
             "us2": {
                 "attempt": 1,
@@ -1123,7 +1152,7 @@ async def test_status_json_is_the_query_result_verbatim(
 
     async with worker_for(temporal_env, script):
         await run_async("start", str(workgraph_json))
-        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        await settle_epic(temporal_env)
         result = await run_async("status", EPIC_ID, "--json")
 
     assert result.code == 0
@@ -1164,7 +1193,7 @@ async def test_the_human_status_is_an_epic_line_then_one_line_per_node(
 
     async with worker_for(temporal_env, script):
         await run_async("start", str(workgraph_json))
-        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        await settle_epic(temporal_env)
         result = await run_async("status", EPIC_ID)
 
     assert result.code == 0
