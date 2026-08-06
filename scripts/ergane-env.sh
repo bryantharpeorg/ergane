@@ -76,6 +76,13 @@ emit LITELLM_MASTER_KEY "$master"
 emit TEMPORAL_ADDRESS   "${TEMPORAL_ADDRESS:-localhost:7233}"
 emit TEMPORAL_NAMESPACE "${TEMPORAL_NAMESPACE:-factory}"
 
+# -- Factory state root ---------------------------------------------------------
+# MUST be absolute: worktree.py hands this path to `git -C <target-clone>
+# worktree add`, and git resolves a relative path against the CLONE while the
+# Python side resolves it against the worker's cwd — a relative root splits the
+# worktree from its record (found live, first 003 crossover start 2026-08-06).
+emit FACTORY_ROOT "${FACTORY_ROOT:-$HOME/code/ergane/.factory}"
+
 # -- Telegram escalation bridge -----------------------------------------------
 # Out-of-repo secrets: decrypted to memory only, never to a plaintext file.
 tg_enc="${ERGANE_SECRETS:-$HOME/.config/homelab/ergane.enc.env}"
