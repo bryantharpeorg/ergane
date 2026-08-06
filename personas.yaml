@@ -6,11 +6,13 @@
 # issued virtual key's `models` list is derived from these, so the binding is
 # enforceable, not advisory.
 #
-# Current wiring (2026-08-05): every agent persona runs `local/qwen3.6-27b` —
-# a locally served Qwen3.6-27B behind the operator's LiteLLM proxy — with no
-# fallback. Interim by intent: when a hosted-model API key lands on the worker
-# host, add e.g. `anthropic/*` aliases to the proxy config and move `model:`
-# there, keeping the local alias as `fallback:`.
+# Current wiring (2026-08-06, Bryan): hosted models via the proxy's
+# `ollama-cloud/*` aliases (Ollama Cloud key on the worker host — the planned
+# `anthropic/*` route was dropped in its favor). Coding personas and researcher
+# run `ollama-cloud/deepseek-v4-flash` (the 0731 release); judge runs
+# `ollama-cloud/glm-5.2` (top agent_loop in the operator's evals, and the
+# claude-CLI-against-GLM path is precedented). Every persona keeps
+# `local/qwen3.6-27b` as fallback.
 #
 # Fields per persona:
 #   agent          adapter name (D-018); "none" = deterministic persona, no key
@@ -30,8 +32,8 @@
 
 architect:
   agent: claude-code
-  model: local/qwen3.6-27b
-  fallback: null
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
   skills: [codebase-design, design-an-interface, domain-modeling]
   write_scope: docs
   needs_worktree: true
@@ -39,8 +41,8 @@ architect:
 
 implementer:
   agent: claude-code
-  model: local/qwen3.6-27b
-  fallback: null
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
@@ -57,8 +59,8 @@ verifier:
 
 judge:
   agent: claude-code
-  model: local/qwen3.6-27b
-  fallback: null
+  model: ollama-cloud/glm-5.2
+  fallback: local/qwen3.6-27b
   skills: [code-review]
   write_scope: read
   needs_worktree: false
@@ -66,8 +68,8 @@ judge:
 
 debugger:
   agent: claude-code
-  model: local/qwen3.6-27b
-  fallback: null
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
   skills: [diagnosing-bugs]
   write_scope: worktree
   needs_worktree: true
@@ -75,8 +77,8 @@ debugger:
 
 researcher:
   agent: claude-code
-  model: local/qwen3.6-27b
-  fallback: null
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
   skills: [research, grill-with-docs]
   write_scope: read
   needs_worktree: false
