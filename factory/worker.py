@@ -61,6 +61,7 @@ from temporalio.worker import Worker
 
 from factory.activities import (
     agent_activities,
+    merge_activities,
     notify_activities,
     usage_activities,
     verify_activities,
@@ -105,6 +106,11 @@ ACTIVITIES = [
     # 002 — the human in the loop.
     notify_activities.send_escalation,
     notify_activities.expire_escalation,
+    # 003 — the landing surface: push, open, enqueue, poll, disable.
+    merge_activities.open_landing_pr,
+    merge_activities.enqueue_landing,
+    merge_activities.poll_landing,
+    merge_activities.disable_auto_merge,
 ]
 
 
