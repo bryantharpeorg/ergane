@@ -291,3 +291,176 @@ def test_no_merge_activity_deletes_a_branch() -> None:
 
     source = inspect.getsource(merge_activities)
     assert "delete-branch" not in source.lower()
+
+
+# --- sync_landing_branch (US2 recovery, plan.md § US2) ------------------------
+
+
+def _advance_and_push(repo: Path) -> str:
+    """Land a commit on the target clone's `main` and push it to origin."""
+    (repo / "README.md").write_text("moved on\n", encoding="utf-8")
+    git(repo, "commit", "--quiet", "-a", "-m", "someone else landed work")
+    git(repo, "push", "--quiet", "origin", "main")
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def _node_worktree_with_work(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A prepared node worktree with a commit on the branch, pushed to origin."""
+    root = tmp_path
+    monkeypatch.setenv("FACTORY_ROOT", str(root))
+    prepared = worktrees.ensure(repo, EPIC, NODE, factory_root=root)
+    worktree = Path(prepared.path)
+    (worktree / "landed.txt").write_text("work\n", encoding="utf-8")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "--quiet", "-m", "node work")
+    worktrees.push_branch(repo, EPIC, NODE, factory_root=root)
+    return worktree
+
+
+def _node_worktree_editing_calc(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A node worktree whose work edits `src/calc.py` — the target will too.
+
+    A conflict needs both sides to touch the same tracked file; this is the shape
+    that produces one.
+    """
+    root = tmp_path
+    monkeypatch.setenv("FACTORY_ROOT", str(root))
+    prepared = worktrees.ensure(repo, EPIC, NODE, factory_root=root)
+    worktree = Path(prepared.path)
+    (worktree / "src/calc.py").write_text(
+        "def add(left, right):\n    return left + right + 1\n", encoding="utf-8"
+    )
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "--quiet", "-m", "node edits calc")
+    worktrees.push_branch(repo, EPIC, NODE, factory_root=root)
+    return worktree
+
+
+async def test_sync_landing_branch_reports_a_clean_base_ref(
+    env: ActivityEnvironment, repo_with_origin: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clean recovery sync returns the merged-in target head as the base_ref."""
+    _node_worktree_with_work(repo_with_origin, tmp_path, monkeypatch)
+    target_head = _advance_and_push(repo_with_origin)
+
+    from factory.activities.merge_activities import (
+        SyncLandingBranchInput,
+        sync_landing_branch,
+    )
+
+    result = await env.run(sync_landing_branch, SyncLandingBranchInput(
+        epic_id=EPIC, node_id=NODE, target_repo=str(repo_with_origin)
+    ))
+
+    assert result.clean is True
+    assert result.base_ref == target_head
+    assert result.conflicted_files == ()
+    assert result.refused is False
+
+
+async def test_sync_landing_branch_reports_a_conflict_as_data(
+    env: ActivityEnvironment, repo_with_origin: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conflicting sync surfaces clean=False with the conflicted file list."""
+    _node_worktree_editing_calc(repo_with_origin, tmp_path, monkeypatch)
+    (repo_with_origin / "src/calc.py").write_text(
+        "def add(left, right):\n    return left + right + 2\n", encoding="utf-8"
+    )
+    git(repo_with_origin, "commit", "--quiet", "-a", "-m", "target edits calc")
+    git(repo_with_origin, "push", "--quiet", "origin", "main")
+
+    from factory.activities.merge_activities import (
+        SyncLandingBranchInput,
+        sync_landing_branch,
+    )
+
+    result = await env.run(sync_landing_branch, SyncLandingBranchInput(
+        epic_id=EPIC, node_id=NODE, target_repo=str(repo_with_origin)
+    ))
+
+    assert result.clean is False
+    assert "src/calc.py" in result.conflicted_files
+    # A conflict is a reportable outcome, not a crash.
+    assert result.refused is False
+
+
+async def test_recovery_reenqueue_reuses_the_same_pr(
+    env: ActivityEnvironment, repo_with_origin: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a recovery sync, re-opening lands on the same PR — never a duplicate.
+
+    The queue holds one PR per head; a recovery that opened a second PR for the
+    same branch would strand a live PR and split the queue's attention. The
+    idempotent open reuses the existing PR, and the re-enqueue rides that number.
+    """
+    _node_worktree_with_work(repo_with_origin, tmp_path, monkeypatch)
+    _advance_and_push(repo_with_origin)
+
+    fake = FakeGh()
+    # The reuse lookup finds the existing open PR — no `pr create` follows.
+    fake.expect_json(
+        "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number,url",
+        payload=[{"number": PR_NUMBER, "url": "https://x/pull/7"}],
+    )
+    fake.expect("pr", "merge", str(PR_NUMBER), "--auto", f"--{MERGE_METHOD}")
+    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        EnqueueLandingInput,
+        OpenLandingPrInput,
+        SyncLandingBranchInput,
+        enqueue_landing,
+        open_landing_pr,
+        sync_landing_branch,
+    )
+
+    synced = await env.run(sync_landing_branch, SyncLandingBranchInput(
+        epic_id=EPIC, node_id=NODE, target_repo=str(repo_with_origin)
+    ))
+    assert synced.clean is True
+
+    opened = await env.run(open_landing_pr, OpenLandingPrInput(
+        epic_id=EPIC,
+        node_id=NODE,
+        target_repo=str(repo_with_origin),
+        base=BASE,
+        branch=BRANCH,
+        title=TITLE,
+        body_file="/tmp/body.md",
+    ))
+    assert opened.number == PR_NUMBER
+    assert all("create" not in a for a in [c.args for c in fake.calls])
+
+    enqueued = await env.run(enqueue_landing, EnqueueLandingInput(
+        pr_number=opened.number, merge_method=MERGE_METHOD, target_repo=str(repo_with_origin)
+    ))
+    assert enqueued.rejected is False
+
+
+async def test_sync_landing_branch_surfaces_a_git_failure_as_data(
+    env: ActivityEnvironment, repo_with_origin: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovery sync that cannot run is a refusal, never a silent pass.
+
+    A missing worktree (the node was never prepared) or a wedged git should
+    surface with the reason, so the workflow can route to escalation rather than
+    read a fake success. The reason carries the stderr tail from the underlying
+    git failure.
+    """
+    # No worktree prepared: the sync must refuse with a reason, not crash.
+    from factory.activities.merge_activities import (
+        SyncLandingBranchInput,
+        sync_landing_branch,
+    )
+
+    result = await env.run(sync_landing_branch, SyncLandingBranchInput(
+        epic_id=EPIC, node_id=NODE, target_repo=str(repo_with_origin)
+    ))
+
+    assert result.refused is True
+    assert result.reason != ""
+    assert "worktree" in result.reason.lower()
