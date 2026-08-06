@@ -128,12 +128,14 @@ with workflow.unsafe.imports_passed_through():
         PollLandingInput,
         PrepareLandingPrInput,
         SyncLandingBranchInput,
+        ValidateTargetRepoInput,
         disable_auto_merge,
         enqueue_landing,
         open_landing_pr,
         poll_landing,
         prepare_landing_pr,
         sync_landing_branch,
+        validate_target_repo,
     )
     from factory.activities.notify_activities import (
         DEFAULT_CHOICES,
@@ -169,6 +171,7 @@ with workflow.unsafe.imports_passed_through():
         LandingState,
         ObservedOutcome,
         QueueOutcome,
+        TargetRepoProfile,
     )
     from factory.notify.messages import render_history, render_landing_history
     from factory.notify.service import SIGNAL_NAME
@@ -515,6 +518,14 @@ class EpicWorkflow:
         widen — the ready set is already computed, only the picker is narrow.
         """
         graph = request.graph
+        # US3 onboarding gate (FR-010, SC-005): the target repo must conform to
+        # the factory's assumptions — public, merge queue enabled on the default
+        # branch, required checks matching factory.yaml's gates — before a single
+        # key is issued or worktree created. A failing profile fails the epic
+        # here, with its findings carried in the failure message so the operator
+        # is told exactly what to change. Checked at every epic start, never
+        # cached (spec § US3 IT).
+        await self._onboard_target(graph)
         resolved = await self._resolve(graph)
         # The one persona no node names, read in the same breath as the graph and
         # under the same snapshot rule: an epic with nobody to score its stories
@@ -590,6 +601,36 @@ class EpicWorkflow:
         else:
             self._epic_state = EpicState.COMPLETED
         return self.epic_status()
+
+    async def _onboard_target(self, graph: WorkGraph) -> None:
+        """Validate the target repo before anything dispatches (FR-010, SC-005).
+
+        The onboarding gate is structural and live at every epic start: it reads
+        the repo's visibility, merge-queue rule and required checks via the
+        `validate_target_repo` activity, and its `factory.yaml` through the 002
+        loader. A failing profile fails the epic here — before `resolve_graph`,
+        before any key is issued, before any worktree is prepared — with its
+        findings rendered into the failure message so the operator is told which
+        check failed and how to fix it. There is no caching: onboarding is a
+        property of a repo that can change between epics, so it is re-read every
+        time (spec § US3 IT).
+        """
+        profile: TargetRepoProfile = await workflow.execute_activity(
+            validate_target_repo,
+            ValidateTargetRepoInput(target_repo=graph.target_repo),
+            **_FAST,
+        )
+        if not profile.passed:
+            findings = "\n".join(
+                f"  [{('PASS' if f.passed else 'FAIL')}] {f.check}: {f.detail}"
+                for f in profile.findings
+            )
+            raise ApplicationError(
+                f"target repo {graph.target_repo} failed onboarding; nothing "
+                f"dispatches against an unvalidated repo:\n{findings}",
+                type=GRAPH_INVALID,
+                non_retryable=True,
+            )
 
     async def _resolve(self, graph: WorkGraph) -> list[ResolvedNode]:
         """Validate the graph against the persona registry, or fail the epic.

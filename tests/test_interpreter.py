@@ -139,6 +139,7 @@ from factory.activities.merge_activities import (
     PrepareLandingPrInput,
     SyncLandingBranchInput,
     SyncLandingBranchResult,
+    ValidateTargetRepoInput,
 )
 from factory.activities.notify_activities import (
     ExpiredEscalation,
@@ -163,12 +164,14 @@ from factory.activities.verify_activities import (
 )
 from factory.config import Persona, WriteScope
 from factory.mergequeue.models import (
+    Finding,
     Landing,
     LandingConfig,
     LandingState,
     ObservedOutcome,
     PrSnapshot,
     QueueOutcome,
+    TargetRepoProfile,
 )
 from factory.notify.service import SIGNAL_NAME
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
@@ -849,6 +852,27 @@ class ScriptedWorld:
         self.landing_syncs: dict[str, SyncLandingBranchResult] = {}
         self.sync_requests: list[SyncLandingBranchInput] = []
 
+        #: US3 onboarding: the profile the scripted `validate_target_repo` returns,
+        #: and the calls logged. Defaults to a fully conforming repo so the rest of
+        #: the suite runs unchanged; onboarding tests override it with a failing
+        #: profile to prove dispatch is blocked (FR-010, SC-005).
+        self.onboard_profile = TargetRepoProfile(
+            repo=TARGET_REPO,
+            default_branch="main",
+            visibility="PUBLIC",
+            queue_enabled=True,
+            required_checks=("test",),
+            declared_gates=("test",),
+            findings=(
+                Finding("visibility", True, "repo is public"),
+                Finding("merge_queue", True, "merge queue enabled on main"),
+                Finding("factory_yaml", True, "factory.yaml is valid"),
+                Finding("gate_check:test", True, "required check 'test' exists"),
+            ),
+            passed=True,
+        )
+        self.onboard_requests: list[ValidateTargetRepoInput] = []
+
         #: PR number assigned per node by `open_landing_pr`, so `enqueue_landing`
         #: and `poll_landing` know which node a PR belongs to (the workflow's PR
         #: number, reconstructed for the call log's sake).
@@ -1311,6 +1335,12 @@ class ScriptedWorld:
                 ),
             )
 
+        @activity.defn(name="validate_target_repo")
+        async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
+            script._log("validate_target_repo")
+            script.onboard_requests.append(request)
+            return script.onboard_profile
+
         @activity.defn(name="send_escalation")
         async def send_escalation(request: SendEscalationInput) -> SentEscalation:
             script._log("send_escalation", request.node_id)
@@ -1363,6 +1393,7 @@ class ScriptedWorld:
             poll_landing,
             disable_auto_merge,
             sync_landing_branch,
+            validate_target_repo,
             send_escalation,
             expire_escalation,
         ]
@@ -1520,8 +1551,10 @@ async def test_a_three_node_graph_runs_to_epic_completion(
     # — the same snapshot discipline 002 applies to criteria. The judge's own
     # entry is resolved there too: no node names it, and discovering four
     # attempts in that the epic cannot score anything is the failure resolving
-    # the whole graph first exists to prevent.
-    assert script.calls[:3] == [
+    # the whole graph first exists to prevent. Onboarding (US3) runs ahead of all
+    # of it — the repo is validated before anything dispatches (FR-010, SC-005).
+    assert script.calls[:4] == [
+        "validate_target_repo",
         "resolve_graph",
         "resolve_persona",
         "load_prompt_sources",
@@ -1901,7 +1934,8 @@ async def test_an_invalid_graph_is_rejected_before_anything_dispatches(
     message = str(failure.value.__cause__)
     assert "us1" in message and "us2" in message
 
-    assert script.calls == ["resolve_graph"]
+    # Onboarding passes first (US3), then the graph is rejected at resolve_graph.
+    assert script.calls == ["validate_target_repo", "resolve_graph"]
     assert script.prepare_requests == []
     assert script.key_requests == []
     assert script.attempts == []
@@ -1923,7 +1957,73 @@ async def test_an_unknown_persona_is_rejected_before_anything_dispatches(
 
     message = str(failure.value.__cause__)
     assert "us1" in message and "archaeologist" in message
-    assert script.calls == ["resolve_graph"]
+    # Onboarding passes first; the unknown persona is then rejected at resolve_graph.
+    assert script.calls == ["validate_target_repo", "resolve_graph"]
+
+
+async def test_a_failing_onboarding_profile_blocks_dispatch_before_resolve_graph(
+    env: WorkflowEnvironment,
+) -> None:
+    """SC-005: a repo that fails onboarding never dispatches — before resolve_graph.
+
+    `validate_target_repo` runs ahead of `resolve_graph` in `EpicWorkflow.run`.
+    A failing profile fails the epic at its first step, with zero keys issued and
+    zero worktrees prepared, and the failure message carries the findings so an
+    operator sees exactly which check failed and how to fix it.
+    """
+    script = ScriptedWorld({}, client=env.client)
+    script.onboard_profile = TargetRepoProfile(
+        repo=TARGET_REPO,
+        default_branch="main",
+        visibility="private",
+        queue_enabled=False,
+        required_checks=(),
+        declared_gates=(),
+        findings=(
+            Finding(
+                "visibility", False,
+                "repo is 'private'; the merge queue is available on any plan "
+                "only for public repos",
+            ),
+            Finding(
+                "merge_queue", False,
+                "merge queue is not enabled on the default branch 'main'",
+            ),
+        ),
+        passed=False,
+    )
+
+    with pytest.raises(WorkflowFailureError) as failure:
+        await run_epic(env, script)
+
+    message = str(failure.value.__cause__)
+    # The failure carries the findings, so the operator is told what to change.
+    assert "visibility" in message
+    assert "merge_queue" in message
+    # The onboarding gate ran; resolve_graph never did, and nothing dispatched.
+    assert script.calls == ["validate_target_repo"]
+    assert script.prepare_requests == []
+    assert script.key_requests == []
+    assert script.attempts == []
+
+
+async def test_a_passing_onboarding_profile_proceeds_to_normal_dispatch(
+    env: WorkflowEnvironment,
+) -> None:
+    """A passing profile is not a gate that stops dispatch — the epic runs."""
+    script = ScriptedWorld(
+        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        scenarios=True,
+    )
+
+    status = await run_epic(env, script)
+
+    # Onboarding ran first, then normal dispatch reached completion.
+    assert script.onboard_requests, "validate_target_repo never ran"
+    assert script.calls[0] == "validate_target_repo"
+    assert script.dispatched == ["us1", "us2", "us3"]
+    assert status.epic_state == EpicState.COMPLETED
 
 
 # --- FR-004 / SC-003: the bracket, and recording before acting ----------------
