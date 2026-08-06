@@ -42,6 +42,7 @@ from typing import Any, Sequence
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from factory.mergequeue.models import Landing, ObservedOutcome, QueueOutcome
 from factory.verify.models import (
     EscalationChoice,
     EscalationRecord,
@@ -79,6 +80,9 @@ _CHOICE_RE = re.compile(r"^[A-Z_]{1,32}$")
 #: One spelling of "evidence was elided here" across the component — the judge's
 #: diff truncation writes the same marker.
 _TRUNCATION_MARKER = "[... {dropped} lines truncated ...]"
+
+#: One spelling of "the queue history was empty" across the component.
+_NO_LANDING_HISTORY = "The node's PR never left the queue; no landing outcome was recorded."
 
 _HISTORY_TRUNCATED = (
     "[... earlier history truncated for Telegram; "
@@ -187,6 +191,41 @@ def render_history(results: Sequence[VerificationResult]) -> str:
         return _NO_HISTORY
 
     return "\n\n".join(_render_attempt(result) for result in results)
+
+
+def render_landing_history(landing: Landing) -> str:
+    """The queue history a rejected landing carries, oldest first, with recovery.
+
+    This is what the landing escalation stores as `history_summary` and what its
+    message body is built from. Every `ObservedOutcome` is reproduced in order
+    with its timestamp, because the operator deciding whether to retry, kill, or
+    pause is asking "how many times did the queue kick this PR, and why" — and
+    `recovery_cycles` is named so the cost of the recovery ladder (FR-006) is
+    visible rather than implied by counting the outcomes themselves.
+    """
+    if not landing.outcomes:
+        return _NO_LANDING_HISTORY
+
+    lines = [f"{_value(o.outcome)} at {o.at}" for o in landing.outcomes]
+    if landing.recovery_cycles:
+        lines.append(f"Recovery cycles: {landing.recovery_cycles}")
+    return "\n".join(lines)
+
+
+def manual_intervention_notice(record: EscalationRecord) -> str:
+    """The notify-only message when a PR is closed by a human, no buttons.
+
+    A human closing the PR is a fact to be told, not a decision to be asked: the
+    workflow will not honor a choice it did not offer, so a notice that rendered
+    buttons would present options the bridge would have to refuse. FR-007's
+    escalation stays the only message shape with a keyboard.
+    """
+    return _compose(
+        _header("⚠️ Manual intervention", record),
+        record.history_summary,
+        "\n\nThe PR was closed without the factory merging it. "
+        "The node branch is preserved and reachable (FR-008).",
+    )
 
 
 def escalation_message(record: EscalationRecord) -> str:
