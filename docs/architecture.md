@@ -404,9 +404,87 @@ reference workflow under time skipping); the WorkGraph interpreter owns running 
 GitHub-native (D-007): branch-per-node → PR on verify-pass → `gh pr merge --auto` →
 GitHub's merge queue serializes, rebases onto the current queue head
 (`gh-readonly-queue/...`), re-runs **deterministic required checks** against the rebased
-tree, merges on green. Temporal enqueues, awaits the outcome, and on conflict/red routes
-to `debugger` or escalates. Unmerged work from failed/killed nodes is preserved on its
-branch (salvage, §5.3) rather than deleted.
+tree, merges on green. Temporal's merge role shrinks to: enqueue → await outcome → escalate
+(or route to `debugger`) on conflict/red. Unmerged work from failed/killed nodes is
+preserved on its branch (salvage, §5.3) rather than deleted.
+
+**Implemented** (US1 — the landing path, spec `specs/003-merge-queue/`). The shipped layout is:
+
+```text
+factory/
+├── mergequeue/
+│   ├── models.py          # QueueOutcome / LandingState / Landing / PrSnapshot / LandingConfig
+│   ├── classify.py        # pure: polled PrSnapshot → QueueOutcome (the reconciliation answer)
+│   ├── gh.py              # GhClient — the only module that spawns gh; failure taxonomy
+│   └── messages.py        # pure: PR title + body renderer (deterministic, secret-free)
+└── activities/
+    └── merge_activities.py  # prepare / open / enqueue / poll / disable — the landing surface
+```
+
+The landing lifecycle, in the plan's order — salvage first, then push, then open, then
+enqueue, then poll-until-terminal:
+
+1. **Salvage** — on ladder PASS the work is already committed to the node branch (§5.3);
+   nothing extra is written here.
+2. **`push_branch`** (`worktree.py`) — plain, fast-forward `git push origin
+   factory/<epic>/<node>`; **refuses a branch named the target's default branch** (FR-001's
+   structural guard — a node never pushes over the trunk). The push precedes the PR because
+   the queue operates against the remote, and it is what makes the PR's head exist there.
+3. **`prepare_landing_pr`** — renders the PR body to a scratch file via the pure
+   `messages.render_pr_body` (below). The renderer's secret inputs are read from the worker
+   host environment *inside the activity*, so they never cross a workflow boundary (D-014).
+4. **`open_landing_pr`** — idempotent: an existing open PR for the branch is reused, never
+   duplicated (the queue holds one PR per head). Never `--draft` — a draft does not enter
+   the queue. The body is passed via `--body-file` so its quoting needs no shell care.
+5. **`enqueue_landing`** — the factory's **only** merge invocation: `gh pr merge <n> --auto
+   --<merge_method>`, the method from `LandingConfig`. A refused enqueue (queue disabled
+   mid-flight, the spec edge case) is returned as rejection data, never raised — the
+   workflow routes it to escalation.
+6. **`poll_landing`** — one `gh pr view --json …` → `PrSnapshot`, fed to the classifier. The
+   poll loop runs as a workflow background task (`asyncio.ensure_future`), so two sibling
+   nodes can both be enqueued and the queue, not the factory, orders them (US1-S4).
+
+**Outcome classification** (`classify.py`, pure — the reconciliation answer to FR-004 and
+every spec edge case; polling only, no webhooks, matching the D-011 no-public-endpoint
+posture). `(PrSnapshot, Landing, LandingConfig, now)` in, `QueueOutcome | None` out:
+
+| observation | outcome |
+|---|---|
+| `merged_at` set | `MERGED` — however it merged; a human merging manually is reconciled, not fought |
+| `state == CLOSED`, not merged | `DEQUEUED_BY_HUMAN` — treated as operator kill; escalation notes the manual intervention |
+| OPEN, auto-merge gone, `failing_required_checks` non-empty | `CHECKS_FAILED` |
+| OPEN, `merge_state_status == DIRTY` (unmergeable) | `CONFLICT` |
+| OPEN, auto-merge gone, no failing checks, not dirty | `DEQUEUED_BY_HUMAN` (the remaining known dequeuer; heuristic — flagged) |
+| OPEN, auto-merge still requested | pending (`None`) — keep polling |
+| pending beyond `stall_after_s` with no state change | `STALLED` → escalation, never a silent stall (SC-002) |
+
+Reconciliation is **polling-only by design**: no webhook, no event subscription. Each poll
+is a pure function of what GitHub reports *now*, so a late landing is reconciled as `MERGED`
+rather than re-read as closed or dequeued, and the classification is replay-identical under
+Temporal (SC-001). A landing's whole queue history (`outcomes`) travels as workflow state on
+its `Landing` — there is no separate landing store (D-028).
+
+**PR body** (`messages.py`, pure): title `<epic>/<node>: <story title>`; body = spec
+reference (feature + requirement keys), branch, attempt count, per-gate results of the
+passing attempt, judge outcome or `judge_unavailable`, and the landing's provenance line. No
+credential, proxy URL, or transcript path may appear (public repo — §10); the renderer
+accepts the secrets in its inputs precisely so its output proves it drops them.
+
+**Landing knobs** — `LandingConfig` (an `EpicInput` field): `merge_method` (default
+`squash`, passed verbatim to `gh pr merge --auto --<method>` and must match a method the
+repo allows), `poll_interval_s` (default 60), `stall_after_s` (default 7200 — SC-002's bound),
+`max_recovery_cycles` (default 1, FR-006 — exercised by US2).
+
+**Structural guards** — the merge surface never removes a branch (FR-008: the branch is the
+queue's to land, and the `--delete-branch` string must never appear in its command surface),
+and `gh pr merge` has exactly two forms: `--auto --<method>` (enqueue) and `--disable-auto`
+(kill cleanup) — never a direct merge (FR-002). Both are asserted against the module source
+by tests.
+
+The interpreter's landing phase and the poll/classify loop are exercised end-to-end under
+time skipping (US1's interpreter tests); the four activities are proven against a `FakeGh`
+and a scratch repo, and a `@pytest.mark.live_merge` smoke drives one real branch of the D-010
+sample repo through the real queue behind `FACTORY_SAMPLE_REPO`.
 
 ## 8. Agents: the adapter seam
 
