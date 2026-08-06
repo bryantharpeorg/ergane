@@ -30,7 +30,7 @@ state correctly.
 
 **Acceptance Scenarios**:
 
-1. **Given** a node with verdict PASS on branch `agent/<epic>/<node>`, **When** the
+1. **Given** a node with verdict PASS on branch `factory/<epic>/<node>`, **When** the
    landing step runs, **Then** a PR is opened (ready, not draft) with the node's spec
    reference and verification summary in the body, and auto-merge into the queue is
    requested.
@@ -123,7 +123,8 @@ queue configured; assert pass/fail with actionable findings.
 ### Functional Requirements
 
 - **FR-001**: Every node MUST land through a PR from its own branch
-  (`agent/<epic>/<node>`); direct pushes to the target branch are prohibited.
+  (`factory/<epic>/<node>`, the 005 FR-013 worktree branch); direct pushes to the
+  target branch are prohibited.
 - **FR-002**: PRs MUST be opened ready-for-review with the node's spec reference and a
   verification summary, and enqueued via the platform's auto-merge/merge-queue
   mechanism — the factory MUST NOT implement its own serialization of landings.
