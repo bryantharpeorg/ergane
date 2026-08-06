@@ -64,6 +64,7 @@ from factory.usage.models import Termination
 from factory.workgraph.worktree import (
     DIFF_CLIP_NOTICE,
     PreparedWorktree,
+    SyncResult,
     WorktreeError,
     capture_base_ref,
     diff,
@@ -71,6 +72,7 @@ from factory.workgraph.worktree import (
     push_branch,
     remove,
     salvage,
+    sync_with_target,
 )
 from tests.target_repo import git, git_env
 
@@ -660,3 +662,129 @@ def test_repush_after_new_commits_succeeds(
     push_branch(repo, EPIC, NODE, factory_root=factory_root)
 
     assert head(bare, f"refs/heads/{prepared.branch}") == head(prepared.path)
+
+
+# --- sync_with_target (US2 recovery, plan.md § US2) ---------------------------
+
+
+def _advance_and_push(repo: Path, bare: Path) -> str:
+    """Land a commit on the target clone's `main` and push it to origin.
+
+    US2's recovery syncs the merge target-head *into* the node branch, so the
+    world that rejected the node has to move on its branch and reach origin for
+    the sync to have anything to merge. This is the "someone else landed work"
+    half of the story.
+    """
+    (repo / "README.md").write_text("moved on\n", encoding="utf-8")
+    git(repo, "commit", "--quiet", "-a", "-m", "someone else landed work")
+    git(repo, "push", "--quiet", "origin", "main")
+    return head(repo)
+
+
+def test_sync_with_target_merges_origin_head_and_reports_a_clean_base(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """A clean sync folds `origin/<default>` into the node branch (US2-S1).
+
+    The node branch is based on the old main; the target has moved on. Sync must
+    fetch origin, merge the new head into the branch, report `clean`, and return
+    the merged-in target head as the new `base_ref` — so the next diff shows only
+    the node's own work (D-027 extended: recovery moves the branch point).
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    # The node's work touches a file the target's advance will not.
+    (worktree / "node_only.txt").write_text("node work\n", encoding="utf-8")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "--quiet", "-m", "node work")
+    push_branch(repo, EPIC, NODE, factory_root=factory_root)
+
+    target_head = _advance_and_push(repo, bare)
+    assert target_head != prepared.base_ref
+
+    result = sync_with_target(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert result.clean is True
+    assert result.conflicted_files == ()
+    # The merged-in target head is the new branch point (D-027 extended).
+    assert result.base_ref == target_head
+
+
+def test_sync_with_target_reports_a_conflict_and_leaves_the_markers(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """A conflicting sync reports `conflict` with the file list, markers in tree.
+
+    The conflict markers are the debugger's work surface (FR-006): the sync must
+    leave them in the tree for the persona to resolve, and name the files so the
+    prompt can hand the debugger the conflicted list.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    # The node edits the same tracked file the target's advance will edit.
+    (worktree / "src/calc.py").write_text(
+        "def add(left, right):\n    return left + right + 1\n", encoding="utf-8"
+    )
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "--quiet", "-m", "node edits calc")
+    push_branch(repo, EPIC, NODE, factory_root=factory_root)
+
+    (repo / "src/calc.py").write_text(
+        "def add(left, right):\n    return left + right + 2\n", encoding="utf-8"
+    )
+    git(repo, "commit", "--quiet", "-a", "-m", "target edits calc")
+    git(repo, "push", "--quiet", "origin", "main")
+
+    result = sync_with_target(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert result.clean is False
+    assert "src/calc.py" in result.conflicted_files
+    # The conflict markers are still in the tree for the debugger to resolve.
+    assert "<<<<<<<" in (worktree / "src/calc.py").read_text(encoding="utf-8")
+
+
+def test_sync_with_target_never_rebases_so_push_stays_fast_forward(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """Sync merges the target head in; the node branch is never rewritten (US2).
+
+    The node's pushed branch must stay reachable and the node branch ref on
+    origin must advance by fast-forward (no forced push, no rebase): a rewrite
+    would overwrite history the queue is still deciding on.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    (worktree / "node_only.txt").write_text("node work\n", encoding="utf-8")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "--quiet", "-m", "node work")
+    push_branch(repo, EPIC, NODE, factory_root=factory_root)
+    before = head(bare, f"refs/heads/{prepared.branch}")
+
+    _advance_and_push(repo, bare)
+    result = sync_with_target(repo, EPIC, NODE, factory_root=factory_root)
+    assert result.clean is True
+
+    # The node branch's original commit is still an ancestor — nothing rewritten.
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", before, prepared.branch],
+        capture_output=True,
+        text=True,
+        env=git_env(),
+    )
+    assert completed.returncode == 0, "sync rewrote the node branch (not an ancestor)"
+    # And the pushed ref advances by fast-forward, so a plain push succeeds.
+    push_branch(repo, EPIC, NODE, factory_root=factory_root)
+    assert head(bare, f"refs/heads/{prepared.branch}") == head(prepared.path)
+
+
+def test_sync_with_target_raises_when_the_worktree_is_gone(
+    repo: Path, factory_root: Path
+) -> None:
+    """A missing worktree is infrastructure, never a silent no-op."""
+    with pytest.raises(WorktreeError) as raised:
+        sync_with_target(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert str(factory_root / "worktrees" / EPIC / NODE) in str(raised.value)
