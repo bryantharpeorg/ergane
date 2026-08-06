@@ -1,0 +1,53 @@
+{
+  "epic_id": "003-merge-queue",
+  "feature": "003-merge-queue",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane-003-target",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "003-merge-queue:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-009"
+      ],
+      "depends_on": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "003-merge-queue:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008"
+      ],
+      "depends_on": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "003-merge-queue:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-010"
+      ],
+      "depends_on": [],
+      "timeout_override_s": null
+    }
+  ]
+}
