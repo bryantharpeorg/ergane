@@ -195,6 +195,41 @@ class DisableResult:
     reason: str
 
 
+@dataclass(frozen=True)
+class SyncLandingBranchInput:
+    """Which node's branch to sync onto the target head (US2 recovery, FR-005).
+
+    A `CHECKS_FAILED` rejection means the target branch moved under the node; the
+    recovery cycle's first move is to sync the node branch onto the new target
+    head inside its worktree. `target_repo` is the clone whose `origin` is the
+    remote the queue operates against — the branch is pushed there, so the sync
+    fetches and merges from it.
+    """
+
+    epic_id: str
+    node_id: str
+    target_repo: str
+
+
+@dataclass(frozen=True)
+class SyncLandingBranchResult:
+    """The sync's outcome, as data the workflow can route (FR-005).
+
+    `clean` mirrors `worktree.SyncResult`: True when the target head merged in
+    without a conflict, with `base_ref` the merged-in target head (the new branch
+    point re-verification's diff is measured from, D-027 extended). `refused`
+    covers a recovery that could not run — a missing worktree or a wedged git —
+    surfaced as data with the reason, never a silent pass that would read as a
+    successful sync and re-enqueue work that was not actually synced.
+    """
+
+    clean: bool
+    base_ref: str | None
+    conflicted_files: tuple[str, ...]
+    refused: bool
+    reason: str
+
+
 #: The seam — a factory `(repo_path: str) -> GhClient`. Production builds a real
 #: client against the target clone; tests replace this with one wired to a
 #: `FakeGh` (same discipline as `open_bot` / `judge_transport`).
@@ -335,3 +370,47 @@ async def disable_auto_merge(request: DisableAutoMergeInput) -> DisableResult:
     except GhError as exc:
         return DisableResult(failed=True, reason=exc.stderr_tail or str(exc))
     return DisableResult(failed=False, reason="")
+
+
+@activity.defn
+async def sync_landing_branch(request: SyncLandingBranchInput) -> SyncLandingBranchResult:
+    """Sync a rejected node's branch onto the target head (US2 recovery, FR-005).
+
+    The recovery cycle's first move after a `CHECKS_FAILED` rejection: the
+    `worktree.sync_with_target` helper fetches origin and merges the target head
+    into the node branch inside its worktree (merge, never rebase — the branch is
+    pushed, history stays fast-forward). The activity turns the helper's two
+    outcomes into the data the workflow routes:
+
+    - a clean merge → `clean=True` with the merged-in target head as `base_ref`;
+    - a conflict → `clean=False` with the conflicted file list, the markers left
+      in the tree for the debugger persona (FR-006);
+    - a helper failure (missing worktree, wedged git) → `refused=True` with the
+      reason, so the workflow escalates rather than re-enqueueing work that was
+      not synced. Never a silent pass.
+    """
+    try:
+        result = await asyncio.to_thread(
+            worktrees.sync_with_target,
+            request.target_repo,
+            request.epic_id,
+            request.node_id,
+            factory_root=Path(
+                os.environ.get(FACTORY_ROOT_ENV) or worktrees.DEFAULT_FACTORY_ROOT
+            ),
+        )
+    except worktrees.WorktreeError as exc:
+        return SyncLandingBranchResult(
+            clean=False,
+            base_ref=None,
+            conflicted_files=(),
+            refused=True,
+            reason=str(exc),
+        )
+    return SyncLandingBranchResult(
+        clean=result.clean,
+        base_ref=result.base_ref,
+        conflicted_files=result.conflicted_files,
+        refused=False,
+        reason="",
+    )
