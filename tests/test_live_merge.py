@@ -52,10 +52,12 @@ from factory.activities.merge_activities import (
     OpenLandingPrInput,
     PollLandingInput,
     PrepareLandingPrInput,
+    ValidateTargetRepoInput,
     enqueue_landing,
     open_landing_pr,
     poll_landing,
     prepare_landing_pr,
+    validate_target_repo,
 )
 from factory.mergequeue import classify
 from factory.mergequeue.models import Landing, LandingConfig, QueueOutcome
@@ -463,6 +465,58 @@ def _close_pr(repo: Path, pr_number: int) -> None:
         text=True,
         cwd=str(repo),
     )
+
+
+# --- US3 onboarding (FR-010): validate a repo live through the real gh ---------
+
+
+def test_onboarding_validates_the_sample_repo_live(
+    live_config: LiveMergeConfig,
+) -> None:
+    """US3's IT: onboarding validation passes against `FACTORY_SAMPLE_REPO`.
+
+    The live `validate_target_repo` reads the sample repo's real facts through
+    the real `gh` binary — visibility, the merge-queue rule on the default
+    branch, the required checks, and the clone's committed `factory.yaml` — and
+    judges it. A repo the landing smoke just merged through is a repo that must
+    pass onboarding; this is the live half of spec § US3 IT.
+    """
+    env = ActivityEnvironment()
+    profile = env.run_sync(
+        validate_target_repo,
+        ValidateTargetRepoInput(target_repo=str(live_config.repo)),
+    )
+    assert profile.passed is True, (
+        "a repo the live landing smoke merges through must pass onboarding; "
+        f"findings: {[f.check for f in profile.findings if not f.passed]}"
+    )
+    assert profile.queue_enabled is True
+    assert profile.visibility == "PUBLIC"
+    assert "factory_yaml" in [f.check for f in profile.findings]
+
+
+def test_onboarding_fails_a_queue_less_repo_with_actionable_findings(
+    live_config: LiveMergeConfig,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """US3's IT: a repo with no merge queue is rejected, with actionable findings.
+
+    This factory clone (Ergane itself) is the queue-less stand-in: it is not
+    configured for merge queue on its default branch, so onboarding must fail
+    with a finding naming the remedy. Nothing dispatches against an unvalidated
+    repo (spec § US3 AS2, FR-010).
+    """
+    # The repo being validated is this worktree's own clone — no queue rule.
+    this_repo = Path(__file__).resolve().parents[1]
+    env = ActivityEnvironment()
+    profile = env.run_sync(
+        validate_target_repo,
+        ValidateTargetRepoInput(target_repo=str(this_repo)),
+    )
+    assert profile.passed is False
+    # The failure is actionable: at least one finding names what to change.
+    assert any(not f.passed and f.detail for f in profile.findings)
+    assert any(f.check == "merge_queue" for f in profile.findings)
 
 
 # --- the passing result ------------------------------------------------------
