@@ -431,13 +431,12 @@ async def sync_landing_branch(request: SyncLandingBranchInput) -> SyncLandingBra
     )
 
 
-@activity.defn
-async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
-    """US3's preflight: gather a repo's facts and judge it (FR-010).
+def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile:
+    """US3's preflight: gather a repo's facts through `client` and judge it (FR-010).
 
     The fact-gathering half of onboarding — `evaluate_repo` (in
-    `factory/mergequeue/onboard.py`) is the pure judgment. This activity reads
-    the world at one moment:
+    `factory/mergequeue/onboard.py`) is the pure judgment. This reads the world
+    at one moment:
 
     - the repo's identity, visibility and default branch from `gh repo view`;
     - the merge-queue rule's required checks from the rules API, falling back to
@@ -449,9 +448,12 @@ async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoPr
     carrying the loader's error, never a shrug (FR-010, spec US3 AS2). The
     profile's `passed` is the conjunction of its findings; a failing profile
     blocks dispatch before any key is issued or worktree created (SC-005).
+
+    `client` is injected so both the activity (via the `_client_factory` seam)
+    and the offline CLI (`factory-epic onboard`) can drive the same logic against
+    whichever `GhClient` their caller wired.
     """
-    client = _client(repo_path=request.target_repo)
-    manifest = Path(request.target_repo) / "factory.yaml"
+    manifest = Path(target_repo) / "factory.yaml"
 
     try:
         config = load_factory_config(manifest)
@@ -468,7 +470,7 @@ async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoPr
         default_branch = str(repo_view.get("defaultBranchRef") or "")
     except GhError as error:
         return _profile_from_gh_failure(
-            request, visibility="", default_branch="", owner_repo="",
+            target_repo, visibility="", default_branch="", owner_repo="",
             manifest_error=manifest_error, declared_gates=declared_gates,
             error=error,
         )
@@ -484,13 +486,13 @@ async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoPr
     except GhError as error:
         # The rules call failed — a repo the factory cannot read is not dispatchable.
         return _profile_from_gh_failure(
-            request, visibility=visibility, default_branch=default_branch,
+            target_repo, visibility=visibility, default_branch=default_branch,
             owner_repo=owner_repo, manifest_error=manifest_error,
             declared_gates=declared_gates, error=error,
         )
 
     return evaluate_repo(
-        repo=owner_repo or request.target_repo,
+        repo=owner_repo or target_repo,
         default_branch=default_branch,
         visibility=visibility,
         queue_enabled=queue_enabled,
@@ -537,7 +539,7 @@ def _classic_contexts(protection: dict[str, Any]) -> list[str]:
 
 
 def _profile_from_gh_failure(
-    request: ValidateTargetRepoInput,
+    target_repo: str,
     *,
     visibility: str,
     default_branch: str,
@@ -570,7 +572,7 @@ def _profile_from_gh_failure(
             )
         )
     return TargetRepoProfile(
-        repo=owner_repo or request.target_repo,
+        repo=owner_repo or target_repo,
         default_branch=default_branch,
         visibility=visibility,
         queue_enabled=False,
@@ -579,3 +581,15 @@ def _profile_from_gh_failure(
         findings=tuple(findings),
         passed=False,
     )
+
+
+@activity.defn
+async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
+    """US3's preflight activity: gather facts through the seam and judge (FR-010).
+
+    The thin wrapper: builds the `GhClient` through the injectable
+    `_client_factory` seam and hands it to `onboard_target_repo`, which both this
+    activity and the offline CLI share. Tests script the seam to a `FakeGh`; the
+    CLI builds a real client against the clone the operator points at.
+    """
+    return onboard_target_repo(_client(repo_path=request.target_repo), request.target_repo)
