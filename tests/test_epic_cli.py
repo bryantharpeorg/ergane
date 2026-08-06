@@ -93,9 +93,10 @@ from factory.activities.merge_activities import (
     PollLandingInput,
     PrepareLandingPrInput,
     PrepareLandingPrResult,
+    ValidateTargetRepoInput,
 )
+from factory.mergequeue.models import Finding, PrSnapshot, TargetRepoProfile
 from factory.activities.usage_activities import IssueKeyInput, TeardownInput
-from factory.mergequeue.models import PrSnapshot
 from factory.activities.verify_activities import (
     CheckOutputInput,
     RecordedVerification,
@@ -475,6 +476,27 @@ class ScriptedEpic:
     def activities(self) -> list[Any]:
         script = self
 
+        @activity.defn(name="validate_target_repo")
+        async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
+            # A CLI-run epic dispatches only against a repo that passes
+            # onboarding (US3, FR-010). The default world answers a conforming
+            # repo so the epic proceeds to normal dispatch.
+            return TargetRepoProfile(
+                repo=request.target_repo,
+                default_branch="main",
+                visibility="PUBLIC",
+                queue_enabled=True,
+                required_checks=("test",),
+                declared_gates=("test",),
+                findings=(
+                    Finding("visibility", True, "repo is public"),
+                    Finding("merge_queue", True, "merge queue enabled on main"),
+                    Finding("factory_yaml", True, "factory.yaml is valid"),
+                    Finding("gate_check:test", True, "required check 'test' exists"),
+                ),
+                passed=True,
+            )
+
         @activity.defn(name="resolve_graph")
         async def resolve_graph(graph: WorkGraph) -> list[ResolvedNode]:
             script.graphs.append(graph)
@@ -667,6 +689,7 @@ class ScriptedEpic:
             enqueue_landing,
             poll_landing,
             disable_auto_merge,
+            validate_target_repo,
         ]
 
 

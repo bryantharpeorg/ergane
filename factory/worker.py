@@ -114,6 +114,8 @@ ACTIVITIES = [
     merge_activities.poll_landing,
     merge_activities.disable_auto_merge,
     merge_activities.sync_landing_branch,
+    # 003 — US3 onboarding: the target repo is validated before any dispatch.
+    merge_activities.validate_target_repo,
 ]
 
 
