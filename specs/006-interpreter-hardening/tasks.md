@@ -50,9 +50,14 @@ assert its history event count is within a small constant of a one-minute attemp
 - [ ] T005 [US1] Write `tests/test_interpreter.py` delivery-path cases FIRST, one per
       path, each asserting teardown receives a **non-NULL** spend: (a) normal completion —
       the snapshot arrives on `AdapterResult`; (b) timeout — the workflow reads
-      `TimeoutError.last_heartbeat_details` off the `ActivityError`; (c) kill — `_cancel`
-      extracts the snapshot before swallowing the error. Today's tests assert on a polled
-      value and would not catch a path that silently stops populating it — must fail.
+      `TimeoutError.last_heartbeat_details` off the `ActivityError`; (c) kill — the
+      adapter catches the cancellation and **returns** a KILLED `AdapterResult` carrying
+      the snapshot, and `_cancel` awaits that result and hands the snapshot to teardown
+      (operator decision 2026-08-06 — do NOT rely on heartbeat details off a cancelled
+      `ActivityError`; plan.md § US1 delivery path 3 carries the rationale). Today's
+      tests assert on a polled value and would not catch a path that silently stops
+      populating it — must fail. If a prior attempt already asked which direction to
+      take: this is the answer — proceed, do not stop to ask again.
 - [ ] T006 [US1] Write the history-cost test FIRST (SC-001/FR-001/FR-002): under time
       skipping, an attempt simulating four hours and an attempt simulating one minute
       contribute history event counts within a small constant of each other, and no
@@ -69,8 +74,9 @@ assert its history event count is within a small constant of a one-minute attemp
       activity's return value.
 - [ ] T009 [US1] Replace the loop at `factory/workgraph/workflow.py` (the
       `wait_condition(..., timeout=poll_interval_s)` / `poll_usage` block) with a plain
-      await plus the existing kill check, and read `last_heartbeat_details` on the timeout
-      and kill paths, until T005 and T006 pass. `poll_usage` stays registered — 001 owns
+      await plus the existing kill check; read `last_heartbeat_details` on the timeout
+      path, and on the kill path take the snapshot from the KILLED `AdapterResult` the
+      adapter now returns (T005(c) decision), until T005 and T006 pass. `poll_usage` stays registered — 001 owns
       it and the judge path has no poller — it is simply no longer scheduled per interval.
 - [ ] T010 [US1] Correct `TeardownInput.last_snapshot`'s docstring in
       `factory/activities/usage_activities.py`: it no longer describes a polled value, and

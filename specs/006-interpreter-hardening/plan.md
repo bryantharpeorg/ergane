@@ -151,8 +151,17 @@ Delivery to teardown, all three paths:
 1. **Normal completion** — the snapshot is a field on the returned `AdapterResult`.
 2. **Timeout** — the workflow reads `TimeoutError.last_heartbeat_details` off the
    `ActivityError` it already catches.
-3. **Kill** — the adapter's KILLED path re-raises, so the same heartbeat-details read
-   applies; `_cancel` currently swallows the error and must extract the snapshot before it does.
+3. **Kill** — **decided by the operator 2026-08-06, superseding this plan's earlier
+   text, after attempt 1 verified the concern and stopped on it**: do NOT rely on
+   reading heartbeat details off a cancelled activity's error — that mechanism is
+   unverified for the cancel path in the installed SDK. Instead the adapter catches
+   the cancellation and **returns** a KILLED `AdapterResult` carrying the final
+   snapshot — the same channel as normal completion. `_cancel` awaits that result
+   and hands its snapshot to teardown instead of swallowing an error; the attempt's
+   termination class still reads KILLED, and the kill-path test asserts a non-NULL
+   spend delivered via the returned result. Verify the exact catch-and-return
+   mechanics against the installed SDK as part of T005(c), as was done for the
+   normal and timeout paths.
 
 `poll_usage` stays a registered activity — 001 owns it and the judge path has no poller —
 but the workflow no longer schedules it per interval.
