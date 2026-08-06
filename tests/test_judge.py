@@ -58,6 +58,7 @@ from factory.verify.judge import (
     DEFAULT_MAX_JUDGE_RETRIES,
     DIFF_INPUT_LIMIT,
     MAX_HTTP_ATTEMPTS,
+    MAX_OUTPUT_TOKENS,
     SYSTEM_PROMPT,
     JudgeParseError,
     JudgeUnavailableError,
@@ -80,6 +81,7 @@ from tests.judge_proxy import (
     JUDGE_MODEL_ALIAS,
     FakeJudgeProxy,
     fence,
+    truncated,
     verdict_json,
 )
 
@@ -782,7 +784,7 @@ async def test_the_request_is_the_chat_completion_the_contract_describes(
     assert call.body is not None
     assert call.body["model"] == JUDGE_MODEL_ALIAS
     assert call.body["temperature"] == 0
-    assert call.body["max_tokens"] == 2000
+    assert call.body["max_tokens"] == MAX_OUTPUT_TOKENS
     assert call.messages == build_prompt(CRITERIA, SMALL_DIFF).messages
 
 
@@ -1011,3 +1013,61 @@ async def test_a_completion_with_no_message_is_unavailability(
 
     with pytest.raises(JudgeUnavailableError):
         await judge(proxy)
+
+
+# --- truncation is not a bad answer ------------------------------------------
+#
+# Found live on 2026-08-06, and it cost a node every attempt it had. A reasoning
+# model's thinking is billed to the same output budget as its verdict, so a cap
+# sized for the verdict alone is spent before the verdict begins: the backend
+# answers 200 with `finish_reason: "length"` and an empty `content`, the parser
+# refuses it as malformed, and the node is charged for someone else's ceiling.
+# Four attempts died that way against gates that were green.
+
+
+async def test_a_truncated_completion_is_unavailability_not_a_verdict(
+    proxy: FakeJudgeProxy,
+) -> None:
+    """A response cut off at the cap is this factory's misconfiguration, not the
+    judge answering badly — it must never consume one of the node's attempts."""
+    proxy.reply_payload(truncated())
+
+    with pytest.raises(JudgeUnavailableError):
+        await judge(proxy)
+
+
+async def test_truncation_is_detected_by_finish_reason_not_by_emptiness(
+    proxy: FakeJudgeProxy,
+) -> None:
+    """The live failure came back with prose in `content` on one attempt and
+    nothing on the next three. Both are the same fault, and only `finish_reason`
+    tells them apart from a model that genuinely answered badly."""
+    proxy.reply_payload(truncated("Let me score each scenario in turn. US2-S1"))
+
+    with pytest.raises(JudgeUnavailableError):
+        await judge(proxy)
+
+
+async def test_the_truncation_error_names_the_cap_and_carries_no_credential(
+    proxy: FakeJudgeProxy,
+) -> None:
+    """The operator reading this in `JUDGE_UNAVAILABLE` needs the remedy in it:
+    the knob is `max_tokens`, and the fix is to raise it or route the persona at
+    a model that answers within it."""
+    proxy.reply_payload(truncated())
+
+    with pytest.raises(JudgeUnavailableError) as excinfo:
+        await judge(proxy)
+
+    assert "max_tokens" in str(excinfo.value)
+    assert str(MAX_OUTPUT_TOKENS) in str(excinfo.value)
+    assert_credential_free(excinfo.value, MASTER_KEY, proxy.virtual_key)
+
+
+def test_the_output_cap_admits_a_reasoning_models_thinking() -> None:
+    """Measured, not guessed: the same judge prompt that returned nothing at 2,000
+    and at 8,000 completed at 16,000 — `ollama-cloud/glm-5.2` spent 3,580 output
+    tokens on it, 12,388 characters of which were thinking. The cap has to clear
+    the thinking *and* the verdict, so it is sized for the model's habit rather
+    than for the verdict's size."""
+    assert MAX_OUTPUT_TOKENS >= 16_000

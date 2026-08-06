@@ -185,6 +185,33 @@ def completion(content: str) -> dict[str, Any]:
     }
 
 
+def truncated(content: str = "", *, reasoning: str = "Let me score each ") -> dict[str, Any]:
+    """A completion the backend cut off at `max_tokens` (`finish_reason` "length").
+
+    Shaped on what a reasoning model really returns through LiteLLM: the thinking
+    lands in `reasoning_content`, spends the same output budget the verdict needs,
+    and `content` is whatever was left — routinely nothing at all. Observed live
+    2026-08-06 on `ollama-cloud/glm-5.2`, four attempts in a row.
+    """
+    return {
+        "id": "chatcmpl-fake",
+        "object": "chat.completion",
+        "model": JUDGE_MODEL_ALIAS,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "reasoning_content": reasoning,
+                },
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {"prompt_tokens": 17061, "completion_tokens": 2000},
+    }
+
+
 def verdict_json(
     *,
     verdict: str = "pass",

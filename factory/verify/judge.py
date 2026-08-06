@@ -76,9 +76,17 @@ DEFAULT_RETRY_BACKOFF_S = 0.5
 #: unbounded — the activity's own timeout should never be the first thing to fire.
 DEFAULT_TIMEOUT_S = 120.0
 
-#: Cap on the verdict object the judge writes back (R4). A verdict that needs
-#: more than this is not a verdict.
-MAX_OUTPUT_TOKENS = 2000
+#: Cap on what the judge may spend answering (R4). A *verdict* that needs more
+#: than a couple of thousand tokens is not a verdict — but the verdict is not all
+#: the budget pays for. A reasoning model's thinking is billed here too, and it
+#: arrives in `reasoning_content` where the parser never looks, so a cap sized for
+#: the verdict alone is exhausted before the verdict starts. That is not
+#: theoretical: on 2026-08-06 `ollama-cloud/glm-5.2` returned `finish_reason:
+#: "length"` and an empty `content` on four consecutive attempts at 2,000, and
+#: again at 8,000; at 16,000 the same prompt completed in 3,580 output tokens, of
+#: which ~2,900 were thinking. Sized for that habit, with room to spare — an
+#: unused ceiling costs nothing, and hitting it costs a node every attempt it has.
+MAX_OUTPUT_TOKENS = 16_000
 
 COMPLETIONS_PATH = "/chat/completions"
 
@@ -760,6 +768,18 @@ def _assistant_content(response: httpx.Response) -> str:
     first = choices[0] if isinstance(choices, list) and choices else None
     message = first.get("message") if isinstance(first, dict) else None
     content = message.get("content") if isinstance(message, dict) else None
+
+    # Before the content is read at all: a reply the backend cut off at the cap is
+    # this factory's ceiling, not the judge's answer. Read whole it might have
+    # parsed; read short it cannot, and the difference is invisible in `content` —
+    # sometimes empty, sometimes prose that stops mid-sentence. Charging either to
+    # the node's judge attempts spends its retries on our configuration.
+    if isinstance(first, dict) and first.get("finish_reason") == "length":
+        raise JudgeUnavailableError(
+            f"the judge's reply was cut off at max_tokens {MAX_OUTPUT_TOKENS} "
+            "before a verdict was returned — raise max_tokens, or route persona "
+            "'judge' at a model that answers within it"
+        )
 
     if not isinstance(content, str):
         raise JudgeUnavailableError(

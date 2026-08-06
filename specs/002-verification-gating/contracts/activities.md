@@ -47,7 +47,7 @@ Judge/debugger attribution keys are NOT minted here — the caller uses componen
 | **Input** | `{criteria: CriteriaSet, diff_text, virtual_key, proxy_url, model_alias, judge_attempt, prior_feedback?}` |
 | **Output** | `JudgeVerdict` |
 | **Errors** | `JUDGE_UNAVAILABLE` (application error) after in-activity HTTP retries exhaust — caller maps to gates-only fallback + notification (spec edge case). Malformed responses are NOT errors: they consume a judge attempt and, once `judge_attempt` exceeds the cap, come back as `outcome=FAIL` with the parse failure as feedback (R5). |
-| **Semantics** | One `POST {proxy_url}/chat/completions`, Bearer = the judge's per-attempt virtual key (minted by the caller via component 1), `temperature 0`, `max_tokens 2000`, diff truncated per R6 with `truncated_input` flagged. Strict JSON verdict schema per [judge.md](judge.md); per-scenario coverage enforced; stricter-interpretation cross-check applied. |
+| **Semantics** | One `POST {proxy_url}/chat/completions`, Bearer = the judge's per-attempt virtual key (minted by the caller via component 1), `temperature 0`, `max_tokens 16000` (sized for a reasoning model's thinking, which shares the output budget), diff truncated per R6 with `truncated_input` flagged. A reply with `finish_reason: "length"` raises `JUDGE_UNAVAILABLE` rather than consuming a judge attempt. Strict JSON verdict schema per [judge.md](judge.md); per-scenario coverage enforced; stricter-interpretation cross-check applied. |
 | **Idempotency** | Each invocation is one judge attempt; the caller controls `judge_attempt` numbering and the ≤ 1+2 bound (SC-003). |
 
 ## `record_verification`

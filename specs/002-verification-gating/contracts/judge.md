@@ -12,7 +12,7 @@ Authorization: Bearer <judge attempt virtual key>
 {
   "model": "<judge persona's registry alias>",
   "temperature": 0,
-  "max_tokens": 2000,
+  "max_tokens": 16000,
   "messages": [ {"role": "system", ...}, {"role": "user", ...} ]
 }
 ```
@@ -70,6 +70,14 @@ Parsing rules (`factory/verify/judge.py`, pure):
 - HTTP failures retry briefly in-activity; persistent unavailability surfaces as
   `JUDGE_UNAVAILABLE` → verdict falls back to deterministic-gates-only with
   `judge_unavailable = true` and an operator notification (spec edge case).
+- `max_tokens` is sized for a *reasoning* model, not for the verdict: thinking is
+  billed to the same output budget and returned in `reasoning_content`, which the
+  parser never reads. A reply carrying `finish_reason: "length"` is therefore
+  `JUDGE_UNAVAILABLE` — our ceiling, not the judge's answer — and MUST NOT consume
+  a judge attempt, whether `content` came back empty or as prose that stops
+  mid-sentence. Measured 2026-08-06: `ollama-cloud/glm-5.2` returned nothing at
+  2,000 and at 8,000 on a 17k-token prompt, and completed at 16,000 in 3,580
+  output tokens.
 - The judge is NEVER invoked from CI or the merge queue (FR-009, D-008) — nothing
   in this contract is reachable from component 3's required checks.
 

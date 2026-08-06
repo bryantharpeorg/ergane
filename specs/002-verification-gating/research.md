@@ -85,7 +85,8 @@ config, the same trust level as CI config.
 proxy fronts), `Authorization: Bearer <judge attempt key>` minted via component 1's
 `issue_attempt_key` (persona `judge`, same epic/node, its own attempt counter),
 `model` = the judge persona's registry alias, `temperature 0`, `max_tokens` capped
-(2000). Torn down via `teardown_attempt` so judge spend lands in the usage ledger
+(16000 — a reasoning model's thinking is billed to the same output budget as its
+verdict). Torn down via `teardown_attempt` so judge spend lands in the usage ledger
 attributed to the node's spec ref.
 
 **Rationale**: The judge's job is one scoring pass over (criteria, diff) — a full
