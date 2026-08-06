@@ -48,6 +48,7 @@ from enum import StrEnum
 from typing import Mapping
 
 from factory.config import Persona
+from factory.mergequeue.models import Landing
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.models import AttemptRecord
 
@@ -63,16 +64,22 @@ class NodeState(StrEnum):
     """Where one node stands.
 
     ```
-    PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED
+    PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED → PR_OPEN → ENQUEUED → MERGED
                                               ↘ FAILED
-    any non-terminal ────────────────────────→ KILLED
+    any non-terminal ───────────────────────────────────────────────→ KILLED
     ```
 
-    Terminal: `PASSED`, `FAILED` (parked by a PAUSE_EPIC resolution), `KILLED`.
-    The ladder's `RETRY`/`DEBUGGER`/`ESCALATE` are deliberately absent — they are
-    `NextAction` values that route a node back into `KEY_ISSUED` or forward to a
-    terminal state. Giving them membership here would create a second place the
-    ladder's outcome is represented, one of which a node could be parked in.
+    `PASSED` now means *verified, landing not terminal*: a node that passed the
+    ladder has opened a landing (FR-009's whole distinction), so the happy-path
+    terminal is `MERGED`, not `PASSED`. `PR_OPEN`/`ENQUEUED` are the landing
+    phase's states, and `MERGED` is the new terminal a verified node reaches when
+    the queue confirms it. `FAILED` (parked by a PAUSE_EPIC resolution) and
+    `KILLED` remain terminals reachable from any non-terminal state, a landing
+    interrupted included. The ladder's `RETRY`/`DEBUGGER`/`ESCALATE` are
+    deliberately absent — they are `NextAction` values that route a node back
+    into `KEY_ISSUED` or forward to a terminal state. Giving them membership here
+    would create a second place the ladder's outcome is represented, one of which
+    a node could be parked in.
     """
 
     PENDING = "PENDING"
@@ -80,6 +87,9 @@ class NodeState(StrEnum):
     RUNNING = "RUNNING"
     VERIFYING = "VERIFYING"
     PASSED = "PASSED"
+    PR_OPEN = "PR_OPEN"
+    ENQUEUED = "ENQUEUED"
+    MERGED = "MERGED"
     FAILED = "FAILED"
     KILLED = "KILLED"
 
@@ -221,6 +231,15 @@ class NodeRecord:
     escalations: list[str] = field(default_factory=list)
     base_ref: str | None = None
     last_snapshot: UsageSnapshot | None = None
+    #: True once the ladder PASSed this node — the moment `depends_on` (verified)
+    #: edges unlock (FR-009). Distinct from `landing.state == MERGED`, which is what
+    #: `depends_on_merged` edges wait on. `state == PASSED` is derived from this the
+    #: moment a landing opens; it is kept as a boolean so the verified fact survives
+    #: the landing's own state changes (PR_OPEN → ENQUEUED → MERGED).
+    verified: bool = False
+    #: The landing the workflow is driving for this node, `None` until its ladder
+    #: PASSes. `None` is also the signal a node never reached the landing phase.
+    landing: Landing | None = None
 
 
 # The adapter seam's payloads (FR-005) ----------------------------------------

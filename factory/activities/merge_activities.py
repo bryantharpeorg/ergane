@@ -7,8 +7,11 @@ it owns the two concerns the library deliberately does not (the same split
 world at a known moment, and turning a library exception into a refusal the
 interpreter can route without reading prose.
 
-The four activities are one landing's life, in the plan's order:
+The activities are one landing's life, in the plan's order:
 
+- `prepare_landing_pr` — renders the PASS node's PR body to a scratch file via
+  the pure `render_pr_body`, reading the renderer's secret inputs from the worker
+  environment so they never cross a workflow boundary (constitution V).
 - `open_landing_pr` — salvage has already happened (the workflow salvages before
   it ever calls this); this *pushes* the node branch to the target clone's
   `origin` (FR-001 — `gh` runs against the clone, so the branch has to exist on
@@ -53,8 +56,12 @@ from factory.mergequeue.gh import (
     GhClient,
     GhError,
 )
+from factory.mergequeue.messages import pr_title, render_pr_body
 from factory.mergequeue.models import PrSnapshot
+from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
+from factory.verify.models import VerificationResult
 from factory.workgraph import worktree as worktrees
+from factory.workgraph.adapter import transcript_dir
 
 #: Where the worker host keeps worktrees — one override, one default, the same
 #: resolver agent_activities uses. The merge surface must hand `push_branch` the
@@ -82,10 +89,40 @@ GH_UNAVAILABLE_ACTIVITY = "GH_UNAVAILABLE"
 
 
 @dataclass(frozen=True)
+class PrepareLandingPrInput:
+    """The non-secret facts the PR body is rendered from (constitution V).
+
+    `result` is the passing attempt's `VerificationResult` — its per-gate
+    results and judge word are what the body quotes. The secrets
+    `render_pr_body` also demands (`proxy_url`, `master_key`, `telegram_token`,
+    `transcript_path`) are deliberately *absent*: they live only in the worker
+    host environment and are read inside this activity, never carried in an
+    orchestration payload (architecture §10).
+    """
+
+    epic_id: str
+    node_id: str
+    branch: str
+    attempt: int
+    feature: str
+    requirement_keys: tuple[str, ...]
+    result: VerificationResult
+    story_title: str
+
+
+@dataclass(frozen=True)
+class PrepareLandingPrResult:
+    """The body file and title `open_landing_pr` needs — the workflow's side is pure."""
+
+    body_file: str
+    title: str
+
+
+@dataclass(frozen=True)
 class OpenLandingPrInput:
     """What the workflow knows about a PASS node that must now land.
 
-    `body_file` is a path the workflow prepared (rendered by
+    `body_file` is a path `prepare_landing_pr` wrote (rendered by
     `factory/mergequeue/messages.py`); the activity passes it to
     `gh pr create --body-file` so the body's quoting needs no shell care.
     """
@@ -168,7 +205,56 @@ def _client(*, repo_path: str) -> GhClient:
     return _client_factory(repo_path=repo_path)
 
 
+def _landing_body_dir() -> Path:
+    """Where prepared PR bodies are written, under the worker's state directory.
+
+    The same `FACTORY_ROOT` the worktree ops use, so one override locates all of
+    the worker host's state. Body files are scratch — the PR create reads them
+    once — so a fixed name is fine and cleanup is not this activity's job.
+    """
+    return Path(os.environ.get(FACTORY_ROOT_ENV) or worktrees.DEFAULT_FACTORY_ROOT)
+
+
 # --- the activities -----------------------------------------------------------
+
+
+@activity.defn
+async def prepare_landing_pr(request: PrepareLandingPrInput) -> PrepareLandingPrResult:
+    """Render a PASS node's PR body to a file — the one landing side effect that is a write.
+
+    The body is rendered by the pure `render_pr_body` (deterministic, secret-free)
+    and written to a scratch file for `gh pr create --body-file`. The renderer's
+    secret inputs — proxy URL, master key, telegram token, transcript path — are
+    read from the worker host environment *here*, inside the activity, so they
+    never cross a workflow boundary (constitution V, architecture §10).
+    """
+    factory_root = _landing_body_dir()
+    transcript = str(
+        transcript_dir(factory_root, request.epic_id, request.node_id, request.attempt)
+    )
+    body = render_pr_body(
+        epic_id=request.epic_id,
+        node_id=request.node_id,
+        branch=request.branch,
+        attempt=request.attempt,
+        feature=request.feature,
+        requirement_keys=request.requirement_keys,
+        result=request.result,
+        proxy_url=os.environ.get(PROXY_URL_ENV, ""),
+        master_key=os.environ.get(MASTER_KEY_ENV, ""),
+        telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+        transcript_path=transcript,
+    )
+    title = pr_title(
+        epic_id=request.epic_id,
+        node_id=request.node_id,
+        story_title=request.story_title,
+    )
+    body_dir = factory_root / "landing" / request.epic_id / request.node_id
+    body_dir.mkdir(parents=True, exist_ok=True)
+    body_file = body_dir / f"attempt-{request.attempt}.md"
+    body_file.write_text(body, encoding="utf-8")
+    return PrepareLandingPrResult(body_file=str(body_file), title=title)
 
 
 @activity.defn

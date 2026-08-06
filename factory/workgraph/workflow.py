@@ -121,6 +121,18 @@ with workflow.unsafe.imports_passed_through():
         run_agent_attempt,
         salvage_worktree,
     )
+    from factory.activities.merge_activities import (
+        DisableAutoMergeInput,
+        EnqueueLandingInput,
+        OpenLandingPrInput,
+        PollLandingInput,
+        PrepareLandingPrInput,
+        disable_auto_merge,
+        enqueue_landing,
+        open_landing_pr,
+        poll_landing,
+        prepare_landing_pr,
+    )
     from factory.activities.notify_activities import (
         DEFAULT_CHOICES,
         ExpireEscalationInput,
@@ -147,6 +159,14 @@ with workflow.unsafe.imports_passed_through():
         run_gates,
         run_judge,
         snapshot_criteria,
+    )
+    from factory.mergequeue.classify import classify
+    from factory.mergequeue.models import (
+        Landing,
+        LandingConfig,
+        LandingState,
+        ObservedOutcome,
+        QueueOutcome,
     )
     from factory.notify.messages import render_history
     from factory.notify.service import SIGNAL_NAME
@@ -198,10 +218,11 @@ JUDGE_PERSONA = "judge"
 #: production cannot afford a test's.
 DEFAULT_POLL_INTERVAL_S = 30
 
-#: Node states from which no dependent can ever be dispatched. A node whose
-#: dependency reached one of these is KILLED where it stands, never dispatched
-#: (SC-002) — the epic's remaining ready set is then a fact about the graph
-#: rather than a race between the scheduler and a dead branch.
+#: Node states from which no *verified-gated* dependent can ever be dispatched. A
+#: node whose dependency reached one of these is KILLED where it stands, never
+#: dispatched (SC-002). A landing-terminal that is not MERGED (KILLED / a final
+#: rejection) is unreachable only for merge-gated dependents (`depends_on_merged`),
+#: which wait for the dependency to MERGE, not merely to pass — FR-009.
 _UNREACHABLE = frozenset({NodeState.FAILED, NodeState.KILLED})
 
 #: Ladder actions that end a node.
@@ -210,7 +231,23 @@ _TERMINAL_ACTIONS = frozenset({NextAction.PASSED, NextAction.KILLED})
 #: Node states nothing may move a node out of. The kill sequence writes over
 #: every node that is not already in one of these, which is what makes a killed
 #: epic's status an account of the whole graph rather than of the part that ran.
-_TERMINAL_STATES = frozenset({NodeState.PASSED, NodeState.FAILED, NodeState.KILLED})
+#: `PASSED` (verified, landing not terminal) is deliberately not here — a verified
+#: node still owes its landing a terminal, and `MERGED` is what a passed node
+#: reaches when the queue confirms it (FR-009).
+_TERMINAL_STATES = frozenset({NodeState.MERGED, NodeState.FAILED, NodeState.KILLED})
+
+#: Landing states that end a landing and admit no recovery: MERGED (the queue
+#: landed it) and KILLED (operator/epic kill, or a rejection routed to a terminal).
+#: `REJECTED` is deliberately absent — FR-006's bounded recovery cycle (US2) can
+#: return a rejected landing to ENQUEUED.
+_LANDING_TERMINAL = frozenset({LandingState.MERGED, LandingState.KILLED})
+
+#: Queue outcomes that are a rejection a recovery cycle can fix (US2, FR-006),
+#: rather than a terminal the landing ends on. Everything else the classifier
+#: yields — MERGED, DEQUEUED_BY_HUMAN, STALLED — ends the landing here.
+_RECOVERY_OUTCOMES = frozenset(
+    {QueueOutcome.CHECKS_FAILED, QueueOutcome.CONFLICT}
+)
 
 #: Activities here are idempotent reads, guarded upserts, and sends that mint a
 #: fresh id per call — all safe to retry, none worth retrying for long while the
@@ -302,13 +339,15 @@ class EpicInput:
     the agent's virtual key is honored. `config` is the ladder's caps, passed in
     rather than read so an operator's retry policy is a property of the epic they
     started (002's `VerificationConfig`). `poll_interval_s` is the usage-poll beat
-    (R3).
+    (R3). `landing_config` is the merge-queue's knobs — how a PASS node lands,
+    how often a landing is polled, when a wait counts as stalled (US1).
     """
 
     graph: WorkGraph
     proxy_url: str
     config: VerificationConfig = VerificationConfig()
     poll_interval_s: int = DEFAULT_POLL_INTERVAL_S
+    landing_config: LandingConfig = LandingConfig()
 
 
 @dataclass(frozen=True)
@@ -318,11 +357,21 @@ class NodeStatus:
     Deliberately narrower than `NodeRecord`: the branch is what survives every
     sweep, the state and attempt are what a human is watching, and the attempt
     history is evidence that belongs in the store rather than in a status line.
+    `landing_state` and `pr_number` are the landing's observable identity and
+    where it stands — `None` until the node's ladder PASSes and a landing opens
+    (US1, FR-009).
     """
 
     state: NodeState
     attempt: int
     branch: str
+    #: Whether the node's ladder PASSed — the fact a `depends_on` edge opens on
+    #: (FR-009). Distinct from `state`: a verified node advances off PASSED the
+    #: moment its landing opens, so "can its verified-gated dependents run?" is
+    #: answered by this flag, not by `state == PASSED`.
+    verified: bool = False
+    landing_state: LandingState | None = None
+    pr_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -362,6 +411,13 @@ class EpicWorkflow:
         #: state, and the reason replay needs no store to rebuild it.
         self._nodes: dict[str, NodeRecord] = {}
         self._epic_state = EpicState.RUNNING
+
+        #: One background poll task per open landing, keyed by node id. Started
+        #: when a PASS node's landing enqueues (US1) and reaped when the landing
+        #: goes terminal. Deterministic under Temporal (`asyncio.ensure_future`
+        #: inside the workflow): the poll loop is a timer-driven read, never a
+        #: wall-clock one, so replay rebuilds it exactly.
+        self._landing_tasks: dict[str, asyncio.Task[None]] = {}
 
         #: Operator answers keyed by escalation id, buffered rather than awaited.
         #: A press can arrive before the send activity has returned the id it
@@ -429,7 +485,16 @@ class EpicWorkflow:
             epic_state=self._epic_state,
             nodes={
                 node_id: NodeStatus(
-                    state=record.state, attempt=record.attempt, branch=record.branch
+                    state=record.state,
+                    attempt=record.attempt,
+                    branch=record.branch,
+                    verified=record.verified,
+                    landing_state=record.landing.state
+                    if record.landing is not None
+                    else None,
+                    pr_number=record.landing.pr_number
+                    if record.landing is not None
+                    else None,
                 )
                 for node_id, record in self._nodes.items()
             },
@@ -482,7 +547,9 @@ class EpicWorkflow:
             if self._paused:
                 # Parked between two nodes, which is the only place a pause can
                 # take effect: the signal may have arrived mid-attempt, and that
-                # attempt has since finished its ladder (R10).
+                # attempt has since finished its ladder (R10). Polling keeps
+                # running (passive) so an in-flight landing is not left parked on
+                # a live queue, but recovery dispatch waits for resume (US1).
                 self._epic_state = EpicState.PAUSED
                 await workflow.wait_condition(
                     lambda: not self._paused or self._kill_requested
@@ -492,15 +559,23 @@ class EpicWorkflow:
                 continue
             ready = self._next_ready(resolved)
             if ready is None:
-                # Every node is terminal: a non-terminal node either had a ready
-                # dependency chain (and would have been picked) or a dead one
-                # (and was killed the moment that dependency died).
                 break
             await self._run_node(ready, request, sources, judge)
             if self._nodes[ready.node.id].state != NodeState.PASSED:
                 self._lock_out_dependents(resolved)
 
+        # The loop ends when no node is ready, which is no longer the epic's end:
+        # every node is terminal (or locked out), but a verified node's landing
+        # may still be riding the queue. So the scheduler parks here until every
+        # node terminal AND every landing terminal — the epic is COMPLETED only
+        # when the queue has finished with every landing it was given (US1-S4).
+        if not self._kill_requested:
+            await workflow.wait_condition(
+                lambda: self._all_landings_terminal() or self._kill_requested
+            )
+
         if self._kill_requested:
+            await self._kill_landings(graph.target_repo)
             self._kill_remaining()
             self._epic_state = EpicState.KILLED
         else:
@@ -529,7 +604,14 @@ class EpicWorkflow:
             raise
 
     def _next_ready(self, resolved: Sequence[ResolvedNode]) -> ResolvedNode | None:
-        """The first PENDING node whose every dependency has PASSED (FR-003).
+        """The first PENDING node whose every dependency has satisfied its edge.
+
+        Two kinds of edge, distinguished by what unlocks them (FR-009): a
+        `depends_on` edge unlocks when the dependency is *verified* — its ladder
+        PASSed, `record.verified` — while a `depends_on_merged` edge unlocks only
+        when the dependency has *merged*, `state == MERGED`. A verified but
+        still-enqueued dependency therefore releases its verified-gated
+        dependents while its own landing is still riding the queue (US1-S4).
 
         First, not any: declaration order is the visible tiebreak whenever more
         than one node is ready, and the deriver emits stories in spec order, so
@@ -540,20 +622,38 @@ class EpicWorkflow:
         for item in resolved:
             if self._nodes[item.node.id].state != NodeState.PENDING:
                 continue
-            if all(
-                self._nodes[dependency].state == NodeState.PASSED
-                for dependency in item.node.depends_on
-            ):
+            if self._edges_satisfied(item.node):
                 return item
         return None
 
-    def _lock_out_dependents(self, resolved: Sequence[ResolvedNode]) -> None:
-        """Kill what can no longer be dispatched, transitively (SC-002).
+    def _edges_satisfied(self, node: WorkNode) -> bool:
+        """Whether every one of `node`'s two edge kinds is unlocked (FR-009)."""
+        if not all(
+            self._nodes[dependency].verified
+            for dependency in node.depends_on
+        ):
+            return False
+        if not all(
+            self._nodes[dependency].state == NodeState.MERGED
+            for dependency in node.depends_on_merged
+        ):
+            return False
+        return True
 
-        Run the moment a node ends anything but PASSED. A dependent is marked
-        KILLED without a worktree, a key or an attempt — the edge stayed locked,
-        so there is nothing to salvage and nothing to sweep — and the pass
-        repeats until it settles, because a chain three deep dies all at once.
+    def _lock_out_dependents(self, resolved: Sequence[ResolvedNode]) -> None:
+        """Kill what can no longer be dispatched, transitively (SC-002, FR-009).
+
+        Run the moment a node ends anything but PASSED — and, for merge-gated
+        dependents, the moment a dependency's landing ends terminal-but-unmerged
+        (`REJECTED`-final, `KILLED`). A dependent is marked KILLED without a
+        worktree, a key or an attempt — the edge stayed locked, so there is
+        nothing to salvage and nothing to sweep — and the pass repeats until it
+        settles, because a chain three deep dies all at once.
+
+        A verified-gated dependent (already dispatched once the dependency
+        verified) is never touched here: its dispatch happened on `verified`, not
+        on the landing. Only a merge-gated dependent still waiting for MERGED can
+        be locked out by a landing that will never merge.
         """
         settled = False
         while not settled:
@@ -562,12 +662,83 @@ class EpicWorkflow:
                 record = self._nodes[item.node.id]
                 if record.state != NodeState.PENDING:
                     continue
-                if any(
-                    self._nodes[dependency].state in _UNREACHABLE
-                    for dependency in item.node.depends_on
-                ):
+                if self._dead_edge(item.node):
                     record.state = NodeState.KILLED
                     settled = False
+
+    def _dead_edge(self, node: WorkNode) -> bool:
+        """Whether any of `node`'s dependencies can never satisfy its edge."""
+        if any(
+            self._nodes[dependency].state in _UNREACHABLE
+            for dependency in node.depends_on
+        ):
+            return True
+        # A merge-gated dependency's edge is dead when it can no longer merge:
+        # it ended FAILED/KILLED outright, or its landing ended terminal without
+        # merging. A verified dependency still riding the queue might still merge.
+        for dependency in node.depends_on_merged:
+            record = self._nodes[dependency]
+            if record.state in _UNREACHABLE or self._landing_unmerged_terminal(
+                dependency
+            ):
+                return True
+        return False
+
+    def _landing_unmerged_terminal(self, node_id: str) -> bool:
+        """Whether a node's landing ended terminal without merging (FR-009)."""
+        landing = self._nodes[node_id].landing
+        return (
+            landing is not None
+            and landing.state in _LANDING_TERMINAL
+            and landing.state != LandingState.MERGED
+        )
+
+    def _all_landings_terminal(self) -> bool:
+        """Whether every open landing has reached a terminal state.
+
+        The main loop's second exit condition (US1-S4): an epic whose nodes are
+        all terminal is not done until the queue has finished with every landing
+        it was given. A node with no landing (never verified, killed, failed) owes
+        nothing here.
+        """
+        return all(
+            record.landing is None or record.landing.state in _LANDING_TERMINAL
+            for record in self._nodes.values()
+        )
+
+    async def _kill_landings(self, target_repo: str) -> None:
+        """Take every open landing out of the queue and stop polling it (US1).
+
+        Kill's landing half: cancel each background poll task, ask the queue to
+        disable auto-merge best-effort (FR-008 — a killed epic must not keep
+        landing, and a failure to de-queue is surfaced, not fatal), and mark each
+        open landing KILLED. Branches are never removed — the branch is the
+        queue's to land and outlives the kill (FR-008).
+        """
+        for node_id, task in list(self._landing_tasks.items()):
+            task.cancel()
+        self._landing_tasks.clear()
+        for record in self._nodes.values():
+            landing = record.landing
+            if landing is None or landing.pr_number is None:
+                continue
+            if landing.state in _LANDING_TERMINAL:
+                continue
+            try:
+                await workflow.execute_activity(
+                    disable_auto_merge,
+                    DisableAutoMergeInput(
+                        pr_number=landing.pr_number,
+                        target_repo=target_repo,
+                    ),
+                    **_GIT,
+                )
+            except ActivityError:
+                # Best-effort: a queue that is down while the epic dies is not a
+                # reason the kill sequence itself fails (FR-008). The landing is
+                # marked KILLED regardless; a human seeing the status knows.
+                pass
+            record.landing = replace(landing, state=LandingState.KILLED)
 
     def _kill_remaining(self) -> None:
         """Account for every node the kill caught short (US3-S3).
@@ -776,12 +947,22 @@ class EpicWorkflow:
             )
 
         if action == NextAction.PASSED:
-            state = NodeState.PASSED
+            # Verified — the fact FR-009's `depends_on` edges wait on, and the
+            # moment the landing phase begins. The worktree is salvaged (its work
+            # is the branch the PR will land), then the node lands; removal is
+            # deferred to the landing's terminal, because recovery and the PR
+            # both read the tree the work was done in (plan.md § US1). This is
+            # the single PASSED grant an edge may open on (FR-003, SC-002).
+            record.verified = True
+            record.state = NodeState.PASSED
+            await self._close_out(graph, node, record, termination, state=None)
+            await self._land(graph, request, resolved, record, prepared, results[-1])
         elif parked:
             state = NodeState.FAILED
+            await self._close_out(graph, node, record, termination, state=state)
         else:
             state = NodeState.KILLED
-        await self._close_out(graph, node, record, termination, state=state)
+            await self._close_out(graph, node, record, termination, state=state)
 
     async def _attempt(
         self,
@@ -1138,7 +1319,7 @@ class EpicWorkflow:
         record: NodeRecord,
         termination: Termination,
         *,
-        state: NodeState,
+        state: NodeState | None,
     ) -> None:
         """Salvage, sweep, then say what the node became (constitution VI).
 
@@ -1149,6 +1330,11 @@ class EpicWorkflow:
         the directory and never the record — the branch and its commits outlive
         it. The terminal state is decided by the caller, because only the caller
         knows whether a node that did not pass was abandoned or parked.
+
+        A `state` of `None` is the PASS path: salvage still happens (the work's
+        durable form precedes the push, constitution VI), but the worktree is
+        *not* removed — the landing phase reads it and recovery needs it, so
+        removal is deferred to the landing's terminal (plan.md § US1).
         """
         await workflow.execute_activity(
             salvage_worktree,
@@ -1160,6 +1346,12 @@ class EpicWorkflow:
             ),
             **_GIT,
         )
+        if state is None:
+            # PASS path: salvage, defer removal. The caller sets the terminal
+            # PASSED (the landing phase follows), so the single PASSED grant —
+            # the one edge may open on (FR-003) — stays in `_run_node` under
+            # `action == NextAction.PASSED`.
+            return
         await workflow.execute_activity(
             remove_worktree,
             RemoveWorktreeInput(
@@ -1170,6 +1362,178 @@ class EpicWorkflow:
             **_GIT,
         )
         record.state = state
+
+    # --- the landing phase (US1) -------------------------------------------
+
+    async def _land(
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        resolved: ResolvedNode,
+        record: NodeRecord,
+        prepared: PreparedWorktree,
+        result: VerificationResult,
+    ) -> None:
+        """Open a landing for a PASS node and start polling it (US1).
+
+        Salvage already happened in `_close_out`. Here: render the PR body, push
+        + open the PR, enqueue it, then start the background poll task that rides
+        it to a terminal. The node advances PASSED → PR_OPEN → ENQUEUED as the
+        landing does; `MERGED` is the verified node's terminal (FR-009). The main
+        scheduler is not blocked: the poll runs on the queue's own beat while the
+        epic goes on to other nodes (US1-S4).
+        """
+        node = resolved.node
+        config = request.landing_config
+
+        rendered = await workflow.execute_activity(
+            prepare_landing_pr,
+            PrepareLandingPrInput(
+                epic_id=graph.epic_id,
+                node_id=node.id,
+                branch=record.branch,
+                attempt=record.attempt,
+                feature=graph.feature,
+                requirement_keys=tuple(node.requirement_keys),
+                result=result,
+                story_title=node.story_key,
+            ),
+            **_FAST,
+        )
+        opened = await workflow.execute_activity(
+            open_landing_pr,
+            OpenLandingPrInput(
+                epic_id=graph.epic_id,
+                node_id=node.id,
+                target_repo=graph.target_repo,
+                base=prepared.default_branch,
+                branch=record.branch,
+                title=rendered.title,
+                body_file=rendered.body_file,
+            ),
+            **_GIT,
+        )
+        landing = Landing(
+            node_id=node.id,
+            branch=record.branch,
+            pr_number=opened.number,
+            pr_url=opened.url,
+        )
+        record.landing = landing
+        record.state = NodeState.PR_OPEN
+
+        enqueued = await workflow.execute_activity(
+            enqueue_landing,
+            EnqueueLandingInput(
+                pr_number=opened.number,
+                merge_method=config.merge_method,
+                target_repo=graph.target_repo,
+            ),
+            **_FAST,
+        )
+        if enqueued.rejected:
+            # The queue refused the enqueue outright (disabled mid-flight — the
+            # spec edge case). US1 surfaces it as a killed landing; US2's
+            # recovery routing is where a refusal an operator can fix goes.
+            record.landing = replace(
+                landing,
+                outcomes=(
+                    ObservedOutcome(at=_now(), outcome=QueueOutcome.DEQUEUED_BY_HUMAN),
+                ),
+                state=LandingState.KILLED,
+            )
+            record.state = NodeState.KILLED
+            return
+
+        record.landing = replace(landing, enqueued_at=_now(), state=LandingState.ENQUEUED)
+        record.state = NodeState.ENQUEUED
+        self._landing_tasks[node.id] = asyncio.ensure_future(
+            self._poll_landing(graph, record, config)
+        )
+
+    async def _poll_landing(
+        self,
+        graph: WorkGraph,
+        record: NodeRecord,
+        config: LandingConfig,
+    ) -> None:
+        """Ride one landing to a terminal, on the queue's own beat (US1, FR-004).
+
+        A background task started when the landing enqueues. It polls the PR,
+        classifies what the queue says, and advances the landing — a pending
+        answer is a read with no consequence (D-021), and a terminal answer ends
+        it. `MERGED` is the reconciled success (a late or manual merge included);
+        recovery-eligible rejections park the landing for US2; an operator
+        dequeue or stall ends it as a killed landing. The worktree, deferred at
+        PASS, is removed only once the landing is terminal.
+        """
+        node_id = record.node_id
+        while True:
+            if self._kill_requested:
+                return
+            try:
+                await workflow.wait_condition(
+                    lambda: self._kill_requested,
+                    timeout=timedelta(seconds=config.poll_interval_s),
+                )
+                if self._kill_requested:
+                    return
+            except asyncio.TimeoutError:
+                pass
+
+            snapshot = await workflow.execute_activity(
+                poll_landing,
+                PollLandingInput(
+                    pr_number=record.landing.pr_number,
+                    target_repo=graph.target_repo,
+                ),
+                **_FAST,
+            )
+            outcome = classify(
+                snapshot, record.landing, config, now=snapshot.observed_at
+            )
+            if outcome is None:
+                # Keep polling: the queue is still on it.
+                continue
+
+            record.landing = replace(
+                record.landing,
+                outcomes=record.landing.outcomes
+                + (ObservedOutcome(at=_now(), outcome=outcome),),
+            )
+            if outcome == QueueOutcome.MERGED:
+                # Removal precedes the terminal state, so the main loop — which
+                # wakes on landing-terminal — only sees MERGED once the deferred
+                # sweep has actually happened. The epic must not complete with a
+                # worktree still on disk (US1-S4, plan.md § US1).
+                await self._remove_worktree(graph, node_id)
+                record.landing = replace(record.landing, state=LandingState.MERGED)
+                record.state = NodeState.MERGED
+                return
+            if outcome in _RECOVERY_OUTCOMES:
+                # Recovery-eligible (CHECKS_FAILED, CONFLICT): the landing is
+                # rejected but not finished — US2's bounded recovery cycle owns
+                # what happens next. Not terminal, so the epic parks on it.
+                record.landing = replace(record.landing, state=LandingState.REJECTED)
+                return
+            # DEQUEUED_BY_HUMAN and STALLED: operator/queue rejections that are
+            # terminal. Node ends killed, branch preserved.
+            await self._remove_worktree(graph, node_id)
+            record.landing = replace(record.landing, state=LandingState.KILLED)
+            record.state = NodeState.KILLED
+            return
+
+    async def _remove_worktree(self, graph: WorkGraph, node_id: str) -> None:
+        """The worktree removal deferred to landing-terminal time (plan.md § US1)."""
+        await workflow.execute_activity(
+            remove_worktree,
+            RemoveWorktreeInput(
+                epic_id=graph.epic_id,
+                node_id=node_id,
+                target_repo=graph.target_repo,
+            ),
+            **_GIT,
+        )
 
 
 def _now() -> str:

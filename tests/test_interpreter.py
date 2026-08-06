@@ -107,6 +107,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -130,6 +131,13 @@ from factory.activities.agent_activities import (
     ResolvePersonaInput,
     SalvageWorktreeInput,
 )
+from factory.activities.merge_activities import (
+    DisableAutoMergeInput,
+    EnqueueLandingInput,
+    OpenLandingPrInput,
+    PollLandingInput,
+    PrepareLandingPrInput,
+)
 from factory.activities.notify_activities import (
     ExpiredEscalation,
     ExpireEscalationInput,
@@ -152,6 +160,13 @@ from factory.activities.verify_activities import (
     SnapshotCriteriaInput,
 )
 from factory.config import Persona, WriteScope
+from factory.mergequeue.models import (
+    LandingConfig,
+    LandingState,
+    ObservedOutcome,
+    PrSnapshot,
+    QueueOutcome,
+)
 from factory.notify.service import SIGNAL_NAME
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
 from factory.verify.ladder import DEBUGGER_PERSONA
@@ -631,6 +646,105 @@ def all_passing() -> dict[str, list[Attempt]]:
     return {"us1": [passing()], "us2": [passing()], "us3": [passing()]}
 
 
+# --- the landing phase's scripted payloads ------------------------------------
+
+
+@dataclass(frozen=True)
+class OpenLandingPrBody:
+    """What `prepare_landing_pr` hands back — the body file and title."""
+
+    body_file: str
+    title: str
+
+
+@dataclass(frozen=True)
+class OpenLandingPr:
+    """What `open_landing_pr` hands back — the PR's identity."""
+
+    number: int
+    url: str
+
+
+@dataclass(frozen=True)
+class EnqueueOutcome:
+    """What `enqueue_landing` hands back — accepted, or refused as data."""
+
+    rejected: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class DisableOutcome:
+    """What `disable_auto_merge` hands back — best-effort."""
+
+    failed: bool
+    reason: str
+
+
+def _node_of_pr(pr_number: int) -> str:
+    """Invert the scripted PR-number scheme: which node a PR belongs to.
+
+    The reverse of `ScriptedWorld._pr_number_for` — the fake's call log names the
+    node behind a `pr merge`/`pr view` the way the workflow's own record does.
+    """
+    for node_id in ("us1", "us2", "us3"):
+        if ScriptedWorld._pr_number_for(node_id) == pr_number:
+            return node_id
+    return f"pr-{pr_number}"
+
+
+def _snapshot(
+    *,
+    state: str = "OPEN",
+    auto_merge: bool = True,
+    merged_at: str | None = None,
+    failing_checks: tuple[str, ...] = (),
+    merge_state_status: str = "CLEAN",
+    observed_at: str = "2026-08-06T10:10:00Z",
+) -> PrSnapshot:
+    """One `PrSnapshot` the scripted poll answers with."""
+    return PrSnapshot(
+        state=state,
+        is_draft=False,
+        auto_merge_requested=auto_merge,
+        merge_state_status=merge_state_status,
+        merged_at=merged_at,
+        closed_at=None,
+        failing_required_checks=failing_checks,
+        observed_at=observed_at,
+    )
+
+
+def pending_snapshot() -> PrSnapshot:
+    """The queue is still holding the PR — a poll that answers "keep polling"."""
+    return _snapshot()
+
+
+def merged_snapshot() -> PrSnapshot:
+    """The queue landed the PR — the reconciled success (FR-004)."""
+    return _snapshot(state="MERGED", auto_merge=False, merged_at="2026-08-06T10:09:00Z")
+
+
+def dequeued_snapshot() -> PrSnapshot:
+    """A human took the PR out of the queue without merging it."""
+    return _snapshot(state="CLOSED", auto_merge=False)
+
+
+def checks_failed_snapshot() -> PrSnapshot:
+    """The queue rejected the PR because required checks failed (recovery-eligible)."""
+    return _snapshot(auto_merge=False, failing_checks=("lint",))
+
+
+def conflict_snapshot() -> PrSnapshot:
+    """The queue cannot merge the PR — its branch is dirty (recovery-eligible)."""
+    return _snapshot(auto_merge=False, merge_state_status="DIRTY")
+
+
+def stalled_snapshot() -> PrSnapshot:
+    """The queue has held the PR past the stall window."""
+    return _snapshot(auto_merge=True, observed_at="2026-08-06T12:00:00Z")
+
+
 # --- the scripted world -------------------------------------------------------
 
 
@@ -711,6 +825,28 @@ class ScriptedWorld:
         self.escalation_ids: list[str] = []
         self.expirations: list[str] = []
 
+        #: The landing phase's scripted surface. `landing_snapshots` is the per-PR
+        #: answer queue, in poll order: each `poll_landing` call consumes one
+        #: `PrSnapshot` and records the observed outcome (the workflow's
+        #: reconciliation, FR-004). A node with no scripted snapshot gets a canned
+        #: pending one so a poll that overruns reads as `overrun` rather than as
+        #: an unscripted hang.
+        self.landing_snapshots: dict[int, list[PrSnapshot]] = {}
+        self.body_prepare_requests: list[PrepareLandingPrInput] = []
+        self.landing_requests: list[OpenLandingPrInput] = []
+        self.enqueue_requests: list[EnqueueLandingInput] = []
+        self.poll_requests: list[PollLandingInput] = []
+        self.disable_requests: list[DisableAutoMergeInput] = []
+
+        #: PR number assigned per node by `open_landing_pr`, so `enqueue_landing`
+        #: and `poll_landing` know which node a PR belongs to (the workflow's PR
+        #: number, reconstructed for the call log's sake).
+        self._pr_numbers: dict[str, int] = {}
+        #: Whether the next `enqueue_landing` is refused (spec edge case). One-shot.
+        self._enqueue_refused = False
+        #: Every snapshot a poll consumed, in order — the reconciliation record.
+        self._observed_outcomes: list[PrSnapshot] = []
+
         #: What `epic_status` said while each node's attempt was in flight — the
         #: only place a mid-epic view of the graph can be taken.
         self.observed: dict[str, Any] = {}
@@ -779,6 +915,44 @@ class ScriptedWorld:
             if request.lease.node_id == node_id and request.lease.attempt == attempt
         ]
         return found
+
+    @staticmethod
+    def _pr_number_for(node_id: str) -> int:
+        """A stable PR number per node, so scripted polls can key on it."""
+        return int(
+            hashlib.sha1(node_id.encode()).hexdigest()[:8], 16
+        ) % 1000 + 1
+
+    def _snapshot_for(self, pr_number: int) -> PrSnapshot:
+        """The next scripted poll answer for a PR, or the happy-path default.
+
+        A `poll_landing` whose PR was not scripted answers MERGED — the default a
+        green node's landing takes, so scheduling tests that only care about the
+        ladder reach a terminal without per-node landing scripting. Landing tests
+        that need a specific queue shape script it with `script_landing`; an
+        overrun past the scripted answers reads as `overrun_poll` (recorded) and
+        returns the default.
+        """
+        queue = self.landing_snapshots.get(pr_number)
+        if not queue:
+            return merged_snapshot()
+        return queue.pop(0)
+
+    def script_landing(
+        self,
+        node_id: str,
+        *snapshots: PrSnapshot,
+        pr_number: int | None = None,
+    ) -> int:
+        """Script one node's landing poll answers; return the PR number.
+
+        Call before starting the epic. Each snapshot is consumed in poll order,
+        so a `(pending, merged)` pair scripts FR-004's event gap — the queue says
+        nothing, then lands.
+        """
+        number = pr_number if pr_number is not None else self._pr_number_for(node_id)
+        self.landing_snapshots[number] = list(snapshots)
+        return number
 
     # --- the fakes ----------------------------------------------------------
 
@@ -1044,6 +1218,46 @@ class ScriptedWorld:
             script._log("remove_worktree", request.node_id)
             script.removals.append(request)
 
+        @activity.defn(name="prepare_landing_pr")
+        async def prepare_landing_pr(request: PrepareLandingPrInput) -> Any:
+            script._log("prepare_landing_pr", request.node_id)
+            script.body_prepare_requests.append(request)
+            return OpenLandingPrBody(
+                body_file=f"/srv/factory/.factory/landing/{request.epic_id}/{request.node_id}/attempt-{request.attempt}.md",
+                title=f"{request.epic_id}/{request.node_id}: {request.story_title}",
+            )
+
+        @activity.defn(name="open_landing_pr")
+        async def open_landing_pr(request: OpenLandingPrInput) -> Any:
+            script._log("open_landing_pr", request.node_id)
+            script.landing_requests.append(request)
+            pr_number = script._pr_number_for(request.node_id)
+            script._pr_numbers[request.node_id] = pr_number
+            return OpenLandingPr(number=pr_number, url=f"https://x/pull/{pr_number}")
+
+        @activity.defn(name="enqueue_landing")
+        async def enqueue_landing(request: EnqueueLandingInput) -> Any:
+            script._log("enqueue_landing", _node_of_pr(request.pr_number))
+            script.enqueue_requests.append(request)
+            if script._enqueue_refused:
+                script._enqueue_refused = False
+                return EnqueueOutcome(rejected=True, reason="queue disabled")
+            return EnqueueOutcome(rejected=False, reason="")
+
+        @activity.defn(name="poll_landing")
+        async def poll_landing(request: PollLandingInput) -> PrSnapshot:
+            script._log("poll_landing", _node_of_pr(request.pr_number))
+            script.poll_requests.append(request)
+            pending = script._snapshot_for(request.pr_number)
+            script._observed_outcomes.append(pending)
+            return pending
+
+        @activity.defn(name="disable_auto_merge")
+        async def disable_auto_merge(request: DisableAutoMergeInput) -> Any:
+            script._log("disable_auto_merge", _node_of_pr(request.pr_number))
+            script.disable_requests.append(request)
+            return DisableOutcome(failed=False, reason="")
+
         @activity.defn(name="send_escalation")
         async def send_escalation(request: SendEscalationInput) -> SentEscalation:
             script._log("send_escalation", request.node_id)
@@ -1090,6 +1304,11 @@ class ScriptedWorld:
             teardown_attempt,
             salvage_worktree,
             remove_worktree,
+            prepare_landing_pr,
+            open_landing_pr,
+            enqueue_landing,
+            poll_landing,
+            disable_auto_merge,
             send_escalation,
             expire_escalation,
         ]
@@ -1231,9 +1450,9 @@ async def test_a_three_node_graph_runs_to_epic_completion(
 
     assert status.epic_state == EpicState.COMPLETED
     assert states(status) == {
-        "us1": NodeState.PASSED,
-        "us2": NodeState.PASSED,
-        "us3": NodeState.PASSED,
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
     }
     assert attempt_counts(status) == {"us1": 1, "us2": 1, "us3": 1}
     assert list(status.nodes) == ["us1", "us2", "us3"]
@@ -1279,14 +1498,17 @@ async def test_a_dependent_node_waits_for_its_dependencys_pass(
     assert during_us1["us3"] == NodeState.PENDING
 
     during_us2 = states(script.observed["us2"])
-    assert during_us2["us1"] == NodeState.PASSED
+    # `us1` verified — its landing opened — yet its own queue ride is still
+    # pending: a verified-gated dependent dispatches while the dependency's
+    # landing is ENQUEUED, not after it merges (FR-009, US1-S4).
+    assert during_us2["us1"] == NodeState.ENQUEUED
     assert during_us2["us2"] == NodeState.RUNNING
     assert during_us2["us3"] == NodeState.PENDING
 
     during_us3 = states(script.observed["us3"])
     assert during_us3 == {
-        "us1": NodeState.PASSED,
-        "us2": NodeState.PASSED,
+        "us1": NodeState.ENQUEUED,
+        "us2": NodeState.ENQUEUED,
         "us3": NodeState.RUNNING,
     }
     assert script.observed["us3"].epic_state == EpicState.RUNNING
@@ -1316,6 +1538,10 @@ async def test_one_nodes_lifecycle_composes_the_verification_contract(
         "record_verification",
         "teardown_attempt:implementer",
         "salvage_worktree",
+        "prepare_landing_pr",
+        "open_landing_pr",
+        "enqueue_landing",
+        "poll_landing",
         "remove_worktree",
     ]
 
@@ -1412,7 +1638,7 @@ async def test_a_failed_attempt_retries_with_its_evidence_verbatim(
     status = await run_epic(env, script)
 
     assert status.epic_state == EpicState.COMPLETED
-    assert states(status)["us1"] == NodeState.PASSED
+    assert states(status)["us1"] == NodeState.MERGED
     assert attempt_counts(status) == {"us1": 2, "us2": 1, "us3": 1}
 
     first, second = script.prompts_for("us1")
@@ -1435,10 +1661,14 @@ async def test_a_failed_attempt_retries_with_its_evidence_verbatim(
         OverallVerdict.PASS,
     ]
 
-    # And exactly one salvage/remove pair, at the end — a retry does not sweep
-    # the worktree the next attempt is about to open.
-    assert script.sequence("us1")[-2:] == ["salvage_worktree", "remove_worktree"]
+    # Exactly one salvage, and the sweep deferred past the landing — a retry does
+    # not sweep the worktree the next attempt is about to open, and the sweep
+    # comes only after the landing is terminal.
     assert len([s for s in script.salvages if s.node_id == "us1"]) == 1
+    assert script.sequence("us1").count("remove_worktree") == 1
+    assert script.sequence("us1").index("salvage_worktree") < script.sequence("us1").index(
+        "remove_worktree"
+    )
 
 
 # --- US1-S3: exhaustion, escalation, and a kill (SC-002, SC-004) --------------
@@ -1515,7 +1745,7 @@ async def test_a_killed_nodes_dependents_never_dispatch(
     assert states(status) == {
         "us1": NodeState.KILLED,
         "us2": NodeState.KILLED,
-        "us3": NodeState.PASSED,
+        "us3": NodeState.MERGED,
     }
     assert attempt_counts(status)["us2"] == 0
     assert status.epic_state == EpicState.COMPLETED
@@ -1549,7 +1779,13 @@ async def test_salvage_precedes_removal_on_every_terminal_path(
     for node_id in ("us1", "us3"):
         sequence = script.sequence(node_id)
         assert sequence.index("salvage_worktree") < sequence.index("remove_worktree")
-        assert sequence[-2:] == ["salvage_worktree", "remove_worktree"]
+        # Salvage comes first; the landing phase rides the queue; removal is
+        # deferred to the landing's terminal, so the sweep is the last thing. A
+        # node that never PASSes (us1 here) has no landing to interleave.
+        assert sequence[-1] == "remove_worktree"
+        if "open_landing_pr" in sequence:
+            assert sequence.index("salvage_worktree") < sequence.index("open_landing_pr")
+            assert sequence.index("open_landing_pr") < sequence.index("remove_worktree")
 
     assert [s.node_id for s in script.salvages] == ["us1", "us3"]
     assert [s.attempt for s in script.salvages] == [4, 1]
@@ -1577,7 +1813,7 @@ async def test_the_adapters_termination_never_shortcuts_verification(
 
     status = await run_epic(env, script)
 
-    assert states(status)["us1"] == NodeState.PASSED
+    assert states(status)["us1"] == NodeState.MERGED
     assert "run_gates" in script.sequence("us1")
     assert script.teardown_for("us1", 1).termination == Termination.TIMEOUT
     assert [s.termination for s in script.salvages if s.node_id == "us1"] == [
@@ -1822,14 +2058,20 @@ async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
     )
 
     async with start_epic(env, script) as handle:
+        # The signal lands while `us1` is mid-attempt; the epic parks only after
+        # us1's ladder is complete, so the node reaches ENQUEUED (the landing
+        # opens and enqueues before the scheduler parks). Polling keeps running
+        # (passive) but its timer only advances when the workflow's clock does,
+        # so the landing stays ENQUEUED while parked — the scheduler, and only
+        # the scheduler, is what pause suspends.
         paused = await wait_for_status(
             handle,
-            paused_with("us1", NodeState.PASSED),
-            what="the epic to park after us1's ladder finished",
+            paused_with("us1", NodeState.ENQUEUED),
+            what="the epic to park after us1's ladder opened and enqueued its landing",
         )
 
         # The whole ladder, not a suspended half of one: the node the signal
-        # interrupted is verified, recorded, torn down and swept.
+        # interrupted is verified, recorded, torn down, salvaged, then landed.
         assert script.sequence("us1") == [
             "snapshot_criteria",
             "prepare_worktree",
@@ -1840,10 +2082,12 @@ async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
             "record_verification",
             "teardown_attempt:implementer",
             "salvage_worktree",
-            "remove_worktree",
+            "prepare_landing_pr",
+            "open_landing_pr",
+            "enqueue_landing",
         ]
         assert states(paused) == {
-            "us1": NodeState.PASSED,
+            "us1": NodeState.ENQUEUED,
             "us2": NodeState.PENDING,
             "us3": NodeState.PENDING,
         }
@@ -1861,9 +2105,9 @@ async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
 
     assert status.epic_state == EpicState.COMPLETED
     assert states(status) == {
-        "us1": NodeState.PASSED,
-        "us2": NodeState.PASSED,
-        "us3": NodeState.PASSED,
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
     }
     assert script.dispatched == ["us1", "us2", "us3"]
     assert "overrun" not in script.calls
@@ -1886,8 +2130,8 @@ async def test_a_paused_epic_survives_replay(env: WorkflowEnvironment) -> None:
     async with start_epic(env, script) as handle:
         await wait_for_status(
             handle,
-            paused_with("us1", NodeState.PASSED),
-            what="the epic to park after us1's ladder finished",
+            paused_with("us1", NodeState.ENQUEUED),
+            what="the epic to park after us1's landing opened and enqueued",
         )
         await handle.signal(RESUME_SIGNAL)
         status = await handle.result()
@@ -1954,7 +2198,7 @@ async def test_a_pause_epic_resolution_parks_the_node_and_pauses_the_epic(
     assert states(status) == {
         "us1": NodeState.FAILED,
         "us2": NodeState.KILLED,
-        "us3": NodeState.PASSED,
+        "us3": NodeState.MERGED,
     }
     assert script.dispatched == ["us1"] * 4 + ["us3"]
 
@@ -2079,7 +2323,7 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
     status = await run_epic(env, script, graph=one_node())
 
     assert status.epic_state == EpicState.COMPLETED
-    assert states(status) == {"us1": NodeState.PASSED}
+    assert states(status) == {"us1": NodeState.MERGED}
     assert attempt_counts(status) == {"us1": 1}
 
     assert script.sequence("us1") == [
@@ -2096,6 +2340,10 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
         "record_verification",
         "teardown_attempt:implementer",
         "salvage_worktree",
+        "prepare_landing_pr",
+        "open_landing_pr",
+        "enqueue_landing",
+        "poll_landing",
         "remove_worktree",
     ]
     assert "unscripted_judge" not in script.calls
@@ -2156,7 +2404,7 @@ async def test_the_judges_alias_never_collides_with_the_live_implementer_key(
 
     status = await run_epic(env, script, graph=one_node())
 
-    assert states(status) == {"us1": NodeState.PASSED}
+    assert states(status) == {"us1": NodeState.MERGED}
 
     # Judge first (its bracket closes inside verification), implementer second —
     # one row each, four dimensions each, nothing shadowed.
@@ -2240,7 +2488,7 @@ async def test_a_judge_retry_spends_an_attempt_and_quotes_its_feedback(
 
     status = await run_epic(env, script, graph=one_node())
 
-    assert states(status) == {"us1": NodeState.PASSED}
+    assert states(status) == {"us1": NodeState.MERGED}
     assert attempt_counts(status) == {"us1": 2}
 
     # Two agent attempts, each with its own judge key and its own bracket: the
@@ -2295,7 +2543,7 @@ async def test_the_judges_rewrites_are_bounded_inside_the_attempt_budget(
         config=VerificationConfig(max_attempts=6, max_judge_retries=1),
     )
 
-    assert states(status) == {"us1": NodeState.PASSED}
+    assert states(status) == {"us1": NodeState.MERGED}
     assert attempt_counts(status) == {"us1": 3}
     assert [key.persona for key in script.key_requests if key.persona != JUDGE_PERSONA] == [
         "implementer",
@@ -2324,7 +2572,7 @@ async def test_an_unreadable_judge_response_is_re_asked_inside_the_attempt(
 
     status = await run_epic(env, script, graph=one_node())
 
-    assert states(status) == {"us1": NodeState.PASSED}
+    assert states(status) == {"us1": NodeState.MERGED}
     assert attempt_counts(status) == {"us1": 1}
     assert script.dispatched == ["us1"]
 
@@ -2360,7 +2608,7 @@ async def test_an_unavailable_judge_passes_a_green_node_and_records_that_it_did(
 
     status = await run_epic(env, script, graph=one_node())
 
-    assert states(status) == {"us1": NodeState.PASSED}
+    assert states(status) == {"us1": NodeState.MERGED}
     assert attempt_counts(status) == {"us1": 1}
 
     # Retried as an outage, not accepted as a verdict, before anything is

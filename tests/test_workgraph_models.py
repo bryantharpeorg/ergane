@@ -479,6 +479,10 @@ def test_node_states_are_exactly_the_state_machine() -> None:
     back into `KEY_ISSUED` or forward to a terminal state, and giving them
     membership here would create a second place the ladder's outcome is
     represented, one of which the workflow could park a node in permanently.
+    The landing phase (FR-004) adds the states a verified node moves through on
+    its way to the queue terminal: `PR_OPEN` → `ENQUEUED` → `MERGED`, matching
+    architecture §1's lifecycle, with `PASSED` now meaning *verified, landing
+    not terminal*.
     """
     assert {state.name for state in NodeState} == {
         "PENDING",
@@ -486,6 +490,9 @@ def test_node_states_are_exactly_the_state_machine() -> None:
         "RUNNING",
         "VERIFYING",
         "PASSED",
+        "PR_OPEN",
+        "ENQUEUED",
+        "MERGED",
         "FAILED",
         "KILLED",
     }
