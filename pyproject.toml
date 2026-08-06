@@ -1,0 +1,37 @@
+[project]
+name = "ergane"
+version = "0.1.0"
+description = "Agentic software factory: per-node usage tracking, verification gating, merge queue"
+requires-python = ">=3.11"
+dependencies = [
+    "temporalio",
+    "httpx",
+    "pyyaml",
+    "python-telegram-bot",
+]
+
+[project.scripts]
+factory-usage = "factory.usage.cli:main"
+factory-epic = "factory.workgraph.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["factory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live_proxy: hits a real LiteLLM proxy; auto-skips unless LITELLM_PROXY_URL and LITELLM_MASTER_KEY are set",
+    "live_telegram: hits the real Telegram Bot API; auto-skips unless TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set",
+    "live_epic: runs a live one-node epic; auto-skips unless Tier 1 env is set",
+]

@@ -1,0 +1,13 @@
+# Variant `hanging-gate`: a gate that sleeps 30s under a 1s deadline.
+#
+# The 1s timeout is what keeps the suite fast; the gate script sleeps thirty
+# times longer so the margin is never in question on a loaded machine. As with
+# `failing-gate`, a passing gate is declared afterwards — a TIMEOUT must not
+# swallow the gates that follow it.
+version: 1
+runtime: python:3.11-bookworm
+gates:
+  test: "bash gates/hang.sh"
+  typecheck: "bash gates/typecheck.sh"
+timeouts:
+  test: 1

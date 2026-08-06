@@ -1,0 +1,9 @@
+# Variant `noisy-gate`: one failing gate that prints ~110 KiB, for the 32 KiB
+# `output_tail` cap. The generous timeout is because writing that much output
+# through a pipe is the slowest thing any fixture gate does.
+version: 1
+runtime: python:3.11-bookworm
+gates:
+  test: "bash gates/noisy.sh"
+timeouts:
+  test: 60

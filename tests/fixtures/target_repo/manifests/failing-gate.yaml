@@ -1,0 +1,14 @@
+# Variant `failing-gate`: the middle gate exits 3.
+#
+# The failure is deliberately not last. `typecheck` is declared after it so the
+# run answers a question the passing manifest cannot: does the runner return one
+# result per declared gate (contracts/activities.md) after a gate fails, or does
+# it stop and leave the remaining gates unaccounted for?
+version: 1
+runtime: python:3.11-bookworm
+gates:
+  lint: "bash gates/lint.sh"
+  test: "bash gates/fail.sh"
+  typecheck: "bash gates/typecheck.sh"
+timeouts:
+  lint: 30

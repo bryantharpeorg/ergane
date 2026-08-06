@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Tooling
+.venv/
+.pytest_cache/
+
+# Temporal dev server state (temporal server start-dev --db-filename .temporal/dev.db)
+.temporal/
+
+# Factory-owned runtime artifacts (SQLite usage ledger, WAL/SHM sidecars)
+.factory/

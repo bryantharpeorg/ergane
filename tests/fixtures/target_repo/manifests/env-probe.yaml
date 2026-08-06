@@ -1,0 +1,9 @@
+# Variant `env-probe`: one passing gate that prints the environment it was given,
+# so a test can set LITELLM_MASTER_KEY and TELEGRAM_BOT_TOKEN in its own process
+# and assert neither value reached the child (R3, constitution V).
+version: 1
+runtime: python:3.11-bookworm
+gates:
+  test: "bash gates/env-probe.sh"
+timeouts:
+  test: 30

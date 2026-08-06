@@ -1,0 +1,17 @@
+# The fixture repo's committed manifest — schema v1, contracts/factory-yaml.md.
+#
+# Declaration order is lint → test → typecheck, which is neither the contract's
+# listing order nor alphabetical: a runner that sorted gates instead of honouring
+# the file would fail an assertion here rather than quietly spending a full test
+# run before the lint that would have failed in two seconds.
+#
+# Only `lint` declares a timeout. `test` and `typecheck` are left to the runner's
+# 600s default, so "declared" and "defaulted" are both exercised by the same run.
+version: 1
+runtime: python:3.11-bookworm
+gates:
+  lint: "bash gates/lint.sh"
+  test: "bash gates/test.sh"
+  typecheck: "bash gates/typecheck.sh"
+timeouts:
+  lint: 30

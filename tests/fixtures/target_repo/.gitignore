@@ -1,0 +1,4 @@
+# Every gate script appends its name here (see gates/README.md), so running gates
+# is observable without dirtying the worktree — which keeps gate-runner tests and
+# diff-check tests from contaminating each other's evidence.
+.factory-gate-order.log

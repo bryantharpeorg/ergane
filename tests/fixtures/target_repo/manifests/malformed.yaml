@@ -1,0 +1,10 @@
+# Variant `malformed-manifest`: unparseable YAML — an unclosed flow sequence, the
+# shape a hand-edited manifest actually takes when it breaks.
+#
+# The parser's own rejection table lives in tests/test_factory_yaml.py as inline
+# strings; this file exists so the *runner* has a real committed manifest to trip
+# over, and must come back with one CONFIG_ERROR gate result rather than an empty
+# gate list that a verdict could mistake for "nothing failed".
+version: 1
+runtime: python:3.11-bookworm
+gates: [unclosed

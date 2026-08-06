@@ -1,0 +1,85 @@
+# Persona registry (D-012, trimmed per D-021 / research R8).
+#
+# Nodes are routed by persona, never by model tier. This registry is the only
+# place a model name appears — code never hardcodes one. The `model` and
+# `fallback` values are LiteLLM aliases from the operator's proxy config; the
+# issued virtual key's `models` list is derived from these, so the binding is
+# enforceable, not advisory.
+#
+# Current wiring (2026-08-06, Bryan): hosted models via the proxy's
+# `ollama-cloud/*` aliases (Ollama Cloud key on the worker host — the planned
+# `anthropic/*` route was dropped in its favor). Coding personas and researcher
+# run `ollama-cloud/deepseek-v4-flash` (the 0731 release); judge runs
+# `ollama-cloud/glm-5.2` (top agent_loop in the operator's evals, and the
+# claude-CLI-against-GLM path is precedented). Every persona keeps
+# `local/qwen3.6-27b` as fallback.
+#
+# Fields per persona:
+#   agent          adapter name (D-018); "none" = deterministic persona, no key
+#   model          LiteLLM alias; required iff agent != "none", null iff "none"
+#   fallback       LiteLLM alias used on primary-model failure; optional (null)
+#   skills         backing skills; may be empty
+#   write_scope    worktree | docs | read  (drives component 2's diff exemption)
+#   needs_worktree whether the node runs against an isolated git worktree
+#   timeout        attempt wall-clock bound in SECONDS; positive integer, and
+#                  null iff agent is "none". Edit these freely — they are the
+#                  operator's dial, and no timeout is hardcoded anywhere in the
+#                  code (FR-010). A node's `## Work Graph` override wins over
+#                  the value here when one is declared.
+#
+# `budget_usd` and `breach_policy` are intentionally absent — budget enforcement
+# is deferred to spec 004 and those fields return with it.
+
+architect:
+  agent: claude-code
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
+  skills: [codebase-design, design-an-interface, domain-modeling]
+  write_scope: docs
+  needs_worktree: true
+  timeout: 7200
+
+implementer:
+  agent: claude-code
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400
+
+verifier:
+  agent: none
+  model: null
+  fallback: null
+  skills: []
+  write_scope: read
+  needs_worktree: true
+  timeout: null
+
+judge:
+  agent: claude-code
+  model: ollama-cloud/glm-5.2
+  fallback: local/qwen3.6-27b
+  skills: [code-review]
+  write_scope: read
+  needs_worktree: false
+  timeout: 3600
+
+debugger:
+  agent: claude-code
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
+  skills: [diagnosing-bugs]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 10800
+
+researcher:
+  agent: claude-code
+  model: ollama-cloud/deepseek-v4-flash
+  fallback: local/qwen3.6-27b
+  skills: [research, grill-with-docs]
+  write_scope: read
+  needs_worktree: false
+  timeout: 7200
