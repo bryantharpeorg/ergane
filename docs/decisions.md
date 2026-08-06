@@ -313,3 +313,36 @@ prepared worktree's `base_ref` (the node's branch point) and measure everything
 since it: committed, staged and untracked alike. Ignored files still stay out —
 a target repo's `.gitignore` is what keeps generated noise from the judge, and
 the smoke's scratch repo now carries one like any real repo.
+
+## D-028 · The landing's outcome lives in workflow state; reconciliation is polling-only (decided)
+
+2026-08-06, settling US1 of the merge-queue epic (spec `specs/003-merge-queue/`). Four
+decisions landed together because they are one posture — GitHub's queue is the source of
+truth, and the factory only reads it:
+
+1. **No landing store.** A landing's history (`outcomes`, `enqueued_at`, `recovery_cycles`,
+   PR identity) is workflow state on its `Landing`, read back through the workflow's query
+   surface. Rationale: the poll already reads GitHub; a SQLite landing table would duplicate
+   that read with its own consistency problem, and unlike the verification evidence store
+   (§6.1) there is no evidence to preserve — the queue history is GitHub's, not ours. A
+   store becomes worth it only if US3's preflight or a future operations UI needs offline
+   facts, and that is a new requirement, not this one.
+2. **`depends_on_merged` grammar extension (FR-009).** A node can now declare it waits for
+   a sibling to *merge* (not merely pass) via a second dependency edge set, so verified-but-
+   unlanded work never unlocks a dependent. The existing `depends_on` (pass-based) set stays
+   valid; the two sets are checked for overlap, and cycles run through their union. Existing
+   graphs without the new field parse unchanged.
+3. **Polling-only outcome observation.** No webhook, no `check_suite` event subscription
+   (the D-011 no-public-endpoint posture again). The poll/classify loop is a pure function
+   of the PR's current state, so a late landing reconciles as `MERGED` rather than being
+   re-read as closed or dequeued, and classification is replay-identical under Temporal
+   (SC-001).
+4. **`LandingConfig` knobs.** The operator's landing surface is one config field on
+   `EpicInput`: `merge_method` (passed verbatim to `gh pr merge --auto --<method>`),
+   `poll_interval_s`, `stall_after_s` (SC-002's bound), `max_recovery_cycles` (FR-006).
+   None of these is a constant buried in the workflow.
+
+The interpreter's landing phase, the classifier, and the four landing activities are
+exercised under time skipping and against a `FakeGh`; a `@pytest.mark.live_merge` smoke
+drives one real branch through the sample repo's queue behind `FACTORY_SAMPLE_REPO` so a
+broken queue assumption surfaces at run time, not at 3am.
