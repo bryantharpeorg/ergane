@@ -299,6 +299,105 @@ def push_branch(
     return _head(path)
 
 
+@dataclass(frozen=True)
+class SyncResult:
+    """The outcome of a sync-with-target, as data the workflow can route.
+
+    `clean` is True when the target head merged into the node branch without a
+    conflict. `base_ref` is the merged-in target head — the new branch point the
+    next diff is measured from, so re-verification sees only the node's own work
+    (D-027 extended: recovery moves the branch point). `conflicted_files` names
+    the paths whose merge conflicted; on a clean sync it is empty, and on a
+    conflict the markers are left in the tree for the debugger persona to resolve
+    (FR-006).
+    """
+
+    clean: bool
+    base_ref: str
+    conflicted_files: tuple[str, ...]
+
+
+def sync_with_target(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+    remote: str = "origin",
+) -> SyncResult:
+    """Merge the target's new head into the node branch inside its worktree (US2).
+
+    US2's first recovery move: a `CHECKS_FAILED` rejection means the target branch
+    moved under the node and the rebased tree went red. The branch is synced by
+    fetching `remote` and merging `remote/<default>` *into* the node branch — a
+    merge, never a rebase — because the branch is pushed and history stays
+    fast-forward so the re-push (after the node's fix) is plain.
+
+    A clean merge reports `clean=True` and returns the merged-in target head as
+    the new `base_ref`, so re-verification's diff and judge see only the node's
+    own work (D-027 extended). A conflict reports `clean=False` with the
+    conflicted file list and leaves the conflict markers in the tree — the
+    debugger persona's work surface (FR-006).
+
+    The node branch is never rewritten: no rebase, no force, no reset. The commit
+    the queue may still be deciding on stays reachable (FR-008).
+    """
+    repo = Path(target_repo)
+    path = worktree_path(factory_root, epic_id, node_id)
+    default = _default_branch(repo)
+
+    if not path.is_dir():
+        raise WorktreeError(f"node worktree does not exist: {path}")
+
+    # Bring the remote's refs up to date against the target clone, so
+    # `remote/<default>` names the head the queue just moved under the node.
+    _git(repo, "fetch", "--quiet", remote)
+
+    target_ref = f"{remote}/{default}"
+    try:
+        # Merge, in the node's worktree, onto the node branch. The merge commit
+        # is the factory's (the `_SALVAGE_IDENTITY` salvage already uses), and
+        # never waits on a passphrase.
+        _git(
+            path,
+            "-c",
+            "commit.gpgsign=false",
+            "merge",
+            "--quiet",
+            target_ref,
+            env_extra=_SALVAGE_IDENTITY,
+        )
+    except WorktreeError:
+        # The merge conflicted: git exited non-zero and left the markers in the
+        # tree. Report the conflicted paths as data, with the merged-in target
+        # head as the base the debugger resolves against.
+        return SyncResult(
+            clean=False,
+            base_ref=_target_head(repo, target_ref),
+            conflicted_files=_conflicted_files(path),
+        )
+
+    return SyncResult(
+        clean=True,
+        base_ref=_target_head(repo, target_ref),
+        conflicted_files=(),
+    )
+
+
+def _target_head(repo: Path, ref: str) -> str:
+    """What `ref` names right now — the merged-in target head."""
+    return _git(repo, "rev-parse", ref).strip()
+
+
+def _conflicted_files(path: Path) -> tuple[str, ...]:
+    """Paths git reports as unmerged after a conflicted merge (FR-006)."""
+    try:
+        out = _git(path, "diff", "--name-only", "--diff-filter=U")
+    except WorktreeError:
+        return ()
+    return tuple(line for line in out.splitlines() if line)
+
+
 def _default_branch(repo: Path) -> str:
     """The target clone's default branch (its current `HEAD`'s symbolic ref).
 
