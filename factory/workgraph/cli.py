@@ -67,7 +67,9 @@ from temporalio.client import Client
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
 
+from factory.activities.merge_activities import onboard_target_repo
 from factory.config import Persona, WriteScope
+from factory.mergequeue.gh import GhClient
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
     DEFAULT_TEMPORAL_NAMESPACE,
@@ -102,6 +104,11 @@ EXIT_TRANSPORT = 2
 #: Only `timeout_s` is consulted, and only to prove a bound is resolvable — which
 #: on the worker it will be, from the real `personas.yaml`.
 _STRUCTURAL_TIMEOUT_S = 1
+
+#: The seam US3's `onboard` command builds its `GhClient` through — production
+#: builds a real client against the clone the operator points at; tests replace
+#: this with one wired to a `FakeGh`, the same discipline as the activity seam.
+_onboard_client_factory = lambda *, repo_path: GhClient(repo=repo_path)
 
 
 class _OperatorError(Exception):
@@ -179,6 +186,65 @@ def derive_command(args: argparse.Namespace) -> int:
 
     print(destination)
     return EXIT_OK
+
+
+# --- onboard: validate a target repo before anything dispatches (US3, FR-010) --
+
+
+def onboard_command(args: argparse.Namespace) -> int:
+    """Validate a target repo against the factory's assumptions (FR-010, SC-005).
+
+    The operator's preflight surface for US3: `factory-epic onboard
+    <target-clone-path>` reads the repo's facts (visibility, merge-queue rule,
+    required checks) and its committed `factory.yaml`, and prints every finding —
+    pass and fail — so an operator can see the repo was checked, not just whether
+    it passed. `--json` emits the whole `TargetRepoProfile` and nothing but, so a
+    script can read the verdict without parsing prose.
+
+    Exit codes are the CLI's contract: `0` all checks pass, `1` any check fails
+    (the repo is rejected for dispatch) or the path is unusable. The command is
+    offline — no Temporal, no proxy — because onboarding is a property of a repo,
+    not of a running epic; it blocks dispatch at epic start precisely because the
+    operator can run it first.
+    """
+    from factory.activities.merge_activities import onboard_target_repo
+
+    client = _onboard_client_factory(repo_path=args.target_repo)
+    try:
+        profile = onboard_target_repo(client, args.target_repo)
+    except _OperatorError:
+        raise
+    except Exception as error:  # pragma: no cover - defensive; onboard is data-safe
+        raise _OperatorError(f"onboarding {args.target_repo} failed: {error}") from error
+
+    if args.as_json:
+        print(json.dumps(asdict(profile), indent=2))
+    else:
+        print(_render_onboard(profile))
+    return EXIT_OK if profile.passed else EXIT_USER
+
+
+def _render_onboard(profile: Any) -> str:
+    """The human view: the repo's verdict line, then one line per finding.
+
+    Each finding is `[pass|fail] <check>: <detail>`, ordered as the profile
+    carries them, so an operator reading a rejected repo sees the first failing
+    check at the top of the failures without hunting.
+    """
+    lines = [
+        f"target repo {profile.repo} "
+        f"{'PASSES' if profile.passed else 'FAILS'} onboarding",
+        f"default branch: {profile.default_branch}",
+        f"visibility: {profile.visibility}",
+        f"merge queue enabled: {profile.queue_enabled}",
+        f"declared gates: {', '.join(profile.declared_gates)}",
+        f"required checks: {', '.join(profile.required_checks)}",
+        "findings:",
+    ]
+    for finding in profile.findings:
+        mark = "PASS" if finding.passed else "FAIL"
+        lines.append(f"  [{mark}] {finding.check}: {finding.detail}")
+    return "\n".join(lines)
 
 
 # --- start: the graph, re-validated, dispatched under its own id (US3-S1) -----
@@ -416,6 +482,22 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help=f"write the artifact here instead of <spec-dir>/{ARTIFACT_NAME}",
     )
     derive.set_defaults(run=derive_command)
+
+    onboard = commands.add_parser(
+        "onboard",
+        help="validate a target repo for dispatch (merge queue + required checks, US3)",
+    )
+    onboard.add_argument(
+        "target_repo",
+        help="worker-host path to the target repo clone to validate",
+    )
+    onboard.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print the TargetRepoProfile verbatim instead of the human view",
+    )
+    onboard.set_defaults(run=onboard_command)
 
     start = commands.add_parser("start", help="start the epic a compiled graph declares")
     start.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")

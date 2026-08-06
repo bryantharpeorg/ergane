@@ -1302,3 +1302,138 @@ def test_the_graph_the_cli_starts_is_the_one_validation_accepts(
         validate_workgraph(graph, PERSONAS)
     except WorkGraphError as error:  # pragma: no cover - the assertion is the point
         pytest.fail(f"a graph the CLI accepted must dispatch: {error}")
+
+
+# --- onboard (US3 onboarding preflight, FR-010) ------------------------------
+
+
+def _script_conforming_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
+    """Script `gh` for a fully conforming repo (public, queue enabled, checks match).
+
+    The fixture target repo declares gates `lint`, `test`, `typecheck`; the
+    scripted queue requires checks of exactly those names.
+    """
+    from tests.fake_gh import FakeGh
+
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": owner_repo, "visibility": "PUBLIC", "defaultBranchRef": "main"},
+    )
+    fake.expect_json(
+        "api", f"repos/{owner_repo}/rules/branches/main",
+        payload=[{"type": "merge_queue", "parameters": {"required_status_checks": [
+            {"context": "lint"}, {"context": "test"}, {"context": "typecheck"},
+        ]}}],
+    )
+
+
+def _script_queue_less_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
+    """Script `gh` for a repo with the merge queue not enabled (rules list empty)."""
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": owner_repo, "visibility": "PUBLIC", "defaultBranchRef": "main"},
+    )
+    fake.expect_json("api", f"repos/{owner_repo}/rules/branches/main", payload=[])
+
+
+@pytest.fixture
+def onboard_gh(monkeypatch: pytest.MonkeyPatch) -> "Any":
+    """Inject a `FakeGh` into the CLI's onboard client factory.
+
+    `factory-epic onboard` builds a real `GhClient` against the clone the
+    operator points at; the test replaces the CLI's client factory so the `gh`
+    boundary is scripted without a network, exactly as the activity tests do.
+    """
+    from tests.fake_gh import FakeGh
+
+    fake = FakeGh()
+    import factory.workgraph.cli as cli_module
+
+    def factory(*, repo_path: str):
+        from factory.mergequeue.gh import GhClient
+
+        return GhClient(repo=repo_path, runner=fake)
+
+    monkeypatch.setattr(cli_module, "_onboard_client_factory", factory)
+    return fake
+
+
+def test_onboard_prints_every_finding_and_passes_a_conforming_repo(
+    run: Callable[..., Run], tmp_path: Path, onboard_gh: "Any",
+) -> None:
+    """A fully conforming repo exits 0 and prints every (passing) finding."""
+    from tests.target_repo import build_target_repo
+
+    repo = build_target_repo(tmp_path / "target")
+    _script_conforming_gh(onboard_gh)
+
+    result = run("onboard", str(repo))
+
+    assert result.code == 0
+    for check in ("visibility", "merge_queue", "factory_yaml",
+                  "gate_check:lint", "gate_check:test", "gate_check:typecheck"):
+        assert check in result.stdout
+    assert "factory.yaml" in result.stdout
+
+
+def test_onboard_json_is_a_parseable_profile_with_pass_flag(
+    run: Callable[..., Run], tmp_path: Path, onboard_gh: "Any",
+) -> None:
+    """`--json` emits the whole `TargetRepoProfile` and nothing but."""
+    from tests.target_repo import build_target_repo
+
+    repo = build_target_repo(tmp_path / "target")
+    _script_conforming_gh(onboard_gh)
+
+    result = run("onboard", "--json", str(repo))
+
+    assert result.code == 0
+    document = json.loads(result.stdout)
+    assert document["passed"] is True
+    assert document["visibility"] == "PUBLIC"
+    assert document["queue_enabled"] is True
+    assert "findings" in document
+
+
+def test_onboard_a_queue_less_repo_is_exit_1_naming_the_failing_finding(
+    run: Callable[..., Run], tmp_path: Path, onboard_gh: "Any",
+) -> None:
+    """A repo failing any check is rejected for dispatch (exit 1), finding named."""
+    from tests.target_repo import build_target_repo
+
+    repo = build_target_repo(tmp_path / "target")
+    _script_queue_less_gh(onboard_gh)
+
+    result = run("onboard", str(repo))
+
+    assert result.code == 1
+    assert "merge_queue" in result.stdout
+    assert "not enabled" in result.stdout
+
+
+def test_onboard_without_a_target_path_is_a_usage_error(
+    run: Callable[..., Run],
+) -> None:
+    """Missing the target-clone path is a usage error, not a guess."""
+    result = run("onboard")
+
+    assert result.code == 1
+
+
+def test_onboard_a_nonexistent_clone_is_exit_1_with_the_manifest_finding(
+    run: Callable[..., Run], tmp_path: Path, onboard_gh: "Any",
+) -> None:
+    """A path with no factory.yaml fails on the manifest finding, not a crash."""
+    empty = tmp_path / "no-repo"
+    empty.mkdir()
+    onboard_gh.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": "main"},
+    )
+    onboard_gh.expect_json("api", "repos/OWNER/REPO/rules/branches/main", payload=[])
+
+    result = run("onboard", str(empty))
+
+    assert result.code == 1
+    assert "factory_yaml" in result.stdout
+    assert "factory.yaml" in result.stdout
