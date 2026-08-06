@@ -6,12 +6,11 @@
 # issued virtual key's `models` list is derived from these, so the binding is
 # enforceable, not advisory.
 #
-# Current wiring (2026-08-05, Tier 1 on the worker host): every agent persona
-# runs `local/qwen3.6-27b` — the host's resident vLLM 27B via the Ergane proxy
-# (~/infra/ergane-tier1) — with no fallback. Interim by intent: when an
-# Anthropic API key lands on the worker host, add `anthropic/*` aliases to the
-# proxy config (instructions in its header) and move `model:` there, keeping
-# the local alias as `fallback:`.
+# Current wiring (2026-08-05): every agent persona runs `local/qwen3.6-27b` —
+# a locally served Qwen3.6-27B behind the operator's LiteLLM proxy — with no
+# fallback. Interim by intent: when a hosted-model API key lands on the worker
+# host, add e.g. `anthropic/*` aliases to the proxy config and move `model:`
+# there, keeping the local alias as `fallback:`.
 #
 # Fields per persona:
 #   agent          adapter name (D-018); "none" = deterministic persona, no key
