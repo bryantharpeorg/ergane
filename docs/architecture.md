@@ -408,7 +408,7 @@ tree, merges on green. Temporal's merge role shrinks to: enqueue → await outco
 (or route to `debugger`) on conflict/red. Unmerged work from failed/killed nodes is
 preserved on its branch (salvage, §5.3) rather than deleted.
 
-**Implemented** (US1 — the landing path, spec `specs/003-merge-queue/`). The shipped layout is:
+**Implemented** (US1 — the landing path; US2 — rejection recovery, spec `specs/003-merge-queue/`). The shipped layout is:
 
 ```text
 factory/
@@ -418,7 +418,7 @@ factory/
 │   ├── gh.py              # GhClient — the only module that spawns gh; failure taxonomy
 │   └── messages.py        # pure: PR title + body renderer (deterministic, secret-free)
 └── activities/
-    └── merge_activities.py  # prepare / open / enqueue / poll / disable — the landing surface
+    └── merge_activities.py  # prepare / open / enqueue / poll / disable / sync — the landing + recovery surface
 ```
 
 The landing lifecycle, in the plan's order — salvage first, then push, then open, then
@@ -443,6 +443,34 @@ enqueue, then poll-until-terminal:
 6. **`poll_landing`** — one `gh pr view --json …` → `PrSnapshot`, fed to the classifier. The
    poll loop runs as a workflow background task (`asyncio.ensure_future`), so two sibling
    nodes can both be enqueued and the queue, not the factory, orders them (US1-S4).
+
+**Rejection recovery** (US2 — FR-005/006/007/008, spec `specs/003-merge-queue/`). A landing
+rejected with a recovery-eligible outcome (`CHECKS_FAILED` or `CONFLICT`) parks the node
+(`landing.state == REJECTED`, never terminal) and the main loop's scheduler picks it back up
+for a recovery cycle, **outranking** a fresh PENDING node — stranded verified work is the
+more expensive kind of idle. One cycle:
+
+1. **`sync_landing_branch`** (`merge_activities.py` → `worktree.sync_with_target`) — fetch
+   `origin/<default>` and merge it *into* the node branch in the existing worktree: a merge,
+   never a rebase, so the re-push stays fast-forward and the commit the queue was deciding
+   on stays reachable (FR-008). Clean → the merged-in target head becomes the new `base_ref`
+   for re-verification (D-027 extended); a conflict reports the conflicted file list.
+2. **Route on the sync** — a clean `CHECKS_FAILED` re-enters the inner loop as the node's own
+   persona; a `CONFLICT` (or a sync that conflicts) hands the cycle to the `debugger`
+   persona with the conflicted files in the prompt (FR-006). The recovery attempt is an
+   ordinary bracketed attempt (fresh key, persona in the alias, D-026) with the queue
+   rejection quoted into a landing-evidence prompt section.
+3. **Re-enqueue on PASS** — salvage, re-render the body, re-push, and re-enqueue the *same*
+   PR (`open_landing_pr` reuses it), starting a fresh poll; `recovery_cycles += 1`.
+4. **Exhaustion** — a cycle that fails again, `recovery_cycles >= max_recovery_cycles`, a
+   refused sync, or a refused re-enqueue → a landing escalation (§9) with the queue history
+   rendered and choices `[RETRY | KILL | PAUSE_EPIC]` (FR-007). `RETRY` grants exactly one
+   more cycle; 1h silence or `KILL` ends the node KILLED with the branch preserved; a
+   `PAUSE_EPIC` parks the node and pauses the epic.
+
+A PR closed manually without merging is an operator kill: the node ends KILLED, the branch is
+preserved, and the notifier sends the **manual-intervention notice** (notify-only, no
+buttons) rather than an escalation — a fact to be told, not a decision to be asked.
 
 **Outcome classification** (`classify.py`, pure — the reconciliation answer to FR-004 and
 every spec edge case; polling only, no webhooks, matching the D-011 no-public-endpoint
@@ -531,8 +559,12 @@ factory/
   button per offered choice (`RETRY` / `KILL` / `PAUSE_EPIC`).
 
 Escalations expire after 1h and **default to kill** — but only after salvage (principle VI),
-which the node-lifecycle owner performs. Used by: verify-fail-after-retries (§6), and merge
-conflict/red (§7) once component 3 lands.
+which the node-lifecycle owner performs. Used by: verify-fail-after-retries (§6), landing
+escalations on recovery exhaustion / refused sync or re-enqueue (§7, US2), and the
+manual-intervention notice when an operator closes a landing PR without merging — all rendered
+through `notify.messages`. The landing escalation is the *escalation* form (`RETRY`/`KILL`/
+`PAUSE_EPIC` inline buttons); the manual-intervention notice is the *notice* form
+(no buttons — a fact to be told, not a decision to be asked).
 
 ## 10. Security notes
 
