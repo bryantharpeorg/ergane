@@ -68,6 +68,7 @@ from factory.workgraph.worktree import (
     capture_base_ref,
     diff,
     ensure,
+    push_branch,
     remove,
     salvage,
 )
@@ -563,3 +564,99 @@ def test_diff_raises_when_the_worktree_is_gone(
         diff(factory_root / "worktrees" / EPIC / NODE, base_ref="HEAD")
 
     assert str(factory_root / "worktrees" / EPIC / NODE) in str(raised.value)
+
+
+# --- push_branch (US1 landing, plan.md § US1) ----------------------------------
+
+
+@pytest.fixture
+def origin_repo(repo: Path, tmp_path: Path) -> tuple[Path, Path]:
+    """A target repo with a bare `origin` remote it can push to.
+
+    The landing path pushes the node branch to the target clone's `origin`
+    (FR-001: `gh pr merge --auto` runs there, so the branch has to exist there).
+    This fixture gives the target clone a bare remote and keeps a handle on the
+    remote's own path so tests can assert the branch arrived.
+    """
+    bare = tmp_path / "origin.git"
+    git(repo, "init", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    return repo, bare
+
+
+def test_push_branch_pushes_the_node_branch_to_origin(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """`factory/<epic>/<node>` reaches origin as a fast-forward push (FR-001)."""
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    # The node's work holds a commit the branch is at, so the push has content.
+    (Path(prepared.path) / "landed.txt").write_text("work\n", encoding="utf-8")
+    git(prepared.path, "add", "-A")
+    git(prepared.path, "commit", "--quiet", "-m", "node work")
+    branch = prepared.branch
+
+    push_branch(repo, EPIC, NODE, factory_root=factory_root)
+
+    # The branch exists on the bare origin, pointing at the same commit.
+    assert ref_exists(bare, f"refs/heads/{branch}")
+    assert head(bare, f"refs/heads/{branch}") == head(prepared.path)
+
+
+def test_push_branch_never_forces() -> None:
+    """`push` is plain and fast-forward; no `--force` ever (plan.md § US1).
+
+    Recovery syncs the merge target-head into the branch, which keeps pushes
+    fast-forward, so force is never needed — and a `push_branch` that reached for
+    `--force` would overwrite history the queue is still deciding on. (The
+    module's `remove` uses `git worktree remove --force` legitimately; the guard
+    is scoped to the push command itself.)
+    """
+    import inspect
+
+    from factory.workgraph import worktree as worktree_module
+
+    source = inspect.getsource(worktree_module.push_branch)
+    assert "--force" not in source
+
+
+def test_push_branch_refuses_the_default_branch(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """Pushing a branch named the target's default branch is refused (FR-001).
+
+    The node branch is always `factory/<epic>/<node>`; if a node id collided with
+    the default branch's name, pushing it would clobber the repo's trunk. The
+    helper refuses with an error naming the default branch.
+    """
+    repo, _ = origin_repo
+    default = git(repo, "symbolic-ref", "--short", "HEAD").strip()
+    with pytest.raises(WorktreeError) as raised:
+        push_branch(repo, EPIC, default, factory_root=factory_root)
+
+    assert default in str(raised.value)
+
+
+def test_repush_after_new_commits_succeeds(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """A second push after the branch gains commits is a normal fast-forward.
+
+    This is the recovery case: the branch is re-pushed after a sync, and git
+    must accept it because it is strictly ahead of what origin holds.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    (Path(prepared.path) / "one.txt").write_text("1\n", encoding="utf-8")
+    git(prepared.path, "add", "-A")
+    git(prepared.path, "commit", "--quiet", "-m", "first")
+    push_branch(repo, EPIC, NODE, factory_root=factory_root)
+
+    # A second commit lands on the branch, then the re-push.
+    (Path(prepared.path) / "two.txt").write_text("2\n", encoding="utf-8")
+    git(prepared.path, "add", "-A")
+    git(prepared.path, "commit", "--quiet", "-m", "second")
+    push_branch(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert head(bare, f"refs/heads/{prepared.branch}") == head(prepared.path)
