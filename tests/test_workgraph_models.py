@@ -108,6 +108,7 @@ def _node(node_id: str = "us1", **overrides: object) -> WorkNode:
         "spec_ref": f"{FEATURE}:{story_key}",
         "requirement_keys": [story_key],
         "depends_on": [],
+        "depends_on_merged": [],
         "timeout_override_s": None,
     }
     fields.update(overrides)
@@ -259,6 +260,100 @@ def test_a_self_dependency_is_rejected() -> None:
         validate_workgraph(graph, REGISTRY)
 
     assert "us1" in str(excinfo.value)
+
+
+# FR-009: verified vs merged gating — `depends_on_merged` -----------------------
+#
+# A merge-gated edge (`depends_on_merged`) unlocks only when the dependency has
+# *merged*, not merely verified. The validator treats it as a second edge set with
+# the same discipline as `depends_on`: entries must be declared nodes, never the
+# story itself, never also in `depends_on` (an edge gates on one thing — the plan
+# D-025 discipline), and the union of both edge sets must be acyclic.
+
+
+def test_depends_on_merged_defaults_to_empty() -> None:
+    """An existing graph without the key stays valid — the additive default."""
+    node = _node("us1")
+
+    assert node.depends_on_merged == []
+
+
+def test_depends_on_merged_round_trips_as_json() -> None:
+    """`workgraph.json` carries the merge-gated edges across the wire."""
+    graph = _graph(nodes=[_node("us2", depends_on_merged=["us1"])])
+
+    raw = _json_round_trip(graph)
+    rebuilt = WorkGraph(
+        **{**raw, "nodes": [WorkNode(**node) for node in raw["nodes"]]}  # type: ignore[arg-type]
+    )
+
+    assert rebuilt == graph
+    assert raw["nodes"][0]["depends_on_merged"] == ["us1"]
+
+
+def test_a_merge_gated_dependency_must_be_a_declared_node() -> None:
+    """A dangling merge-gated edge can never unlock — reject by both ends."""
+    graph = _graph(nodes=[_node("us1"), _node("us2", depends_on_merged=["us9"])])
+
+    with pytest.raises(WorkGraphError) as excinfo:
+        validate_workgraph(graph, REGISTRY)
+
+    message = str(excinfo.value)
+    assert "us2" in message
+    assert "us9" in message
+
+
+def test_a_self_merge_gated_dependency_is_rejected() -> None:
+    """A node waiting on its own merge could never dispatch (cycle of one)."""
+    graph = _graph(nodes=[_node("us1", depends_on_merged=["us1"])])
+
+    with pytest.raises(WorkGraphError) as excinfo:
+        validate_workgraph(graph, REGISTRY)
+
+    assert "us1" in str(excinfo.value)
+
+
+def test_a_key_in_both_edge_sets_is_rejected() -> None:
+    """One dependency cannot gate on both verified and merged (D-025).
+
+    A key in `depends_on` *and* `depends_on_merged` means the author wrote the
+    same edge twice with two meanings; the scheduler would not know whether to
+    dispatch on verification or on merge. The validator refuses it rather than
+    silently preferring one.
+    """
+    graph = _graph(
+        nodes=[_node("us1"), _node("us2", depends_on=["us1"], depends_on_merged=["us1"])]
+    )
+
+    with pytest.raises(WorkGraphError) as excinfo:
+        validate_workgraph(graph, REGISTRY)
+
+    message = str(excinfo.value)
+    assert "us2" in message
+    assert "us1" in message
+
+
+def test_a_cycle_through_the_union_of_both_edge_sets_is_rejected() -> None:
+    """Cycles may span both edge kinds — each edge is a real dependency.
+
+    `us1` waits on `us3`'s *merge*; `us3` waits on `us2`'s merge; `us2` waits on
+    `us1`'s verification. None of the three can ever run, but no single edge set
+    contains a cycle — the union is what deadlocks, and the validator must see the
+    union.
+    """
+    graph = _graph(
+        nodes=[
+            _node("us1", depends_on_merged=["us3"]),
+            _node("us2", depends_on=["us1"]),
+            _node("us3", depends_on_merged=["us2"]),
+        ]
+    )
+
+    with pytest.raises(WorkGraphError) as excinfo:
+        validate_workgraph(graph, REGISTRY)
+
+    message = str(excinfo.value)
+    assert all(node_id in message for node_id in ("us1", "us2", "us3"))
 
 
 @pytest.mark.parametrize(

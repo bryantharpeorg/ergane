@@ -157,6 +157,7 @@ EXPECTED_NODES = [
         spec_ref=f"{FEATURE}:US1",
         requirement_keys=["US1", "FR-001", "FR-002"],
         depends_on=[],
+        depends_on_merged=[],
         timeout_override_s=None,
     ),
     WorkNode(
@@ -166,6 +167,7 @@ EXPECTED_NODES = [
         spec_ref=f"{FEATURE}:US2",
         requirement_keys=["US2", "FR-003"],
         depends_on=["us1"],
+        depends_on_merged=[],
         timeout_override_s=7200,
     ),
     WorkNode(
@@ -175,6 +177,7 @@ EXPECTED_NODES = [
         spec_ref=f"{FEATURE}:US3",
         requirement_keys=["US3", "FR-004"],
         depends_on=[],
+        depends_on_merged=[],
         timeout_override_s=None,
     ),
 ]
@@ -493,6 +496,103 @@ def test_a_malformed_declaration_is_refused_by_rule(
     ]
 
 
+# FR-009: `depends_on_merged` in the `## Work Graph` grammar --------------------
+#
+# A merge-gated edge is additive (D-025): a story may declare `depends_on_merged`
+# beside `depends_on`, and a graph without it stays valid. It is *optional* — a
+# declaration omitting it is not malformed the way omitting required `depends_on`
+# is — and its entries compile to the node's `depends_on_merged` in id form.
+
+
+def _declares_depends_on_merged() -> str:
+    """The valid block with US2 merge-gated on US1 (and nothing else)."""
+    return work_graph(
+        "US2:\n  depends_on: []\n  depends_on_merged: [US1]\n"
+        "  implements: [FR-003]\n"
+    )
+
+
+def test_depends_on_merged_derives_onto_the_node() -> None:
+    """`depends_on_merged: [US1]` compiles to `["us1"]` — the scheduler's id."""
+    graph = derive_text(respecified(_declares_depends_on_merged()))
+
+    (us2,) = [node for node in graph.nodes if node.id == "us2"]
+    assert us2.depends_on_merged == ["us1"]
+
+
+def test_a_node_without_depends_on_merged_stays_empty() -> None:
+    """The key is optional: a declaration without it derives an empty tuple."""
+    graph = derive_text(respecified(work_graph(
+        "US2:\n  depends_on: [US1]\n  implements: [FR-003]\n"
+    )))
+
+    (us1,) = [node for node in graph.nodes if node.id == "us1"]
+    assert us1.depends_on_merged == []
+
+
+def test_an_unknown_merge_gated_dependency_is_rejected() -> None:
+    """`depends_on_merged: [US9]` names no declared story — refuse, emit nothing."""
+    block = work_graph(
+        "US2:\n  depends_on: [US1]\n  depends_on_merged: [US9]\n"
+        "  implements: [FR-003]\n"
+    )
+
+    with pytest.raises(DerivationError) as caught:
+        derive_text(respecified(block))
+
+    assert [(fault.rule, fault.story) for fault in caught.value.rejections] == [
+        ("depends_on_merged", "US2")
+    ]
+
+
+def test_a_self_merge_gated_dependency_is_rejected() -> None:
+    """`depends_on_merged: [US2]` on US2 could never dispatch (cycle of one)."""
+    block = work_graph(
+        "US2:\n  depends_on: [US1]\n  depends_on_merged: [US2]\n"
+        "  implements: [FR-003]\n"
+    )
+
+    with pytest.raises(DerivationError) as caught:
+        derive_text(respecified(block))
+
+    assert [(fault.rule, fault.story) for fault in caught.value.rejections] == [
+        ("depends_on_merged", "US2")
+    ]
+
+
+def test_a_key_in_both_edge_sets_is_rejected() -> None:
+    """One dependency cannot gate on both verified and merged (D-025)."""
+    block = work_graph(
+        "US2:\n  depends_on: [US1]\n  depends_on_merged: [US1]\n"
+        "  implements: [FR-003]\n"
+    )
+
+    with pytest.raises(DerivationError) as caught:
+        derive_text(respecified(block))
+
+    assert [(fault.rule, fault.story) for fault in caught.value.rejections] == [
+        ("depends_on_merged", "US2")
+    ]
+
+
+def test_a_cycle_through_the_union_of_both_edge_sets_is_rejected() -> None:
+    """A cycle may span both edge kinds — `US1 ⇄ US2` across verified/merged."""
+    block = (
+        "US1:\n  depends_on: []\n  depends_on_merged: [US2]\n"
+        "  implements: [FR-001, FR-002]\n"
+        "US2:\n  depends_on: [US1]\n  depends_on_merged: []\n"
+        "  implements: [FR-003]\n"
+        "US3:\n  depends_on: []\n  implements: [FR-004]\n"
+    )
+
+    with pytest.raises(DerivationError) as caught:
+        derive_text(respecified(block))
+
+    faults = caught.value.rejections
+    assert (faults[0].rule, faults[0].story) == ("acyclic", "US1")
+    assert "US1" in str(faults[0]) and "US2" in str(faults[0])
+
+
 # The crossover epic, for real (005 T030) -------------------------------------
 #
 # Everything above compiles fixtures written to exercise the grammar. This
@@ -558,6 +658,7 @@ def test_the_crossover_epic_compiles_into_exactly_three_nodes() -> None:
                     "FR-009",
                 ],
                 depends_on=[],
+                depends_on_merged=[],
                 timeout_override_s=None,
             ),
             WorkNode(
@@ -567,6 +668,7 @@ def test_the_crossover_epic_compiles_into_exactly_three_nodes() -> None:
                 spec_ref=f"{CROSSOVER}:US2",
                 requirement_keys=["US2", "FR-005", "FR-006", "FR-007", "FR-008"],
                 depends_on=["us1"],
+                depends_on_merged=[],
                 timeout_override_s=None,
             ),
             WorkNode(
@@ -576,6 +678,7 @@ def test_the_crossover_epic_compiles_into_exactly_three_nodes() -> None:
                 spec_ref=f"{CROSSOVER}:US3",
                 requirement_keys=["US3", "FR-010"],
                 depends_on=[],
+                depends_on_merged=[],
                 timeout_override_s=None,
             ),
         ],

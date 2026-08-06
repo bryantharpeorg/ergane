@@ -183,6 +183,7 @@ EXPECTED_ARTIFACT: dict[str, Any] = {
             "spec_ref": f"{EPIC_ID}:US1",
             "requirement_keys": ["US1", "FR-001", "FR-002"],
             "depends_on": [],
+            "depends_on_merged": [],
             "timeout_override_s": None,
         },
         {
@@ -192,6 +193,7 @@ EXPECTED_ARTIFACT: dict[str, Any] = {
             "spec_ref": f"{EPIC_ID}:US2",
             "requirement_keys": ["US2", "FR-003"],
             "depends_on": ["us1"],
+            "depends_on_merged": [],
             "timeout_override_s": 7200,
         },
         {
@@ -201,6 +203,7 @@ EXPECTED_ARTIFACT: dict[str, Any] = {
             "spec_ref": f"{EPIC_ID}:US3",
             "requirement_keys": ["US3", "FR-004"],
             "depends_on": [],
+            "depends_on_merged": [],
             "timeout_override_s": None,
         },
     ],
