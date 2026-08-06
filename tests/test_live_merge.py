@@ -315,6 +315,156 @@ def test_no_credential_escaped_into_the_public_pr_body(live_merge: LiveMerge) ->
     assert "/.factory/transcripts/" not in body
 
 
+def test_a_conflicting_pair_is_classified_conflict_and_the_loser_survives(
+    live_config: LiveMergeConfig,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """US2's IT: manufacture a conflicting pair, land the winner, the loser is CONFLICT.
+
+    Two node branches edit the same file in different ways, so neither can rebase
+    onto the other's merge. Both PRs are enqueued; the winner lands through the
+    real queue. The loser — polled through the real `poll_landing`/`classify`
+    path after the winner merges — is read as CONFLICT (the dirty merge state),
+    and its branch is left untouched: the commit the queue is not deciding on
+    stays reachable (FR-008). This proves *detection*; the full recovery drive
+    stays in the time-skipping suite (plan.md § US2).
+    """
+    repo = live_config.repo
+    root = tmp_path_factory.mktemp("live-conflict")
+    factory_root = root / ".factory"
+    os.environ["FACTORY_ROOT"] = str(factory_root)
+
+    target_file = repo / "conflict-me.txt"
+    winner = "factory/live-conflict/winner"
+    loser = "factory/live-conflict/loser"
+    env = ActivityEnvironment()
+
+    winner_number: int | None = None
+    loser_number: int | None = None
+    try:
+        _make_branch_editing(repo, winner, target_file, "winner's line\n")
+        winner_number = asyncio.run(
+            _open_pr(env, live_config, winner, "live-conflict winner")
+        )
+        _make_branch_editing(repo, loser, target_file, "loser's line\n")
+        loser_number = asyncio.run(
+            _open_pr(env, live_config, loser, "live-conflict loser")
+        )
+
+        # Land the winner; the loser's branch is now dirty against main.
+        landing = Landing(node_id="winner", branch=winner, pr_number=winner_number)
+        config_lc = LandingConfig(
+            merge_method="squash",
+            poll_interval_s=POLL_INTERVAL_S,
+            stall_after_s=STALL_AFTER_S,
+        )
+        deadline = time.time() + STALL_AFTER_S
+        winner_outcome: QueueOutcome | None = None
+        while time.time() < deadline:
+            snapshot = asyncio.run(
+                env.run(
+                    poll_landing,
+                    PollLandingInput(pr_number=winner_number, target_repo=str(repo)),
+                )
+            )
+            winner_outcome = classify.classify(
+                snapshot, landing, config_lc, now=snapshot.observed_at
+            )
+            if winner_outcome is not None:
+                break
+            time.sleep(POLL_INTERVAL_S)
+        assert winner_outcome == QueueOutcome.MERGED, (
+            f"winner did not merge (got {winner_outcome}) — the sample repo's "
+            "queue may not be enabled on its default branch"
+        )
+
+        # The loser is now unmergeable: its head and main disagree on the file.
+        loser_landing = Landing(node_id="loser", branch=loser, pr_number=loser_number)
+        loser_snapshot = asyncio.run(
+            env.run(
+                poll_landing,
+                PollLandingInput(pr_number=loser_number, target_repo=str(repo)),
+            )
+        )
+        loser_outcome = classify.classify(
+            loser_snapshot, loser_landing, config_lc, now=loser_snapshot.observed_at
+        )
+        assert loser_outcome == QueueOutcome.CONFLICT, (
+            f"expected the loser to be CONFLICT, got {loser_outcome}"
+        )
+
+        # The loser's branch survives untouched (FR-008): its tip commit is still
+        # reachable by name.
+        worktrees._git(repo, "log", "--oneline", "-1", loser)
+    finally:
+        if "FACTORY_ROOT" in os.environ:
+            del os.environ["FACTORY_ROOT"]
+        if winner_number is not None:
+            _close_pr(repo, winner_number)
+        if loser_number is not None:
+            _close_pr(repo, loser_number)
+
+
+def _make_branch_editing(repo: Path, branch: str, target_file: Path, content: str) -> None:
+    """Create `branch` in the sample repo, editing `target_file` to `content`."""
+    worktrees._git(repo, "checkout", "-b", branch)
+    target_file.write_text(content, encoding="utf-8")
+    worktrees._git(repo, "add", str(target_file))
+    worktrees._git(
+        repo,
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        f"{branch} edits {target_file.name}",
+        env_extra=_FACTORY_IDENTITY,
+    )
+    worktrees._git(repo, "push", "--quiet", "origin", branch)
+    # Back onto the trunk so subsequent branch creations start from a clean HEAD.
+    worktrees._git(repo, "checkout", worktrees._default_branch(repo))
+
+
+def _open_pr(
+    env: ActivityEnvironment, config: LiveMergeConfig, branch: str, title: str
+) -> int:
+    """Open + enqueue a PR for `branch`, returning its number."""
+    body_file = Path(config.repo) / "pr-body.md"
+    body_file.write_text("live-conflict smoke body\n", encoding="utf-8")
+    opened = env.run_sync(
+        open_landing_pr,
+        OpenLandingPrInput(
+            epic_id="live-conflict",
+            node_id=branch.rsplit("/", 1)[-1],
+            target_repo=str(config.repo),
+            base=worktrees._default_branch(config.repo),
+            branch=branch,
+            title=title,
+            body_file=str(body_file),
+        ),
+    )
+    enqueued = env.run_sync(
+        enqueue_landing,
+        EnqueueLandingInput(
+            pr_number=opened.number,
+            merge_method="squash",
+            target_repo=str(config.repo),
+        ),
+    )
+    assert not enqueued.rejected, f"queue refused the enqueue: {enqueued.reason}"
+    return opened.number
+
+
+def _close_pr(repo: Path, pr_number: int) -> None:
+    """Best-effort cleanup: close the PR without deleting its branch (FR-008)."""
+    subprocess.run(
+        ["gh", "pr", "close", str(pr_number), "--comment", "live-conflict smoke cleanup"],
+        capture_output=True,
+        text=True,
+        cwd=str(repo),
+    )
+
+
 # --- the passing result ------------------------------------------------------
 
 
