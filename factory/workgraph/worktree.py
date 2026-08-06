@@ -245,6 +245,62 @@ def salvage(
     return _head(path)
 
 
+def push_branch(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+    remote: str = "origin",
+) -> str:
+    """Push the node's branch to `remote`, returning the pushed commit sha.
+
+    US1's landing path calls this after salvage, before opening the PR: the PR's
+    head branch has to exist on the remote the queue operates against (FR-001 —
+    `gh pr merge --auto` runs in the target clone, whose `origin` is that
+    remote). The push is plain and fast-forward, never forced: recovery syncs the
+    merge target-head *into* the branch, which keeps pushes fast-forward, so
+    force is never needed and would overwrite history the queue is still deciding
+    on (plan.md § US1).
+
+    Structural guard (FR-001): pushing a branch named the target repo's default
+    branch is refused with an error naming it. The node branch is always
+    `factory/<epic>/<node>`; a node id that collided with the trunk's name would
+    clobber the repo's main line, which is not a node's to push over.
+    """
+    repo = Path(target_repo)
+    path = worktree_path(factory_root, epic_id, node_id)
+    branch = branch_name(epic_id, node_id)
+    default = _default_branch(repo)
+
+    if branch == default:
+        raise WorktreeError(
+            f"refusing to push branch '{branch}' to origin: it is the target "
+            f"repo's default branch '{default}' (FR-001) — a node never pushes "
+            "over the trunk"
+        )
+
+    if not path.is_dir():
+        raise WorktreeError(f"node worktree does not exist: {path}")
+
+    _git(repo, "push", "--quiet", remote, branch)
+    return _head(path)
+
+
+def _default_branch(repo: Path) -> str:
+    """The target clone's default branch (its current `HEAD`'s symbolic ref).
+
+    Read live at push time so a repo that renames its trunk mid-epic is refused
+    against the current name, not the one pinned when the worktree was created.
+    """
+    try:
+        return _git(repo, "symbolic-ref", "--short", "HEAD").strip()
+    except WorktreeError:
+        # A detached HEAD has no symbolic ref; fall back to what git calls the
+        # default so the guard still has *a* name to compare against.
+        return _git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+
 def diff(worktree: Path | str, *, base_ref: str, limit: int = DIFF_READ_LIMIT) -> str:
     """Everything the attempt changed, as one patch — what 002's judge scores.
 
