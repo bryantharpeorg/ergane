@@ -14,10 +14,11 @@ Each component is specified first under `specs/` (GitHub Spec Kit, D-020) —
 §6 and §9),
 [005-workgraph-interpreter](../specs/005-workgraph-interpreter/spec.md)
 (**implemented**, §3 and §8),
-[003-merge-queue](../specs/003-merge-queue/spec.md), plus the deferred
+[003-merge-queue](../specs/003-merge-queue/spec.md) (**implemented**, §7), plus
+the deferred
 [004-budget-enforcement](../specs/004-budget-enforcement/spec.md). The merge
-component (§7) does not exist in code yet — it is the first epic the factory
-dispatches against itself (D-024).
+component was the first epic the factory dispatched against itself (D-024);
+its onboarding story (§7) is what makes a repo a valid dispatch target.
 
 ## 1. System overview
 
@@ -408,17 +409,19 @@ tree, merges on green. Temporal's merge role shrinks to: enqueue → await outco
 (or route to `debugger`) on conflict/red. Unmerged work from failed/killed nodes is
 preserved on its branch (salvage, §5.3) rather than deleted.
 
-**Implemented** (US1 — the landing path; US2 — rejection recovery, spec `specs/003-merge-queue/`). The shipped layout is:
+**Implemented** (US1 — the landing path; US2 — rejection recovery; US3 — target-repo
+onboarding, spec `specs/003-merge-queue/`). The shipped layout is:
 
 ```text
 factory/
 ├── mergequeue/
-│   ├── models.py          # QueueOutcome / LandingState / Landing / PrSnapshot / LandingConfig
+│   ├── models.py          # QueueOutcome / LandingState / Landing / PrSnapshot / LandingConfig / TargetRepoProfile / Finding
 │   ├── classify.py        # pure: polled PrSnapshot → QueueOutcome (the reconciliation answer)
-│   ├── gh.py              # GhClient — the only module that spawns gh; failure taxonomy
+│   ├── gh.py              # GhClient — the only module that spawns gh; failure taxonomy; repo_view / rules_for_branch
+│   ├── onboard.py         # pure: evaluate_repo — repo facts → TargetRepoProfile (onboarding verdict + findings)
 │   └── messages.py        # pure: PR title + body renderer (deterministic, secret-free)
 └── activities/
-    └── merge_activities.py  # prepare / open / enqueue / poll / disable / sync — the landing + recovery surface
+    └── merge_activities.py  # prepare / open / enqueue / poll / disable / sync — the landing + recovery surface; validate_target_repo — onboarding
 ```
 
 The landing lifecycle, in the plan's order — salvage first, then push, then open, then
@@ -513,6 +516,20 @@ The interpreter's landing phase and the poll/classify loop are exercised end-to-
 time skipping (US1's interpreter tests); the four activities are proven against a `FakeGh`
 and a scratch repo, and a `@pytest.mark.live_merge` smoke drives one real branch of the D-010
 sample repo through the real queue behind `FACTORY_SAMPLE_REPO`.
+
+**Onboarding** (US3 — FR-010, SC-005). Nothing dispatches against a repo whose queue,
+protection, or required-check configuration does not match `factory.yaml` — that is validated
+live at every epic start. `validate_target_repo` (an activity) gathers the repo's facts
+through `GhClient` — `gh repo view` (visibility, default branch), the merge-queue rule on the
+default branch (`gh api repos/…/rules/branches/…`), falling back to classic branch
+protection when the rule returns no required checks, and the clone's committed
+`factory.yaml` via the 002 loader — and feeds them to the pure `evaluate_repo`
+(`factory/mergequeue/onboard.py`), which renders a `TargetRepoProfile` of named findings.
+A finding fails the epic with a `GRAPH_INVALID` non-retryable error carrying the findings,
+so an operator preflight (`factory-epic onboard <clone>`) and the workflow itself agree on
+what is wrong and what to change: a private repo, a missing merge queue, a declared gate
+with no matching required check, or a required check no gate declares. Deterministic only —
+an LLM judge never enters CI (FR-003).
 
 ## 8. Agents: the adapter seam
 
