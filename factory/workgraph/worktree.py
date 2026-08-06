@@ -108,12 +108,16 @@ class PreparedWorktree:
 
     Crosses the activity boundary as JSON, so `path` is a string rather than a
     `Path`. `base_ref` is the pin described in the module docstring — the same
-    value on the tenth call as on the first.
+    value on the tenth call as on the first. `default_branch` is the target
+    clone's default branch at prepare time — the `gh pr create --base` a landing
+    needs (FR-001), captured here because the workflow cannot run git itself
+    (constitution IV) and this is the same git fact the branch was pinned against.
     """
 
     path: str
     branch: str
     base_ref: str
+    default_branch: str = "main"
 
 
 # Naming (R5) -----------------------------------------------------------------
@@ -186,7 +190,12 @@ def ensure(
         # than rebuild it, pinning to where it stands. Wrong is impossible here —
         # the tree is the node's real state either way — and rebuilding would
         # discard exactly the in-progress work the reuse rule protects.
-        return _record(record_file, PreparedWorktree(str(path), branch, _head(path)))
+        return _record(
+            record_file,
+            PreparedWorktree(
+                str(path), branch, _head(path), _default_branch(repo)
+            ),
+        )
 
     pinned = base_ref or (recorded.base_ref if recorded else capture_base_ref(repo))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,7 +207,10 @@ def ensure(
     else:
         _git(repo, "worktree", "add", "--quiet", "-b", branch, str(path), pinned)
 
-    return _record(record_file, PreparedWorktree(str(path), branch, pinned))
+    return _record(
+        record_file,
+        PreparedWorktree(str(path), branch, pinned, _default_branch(repo)),
+    )
 
 
 def salvage(
@@ -394,6 +406,10 @@ def _read_record(record_file: Path) -> PreparedWorktree | None:
             path=str(payload["path"]),
             branch=str(payload["branch"]),
             base_ref=str(payload["base_ref"]),
+            # A record written before the default-branch capture has no value;
+            # "main" is the universal git default and the landing's base for any
+            # repo that never renamed its trunk.
+            default_branch=str(payload.get("default_branch") or "main"),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

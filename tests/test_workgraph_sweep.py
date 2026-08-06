@@ -1162,8 +1162,8 @@ async def test_every_termination_passes_a_green_node_and_fails_a_red_one(
     )
     status = await run_epic(temporal, green)
 
-    assert states(status)["us1"] == NodeState.PASSED, (
-        f"a {termination.value} attempt with green gates did not pass the node"
+    assert states(status)["us1"] == NodeState.MERGED, (
+        f"a {termination.value} attempt with green gates did not merge the node"
     )
     assert "run_gates" in green.sequence("us1"), (
         f"a {termination.value} attempt skipped verification (FR-012)"
@@ -1216,7 +1216,7 @@ async def test_an_agent_that_claims_success_over_a_failing_gate_still_fails(
     assert states(status) == {
         "us1": NodeState.KILLED,
         "us2": NodeState.KILLED,
-        "us3": NodeState.PASSED,
+        "us3": NodeState.MERGED,
     }
     # Every attempt reported COMPLETED — the default script's termination — and
     # not one of them advanced the node.
@@ -1265,27 +1265,42 @@ def test_a_node_is_picked_in_one_place_and_an_agent_started_in_one_place() -> No
 
 
 def test_readiness_is_every_dependency_in_the_passed_state() -> None:
-    """The predicate itself, read out of the source (FR-003).
+    """The readiness predicate, read out of the source (FR-009).
 
-    Not "no dependency failed" and not "the dependency is terminal": a node is
-    ready when every dependency holds `NodeState.PASSED`, which is the one state
-    an edge may open on.
+    Readiness is `_edges_satisfied`, and it is two conjuncts rather than one: a
+    `depends_on` edge unlocks when every such dependency is *verified* (its ladder
+    PASSed — the fact the edge opens on), and a `depends_on_merged` edge unlocks
+    only when every such dependency has *merged*. Neither conjunct may fall back
+    to a weaker "terminal-ish" test — `_UNREACHABLE` or `!=` would let a killed
+    dependency's landing unlock its dependents, which is exactly the dead-edge
+    case SC-002 exists to shut.
     """
-    ready = function_named(parse(WORKFLOW_MODULE), "_next_ready")
-    [predicate] = [
+    satisfied = function_named(parse(WORKFLOW_MODULE), "_edges_satisfied")
+    calls = [
         node
-        for node in ast.walk(ready)
+        for node in ast.walk(satisfied)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "all"
     ]
-    source = ast.unparse(predicate)
-    assert "NodeState.PASSED" in source
-    assert "depends_on" in source
-    assert not any(
-        weaker in source
-        for weaker in ("_TERMINAL_STATES", "_UNREACHABLE", "!=", "not in")
-    ), f"readiness is decided by {source}"
+    assert len(calls) == 2, (
+        f"_edges_satisfied has {len(calls)} `all(...)` conjuncts; it needs one "
+        "per edge kind (verified-gated `depends_on`, merge-gated `depends_on_merged`)"
+    )
+    sources = [ast.unparse(call) for call in calls]
+    # The verified-gated conjunct keys on `depends_on` and `.verified` — never on
+    # a terminal state, which a verified dependency leaves the moment it lands.
+    verified_src = next(src for src in sources if "depends_on_merged" not in src)
+    assert "depends_on" in verified_src
+    assert ".verified" in verified_src
+    # The merge-gated conjunct keys on `depends_on_merged` and `MERGED`.
+    merged_src = next(src for src in sources if "depends_on_merged" in src)
+    assert "depends_on_merged" in merged_src
+    assert "NodeState.MERGED" in merged_src
+    for source in sources:
+        assert not any(
+            weaker in source for weaker in ("_TERMINAL_STATES", "_UNREACHABLE", "!=", "not in")
+        ), f"readiness is decided by {source}"
 
 
 def _diamond() -> list[WorkNode]:
@@ -1306,7 +1321,7 @@ def _diamond() -> list[WorkNode]:
 #: it, and the outcome it has to reach. The expected states are what keeps the
 #: sweep from passing vacuously — an epic that died at its first node dispatches
 #: nothing on a locked edge for the least interesting reason there is.
-_PASSED_ALL = {"us1": NodeState.PASSED, "us2": NodeState.PASSED, "us3": NodeState.PASSED}
+_PASSED_ALL = {"us1": NodeState.MERGED, "us2": NodeState.MERGED, "us3": NodeState.MERGED}
 _KILLED_ALL = {"us1": NodeState.KILLED, "us2": NodeState.KILLED, "us3": NodeState.KILLED}
 
 
@@ -1341,7 +1356,7 @@ def _epics(client: Any) -> list[_Epic]:
             ),
             {"graph": make_graph(_diamond())},
             {
-                "us1": NodeState.PASSED,
+                "us1": NodeState.MERGED,
                 "us2": NodeState.KILLED,
                 "us3": NodeState.KILLED,
             },
@@ -1400,24 +1415,29 @@ async def test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency(
         assert states(status) == expected, f"{label}: ended {states(status)}"
         assert script.observed, f"{label}: nothing was ever dispatched"
         for node_id, seen in script.observed.items():
-            during = states(seen)
+            during = {nid: s for nid, s in seen.nodes.items()}
             for dependency in depends_on[node_id]:
-                assert during[dependency] == NodeState.PASSED, (
+                # A `depends_on` edge opens on *verified* (FR-009), not on the
+                # transient PASSED state — a verified dependency rides its landing
+                # straight off PASSED to ENQUEUED/MERGED, so the edge's lock is
+                # `verified`, and dispatching on an unverified dependency is the
+                # SC-002 violation this sweep exists to catch.
+                assert during[dependency].verified, (
                     f"{label}: {node_id} was dispatched while {dependency} was "
-                    f"{during[dependency]} (SC-002)"
+                    f"{during[dependency].state}, unverified (SC-002)"
                 )
 
-        # And the converse, from the outside: nothing that never became PASSED
-        # has a dependent among the nodes that ran.
-        final = states(status)
+        # And the converse, from the outside: nothing that was never verified has
+        # a dependent among the nodes that ran.
+        final = status.nodes
         dispatched = set(script.dispatched)
         for node_id, dependencies in depends_on.items():
             if node_id not in dispatched:
                 continue
             for dependency in dependencies:
-                assert final[dependency] == NodeState.PASSED, (
+                assert final[dependency].verified, (
                     f"{label}: {node_id} ran although {dependency} ended "
-                    f"{final[dependency]}"
+                    f"{final[dependency].state}, unverified"
                 )
 
         assert "overrun" not in script.calls, f"{label}: the script ran out"

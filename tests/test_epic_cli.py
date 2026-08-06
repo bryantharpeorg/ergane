@@ -64,6 +64,7 @@ module lands, every test here fails at import.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
@@ -82,7 +83,18 @@ from factory.activities.agent_activities import (
     ResolvePersonaInput,
     SalvageWorktreeInput,
 )
+from factory.activities.merge_activities import (
+    DisableAutoMergeInput,
+    EnqueueLandingInput,
+    EnqueueResult,
+    OpenLandingPrInput,
+    OpenLandingPrResult,
+    PollLandingInput,
+    PrepareLandingPrInput,
+    PrepareLandingPrResult,
+)
 from factory.activities.usage_activities import IssueKeyInput, TeardownInput
+from factory.mergequeue.models import PrSnapshot
 from factory.activities.verify_activities import (
     CheckOutputInput,
     RecordedVerification,
@@ -119,6 +131,7 @@ from factory.workgraph.models import (
 )
 from factory.workgraph.worktree import PreparedWorktree, branch_name
 from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
+from tests.test_interpreter import merged_snapshot
 
 CORPUS = Path(__file__).resolve().parent / "fixtures" / "workgraph"
 
@@ -594,6 +607,40 @@ class ScriptedEpic:
         async def remove_worktree(request: RemoveWorktreeInput) -> None:
             return None
 
+        # --- the landing phase (US1): the same happy-path merge the worker's own
+        # registration test drives, so a CLI-run epic completes instead of parking
+        # forever on a live queue.
+        @activity.defn(name="prepare_landing_pr")
+        async def prepare_landing_pr(
+            request: PrepareLandingPrInput,
+        ) -> PrepareLandingPrResult:
+            return PrepareLandingPrResult(
+                body_file=f"/srv/factory/.factory/landing/{request.epic_id}/"
+                f"{request.node_id}/attempt-{request.attempt}.md",
+                title=f"{request.story_title}: {request.feature}",
+            )
+
+        @activity.defn(name="open_landing_pr")
+        async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
+            return OpenLandingPrResult(
+                number=int(hashlib.sha1(request.branch.encode()).hexdigest()[:8], 16)
+                % 1000
+                + 1,
+                url=f"https://github.com/ergane/{request.target_repo}/pull/1",
+            )
+
+        @activity.defn(name="enqueue_landing")
+        async def enqueue_landing(request: EnqueueLandingInput) -> EnqueueResult:
+            return EnqueueResult(rejected=False, reason="")
+
+        @activity.defn(name="poll_landing")
+        async def poll_landing(request: PollLandingInput) -> PrSnapshot:
+            return merged_snapshot()
+
+        @activity.defn(name="disable_auto_merge")
+        async def disable_auto_merge(request: DisableAutoMergeInput) -> None:
+            return None
+
         return [
             resolve_graph,
             resolve_persona,
@@ -609,6 +656,11 @@ class ScriptedEpic:
             teardown_attempt,
             salvage_worktree,
             remove_worktree,
+            prepare_landing_pr,
+            open_landing_pr,
+            enqueue_landing,
+            poll_landing,
+            disable_auto_merge,
         ]
 
 
@@ -1023,25 +1075,34 @@ async def test_status_reads_a_live_epic_mid_flight(
             "us1": {
                 "attempt": 1,
                 "branch": branch_name(EPIC_ID, "us1"),
-                "state": "PASSED",
+                "state": "ENQUEUED",
+                "verified": True,
+                "landing_state": "ENQUEUED",
+                "pr_number": 387,
             },
             "us2": {
                 "attempt": 1,
                 "branch": branch_name(EPIC_ID, "us2"),
                 "state": "RUNNING",
+                "verified": False,
+                "landing_state": None,
+                "pr_number": None,
             },
             "us3": {
                 "attempt": 0,
                 "branch": branch_name(EPIC_ID, "us3"),
                 "state": "PENDING",
+                "verified": False,
+                "landing_state": None,
+                "pr_number": None,
             },
         },
     }
     assert final.json["epic_state"] == "COMPLETED"
     assert [node["state"] for node in final.json["nodes"].values()] == [
-        "PASSED",
-        "PASSED",
-        "PASSED",
+        "MERGED",
+        "MERGED",
+        "MERGED",
     ]
 
 
@@ -1072,7 +1133,14 @@ async def test_status_json_is_the_query_result_verbatim(
             node_id: {
                 "attempt": 1,
                 "branch": branch_name(EPIC_ID, node_id),
-                "state": "PASSED",
+                "state": "MERGED",
+                "verified": True,
+                "landing_state": "MERGED",
+                "pr_number": int(
+                    hashlib.sha1(branch_name(EPIC_ID, node_id).encode()).hexdigest()[:8], 16
+                )
+                % 1000
+                + 1,
             }
             for node_id in NODE_IDS
         },
@@ -1107,7 +1175,7 @@ async def test_the_human_status_is_an_epic_line_then_one_line_per_node(
     printed = node_lines(result.stdout)
     assert [line.split()[0] for line in printed] == NODE_IDS
     for node_id, line in zip(NODE_IDS, printed):
-        assert "PASSED" in line
+        assert "MERGED" in line
         assert "attempt 1" in line
         assert branch_name(EPIC_ID, node_id) in line
 
