@@ -464,3 +464,233 @@ async def test_sync_landing_branch_surfaces_a_git_failure_as_data(
     assert result.refused is True
     assert result.reason != ""
     assert "worktree" in result.reason.lower()
+
+
+# --- validate_target_repo (US3 onboarding, FR-010) ---------------------------
+
+
+def _onboard_client_factory(fake: FakeGh, repo: Path):
+    """A client factory wired to `fake` against `repo`, plus the gh surface scripted.
+
+    `validate_target_repo` resolves the owner/repo slug from the clone's `origin`
+    remote, reads repo facts with `gh repo view`, and reads the merge-queue rule
+    (with a classic-protection fallback) from the rules API. This wires a fake so
+    the activity constructs the exact `GhClient` it would in production.
+    """
+
+    def factory(*, repo_path: str):
+        from factory.mergequeue.gh import GhClient
+
+        return GhClient(repo=repo_path, runner=fake)
+
+    return factory
+
+
+def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main") -> None:
+    """Script `gh` for a fully conforming repo: public, queue enabled, checks match.
+
+    The fixture repo declares gates `lint`, `test`, `typecheck`; the scripted
+    queue requires checks of exactly those names. The rules payload carries a
+    `merge_queue` rule with the required checks and no classic-protection
+    fallback needed. The slug is read from the same `repo view` call (gh resolves
+    the repo from the clone's cwd), so `owner/repo` for the rules API comes from
+    `nameWithOwner`.
+    """
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={
+            "nameWithOwner": "OWNER/REPO",
+            "visibility": "PUBLIC",
+            "defaultBranchRef": default_branch,
+        },
+    )
+    fake.expect_json(
+        "api", f"repos/OWNER/REPO/rules/branches/{default_branch}",
+        payload=[
+            {
+                "type": "merge_queue",
+                "parameters": {"required_status_checks": [
+                    {"context": "lint"},
+                    {"context": "test"},
+                    {"context": "typecheck"},
+                ]},
+            }
+        ],
+    )
+
+
+async def test_validate_target_repo_gathers_repo_facts_and_loads_the_manifest(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conforming repo passes: repo facts + rules + the clone's factory.yaml.
+
+    `validate_target_repo` reads the repo's committed `factory.yaml` (the
+    fixture's declares `lint`/`test`/`typecheck`), gathers visibility and the
+    queue rule from `gh`, and returns a profile whose checks all pass.
+    """
+    fake = FakeGh()
+    _fake_gh_conforming(fake, repo_with_origin)
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.passed is True
+    assert profile.visibility == "PUBLIC"
+    assert profile.default_branch == "main"
+    assert profile.queue_enabled is True
+    assert set(profile.declared_gates) == {"lint", "test", "typecheck"}
+    assert set(profile.required_checks) == {"lint", "test", "typecheck"}
+    checks = [f.check for f in profile.findings]
+    assert "visibility" in checks
+    assert "merge_queue" in checks
+    assert "factory_yaml" in checks
+    assert all(f.passed for f in profile.findings)
+
+
+async def test_validate_target_repo_reports_a_queue_missing_repo_as_failing(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No merge_queue rule on the default branch is a failing finding, not a crash.
+
+    The rules list is empty, so the queue is not enabled and the profile fails
+    with a finding naming the branch.
+    """
+    fake = FakeGh()
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": "main"},
+    )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO/rules/branches/main", payload=[]
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.passed is False
+    queue_finding = next(f for f in profile.findings if f.check == "merge_queue")
+    assert queue_finding.passed is False
+    assert "main" in queue_finding.detail
+
+
+async def test_validate_target_repo_falls_back_to_classic_protection_for_checks(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the rules list carries no required checks, the classic endpoint is asked.
+
+    A repo that enables the queue but configures required checks via the classic
+    branch-protection endpoint carries none in the rules payload; the activity
+    must fall back to `repos/{owner}/{repo}/branches/{default}/protection` for the
+    `required_status_checks.contexts`. The queue rule present but the checks
+    absent means the activity reads them from the classic endpoint.
+    """
+    fake = FakeGh()
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": "main"},
+    )
+    # Rules list has a merge_queue rule but no required checks within it.
+    fake.expect_json(
+        "api", "repos/OWNER/REPO/rules/branches/main",
+        payload=[{"type": "merge_queue", "parameters": {"required_status_checks": []}}],
+    )
+    # Classic-protection fallback names the checks.
+    fake.expect_json(
+        "api", "repos/OWNER/REPO/branches/main/protection",
+        payload={"required_status_checks": {"contexts": ["test"]}},
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    # The fixture declares gates lint/test/typecheck; classic protection only
+    # names `test`, so the declared-but-unchecked gates fail (deterministic-only
+    # and every-gate-must-run).
+    assert profile.passed is False
+    assert profile.required_checks == ("test",)
+    gate_finding = next(f for f in profile.findings if f.check == "gate_check:lint")
+    assert gate_finding.passed is False
+    assert "lint" in gate_finding.detail
+
+
+async def test_validate_target_repo_a_gh_failure_is_a_failed_validation_not_a_pass(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any gh failure yields a failed validation with a finding — never a pass.
+
+    A repo the factory cannot read is a repo the factory must not dispatch
+    against. The activity reports the refusal as data with an actionable finding
+    rather than raising, so the workflow can route it to the operator preflight.
+    """
+    fake = FakeGh()
+    fake.expect_error(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        stderr="gh: not found", returncode=1,
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.passed is False
+    assert any(not f.passed for f in profile.findings)
+    assert any("gh" in f.detail.lower() or "read" in f.detail.lower() for f in profile.findings)
+
+
+async def test_validate_target_repo_loads_the_clones_factory_yaml(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The manifest is read from the target clone itself, via the 002 loader."""
+    fake = FakeGh()
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": "main"},
+    )
+    # The fixture declares gates lint/test/typecheck; script the queue with a
+    # matching rule so the only variable under test is the manifest load.
+    fake.expect_json(
+        "api", "repos/OWNER/REPO/rules/branches/main",
+        payload=[{"type": "merge_queue", "parameters": {"required_status_checks": [
+            {"context": "lint"}, {"context": "test"}, {"context": "typecheck"},
+        ]}}],
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.passed is True
+    assert set(profile.declared_gates) == {"lint", "test", "typecheck"}

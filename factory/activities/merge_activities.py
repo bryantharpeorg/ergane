@@ -57,8 +57,10 @@ from factory.mergequeue.gh import (
     GhError,
 )
 from factory.mergequeue.messages import pr_title, render_pr_body
-from factory.mergequeue.models import PrSnapshot
+from factory.mergequeue.models import PrSnapshot, TargetRepoProfile
+from factory.mergequeue.onboard import evaluate_repo
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
+from factory.verify.factory_yaml import FactoryConfigError, load_factory_config
 from factory.verify.models import VerificationResult
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import transcript_dir
@@ -228,6 +230,19 @@ class SyncLandingBranchResult:
     conflicted_files: tuple[str, ...]
     refused: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class ValidateTargetRepoInput:
+    """Which target clone to validate — US3's preflight (FR-010).
+
+    `validate_target_repo` runs against the clone itself: `gh` resolves the
+    owner/repo from `origin`, and the repo's committed `factory.yaml` is read from
+    the same clone. There is nothing else to say — the repo path is the whole
+    input, which is what makes onboarding a property of a repo, not of a payload.
+    """
+
+    target_repo: str
 
 
 #: The seam — a factory `(repo_path: str) -> GhClient`. Production builds a real
@@ -413,4 +428,154 @@ async def sync_landing_branch(request: SyncLandingBranchInput) -> SyncLandingBra
         conflicted_files=result.conflicted_files,
         refused=False,
         reason="",
+    )
+
+
+@activity.defn
+async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
+    """US3's preflight: gather a repo's facts and judge it (FR-010).
+
+    The fact-gathering half of onboarding — `evaluate_repo` (in
+    `factory/mergequeue/onboard.py`) is the pure judgment. This activity reads
+    the world at one moment:
+
+    - the repo's identity, visibility and default branch from `gh repo view`;
+    - the merge-queue rule's required checks from the rules API, falling back to
+      classic branch protection when the rules list carries none (plan.md § US3);
+    - the clone's committed `factory.yaml` via the 002 loader.
+
+    Every `gh` failure is returned as a failed validation with a finding — never
+    a pass — and a malformed manifest is a failing `factory_yaml` finding
+    carrying the loader's error, never a shrug (FR-010, spec US3 AS2). The
+    profile's `passed` is the conjunction of its findings; a failing profile
+    blocks dispatch before any key is issued or worktree created (SC-005).
+    """
+    client = _client(repo_path=request.target_repo)
+    manifest = Path(request.target_repo) / "factory.yaml"
+
+    try:
+        config = load_factory_config(manifest)
+        declared_gates = tuple(config.gates.keys())
+        manifest_error = None
+    except FactoryConfigError as error:
+        declared_gates = ()
+        manifest_error = str(error)
+
+    try:
+        repo_view = client.repo_view()
+        owner_repo = str(repo_view.get("nameWithOwner") or "")
+        visibility = str(repo_view.get("visibility") or "")
+        default_branch = str(repo_view.get("defaultBranchRef") or "")
+    except GhError as error:
+        return _profile_from_gh_failure(
+            request, visibility="", default_branch="", owner_repo="",
+            manifest_error=manifest_error, declared_gates=declared_gates,
+            error=error,
+        )
+
+    try:
+        rules = client.rules_for_branch(owner_repo, default_branch)
+        queue_enabled, required_checks = _queue_from_rules(rules)
+        if required_checks is None:
+            # The queue is enabled but carries no checks in the rules payload:
+            # fall back to classic branch protection for the required checks.
+            protection = client.classic_branch_protection(owner_repo, default_branch)
+            required_checks = _classic_contexts(protection)
+    except GhError as error:
+        # The rules call failed — a repo the factory cannot read is not dispatchable.
+        return _profile_from_gh_failure(
+            request, visibility=visibility, default_branch=default_branch,
+            owner_repo=owner_repo, manifest_error=manifest_error,
+            declared_gates=declared_gates, error=error,
+        )
+
+    return evaluate_repo(
+        repo=owner_repo or request.target_repo,
+        default_branch=default_branch,
+        visibility=visibility,
+        queue_enabled=queue_enabled,
+        required_checks=required_checks or (),
+        declared_gates=declared_gates,
+        factory_yaml_error=manifest_error,
+    )
+
+
+def _queue_from_rules(rules: list[dict[str, Any]]) -> tuple[bool, list[str] | None]:
+    """The merge-queue rule from a branch-rules list, and its required checks.
+
+    Returns `(queue_enabled, required_checks)`. `required_checks` is `None` when
+    the queue rule is present but names no checks (so the caller falls back to
+    classic protection); it is `[]` when the queue rule is absent.
+    """
+    for rule in rules:
+        if str(rule.get("type") or "") != "merge_queue":
+            continue
+        parameters = rule.get("parameters")
+        if not isinstance(parameters, dict):
+            return True, None
+        checks = parameters.get("required_status_checks")
+        if isinstance(checks, list):
+            contexts = [
+                str(c.get("context") or c) for c in checks if isinstance(c, dict)
+            ]
+            # An empty checks list means the queue rule names no checks — the
+            # repo likely configures them via classic protection, so the caller
+            # falls back (plan.md § US3).
+            return True, contexts or None
+        return True, None
+    return False, []
+
+
+def _classic_contexts(protection: dict[str, Any]) -> list[str]:
+    """The required-check contexts a classic branch-protection payload names."""
+    checks = protection.get("required_status_checks")
+    if isinstance(checks, dict):
+        contexts = checks.get("contexts")
+        if isinstance(contexts, list):
+            return [str(c) for c in contexts]
+    return []
+
+
+def _profile_from_gh_failure(
+    request: ValidateTargetRepoInput,
+    *,
+    visibility: str,
+    default_branch: str,
+    owner_repo: str,
+    manifest_error: str | None,
+    declared_gates: tuple[str, ...],
+    error: GhError,
+) -> TargetRepoProfile:
+    """A failed validation from a `gh` refusal — never a pass (FR-010).
+
+    A repo the factory cannot read is a repo the factory must not dispatch
+    against. The findings carry the refusal and name the remedy; `queue_enabled`
+    is False and the required checks are unknown, so `evaluate_repo` would report
+    them as failing — but the primary finding is the read failure itself.
+    """
+    # The read failure dominates: visibility, queue and checks are all unknown,
+    # so every check a known-value check would need is not judgeable. We return a
+    # profile whose single dominant finding is the refusal, plus the manifest's
+    # own finding if the manifest also failed.
+    from factory.mergequeue.models import Finding
+
+    detail = f"could not read the repo via gh ({error.kind}): {error.stderr_tail or str(error)}"
+    findings = [Finding("repo_read", False, detail)]
+    if manifest_error is not None:
+        findings.append(
+            Finding(
+                "factory_yaml",
+                False,
+                f"factory.yaml failed to load: {manifest_error}",
+            )
+        )
+    return TargetRepoProfile(
+        repo=owner_repo or request.target_repo,
+        default_branch=default_branch,
+        visibility=visibility,
+        queue_enabled=False,
+        required_checks=(),
+        declared_gates=declared_gates,
+        findings=tuple(findings),
+        passed=False,
     )
