@@ -69,7 +69,9 @@ _STORY_ID_RE = re.compile(r"^US\d+$")
 #: grammar and are refused rather than ignored — silently dropping a key an
 #: author wrote is how a spec comes to mean something other than it says.
 _REQUIRED_KEYS = ("depends_on", "implements")
-_OPTIONAL_KEYS = ("timeout",)
+#: Optional keys. `depends_on_merged` (FR-009) is optional the way `timeout` is —
+#: a declaration without it stays valid, unlike omitting a required edge.
+_OPTIONAL_KEYS = ("timeout", "depends_on_merged")
 
 #: The persona every derived node names in the minimal interpreter
 #: (contracts/workgraph-schema.md § Derivation semantics).
@@ -180,6 +182,9 @@ def _node(
         spec_ref=f"{feature}:{story_key}",
         requirement_keys=[story_key, *declaration.implements],
         depends_on=[dependency.lower() for dependency in declaration.depends_on],
+        depends_on_merged=[
+            dependency.lower() for dependency in declaration.depends_on_merged
+        ],
         timeout_override_s=declaration.timeout,
     )
 
@@ -430,11 +435,21 @@ def _declaration(
     if len(lists) != len(_REQUIRED_KEYS):
         return None
 
+    merged = body.get("depends_on_merged", [])
+    if not isinstance(merged, list) or not all(isinstance(item, str) for item in merged):
+        rejections.add(
+            "depends_on_merged",
+            key,
+            f"'depends_on_merged' must be a list of ids, got {merged!r}",
+        )
+        return None
+
     return WorkGraphDeclaration(
         story_id=key,
         depends_on=lists["depends_on"],
         implements=lists["implements"],
         timeout=timeout,
+        depends_on_merged=list(merged),
     )
 
 
@@ -479,6 +494,21 @@ def _cross_validate(
 
     rejections.raise_if_any()
 
+    # FR-009: an edge gates on either verification or merge, never both. This is
+    # checked after the individual edge rules so a story that is already broken
+    # is not reported twice for the same overlap.
+    for declaration in declarations.values():
+        overlap = set(declaration.depends_on) & set(declaration.depends_on_merged)
+        if overlap:
+            rejections.add(
+                "depends_on_merged",
+                declaration.story_id,
+                f"lists {_quoted(sorted(overlap))} in both `depends_on` and "
+                "`depends_on_merged` — an edge gates on either verification or "
+                "merge, never both (FR-009)",
+            )
+    rejections.raise_if_any()
+
     cycle = _find_cycle(declarations)
     if cycle is not None:
         rejections.add(
@@ -495,7 +525,12 @@ def _check_edges(
     declarations: Mapping[str, WorkGraphDeclaration],
     rejections: _Rejections,
 ) -> None:
-    """`depends_on` names declared stories, and never the story itself."""
+    """Both edge sets name declared stories, and never the story itself.
+
+    `depends_on` unlocks on verification, `depends_on_merged` (FR-009) on merge —
+    but each is a dependency edge, so each gets the same two rules. A self-edge in
+    either set is a cycle of one; an edge to an undeclared story can never unlock.
+    """
     if declaration.story_id in declaration.depends_on:
         rejections.add(
             "depends_on",
@@ -514,6 +549,27 @@ def _check_edges(
             "depends_on",
             declaration.story_id,
             f"depends on {_quoted(unknown)}, which no declaration names",
+        )
+
+    if declaration.story_id in declaration.depends_on_merged:
+        rejections.add(
+            "depends_on_merged",
+            declaration.story_id,
+            "depends on the merge of itself, so it could never be dispatched",
+        )
+        return
+
+    unknown_merged = [
+        dependency
+        for dependency in declaration.depends_on_merged
+        if dependency not in declarations
+    ]
+    if unknown_merged:
+        rejections.add(
+            "depends_on_merged",
+            declaration.story_id,
+            f"depends on the merge of {_quoted(unknown_merged)}, which no "
+            "declaration names",
         )
 
 
@@ -553,7 +609,8 @@ def _find_cycle(
     def visit(story_id: str) -> list[str] | None:
         path.append(story_id)
         on_path.add(story_id)
-        for dependency in declarations[story_id].depends_on:
+        declaration = declarations[story_id]
+        for dependency in [*declaration.depends_on, *declaration.depends_on_merged]:
             if dependency in on_path:
                 return path[path.index(dependency) :] + [dependency]
             if dependency not in finished:

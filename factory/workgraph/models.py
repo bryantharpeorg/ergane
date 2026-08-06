@@ -114,6 +114,7 @@ class WorkGraphDeclaration:
     depends_on: list[str]
     implements: list[str]
     timeout: int | None = None
+    depends_on_merged: list[str] = field(default_factory=list)
 
 
 # The compiled graph ----------------------------------------------------------
@@ -137,6 +138,11 @@ class WorkNode:
     spec_ref: str
     requirement_keys: list[str]
     depends_on: list[str]
+    #: Merge-gated edges (FR-009). Unlike `depends_on` — whose edge unlocks once
+    #: the dependency is *verified* — an edge here unlocks only when the dependency
+    #: has *merged*. Additive (D-025): a graph without the key stays valid, so the
+    #: default is empty and every existing graph is unchanged.
+    depends_on_merged: list[str] = field(default_factory=list)
     timeout_override_s: int | None = None
 
 
@@ -315,6 +321,21 @@ def validate_workgraph(graph: WorkGraph, personas: Mapping[str, Persona]) -> Non
                     f"node '{node.id}' depends on '{dependency}', which is not a "
                     "declared node"
                 )
+        for dependency in node.depends_on_merged:
+            if dependency not in declared:
+                raise fail(
+                    f"node '{node.id}' depends on the merge of '{dependency}', "
+                    "which is not a declared node"
+                )
+
+    for node in graph.nodes:
+        overlap = set(node.depends_on) & set(node.depends_on_merged)
+        if overlap:
+            raise fail(
+                f"node '{node.id}' lists {sorted(overlap)} in both `depends_on` "
+                "and `depends_on_merged` — an edge gates on either verification "
+                "or merge, never both (FR-009)"
+            )
 
     cycle = _find_cycle(graph.nodes)
     if cycle is not None:
@@ -355,7 +376,11 @@ def _find_cycle(nodes: list[WorkNode]) -> list[str] | None:
     listing the whole graph would leave the reader to re-derive the cycle by hand,
     which is the work this just did.
     """
-    adjacency = {node.id: node.depends_on for node in nodes}
+    # The union of both edge sets: a merge-gated edge is as real a dependency as
+    # a verified one, and a cycle that spans the two is still a deadlock.
+    adjacency = {
+        node.id: [*node.depends_on, *node.depends_on_merged] for node in nodes
+    }
     finished: set[str] = set()
     path: list[str] = []
     on_path: set[str] = set()
