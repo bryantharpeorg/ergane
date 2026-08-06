@@ -106,12 +106,14 @@ ACTIVITIES = [
     # 002 — the human in the loop.
     notify_activities.send_escalation,
     notify_activities.expire_escalation,
-    # 003 — the landing surface: prepare the body, push, open, enqueue, poll, disable.
+    # 003 — the landing surface: prepare the body, push, open, enqueue, poll,
+    # disable, and US2's recovery sync.
     merge_activities.prepare_landing_pr,
     merge_activities.open_landing_pr,
     merge_activities.enqueue_landing,
     merge_activities.poll_landing,
     merge_activities.disable_auto_merge,
+    merge_activities.sync_landing_branch,
 ]
 
 

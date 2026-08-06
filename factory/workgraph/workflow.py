@@ -127,11 +127,13 @@ with workflow.unsafe.imports_passed_through():
         OpenLandingPrInput,
         PollLandingInput,
         PrepareLandingPrInput,
+        SyncLandingBranchInput,
         disable_auto_merge,
         enqueue_landing,
         open_landing_pr,
         poll_landing,
         prepare_landing_pr,
+        sync_landing_branch,
     )
     from factory.activities.notify_activities import (
         DEFAULT_CHOICES,
@@ -168,7 +170,7 @@ with workflow.unsafe.imports_passed_through():
         ObservedOutcome,
         QueueOutcome,
     )
-    from factory.notify.messages import render_history
+    from factory.notify.messages import render_history, render_landing_history
     from factory.notify.service import SIGNAL_NAME
     from factory.usage.models import KeyLease, Termination, UsageSnapshot
     from factory.verify.ladder import DEBUGGER_PERSONA, next_action
@@ -179,6 +181,7 @@ with workflow.unsafe.imports_passed_through():
         JudgeOutcome,
         JudgeVerdict,
         NextAction,
+        OverallVerdict,
         VerificationConfig,
         VerificationForm,
         VerificationResult,
@@ -196,7 +199,7 @@ with workflow.unsafe.imports_passed_through():
         WorkGraph,
         WorkNode,
     )
-    from factory.workgraph.prompt import AttemptEvidence, build_attempt_prompt
+    from factory.workgraph.prompt import AttemptEvidence, LandingEvidence, build_attempt_prompt
     from factory.workgraph.worktree import PreparedWorktree, branch_name
 
 #: The one task queue every epic and every activity of this component runs on
@@ -557,22 +560,28 @@ class EpicWorkflow:
                 if not self._kill_requested:
                     self._epic_state = EpicState.RUNNING
                 continue
+            recovery = self._next_recovery(resolved)
+            if recovery is not None:
+                await self._run_recovery(recovery, request, sources, judge)
+                continue
             ready = self._next_ready(resolved)
             if ready is None:
-                break
+                # No recovery pending and no fresh node ready. That is only the
+                # epic's end when every landing is terminal (MERGED or KILLED);
+                # a landing still riding the queue — or about to be rejected into
+                # a recovery — parks the scheduler until the queue is done with
+                # it (US1-S4), and a REJECTED landing wakes it into a recovery.
+                if self._all_landings_terminal():
+                    break
+                await workflow.wait_condition(
+                    lambda: self._all_landings_terminal()
+                    or self._next_recovery(resolved) is not None
+                    or self._kill_requested
+                )
+                continue
             await self._run_node(ready, request, sources, judge)
             if self._nodes[ready.node.id].state != NodeState.PASSED:
                 self._lock_out_dependents(resolved)
-
-        # The loop ends when no node is ready, which is no longer the epic's end:
-        # every node is terminal (or locked out), but a verified node's landing
-        # may still be riding the queue. So the scheduler parks here until every
-        # node terminal AND every landing terminal — the epic is COMPLETED only
-        # when the queue has finished with every landing it was given (US1-S4).
-        if not self._kill_requested:
-            await workflow.wait_condition(
-                lambda: self._all_landings_terminal() or self._kill_requested
-            )
 
         if self._kill_requested:
             await self._kill_landings(graph.target_repo)
@@ -603,8 +612,29 @@ class EpicWorkflow:
                 ) from exc
             raise
 
+    def _next_recovery(self, resolved: Sequence[ResolvedNode]) -> ResolvedNode | None:
+        """The first node whose landing is REJECTED and pending a recovery cycle.
+
+        A rejection parks the node (`landing.state == REJECTED`) but never makes
+        it terminal — the recovery routing (US2) owns what happens next. Recovery
+        outranks a fresh PENDING node in the scheduler: stranded verified work is
+        the more expensive kind of idle (plan.md § US2). Declaration order is the
+        tiebreak, so recovery order is the authored order (R10).
+        """
+        for item in resolved:
+            landing = self._nodes[item.node.id].landing
+            if landing is not None and landing.state == LandingState.REJECTED:
+                return item
+        return None
+
     def _next_ready(self, resolved: Sequence[ResolvedNode]) -> ResolvedNode | None:
-        """The first PENDING node whose every dependency has satisfied its edge.
+        """The next node to dispatch: a pending recovery, then the first PENDING
+        node whose every dependency has satisfied its edge.
+
+        Recovery outranks fresh dispatch (plan.md § US2): a REJECTED landing is
+        verified work that must not sit idle while independent fresh nodes run.
+        The recovery ordering is a pure function of landing state, so it is
+        replay-identical like the rest of the scheduler (SC-001).
 
         Two kinds of edge, distinguished by what unlocks them (FR-009): a
         `depends_on` edge unlocks when the dependency is *verified* — its ladder
@@ -619,6 +649,9 @@ class EpicWorkflow:
         pure function of graph data and node state is also what makes scheduling
         replay-identical (SC-001).
         """
+        recovery = self._next_recovery(resolved)
+        if recovery is not None:
+            return recovery
         for item in resolved:
             if self._nodes[item.node.id].state != NodeState.PENDING:
                 continue
@@ -795,6 +828,11 @@ class EpicWorkflow:
             **_GIT,
         )
         record.base_ref = prepared.base_ref
+        # The recovery re-entry (US2) re-verifies this same tree against this same
+        # pin and these same goalposts, so they live on the record rather than
+        # only in this method's locals.
+        record.prepared = prepared
+        record.criteria = criteria
 
         results: list[VerificationResult] = []
         evidence: list[AttemptEvidence] = []
@@ -1534,6 +1572,373 @@ class EpicWorkflow:
             ),
             **_GIT,
         )
+
+    # --- the landing-recovery routing (US2, FR-005/006/007/008) ---------------
+
+    async def _run_recovery(
+        self,
+        resolved: ResolvedNode,
+        request: EpicInput,
+        sources: PromptSources,
+        judge: ResolvedPersona,
+        *,
+        granted: bool = False,
+    ) -> None:
+        """One recovery cycle for a REJECTED landing, or escalate (US2).
+
+        The main loop schedules this for a node whose landing is REJECTED
+        (`_next_recovery`), outranking fresh nodes. A recovery cycle routes on
+        the last classified outcome:
+
+        - **CHECKS_FAILED** → sync the branch onto the new target head; a clean
+          sync re-enters the inner loop as the node's own persona.
+        - **CONFLICT** (or a sync that conflicts) → the `debugger` persona gets
+          the cycle, with the conflicted files in the prompt (FR-006).
+        - **Exhaustion** (`recovery_cycles >= max_recovery_cycles`, or a cycle
+          that fails again, or a refused sync) → Telegram escalation with the
+          queue history rendered and choices `[RETRY | KILL | PAUSE_EPIC]`
+          (FR-007). `RETRY` grants exactly one more cycle; 1h silence or `KILL`
+          ends the node KILLED, branch preserved (FR-008); `PAUSE_EPIC` parks
+          the node and pauses the epic.
+
+        A recovery cycle that PASSes re-pushes + re-enqueues the same PR and
+        starts a fresh poll — the landing is back on the queue (FR-005).
+        """
+        graph = request.graph
+        record = self._nodes[resolved.node.id]
+        landing = record.landing
+        if landing is None:
+            return
+        config = request.landing_config
+
+        # Exhaustion gates the automatic cycle. An operator's RETRY is not an
+        # automatic cycle — it is one more cycle, granted by hand.
+        if not granted and landing.recovery_cycles >= config.max_recovery_cycles:
+            resolution = await self._escalate_landing(graph, request, record)
+            await self._apply_landing_resolution(
+                graph, request, resolved, resolution, sources, judge
+            )
+            return
+
+        record.landing = replace(
+            landing, recovery_cycles=landing.recovery_cycles + 1
+        )
+        last = record.landing.outcomes[-1].outcome
+
+        # The sync runs first for both recovery-eligible rejections: a
+        # CHECKS_FAILED needs the new target head merged in, and a CONFLICT sync
+        # is what surfaces the conflicted file list the debugger resolves.
+        sync = await workflow.execute_activity(
+            sync_landing_branch,
+            SyncLandingBranchInput(
+                epic_id=graph.epic_id,
+                node_id=record.node_id,
+                target_repo=graph.target_repo,
+            ),
+            **_GIT,
+        )
+        if sync.refused:
+            # A recovery that could not run is not a silent pass — it escalates.
+            resolution = await self._escalate_landing(graph, request, record)
+            await self._apply_landing_resolution(
+                graph, request, resolved, resolution, sources, judge
+            )
+            return
+
+        # Carry the new branch point into re-verification (D-027 extended): the
+        # diff and the judge see only the node's own work above the merged-in
+        # target head.
+        prepared = replace(record.prepared, base_ref=sync.base_ref)
+        record.base_ref = sync.base_ref
+        record.prepared = prepared
+
+        if sync.clean:
+            persona = resolved.node.persona
+            conflicted_files = ()
+        else:
+            persona = DEBUGGER_PERSONA
+            conflicted_files = sync.conflicted_files
+
+        result = await self._recovery_attempt(
+            graph,
+            request,
+            resolved,
+            sources,
+            judge,
+            prepared,
+            persona,
+            conflicted_files,
+        )
+        if result is not None:
+            await self._reenqueue(
+                graph, request, resolved, sources, judge, record, prepared, result
+            )
+            return
+
+        # The recovery cycle failed again — exhaustion.
+        resolution = await self._escalate_landing(graph, request, record)
+        if resolution == EscalationChoice.RETRY.value:
+            # Exactly one more cycle, granted by the operator.
+            await self._run_recovery(
+                resolved, request, sources, judge, granted=True
+            )
+            return
+        await self._apply_landing_resolution(
+            graph, request, resolved, resolution, sources, judge
+        )
+
+    async def _recovery_attempt(
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        resolved: ResolvedNode,
+        sources: PromptSources,
+        judge: ResolvedPersona,
+        prepared: PreparedWorktree,
+        persona: str,
+        conflicted_files: tuple[str, ...],
+    ) -> VerificationResult | None:
+        """One bounded recovery attempt: fresh key, landing evidence, then verify.
+
+        The recovery attempt is an ordinary bracketed attempt (constitution V):
+        a fresh key with the persona in the alias (D-026), the queue rejection
+        quoted into the prompt, and the full 002 ladder authority (gates →
+        output → judge). Returns the `VerificationResult` on PASS, `None` on a
+        failed or killed attempt — the caller routes a failure to escalation.
+        """
+        node = resolved.node
+        record = self._nodes[node.id]
+        landing = record.landing
+
+        record.attempt += 1
+        prompt = build_attempt_prompt(
+            node=node,
+            epic_id=graph.epic_id,
+            spec_text=sources.spec_text,
+            plan_text=sources.plan_text,
+            tasks_text=sources.tasks_text,
+            standards=sources.standards,
+            prior_attempts=(),
+            landing_evidence=LandingEvidence(
+                outcome=landing.outcomes[-1].outcome,
+                queue_history=landing.outcomes,
+                conflicted_files=conflicted_files,
+            ),
+        )
+
+        lease = await workflow.execute_activity(
+            issue_attempt_key,
+            IssueKeyInput(
+                node_id=node.id,
+                epic_id=graph.epic_id,
+                attempt=record.attempt,
+                persona=persona,
+                spec_ref=node.spec_ref,
+                models=list(resolved.models),
+            ),
+            **_PROXY,
+        )
+        record.last_snapshot = None
+
+        adapter_result = await self._attempt(
+            record,
+            lease,
+            AttemptContext(
+                epic_id=graph.epic_id,
+                node_id=node.id,
+                attempt=record.attempt,
+                prompt=prompt,
+                worktree_path=prepared.path,
+                proxy_url=request.proxy_url,
+                virtual_key=lease.key,
+                model_alias=resolved.model_alias,
+                session_id=str(workflow.uuid4()),
+                timeout_s=resolved.timeout_s,
+            ),
+            poll_interval_s=request.poll_interval_s,
+        )
+        if adapter_result is None or self._kill_requested:
+            termination = (
+                adapter_result.termination
+                if adapter_result is not None
+                else Termination.KILLED
+            )
+            await self._teardown(lease, termination, record.last_snapshot)
+            return None
+
+        termination = adapter_result.termination
+        result, _verdict = await self._verify(
+            request, resolved, record.criteria, prepared, record.attempt, judge, None
+        )
+        await self._teardown(lease, termination, record.last_snapshot)
+        record.history.append(
+            AttemptRecord(
+                attempt=record.attempt,
+                persona=persona,
+                verdict=result.verdict,
+                judge_outcome=None if result.judge is None else result.judge.outcome,
+            )
+        )
+        return result if result.verdict == OverallVerdict.PASS else None
+
+    async def _reenqueue(
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        resolved: ResolvedNode,
+        sources: PromptSources,
+        judge: ResolvedPersona,
+        record: NodeRecord,
+        prepared: PreparedWorktree,
+        result: VerificationResult,
+    ) -> None:
+        """Salvage, re-push and re-enqueue the same PR after a recovery PASS (FR-005).
+
+        The recovery PASS re-enters the landing phase exactly as the first
+        landing did: salvage the recovery work (the branch's durable form,
+        constitution VI), re-render the PR body, push the synced branch, and
+        re-enqueue the *same* PR (`open_landing_pr` reuses it idempotently), then
+        start a fresh poll task. `recovery_cycles` was already incremented.
+        """
+        config = request.landing_config
+        node = resolved.node
+        await workflow.execute_activity(
+            salvage_worktree,
+            SalvageWorktreeInput(
+                epic_id=graph.epic_id,
+                node_id=record.node_id,
+                termination=Termination.COMPLETED,
+                attempt=record.attempt,
+            ),
+            **_GIT,
+        )
+        rendered = await workflow.execute_activity(
+            prepare_landing_pr,
+            PrepareLandingPrInput(
+                epic_id=graph.epic_id,
+                node_id=record.node_id,
+                branch=record.branch,
+                attempt=record.attempt,
+                feature=graph.feature,
+                requirement_keys=tuple(node.requirement_keys),
+                result=result,
+                story_title=node.story_key,
+            ),
+            **_FAST,
+        )
+        opened = await workflow.execute_activity(
+            open_landing_pr,
+            OpenLandingPrInput(
+                epic_id=graph.epic_id,
+                node_id=record.node_id,
+                target_repo=graph.target_repo,
+                base=prepared.default_branch,
+                branch=record.branch,
+                title=rendered.title,
+                body_file=rendered.body_file,
+            ),
+            **_GIT,
+        )
+        enqueued = await workflow.execute_activity(
+            enqueue_landing,
+            EnqueueLandingInput(
+                pr_number=opened.number,
+                merge_method=config.merge_method,
+                target_repo=graph.target_repo,
+            ),
+            **_FAST,
+        )
+        if enqueued.rejected:
+            # A refusal is a queue rejection an operator can fix — escalate.
+            resolution = await self._escalate_landing(graph, request, record)
+            await self._apply_landing_resolution(
+                graph, request, resolved, resolution, sources, judge
+            )
+            return
+
+        record.landing = replace(
+            record.landing,
+            enqueued_at=_now(),
+            state=LandingState.ENQUEUED,
+        )
+        record.state = NodeState.ENQUEUED
+        self._landing_tasks[record.node_id] = asyncio.ensure_future(
+            self._poll_landing(graph, record, config)
+        )
+
+    async def _escalate_landing(
+        self, graph: WorkGraph, request: EpicInput, record: NodeRecord
+    ) -> str:
+        """Page a human with the rendered queue history and wait out the hour.
+
+        The landing escalation carries the recovery evidence — every queue
+        outcome in order and the recovery cycles spent — through the same
+        `send_escalation` / `expire_escalation` activities the verification
+        ladder uses, with choices `[RETRY | KILL | PAUSE_EPIC]` (FR-007). An
+        undelivered message applies the fail-safe KILL at once; an hour of
+        silence expires to KILL; the store's word on a press that beat the timer
+        by a millisecond still decides (002 R12).
+        """
+        sent = await workflow.execute_activity(
+            send_escalation,
+            SendEscalationInput(
+                workflow_id=workflow.info().workflow_id,
+                epic_id=graph.epic_id,
+                node_id=record.node_id,
+                history_summary=render_landing_history(record.landing),
+                choices=list(DEFAULT_CHOICES),
+                timeout_s=request.config.escalation_timeout_s,
+            ),
+            **_FAST,
+        )
+        if not sent.delivered:
+            return EscalationChoice.KILL.value
+        try:
+            await workflow.wait_condition(
+                lambda: sent.escalation_id in self._resolutions,
+                timeout=timedelta(seconds=request.config.escalation_timeout_s),
+            )
+        except asyncio.TimeoutError:
+            expired = await workflow.execute_activity(
+                expire_escalation,
+                ExpireEscalationInput(escalation_id=sent.escalation_id),
+                **_FAST,
+            )
+            return expired.final_state or EscalationChoice.KILL.value
+        return self._resolutions[sent.escalation_id]
+
+    async def _apply_landing_resolution(
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        resolved: ResolvedNode,
+        resolution: str,
+        sources: PromptSources,
+        judge: ResolvedPersona,
+    ) -> None:
+        """Act on an operator's landing decision (FR-007/008).
+
+        `KILL` (and the hour of silence that defaults to it) ends the node KILLED
+        with the branch preserved — removal takes the directory, never the branch
+        (constitution VI). `PAUSE_EPIC` parks the node and pauses the epic,
+        exactly as the verification ladder's escalation does. `RETRY` is not
+        routed here — the caller grants one more recovery cycle.
+        """
+        record = self._nodes[resolved.node.id]
+        if resolution == EscalationChoice.PAUSE_EPIC.value:
+            self._paused = True
+            self._epic_state = EpicState.PAUSED
+            await self._close_out(
+                graph, resolved.node, record, Termination.KILLED, state=NodeState.FAILED
+            )
+            record.landing = replace(record.landing, state=LandingState.KILLED)
+            record.state = NodeState.FAILED
+            return
+        # KILL, EXPIRED, or anything unoffered — all end the node killed.
+        await self._remove_worktree(graph, record.node_id)
+        record.landing = replace(record.landing, state=LandingState.KILLED)
+        record.state = NodeState.KILLED
+
 
 
 def _now() -> str:

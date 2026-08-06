@@ -137,6 +137,8 @@ from factory.activities.merge_activities import (
     OpenLandingPrInput,
     PollLandingInput,
     PrepareLandingPrInput,
+    SyncLandingBranchInput,
+    SyncLandingBranchResult,
 )
 from factory.activities.notify_activities import (
     ExpiredEscalation,
@@ -161,6 +163,7 @@ from factory.activities.verify_activities import (
 )
 from factory.config import Persona, WriteScope
 from factory.mergequeue.models import (
+    Landing,
     LandingConfig,
     LandingState,
     ObservedOutcome,
@@ -191,6 +194,7 @@ from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
     EpicState,
+    NodeRecord,
     NodeState,
     ResolvedNode,
     ResolvedPersona,
@@ -838,6 +842,13 @@ class ScriptedWorld:
         self.poll_requests: list[PollLandingInput] = []
         self.disable_requests: list[DisableAutoMergeInput] = []
 
+        #: US2 recovery: per-node scripted `sync_landing_branch` answers, and the
+        #: calls logged. A node with no scripted sync answers a clean sync with a
+        #: canned head, so a recovery test that only cares about the ladder
+        #: reaches re-enqueue without scripting git.
+        self.landing_syncs: dict[str, SyncLandingBranchResult] = {}
+        self.sync_requests: list[SyncLandingBranchInput] = []
+
         #: PR number assigned per node by `open_landing_pr`, so `enqueue_landing`
         #: and `poll_landing` know which node a PR belongs to (the workflow's PR
         #: number, reconstructed for the call log's sake).
@@ -953,6 +964,31 @@ class ScriptedWorld:
         number = pr_number if pr_number is not None else self._pr_number_for(node_id)
         self.landing_snapshots[number] = list(snapshots)
         return number
+
+    def script_sync(
+        self,
+        node_id: str,
+        *,
+        clean: bool = True,
+        base_ref: str = "c0ffee",
+        conflicted_files: tuple[str, ...] = (),
+        refused: bool = False,
+        reason: str = "",
+    ) -> None:
+        """Script one node's recovery sync answer (US2, FR-005).
+
+        The default clean answer carries a canned head so a recovery test that
+        only cares about the ladder re-enters without scripting git; a conflict
+        or refusal scripts the shape that routes to the debugger or to
+        escalation.
+        """
+        self.landing_syncs[node_id] = SyncLandingBranchResult(
+            clean=clean,
+            base_ref=base_ref,
+            conflicted_files=conflicted_files,
+            refused=refused,
+            reason=reason,
+        )
 
     # --- the fakes ----------------------------------------------------------
 
@@ -1258,6 +1294,23 @@ class ScriptedWorld:
             script.disable_requests.append(request)
             return DisableOutcome(failed=False, reason="")
 
+        @activity.defn(name="sync_landing_branch")
+        async def sync_landing_branch(
+            request: SyncLandingBranchInput,
+        ) -> SyncLandingBranchResult:
+            script._log("sync_landing_branch", request.node_id)
+            script.sync_requests.append(request)
+            return script.landing_syncs.get(
+                request.node_id,
+                SyncLandingBranchResult(
+                    clean=True,
+                    base_ref="c0ffee",
+                    conflicted_files=(),
+                    refused=False,
+                    reason="",
+                ),
+            )
+
         @activity.defn(name="send_escalation")
         async def send_escalation(request: SendEscalationInput) -> SentEscalation:
             script._log("send_escalation", request.node_id)
@@ -1309,6 +1362,7 @@ class ScriptedWorld:
             enqueue_landing,
             poll_landing,
             disable_auto_merge,
+            sync_landing_branch,
             send_escalation,
             expire_escalation,
         ]
@@ -2650,3 +2704,216 @@ async def test_a_failed_gate_costs_no_diff_and_no_judge_completion(
     assert judge_keys(script) == []
     assert [record.judge for record in script.records] == [None] * 4
     assert [record.judge_unavailable for record in script.records] == [False] * 4
+
+
+# --- US2: queue rejection recovery (FR-005, 006, 007, 008) --------------------
+
+
+async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
+    env: WorkflowEnvironment,
+) -> None:
+    """US2-S1: CHECKS_FAILED re-enters the inner loop and re-enqueues on pass.
+
+    A verified node whose landing the queue rejects for failing checks is not
+    terminal: the branch is synced onto the new target head, the node re-enters
+    the inner loop with the queue rejection quoted in the landing-evidence
+    section, re-verifies through the real ladder path, and re-enqueues on pass.
+    The same PR is reused, and `recovery_cycles` is incremented (FR-006).
+    """
+    script = ScriptedWorld({"us1": [passing(), passing()]}, client=env.client)
+    pr_number = script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    # Two attempts: the first verified, the recovery re-verified.
+    assert attempt_counts(status) == {"us1": 2}
+    assert status.nodes["us1"].landing_state == LandingState.MERGED
+    assert status.nodes["us1"].pr_number == pr_number
+
+    # The recovery cycle ran a sync, then a fresh bracketed attempt.
+    assert [s.node_id for s in script.sync_requests] == ["us1"]
+    assert script.sequence("us1") == [
+        "snapshot_criteria",
+        "prepare_worktree",
+        "issue_attempt_key:implementer",
+        "run_agent_attempt",
+        "run_gates",
+        "check_output",
+        "record_verification",
+        "teardown_attempt:implementer",
+        "salvage_worktree",
+        "prepare_landing_pr",
+        "open_landing_pr",
+        "enqueue_landing",
+        "poll_landing",
+        "sync_landing_branch",
+        "issue_attempt_key:implementer",
+        "run_agent_attempt",
+        "run_gates",
+        "check_output",
+        "record_verification",
+        "teardown_attempt:implementer",
+        "salvage_worktree",
+        "prepare_landing_pr",
+        "open_landing_pr",
+        "enqueue_landing",
+        "poll_landing",
+        "remove_worktree",
+    ]
+    # Two keys, both bracketed (FR-004 / constitution V): one per attempt.
+    assert len(script.key_requests) == 2
+    assert len(script.teardowns) == 2
+    # The recovery attempt carried the queue rejection verbatim (002's feedback
+    # discipline), and only the recovery attempt did.
+    recovery_prompt = script.prompts_for("us1")[1]
+    assert "## Landing rejection" in recovery_prompt
+    assert "CHECKS_FAILED" in recovery_prompt
+    assert "c0ffee" not in recovery_prompt  # the base_ref is carried, not quoted
+
+
+async def test_conflict_routes_one_bounded_cycle_to_the_debugger_persona(
+    env: WorkflowEnvironment,
+) -> None:
+    """US2-S2: a sync conflict gives the debugger one bounded cycle.
+
+    The `debugger` persona runs the recovery attempt (its alias carries the
+    persona, D-026), the prompt names the conflicted files, and on pass the
+    branch re-enqueues. `recovery_cycles` is bounded by the config default of 1.
+    """
+    script = ScriptedWorld({"us1": [passing(), passing()]}, client=env.client)
+    pr_number = script.script_landing("us1", conflict_snapshot(), merged_snapshot())
+    # The queue conflict surfaces as a sync conflict naming the dirty files.
+    script.script_sync("us1", clean=False, base_ref="c0ffee",
+                       conflicted_files=("src/calc.py",))
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    assert status.nodes["us1"].pr_number == pr_number
+    # The recovery attempt ran under the debugger persona's alias (D-026).
+    debugger_keys = [k for k in script.key_requests if k.persona == DEBUGGER_PERSONA]
+    assert len(debugger_keys) == 1
+    recovery_prompt = script.prompts_for("us1")[1]
+    assert "## Landing rejection" in recovery_prompt
+    assert "CONFLICT" in recovery_prompt
+    assert "src/calc.py" in recovery_prompt
+
+
+async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
+    env: WorkflowEnvironment,
+) -> None:
+    """US2-S3: a second failure escalates; RETRY grants one more cycle.
+
+    With `max_recovery_cycles = 1`, a recovery that fails again exhausts the
+    automatic budget and fires the Telegram escalation with the queue history
+    rendered and choices [RETRY | KILL | PAUSE_EPIC] (FR-007). An operator press
+    of RETRY grants exactly one more cycle; a clean re-verify then re-enqueues.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing(), failing(2), passing()]},
+        client=env.client,
+        press=EscalationChoice.RETRY.value,
+    )
+    pr_number = script.script_landing(
+        "us1", checks_failed_snapshot(), merged_snapshot()
+    )
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    assert status.nodes["us1"].pr_number == pr_number
+    assert attempt_counts(status) == {"us1": 3}
+    # One landing escalation fired, carrying the rendered queue history.
+    assert len(script.escalation_requests) == 1
+    history = script.escalation_requests[0].history_summary
+    assert "CHECKS_FAILED" in history
+    assert script.escalation_requests[0].choices == [
+        EscalationChoice.RETRY,
+        EscalationChoice.KILL,
+        EscalationChoice.PAUSE_EPIC,
+    ]
+
+
+async def test_recovery_escalation_kill_preserves_the_branch(
+    env: WorkflowEnvironment,
+) -> None:
+    """US2-S4 / FR-008: kill after exhaustion never deletes the branch.
+
+    An operator KILL on the landing escalation ends the node KILLED; the branch
+    is preserved (no removal activity deletes it — recovery's re-push still
+    reads it). The queue history rendered into the escalation is the recovery
+    evidence.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing(), failing(2)]},
+        client=env.client,
+        press=EscalationChoice.KILL.value,
+    )
+    script.script_landing("us1", checks_failed_snapshot(), checks_failed_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.KILLED}
+    assert status.nodes["us1"].landing_state == LandingState.KILLED
+    # The node's branch is named in the status and survives the sweep.
+    assert status.nodes["us1"].branch == branch_name(EPIC_ID, "us1")
+    # The escalation carried the full queue history, oldest first.
+    [escalation] = script.escalation_requests
+    assert "CHECKS_FAILED" in escalation.history_summary
+    assert escalation.choices == [
+        EscalationChoice.RETRY,
+        EscalationChoice.KILL,
+        EscalationChoice.PAUSE_EPIC,
+    ]
+
+
+async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(
+    env: WorkflowEnvironment,
+) -> None:
+    """A REJECTED node's recovery dispatches before a fresh PENDING node (plan § US2).
+
+    White-box: `_next_ready` is the picker, so this asserts its ordering directly
+    rather than racing the poll task's timer. A node whose landing is REJECTED
+    (verified work stranded) is picked before an independent PENDING node — the
+    more expensive kind of idle.
+    """
+    wf = EpicWorkflow()
+    us1 = make_node("us1", "US1")
+    us3 = make_node("us3", "US3")
+
+    def resolved_for(node: WorkNode) -> ResolvedNode:
+        return ResolvedNode(
+            node=node,
+            model_alias="implementer-alias",
+            models=["implementer-alias"],
+            write_scope="worktree",
+            timeout_s=1,
+        )
+
+    # us1 verified and its landing is rejected, pending recovery.
+    wf._nodes["us1"] = NodeRecord(
+        node_id="us1",
+        branch=branch_name(EPIC_ID, "us1"),
+        state=NodeState.PR_OPEN,
+        verified=True,
+        landing=Landing(
+            node_id="us1",
+            branch=branch_name(EPIC_ID, "us1"),
+            pr_number=1,
+            outcomes=(
+                ObservedOutcome(at="2026-08-06T10:10:00Z", outcome=QueueOutcome.CHECKS_FAILED),
+            ),
+            state=LandingState.REJECTED,
+        ),
+    )
+    # us3 is fresh and ready (no dependencies).
+    wf._nodes["us3"] = NodeRecord(node_id="us3", branch=branch_name(EPIC_ID, "us3"))
+
+    ready = wf._next_ready([resolved_for(us1), resolved_for(us3)])
+
+    assert ready is not None
+    assert ready.node.id == "us1"

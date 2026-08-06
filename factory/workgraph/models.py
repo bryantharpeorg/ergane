@@ -240,6 +240,12 @@ class NodeRecord:
     #: The landing the workflow is driving for this node, `None` until its ladder
     #: PASSes. `None` is also the signal a node never reached the landing phase.
     landing: Landing | None = None
+    #: The worktree and snapshotted criteria the node's attempts run in, captured
+    #: once at first dispatch (FR-013) and reused by a recovery re-entry (US2):
+    #: recovery re-verifies the *same* tree on the synced branch, so it must see
+    #: the same pin and the same goalposts. `None` until a node dispatches.
+    prepared: "PreparedWorktree | None" = None
+    criteria: "CriteriaSet | None" = None
 
 
 # The adapter seam's payloads (FR-005) ----------------------------------------
