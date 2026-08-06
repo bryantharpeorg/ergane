@@ -59,7 +59,7 @@ import asyncio
 import json
 import os
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -67,14 +67,15 @@ from temporalio.client import Client
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
 
-from factory.config import Persona, WriteScope
+from factory.activities.usage_activities import key_alias_for
+from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
     DEFAULT_TEMPORAL_NAMESPACE,
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
-from factory.usage.litellm_client import PROXY_URL_ENV
+from factory.usage.litellm_client import PROXY_URL_ENV, LiteLLMClient, LiteLLMError
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import (
     WorkGraph,
@@ -82,7 +83,7 @@ from factory.workgraph.models import (
     WorkNode,
     validate_workgraph,
 )
-from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
+from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicInput, EpicWorkflow
 
 #: The spec file every epic is compiled from, and the artifact it compiles to.
 #: Both are conventions rather than flags because the pair is what makes
@@ -116,6 +117,209 @@ class _OperatorError(Exception):
     def __init__(self, message: str, code: int = EXIT_USER) -> None:
         super().__init__(message)
         self.code = code
+
+
+@dataclass(frozen=True)
+class PreflightFinding:
+    """One fact the preflight checked before dispatch (US2 FR-004/005/006).
+
+    The same shape as 003's onboarding `Finding` (check/passed/detail) so the
+    two surfaces read alike; a local type is defined only because 003 has not
+    landed, and it must be swapped for the shared type the moment it is
+    importable rather than kept as a near-duplicate.
+
+    `transport` is the FR-005 discriminator: `True` when the proxy would not
+    answer a preflight read (so the operator's move is to go look at the proxy,
+    exit 2), `False` when it answered and something the operator can fix in the
+    registry or the credential store is wrong (exit 1).
+    """
+
+    check: str
+    passed: bool
+    detail: str
+    transport: bool = False
+
+
+def _preflight_registry() -> dict[str, Persona]:
+    """The CLI's own view of the registry, read from its `personas.yaml`.
+
+    Deliberately the CLI's file, not a copy the worker must match: R8 lets the
+    CLI and the worker resolve personas from different hosts, and preflight can
+    only validate the aliases it can see. That is why every finding is worded
+    about "this registry" rather than about what the worker will resolve — the
+    honesty constraint (US2 Edge Cases) is that preflight states what it checked
+    and never claims the worker's resolution was validated.
+    """
+    return load_personas()
+
+
+def _open_preflight_client() -> LiteLLMClient:
+    """The preflight's one route to the proxy, credentials from the environment.
+
+    A seam, not a factory: tests replace it to inject a fake transport the way
+    `usage_activities.open_client` is replaced, so the CLI's preflight is tested
+    against the same fake proxy the activities are.
+    """
+    return LiteLLMClient.from_env()
+
+
+def _first_attempt_aliases(graph: WorkGraph) -> set[str]:
+    """The aliases this epic's first attempts will mint (US2 FR-006).
+
+    Each node's attempt-1 key (under its persona) and the judge's attempt-1 key
+    (the judge scores while the node's key is live, on its own alias). These are
+    the deterministic aliases the proxy would reject a duplicate of at dispatch
+    — a collision knowable before any key is issued.
+    """
+    aliases: set[str] = set()
+    for node in graph.nodes:
+        aliases.add(key_alias_for(graph.epic_id, node.id, 1, node.persona))
+        aliases.add(key_alias_for(graph.epic_id, node.id, 1, JUDGE_PERSONA))
+    return aliases
+
+
+def _aliases_to_check(
+    graph: WorkGraph, registry: Mapping[str, Persona]
+) -> dict[str, set[str]]:
+    """alias -> personas naming it, for the graph's LLM personas and the judge.
+
+    A deterministic persona (`agent == "none"`) gets no key and mints nothing, so
+    it contributes no alias. The judge is included even when no node names it,
+    because it is always resolved and always mints a first-attempt key.
+    """
+    persona_names = {node.persona for node in graph.nodes}
+    persona_names.add(JUDGE_PERSONA)
+    named_by: dict[str, set[str]] = {}
+    for name in persona_names:
+        persona = registry.get(name)
+        if persona is None or not persona.is_llm:
+            continue
+        for alias in (persona.model, persona.fallback):
+            if alias:
+                named_by.setdefault(alias, set()).add(name)
+    return named_by
+
+
+async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
+    """Check what the proxy serves before anything dispatches (US2).
+
+    Two read-only facts a graph cannot carry, in the same spirit as the
+    structural re-validation in `start_command`: a graph that fails them never
+    becomes a workflow that has to be killed, and the failure costs one message
+    instead of attempts, issued credentials and a burned node.
+
+    - **Model aliases** (FR-004): every `model`/`fallback` the CLI's registry
+      names for the personas this graph routes to is checked against the
+      proxy's `/v1/models`. An unserved alias is reported with every persona
+      that names it, so the operator sees the alias *and* the work it would have
+      dispatched.
+    - **First-attempt key aliases** (FR-006): the aliases this epic's first
+      attempts will mint (`<epic>:<node>:1:<persona>`, and the judge's) are
+      checked against `/key/list`. A collision is reported with its remedy
+      before any dispatch, instead of surfacing as a mid-flight uniqueness
+      failure on the first mint.
+
+    A proxy that does not answer is a **distinct** finding (FR-005) naming the
+    address tried — never a silent pass, and never conflated with "not served".
+    The caller maps a read failure to `EXIT_TRANSPORT` and an unserved alias or
+    collision to `EXIT_USER`.
+
+    Returns `[]` when every check passes.
+    """
+    client = _open_preflight_client()
+    findings: list[PreflightFinding] = []
+    registry = _preflight_registry()
+
+    try:
+        try:
+            served = await client.list_model_ids()
+        except LiteLLMError as exc:
+            findings.append(
+                PreflightFinding(
+                    check="model-aliases-served",
+                    passed=False,
+                    transport=True,
+                    detail=(
+                        f"cannot read the model list from the proxy at "
+                        f"{client.base_url}: {exc} — the aliases this epic names "
+                        "cannot be confirmed served, so nothing was dispatched"
+                    ),
+                )
+            )
+        else:
+            unserved = {
+                alias: personas
+                for alias, personas in _aliases_to_check(graph, registry).items()
+                if alias not in served
+            }
+            if unserved:
+                _named = ", ".join(
+                    f"`{alias}` ({' / '.join(sorted(personas))})"
+                    for alias, personas in sorted(unserved.items())
+                )
+                findings.append(
+                    PreflightFinding(
+                        check="model-aliases-served",
+                        passed=False,
+                        detail=(
+                            "the proxy does not serve every alias this registry "
+                            f"names for the epic's personas: {_named}. Nothing "
+                            "was dispatched."
+                        ),
+                    )
+                )
+
+        try:
+            live = await client.list_key_aliases()
+        except LiteLLMError as exc:
+            findings.append(
+                PreflightFinding(
+                    check="first-attempt-key-aliases",
+                    passed=False,
+                    transport=True,
+                    detail=(
+                        f"cannot read the key list from the proxy at "
+                        f"{client.base_url}: {exc} — a first-attempt alias "
+                        "collision cannot be ruled out, so nothing was dispatched"
+                    ),
+                )
+            )
+        else:
+            collisions = sorted(_first_attempt_aliases(graph) & live)
+            if collisions:
+                findings.append(
+                    PreflightFinding(
+                        check="first-attempt-key-aliases",
+                        passed=False,
+                        detail=(
+                            "a live key already holds an alias this epic's first "
+                            "attempts will mint: "
+                            + ", ".join(f"`{alias}`" for alias in collisions)
+                            + ". Revoke that orphaned key (or let its TTL expire) "
+                            "so the first attempt can mint it; nothing was "
+                            "dispatched."
+                        ),
+                    )
+                )
+    finally:
+        await client.aclose()
+
+    return findings
+
+
+async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:
+    """Map the preflight findings to the scripting contract.
+
+    `EXIT_TRANSPORT` when the proxy would not answer a preflight read — the
+    "go look at the server" case (FR-005). `EXIT_USER` when the proxy answered
+    and something the operator can fix is wrong — unserved aliases, or a
+    first-attempt alias collision. `EXIT_OK` when nothing failed.
+    """
+    if not findings:
+        return EXIT_OK
+    if any(finding.transport for finding in findings):
+        return EXIT_TRANSPORT
+    return EXIT_USER
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -191,6 +395,11 @@ def start_command(args: argparse.Namespace) -> int:
     file parses, the graph is structurally sound, and the proxy url the attempt's
     virtual key will be honored at is present. Only then is a client built — so a
     transport failure is always about the server, never about the file.
+
+    The proxy is also where the preflight happens (US2): the model aliases this
+    registry names and the first-attempt key aliases this epic will mint are
+    checked against it *before* the workflow starts, so a misconfigured epic
+    costs one message instead of attempts, issued credentials and a burned node.
     """
     try:
         graph = load_workgraph(args.graph)
@@ -213,6 +422,22 @@ def start_command(args: argparse.Namespace) -> int:
 
 async def _start_epic(graph: WorkGraph, proxy_url: str) -> int:
     client = await _connect()
+
+    try:
+        findings = await _run_preflight(graph)
+    except ConfigError as error:
+        # The CLI's own registry would not load: an operator-fixable config
+        # error, reported before any dispatch (US2 honesty — we can only check
+        # the aliases we can resolve).
+        raise _OperatorError(f"preflight: {error}") from error
+
+    exit_code = await _preflight_exit_code(findings)
+    if findings:
+        # Everything the operator must act on, at once, and nothing started.
+        for finding in findings:
+            print(f"factory-epic: preflight [{finding.check}]: {finding.detail}", file=sys.stderr)
+        return exit_code
+
     epic_workflow_id = workflow_id(graph.epic_id)
     try:
         await client.start_workflow(

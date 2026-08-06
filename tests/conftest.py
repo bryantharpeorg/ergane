@@ -171,6 +171,10 @@ class FakeLiteLLM:
         queue = self._failures.setdefault(path, [])
         queue.extend([(status, f"injected {status} for {path}")] * times)
 
+    def make_unreachable(self) -> None:
+        """Drop every request, as if the address were dead (US2 FR-005)."""
+        self._refuse_requests = True
+
     def key_for_alias(self, alias: str) -> str | None:
         for key, key_alias in self.aliases.items():
             if key_alias == alias:
@@ -240,13 +244,19 @@ class FakeLiteLLM:
         )
 
     def _key_list(self) -> httpx.Response:
-        """`GET /key/list`: every live key's alias (FR-006 preflight)."""
+        """`GET /key/list`: every *live* key's alias (US2 FR-006 preflight).
+
+        Live only: a deleted key is gone from `/key/list` the way it is on the
+        real proxy, so an orphaned alias that would collide with an epic's first
+        attempt is exactly one that is still live (a dead worker that never ran
+        teardown) — never a key that already tore down.
+        """
         return httpx.Response(
             200,
             json={
                 "data": [
-                    {"key_alias": alias, "key": key}
-                    for key, alias in sorted(self.aliases.items())
+                    {"key_alias": self.aliases[key], "key": key}
+                    for key in self.keys
                 ]
             },
         )
