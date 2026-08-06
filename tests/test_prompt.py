@@ -70,9 +70,11 @@ from factory.verify.models import (
     VerificationForm,
     VerificationResult,
 )
+from factory.mergequeue.models import ObservedOutcome, QueueOutcome
 from factory.workgraph.models import WorkNode
 from factory.workgraph.prompt import (
     AttemptEvidence,
+    LandingEvidence,
     PromptAssemblyError,
     build_attempt_prompt,
 )
@@ -228,6 +230,11 @@ def build(**overrides: Any) -> str:
 
 
 def section_of(prompt: str, heading: str) -> str:
+    """One section's text: its heading through the next section heading."""
+    start = prompt.index(heading)
+    rest = prompt[start + len(heading) :]
+    end = rest.find("\n## ")
+    return heading + (rest if end == -1 else rest[:end])
     """One section's text: its heading through the next section heading."""
     start = prompt.index(heading)
     rest = prompt[start + len(heading) :]
@@ -519,3 +526,82 @@ def test_unknown_requirement_key_fails_naming_the_requirement() -> None:
         build(node=node)
 
     assert "FR-404" in str(excinfo.value)
+
+
+# --- landing evidence (US2 recovery, plan.md § US2) ---------------------------
+
+
+def checks_failed_evidence() -> LandingEvidence:
+    """A CHECKS_FAILED rejection: the queue history, one entry, no conflict."""
+    return LandingEvidence(
+        outcome=QueueOutcome.CHECKS_FAILED,
+        queue_history=(
+            ObservedOutcome(at="2026-08-06T10:10:00Z", outcome=QueueOutcome.CHECKS_FAILED),
+        ),
+        conflicted_files=(),
+    )
+
+
+def conflict_evidence() -> LandingEvidence:
+    """A CONFLICT rejection: queue history plus the conflicted file list."""
+    return LandingEvidence(
+        outcome=QueueOutcome.CONFLICT,
+        queue_history=(
+            ObservedOutcome(at="2026-08-06T10:10:00Z", outcome=QueueOutcome.CONFLICT),
+        ),
+        conflicted_files=("src/loans.py",),
+    )
+
+
+LANDING_SECTION = "## Landing rejection"
+
+
+def test_absent_landing_evidence_adds_no_section() -> None:
+    """A fresh dispatch — no landing rejection — carries no landing section.
+
+    Existing golden prompts are byte-identical: no landing evidence is the first
+    attempt, and the prompt must not grow a section nothing asked for.
+    """
+    prompt = build()
+    assert LANDING_SECTION not in prompt
+
+
+def test_landing_evidence_carries_the_outcome_and_queue_history_verbatim() -> None:
+    """The recovery prompt quotes the classified outcome and the queue history.
+
+    The operator-facing history is reproduced verbatim (002's feedback
+    discipline): the agent being re-driven is shown the actual sequence of queue
+    outcomes, not a summary of it.
+    """
+    evidence = checks_failed_evidence()
+    prompt = build(landing_evidence=evidence)
+
+    assert LANDING_SECTION in prompt
+    assert "CHECKS_FAILED" in prompt
+    # The queue history timestamp and outcome both appear.
+    assert "2026-08-06T10:10:00Z" in prompt
+    assert "CHECKS_FAILED" in prompt
+
+
+def test_conflict_evidence_names_the_conflicted_files_verbatim() -> None:
+    """A CONFLICT rejection hands the debugger the conflicted file list.
+
+    The conflicted paths are the debugger's work surface (FR-006): the prompt
+    must name them so the persona resolves exactly the files the queue could not
+    merge.
+    """
+    evidence = conflict_evidence()
+    prompt = build(landing_evidence=evidence)
+
+    assert LANDING_SECTION in prompt
+    assert "CONFLICT" in prompt
+    assert "src/loans.py" in prompt
+
+
+def test_landing_evidence_assembly_is_deterministic() -> None:
+    """Same inputs, same bytes — even for a recovery prompt (SC-001)."""
+    evidence = conflict_evidence()
+    first = build(landing_evidence=evidence)
+    second = build(landing_evidence=evidence)
+
+    assert first == second

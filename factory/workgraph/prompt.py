@@ -44,6 +44,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from factory.mergequeue.models import ObservedOutcome, QueueOutcome
 from factory.usage.models import Termination
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
 from factory.verify.models import GateStatus, VerificationResult
@@ -74,6 +75,22 @@ class AttemptEvidence:
 
     termination: Termination
     result: VerificationResult | None = None
+
+
+@dataclass(frozen=True)
+class LandingEvidence:
+    """One queue rejection, as the recovery attempt is shown it (US2, plan.md § US2).
+
+    The classified `outcome` (CHECKS_FAILED or CONFLICT), the queue history in
+    order, and — for a conflict — the conflicted file list the debugger persona
+    must resolve (FR-006). The history is reproduced verbatim, the same discipline
+    002's prior-attempt evidence already applies: an agent re-driven on a summary
+    of what the queue rejected would debug the summary, not the rejection.
+    """
+
+    outcome: QueueOutcome
+    queue_history: tuple[ObservedOutcome, ...]
+    conflicted_files: tuple[str, ...] = ()
 
 
 # --- the fixed sections -------------------------------------------------------
@@ -148,6 +165,12 @@ _NO_EVIDENCE_RECORDED = (
     "verification ran."
 )
 
+_LANDING_PREAMBLE = (
+    "Your branch was rejected by the merge queue after its last verification. "
+    "This is why the queue refused it, reproduced verbatim from the queue "
+    "history — read it as what actually happened, not as a summary of it:"
+)
+
 _NOTHING_FAILED_LOUDLY = (
     "No failing gate output and no judge feedback were recorded for this "
     "attempt."
@@ -159,6 +182,7 @@ _STORY_HEADING = "## Story"
 _PLAN_HEADING = "## Plan"
 _SLICE_HEADING = "## Your task slice"
 _EVIDENCE_HEADING = "## Prior attempt evidence"
+_LANDING_HEADING = "## Landing rejection"
 
 # --- requirement keys ---------------------------------------------------------
 
@@ -182,6 +206,7 @@ def build_attempt_prompt(
     tasks_text: str,
     standards: str | None = None,
     prior_attempts: Sequence[AttemptEvidence] = (),
+    landing_evidence: LandingEvidence | None = None,
 ) -> str:
     """Assemble one attempt's prompt (contracts/prompt-assembly.md § Prompt shape).
 
@@ -189,6 +214,11 @@ def build_attempt_prompt(
     agent reads that in its own worktree, where `prepare_worktree` has already
     confirmed it exists), and the prior attempts already in workflow state are
     the whole input. Same inputs, same bytes.
+
+    `landing_evidence` is the US2 recovery input: a queue rejection quoted into
+    the attempt's prompt so the re-driven node is shown the outcome, the queue
+    history and (for a conflict) the conflicted file list verbatim. Absent on a
+    first dispatch, so an untouched graph assembles byte-identical prompts.
 
     Raises `PromptAssemblyError` when the spec declares no section for one of the
     node's `requirement_keys`, or when `tasks.md` has no phase naming the node's
@@ -212,6 +242,8 @@ def build_attempt_prompt(
     parts.append("\n\n".join([_STORY_HEADING, _STORY_PREAMBLE, *sections]))
     parts.append("\n\n".join([_PLAN_HEADING, _PLAN_PREAMBLE, plan_text.strip()]))
     parts.append("\n\n".join([_SLICE_HEADING, _SLICE_PREAMBLE, slice_text]))
+    if landing_evidence is not None:
+        parts.append(_landing_section(landing_evidence))
     if prior_attempts:
         parts.append(_evidence_section(prior_attempts))
 
@@ -351,6 +383,30 @@ def _task_slice(node: WorkNode, tasks_text: str) -> str:
             f"{node.story_key}, so this node has no task slice to work (FR-006)"
         )
     return text
+
+
+# --- landing rejection evidence (US2) -----------------------------------------
+
+
+def _landing_section(evidence: LandingEvidence) -> str:
+    """The recovery attempt's landing-rejection section (plan.md § US2).
+
+    Names the classified outcome, then quotes the queue history in order, and —
+    for a conflict — the conflicted file list the debugger persona must resolve
+    (FR-006). History entries are rendered one per line; nothing is summarized or
+    paraphrased (002's verbatim discipline, applied to the queue's word).
+    """
+    blocks: list[str] = [_LANDING_HEADING, _LANDING_PREAMBLE]
+    history = "\n".join(
+        f"- {entry.at} {entry.outcome.value}" for entry in evidence.queue_history
+    )
+    blocks.append(f"Outcome: `{evidence.outcome.value}`\n\nQueue history:\n{history}")
+    if evidence.conflicted_files:
+        files = "\n".join(f"- {name}" for name in evidence.conflicted_files)
+        blocks.append(
+            f"Conflicted files (resolve these conflict markers):\n{files}"
+        )
+    return "\n\n".join(blocks)
 
 
 # --- prior failure evidence (002 FR-006) --------------------------------------
