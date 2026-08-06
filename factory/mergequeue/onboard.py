@@ -107,7 +107,7 @@ def evaluate_repo(
 
 
 def _visibility_finding(findings: list[Finding], visibility: str) -> None:
-    public = str(visibility).lower() in ("public", "PUBLIC", "")
+    public = str(visibility).strip().lower() == "public"
     if public:
         findings.append(Finding("visibility", True, "repo is public"))
     else:

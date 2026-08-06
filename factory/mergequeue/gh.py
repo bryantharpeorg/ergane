@@ -178,6 +178,60 @@ class GhClient:
         """Take the PR out of the queue — best-effort kill cleanup (FR-008)."""
         self._run("pr", "merge", str(pr_number), "--disable-auto")
 
+    # --- US3 onboarding (FR-010) ---------------------------------------------
+
+    def repo_view(self) -> dict[str, Any]:
+        """The repo's identity and visibility, as `gh` resolves them from the clone.
+
+        `gh repo view` resolves owner/repo from the clone's `origin` remote (the
+        client runs with `cwd` = the clone), so the slug, visibility and default
+        branch all come back in one call — the activity needs the slug to address
+        the rules API, and the visibility/default-branch to judge the repo.
+        """
+        payload = self._run_json(
+            "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef"
+        )
+        if not isinstance(payload, dict):
+            raise GhError(
+                GH_REFUSED, "gh repo view returned an unexpected JSON shape"
+            )
+        return payload
+
+    def rules_for_branch(self, owner_repo: str, branch: str) -> list[dict[str, Any]]:
+        """The branch rules list for `owner_repo`'s `branch` (the merge_queue rule).
+
+        The `merge_queue` rule (when present) carries the required checks the
+        queue will demand of a PR. `gh api` prints the endpoint's JSON verbatim,
+        so a list is returned and the caller reads the merge-queue rule from it.
+        """
+        payload = self._run_json("api", f"repos/{owner_repo}/rules/branches/{branch}")
+        if isinstance(payload, list):
+            return [p for p in payload if isinstance(p, dict)]
+        if isinstance(payload, dict):
+            # Some endpoints nest under a key; tolerate it rather than guess.
+            nested = payload.get("rules") or payload.get("branches")
+            if isinstance(nested, list):
+                return [p for p in nested if isinstance(p, dict)]
+        raise GhError(
+            GH_REFUSED, "gh api rules/branches returned an unexpected JSON shape"
+        )
+
+    def classic_branch_protection(self, owner_repo: str, branch: str) -> dict[str, Any]:
+        """The classic branch-protection payload, when the rules list carries no checks.
+
+        A repo that enables the queue but configures its required checks through
+        the classic protection endpoint names none in the rules payload; this
+        reads the `required_status_checks.contexts` fallback (plan.md § US3).
+        """
+        payload = self._run_json(
+            "api", f"repos/{owner_repo}/branches/{branch}/protection"
+        )
+        if not isinstance(payload, dict):
+            raise GhError(
+                GH_REFUSED, "gh api branches/protection returned an unexpected JSON shape"
+            )
+        return payload
+
     # --- plumbing ------------------------------------------------------------
 
     def _run_json(self, *args: str) -> dict[str, Any] | list[Any]:
