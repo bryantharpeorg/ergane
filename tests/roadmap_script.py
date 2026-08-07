@@ -33,6 +33,18 @@ class _Script:
         self.statuses: dict[str, EpicStatus] = {}
         self.on_dispatch: Callable[[str], None] | None = None
         self.on_complete: Callable[[str], None] | None = None
+        #: US3 (T015): specs whose children must stay open until the test
+        #: releases them, so an operator signal or a `roadmap_status` query can
+        #: observe a child *in flight*. The scripted epic returns instantly by
+        #: default (US2's tests leave this empty); a spec in this set blocks on
+        #: `wait_condition` until the test removes it, which is what makes
+        #: `pause_roadmap` mid-flight and a `running`-child status observable.
+        #: Additive only — unset, it changes nothing US2 relies on.
+        self.hold: set[str] = set()
+
+    def release(self, epic_id: str) -> None:
+        """Drop a held child so it completes (the test's release signal)."""
+        self.hold.discard(epic_id)
 
 
 #: The single script tests set before starting the roadmap.
@@ -85,17 +97,33 @@ def failed_status(nodes: dict[str, NodeStatus] | None = None) -> EpicStatus:
 class ScriptedEpicWorkflow:
     """A scripted `EpicWorkflow` registered under the real dispatch name."""
 
+    def __init__(self) -> None:
+        self._released = False
+
     @workflow.run
     async def run(self, request: EpicInput) -> EpicStatus:
         epic_id = request.graph.epic_id
         if _SCRIPT.on_dispatch is not None:
             _SCRIPT.on_dispatch(epic_id)
+        # US3 (T015): if the test held this child open, block here until the
+        # test signals `release`. The dispatch hook above has already fired, so
+        # the roadmap sees the child in flight (`_children` holds its handle)
+        # and the test can query `running` or signal the roadmap mid-flight.
+        # The hold is per-spec and opt-in; a spec not in the set never blocks,
+        # so US2's run-to-completion tests are unaffected.
+        if epic_id in _SCRIPT.hold:
+            await workflow.wait_condition(lambda: self._released)
         status = _SCRIPT.statuses.get(epic_id)
         if status is None:
             status = _landed_status({"us1": _merged_node()})
         if _SCRIPT.on_complete is not None:
             _SCRIPT.on_complete(epic_id)
         return status
+
+    @workflow.signal
+    def release(self) -> None:
+        """Test release: let a held child complete (the hold's counterpart)."""
+        self._released = True
 
 
 # --- blocker workflows for the T011 child-policy tests ------------------------

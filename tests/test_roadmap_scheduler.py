@@ -347,6 +347,7 @@ async def env() -> AsyncIterator[WorkflowEnvironment]:
     _SCRIPT.statuses = {}
     _SCRIPT.on_dispatch = None
     _SCRIPT.on_complete = None
+    _SCRIPT.hold = set()
     try:
         yield environment
     finally:
@@ -354,6 +355,7 @@ async def env() -> AsyncIterator[WorkflowEnvironment]:
         _SCRIPT.statuses = {}
         _SCRIPT.on_dispatch = None
         _SCRIPT.on_complete = None
+        _SCRIPT.hold = set()
 
 
 @asynccontextmanager

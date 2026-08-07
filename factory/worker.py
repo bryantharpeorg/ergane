@@ -1,4 +1,4 @@
-"""The process that serves the factory: one queue, one workflow, every activity.
+"""The process that serves the factory: one queue, two workflows, every activity.
 
 Everything else in this repository is a library. This is the deployment: the
 long-lived process an operator runs on the worker host, which polls the

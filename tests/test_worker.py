@@ -221,7 +221,14 @@ def test_the_scan_finds_all_four_surfaces() -> None:
 
 
 def test_the_interpreter_workflow_is_registered() -> None:
-    """`EpicWorkflow` is the one workflow type in the factory (D-002)."""
+    """`EpicWorkflow` and `RoadmapWorkflow` are the factory's two workflow types.
+
+    D-002 named `EpicWorkflow` the factory's one workflow; 009 supersedes that
+    with the roadmap scheduler (D-031), so the worker now registers two. The
+    epic remains the unit of work — the roadmap dispatches specs *as* child
+    epics — but the worker serves both names because dispatch is by name over
+    the one queue.
+    """
     workflows = list(worker_module.WORKFLOWS)
     assert EpicWorkflow in workflows, (
         f"factory.worker registers {workflows}, which does not include "
