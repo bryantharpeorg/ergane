@@ -165,9 +165,14 @@ class GhClient:
         """Enqueue the PR through GitHub's merge queue (FR-002).
 
         This is the factory's *only* merge invocation — `--auto`, never a direct
-        merge. `merge_method` is passed verbatim from `LandingConfig`.
+        merge. No strategy flag rides along: a branch governed by a merge-queue
+        ruleset owns its merge method (ours declares SQUASH), and gh refuses
+        the flag outright — "The merge strategy for <branch> is set by the
+        merge queue", proved live 2026-08-07 by the queue canary. The
+        `merge_method` from `LandingConfig` stays as the operator's declared
+        intent, which must match the queue's own configuration.
         """
-        self._run("pr", "merge", str(pr_number), "--auto", f"--{merge_method}")
+        self._run("pr", "merge", str(pr_number), "--auto")
 
     def poll_pr(self, pr_number: int) -> PrSnapshot:
         """One `gh pr view` — the poll that becomes a classifier input."""

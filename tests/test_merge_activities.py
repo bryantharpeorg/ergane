@@ -13,7 +13,8 @@ The properties these tests defend:
   has to precede the create, and the PR is never `--draft` — a draft PR does not
   enter the queue. It is idempotent: an existing open PR for the branch is
   reused, not duplicated (the queue can hold only one PR per head).
-- **`enqueue_landing` issues exactly `gh pr merge <n> --auto --<method>`** from
+- **`enqueue_landing` issues exactly `gh pr merge <n> --auto`** (no strategy flag —
+  the queue ruleset owns the merge method) from
   `LandingConfig` (FR-002). A queue-disabled refusal is returned as rejection
   data, never raised — the spec edge case the workflow routes to escalation.
 - **`poll_landing` returns a `PrSnapshot`** — the classifier's input.
@@ -193,7 +194,7 @@ async def test_enqueue_landing_issues_auto_merge_from_config(
     env: ActivityEnvironment, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = FakeGh()
-    fake.expect("pr", "merge", str(PR_NUMBER), "--auto", f"--{MERGE_METHOD}")
+    fake.expect("pr", "merge", str(PR_NUMBER), "--auto")
     monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import (
@@ -206,8 +207,11 @@ async def test_enqueue_landing_issues_auto_merge_from_config(
     ))
 
     assert result.rejected is False
+    # No strategy flag: a queue-ruleset branch owns its merge method, and gh
+    # refuses the flag ("The merge strategy ... is set by the merge queue" —
+    # proved live 2026-08-07). Equality on the argv is what enforces it.
     assert [(c.args, c.cwd) for c in fake.calls] == [
-        (("pr", "merge", "7", "--auto", "--squash"), TARGET)
+        (("pr", "merge", "7", "--auto"), TARGET)
     ]
 
 
@@ -217,7 +221,7 @@ async def test_enqueue_landing_returns_a_queue_disabled_refusal_as_data(
     """A queue-disabled enqueue is rejection data, never a crash (spec edge case)."""
     fake = FakeGh()
     fake.expect(
-        "pr", "merge", str(PR_NUMBER), "--auto", f"--{MERGE_METHOD}",
+        "pr", "merge", str(PR_NUMBER), "--auto",
         stderr="gh: error: merge queue is disabled for this repository", returncode=1,
     )
     monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
@@ -405,7 +409,7 @@ async def test_recovery_reenqueue_reuses_the_same_pr(
         "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number,url",
         payload=[{"number": PR_NUMBER, "url": "https://x/pull/7"}],
     )
-    fake.expect("pr", "merge", str(PR_NUMBER), "--auto", f"--{MERGE_METHOD}")
+    fake.expect("pr", "merge", str(PR_NUMBER), "--auto")
     monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
