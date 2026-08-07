@@ -41,7 +41,13 @@ architect:
 
 implementer:
   agent: claude-code
-  model: ollama-cloud/deepseek-v4-flash
+  # Swapped from ollama-cloud/deepseek-v4-flash 2026-08-07 ~07:20 UTC:
+  # deepseek's thinking-heavy emission on the 007 task produced empty
+  # assistant text blocks that this LiteLLM translates to nil content for
+  # Ollama — four attempts burned on the same 400. GLM is the proven
+  # claude-CLI pairing (claude-glm precedent; judge ran it all night).
+  # Revert candidate once LiteLLM is upgraded past the translation bug.
+  model: ollama-cloud/glm-5.2
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
