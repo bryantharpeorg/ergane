@@ -57,6 +57,31 @@ CREATE TABLE IF NOT EXISTS escalations (
 CREATE INDEX IF NOT EXISTS idx_esc_pending ON escalations (resolution) WHERE resolution IS NULL;
 CREATE INDEX IF NOT EXISTS idx_esc_node    ON escalations (epic_id, node_id);
 
+-- 008-US1: a sibling to escalations for operator questions. The escalations
+-- CHECK constraints cannot hold a free-text answer, which is the whole reason
+-- this table exists. message_id is the Telegram message id the send returned
+-- (the reply-routing key, FR-008); NULL until delivered. resolution is
+-- ANSWERED/EXPIRED; NULL while the node is parked WAITING_OPERATOR.
+CREATE TABLE IF NOT EXISTS questions (
+    question_id    TEXT PRIMARY KEY,
+    workflow_id    TEXT NOT NULL,
+    epic_id        TEXT NOT NULL,
+    node_id        TEXT NOT NULL,
+    attempt        INTEGER NOT NULL CHECK (attempt >= 1),
+    question_text  TEXT NOT NULL,
+    message_id     INTEGER,
+    sent_at        TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    resolution     TEXT CHECK (resolution IN ('ANSWERED', 'EXPIRED')),
+    answer_text    TEXT,
+    resolved_at    TEXT,
+    CHECK ((resolution IS NULL) = (resolved_at IS NULL)),
+    CHECK ((answer_text IS NULL OR resolution = 'ANSWERED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_q_pending ON questions (resolution) WHERE resolution IS NULL;
+CREATE INDEX IF NOT EXISTS idx_q_node    ON questions (epic_id, node_id);
+
 -- Canonical queries -----------------------------------------------------------
 
 -- Failure history for one node (retry prompts, escalation summaries, SC-005):

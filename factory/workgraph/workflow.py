@@ -155,8 +155,10 @@ with workflow.unsafe.imports_passed_through():
         DEFAULT_CHOICES,
         ExpireEscalationInput,
         SendEscalationInput,
+        SendQuestionInput,
         expire_escalation,
         send_escalation,
+        send_question,
     )
     from factory.activities.usage_activities import (
         IssueKeyInput,
@@ -168,11 +170,13 @@ with workflow.unsafe.imports_passed_through():
     from factory.activities.verify_activities import (
         JUDGE_UNAVAILABLE,
         CheckOutputInput,
+        DetectQuestionInput,
         RecordVerificationInput,
         RunGatesInput,
         RunJudgeInput,
         SnapshotCriteriaInput,
         check_output,
+        detect_operator_question_activity,
         record_verification,
         run_gates,
         run_judge,
@@ -1107,6 +1111,56 @@ class EpicWorkflow:
                 action = NextAction.KILLED
                 break
 
+            # 008-US1: the narrowest hole in D-018/FR-012. The marker is the one
+            # agent-authored signal that reaches node state, and its only effect
+            # is to park — never to grade. Detection is a read-only scan over the
+            # archived stdout.log the adapter streams on every termination path
+            # (the transcript_path the adapter just returned), so it runs before
+            # the gates and the judge are consulted: a QUESTION attempt has
+            # nothing to grade, and consulting them would let the marker
+            # influence the verdict path (FR-010).
+            if adapter_result is not None:
+                marker = await workflow.execute_activity(
+                    detect_operator_question_activity,
+                    DetectQuestionInput(
+                        transcript_path=adapter_result.transcript_path
+                    ),
+                    **_FAST,
+                )
+                if marker.is_question:
+                    termination = Termination.QUESTION
+                    # Salvage and teardown run on every terminal path
+                    # (constitution VI, FR-005/006) — a question attempt is a
+                    # terminal like any other, so the committed work survives on
+                    # the branch and the ledger row carries the real usage.
+                    await self._teardown(lease, termination, record.last_snapshot)
+                    await self._close_out(
+                        graph, node, record, termination, state=NodeState.WAITING_OPERATOR
+                    )
+                    # The question ships once, attributed to its epic/node/attempt
+                    # (FR-002). The send happens after salvage, so the branch the
+                    # operator might be asked about is the one the question names.
+                    await workflow.execute_activity(
+                        send_question,
+                        SendQuestionInput(
+                            workflow_id=workflow.info().workflow_id,
+                            epic_id=graph.epic_id,
+                            node_id=node.id,
+                            attempt=record.attempt,
+                            question_text=marker.text,
+                        ),
+                        **_FAST,
+                    )
+                    # Park the node and pause the epic — the operator's answer
+                    # (US2) is what un-parks it. WAITING_OPERATOR is non-terminal
+                    # and not a dead edge, so dependents stay PENDING; the pause
+                    # stops the scheduler from dispatching anything else while it
+                    # waits, the way a PAUSE_EPIC press does.
+                    record.state = NodeState.WAITING_OPERATOR
+                    self._paused = True
+                    action = NextAction.KILLED  # not PASSED; the post-loop parks
+                    break
+
             record.state = NodeState.VERIFYING
             result, verdict = await self._verify(
                 request,
@@ -1175,6 +1229,14 @@ class EpicWorkflow:
             record.state = NodeState.PASSED
             await self._close_out(graph, node, record, termination, state=None)
             await self._land(graph, request, resolved, record, prepared, results[-1])
+        elif record.state == NodeState.WAITING_OPERATOR:
+            # 008-US1: the QUESTION path already salvaged, tore down, sent the
+            # question, and parked the node (the only terminal path that closes
+            # itself out *inside* the loop, because the marker is detected before
+            # the gates). Nothing to do here but leave the node parked — the
+            # operator's answer (US2) is what un-parks it. `action` is unset because
+            # the break preceded the ladder; the state is the truth.
+            pass
         elif parked:
             state = NodeState.FAILED
             await self._close_out(graph, node, record, termination, state=state)

@@ -102,11 +102,13 @@ from factory.mergequeue.models import Finding, PrSnapshot, TargetRepoProfile
 from factory.activities.usage_activities import IssueKeyInput, TeardownInput
 from factory.activities.verify_activities import (
     CheckOutputInput,
+    DetectQuestionInput,
     RecordedVerification,
     RecordVerificationInput,
     RunGatesInput,
     SnapshotCriteriaInput,
 )
+from factory.verify.question import QuestionMarker
 from factory.config import Persona, WriteScope
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
@@ -704,6 +706,15 @@ class ScriptedEpic:
         async def disable_auto_merge(request: DisableAutoMergeInput) -> None:
             return None
 
+        # 008-US1: the marker scan runs before the gates on every attempt. These
+        # CLI scripts exercise the all-passing path, so the scan reports no
+        # question — the node proceeds to the ladder unchanged.
+        @activity.defn(name="detect_operator_question_activity")
+        async def detect_operator_question_activity(
+            request: DetectQuestionInput,
+        ) -> QuestionMarker:
+            return QuestionMarker(is_question=False)
+
         return [
             resolve_graph,
             resolve_persona,
@@ -724,6 +735,7 @@ class ScriptedEpic:
             enqueue_landing,
             poll_landing,
             disable_auto_merge,
+            detect_operator_question_activity,
             validate_target_repo,
         ]
 

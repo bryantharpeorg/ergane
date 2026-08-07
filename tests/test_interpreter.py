@@ -688,6 +688,68 @@ class DisableOutcome:
     reason: str
 
 
+# --- US1 operator-question channel (fake activity payloads) -------------------
+
+
+@dataclass(frozen=True)
+class DetectQuestionInput:
+    """What the workflow hands the marker-detection activity.
+
+    The detector reads the attempt's archived ``stdout.log`` from
+    ``transcript_path`` (the same path the adapter points at, D-018's evidence),
+    so the only input it needs is that path — the workflow owns the attribution
+    (epic/node/attempt) and the detector owns nothing but the read.
+    """
+
+    transcript_path: str
+
+
+@dataclass(frozen=True)
+class QuestionMarker:
+    """What the detection activity answers with.
+
+    A read-only scan's whole output: whether the final message carried the
+    marker, and the body verbatim. ``is_question=False`` is the common case (no
+    marker — nothing changes from today, acceptance scenario 3); the workflow
+    never consults gates or a judge for it (FR-010).
+    """
+
+    is_question: bool
+    text: str = ""
+
+
+@dataclass(frozen=True)
+class SendQuestionInput:
+    """What the workflow hands `send_question` — the mirror of `send_escalation`.
+
+    Deliberately no token/chat field (constitution V): the bridge reads those
+    from the worker env inside the activity, never from a payload. The body is
+    the question text the detection extracted; the attribution triple is what
+    the `questions` row is keyed on (FR-002).
+    """
+
+    workflow_id: str
+    epic_id: str
+    node_id: str
+    attempt: int
+    question_text: str
+
+
+@dataclass(frozen=True)
+class SentQuestion:
+    """What `send_question` hands back — the row id and the Telegram message id.
+
+    The message id is the reply-routing key (FR-008, US2): a free-text reply
+    threads back to the question whose send returned this id. It is captured
+    into the `questions` table at send time (FR-002, T005).
+    """
+
+    question_id: str
+    message_id: int | None
+    sent_at: str
+    expires_at: str
+
+
 def _node_of_pr(pr_number: int) -> str:
     """Invert the scripted PR-number scheme: which node a PR belongs to.
 
@@ -846,6 +908,23 @@ class ScriptedWorld:
         self.escalation_requests: list[SendEscalationInput] = []
         self.escalation_ids: list[str] = []
         self.expirations: list[str] = []
+
+        #: US1 operator-question channel. `question_bodies` is the per-node marker
+        #: body the fake `detect_operator_question` activity answers with — a node
+        #: present in this dict is one whose archived stdout.log carried the
+        #: `## OPERATOR QUESTION` heading, and the body is what the bridge ships
+        #: (FR-002). `question_requests` logs every `send_question` call; the
+        #: question ships once, attributed to its epic/node/attempt. The Telegram
+        #: message id the bridge returns is captured into the `questions` table
+        #: (T005); here it is tracked as `question_message_ids` so a test can assert
+        #: the id travelled from send to store. `detect_requests` logs every
+        #: detection call so a test can prove the judge was never invoked for a
+        #: QUESTION attempt (FR-010): the sequence ends at detection, not at the
+        #: judge.
+        self.question_bodies: dict[str, str] = {}
+        self.detect_requests: list[DetectQuestionInput] = []
+        self.question_requests: list[SendQuestionInput] = []
+        self.question_message_ids: list[int] = []
 
         #: The landing phase's scripted surface. `landing_snapshots` is the per-PR
         #: answer queue, in poll order: each `poll_landing` call consumes one
@@ -1406,6 +1485,42 @@ class ScriptedWorld:
             script.expirations.append(request.escalation_id)
             return ExpiredEscalation(final_state=script._expiry_state)
 
+        @activity.defn(name="detect_operator_question_activity")
+        async def detect_operator_question_activity(
+            request: DetectQuestionInput,
+        ) -> QuestionMarker:
+            # The detector is a read-only scan over the archived stdout.log the
+            # adapter streams on every termination path (plan § US1). The fake
+            # answers from the per-node scripted body rather than from disk: a
+            # node present in `question_bodies` is one whose transcript carried
+            # the marker, and the body is what ships. No node id travels in the
+            # input (the detector owns nothing but the read), so the current node
+            # is read from the scripted attempt counter the agent activity set.
+            script._log("detect_operator_question_activity", script._node)
+            script.detect_requests.append(request)
+            body = script.question_bodies.get(script._node)
+            if body is None:
+                return QuestionMarker(is_question=False, text="")
+            return QuestionMarker(is_question=True, text=body)
+
+        @activity.defn(name="send_question")
+        async def send_question(request: SendQuestionInput) -> SentQuestion:
+            # The mirror of `send_escalation` with two deltas (plan § US1): no
+            # keyboard (a question is not a choice), and the Telegram message id
+            # is captured so a free-text reply can thread back to it (FR-008,
+            # US2). The question ships once, attributed to its epic/node/attempt.
+            script._log("send_question", request.node_id)
+            script.question_requests.append(request)
+            question_id = f"{len(script.question_requests):012x}"
+            message_id = 1000 + len(script.question_requests)
+            script.question_message_ids.append(message_id)
+            return SentQuestion(
+                question_id=question_id,
+                message_id=message_id,
+                sent_at="2026-08-07T09:31:00Z",
+                expires_at="2026-08-07T17:31:00Z",
+            )
+
         return [
             resolve_graph,
             resolve_persona,
@@ -1432,6 +1547,8 @@ class ScriptedWorld:
             validate_target_repo,
             send_escalation,
             expire_escalation,
+            detect_operator_question_activity,
+            send_question,
         ]
 
 
@@ -1662,6 +1779,7 @@ async def test_one_nodes_lifecycle_composes_the_verification_contract(
         "prepare_worktree",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
+        "detect_operator_question_activity",
         "run_gates",
         "check_output",
         "record_verification",
@@ -2245,6 +2363,7 @@ async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
             "prepare_worktree",
             "issue_attempt_key:implementer",
             "run_agent_attempt",
+            "detect_operator_question_activity",
             "run_gates",
             "check_output",
             "record_verification",
@@ -2447,6 +2566,228 @@ async def test_kill_cancels_the_attempt_salvages_and_kills_every_node(
     assert [(r.node_id, r.target_repo) for r in script.removals] == [
         ("us1", TARGET_REPO)
     ]
+
+
+# --- 008 US1: a marker parks the node WAITING_OPERATOR (FR-001/005/006/010) -----
+#
+# The narrowest hole in D-018/FR-012 (spec § Decision): exactly one agent-authored
+# signal — the `## OPERATOR QUESTION` heading in the final message — reaches
+# node state, and its only possible effect is to park the node and page the
+# operator. It can never produce, influence, or substitute for a verdict, so for
+# a QUESTION attempt the gates and the judge are never consulted (there is
+# nothing to grade). Salvage and teardown still run — a question attempt is a
+# terminal like any other (constitution VI, FR-005/006) — and the node parks
+# WAITING_OPERATOR rather than FAILING, because the operator's answer (US2) is
+# what un-parks it. These tests are written before the QUESTION path exists in
+# the interpreter, so they fail: the node ends a terminal the ladder knows
+# (FAILED/KILLED), the judge runs as it would for any unverified attempt, and
+# `WAITING_OPERATOR` is not a state the workflow can reach yet.
+
+
+QUESTION_BODY = (
+    "I hit a fork on how the questions table should key its rows.\n\n"
+    "Option A: a 12-hex id like escalations. Option B: the (epic, node, "
+    "attempt) tuple. I lean A for reply-routing parity.\n\n"
+    "Which?"
+)
+
+
+def questioning(client: Any, *, body: str = QUESTION_BODY) -> ScriptedWorld:
+    """`us1` completes its first attempt with a marker in the final message.
+
+    The attempt is otherwise a normal completion — it may even have committed
+    work (a substantive diff) — but its archived stdout.log carries the
+    `## OPERATOR QUESTION` heading, so detection classifies it QUESTION rather
+    than running the gates. The scripted `detect_operator_question` fake reads
+    `question_bodies[us1]` to answer, so setting the body is what arms the
+    marker for this node.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
+        client=client,
+    )
+    script.question_bodies["us1"] = body
+    return script
+
+
+async def test_a_marker_terminates_question_and_parks_waiting_operator(
+    env: WorkflowEnvironment,
+) -> None:
+    """Acceptance scenario 1: marker → QUESTION, question ships, node parks.
+
+    The attempt completes, detection finds the marker, and the node ends
+    `WAITING_OPERATOR` — not FAILED, not KILLED. The question ships once to the
+    bridge, attributed to its epic/node/attempt (FR-002). The epic pauses, the
+    way a `PAUSE_EPIC` resolution pauses it: a parked node is non-terminal, so
+    the scheduler must stop dispatching rather than spin, and US2's answer is
+    what resumes it.
+    """
+    script = questioning(env.client)
+
+    async with start_epic(env, script) as handle:
+        parked = await wait_for_status(
+            handle,
+            lambda status: (
+                NodeState.WAITING_OPERATOR  # type: ignore[attr-defined]
+                if hasattr(NodeState, "WAITING_OPERATOR")
+                else NodeState.FAILED
+            )
+            == states(status).get("us1")
+            and status.epic_state == EpicState.PAUSED,
+            what="us1 to park WAITING_OPERATOR and the epic to pause",
+        )
+
+        assert states(parked)["us1"] == NodeState.WAITING_OPERATOR
+        assert parked.epic_state == EpicState.PAUSED
+        # The dependent stays PENDING, not KILLED — a parked question is not a
+        # dead edge (US2 resumes us1), and the independent leaf is not dispatched
+        # while the epic is paused.
+        assert states(parked)["us2"] == NodeState.PENDING
+        assert states(parked)["us3"] == NodeState.PENDING
+
+        [question] = script.question_requests
+        assert question.epic_id == EPIC_ID
+        assert question.node_id == "us1"
+        assert question.attempt == 1
+        assert question.question_text == QUESTION_BODY
+
+
+async def test_a_question_attempt_salvages_and_preserves_committed_work(
+    env: WorkflowEnvironment,
+) -> None:
+    """Acceptance scenario 2 / FR-005: committed work survives on the branch.
+
+    A question attempt that also committed work (tests written, then a fork was
+    hit) is salvaged exactly as a salvaged attempt's would be: the salvage
+    commit carries the attempt number and the QUESTION termination, and the
+    worktree is swept after the branch is preserved (constitution VI). The
+    question still ships.
+    """
+    script = questioning(env.client)
+
+    async with start_epic(env, script) as handle:
+        await wait_for_status(
+            handle,
+            lambda status: states(status).get("us1") == NodeState.WAITING_OPERATOR
+            if hasattr(NodeState, "WAITING_OPERATOR")
+            else False,
+            what="us1 to park WAITING_OPERATOR",
+        )
+
+    # Salvage precedes removal (FR-005, constitution VI) — the work is on the
+    # branch before the tree is swept, and it says which attempt left it there.
+    seq = script.sequence("us1")
+    assert "salvage_worktree" in seq
+    if "remove_worktree" in seq:
+        assert seq.index("salvage_worktree") < seq.index("remove_worktree")
+    [salvage] = [s for s in script.salvages if s.node_id == "us1"]
+    assert salvage.attempt == 1
+    assert salvage.termination == Termination.QUESTION
+    # The question still ships (acceptance scenario 2's second clause).
+    assert len(script.question_requests) == 1
+
+
+async def test_a_question_attempt_writes_a_real_ledger_row_on_teardown(
+    env: WorkflowEnvironment,
+) -> None:
+    """Acceptance scenario 4 / FR-006: QUESTION is a termination class, not an
+    accounting exemption.
+
+    The bracket closes the way it does for any terminal: one teardown carrying
+    the adapter's QUESTION termination, and the ledger row carries real usage
+    (the snapshot the attempt measured), not NULL. The termination on the
+    teardown input is QUESTION — the same field every other class travels on.
+    """
+    script = questioning(env.client, body=QUESTION_BODY)
+    script.adapter_snapshot = SNAPSHOT
+
+    async with start_epic(env, script) as handle:
+        await wait_for_status(
+            handle,
+            lambda status: states(status).get("us1") == NodeState.WAITING_OPERATOR
+            if hasattr(NodeState, "WAITING_OPERATOR")
+            else False,
+            what="us1 to park WAITING_OPERATOR",
+        )
+
+    teardown = script.teardown_for("us1", 1)
+    assert teardown.termination == Termination.QUESTION
+    # Real usage travels to teardown — the same path a normal completion takes
+    # (FR-006). NULL would mean a question was silently excused its accounting.
+    assert teardown.last_snapshot == SNAPSHOT
+
+
+async def test_the_judge_is_never_invoked_for_a_question_attempt(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-010's first half: the marker parks, it does not grade.
+
+    For a QUESTION attempt there is nothing to grade, so the gates and the judge
+    are never consulted. The sequence for the node ends at detection + teardown
+    + salvage + send_question — it never reaches `run_gates`, `check_output`,
+    `read_worktree_diff`, or `run_judge`. A workflow that ran the gates for a
+    marker attempt would be letting the marker influence the verdict path.
+    """
+    script = questioning(env.client)
+
+    async with start_epic(env, script) as handle:
+        await wait_for_status(
+            handle,
+            lambda status: states(status).get("us1") == NodeState.WAITING_OPERATOR
+            if hasattr(NodeState, "WAITING_OPERATOR")
+            else False,
+            what="us1 to park WAITING_OPERATOR",
+        )
+
+    seq = script.sequence("us1")
+    assert "run_gates" not in seq
+    assert "check_output" not in seq
+    assert "read_worktree_diff" not in seq
+    assert "run_judge" not in seq
+    assert script.judge_requests == []
+    assert script.gate_requests == []
+    # Detection ran — the read-only scan that is the whole of the marker's path.
+    assert "detect_operator_question_activity" in seq
+
+
+async def test_a_marker_never_produces_a_pass_from_its_presence(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-010's guard: the marker can never produce, influence, or substitute for
+    a verdict.
+
+    The hardest case the amendment names: an attempt with a marker AND a
+    substantive diff (gates would pass, output has a diff) must not get a PASS
+    from the marker's presence. The marker only parks — it does not award an
+    outcome — so the node ends WAITING_OPERATOR, never PASSED/MERGED, and the
+    landing phase (which only a PASS opens) is never entered. This is the test
+    that pins the hole's narrowness: a marker that could steer toward PASS would
+    be an agent grading itself, the very thing FR-012 exists to stop.
+    """
+    # A passing attempt that ALSO carries a marker: gates green, a real diff,
+    # and the heading in the final message. Without the guard the workflow might
+    # treat the diff as the verdict and PASS the node; the guard says the marker
+    # parks it instead, and the gates are never even read.
+    script = questioning(env.client)
+    # The default `passing()` already scripts green gates and a real diff — the
+    # marker is what the workflow must heed, not the would-be PASS.
+
+    async with start_epic(env, script) as handle:
+        parked = await wait_for_status(
+            handle,
+            lambda status: states(status).get("us1") == NodeState.WAITING_OPERATOR
+            if hasattr(NodeState, "WAITING_OPERATOR")
+            else False,
+            what="us1 to park WAITING_OPERATOR, not pass",
+        )
+
+    # The node parked, it did not pass — and the landing phase a PASS opens is
+    # never entered: no PR is opened, nothing is enqueued.
+    assert states(parked)["us1"] == NodeState.WAITING_OPERATOR
+    assert script.landing_requests == []
+    assert script.enqueue_requests == []
+    # And the gates that would have passed were never read (FR-010 first half):
+    assert "run_gates" not in script.sequence("us1")
 
 
 # --- US1: the snapshot reaches teardown on all three delivery paths -----------
@@ -2723,6 +3064,7 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
         "prepare_worktree",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
+        "detect_operator_question_activity",
         "run_gates",
         "check_output",
         "read_worktree_diff",
@@ -3077,6 +3419,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "prepare_worktree",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
+        "detect_operator_question_activity",
         "run_gates",
         "check_output",
         "record_verification",

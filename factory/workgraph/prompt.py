@@ -134,6 +134,22 @@ final message is read as a result.
 Do not weaken tests, skip gates, or narrow acceptance criteria to reach a green
 run. A diff that passes by deleting the check fails the outer loop."""
 
+_OPERATOR_QUESTION = """## If you are blocked, ask the operator
+
+If you hit a fork in the road you cannot resolve on your own — a design choice
+the spec does not settle, a dependency the constitution has not approved, a
+constraint you cannot satisfy and cannot safely relax — you may ask the operator
+one kind of question, in one place, and the bar is high.
+
+Write your question as a level-2 heading, exactly `## OPERATOR QUESTION`, in your
+final message, followed by its body. The body names the fork you are at, the
+options you considered, and your lean; it is for a genuinely blocking fork only —
+not a check you could run yourself, not a doubt the spec or plan already answers,
+and not a preference. A marker is not a verdict and never passes your node: the
+work you committed is salvaged either way, and the gates and judge are not
+consulted for a question because there is nothing to grade. Ask only when
+proceeding without the answer would be wrong; otherwise keep working."""
+
 _STANDARDS = """## Standards
 
 Read `{standards}` in this worktree before you write code, and obey it.
@@ -236,6 +252,7 @@ def build_attempt_prompt(
         ),
         _INNER_LOOP,
         _OUTER_LOOP,
+        _OPERATOR_QUESTION,
     ]
     if standards:
         parts.append(_STANDARDS.format(standards=standards))

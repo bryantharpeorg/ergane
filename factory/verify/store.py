@@ -62,13 +62,14 @@ from factory.verify.models import (
     JudgeVerdict,
     OutputCheck,
     OverallVerdict,
+    QuestionRecord,
     VerificationForm,
     VerificationResult,
 )
 
 #: Bumping this means the DDL below changed shape and existing stores need a
 #: migration path. Recorded in the database so a reader can tell.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -131,6 +132,35 @@ CREATE TABLE IF NOT EXISTS escalations (
 
 CREATE INDEX IF NOT EXISTS idx_esc_pending ON escalations (resolution) WHERE resolution IS NULL;
 CREATE INDEX IF NOT EXISTS idx_esc_node    ON escalations (epic_id, node_id);
+
+-- 008-US1: a sibling to escalations for operator questions. The escalations
+-- table's CHECK constraints (resolution IN RETRY/KILL/PAUSE_EPIC/EXPIRED) cannot
+-- hold a free-text answer, which is the whole reason this table exists (plan §
+-- Technical Context): an escalation path never touches it, and it is never
+-- touched by one. `message_id` is the Telegram message id the send returned —
+-- the reply-routing key a free-text answer threads back to (FR-008, US2); it is
+-- NULL until the message is delivered. `resolution` is ANSWERED (an operator
+-- replied, US2) or EXPIRED (the question's own window ran out, FR-004); NULL
+-- while the node is parked WAITING_OPERATOR.
+CREATE TABLE IF NOT EXISTS questions (
+    question_id    TEXT PRIMARY KEY,         -- 12-hex token (reply-routing key)
+    workflow_id    TEXT NOT NULL,
+    epic_id        TEXT NOT NULL,
+    node_id        TEXT NOT NULL,
+    attempt        INTEGER NOT NULL CHECK (attempt >= 1),
+    question_text  TEXT NOT NULL,            -- the marker body, verbatim (FR-002)
+    message_id     INTEGER,                  -- Telegram message id; NULL until delivered
+    sent_at        TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,            -- sent_at + 8h (FR-004, the question's own window)
+    resolution     TEXT CHECK (resolution IN ('ANSWERED', 'EXPIRED')),
+    answer_text    TEXT,                     -- the operator's reply (US2 fills this)
+    resolved_at    TEXT,
+    CHECK ((resolution IS NULL) = (resolved_at IS NULL)),
+    CHECK ((answer_text IS NULL OR resolution = 'ANSWERED'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_q_pending ON questions (resolution) WHERE resolution IS NULL;
+CREATE INDEX IF NOT EXISTS idx_q_node    ON questions (epic_id, node_id);
 """
 
 
@@ -572,5 +602,182 @@ def _escalation_from_row(row: tuple[Any, ...]) -> EscalationRecord:
             if resolution == EXPIRED
             else EscalationChoice(resolution)
         ),
+        resolved_at=values["resolved_at"],
+    )
+
+
+# --- operator questions (008-US1) -------------------------------------------
+#
+# A sibling table to escalations, for the one thing the escalations CHECK
+# constraints cannot hold: a free-text answer. The shape mirrors escalations —
+# the row is written before the send (R11), the message id is captured at send
+# (FR-008's prerequisite), and a terminal transition is one guarded UPDATE —
+# but the resolution vocabulary is ANSWERED/EXPIRED, not RETRY/KILL/PAUSE_EPIC,
+# because a question is not a choice the operator picks from a list. The no-burn
+# accounting and the answer round-trip are US2; this component owns only the row
+# the send writes and the transition the expiry (US2) will close.
+
+#: `ANSWERED` — the operator replied (US2). `EXPIRED` — the question's own
+#: window ran out (FR-004), reusing the escalation vocabulary's terminal word so
+#: a reader of either table reads the other the same way.
+ANSWERED = "ANSWERED"
+
+#: The columns identifying one question, in the order `_SELECT_QUESTION_SQL`
+#: returns them — the same order `_question_from_row` reads.
+_QUESTION_COLUMNS = (
+    "question_id",
+    "workflow_id",
+    "epic_id",
+    "node_id",
+    "attempt",
+    "question_text",
+    "message_id",
+    "sent_at",
+    "expires_at",
+    "resolution",
+    "answer_text",
+    "resolved_at",
+)
+
+_SELECT_QUESTION_SQL = (
+    f"SELECT {', '.join(_QUESTION_COLUMNS)} FROM questions"
+)
+
+_INSERT_QUESTION_SQL = (
+    "INSERT INTO questions (question_id, workflow_id, epic_id, node_id, attempt, "
+    "question_text, message_id, sent_at, expires_at, resolution, answer_text, "
+    "resolved_at) VALUES (:question_id, :workflow_id, :epic_id, :node_id, :attempt, "
+    ":question_text, :message_id, :sent_at, :expires_at, :resolution, :answer_text, "
+    ":resolved_at)"
+)
+
+#: The guarded transition an answer (US2) or the question's own expiry closes.
+#: Whichever arrives second matches no rows and is told so, the same way the
+#: escalations table settles the race between a press and the hour.
+_QUESTION_TRANSITION_SQL = (
+    "UPDATE questions SET resolution = ?, answer_text = ?, resolved_at = ? "
+    "WHERE question_id = ? AND resolution IS NULL"
+)
+
+
+def insert_question(conn: sqlite3.Connection, record: QuestionRecord) -> None:
+    """Write a pending question row (R11, the escalation precedent).
+
+    Called *before* the message is sent, so a crash in between leaves something
+    the expiry path (US2) can still close rather than an untracked message in a
+    chat. Raises `sqlite3.IntegrityError` if the id is already taken, since a
+    reused token would let a reply to last week's question land on this one's.
+    """
+    conn.execute(
+        _INSERT_QUESTION_SQL,
+        {
+            "question_id": record.question_id,
+            "workflow_id": record.workflow_id,
+            "epic_id": record.epic_id,
+            "node_id": record.node_id,
+            "attempt": record.attempt,
+            "question_text": record.question_text,
+            "message_id": record.message_id,
+            "sent_at": record.sent_at,
+            "expires_at": record.expires_at,
+            "resolution": record.resolution,
+            "answer_text": record.answer_text,
+            "resolved_at": record.resolved_at,
+        },
+    )
+    conn.commit()
+
+
+def capture_message_id(conn: sqlite3.Connection, question_id: str, message_id: int) -> bool:
+    """Record the Telegram message id the send returned (FR-008's prerequisite).
+
+    Separate from the insert because the insert happens first, on purpose (R11):
+    the row exists before the send, so the message id — the one fact about a
+    question that can only be known after Telegram accepts it — is captured
+    afterwards. True if a row was updated; False means the id is unknown to the
+    store (a rebuilt database under a running epic), in which case the row's
+    `message_id` stays NULL and a reply cannot thread to it.
+    """
+    cursor = conn.execute(
+        "UPDATE questions SET message_id = ? WHERE question_id = ?",
+        (message_id, question_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def get_question(conn: sqlite3.Connection, question_id: str) -> QuestionRecord | None:
+    """One question by its id, or None if there is no such row.
+
+    None rather than an exception: a reply that names a question the store has
+    no record of is answered with a notice, not a crashed bridge service (US2).
+    """
+    row = conn.execute(
+        f"{_SELECT_QUESTION_SQL} WHERE question_id = ?", (question_id,)
+    ).fetchone()
+    return None if row is None else _question_from_row(row)
+
+
+def pending_questions(conn: sqlite3.Connection) -> list[QuestionRecord]:
+    """Every question still awaiting an answer, oldest first."""
+    rows = conn.execute(
+        f"{_SELECT_QUESTION_SQL} WHERE resolution IS NULL "
+        "ORDER BY sent_at, question_id"
+    ).fetchall()
+    return [_question_from_row(row) for row in rows]
+
+
+def resolve_question(
+    conn: sqlite3.Connection,
+    question_id: str,
+    *,
+    answer_text: str,
+    resolved_at: str,
+) -> bool:
+    """Record the operator's reply (US2). True if this call is what resolved it.
+
+    The guarded UPDATE settles the race between an answer and the question's own
+    expiry (FR-004): whichever arrives second matches no rows and is told so,
+    instead of overwriting a resolution already set. US2 owns this; it is here so
+    the transition lives in the same store the send wrote to.
+    """
+    cursor = conn.execute(
+        _QUESTION_TRANSITION_SQL,
+        (ANSWERED, answer_text, resolved_at, question_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def expire_question(conn: sqlite3.Connection, question_id: str, *, resolved_at: str) -> bool:
+    """Record the question's own window elapsing (FR-004). True if this call expired it.
+
+    The one resolution no reply can produce, the same way `EXPIRED` is the one
+    escalation resolution no button can produce. US2 owns the call; the
+    transition is the store's.
+    """
+    cursor = conn.execute(
+        _QUESTION_TRANSITION_SQL,
+        (EXPIRED, None, resolved_at, question_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def _question_from_row(row: tuple[Any, ...]) -> QuestionRecord:
+    """Rebuild a record from a `_QUESTION_COLUMNS`-ordered row."""
+    values = dict(zip(_QUESTION_COLUMNS, row))
+    return QuestionRecord(
+        question_id=values["question_id"],
+        workflow_id=values["workflow_id"],
+        epic_id=values["epic_id"],
+        node_id=values["node_id"],
+        attempt=values["attempt"],
+        question_text=values["question_text"],
+        message_id=values["message_id"],
+        sent_at=values["sent_at"],
+        expires_at=values["expires_at"],
+        resolution=values["resolution"],
+        answer_text=values["answer_text"],
         resolved_at=values["resolved_at"],
     )

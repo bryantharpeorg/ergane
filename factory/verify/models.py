@@ -493,3 +493,35 @@ class EscalationRecord:
     delivered: bool = False
     resolution: EscalationChoice | str | None = None
     resolved_at: str | None = None
+
+
+@dataclass(frozen=True)
+class QuestionRecord:
+    """A pending operator question — a store row before it is ever a message.
+
+    The sibling of `EscalationRecord` for the operator-question channel
+    (008-US1). The row is written before the send (R11, the escalation
+    precedent), so a crash in between leaves something the expiry path (US2) can
+    close rather than an untracked message. `message_id` is the Telegram message
+    id the send returned — the reply-routing key a free-text answer threads back
+    to (FR-008) — and is ``None`` until the message is delivered.
+
+    `resolution` is ``None`` while the node is parked WAITING_OPERATOR,
+    ``ANSWERED`` once the operator replies (US2), or ``EXPIRED`` when the
+    question's own window runs out (FR-004). `answer_text` is the operator's
+    reply, filled in by US2; the store's CHECK constraint keeps it ``None``
+    unless the resolution is ``ANSWERED``.
+    """
+
+    question_id: str
+    workflow_id: str
+    epic_id: str
+    node_id: str
+    attempt: int
+    question_text: str
+    sent_at: str
+    expires_at: str
+    message_id: int | None = None
+    resolution: str | None = None
+    answer_text: str | None = None
+    resolved_at: str | None = None
