@@ -251,21 +251,27 @@ promoted spec dispatches on the next pass.
 
 ## Work Graph
 
-US2 depends on US1: the scheduler computes over the grammar and the readiness
-rules US1 defines. US3 depends on US2: durability and steering harden a
-scheduler that must first exist. Nothing here touches the epic interpreter's
-internals — the roadmap consumes `EpicWorkflow` through its public contract
-(input, result, signals), which is what makes the child-workflow seam safe.
+US2 depends on US1 **merged**, not merely passed: the scheduler imports the
+grammar module US1 lands, so a pass-edge would dispatch US2 into a worktree
+that lacks its foundation — which is exactly what happened on the first run
+(2026-08-07: us2 dispatched on us1's PASS, four minutes before us1's PR
+merged, and built against a tree with no `factory/roadmap/`). Same for US3 on
+US2. `depends_on_merged` is 003's FR-009 edge, built for precisely this.
+Nothing here touches the epic interpreter's internals — the roadmap consumes
+`EpicWorkflow` through its public contract (input, result, signals), which is
+what makes the child-workflow seam safe.
 
 ```yaml
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-003]
 US2:
-  depends_on: [US1]
+  depends_on: []
+  depends_on_merged: [US1]
   implements: [FR-004, FR-005, FR-006, FR-009]
 US3:
-  depends_on: [US2]
+  depends_on: []
+  depends_on_merged: [US2]
   implements: [FR-007, FR-008, FR-010]
 ```
 
