@@ -45,7 +45,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from factory.config import Persona
 from factory.mergequeue.models import Landing
@@ -372,7 +372,9 @@ def validate_workgraph(graph: WorkGraph, personas: Mapping[str, Persona]) -> Non
                 "or merge, never both (FR-009)"
             )
 
-    cycle = _find_cycle(graph.nodes)
+    cycle = find_cycle(
+        {node.id: [*node.depends_on, *node.depends_on_merged] for node in graph.nodes}
+    )
     if cycle is not None:
         raise fail(f"dependency cycle: {' -> '.join(cycle)}")
 
@@ -402,20 +404,22 @@ def validate_workgraph(graph: WorkGraph, personas: Mapping[str, Persona]) -> Non
             )
 
 
-def _find_cycle(nodes: list[WorkNode]) -> list[str] | None:
-    """One cycle in the dependency relation as the path that closes it, or None.
+def find_cycle(adjacency: Mapping[str, Sequence[str]]) -> list[str] | None:
+    """One cycle in a dependency relation as the path that closes it, or None.
 
     A cycle is reported as `a -> b -> a` rather than as a set of implicated nodes
     because the operator's next move is to delete one of those edges, and the
     path says which edges exist. Only the nodes on the cycle appear: a message
     listing the whole graph would leave the reader to re-derive the cycle by hand,
     which is the work this just did.
+
+    Generalized from the two byte-identical `_find_cycle` copies this repo used
+    to carry (one over `WorkNode`s, one over `WorkGraphDeclaration`s): both built
+    an adjacency mapping and then ran the same DFS, so the mapping is the whole
+    interface. The roadmap graph is the third caller — three duplicates was the
+    defect the second copy's docstring warned about, so the shared spelling lives
+    here and both existing callers reach it through their own adjacency dicts.
     """
-    # The union of both edge sets: a merge-gated edge is as real a dependency as
-    # a verified one, and a cycle that spans the two is still a deadlock.
-    adjacency = {
-        node.id: [*node.depends_on, *node.depends_on_merged] for node in nodes
-    }
     finished: set[str] = set()
     path: list[str] = []
     on_path: set[str] = set()
@@ -423,7 +427,7 @@ def _find_cycle(nodes: list[WorkNode]) -> list[str] | None:
     def visit(node_id: str) -> list[str] | None:
         path.append(node_id)
         on_path.add(node_id)
-        for dependency in adjacency[node_id]:
+        for dependency in adjacency.get(node_id, ()):
             if dependency in on_path:
                 return path[path.index(dependency) :] + [dependency]
             if dependency not in finished:
@@ -435,9 +439,9 @@ def _find_cycle(nodes: list[WorkNode]) -> list[str] | None:
         finished.add(node_id)
         return None
 
-    for node in nodes:
-        if node.id not in finished:
-            cycle = visit(node.id)
+    for node_id in adjacency:
+        if node_id not in finished:
+            cycle = visit(node_id)
             if cycle is not None:
                 return cycle
     return None
