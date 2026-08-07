@@ -166,8 +166,13 @@ dispatched and after its answer arrived.
 Expiry (FR-004) reuses the escalation expiry *pattern* — the workflow timer
 plus an idempotent expire transition on the questions table ("True if this
 call is what expired it") — an expired question resolves as if the attempt had
-FAILed, and the ladder proceeds. Expiry window: the escalation default, no new
-knob unless a test proves it wrong.
+FAILed **and consumes a slot**: asking is free exactly when the operator
+engages (decided 2026-08-07), which is what keeps burn-free questions from
+being farmable. Expiry window: the question's own default, 8 hours
+(`QUESTION_TIMEOUT_S = 28_800`), deliberately not the escalation hour
+(`ESCALATION_TIMEOUT_S = 3600` in `factory/activities/notify_activities.py`) —
+questions are routinely asked into an operator's sleep, and an epic parked
+till morning is cheaper than a good question burned at 3 AM.
 
 ### US3 — the in-attempt ferry (FR-009), deferred behind live evidence
 
@@ -189,4 +194,4 @@ monitor loop, one editor at a time.
 | Question parks a node forever | Operator asleep; epic hostage | Expiry reuses the escalation timer + idempotent-transition pattern (FR-004) |
 | Free text corrupts escalation semantics | escalations table CHECKs are load-bearing for the fail-safe ladder | Sibling `questions` table; the constrained table is never touched |
 | Credential leak via Telegram | Question/answer text leaves the machine | Sweep assertion extended to payloads, answers, and the new table (FR-007) |
-| Burn-free questions get farmed | Agents learn asking is free | Prompt contract: a question names its fork and options; no verdict exists to game — operator patience is the rate limiter |
+| Burn-free questions get farmed | Agents learn asking is free | Expiry reclassifies an unanswered question as a burned FAIL (FR-004), so farming costs slots; prompt contract: a question names its fork and options |

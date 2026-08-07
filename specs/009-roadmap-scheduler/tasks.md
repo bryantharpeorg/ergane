@@ -15,8 +15,10 @@ in any order. Tasks without it are sequential because they share a file.
 
 ## Phase 1: Setup (operator preflight — dispatched to no node)
 
-- [ ] T001 Operator: confirm 003 and 006 have landed on the target's default
-      branch (this spec's own frontmatter declares the 003 dependency), then
+- [ ] T001 Operator: confirm 003, 007, and 006's us1/us2 have landed on the
+      target's default branch (frontmatter declares the 003 and 007 edges;
+      006's requirement is story-level — us2's preflight and us1's heartbeat —
+      and 006's us3/us4 are explicitly NOT required, decided 2026-08-07), then
       re-verify plan.md's reuse inventory against that tree — the inventory was
       drafted 2026-08-07 against `ergane-buildout` + the `003-landed` branch
       and landings may have moved line numbers or shapes. Correct the plan
@@ -73,7 +75,8 @@ blocker.
 - [ ] T008 [US1] Implement the roadmap render command (new `factory-roadmap`
       console script or subcommand — match `factory-epic`'s parser shape) until
       T005 passes.
-- [ ] T009 [US1] Add frontmatter to the existing specs: `003-merge-queue`,
+- [ ] T009 [US1] Add or true-up frontmatter on the existing specs (007, 008
+      and this spec already carry it): `003-merge-queue`,
       `006-interpreter-hardening`, `007-parallel-dispatch`,
       `008-operator-channel` with their true states and dependency edges;
       `004-budget-enforcement` as `deferred`; `001/002/005` as attested

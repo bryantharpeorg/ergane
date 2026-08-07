@@ -1,6 +1,10 @@
 ---
-state: draft
-depends_on_landed: [003-merge-queue]
+state: ready
+# Run order decided 2026-08-07: 007 → 009 → 008. 007 and this spec share
+# workgraph/models.py (_find_cycle), so they run sequentially. 006's
+# requirement is story-level (us1 heartbeat, us2 preflight), carried by
+# tasks.md T001; this grammar's edges are spec-level.
+depends_on_landed: [003-merge-queue, 007-parallel-dispatch]
 ---
 
 # Feature Specification: Roadmap Scheduler
@@ -114,8 +118,9 @@ blocked with a finding.
    nodes), **When** the parent wakes, **Then** dependents remain blocked and
    the roadmap reports the dependency as finished-but-not-landed.
 5. **Given** the concurrency bound, **When** two specs are simultaneously
-   dispatchable, **Then** dispatch order follows roadmap declaration order and
-   the second waits for capacity.
+   dispatchable, **Then** dispatch order follows spec-directory order
+   (lexicographic — the numbered-directory convention makes this the roadmap's
+   declared order) and the second waits for capacity.
 
 ---
 
@@ -198,7 +203,8 @@ promoted spec dispatches on the next pass.
   NOT poll for epic state on any interval.
 - **FR-005**: Concurrent child epics MUST be bounded, default one, adjustable
   per roadmap run; dispatch order among simultaneously dispatchable specs MUST
-  be deterministic.
+  be deterministic — lexicographic by spec directory name, which the numbered
+  directories make the roadmap's declared order.
 - **FR-006**: Pre-dispatch MUST run, per spec: fresh target clone at the
   current default branch, derivation, and the existing preflight and onboarding
   checks; any refusal MUST park the spec with the finding and MUST NOT stall
@@ -270,6 +276,9 @@ US3:
   frontmatter declares that dependency.
 - 006-US2's preflight exists (it does; it passed tonight) and is reusable at
   dispatch time.
+- 007 lands before this epic runs (the frontmatter edge above): both epics
+  touch `factory/workgraph/models.py`, and sequential execution is the same
+  conflict-avoidance argument 006/007 use (decided 2026-08-07).
 - Telegram remains the notification surface; the roadmap emits through the
   existing bridge and adds no new channel. 008, if built, composes: a child
   epic parked on an operator question does not block the roadmap's accounting.

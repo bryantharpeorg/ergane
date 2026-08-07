@@ -1,6 +1,10 @@
 ---
-state: draft
-depends_on_landed: [006-interpreter-hardening]
+state: ready
+# Run order decided 2026-08-07: 007 → 009 → 008. All three share files
+# (workflow.py with 007, workgraph/models.py with 009), so they run
+# sequentially. 006-US1 is also required — but only by US3, story-level,
+# carried by the work graph and tasks.md; this grammar's edges are spec-level.
+depends_on_landed: [007-parallel-dispatch, 009-roadmap-scheduler]
 ---
 
 # Feature Specification: Operator Channel
@@ -67,10 +71,10 @@ one message carrying the question text, and no FAIL is recorded.
 
 ---
 
-### User Story 2 - The answer reaches the next attempt, and the question costs no ladder slot (Priority: P1)
+### User Story 2 - The answer reaches the next attempt, and an answered question costs no ladder slot (Priority: P1)
 
 As the factory operator, my Telegram reply becomes part of the next attempt's
-prompt verbatim, and the question attempt does not count against the node's
+prompt verbatim, and an answered question does not count against the node's
 attempt ceiling, so that asking first is strictly cheaper than guessing wrong.
 
 Tonight's manual equivalent: the operator's answer was encoded into plan.md and
@@ -91,13 +95,15 @@ question attempt dispatched.
 1. **Given** a node parked WAITING_OPERATOR, **When** the operator replies to the
    question message, **Then** a new attempt dispatches whose prompt carries the
    answer verbatim under a dedicated operator-answer section.
-2. **Given** a question attempt, **When** the ladder accounts attempts, **Then**
-   the QUESTION termination consumed no slot: a node that could take 4 attempts
-   before the question can still take 4 after it.
+2. **Given** a question attempt answered before expiry, **When** the ladder
+   accounts attempts, **Then** the QUESTION termination consumed no slot: a node
+   that could take 4 attempts before the question can still take 4 after the
+   answer arrives.
 3. **Given** an unanswered question, **When** the configured expiry elapses,
    **Then** the node un-parks and the ladder proceeds as if the attempt had been
-   a FAIL — a question may pause a node, never park it forever (the factory's
-   existing escalation expiry is the precedent and the mechanism).
+   a FAIL, slot consumed — a question may pause a node, never park it forever
+   (the factory's existing escalation expiry is the precedent and the mechanism;
+   the default window is the question's own 8 hours, per FR-004).
 4. **Given** an answer, **When** it is stored and forwarded, **Then** it is
    recorded in the verification store alongside the question, so the epic's
    record shows what was asked and what was decided.
@@ -160,16 +166,24 @@ same agent process reads it and proceeds to commit work, with no second dispatch
 ### Functional Requirements
 
 - **FR-001**: An attempt whose final message carries the question marker MUST
-  terminate with a distinct QUESTION classification, not FAIL, and MUST NOT be
-  charged against the node's attempt ceiling.
+  terminate with a distinct QUESTION classification, not FAIL, and — when the
+  operator answers before expiry — MUST NOT be charged against the node's
+  attempt ceiling. A question that expires unanswered is the one exception:
+  FR-004 reclassifies it as a burn. Asking is free exactly when the operator
+  engages (decided 2026-08-07).
 - **FR-002**: The question text MUST reach the operator over the existing notify
   bridge, attributed to its epic, node, and attempt.
 - **FR-003**: The operator's reply MUST be delivered verbatim into the next
   attempt's prompt under a dedicated section, and MUST be persisted alongside
   the question in the verification store.
 - **FR-004**: A node parked on a question MUST un-park on a configurable expiry,
-  after which the ladder proceeds as if the attempt had FAILed. Expiry MUST
-  reuse the existing escalation-expiry mechanism, not duplicate it.
+  after which the ladder proceeds as if the attempt had FAILed — consuming an
+  attempt slot, the one case where a question burns (see FR-001). Expiry MUST
+  reuse the existing escalation-expiry mechanism, not duplicate it, but the
+  default window is the question's own: 8 hours (28,800 s), not the escalation
+  hour — questions are routinely asked into an operator's sleep, and an epic
+  parked till morning is cheaper than a good question burned at 3 AM (decided
+  2026-08-07).
 - **FR-005**: Committed work in a question attempt's worktree MUST be preserved
   identically to a salvaged attempt's.
 - **FR-006**: A question attempt's usage MUST be recorded in the ledger exactly

@@ -14,12 +14,14 @@ sequential because they share a file.
 
 ## Phase 1: Setup (operator preflight — dispatched to no node)
 
-- [ ] T001 Operator: confirm 003 and 006 have both landed. 003 supplies the landing path
-      US3 tests against; 006 supplies the heartbeat change without which fan-out multiplies
-      workflow history by the number of concurrent attempts — at the pre-006 rate of ~1,320
-      events/hour/attempt, three concurrent nodes produce ~4,000/hour against Temporal's
-      10,240 warning and 51,200 hard limit, making history the binding constraint on epic
-      width. This is a sequencing requirement, not a preference.
+- [ ] T001 Operator: confirm 003 and 006-US1 have both landed. 003 supplies the landing
+      path US3 tests against; 006-US1 supplies the heartbeat change without which fan-out
+      multiplies workflow history by the number of concurrent attempts — at the pre-006
+      rate of ~1,320 events/hour/attempt, three concurrent nodes produce ~4,000/hour
+      against Temporal's 10,240 warning and 51,200 hard limit, making history the binding
+      constraint on epic width. 006's us3/us4 are explicitly NOT required (decided
+      2026-08-07) and may land before or after this epic. This is a sequencing
+      requirement, not a preference.
 
 ---
 

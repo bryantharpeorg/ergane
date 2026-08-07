@@ -1,10 +1,17 @@
+---
+state: ready
+# 006-US1 (the heartbeat rewrite) is also required — story-level, carried by
+# tasks.md T001; this grammar's edges are spec-level.
+depends_on_landed: [003-merge-queue]
+---
+
 # Feature Specification: Parallel Node Dispatch
 
 **Feature Branch**: `007-parallel-dispatch`
 
 **Created**: 2026-08-06
 
-**Status**: Drafted. This is the widening the interpreter was built to accept —
+**Status**: Ready for dev (2026-08-07). This is the widening the interpreter was built to accept —
 `workflow.py`'s main loop already says so: *"Sequential by design: one node at a time,
 the first ready one in declaration order... Parallel execution is deferred, and this
 loop is where it would widen — the ready set is already computed, only the picker is
@@ -266,13 +273,15 @@ US5:
 
 - **003 has landed.** US3 is meaningless without the landing path, and the epic assumes
   the merge queue exists rather than the D-024 interim manual dance.
-- **006 has landed, and this matters more than it looks.** Fan-out multiplies whatever
-  an attempt costs in workflow history by the number of concurrent attempts. At today's
-  polling rate — 11 history events per 30 seconds per attempt, ~1,320/hour — three
-  concurrent nodes would produce ~4,000 events/hour against Temporal's 10,240-event
-  warning and 51,200 hard limit. Running this before 006's heartbeat change would make
-  the history ceiling the binding constraint on how wide an epic can go. 006 first is a
-  sequencing requirement, not a preference.
+- **006-US1 has landed, and this matters more than it looks.** Fan-out multiplies
+  whatever an attempt costs in workflow history by the number of concurrent attempts.
+  At the pre-006 polling rate — 11 history events per 30 seconds per attempt,
+  ~1,320/hour — three concurrent nodes would produce ~4,000 events/hour against
+  Temporal's 10,240-event warning and 51,200 hard limit. Running this before 006's
+  heartbeat change would make the history ceiling the binding constraint on how wide an
+  epic can go. US1's heartbeat rewrite is the gate; 006's us3 (orphan-key recovery) and
+  us4 (outage tolerance) are explicitly not required and may land before or after this
+  epic (decided 2026-08-07). 006-US1 first is a sequencing requirement, not a preference.
 - 006 and 007 both modify `factory/workgraph/workflow.py` — 006 the attempt's inner
   loop, 007 the scheduler around it. They are run sequentially for that reason; running
   them concurrently would manufacture exactly the CONFLICT recovery 003 US2 handles, for

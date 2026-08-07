@@ -85,7 +85,7 @@ and no FAIL recorded.
 ## Phase 3: User Story 2 — The answer reaches the next attempt at zero ladder cost (Priority: P1)
 
 **Goal**: a Telegram reply becomes the next attempt's operator-answer section,
-and the question attempt never counted against the ceiling.
+and an answered question never counted against the ceiling.
 
 **Independent Test**: answer a parked question; the next prompt carries Q and A
 verbatim; the node's remaining attempts equal the pre-question count.
@@ -103,9 +103,10 @@ verbatim; the node's remaining attempts equal the pre-question count.
       resolution the node un-parks and the next attempt's assembled prompt
       carries the question and answer verbatim in a dedicated section, distinct
       from verification feedback (FR-003); attempt accounting is unchanged by
-      the question attempt (a node with N attempts before the question has N
-      after the answer); an expired question resolves as FAIL and the ladder
-      proceeds (FR-004, reusing the existing expiry) — must fail.
+      an answered question (a node with N attempts before the question has N
+      after the answer); an expired question resolves as FAIL and consumes a
+      slot, and the question default is 8 h — 28,800 s, not the escalation
+      hour (FR-004, reusing the existing expiry mechanism) — must fail.
 
 ### Implementation for User Story 2
 
