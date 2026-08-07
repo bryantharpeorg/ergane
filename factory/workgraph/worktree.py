@@ -17,6 +17,9 @@ Three decisions here are load-bearing:
   the pin has to survive outside workflow memory: it is written beside the
   worktree as `<node>.json` and read back on reuse. Recapturing HEAD instead would
   quietly re-parent a node whose attempt 3 started after someone else's merge.
+  What is captured is the *remote's* current default-branch head, fetched at that
+  moment — not the clone's own HEAD, which is stale exactly when a merge-edge
+  (003 FR-009) matters (see `capture_base_ref`).
 
 - **Salvage commits an empty tree as readily as a dirty one.** SC-004 asks that
   every terminal attempt be observable from the ref alone, and an attempt that
@@ -151,13 +154,26 @@ def salvage_message(
 
 
 def capture_base_ref(target_repo: Path | str) -> str:
-    """The target clone's current commit — what a node dispatched now branches from.
+    """The target's current *remote* head — what a node dispatched now branches from.
 
     Read once, at first dispatch, and then carried: this is the moment the epic's
     view of the target repo is fixed, and every later call reads the recorded
     value rather than re-asking git.
+
+    Fetched, never read from the clone: the queue merges on the remote, and
+    nothing pulls the worker host's clone in between, so the clone's own HEAD is
+    stale exactly when a merge-edge (003 FR-009) matters. Found live 2026-08-07:
+    us3, dispatched 21 seconds after us2's squash-merge, was pinned to the
+    clone's HEAD, built without us2's code, and collided with it at PR #10. A
+    clone with no `origin` pins its own HEAD — there is nothing to be stale
+    against — but a fetch that *fails* raises: a quiet stale pin is the defect
+    this exists to prevent.
     """
-    return _git(Path(target_repo), "rev-parse", "HEAD").strip()
+    repo = Path(target_repo)
+    if not _has_remote(repo, "origin"):
+        return _git(repo, "rev-parse", "HEAD").strip()
+    _git(repo, "fetch", "--quiet", "origin")
+    return _git(repo, "rev-parse", f"origin/{_default_branch(repo)}").strip()
 
 
 def ensure(
@@ -572,6 +588,17 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     ref = f"refs/heads/{branch}"
     completed = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref],
+        capture_output=True,
+        text=True,
+        env=scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"},
+        timeout=GIT_TIMEOUT_S,
+    )
+    return completed.returncode == 0
+
+
+def _has_remote(repo: Path, remote: str) -> bool:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "remote", "get-url", remote],
         capture_output=True,
         text=True,
         env=scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"},

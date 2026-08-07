@@ -268,6 +268,63 @@ def test_ensure_names_the_path_when_the_target_repo_is_not_a_repository(
     assert str(not_a_repo) in str(raised.value)
 
 
+def _land_on_origin_only(repo: Path) -> str:
+    """Land a commit on origin while the local clone's default branch stays put.
+
+    The shape GitHub's merge queue produces: the squash-merge exists on the
+    remote the moment the landing poll sees MERGED, and the worker host's clone
+    has not pulled since.
+    """
+    (repo / "README.md").write_text("landed by the queue\n", encoding="utf-8")
+    git(repo, "commit", "--quiet", "-a", "-m", "queue merged the predecessor")
+    git(repo, "push", "--quiet", "origin", "main")
+    landed = head(repo)
+    git(repo, "reset", "--quiet", "--hard", "HEAD~1")
+    return landed
+
+
+def test_ensure_pins_the_remote_head_not_the_stale_local_clone(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """First dispatch fetches origin and branches from *its* default-branch head.
+
+    The merge-edge regression (FR-009, found live 2026-08-07 on PR #10): a node
+    dispatched after its predecessor MERGED must open a worktree containing the
+    predecessor's landed work. The queue merges on the remote and nothing pulls
+    the clone in between, so a pin captured from the clone's own HEAD is stale
+    exactly when the merge-edge matters — the dependent builds without the code
+    its edge waited for, and collides with it at the PR.
+    """
+    repo, _bare = origin_repo
+    remote_head = _land_on_origin_only(repo)
+    assert head(repo) != remote_head
+
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert prepared.base_ref == remote_head
+    assert head(Path(prepared.path)) == remote_head
+    # The predecessor's landed work is actually in the tree the agent opens.
+    readme = Path(prepared.path) / "README.md"
+    assert readme.read_text(encoding="utf-8") == "landed by the queue\n"
+
+
+def test_capture_base_ref_without_an_origin_reads_the_local_head(
+    repo: Path,
+) -> None:
+    """A clone with no remote has nothing to be stale against."""
+    assert capture_base_ref(repo) == head(repo)
+
+
+def test_capture_base_ref_raises_when_origin_is_unreachable(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A failed fetch is infrastructure, never a quiet stale pin (fail closed)."""
+    git(repo, "remote", "add", "origin", str(tmp_path / "gone.git"))
+
+    with pytest.raises(WorktreeError):
+        capture_base_ref(repo)
+
+
 # --- salvage -----------------------------------------------------------------
 
 
