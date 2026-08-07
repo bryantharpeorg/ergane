@@ -63,6 +63,7 @@ from factory.activities import (
     agent_activities,
     merge_activities,
     notify_activities,
+    roadmap_activities,
     usage_activities,
     verify_activities,
 )
@@ -72,13 +73,21 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
+from factory.roadmap.workflow import (
+    read_corpus_activity,
+    read_spec_text_activity,
+    RoadmapWorkflow,
+)
 from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
 
 logger = logging.getLogger(__name__)
 
-#: The one workflow type in the factory (D-002): every epic, whatever its shape,
-#: is an execution of this class over a different `WorkGraph`.
-WORKFLOWS = [EpicWorkflow]
+#: The factory's two workflow types (D-002 for the epic; 009 adds the roadmap).
+#: `EpicWorkflow` is one epic over a `WorkGraph`; `RoadmapWorkflow` is the
+#: long-lived scheduler that dispatches dispatchable specs as child epics (US2,
+#: FR-004). Both run on the one `workgraph` task queue, so a single worker poll
+#: serves epics an operator started and epics the roadmap dispatched alike.
+WORKFLOWS = [EpicWorkflow, RoadmapWorkflow]
 
 #: Every activity the three components ship, grouped by the component that owns
 #: it. The interpreter's own surface is first because it is the one whose
@@ -116,6 +125,18 @@ ACTIVITIES = [
     merge_activities.sync_landing_branch,
     # 003 — US3 onboarding: the target repo is validated before any dispatch.
     merge_activities.validate_target_repo,
+    # 009 — the roadmap's pre-dispatch surface: clone, derive, preflight,
+    # onboarding, capacity, and the corpus/spec reads the scheduler needs.
+    # Onboarding reuses 003's `validate_target_repo` activity (registered above)
+    # from inside the roadmap's own `onboard_target` wrapper; the wrapper is
+    # registered whole here so the worker serves the roadmap's call shape.
+    roadmap_activities.clone_target,
+    roadmap_activities.derive_spec,
+    roadmap_activities.preflight_spec,
+    roadmap_activities.onboard_target,
+    roadmap_activities.count_open_epics,
+    read_corpus_activity,
+    read_spec_text_activity,
 ]
 
 

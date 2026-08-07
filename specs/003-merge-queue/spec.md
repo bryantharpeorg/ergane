@@ -1,3 +1,14 @@
+---
+# Attested landed 2026-08-07 (operator): the merge-queue component (spec 003)
+# landed 2026-08-06 — the crossover built it by dispatching the factory against
+# this repository, all three nodes passed on the final run's first attempt
+# (SC-005 met, default branch @ 53bdbb4). It landed before the roadmap grammar
+# existed, so this is the attestation path 009's grammar defines for work that
+# predates the roadmap.
+state: landed
+depends_on_landed: [001-usage-tracking, 005-workgraph-interpreter]
+---
+
 # Feature Specification: Merge Discipline via GitHub Merge Queue
 
 **Feature Branch**: `003-merge-queue`

@@ -50,8 +50,18 @@ from temporalio import activity, workflow as workflow_api
 from temporalio.testing import WorkflowEnvironment
 
 import factory.worker as worker_module
+from factory.roadmap import workflow as roadmap_workflow_module
 from factory.workgraph import workflow as workflow_module
 from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
+
+#: The workflow modules whose `workflow.execute_activity` / `start_activity`
+#: calls the scan reads. T008 read only `workgraph/workflow.py` because that
+#: was the factory's one workflow; 009 adds the roadmap scheduler, whose
+#: pre-dispatch dispatches activities the workgraph scan would leave
+#: unchecked. Every module that invokes `workflow.execute_activity` is in this
+#: list, so a workflow registered in `WORKFLOWS` whose activity a worker
+#: forgot to serve fails here rather than hanging in production.
+_WORKFLOW_MODULES = (workflow_module, roadmap_workflow_module)
 
 #: The call sites that put an activity on a task queue. `start_activity` is in
 #: here because the agent attempt uses it — it is the cancellable form (the kill
@@ -94,13 +104,22 @@ def _activity_name(fn: object) -> str:
 def _resolve(node: ast.expr) -> object:
     """Resolve an `execute_activity` first argument to the thing it names.
 
-    Two shapes reach here: a bare name (`resolve_graph`), which the workflow
-    imported and this looks up in that module's namespace, and a dotted one
-    (`usage_activities.poll_usage`). A string literal never does — those are
-    handled by the caller, since a literal *is* already the dispatch name.
+    Two shapes reach here: a bare name (`resolve_graph`), which a workflow
+    imported and this looks up across the workflow modules' namespaces, and a
+    dotted one (`usage_activities.poll_usage`). A string literal never does —
+    those are handled by the caller, since a literal *is* already the dispatch
+    name. The lookup walks every module in `_WORKFLOW_MODULES` so a bare name
+    imported in *either* workflow resolves, not just the workgraph's.
     """
     if isinstance(node, ast.Name):
-        return getattr(workflow_module, node.id)
+        for module in _WORKFLOW_MODULES:
+            if hasattr(module, node.id):
+                return getattr(module, node.id)
+        raise AssertionError(
+            f"the workflow invokes an activity through the bare name {node.id!r} "
+            "that no workflow module imports; registration can no longer be "
+            "checked mechanically — teach this test the new shape before landing it"
+        )
     if isinstance(node, ast.Attribute):
         return getattr(_resolve(node.value), node.attr)
     raise AssertionError(
@@ -111,27 +130,37 @@ def _resolve(node: ast.expr) -> object:
 
 
 def _invoked_activity_names() -> set[str]:
-    """Every activity `factory/workgraph/workflow.py` schedules, by name."""
-    tree = ast.parse(inspect.getsource(workflow_module))
+    """Every activity a workflow module schedules, by name.
+
+    Scans every module in `_WORKFLOW_MODULES` (the workgraph workflow and the
+    roadmap scheduler) for `workflow.execute_activity` / `start_activity`
+    calls, so an activity the roadmap dispatches that the worker forgot to
+    serve fails here rather than hanging in production.
+    """
     names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in _INVOCATIONS:
-            continue
-        if not (isinstance(node.func.value, ast.Name) and node.func.value.id == "workflow"):
-            continue
-        assert node.args, (
-            "an activity invocation with no arguments in workflow.py: "
-            f"line {node.lineno}"
-        )
-        first = node.args[0]
-        if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            names.add(first.value)
-        else:
-            names.add(_activity_name(_resolve(first)))
+    for module in _WORKFLOW_MODULES:
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in _INVOCATIONS:
+                continue
+            if not (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "workflow"
+            ):
+                continue
+            assert node.args, (
+                f"an activity invocation with no arguments in "
+                f"{module.__name__}: line {node.lineno}"
+            )
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                names.add(first.value)
+            else:
+                names.add(_activity_name(_resolve(first)))
     return names
 
 
