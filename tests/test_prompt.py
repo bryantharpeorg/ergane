@@ -190,6 +190,7 @@ SECTIONS = (
     "## Role and scope",
     "## The inner loop (advisory)",
     "## The outer loop (authoritative)",
+    "## If you are blocked, ask the operator",
     "## Story",
     "## Plan",
     "## Your task slice",
@@ -425,6 +426,27 @@ def test_outer_loop_is_stated_as_the_authoritative_verdict() -> None:
 
     assert "carries no weight" in outer
     assert "Do not weaken tests" in outer
+
+
+def test_the_operator_question_contract_states_the_marker_and_the_bar() -> None:
+    """008-US1: the standing instruction that lets an agent ask a blocking fork.
+
+    The marker is a fixed level-2 heading the agent writes in its final message,
+    and the bar is high: a question names its fork and the options considered and
+    is for genuinely blocking forks only. It also states the amendment's guard
+    in the agent's own terms — a marker parks, it never passes (FR-010).
+    """
+    section = section_of(build(), "## If you are blocked, ask the operator")
+
+    assert "## OPERATOR QUESTION" in section, (
+        "the contract must name the exact marker the detector scans for"
+    )
+    assert "fork" in section.lower()
+    assert "options" in section.lower()
+    assert "blocking" in section.lower()
+    # The guard: a marker is never a verdict. Stated so an agent does not reach
+    # for the marker to pass its node (FR-010).
+    assert "never passes" in section.lower() or "not a verdict" in section.lower()
 
 
 # --- standards directive (R11) ------------------------------------------------

@@ -80,6 +80,12 @@ from factory.verify.models import (
     OutputCheck,
     VerificationResult,
 )
+from factory.verify.question import (
+    QUESTION_HEADING,  # noqa: F401  -- re-exported for the prompt contract (T008)
+    QuestionMarker,
+    TranscriptReadError,
+    detect_operator_question,
+)
 
 #: The activity error type for a spec the grammar refuses (spec US1). The
 #: message is the parser's, naming the one requirement at fault.
@@ -100,6 +106,12 @@ JUDGE_UNAVAILABLE = "JUDGE_UNAVAILABLE"
 
 #: The activity error type for a verification result no rollup could account for.
 ATTRIBUTION_INCOMPLETE = "ATTRIBUTION_INCOMPLETE"
+
+#: The activity error type for a transcript the marker detector could not read
+#: (008-US1). Infrastructure, not a verdict: a vanished or unreadable archive must
+#: never be read as a clean attempt that happened to ask nothing, so it raises the
+#: way `WORKTREE_MISSING` does rather than returning "no question" (FR-010).
+DETECT_FAILED = "DETECT_FAILED"
 
 #: The system of record's filename under `<specs_root>/<feature>/` (D-023).
 SPEC_FILENAME = "spec.md"
@@ -312,6 +324,49 @@ async def check_output(request: CheckOutputInput) -> OutputCheck:
         # The path travels with the error: by the time an operator reads this
         # they are holding a node id, not a directory.
         raise ApplicationError(str(exc), type=WORKTREE_MISSING) from exc
+
+
+# --- operator-question detection (008-US1) ----------------------------------
+
+
+@dataclass(frozen=True)
+class DetectQuestionInput:
+    """The archived transcript the marker detector reads (D-018's evidence).
+
+    The detector reads ``stdout.log`` from the attempt's transcript directory —
+    the same ``AdapterResult.transcript_path`` the adapter points at the archive
+    on every termination path. The workflow owns the attribution (epic/node/
+    attempt) and the detector owns nothing but the read, so the only input it
+    needs is the path. No verdict travels in or out: the marker's only possible
+    effect is to park the node, never to grade it (FR-010).
+    """
+
+    transcript_path: str
+
+
+@activity.defn
+async def detect_operator_question_activity(
+    request: DetectQuestionInput,
+) -> QuestionMarker:
+    """Scan the archived transcript for the OPERATOR QUESTION marker (008-US1).
+
+    Read-only, and safe to retry. Raises ``DETECT_FAILED`` when the transcript is
+    missing or unreadable — the same line ``check_output`` draws for a vanished
+    worktree: an absent archive resembles a marker-free attempt exactly, and
+    reporting one would let an infrastructure failure masquerade as a clean
+    attempt that happened to ask nothing. ``None`` (no marker, or a marker with
+    an empty body) is the common case the workflow grades as today; an
+    unreadable archive is the one outcome that is neither QUESTION nor the common
+    case, and it stays retryable so the workflow's retry budget — not the
+    ladder's — spends it.
+    """
+    try:
+        marker = await asyncio.to_thread(
+            detect_operator_question, Path(request.transcript_path)
+        )
+    except TranscriptReadError as exc:
+        raise ApplicationError(str(exc), type=DETECT_FAILED) from exc
+    return marker if marker is not None else QuestionMarker(is_question=False)
 
 
 # --- judge ------------------------------------------------------------------

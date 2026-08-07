@@ -49,6 +49,7 @@ from factory.verify.models import (
     GateResult,
     GateStatus,
     OutputCheck,
+    QuestionRecord,
     VerificationResult,
 )
 from factory.verify.store import EXPIRED
@@ -235,6 +236,24 @@ def escalation_message(record: EscalationRecord) -> str:
         record.history_summary,
         f"\n\nNo answer by {record.expires_at} applies the default: KILL the node.",
     )
+
+
+def question_message(record: QuestionRecord) -> str:
+    """The message an operator is paged with when an agent asks (008-US1, FR-002).
+
+    The mirror of `escalation_message` with the two deltas that make a question a
+    question: no keyboard (the operator types a reply rather than pressing a
+    button — `send_question` sends with no `reply_markup`), and the body is the
+    marker text the detector extracted, shipped verbatim (FR-002). The header
+    attributes the question to its epic and node the same way an escalation's
+    does, so the operator knows which node is parked and waiting.
+    """
+    header = f"❓ Operator question\nepic: {record.epic_id}\nnode: {record.node_id}\n\n"
+    footer = (
+        f"\n\nReply to this message with your answer (attempt {record.attempt}). "
+        f"No answer by {record.expires_at} lets the node proceed as a FAIL."
+    )
+    return _compose(header, record.question_text, footer)
 
 
 def resolution_notice(

@@ -59,9 +59,9 @@ from factory.activities.verify_activities import (
     DEFAULT_VERIFICATION_DB_PATH,
     VERIFICATION_DB_PATH_ENV,
 )
-from factory.notify.messages import escalation_keyboard, escalation_message
+from factory.notify.messages import escalation_keyboard, escalation_message, question_message
 from factory.verify import store
-from factory.verify.models import EscalationChoice, EscalationRecord
+from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,18 @@ DEFAULT_CHOICES = (
     EscalationChoice.KILL,
     EscalationChoice.PAUSE_EPIC,
 )
+
+#: The activity error type for a question that could not be recorded (008-US1).
+#: The mirror of `ESCALATION_NOT_RECORDED`: an unwritten row cannot be expired,
+#: resolved or found again, so it raises before a message exists in a chat.
+QUESTION_NOT_RECORDED = "QUESTION_NOT_RECORDED"
+
+#: How long an operator has to answer a question before silence reclassifies it
+#: as a burn (FR-004). The question's own window, not the escalation hour: a
+#: question asked into an operator's sleep is cheaper parked till morning than
+#: burned at 3 AM (decided 2026-08-07). The row advertises the deadline the
+#: workflow's timer (US2) holds.
+QUESTION_TIMEOUT_S = 28800
 
 
 def open_bot(token: str) -> Any:
@@ -149,6 +161,64 @@ class ExpiredEscalation:
     `None` covers an id the store has never heard of (a store rebuilt under a
     running epic, a row lost with the disk). The workflow applies its default
     either way; there is simply no recorded state to hand back.
+    """
+
+    final_state: str | None
+
+
+# --- operator questions (008-US1) -------------------------------------------
+
+
+@dataclass(frozen=True)
+class SendQuestionInput:
+    """One question, in the terms an operator will read it in (FR-002).
+
+    The mirror of `SendEscalationInput` with the deltas that make a question a
+    question: there is no `choices` field (the operator types a reply rather than
+    pressing a button), and `attempt` travels because a question is attributed to
+    one attempt the way a teardown's ledger row is. There is deliberately no
+    field for a token or a chat id: a credential in an activity input is a
+    credential in the workflow's history forever (FR-007, the discipline 001
+    established for the master key). `question_text` is the marker body the
+    detector extracted, shipped verbatim.
+    """
+
+    workflow_id: str
+    epic_id: str
+    node_id: str
+    attempt: int
+    question_text: str
+    timeout_s: int = QUESTION_TIMEOUT_S
+
+
+@dataclass(frozen=True)
+class SentQuestion:
+    """What the workflow needs to know the question is on its way (FR-002).
+
+    `message_id` is the Telegram message id the bot returned — the reply-routing
+    key a free-text answer threads back to (FR-008, US2) — and is ``None`` when no
+    message was sent (the notifier is down, unconfigured, or refused the send),
+    the way `delivered=False` works for an escalation. `question_id` keys the row
+    either way: the row is written before the send (R11), so a crash in between
+    leaves something the expiry path (US2) can still close.
+    """
+
+    question_id: str
+    message_id: int | None
+    sent_at: str
+    expires_at: str
+
+
+@dataclass(frozen=True)
+class ExpireQuestionInput:
+    question_id: str
+
+
+@dataclass(frozen=True)
+class ExpiredQuestion:
+    """What the question settled on — `ANSWERED`/`EXPIRED`, or `None` for an
+    unknown id (the escalation precedent: the workflow applies its default either
+    way, and there is no recorded state to hand back). US2 owns the call.
     """
 
     final_state: str | None
@@ -354,3 +424,166 @@ def _now_iso() -> str:
 def _value(item: EscalationChoice | str) -> str:
     """The wire spelling of a resolution: a choice's value, or `EXPIRED` itself."""
     return item.value if isinstance(item, Enum) else str(item)
+
+
+# --- operator questions (008-US1) -------------------------------------------
+
+
+@activity.defn
+async def send_question(request: SendQuestionInput) -> SentQuestion:
+    """Record a question, then page the operator about it (008-US1, R11).
+
+    The mirror of `send_escalation` with the two deltas that make a question a
+    question: the message carries no keyboard (the operator types a reply), and
+    the Telegram message id the bot returns is captured into the sibling
+    `questions` table so a free-text answer can thread back to it (FR-008). The
+    row is inserted first and committed before the message is built — the same
+    ordering R11 turns on — so a crash in between leaves something the expiry
+    path (US2) can still close.
+
+    Raises `QUESTION_NOT_RECORDED` when the store refuses the row, before any
+    message exists. A send that fails (no token, no chat id, a refused connection)
+    is data, not an error: `message_id=None` is the signal that the workflow
+    should proceed with no reply-routing key, the way `delivered=False` is the
+    signal an escalation applies the fail-safe default immediately.
+    """
+    record = _pending_question(request)
+
+    with closing(_connect_question()) as conn:
+        _insert_question(conn, record)
+
+        message_id = await _send_question(record)
+        if message_id is not None:
+            # Best effort, and after the fact by construction: the message is
+            # already out, and a row missing its message id costs a reply its
+            # routing key, where raising here would re-send on the next attempt.
+            _capture_message_id(conn, record.question_id, message_id)
+
+    return SentQuestion(
+        question_id=record.question_id,
+        message_id=message_id,
+        sent_at=record.sent_at,
+        expires_at=record.expires_at,
+    )
+
+
+@activity.defn
+async def expire_question(request: ExpireQuestionInput) -> ExpiredQuestion:
+    """Close out the question's window, and report what it settled on (US2's call).
+
+    The mirror of `expire_escalation`: marks the row `EXPIRED` iff it is still
+    pending, hands back `ANSWERED` if an operator already replied (the race the
+    guarded UPDATE settles), and `None` for an id the store has no record of.
+    Never raises on an unknown id or an unreadable store: the caller's default
+    must not be blocked by the same failure that lost the row.
+    """
+    try:
+        with closing(store.connect(_store_path())) as conn:
+            if store.expire_question(
+                conn, request.question_id, resolved_at=_now_iso()
+            ):
+                return ExpiredQuestion(final_state=store.EXPIRED)
+            record = store.get_question(conn, request.question_id)
+    except (sqlite3.Error, OSError):
+        logger.warning(
+            "question %s: store unreadable; reporting no recorded resolution",
+            request.question_id,
+        )
+        return ExpiredQuestion(final_state=None)
+
+    if record is None or record.resolution is None:
+        return ExpiredQuestion(final_state=None)
+    return ExpiredQuestion(final_state=record.resolution)
+
+
+# --- the row ----------------------------------------------------------------
+
+
+def _pending_question(request: SendQuestionInput) -> QuestionRecord:
+    """The question as it is written down: a fresh id and its own window."""
+    sent = datetime.now(timezone.utc).replace(microsecond=0)
+
+    return QuestionRecord(
+        question_id=secrets.token_hex(6),
+        workflow_id=request.workflow_id,
+        epic_id=request.epic_id,
+        node_id=request.node_id,
+        attempt=request.attempt,
+        question_text=request.question_text,
+        sent_at=_iso(sent),
+        expires_at=_iso(sent + timedelta(seconds=request.timeout_s)),
+        message_id=None,
+    )
+
+
+def _connect_question() -> sqlite3.Connection:
+    """Open the evidence store, or fail before an untracked message exists."""
+    try:
+        return store.connect(_store_path())
+    except (sqlite3.Error, OSError) as exc:
+        raise ApplicationError(
+            f"cannot open the verification store at {_store_path()}: {exc}",
+            type=QUESTION_NOT_RECORDED,
+        ) from exc
+
+
+def _insert_question(conn: sqlite3.Connection, record: QuestionRecord) -> None:
+    """Write the pending row — the first half of the ordering R11 turns on."""
+    try:
+        store.insert_question(conn, record)
+    except sqlite3.Error as exc:
+        raise ApplicationError(
+            f"could not record the question for node {record.node_id!r} "
+            f"in epic {record.epic_id!r}: {exc}",
+            type=QUESTION_NOT_RECORDED,
+        ) from exc
+
+
+def _capture_message_id(
+    conn: sqlite3.Connection, question_id: str, message_id: int
+) -> None:
+    try:
+        store.capture_message_id(conn, question_id, message_id)
+    except sqlite3.Error:
+        logger.warning(
+            "question %s: sent, but the store could not record its message id",
+            question_id,
+        )
+
+
+# --- the message ------------------------------------------------------------
+
+
+async def _send_question(record: QuestionRecord) -> int | None:
+    """Page the operator. None means they were not paged, for any reason.
+
+    No keyboard: a question is not a choice the operator picks from a list, so
+    the message sends with no `reply_markup` (FR-008). The message id the bot
+    returns is the reply-routing key, captured into the row by the caller.
+    """
+    token = os.environ.get(TELEGRAM_BOT_TOKEN_ENV)
+    chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV)
+    if not token or not chat_id:
+        logger.warning(
+            "question %s: not sent — %s is not set on this worker",
+            record.question_id,
+            TELEGRAM_BOT_TOKEN_ENV if not token else TELEGRAM_CHAT_ID_ENV,
+        )
+        return None
+
+    try:
+        async with open_bot(token) as bot:
+            message = await bot.send_message(
+                chat_id=chat_id,
+                text=question_message(record),
+            )
+    except Exception as exc:
+        # Broad on purpose, and the message is not logged: an unauthorized Bot
+        # API error quotes the token back at us (it is in the URL it failed on),
+        # and nothing the factory keeps may repeat it (FR-007).
+        logger.warning(
+            "question %s: not delivered (%s)", record.question_id, type(exc).__name__
+        )
+        return None
+
+    return message.message_id

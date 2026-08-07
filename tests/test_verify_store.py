@@ -379,7 +379,7 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    assert SCHEMA_VERSION == 1
+    assert SCHEMA_VERSION == 2
     assert versions == [SCHEMA_VERSION]
 
 
