@@ -42,6 +42,11 @@ DEFAULT_KEY_TTL = "24h"
 #: response's `total_pages`, so the proxy is free to return fewer.
 SPEND_LOG_PAGE_SIZE = 100
 
+#: `/key/list` page size — the proxy caps pages at 100; the alias read pages
+#: through `total_pages` so a fleet with more live keys than one page stays
+#: fully visible to the preflight's collision check.
+KEY_LIST_PAGE_SIZE = 100
+
 #: Loop guard: a proxy that never reports a last page is a bug, and hanging on
 #: it during teardown would be worse than failing loudly.
 MAX_SPEND_LOG_PAGES = 1_000
@@ -327,16 +332,35 @@ class LiteLLMClient:
         `status is None`, which FR-005 demands the preflight report as a
         distinct finding rather than as a served-alias verdict.
         """
-        body = await self._call("GET", "/key/list")
-
-        data = body.get("data")
-        if not isinstance(data, list):
-            raise LiteLLMError("/key/list returned no key array")
-        return {
-            entry["key_alias"]
-            for entry in data
-            if isinstance(entry, dict) and isinstance(entry.get("key_alias"), str)
-        }
+        # The live proxy's shape (verified 2026-08-07): entries ride a `keys`
+        # array with pagination metadata, and they are full objects carrying
+        # `key_alias` only under `return_full_object=true` — without it the
+        # proxy answers bare token hashes.
+        aliases: set[str] = set()
+        page = 1
+        while True:
+            body = await self._call(
+                "GET",
+                "/key/list",
+                params={
+                    "return_full_object": "true",
+                    "size": KEY_LIST_PAGE_SIZE,
+                    "page": page,
+                },
+            )
+            keys = body.get("keys")
+            if not isinstance(keys, list):
+                raise LiteLLMError("/key/list returned no key array")
+            aliases |= {
+                entry["key_alias"]
+                for entry in keys
+                if isinstance(entry, dict)
+                and isinstance(entry.get("key_alias"), str)
+            }
+            total_pages = body.get("total_pages")
+            if not isinstance(total_pages, int) or page >= total_pages:
+                return aliases
+            page += 1
 
 
     # --- plumbing -----------------------------------------------------------

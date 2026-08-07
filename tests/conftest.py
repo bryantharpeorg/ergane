@@ -231,7 +231,7 @@ class FakeLiteLLM:
         if route == ("GET", "/v1/models"):
             return self._models()
         if route == ("GET", "/key/list"):
-            return self._key_list()
+            return self._key_list(dict(request.url.params))
         return self._error(404, f"unknown route {request.method} {path}")
 
     def _models(self) -> httpx.Response:
@@ -243,21 +243,39 @@ class FakeLiteLLM:
             },
         )
 
-    def _key_list(self) -> httpx.Response:
+    def _key_list(self, params: dict[str, Any]) -> httpx.Response:
         """`GET /key/list`: every *live* key's alias (US2 FR-006 preflight).
 
         Live only: a deleted key is gone from `/key/list` the way it is on the
         real proxy, so an orphaned alias that would collide with an epic's first
         attempt is exactly one that is still live (a dead worker that never ran
         teardown) — never a key that already tore down.
+
+        Shape hardened to the live proxy 2026-08-07: entries ride a `keys`
+        array with pagination metadata, and they are full objects only when
+        `return_full_object=true` — without it the proxy answers bare token
+        hashes, which is exactly the response that hid the first preflight's
+        parse bug. The fake enforces that contract behaviorally.
         """
+        entries: list[Any]
+        if str(params.get("return_full_object", "")).lower() == "true":
+            entries = [
+                {"key_alias": self.aliases[key], "token": f"hash-{key}"}
+                for key in self.keys
+            ]
+        else:
+            entries = [f"hash-{key}" for key in self.keys]
+        size = max(1, int(params.get("size", 100)))
+        page = max(1, int(params.get("page", 1)))
+        total_pages = max(1, -(-len(entries) // size))
+        start = (page - 1) * size
         return httpx.Response(
             200,
             json={
-                "data": [
-                    {"key_alias": self.aliases[key], "key": key}
-                    for key in self.keys
-                ]
+                "keys": entries[start : start + size],
+                "total_count": len(entries),
+                "current_page": page,
+                "total_pages": total_pages,
             },
         )
 

@@ -88,6 +88,35 @@ async def test_list_key_aliases_returns_every_live_key_alias(
     assert "key" not in str(call.body) and "sk-" not in str(aliases)
 
 
+async def test_list_key_aliases_pages_through_the_whole_key_list(
+    fake_litellm: FakeLiteLLM, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fleet with more live keys than one page stays fully visible.
+
+    The live proxy pages `/key/list` (`total_pages`); a preflight that read
+    only page one would miss a colliding alias on page two and dispatch into
+    the very 400 the check exists to prevent.
+    """
+    from factory.usage import litellm_client as module
+
+    monkeypatch.setattr(module, "KEY_LIST_PAGE_SIZE", 1)
+    async with await _client(fake_litellm) as client:
+        await client.issue_key(
+            key_alias="epic-7:node-3:1:implementer", models=["anthropic/CHANGEME"]
+        )
+        await client.issue_key(
+            key_alias="epic-7:node-9:1:debugger", models=["anthropic/CHANGEME"]
+        )
+
+        aliases = await client.list_key_aliases()
+
+    assert aliases == {
+        "epic-7:node-3:1:implementer",
+        "epic-7:node-9:1:debugger",
+    }
+    assert len(fake_litellm.calls_to("/key/list")) == 2
+
+
 async def test_a_non_200_model_read_is_a_named_failure(
     fake_litellm: FakeLiteLLM,
 ) -> None:
