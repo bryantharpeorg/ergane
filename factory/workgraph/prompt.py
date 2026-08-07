@@ -158,14 +158,29 @@ the spec does not settle, a dependency the constitution has not approved, a
 constraint you cannot satisfy and cannot safely relax — you may ask the operator
 one kind of question, in one place, and the bar is high.
 
-Write your question as a level-2 heading, exactly `## OPERATOR QUESTION`, in your
-final message, followed by its body. The body names the fork you are at, the
-options you considered, and your lean; it is for a genuinely blocking fork only —
-not a check you could run yourself, not a doubt the spec or plan already answers,
-and not a preference. A marker is not a verdict and never passes your node: the
-work you committed is salvaged either way, and the gates and judge are not
-consulted for a question because there is nothing to grade. Ask only when
-proceeding without the answer would be wrong; otherwise keep working."""
+There are two ways to ask, and you should prefer the in-flight ferry when you
+can keep working until the answer arrives: write your question to the file
+`$ATTEMPT_ARCHIVE/question` (the attempt's archive directory, never the worktree —
+salvage would commit a file you left in the worktree), then poll for an answer in
+`$ATTEMPT_ARCHIVE/answer`. The monitor loop ferries your question to the operator
+and the answer back, so your process and context stay alive while the answer
+travels and you pay seconds of resumed work rather than a fresh dispatch and a
+cold re-read of the worktree. Do not wait forever: if no answer arrives within
+a bounded window you set yourself (a few minutes is right for a blocking fork —
+long enough for a human to read and type, short enough not to stall the attempt),
+give up the ferry and fall back to the marker path below, so a question never
+becomes a hang. Never write ferry files anywhere but `$ATTEMPT_ARCHIVE`.
+
+When the ferry is not right — you have no work to keep doing, or the window has
+elapsed with no answer — write your question as a level-2 heading, exactly
+`## OPERATOR QUESTION`, in your final message, followed by its body. The body
+names the fork you are at, the options you considered, and your lean; it is for a
+genuinely blocking fork only — not a check you could run yourself, not a doubt
+the spec or plan already answers, and not a preference. A marker is not a
+verdict and never passes your node: the work you committed is salvaged either
+way, and the gates and judge are not consulted for a question because there is
+nothing to grade. Ask only when proceeding without the answer would be wrong;
+otherwise keep working."""
 
 _STANDARDS = """## Standards
 

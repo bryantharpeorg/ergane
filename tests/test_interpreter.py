@@ -146,6 +146,8 @@ from factory.activities.notify_activities import (
     ExpiredQuestion,
     ExpireEscalationInput,
     ExpireQuestionInput,
+    FindFerriedQuestion,
+    FindFerriedQuestionInput,
     SendEscalationInput,
     SendQuestionInput,
     SentEscalation,
@@ -1571,6 +1573,21 @@ class ScriptedWorld:
             script.question_expirations.append(request.question_id)
             return ExpiredQuestion(final_state=EXPIRED)
 
+        @activity.defn(name="find_ferried_question")
+        async def find_ferried_question(
+            request: FindFerriedQuestionInput,
+        ) -> FindFerriedQuestion:
+            # 008-US3: the dedup the US1 degrade path asks before it re-sends.
+            # The scripted world never runs a real ferry (the stub agent takes
+            # the marker path directly), so there is no prior row to reuse —
+            # the answer is always "no ferry shipped," and the workflow sends
+            # fresh, exactly as it did before the ferry existed. The real
+            # activity queries the store; this stub only needs to occupy the
+            # activity name the workflow invokes (FR-002 attribution, FR-009
+            # degrade).
+            script._log("find_ferried_question", request.node_id)
+            return FindFerriedQuestion(question_id=None)
+
         return [
             resolve_graph,
             resolve_persona,
@@ -1600,6 +1617,7 @@ class ScriptedWorld:
             detect_operator_question_activity,
             send_question,
             expire_question,
+            find_ferried_question,
         ]
 
 

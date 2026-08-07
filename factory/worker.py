@@ -128,6 +128,12 @@ ACTIVITIES = [
     # its branch landed), so the day that wiring lands takes no worker edit.
     notify_activities.send_question,
     notify_activities.expire_question,
+    # 008 — US3's dedup: before the US1 degrade path re-sends, it asks the store
+    # (not the adapter result) whether the in-attempt ferry already shipped a
+    # question for this attempt, so the operator is paged once, not twice. The
+    # ferry's question id is evidence in the store, never a second field on the
+    # adapter result — D-018's hole stays at one signal (the marker).
+    notify_activities.find_ferried_question,
     # 003 — the landing surface: prepare the body, push, open, enqueue, poll,
     # disable, and US2's recovery sync.
     merge_activities.prepare_landing_pr,

@@ -737,13 +737,17 @@ async def test_no_worker_credential_reaches_the_agent_the_activity_launched(
     context: Callable[..., AttemptContext],
     worktree: Path,
     worker_host: Path,
+    factory_root: Path,
 ) -> None:
     """US2-S1 through the activity, which is what production actually calls.
 
     The child environment is *built*, not filtered: the master key and the bot
     token are absent because nothing put them there, as is every other variable
     the worker happens to carry. The per-attempt virtual key is the one
-    credential allowed through (constitution V).
+    credential allowed through (constitution V). `ATTEMPT_ARCHIVE` is the one
+    constructed path var (008-US3): the agent's ferry files live in the archive
+    directory, never the worktree, and it is built — not passed through — so it
+    carries no worker path the agent did not earn.
     """
     write_control(worker_host)
 
@@ -757,8 +761,10 @@ async def test_no_worker_credential_reaches_the_agent_the_activity_launched(
         "HOME",
         "LANG",
         "TERM",
+        "ATTEMPT_ARCHIVE",
     }
     assert child_env["ANTHROPIC_AUTH_TOKEN"] == VIRTUAL_KEY
+    assert child_env["ATTEMPT_ARCHIVE"] == str(archive_dir(factory_root))
     assert MASTER_KEY not in child_env.values()
     assert BOT_TOKEN not in child_env.values()
 

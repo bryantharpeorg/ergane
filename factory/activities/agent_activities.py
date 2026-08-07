@@ -70,6 +70,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError, CancelledError
 
 from factory.activities.usage_activities import open_client
+from factory.activities.notify_activities import ferry_read_answer, ferry_send_question
 from factory.config import ConfigError, Persona, load_personas
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import (
@@ -190,6 +191,36 @@ def _usage_reader(key: str) -> Callable[[], Awaitable[UsageSnapshot]]:
         )
 
     return read
+
+
+def _ferry_sender(
+    context: AttemptContext,
+) -> Callable[[str], Awaitable[str]] | None:
+    """The ferry's send callable, bound to this attempt's identity (008-US3).
+
+    Closes over the workflow id (the activity's own info), the epic/node/attempt
+    the question is attributed to (FR-002), and the question text the agent
+    writes — so the monitor loop calls one argument (the text) and the rest is
+    already pinned. Returns ``None`` when the workflow id is unavailable (a
+    bare-`ActivityEnvironment` test with no info), so the ferry degrades to the
+    US1-only path rather than raising: a sender that cannot attribute a question
+    ships nothing, and the agent degrades to the marker path if the window
+    elapses (FR-009).
+    """
+    workflow_id = activity.info().workflow_id if activity.in_activity() else None
+    if workflow_id is None:
+        return None
+
+    async def send(question_text: str) -> str:
+        return await ferry_send_question(
+            workflow_id,
+            context.epic_id,
+            context.node_id,
+            context.attempt,
+            question_text,
+        )
+
+    return send
 
 
 # --- resolve_graph (the registry snapshot) ------------------------------------
@@ -409,6 +440,17 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
             heartbeat=activity.heartbeat,
             heartbeat_interval_s=HEARTBEAT_INTERVAL_S,
             read_usage=_usage_reader(context.virtual_key),
+            # 008-US3: the in-attempt ferry. An agent that asks mid-flight writes
+            # a `question` file to its archive directory; these callables ship it
+            # up (record + page, the same `send_question` path US1 takes) and
+            # poll the store for the operator's reply. Both are isolated by the
+            # adapter so a dead ferry call never kills the liveness beat (FR-009).
+            # The workflow id is the activity's own info — the same id the US1
+            # terminal path puts on the `SendQuestionInput` — so a ferried
+            # question is attributed to the same workflow that would have asked
+            # it at the end.
+            send_ferry_question=_ferry_sender(context),
+            read_ferry_answer=ferry_read_answer,
         )
     except asyncio.CancelledError:
         raise CancelledError(

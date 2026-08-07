@@ -67,13 +67,17 @@ from factory.activities.notify_activities import (
     TELEGRAM_BOT_TOKEN_ENV,
     TELEGRAM_CHAT_ID_ENV,
     ExpireQuestionInput,
+    FindFerriedQuestion,
+    FindFerriedQuestionInput,
     SendQuestionInput,
     SentQuestion,
     expire_question,
+    find_ferried_question,
     send_question,
 )
 from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
 from factory.verify import store
+from factory.verify.models import QuestionRecord
 
 #: Shaped like a real bot token, and deliberately distinctive: every assertion
 #: that it did not leak is a substring search over something the factory wrote.
@@ -519,4 +523,146 @@ async def test_a_configured_timeout_moves_the_deadline_the_row_advertises(
     row = only_row(db_path)
     assert parse_iso(row["expires_at"]) - parse_iso(row["sent_at"]) == timedelta(
         seconds=3600
+    )
+
+
+# --- 008-US3: the dedup the US1 degrade path asks before re-sending -----------
+#
+# The ferry ships a question mid-flight; the agent then degrades to the marker
+# path before an answer arrives; the workflow reaches the US1 send path and
+# asks the store (not the adapter result — D-018's hole stays at one signal)
+# whether a question for this attempt already exists. `find_ferried_question` is
+# that ask. The row the ferry wrote is the evidence; the workflow reuses its id
+# and skips the re-send, so the operator is paged once about one question, not
+# twice.
+
+
+@pytest.mark.parametrize("fn", [find_ferried_question], ids=lambda fn: fn.__name__)
+def test_the_ferry_dedup_activity_is_registered_under_its_contract_name(
+    fn: Any,
+) -> None:
+    """The name the workflow invokes is the name the worker serves (R10)."""
+    from temporalio import activity as _activity
+
+    definition = _activity._Definition.from_callable(fn)
+    assert definition is not None
+    assert definition.name == "find_ferried_question"
+
+
+async def test_find_ferried_question_returns_none_when_no_ferry_shiped(
+    env: ActivityEnvironment, db_path: Path
+) -> None:
+    """No prior row means the US1 path sends fresh, as it did before the ferry."""
+    found = await env.run(
+        find_ferried_question, FindFerriedQuestionInput(EPIC, NODE, ATTEMPT)
+    )
+    assert found.question_id is None
+
+
+async def test_find_ferried_question_reuses_a_pending_row_the_ferry_wrote(
+    env: ActivityEnvironment, db_path: Path, conn: sqlite3.Connection
+) -> None:
+    """A pending question for this attempt is the ferry's row — reuse, don't resend.
+
+    This is the dedup: the ferry wrote a `questions` row mid-flight (still
+    unanswered, because the agent degraded before an answer arrived), and the
+    workflow's US1 path asks the store before re-sending. The same id comes
+    back, so the operator is paged once about one question. The store is the
+    source of truth, not the adapter result — D-018's hole stays at one signal.
+    """
+    # A row the ferry would have written: pending (resolution IS NULL),
+    # attributed to this attempt.
+    store.insert_question(
+        conn,
+        _pending_question_row(question_id="ferry123456", attempt=ATTEMPT),
+    )
+
+    found = await env.run(
+        find_ferried_question, FindFerriedQuestionInput(EPIC, NODE, ATTEMPT)
+    )
+    assert found.question_id == "ferry123456"
+
+
+async def test_find_ferried_question_ignores_a_row_for_a_different_attempt(
+    env: ActivityEnvironment, db_path: Path, conn: sqlite3.Connection
+) -> None:
+    """A question attributed to a different attempt is not this attempt's ferry."""
+    store.insert_question(
+        conn,
+        _pending_question_row(question_id="ferryaaaaaa", attempt=ATTEMPT + 1),
+    )
+
+    found = await env.run(
+        find_ferried_question, FindFerriedQuestionInput(EPIC, NODE, ATTEMPT)
+    )
+    assert found.question_id is None
+
+
+async def test_find_ferried_question_ignores_an_answered_row(
+    env: ActivityEnvironment, db_path: Path, conn: sqlite3.Connection
+) -> None:
+    """An answered row was a ferry that got its reply — the agent resumed, not
+    degraded, so the US1 send path is never reached and that row is not reused.
+
+    Only a *pending* row (the ferry shipped and the agent then degraded before
+    an answer) is the one to reuse; an ANSWERED row belongs to a ferry window
+    that closed the other way.
+    """
+    answered = _pending_question_row(question_id="ferrybbbbbb", attempt=ATTEMPT)
+    store.insert_question(conn, answered)
+    store.resolve_question(
+        conn, "ferrybbbbbb", answer_text="do option A", resolved_at="2026-08-07T10:00:00Z"
+    )
+
+    found = await env.run(
+        find_ferried_question, FindFerriedQuestionInput(EPIC, NODE, ATTEMPT)
+    )
+    assert found.question_id is None
+
+
+async def test_find_ferried_question_degrades_to_none_when_the_store_is_unreadable(
+    env: ActivityEnvironment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead read degrades to the fresh send (the US1 path), never a hang (FR-009).
+
+    The duplicate page a read failure risks is a tolerable, rare failure mode;
+    a hang is not. The same posture as `ferry_read_answer`: a dead read is
+    `None`, the signal "send fresh."
+    """
+
+    def boom(_conn: sqlite3.Connection, **_kwargs: Any) -> Any:
+        raise sqlite3.OperationalError("disk is gone")
+
+    monkeypatch.setattr(store, "find_pending_question_by_attempt", boom)
+
+    found = await env.run(
+        find_ferried_question, FindFerriedQuestionInput(EPIC, NODE, ATTEMPT)
+    )
+    assert found.question_id is None
+
+
+# --- the row the ferry would have written ------------------------------------
+
+
+def _pending_question_row(*, question_id: str, attempt: int) -> QuestionRecord:
+    """A pending `questions` row, the way the ferry's `send_question` writes one.
+
+    The store is real; the row is constructed directly so the test owns its
+    state rather than depending on Telegram-side send plumbing.
+    """
+    from datetime import datetime, timezone
+
+    from factory.activities.notify_activities import _iso
+
+    sent = datetime(2026, 8, 7, 9, 31, 0, tzinfo=timezone.utc)
+    return QuestionRecord(
+        question_id=question_id,
+        workflow_id=WORKFLOW_ID,
+        epic_id=EPIC,
+        node_id=NODE,
+        attempt=attempt,
+        question_text=QUESTION_TEXT,
+        message_id=None,
+        sent_at=_iso(sent),
+        expires_at=_iso(sent + timedelta(seconds=QUESTION_TIMEOUT_S)),
     )

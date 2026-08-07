@@ -1138,6 +1138,7 @@ async def test_an_answer_is_delivered_to_the_polling_agent(
             factory_root=factory_root,
             send_ferry_question=send_ferry_question,
             read_ferry_answer=read_ferry_answer,
+            ferry_interval_s=0.05,
         )
     )
     await _wait_for_question(factory_root)

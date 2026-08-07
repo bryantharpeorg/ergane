@@ -435,7 +435,10 @@ async def test_no_byte_a_real_attempt_persists_carries_either_credential(
 
     # The child's environment, as the child itself recorded it: the allowlist is
     # a construction, so the two credentials are absent because nothing put them
-    # there rather than because something removed them (US2-S1).
+    # there rather than because something removed them (US2-S1). `ATTEMPT_ARCHIVE`
+    # is the one constructed path var (008-US3): the agent's ferry files live in
+    # the archive directory, never the worktree, and it is built — not passed
+    # through — so it carries no worker path the agent did not earn.
     recorded = json.loads(
         (next(agent_worktree.glob(".stub-agent/*/env.json"))).read_text(encoding="utf-8")
     )
@@ -446,6 +449,7 @@ async def test_no_byte_a_real_attempt_persists_carries_either_credential(
         "HOME",
         "LANG",
         "TERM",
+        "ATTEMPT_ARCHIVE",
     }
     assert MASTER_KEY not in recorded.values()
     assert BOT_TOKEN not in recorded.values()

@@ -105,6 +105,28 @@ DEFAULT_HEARTBEAT_INTERVAL_S = 1.0
 #: history for it (FR-001, FR-002).
 DEFAULT_POLL_INTERVAL_S = 30
 
+#: Seconds between ferry answer polls while a question is in flight (008-US3).
+#: The answer read is a store round trip the bridge fills, throttled to its own
+#: cadence the way the usage read is — a question waiting hours for an operator
+#: issues a bounded number of polls, and the beat (which carries liveness) is
+#: never gated on it. The question ships up the moment its file appears (no
+#: throttle: it ships once); only the answer poll is cadenced.
+DEFAULT_FERRY_INTERVAL_S = 5.0
+
+#: The env var that hands the agent its archive directory (008-US3). The ferry
+#: channel is the filesystem the agent already owns: `question` and `answer`
+#: files in the archive directory, never the worktree (where salvage would
+#: commit them — FR-007). The agent learns the directory from the environment
+#: the adapter builds, not from a worker path in the prompt (the prompt carries
+#: no worker path).
+ATTEMPT_ARCHIVE_ENV = "ATTEMPT_ARCHIVE"
+
+#: The ferry file names — the contract the adapter's monitor loop and the agent
+#: share, lived in `$ATTEMPT_ARCHIVE`. The agent writes `question`, polls for
+#: `answer`; the adapter ferries question up and answer down (FR-009).
+FERRY_QUESTION_FILE = "question"
+FERRY_ANSWER_FILE = "answer"
+
 _NON_ALNUM = re.compile(r"[^a-zA-Z0-9]")
 
 
@@ -122,6 +144,63 @@ async def _invoke_heartbeat(
     result = heartbeat(snapshot)
     if result is not None:
         await result
+
+
+class _FerryState:
+    """The in-attempt ferry's per-attempt state, kept across beats (008-US3).
+
+    The monitor loop is beat-sized, so the ferry has to remember three things
+    between beats: whether the question has shipped (``question_id`` is set the
+    moment the send succeeds, so the question ships up exactly once), whether
+    the answer has been delivered (``answer_written`` stops the answer poll the
+    beat after it lands), and the archive directory both files live in. A plain
+    object rather than a dataclass because the two booleans mutate every beat
+    and a frozen dataclass would rebuild one each time for no gain.
+
+    The agent, not this state, bounds the ferry window: when its own wait
+    elapses it proceeds to the US1 final-message path, so the state never holds
+    a timer and the adapter never decides a question is over (FR-009).
+    """
+
+    def __init__(self, archive: Path) -> None:
+        self.archive = archive
+        self.question_id: str | None = None
+        self.answer_written: bool = False
+
+    def read_question(self) -> str | None:
+        """The question file's text, or None if the agent has not written one yet.
+
+        A filesystem read that fails is treated as "no question yet": a
+        transient I/O error must not convert a question into a hang (FR-009),
+        and the next beat will try again. An empty file is None too — a question
+        with no body parks nothing, the same rule the US1 detector applies.
+        """
+        path = self.archive / FERRY_QUESTION_FILE
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+        return text or None
+
+    def write_answer(self, answer: str) -> None:
+        """Deliver the answer down to the polling agent.
+
+        Best-effort like the archive step: a write that fails leaves the agent
+        polling, and the agent degrades to the US1 path when its window elapses.
+        Marked written before the bytes are observed so a second beat does not
+        double-deliver; the file is written in one call so the agent never reads
+        a half-written answer.
+        """
+        if self.answer_written:
+            return
+        path = self.archive / FERRY_ANSWER_FILE
+        self.answer_written = True
+        try:
+            path.write_text(answer, encoding="utf-8")
+        except OSError:
+            # A failed write is not a hang: the next beat polls again and the
+            # agent degrades to the US1 path if the window elapses first.
+            pass
 
 
 class AdapterError(RuntimeError):
@@ -161,6 +240,9 @@ class AgentAdapter(Protocol):
         heartbeat_interval_s: float = ...,
         read_usage: Callable[[], Awaitable[UsageSnapshot]] | None = ...,
         poll_interval_s: float = ...,
+        send_ferry_question: Callable[[str], Awaitable[str]] | None = ...,
+        read_ferry_answer: Callable[[str], Awaitable[str | None]] | None = ...,
+        ferry_interval_s: float = ...,
     ) -> AdapterResult: ...
 
 
@@ -278,6 +360,9 @@ class ClaudeCodeAdapter:
         heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
         read_usage: Callable[[], Awaitable[UsageSnapshot]] | None = None,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+        send_ferry_question: Callable[[str], Awaitable[str]] | None = None,
+        read_ferry_answer: Callable[[str], Awaitable[str | None]] | None = None,
+        ferry_interval_s: float = DEFAULT_FERRY_INTERVAL_S,
     ) -> AdapterResult:
         """Run one attempt to its end, whatever that end is.
 
@@ -285,6 +370,17 @@ class ClaudeCodeAdapter:
         (D-018). Raises `asyncio.CancelledError` on the kill path *after* the
         group is dead and the evidence is archived, so Temporal records the
         cancellation and the workflow still salvages the worktree.
+
+        The ferry (008-US3) is two optional callables the activity wires to the
+        question store: ``send_ferry_question`` ships an in-flight question up
+        (the same ``send_question`` row + Telegram send the US1 path uses), and
+        ``read_ferry_answer`` polls for the operator's reply. Neither is the
+        adapter's concern to provide — they are the seam the monitor loop ferries
+        across, the way ``read_usage`` is the seam for spend. Both are
+        failure-isolated: a ferry call that raises leaves the beat and the
+        deadline intact, so a question can never become a hang (FR-009).
+        Absent both, no ferry runs — the US1 final-message path is the whole
+        question channel, unchanged.
         """
         archive = transcript_dir(
             factory_root, context.epic_id, context.node_id, context.attempt
@@ -294,7 +390,14 @@ class ClaudeCodeAdapter:
         await self._reap(pids)
 
         worktree = Path(context.worktree_path).resolve()
+        # `ATTEMPT_ARCHIVE` is the one constructed env var beyond the two
+        # attempt credentials and the four passthroughs: the agent's ferry files
+        # live in the archive directory (never the worktree, where salvage would
+        # commit them — FR-007), so the agent has to know where it is. Built here
+        # rather than in `attempt_env` because the archive path is the adapter's
+        # knowledge, derived from the same identity the transcript directory is.
         env = attempt_env(context)
+        env[ATTEMPT_ARCHIVE_ENV] = str(archive)
 
         with (archive / STDOUT_LOG_NAME).open("wb") as log:
             process = await self._launch(context, worktree=worktree, env=env, log=log)
@@ -308,6 +411,10 @@ class ClaudeCodeAdapter:
                     interval_s=heartbeat_interval_s,
                     read_usage=read_usage,
                     poll_interval_s=poll_interval_s,
+                    archive=archive,
+                    send_ferry_question=send_ferry_question,
+                    read_ferry_answer=read_ferry_answer,
+                    ferry_interval_s=ferry_interval_s,
                 )
             except BaseException:
                 # Cancellation (the workflow's kill) and any failure of the
@@ -385,6 +492,10 @@ class ClaudeCodeAdapter:
         interval_s: float,
         read_usage: Callable[[], Awaitable[UsageSnapshot]] | None,
         poll_interval_s: float,
+        archive: Path,
+        send_ferry_question: Callable[[str], Awaitable[str]] | None,
+        read_ferry_answer: Callable[[str], Awaitable[str | None]] | None,
+        ferry_interval_s: float,
     ) -> tuple[Termination, UsageSnapshot | None]:
         """Wait for the agent, beating as it goes, and end it at its deadline.
 
@@ -399,6 +510,18 @@ class ClaudeCodeAdapter:
         read that raises leaves the previous snapshot in place and the beat still
         fires — liveness and spend share one channel, and spend must never be
         able to kill liveness (constitution V).
+
+        The ferry rides the beat too (008-US3): the monitor loop watches the
+        archive directory for a `question` file the in-flight agent writes, ships
+        it up once through ``send_ferry_question``, and then polls
+        ``read_ferry_answer`` on its own (slower) cadence, writing the answer back
+        to an `answer` file the agent polls. The ferry is the same isolation the
+        usage read is: a raising send or poll leaves the beat and the deadline
+        intact, so a question can never become a hang or a timeout burn (FR-009).
+        The agent, not the adapter, bounds the ferry window — it proceeds to the
+        US1 final-message path when its own wait elapses, so the adapter's only
+        ferry duty is to carry the question up and the answer down, never to
+        decide when a question is over.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
@@ -409,6 +532,12 @@ class ClaudeCodeAdapter:
         # heartbeat interval in) necessarily carries `None` — the attempt has
         # not been measured yet (constitution V: unknown, not zero).
         next_read = loop.time() + poll_interval_s
+
+        ferry = _FerryState(archive=archive)
+        # The first answer poll is eligible the beat a question ships: the
+        # cadence starts when the question is in flight, not at attempt start,
+        # so a fast answer does not wait a full interval it would never need.
+        next_ferry_read = 0.0
 
         try:
             while True:
@@ -429,6 +558,18 @@ class ClaudeCodeAdapter:
                         except BaseException:
                             pass
                         next_read = now + poll_interval_s
+                    # The ferry: a dead ferry call must not kill liveness either
+                    # (FR-009). A question ships up once; an answer polls on its
+                    # own cadence. Both are isolated the way the usage read is.
+                    polled = await self._ferry_once(
+                        ferry,
+                        send_ferry_question=send_ferry_question,
+                        read_ferry_answer=read_ferry_answer,
+                        now=now,
+                        next_read=next_ferry_read,
+                    )
+                    if polled:
+                        next_ferry_read = now + ferry_interval_s
                     if heartbeat is not None:
                         await _invoke_heartbeat(heartbeat, snapshot)
                     continue
@@ -446,6 +587,60 @@ class ClaudeCodeAdapter:
 
         await self._reclaim(process)
         return Termination.TIMEOUT, snapshot
+
+    async def _ferry_once(
+        self,
+        state: _FerryState,
+        *,
+        send_ferry_question: Callable[[str], Awaitable[str]] | None,
+        read_ferry_answer: Callable[[str], Awaitable[str | None]] | None,
+        now: float,
+        next_read: float,
+    ) -> bool:
+        """One beat's worth of the ferry, fully isolated from liveness.
+
+        Ships the question up the first time its file appears (and only then),
+        and polls for the answer on the ferry cadence once a question is in
+        flight. Every callable is wrapped: a raise leaves the state where it was
+        and the beat still fires — the ferry can improve the round trip or
+        degrade to the US1 path, but it can never hang the attempt (FR-009).
+
+        Returns whether an answer poll ran this beat, so the caller throttles the
+        next poll to ``ferry_interval_s`` only when a poll actually happened (a
+        beat that shipped a question but did not poll keeps the cadence at
+        "eligible now"). The two callables are independent: a question ships if a
+        sender is wired, an answer polls if a reader is wired — either half may
+        be absent (the US1-only path wires neither, and a sender-only path is a
+        question that ferries up with no round trip back through the store).
+        """
+        # Ship the question up the moment its file appears, once.
+        if send_ferry_question is not None and state.question_id is None:
+            question = state.read_question()
+            if question is not None:
+                try:
+                    state.question_id = await send_ferry_question(question)
+                except BaseException:
+                    # A failed send is not a hang: the agent keeps polling and
+                    # degrades to the US1 path when its window elapses. Leave
+                    # `question_id` unset so the next beat tries the send again.
+                    pass
+
+        # Poll for the answer on the ferry's own cadence, once a question is up.
+        if (
+            read_ferry_answer is None
+            or state.question_id is None
+            or state.answer_written
+            or now < next_read
+        ):
+            return False
+        try:
+            answer = await read_ferry_answer(state.question_id)
+        except BaseException:
+            # A failed read is not a hang either: keep polling, keep beating.
+            return True
+        if answer is not None:
+            state.write_answer(answer)
+        return True
 
     async def _reclaim(self, process: asyncio.subprocess.Process) -> None:
         """SIGTERM the agent's process group, then SIGKILL what survives.
