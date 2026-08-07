@@ -41,13 +41,13 @@ architect:
 
 implementer:
   agent: claude-code
-  # Swapped from ollama-cloud/deepseek-v4-flash 2026-08-07 ~07:20 UTC:
-  # deepseek's thinking-heavy emission on the 007 task produced empty
-  # assistant text blocks that this LiteLLM translates to nil content for
-  # Ollama — four attempts burned on the same 400. GLM is the proven
-  # claude-CLI pairing (claude-glm precedent; judge ran it all night).
-  # Revert candidate once LiteLLM is upgraded past the translation bug.
-  model: ollama-cloud/glm-5.2
+  # Swapped to kimi 2026-08-07 ~22:45 CT (Bryan): extends the homelab's
+  # ADR-0016 lineage doctrine to the factory — kimi (Moonshot) authors,
+  # glm (Zhipu) judges. The interim glm implementer (07:20 UTC swap after
+  # deepseek's emission shape hit the LiteLLM nil-content bug; went 9-for-9
+  # across 007/009/008) had the judge reviewing its own family's output,
+  # which U3 forbids. Alias carries Moonshot-list synthetic pricing.
+  model: ollama-cloud/kimi-k2.7-code
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
