@@ -1,3 +1,8 @@
+---
+state: draft
+depends_on_landed: [006-interpreter-hardening]
+---
+
 # Feature Specification: Operator Channel
 
 **Feature Branch**: `008-operator-channel`
@@ -29,11 +34,13 @@ so that the question starts costing me reading time instead of costing the node
 an attempt and me an archaeology session.
 
 The agent's side of the contract is one instruction in the prompt: a blocking
-question is stated under a fixed heading in its final message (the exact marker
-is the plan's; the final message is already captured and already read by the
-output check, so no new artifact and no worktree pollution). Verification
-detects the marker, classifies the attempt QUESTION rather than FAIL, and ships
-the question text through the existing notify bridge.
+question is stated under a fixed heading in its final message. The message's
+home already exists — the adapter streams the agent's stdout into the attempt
+archive on every termination path — so detection is a read-only verification
+step over evidence the factory already keeps: no new artifact, no worktree
+pollution. Verification detects the marker, classifies the attempt QUESTION
+rather than FAIL, and ships the question text through the existing notify
+bridge.
 
 **Why this priority**: This is the half that converts a silent burn into a
 conversation. Without it nothing else in this spec exists.
@@ -167,12 +174,16 @@ same agent process reads it and proceeds to commit work, with no second dispatch
   identically to a salvaged attempt's.
 - **FR-006**: A question attempt's usage MUST be recorded in the ledger exactly
   as any other termination class.
-- **FR-007**: No credential value may appear in a question message, an answer
-  payload, or their stored records (001's discipline, extended to this channel).
+- **FR-007**: No credential value MUST ever appear in a question message, an
+  answer payload, or their stored records (001's discipline, extended to this
+  channel): the sweep MUST assert each surface.
 - **FR-008**: Free-text operator replies MUST route to the correct parked
   question when several are open, using the bridge's message threading.
-- **FR-009** *(US3 only)*: An in-attempt ferry MUST degrade to the US1 path when
-  unanswered — it may never convert a question into a hang or a timeout burn.
+- **FR-009**: (US3 only) An in-attempt ferry MUST degrade to the US1 path when
+  unanswered — it MUST never convert a question into a hang or a timeout burn.
+- **FR-010**: The scoped amendment to D-018/FR-012 (spec § Decision) MUST be
+  recorded in the decision log when this feature lands, and a test MUST assert
+  its guard: the marker can park a node and can never influence a verdict.
 
 ### Key Entities
 
@@ -215,7 +226,7 @@ US1:
   implements: [FR-001, FR-002, FR-005, FR-006, FR-007]
 US2:
   depends_on: [US1]
-  implements: [FR-003, FR-004, FR-008]
+  implements: [FR-003, FR-004, FR-008, FR-010]
 US3:
   depends_on: [US2]
   implements: [FR-009]
@@ -244,6 +255,26 @@ argument: a fresh dispatch carrying the answer recovers everything except warm
 process context, and warm context is worth paying for only if questions turn
 out to be common.
 
-**The decision-log number is deliberately unassigned here** — same reasoning as
-006's heartbeat decision: D-numbers are claimed at landing time, in
-`docs/decisions.md`, after whatever 003 and 006 consume.
+## Decision: one hole in FR-012, drilled deliberately (surfaced 2026-08-07 by verification against the tree)
+
+D-018 keeps `AdapterResult` narrow and FR-012 forbids any agent-reported signal
+from reaching node state — the rule that stops an agent from grading itself,
+and the reason `transcript_path` is documented as "evidence, never an input to
+a decision." A question marker read out of the agent's final message **is** an
+agent-authored signal reaching state, and this spec does not pretend otherwise.
+
+**Decided: amend the rule with the narrowest possible hole rather than route
+around it.** Exactly one signal exists (the marker); its only possible effect
+is to park the node and page the operator; it can never produce, influence, or
+substitute for a verdict — gates and judge are not consulted for a QUESTION
+attempt because there is nothing to grade, and a marker on an attempt that
+*also* claims completion changes nothing about how completion is judged. The
+distinction that keeps the rule's purpose intact: FR-012 exists to stop agents
+from awarding themselves outcomes, and "I cannot proceed without the operator"
+awards nothing — it is the one statement whose truth the speaker is the sole
+authority on.
+
+**The decision-log numbers are deliberately unassigned here** — same reasoning
+as 006's heartbeat decision: D-numbers are claimed at landing time, in
+`docs/decisions.md`, after whatever 003 and 006 consume. This spec claims two
+entries at landing: the channel itself, and the FR-012 amendment (FR-010).

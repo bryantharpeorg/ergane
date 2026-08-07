@@ -1,6 +1,6 @@
 # Implementation Plan: Operator Channel
 
-**Branch**: `008-operator-channel` | **Date**: 2026-08-06 | **Spec**: [spec.md](spec.md)
+**Branch**: `008-operator-channel` | **Date**: 2026-08-06 (verified against the tree 2026-08-07) | **Spec**: [spec.md](spec.md)
 
 **Input**: Feature specification from `/specs/008-operator-channel/spec.md`
 
@@ -9,13 +9,16 @@
 A blocking design question from an implementer currently dies in a one-shot
 stdout and is charged as a failed attempt (found live: 006-us1 attempt 1,
 2026-08-06 — $2.57 and 23 minutes to ask a good question nobody could hear).
-This feature gives the question a channel built almost entirely from parts the
-factory already runs: the final-message capture the output check already reads,
-the escalation store and Telegram bridge that ladder escalations already use,
-and the retry prompt that already carries verification feedback. New surface is
-deliberately thin: a marker convention, a QUESTION termination class with
-park-don't-burn ladder routing, free-text reply handling in the bridge, and an
-operator-answer section in the prompt assembler.
+This feature gives the question a channel built from parts the factory already
+runs — the streamed transcript the adapter already archives, the escalation
+send/expiry patterns, the Telegram bridge, the retry-prompt evidence assembly —
+plus three genuinely new pieces this plan names honestly: a `questions` store
+table (the escalations table's CHECK constraints make it unusable for free-text
+answers), a free-text reply path in the bridge (it is callback-only today), and
+a **scoped amendment to D-018/FR-012**, which currently forbids any
+agent-reported signal from reaching node state. Every claim below was verified
+against the tree on 2026-08-07; T002 re-verifies against the tree that hosts
+the work.
 
 This plan is deliberately self-contained: the prompt assembler ships
 spec/plan/tasks only, so contracts an implementer node needs are inlined here.
@@ -26,57 +29,92 @@ spec/plan/tasks only, so contracts an implementer node needs are inlined here.
 
 **Primary Dependencies**: `temporalio`, `httpx`, `pyyaml`, `python-telegram-bot`
 — all roster items, all already in use. **This feature adds no dependency.**
-If a task believes it needs one, that is an operator-approval conversation
-(constitution III), not a quiet `uv add`.
 
-**Existing parts this feature reuses — verify each against the code before
-building on it; the first task of each story is that verification**:
+**Verified reuse inventory** (file:line as of 2026-08-07):
 
-- The agent's final message is captured per attempt and is already an input to
-  verification (`check_output` reads attempt output today). The question marker
-  rides that channel; no new artifact, no worktree pollution.
-- The escalation store lives in the verification DB (`escalations` table,
-  `factory/activities/verify_activities.py`) with expiry semantics
-  (`expire_escalation`) and a resolution signal (`escalation_resolved`, carried
-  by `SIGNAL_NAME`, signature `(escalation_id, choice: str)` — `choice` is a
-  string and can carry free text; reuse it, do not add a second signal).
-- The Telegram bridge (`factory/notify/service.py`, `CallbackBridge`) handles
-  **callback queries only** (inline buttons). Free-text replies need a
-  `MessageHandler` registered alongside the existing `CallbackQueryHandler`,
-  routing by reply-to message id → escalation id. This is the one genuinely new
-  bridge behaviour; everything else is reuse.
-- Retry attempts already carry verification feedback into the next prompt. The
-  operator answer is a **separate, clearly labelled section**, not an addendum
-  to failure feedback — an answer is a decision, not a diagnosis.
+- **The final message's real home**: the adapter streams the agent's combined
+  stdout/stderr live into the attempt archive (`factory/workgraph/adapter.py:36`,
+  `STDOUT_LOG_NAME = "stdout.log"` at `:67`), and `AdapterResult.transcript_path`
+  points at that directory (`factory/workgraph/models.py:249-261`). The output
+  check does NOT read it — `check_output` is a diff/artifact check only
+  (`factory/activities/verify_activities.py:270-310`). Marker detection is
+  therefore a new, read-only verification-side reader over the archived
+  `stdout.log`, keyed off `transcript_path`.
+- **The rule this feature must amend, not evade**: `AdapterResult` is narrow by
+  design — "No diff, no usage numbers, no parsed verdict … FR-012 forbids any
+  agent-reported signal from reaching node state. `transcript_path` is
+  evidence, never an input to a decision" (`models.py:250-258`, D-018). A
+  question marker that produces a QUESTION classification is an agent-authored
+  signal reaching state. The spec records the scoped amendment (spec
+  § Decision): exactly one signal, park-only, never a verdict.
+- **Escalation store — pattern yes, table no**: the `escalations` schema
+  (`factory/verify/store.py:116-133`) hard-CHECKs
+  `resolution IN ('RETRY','KILL','PAUSE_EPIC','EXPIRED')` and
+  `resolved_via IN ('BUTTON','TIMEOUT')`, stores `choices` as a JSON list of
+  `EscalationChoice` (StrEnum `RETRY|KILL|PAUSE_EPIC`,
+  `factory/verify/models.py:112-121`), and has **no** kind, attempt, answer, or
+  Telegram message-id column. Free text cannot ride it. **Decision: a sibling
+  `questions` table in the same verification DB** — `question_id` (12-hex, the
+  escalation keying convention), workflow/epic/node/attempt, `question_text`,
+  `message_id` (Telegram, for reply routing), `sent_at`, `expires_at`,
+  `resolution IN ('ANSWERED','EXPIRED')`, `answer_text`, `resolved_at` — reusing
+  the store's idempotent `_transition` shape and expiry discipline
+  (`store.py:482-527`: "True if this call is what resolved it"), not the
+  constrained table.
+- **Bridge**: `CallbackBridge.handle` (`factory/notify/service.py:118-148`) is
+  callback-query-only and validates a press against the record's offered
+  choices before signalling. Free-text replies are a new `MessageHandler`
+  registered beside the existing `CallbackQueryHandler` (`service.py:230-231`),
+  routing reply-to `message_id` → `question_id` via the new table.
+- **Signal**: `SIGNAL_NAME = "escalation_resolved"` (`service.py:56`) resolves
+  through the enum-validated escalation path — overloading it with free text
+  was this plan's first idea and the store's CHECK constraints falsify it.
+  **New signal `question_answered(question_id, answer_text)`** on
+  `EpicWorkflow`, mirroring the `escalation_resolved` shape (`workflow.py:414-423`).
+- **Send path template**: `send_escalation`
+  (`factory/activities/notify_activities.py:158`) with `SendEscalationInput`
+  (workflow_id/epic_id/node_id/history_summary; deliberately no credential —
+  `:109-121`) and `SentEscalation` (escalation_id, delivered, expires_at,
+  `:127-135`). `send_question` mirrors it, with two deltas: no keyboard (a
+  question wants a typed reply, not buttons), and the Telegram `message_id`
+  from the send **is captured into the questions table** — the escalation path
+  never stores it, and reply routing needs it.
+- **The answer's road into the next prompt — verified real**: the ladder
+  threads `prior_feedback` between attempts (`factory/workgraph/workflow.py:643`,
+  `:729-732` — "if verdict is not None and verdict.feedback: prior_feedback =
+  verdict.feedback") and the prompt assembler renders verification evidence
+  sections (`factory/workgraph/prompt.py:147-152`, judge feedback quoted at
+  `:392-393`). The operator answer becomes a **sibling section** in that same
+  assembly — a decision, rendered distinctly from a diagnosis.
 
-**Storage**: No new store. Questions and answers are rows in the existing
-escalation store with a distinguishing kind; the ledger schema is unchanged
-(FR-006 is satisfied by the existing teardown path).
+**Storage**: the new `questions` table above; the ledger is untouched (FR-006
+is satisfied by the existing teardown path — QUESTION is a termination class,
+not an accounting exemption).
 
 **Testing**: `pytest`, `WorkflowEnvironment.start_time_skipping()`,
-`ActivityEnvironment`, and the existing fake bridge/store patterns in the
-notify and verify test suites. Every behaviour here is provable without a live
-Telegram bot; one optional `live_telegram` case may round-trip a real message.
+`ActivityEnvironment`, the fake-bridge and scripted-world patterns already in
+the notify/interpreter suites. Everything provable without a live bot; one
+optional `live_telegram` case may round-trip a real reply.
 
 **Project Type**: single Python package (`factory/`).
 
-**Constraints**: No behaviour change that any existing escalation test asserts
-(SC-005). Repo gotcha that will bite here if forgotten:
-`tests/test_final_sweep.py` forbids certain enforcement words in component
-string literals outside docstrings (D-021) — check its list before naming
-anything in user-facing strings.
+**Constraints**: No behaviour change any existing escalation test asserts
+(SC-005). Repo gotcha: `tests/test_final_sweep.py` bans 18 enforcement words in
+component identifiers/strings and forbids branching on values named
+`requests`/`cost`/`tokens` — check its lists before naming anything here.
 
 ## Constitution Check
 
 - **I (test-first)**: every task pairs a failing test with its implementation.
 - **III (no unapproved dependencies)**: none added.
 - **V (credentials)**: FR-007. Question and answer text transit Telegram —
-  outside the machine. The existing escalation sweep is the precedent; extend
-  its assertion to question payloads and stored answers. No key value, ever.
+  outside the machine. Extend the escalation sweep's assertion to question
+  payloads, stored answers, and the new table. No key value, ever.
 - **VI (salvage)**: FR-005 — a question attempt's committed work is preserved
-  identically to any salvaged attempt. The QUESTION path must reuse the salvage
-  activity, not approximate it.
+  via the same salvage path as any terminal attempt.
 - **VII (persona routing)**: untouched.
+- **D-018/FR-012**: amended, not violated — the amendment is scoped in spec
+  § Decision and recorded in the decision log at landing (FR-010).
 
 ## Approach by story
 
@@ -89,61 +127,66 @@ The marker is a fixed heading the agent writes in its final message:
 <the fork, the options considered, the agent's lean>
 ```
 
-Detection happens in verification, next to where the output check already reads
-attempt output: marker present → the attempt's termination is QUESTION and the
-verification short-circuits (no judge — there is nothing to score; gates may
-still be recorded if they ran). The ladder routes QUESTION to a new parked
-state (`WAITING_OPERATOR`) instead of consuming a retry. Salvage and teardown
-run exactly as for any terminal attempt (FR-005/006).
+Detection: a new read-only verification activity reads the archived
+`stdout.log` under `AdapterResult.transcript_path` (the adapter streams it
+live, so it exists on every termination path) and extracts a line-anchored
+marker section from the **final** assistant message. Marker present → the
+attempt's termination is QUESTION; verification records the fact and never
+consults gates or judge for a verdict — there is nothing to grade, and the
+amendment's guard is exactly that a marker can *park* a node and can never
+*pass* one. The ladder routes QUESTION to `WAITING_OPERATOR`; salvage and
+teardown run exactly as for any terminal attempt (FR-005/006).
 
-Delivery reuses the escalation send: a new kind (question) with epic/node/
-attempt attribution and the marker body as text. The credential sweep extends
-to this payload (FR-007).
+Delivery: `send_question` (mirror of `send_escalation`, no keyboard), row into
+the `questions` table with the Telegram `message_id` captured at send.
 
-**The trap**: QUESTION must not be reachable by accident. The marker is chosen
-to be improbable in ordinary output (a level-2 heading with a fixed phrase),
-and detection requires it at line start in the final message — not in code
-blocks quoted from specs, not in the transcript body. A task must assert the
-false-positive case: an attempt whose final message merely *discusses* operator
-questions is not classified QUESTION.
+**The trap**: QUESTION must not be reachable by accident. Line-anchored fixed
+heading, final message only, not inside fenced blocks; a task must assert the
+false-positive case — an attempt whose final message merely *discusses* the
+marker is not classified QUESTION.
 
 ### US2 — the answer round trip and the no-burn accounting (FR-003/004/008)
 
-The bridge gains a `MessageHandler`: a reply to a question message resolves the
-escalation with the reply text as `choice`, through the same
-`escalation_resolved` signal ladder escalations use. Routing is by reply-to
-message id, mapped to escalation id at send time (FR-008) — never "the newest
-open question".
+The bridge gains a `MessageHandler`: a Telegram **reply** to a question message
+looks up `message_id` → `question_id`, records the reply text as `answer_text`
+via the idempotent transition (first answer wins), and signals the workflow
+with the new `question_answered(question_id, answer_text)` signal. Routing is
+by reply-to threading only (FR-008) — never "the newest open question"; a
+non-reply message, a reply to a non-question message, and a reply to an
+already-resolved question are all ignored or answered-as-settled, mirroring
+the bridge's existing outcomes.
 
-On resolution the node un-parks and dispatches its next attempt. The prompt
-assembler adds an operator-answer section carrying the stored question and the
-answer verbatim (FR-003) — the next agent sees both what was asked and what was
-decided. Attempt accounting: the ladder's ceiling counts only burn-class
-terminations; a task must assert a node's remaining attempts are identical
-before the question attempt dispatched and after its answer arrived.
+On the signal the node un-parks and dispatches its next attempt; the prompt
+assembler renders the stored question and answer verbatim in a dedicated
+operator-answer section, distinct from verification feedback. Attempt
+accounting: the ladder's ceiling counts only burn-class terminations; a task
+asserts a node's remaining attempts are identical before the question attempt
+dispatched and after its answer arrived.
 
-Expiry (FR-004) reuses `expire_escalation`: an expired question resolves as if
-the attempt had FAILed, and the ladder proceeds. The expiry window is the
-existing escalation default unless the registry overrides it; no new knob
-unless a test proves the default wrong.
+Expiry (FR-004) reuses the escalation expiry *pattern* — the workflow timer
+plus an idempotent expire transition on the questions table ("True if this
+call is what expired it") — an expired question resolves as if the attempt had
+FAILed, and the ladder proceeds. Expiry window: the escalation default, no new
+knob unless a test proves it wrong.
 
 ### US3 — the in-attempt ferry (FR-009), deferred behind live evidence
 
-Ferry files in the attempt's archive directory (not the worktree — nothing the
-salvage would commit): the agent writes `question`, polls for `answer`; the
-adapter's monitor loop ships the question up (same delivery as US1) and the
-answer down. The window is bounded; on expiry the agent proceeds to the US1
-path (final-message marker), so the ferry can only ever improve the round trip,
-never hang it (FR-009). Sequenced behind 006-US1's adapter changes by the work
-graph, for the same reason 006 sequenced US4 behind US1: one loop, one editor
-at a time.
+Ferry files in the attempt's **archive directory** (never the worktree —
+nothing salvage would commit): the agent writes `question`, polls for
+`answer`; the adapter's monitor loop ships the question up (same `questions`
+row + send) and the answer down. Bounded window; on expiry the agent proceeds
+to the US1 final-message path, so the ferry can only improve the round trip,
+never hang it (FR-009). Sequenced behind 006-US1's adapter changes: one
+monitor loop, one editor at a time.
 
 ## Complexity Tracking
 
 | Risk | Why it is real | Mitigation |
 |---|---|---|
-| Marker false positives | Classification by string match on model output | Line-anchored fixed heading; explicit false-positive test |
-| Answer routed to wrong question | Two nodes parked concurrently | Reply-to threading asserted with two open questions |
-| Question parks a node forever | Operator asleep; epic hostage | FR-004 expiry reuses proven escalation expiry |
-| Burn-free questions get farmed | Agents learn asking is free | Prompt contract: a question must name its fork and options; the judge never sees QUESTION attempts, so there is no verdict to game — only operator patience, which is the natural rate limiter |
-| Credential leak via Telegram | Question text leaves the machine | Sweep assertion extended to question/answer payloads (FR-007) |
+| Agent-signal creep past the amendment | D-018/FR-012 exists to stop self-grading; the marker is a hole in it | Amendment scoped in spec § Decision: one marker, park-only, never a verdict; guard asserted in tests |
+| Marker false positives | Classification by string match on model output | Line-anchored fixed heading, final message only; explicit false-positive test |
+| Answer routed to wrong question | Two nodes parked concurrently | `message_id` reply-to threading via the questions table; asserted with two open questions |
+| Question parks a node forever | Operator asleep; epic hostage | Expiry reuses the escalation timer + idempotent-transition pattern (FR-004) |
+| Free text corrupts escalation semantics | escalations table CHECKs are load-bearing for the fail-safe ladder | Sibling `questions` table; the constrained table is never touched |
+| Credential leak via Telegram | Question/answer text leaves the machine | Sweep assertion extended to payloads, answers, and the new table (FR-007) |
+| Burn-free questions get farmed | Agents learn asking is free | Prompt contract: a question names its fork and options; no verdict exists to game — operator patience is the rate limiter |
