@@ -72,7 +72,7 @@ assert its history event count is within a small constant of a one-minute attemp
       await plus the existing kill check, and read `last_heartbeat_details` on the timeout
       and kill paths, until T005 and T006 pass. `poll_usage` stays registered — 001 owns
       it and the judge path has no poller — it is simply no longer scheduled per interval.
-- [ ] T010 [US1] Correct `TeardownInput.last_snapshot`'s docstring in
+- [x] T010 [US1] Correct `TeardownInput.last_snapshot`'s docstring in
       `factory/activities/usage_activities.py`: it no longer describes a polled value, and
       leaving that sentence is a lie the next reader inherits. State that a NULL spend now
       means "never measured", which is the stronger claim the heartbeat buys (FR-003).

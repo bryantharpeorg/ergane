@@ -5,14 +5,15 @@ Everything else in this component is a library; this module is where the
 promises become the factory's behaviour, so the ordering and the failure
 handling here are the design rather than an implementation detail:
 
-- **A poll is a read with no consequence.** `poll_usage` is the only activity
-  here that runs while an attempt is alive, which makes it the only place a
-  budget could accidentally be enforced. It does one `/key/info` read per beat
-  (R9) and returns the number; nothing branches on the number, at any
-  magnitude, because enforcement is deferred (D-021) and SC-005 asks for its
-  absence to be observable rather than asserted. A failed poll raises the
-  client's own error rather than a typed one, since the caller's only correct
-  response is to skip the beat (contracts/activities.md).
+- **A poll is a read with no consequence.** `poll_usage` does one `/key/info`
+  read and returns the number; nothing branches on the number, at any magnitude,
+  because enforcement is deferred (D-021) and SC-005 asks for its absence to be
+  observable rather than asserted. It is no longer called per interval — the
+  live figure rides the attempt's own heartbeat to teardown (plan US1, FR-001)
+  — and the workflow's one remaining call, on a kill, reads the bracket it is
+  about to close (FR-003). A failed poll raises the client's own error rather
+  than a typed one, since the caller's only correct response is to skip the
+  read (contracts/activities.md).
 - **Teardown's deliverable is the ledger row, not the proxy call.** The order is
   fixed (R3): read `/key/info`, page the spend logs, write the row, delete the
   key LAST. Deleting last removes any dependence on how the proxy's spend-log
@@ -121,10 +122,13 @@ class IssueKeyInput:
 class TeardownInput:
     """A terminated attempt: its key, how it ended, and the last thing measured.
 
-    `last_snapshot` is the newest heartbeat read (R9) and exists solely so a
-    teardown that cannot reach the proxy still has a dollar figure to record.
-    `None` means no poll ever succeeded — the row then carries `NULL` spend
-    rather than a fabricated zero (FR-005).
+    `last_snapshot` is the newest measurement the attempt's own heartbeat read
+    (plan US1) and exists solely so a teardown that cannot reach the proxy still
+    has a dollar figure to record. It is carried to the row by the workflow on
+    the normal and timeout paths and read once more by the workflow on a kill —
+    never polled per interval (FR-001). `None` means the proxy was never read —
+    the row then carries `NULL` spend rather than a fabricated zero (FR-003,
+    FR-005).
     """
 
     lease: KeyLease
@@ -221,10 +225,13 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
 async def poll_usage(lease: KeyLease) -> UsageSnapshot:
     """Read what the attempt has spent so far (FR-007, R9).
 
-    Called on the agent activity's heartbeat, roughly every 30s per live
-    attempt, which makes it the most-executed proxy call in the component and
-    the reason it stays this small: one `/key/info`, no spend-log paging, no
-    write. Token detail is aggregated once, at teardown (R2).
+    Called by the workflow on a kill, once, to close the bracket with a real
+    reading where the SDK surfaces no heartbeat details on a cancellation the
+    workflow itself requested (plan US1, FR-003). The attempt's own heartbeat —
+    not a per-interval workflow poll — is what carries the live figure to
+    teardown on the normal and timeout paths (FR-001). It stays this small: one
+    `/key/info`, no spend-log paging, no write. Token detail is aggregated once,
+    at teardown (R2).
 
     The returned snapshot is the attempt's latest-known state and teardown's
     fallback, so it carries the moment it was true — a value the ledger may
