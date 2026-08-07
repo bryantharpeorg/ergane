@@ -101,7 +101,7 @@ from factory.workgraph.models import (
     WorkGraph,
     WorkNode,
 )
-from factory.workgraph.prompt import build_attempt_prompt
+from factory.workgraph.prompt import OperatorAnswer, build_attempt_prompt
 from factory.workgraph.worktree import branch_name, worktree_path
 from tests.stub_agent import STUB_AGENT_PATH, install_as, write_control
 from tests.target_repo import git
@@ -515,6 +515,13 @@ def test_the_attempt_prompt_never_carries_a_credential() -> None:
     is a credential, and nothing in its output may be one — not even the key the
     same context legitimately carries, which would then reach `stdout.log`, the
     archived transcript, and any repository the agent chose to paste it into.
+
+    008-US2 SC-004: the operator-answer section reproduces the operator's reply
+    and the agent's question verbatim, and a reply that quoted a credential
+    (a key the operator pasted, or the bot token the bridge read) would carry it
+    into the next attempt's prompt — the same `stdout.log`/transcript/repo
+    surface. The section is assembled from the same authored-text discipline,
+    so the sweep extends to the answer-bearing prompt.
     """
     prompt = build_attempt_prompt(
         node=make_node("us1", "US1"),
@@ -524,10 +531,24 @@ def test_the_attempt_prompt_never_carries_a_credential() -> None:
         tasks_text=TASKS_TEXT,
         standards=".specify/memory/constitution.md",
     )
+    answer_prompt = build_attempt_prompt(
+        node=make_node("us1", "US1"),
+        epic_id=EPIC_ID,
+        spec_text=SPEC_TEXT,
+        plan_text=PLAN_TEXT,
+        tasks_text=TASKS_TEXT,
+        standards=".specify/memory/constitution.md",
+        operator_answer=OperatorAnswer(
+            question_text="## OPERATOR QUESTION\nWhich branch should I target?",
+            answer_text="Use ergane-buildout; the feature branch is stale.",
+        ),
+    )
 
     for secret in (MASTER_KEY, BOT_TOKEN, VIRTUAL_KEY):
         assert secret not in prompt
+        assert secret not in answer_prompt
     assert "ANTHROPIC_AUTH_TOKEN" not in prompt
+    assert "ANTHROPIC_AUTH_TOKEN" not in answer_prompt
 
 
 # --- every way this component fails -------------------------------------------

@@ -93,6 +93,23 @@ class LandingEvidence:
     conflicted_files: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class OperatorAnswer:
+    """The operator's reply to a question the node asked (008-US2, FR-003).
+
+    The question the agent asked under `## OPERATOR QUESTION` and the answer the
+    operator typed back, carried together so the next attempt reads the exchange
+    as a whole. Both travel verbatim — the same discipline 002's prior-attempt
+    evidence applies — and both ride a dedicated section distinct from the
+    verification-evidence section: the answer is the operator's voice, not a
+    gate tail or judge feedback, and a reply that is not the operator's (a guess
+    the agent might paste in) is what FR-012's hole is fenced against.
+    """
+
+    question_text: str
+    answer_text: str
+
+
 # --- the fixed sections -------------------------------------------------------
 
 _ROLE = """## Role and scope
@@ -187,6 +204,17 @@ _LANDING_PREAMBLE = (
     "history — read it as what actually happened, not as a summary of it:"
 )
 
+#: 008-US2: the operator's answer to the question your previous attempt asked,
+#: reproduced verbatim. The question is quoted first (what you asked), then the
+#: answer (what the operator decided). Neither is summarized — the operator's
+#: wording is the decision, the way a gate tail is the failure (FR-003).
+_ANSWER_PREAMBLE = (
+    "You asked the operator a question on your previous attempt, and the "
+    "operator answered. Both are reproduced verbatim — the question you "
+    "asked, then the answer the operator gave. Read the answer as the "
+    "operator's decision and proceed on it."
+)
+
 _NOTHING_FAILED_LOUDLY = (
     "No failing gate output and no judge feedback were recorded for this "
     "attempt."
@@ -199,6 +227,11 @@ _PLAN_HEADING = "## Plan"
 _SLICE_HEADING = "## Your task slice"
 _EVIDENCE_HEADING = "## Prior attempt evidence"
 _LANDING_HEADING = "## Landing rejection"
+#: 008-US2: the dedicated section an operator's answer renders under (FR-003).
+#: Distinct from `_EVIDENCE_HEADING` (the ladder's verdict) and from the agent's
+#: own `## OPERATOR QUESTION` marker — the answer is neither the agent's question
+#: nor the gates' verdict, so it has its own heading.
+_ANSWER_HEADING = "## Operator answer"
 
 # --- requirement keys ---------------------------------------------------------
 
@@ -223,6 +256,7 @@ def build_attempt_prompt(
     standards: str | None = None,
     prior_attempts: Sequence[AttemptEvidence] = (),
     landing_evidence: LandingEvidence | None = None,
+    operator_answer: OperatorAnswer | None = None,
 ) -> str:
     """Assemble one attempt's prompt (contracts/prompt-assembly.md § Prompt shape).
 
@@ -235,6 +269,13 @@ def build_attempt_prompt(
     the attempt's prompt so the re-driven node is shown the outcome, the queue
     history and (for a conflict) the conflicted file list verbatim. Absent on a
     first dispatch, so an untouched graph assembles byte-identical prompts.
+
+    `operator_answer` is 008-US2's return path: the question the previous
+    attempt asked and the operator's verbatim answer, rendered under a
+    dedicated section distinct from the verification-evidence section (FR-003).
+    Absent unless the node was un-parked by an answer, so a question that
+    expired (and re-entered the ladder as a FAIL) assembles no answer section —
+    the operator never engaged, so there is nothing to carry.
 
     Raises `PromptAssemblyError` when the spec declares no section for one of the
     node's `requirement_keys`, or when `tasks.md` has no phase naming the node's
@@ -261,6 +302,8 @@ def build_attempt_prompt(
     parts.append("\n\n".join([_SLICE_HEADING, _SLICE_PREAMBLE, slice_text]))
     if landing_evidence is not None:
         parts.append(_landing_section(landing_evidence))
+    if operator_answer is not None:
+        parts.append(_answer_section(operator_answer))
     if prior_attempts:
         parts.append(_evidence_section(prior_attempts))
 
@@ -424,6 +467,27 @@ def _landing_section(evidence: LandingEvidence) -> str:
             f"Conflicted files (resolve these conflict markers):\n{files}"
         )
     return "\n\n".join(blocks)
+
+
+# --- operator answer (008-US2 FR-003) -----------------------------------------
+
+
+def _answer_section(answer: OperatorAnswer) -> str:
+    """The re-dispatch's operator-answer section (spec FR-003).
+
+    The question the previous attempt asked and the operator's verbatim answer,
+    under a heading distinct from the verification-evidence section. Both texts
+    travel verbatim — the question is what the agent itself wrote, the answer is
+    the operator's decision, and the agent must proceed on it (008 FR-010).
+    """
+    return "\n\n".join(
+        [
+            _ANSWER_HEADING,
+            _ANSWER_PREAMBLE,
+            f"Question:\n\n{_quote(answer.question_text)}",
+            f"Answer:\n\n{_quote(answer.answer_text)}",
+        ]
+    )
 
 
 # --- prior failure evidence (002 FR-006) --------------------------------------

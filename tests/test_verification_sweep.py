@@ -1019,14 +1019,19 @@ def test_the_reference_flow_is_not_production_code() -> None:
         )
 
 
-def test_the_bridge_sends_one_signal_and_no_other() -> None:
+def test_the_bridge_sends_only_its_named_signals() -> None:
     """The bridge is this component's only outbound orchestration call.
 
-    Naming the signal in one place is what keeps a button press from becoming a
+    Naming each signal in one place is what keeps a button press from becoming a
     second way to unlock an edge — the interpreter decides that from the recorded
-    verdict (FR-005), never from a Telegram callback.
+    verdict (FR-005), never from a Telegram callback. 008-US2 adds a second
+    signal for free-text answers: the escalation signal cannot carry the
+    operator's reply text (the escalations CHECK constraints pin the choice
+    enum), so a sibling `question_answered` signal exists alongside
+    `escalation_resolved`, each named in one place (plan § US2).
     """
     assert service.SIGNAL_NAME == "escalation_resolved"
+    assert service.QUESTION_SIGNAL_NAME == "question_answered"
 
     signalled = {
         ast.unparse(node.args[0])
@@ -1036,7 +1041,7 @@ def test_the_bridge_sends_one_signal_and_no_other() -> None:
         and node.func.attr == "signal"
         and node.args
     }
-    assert signalled == {"SIGNAL_NAME"}
+    assert signalled == {"SIGNAL_NAME", "QUESTION_SIGNAL_NAME"}
 
 
 # ============================================================================

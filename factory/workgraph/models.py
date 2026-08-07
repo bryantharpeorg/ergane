@@ -45,12 +45,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from factory.config import Persona
 from factory.mergequeue.models import Landing
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.models import AttemptRecord
+
+if TYPE_CHECKING:
+    # 008-US2: `OperatorAnswer` lives in the prompt assembler, which itself
+    # imports `WorkNode` from this module — a runtime import here would cycle.
+    # The field is a forward reference under `from __future__ import annotations`,
+    # so the symbol is only needed for type checkers, never at runtime.
+    from factory.workgraph.prompt import OperatorAnswer
 
 
 class WorkGraphError(ValueError):
@@ -256,6 +263,19 @@ class NodeRecord:
     #: the same pin and the same goalposts. `None` until a node dispatches.
     prepared: "PreparedWorktree | None" = None
     criteria: "CriteriaSet | None" = None
+    #: 008-US2: the operator answer that un-parked this node, set the moment an
+    #: answer arrives and cleared the moment the next attempt consumes it. `None`
+    #: whenever the node was never parked, or was parked and expired (the
+    #: operator never engaged, so there is no answer to carry — the question
+    #: re-enters the ladder as a FAIL, FR-004, and the next prompt gets no answer
+    #: section). Transient across one attempt: read once into the prompt, then
+    #: reset to `None` so a *second* question on the same node starts clean.
+    operator_answer: "OperatorAnswer | None" = None
+    #: 008-US2: the question id this node is parked on while WAITING_OPERATOR,
+    #: stashed at park time so the scheduler can route the buffered answer (or
+    #: the expiry) back to *this* node on un-park. `None` unless the node is
+    #: parked, and cleared on re-dispatch.
+    pending_question_id: str | None = None
 
 
 # The adapter seam's payloads (FR-005) ----------------------------------------
