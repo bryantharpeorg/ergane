@@ -718,6 +718,27 @@ def get_question(conn: sqlite3.Connection, question_id: str) -> QuestionRecord |
     return None if row is None else _question_from_row(row)
 
 
+def get_question_by_message_id(
+    conn: sqlite3.Connection, message_id: int
+) -> QuestionRecord | None:
+    """One question by the Telegram message id the send returned (FR-008, US2).
+
+    The reply-routing key: a free-text reply threads back to the message the
+    factory sent, so the bridge looks the question up by `reply_to_message_id`
+    rather than by recency. `message_id` is NULL until the message is delivered,
+    so a reply to a message that never landed (or one the store has no record of)
+    resolves to None and is answered with a notice, not a crashed poll loop.
+
+    Distinct from `get_question` because the bridge never holds the question id
+    — only the message id the operator replied to — and recency would route a
+    reply to the wrong question when two are open (FR-008).
+    """
+    row = conn.execute(
+        f"{_SELECT_QUESTION_SQL} WHERE message_id = ?", (message_id,)
+    ).fetchone()
+    return None if row is None else _question_from_row(row)
+
+
 def pending_questions(conn: sqlite3.Connection) -> list[QuestionRecord]:
     """Every question still awaiting an answer, oldest first."""
     rows = conn.execute(

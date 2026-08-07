@@ -192,7 +192,7 @@ with workflow.unsafe.imports_passed_through():
         TargetRepoProfile,
     )
     from factory.notify.messages import render_history, render_landing_history
-    from factory.notify.service import SIGNAL_NAME
+    from factory.notify.service import QUESTION_SIGNAL_NAME, SIGNAL_NAME
     from factory.usage.models import KeyLease, Termination, UsageSnapshot
     from factory.verify.ladder import DEBUGGER_PERSONA, next_action
     from factory.verify.models import (
@@ -457,6 +457,16 @@ class EpicWorkflow:
         #: already waiting.
         self._resolutions: dict[str, str] = {}
 
+        #: 008-US2: the operator's answers to parked questions, keyed by question
+        #: id. The bridge's reply path sends `question_answered(question_id,
+        #: answer_text)`; the workflow buffers it here the same way it buffers
+        #: escalation resolutions, and a parked node's wait condition reads it.
+        #: The escalation signal cannot carry free text (the CHECK constraints
+        #: pin the choice enum), which is the whole reason a sibling signal
+        #: exists (plan § US2). An answer this epic never asked is stored and
+        #: never read, the same incurious discipline as `_resolutions`.
+        self._answers: dict[str, str] = {}
+
         #: The steering wheel's whole state (FR-008). Two plain flags and no
         #: persistence: a signal is a history event, so replay rebuilds both
         #: exactly where the recorded run had them (R1).
@@ -508,6 +518,25 @@ class EpicWorkflow:
         fastest (002's contract, and its reference flow's hardest-won ordering).
         """
         self._resolutions[escalation_id] = choice
+
+    @workflow.signal(name=QUESTION_SIGNAL_NAME)
+    def question_answered(self, question_id: str, answer_text: str) -> None:
+        """Record one operator answer to a parked question (008-US2).
+
+        The sibling of `escalation_resolved` for the one thing a button cannot
+        carry: free text. The escalation signal's args are `(escalation_id,
+        choice)` where `choice` is pinned to a closed enum by the escalations
+        table's CHECK constraints; an answer is whatever the operator typed, so
+        it rides its own signal and is buffered in `_answers` the same way
+        resolutions are buffered in `_resolutions`.
+
+        Deliberately incurious, for the same reason as `escalation_resolved`:
+        an id this epic never asked is stored and never read, because
+        validating against state the workflow may not have written yet would
+        drop the answers that arrive fastest (the bridge's hardest-won
+        ordering, the escalation precedent).
+        """
+        self._answers[question_id] = answer_text
 
     @workflow.query
     def epic_status(self) -> EpicStatus:
