@@ -3214,7 +3214,7 @@ async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(
 ) -> None:
     """A REJECTED node's recovery dispatches before a fresh PENDING node (plan § US2).
 
-    White-box: `_next_ready` is the picker, so this asserts its ordering directly
+    White-box: `_ready_set` is the picker, so this asserts its ordering directly
     rather than racing the poll task's timer. A node whose landing is REJECTED
     (verified work stranded) is picked before an independent PENDING node — the
     more expensive kind of idle.
@@ -3251,10 +3251,10 @@ async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(
     # us3 is fresh and ready (no dependencies).
     wf._nodes["us3"] = NodeRecord(node_id="us3", branch=branch_name(EPIC_ID, "us3"))
 
-    ready = wf._next_ready([resolved_for(us1), resolved_for(us3)])
+    ready = wf._ready_set([resolved_for(us1), resolved_for(us3)])
 
-    assert ready is not None
-    assert ready.node.id == "us1"
+    assert ready
+    assert ready[0].node.id == "us1"
 
 
 # --- US1: the widened scheduler (FR-001/002/003/004) --------------------------

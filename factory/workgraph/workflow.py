@@ -592,11 +592,20 @@ class EpicWorkflow:
             if self._kill_requested:
                 break
             if self._paused:
-                # Parked between two nodes, which is the only place a pause can
-                # take effect: the signal may have arrived mid-attempt, and that
-                # attempt has since finished its ladder (R10). Polling keeps
-                # running (passive) so an in-flight landing is not left parked on
-                # a live queue, but recovery dispatch waits for resume (US1).
+                # Pause stops dispatch and lets every in-flight node finish its
+                # ladder — the key lease and the worktree are one bracket, and a
+                # node parked halfway would hold an issued key against work
+                # nobody is doing (constitution V). The node that *raised* the
+                # pause (a PAUSE_EPIC escalation) sets the flag from inside its
+                # own `_run_node` before that task is done, so the scheduler must
+                # drain the in-flight set — reaping each task as it reaches its
+                # terminal state and applying the lock-out its ending demands
+                # — *before* it parks, or a dependent whose dependency just
+                # failed is left PENDING through the pause instead of KILLED
+                # (FR-009). Polling keeps running (passive) so an in-flight
+                # landing is not left parked on a live queue, but recovery
+                # dispatch waits for resume (US1).
+                await self._drain_in_flight(in_flight, resolved)
                 self._epic_state = EpicState.PAUSED
                 await workflow.wait_condition(
                     lambda: not self._paused or self._kill_requested
@@ -608,6 +617,14 @@ class EpicWorkflow:
             # Fill every free slot with a ready node. The ready set is read
             # fresh each pass — never cached across a completion — so a node
             # whose dependency just failed is not dispatched (FR-003, SC-003).
+            # A REJECTED landing is a recovery, not a fresh dispatch: it routes
+            # through `_run_recovery` (sync → debugger → re-verify → re-enqueue,
+            # or escalate), which is the path the queue rejection came in on
+            # (US2). Routing it through `_run_node` would re-issue a key and run
+            # a fresh agent against a tree that already verified — the wrong
+            # kind of work, charged to the wrong rung — so the scheduler picks
+            # the handler the same way the base loop did, only now N of either
+            # may be in flight at once.
             for item in self._ready_set(resolved):
                 if self._kill_requested:
                     break
@@ -615,9 +632,15 @@ class EpicWorkflow:
                     break
                 if item.node.id in in_flight:
                     continue
-                in_flight[item.node.id] = asyncio.create_task(
-                    self._run_node(item, request, sources, judge)
-                )
+                landing = self._nodes[item.node.id].landing
+                if landing is not None and landing.state == LandingState.REJECTED:
+                    in_flight[item.node.id] = asyncio.create_task(
+                        self._run_recovery(item, request, sources, judge)
+                    )
+                else:
+                    in_flight[item.node.id] = asyncio.create_task(
+                        self._run_node(item, request, sources, judge)
+                    )
 
             if not in_flight:
                 # No recovery pending and no fresh node ready. That is only the
@@ -657,12 +680,16 @@ class EpicWorkflow:
                     self._lock_out_dependents(resolved)
 
         if self._kill_requested:
-            # Kill outranks the ladder: cancel every in-flight task and salvage
-            # each (constitution VI). Each `_run_node` closes its own bracket on
-            # the way out, so the loop only has to stop them and let them finish.
-            for task in in_flight.values():
-                task.cancel()
-            await asyncio.gather(*in_flight.values(), return_exceptions=True)
+            # Kill outranks the ladder: every in-flight node closes its own
+            # bracket on the way out — its `_attempt` sees `_kill_requested` in
+            # the `wait_condition`, cancels its adapter, and runs teardown +
+            # salvage before returning (constitution VI). `task.cancel()` would
+            # interrupt that bracket at whatever `await` it was parked on and
+            # skip teardown, so the scheduler does NOT cancel: it waits for each
+            # in-flight task to finish itself, reaping each so the lock-out a
+            # killed node's dependents need is applied (FR-009). A kill that
+            # salvages three of four nodes is a lost-work bug; this is the guard.
+            await self._drain_in_flight(in_flight, resolved)
             await self._kill_landings(graph.target_repo)
             self._kill_remaining()
             self._epic_state = EpicState.KILLED
@@ -770,16 +797,6 @@ class EpicWorkflow:
                 ready.append(item)
         return ready
 
-    def _next_ready(self, resolved: Sequence[ResolvedNode]) -> ResolvedNode | None:
-        """The next node to dispatch: the head of the whole ready set.
-
-        A thin wrapper over `_ready_set` kept for the white-box scheduler tests
-        that assert the picker's ordering directly; the widened scheduler reads
-        the whole set so it can fill every free slot at once (FR-001).
-        """
-        ready = self._ready_set(resolved)
-        return ready[0] if ready else None
-
     def _edges_satisfied(self, node: WorkNode) -> bool:
         """Whether every one of `node`'s two edge kinds is unlocked (FR-009)."""
         if not all(
@@ -859,6 +876,39 @@ class EpicWorkflow:
             record.landing is None or record.landing.state in _LANDING_TERMINAL
             for record in self._nodes.values()
         )
+
+    async def _drain_in_flight(
+        self,
+        in_flight: dict[str, "asyncio.Task[None]"],
+        resolved: Sequence[ResolvedNode],
+    ) -> None:
+        """Wait for every in-flight node to finish, reaping each as it does.
+
+        Used by the pause and the kill paths, which both need the in-flight set
+        empty and every finished node's lock-out applied *before* they take their
+        next step: a pause parks the scheduler (so the drain must run first, or
+        a node that raised the pause mid-`_close_out` is left un-reaped and its
+        dependents stay PENDING through the pause), and a kill waits for the
+        epic's last bracket to close before it accounts for the rest.
+
+        Each `_run_node` closes its own bracket — teardown, salvage — on its way
+        out, so the drain only reaps: it waits on a task finishing, releases the
+        slot, and applies the lock-out a non-PASSED terminal demands (FR-009).
+        It does NOT cancel the tasks: cancelling would interrupt `_run_node` at
+        whatever `await` it was parked on and skip teardown (constitution VI).
+        The predicate is a pure function of task state, so it replays
+        identically (SC-005).
+        """
+        while in_flight:
+            await workflow.wait_condition(
+                lambda: any(task.done() for task in in_flight.values())
+            )
+            for node_id, task in list(in_flight.items()):
+                if not task.done():
+                    continue
+                del in_flight[node_id]
+                if self._nodes[node_id].state != NodeState.PASSED:
+                    self._lock_out_dependents(resolved)
 
     async def _kill_landings(self, target_repo: str) -> None:
         """Take every open landing out of the queue and stop polling it (US1).
