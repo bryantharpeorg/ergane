@@ -37,23 +37,23 @@ assert its history event count is within a small constant of a one-minute attemp
       `factory/workgraph/workflow.py`, `factory/workgraph/adapter.py`,
       `factory/activities/agent_activities.py`, `factory/activities/usage_activities.py`
       exist — constitution I gate; STOP and report blocked if not satisfied.
-- [ ] T003 [P] [US1] Write `tests/test_adapter.py` cases FIRST: the monitor's heartbeat
+- [x] T003 [P] [US1] Write `tests/test_adapter.py` cases FIRST: the monitor's heartbeat
       callable is invoked with a `UsageSnapshot` once a reading exists and with `None`
       before the first successful read; a usage read that raises leaves the previous
       snapshot in place **and the beat still fires** (liveness must never be killed by a
       spend read); the proxy is read at most once per `poll_interval_s` regardless of the
       beat interval — must fail.
-- [ ] T004 [P] [US1] Write a data-converter round-trip test FIRST: the heartbeat payload
+- [x] T004 [P] [US1] Write a data-converter round-trip test FIRST: the heartbeat payload
       (`UsageSnapshot | None`) survives `temporalio`'s default data converter unchanged.
       A payload that fails to serialise degrades the heartbeat to liveness-only *silently*,
       so this is asserted directly rather than inferred — must fail.
-- [ ] T005 [US1] Write `tests/test_interpreter.py` delivery-path cases FIRST, one per
+- [x] T005 [US1] Write `tests/test_interpreter.py` delivery-path cases FIRST, one per
       path, each asserting teardown receives a **non-NULL** spend: (a) normal completion —
       the snapshot arrives on `AdapterResult`; (b) timeout — the workflow reads
       `TimeoutError.last_heartbeat_details` off the `ActivityError`; (c) kill — `_cancel`
       extracts the snapshot before swallowing the error. Today's tests assert on a polled
       value and would not catch a path that silently stops populating it — must fail.
-- [ ] T006 [US1] Write the history-cost test FIRST (SC-001/FR-001/FR-002): under time
+- [x] T006 [US1] Write the history-cost test FIRST (SC-001/FR-001/FR-002): under time
       skipping, an attempt simulating four hours and an attempt simulating one minute
       contribute history event counts within a small constant of each other, and no
       `poll_usage` activity and no timer appears in the four-hour attempt's history —
@@ -61,13 +61,13 @@ assert its history event count is within a small constant of a one-minute attemp
 
 ### Implementation for User Story 1
 
-- [ ] T007 [US1] Amend `factory/workgraph/adapter.py`: the monitor's heartbeat callable
+- [x] T007 [US1] Amend `factory/workgraph/adapter.py`: the monitor's heartbeat callable
       takes details; add the bounded usage read on its own `poll_interval_s` cadence,
       failure-isolated from the beat, until T003 and T004 pass.
-- [ ] T008 [US1] Amend `factory/workgraph/models.py` (`AdapterResult.last_snapshot`) and
+- [x] T008 [US1] Amend `factory/workgraph/models.py` (`AdapterResult.last_snapshot`) and
       `factory/activities/agent_activities.py` to carry the final snapshot home in the
       activity's return value.
-- [ ] T009 [US1] Replace the loop at `factory/workgraph/workflow.py` (the
+- [x] T009 [US1] Replace the loop at `factory/workgraph/workflow.py` (the
       `wait_condition(..., timeout=poll_interval_s)` / `poll_usage` block) with a plain
       await plus the existing kill check, and read `last_heartbeat_details` on the timeout
       and kill paths, until T005 and T006 pass. `poll_usage` stays registered — 001 owns

@@ -263,7 +263,11 @@ class AdapterResult:
     """
 
     termination: Termination
-    transcript_path: str
+    #: Empty only on the one path where there is nothing to point at: the attempt
+    #: that died on a heartbeat timeout never archived a transcript (the worker
+    #: was already gone), so the workflow records that ending without inventing a
+    #: path. Every adapter-produced result carries one.
+    transcript_path: str = ""
     last_snapshot: UsageSnapshot | None = None
 
 

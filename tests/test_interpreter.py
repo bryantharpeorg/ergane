@@ -663,7 +663,6 @@ class ScriptedWorld:
         delivered: bool = True,
         press: str | None = None,
         expiry_state: str | None = EXPIRED,
-        wait_for_poll: bool = False,
         signal_during: dict[str, str] | None = None,
         await_cancel: bool = False,
         scenarios: bool = False,
@@ -676,7 +675,6 @@ class ScriptedWorld:
         self._delivered = delivered
         self._press = press
         self._expiry_state = expiry_state
-        self._wait_for_poll = wait_for_poll
         #: Whether `snapshot_criteria` hands back criteria the judge can score.
         #: False is not "the judge is disabled" — it is a node owing only
         #: `FR-###` bullets, for which `judge_required` is false by 002's own
@@ -744,7 +742,6 @@ class ScriptedWorld:
         self._node = ""
         self._attempt = 0
         self._spend = 0.0
-        self._polled = asyncio.Event()
 
         #: Aliases with a live key behind them, issue-to-teardown. The fake
         #: enforces what the real proxy enforces — a duplicate alias will not
@@ -960,14 +957,6 @@ class ScriptedWorld:
                 # grow, and a long real sleep would only slow the suite.
                 await asyncio.sleep(script._agent_sleep_s)
 
-            if script._wait_for_poll:
-                # Bounded, so a workflow with no poll loop fails the assertion
-                # instead of hanging the suite.
-                try:
-                    await asyncio.wait_for(script._polled.wait(), timeout=10)
-                except asyncio.TimeoutError:
-                    pass
-
             result_kwargs: dict[str, Any] = {
                 "termination": script._current.termination,
                 "transcript_path": (
@@ -987,7 +976,6 @@ class ScriptedWorld:
                 spend_usd=script._spend, captured_at="2026-08-05T09:31:00Z"
             )
             script.polls.append((lease.node_id, lease.attempt, snapshot))
-            script._polled.set()
             return snapshot
 
         @activity.defn(name="run_gates")
@@ -1767,34 +1755,6 @@ async def test_the_teardown_carries_the_terminations_the_adapter_reported(
 # --- R3: the poll loop's snapshot reaches teardown ----------------------------
 
 
-async def test_the_poll_loop_retains_the_last_snapshot_for_teardown(
-    env: WorkflowEnvironment,
-) -> None:
-    """Usage is polled while the agent runs, and the latest read survives (R3).
-
-    D-018 caps the adapter's output at a termination and a transcript path, so
-    the snapshot cannot ride back through it. Teardown's fallback figure is
-    whatever the last poll saw — an unreadable proxy at teardown must record the
-    number that was true 30 seconds ago rather than none at all (constitution V).
-    """
-    script = ScriptedWorld(
-        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
-        client=env.client,
-        wait_for_poll=True,
-    )
-
-    await run_epic(env, script, poll_interval_s=1)
-
-    assert script.polls, "the workflow never polled usage while the agent ran"
-
-    for node_id, attempt, _ in script.polls:
-        assert (node_id, attempt) in {
-            (context.node_id, context.attempt) for context in script.attempts
-        }
-
-    node_polls = [poll for poll in script.polls if poll[0] == "us1"]
-    assert node_polls
-    assert script.teardown_for("us1", 1).last_snapshot == node_polls[-1][2]
 
 
 # --- US1-S4: replay ------------------------------------------------------------

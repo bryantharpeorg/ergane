@@ -168,11 +168,16 @@ COMPONENT_MODULES = sorted(
 
 WORKFLOW_MODULE = WORKGRAPH_PACKAGE / "workflow.py"
 ADAPTER_MODULE = WORKGRAPH_PACKAGE / "adapter.py"
+AGENT_ACTIVITIES_MODULE = COMPONENT_ROOT / "activities" / "agent_activities.py"
 
-#: The one dataclass allowed to carry the attempt's virtual key, and the one
-#: function allowed to read it out (contracts/adapter.md § Environment).
+#: The one dataclass allowed to carry the attempt's virtual key, and the
+#: functions allowed to read it out (contracts/adapter.md § Environment): the
+#: child environment builder (`attempt_env`) and — since US1 moved observation
+#: inside the attempt — the activity's spend reader, which queries the proxy for
+#: that key's usage (plan US1).
 KEY_HOLDER = WORKGRAPH_PACKAGE / "models.py"
 KEY_READER = ADAPTER_MODULE
+USAGE_READER = AGENT_ACTIVITIES_MODULE
 
 
 def module_id(path: Path) -> str:
@@ -900,24 +905,27 @@ def test_this_component_never_names_either_credential(path: Path) -> None:
 def test_the_virtual_key_is_spelled_only_where_it_is_carried_and_read(
     path: Path,
 ) -> None:
-    """One field, one assembly site, one read — and no fourth spelling.
+    """One field, one assembly site, and a small closed set of reads.
 
     `AttemptContext.virtual_key` is declared in `models.py`, filled from the
     attempt's `KeyLease` in `workflow.py`, and read by `attempt_env` in
-    `adapter.py`. Any other module naming it would be a second thing holding a
-    credential, which is how a credential ends up in an error message.
+    `adapter.py` (the child's credential) and by the activity's spend reader in
+    `agent_activities.py` (the proxy query for that key's usage, plan US1). Any
+    other module naming it would be a second thing holding a credential, which is
+    how a credential ends up in an error message.
     """
     names_it = "virtual_key" in identifiers(parse(path))
-    allowed = {KEY_HOLDER, KEY_READER, WORKFLOW_MODULE}
+    allowed = {KEY_HOLDER, KEY_READER, WORKFLOW_MODULE, USAGE_READER}
     if path in allowed:
         assert names_it, (
-            f"{module_id(path)} is one of the three modules that carry the "
+            f"{module_id(path)} is one of the modules that carry or read the "
             "attempt's virtual key and no longer names it — has it moved?"
         )
     else:
         assert not names_it, (
             f"{module_id(path)} names the attempt's virtual key; it lives in "
-            "AttemptContext and is read only where the child env is built"
+            "AttemptContext and is read only where the child env is built or "
+            "where its spend is queried"
         )
 
 
@@ -991,22 +999,30 @@ def test_the_credential_sweep_actually_read_the_component() -> None:
 def test_the_adapter_returns_a_classification_and_evidence_and_nothing_else() -> None:
     """D-018's narrow output, asserted as the field set.
 
-    No diff, no usage figure, no parsed verdict, no "the agent says it is done":
-    a field added here is a new thing the workflow could branch on, and FR-012
-    is the rule that it must not.
+    No diff, no parsed verdict, no "the agent says it is done": a field added
+    here is a new thing the workflow could branch on, and FR-012 is the rule that
+    it must not. `last_snapshot` is the one deliberate exception (plan US1) — a
+    number the proxy reported, never one the workflow or adapter invented — so
+    observation can ride the attempt's heartbeat without a per-interval poll
+    (FR-001).
     """
     assert {field.name for field in AdapterResult.__dataclass_fields__.values()} == {
         "termination",
         "transcript_path",
+        "last_snapshot",
     }
 
 
 def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None:
-    """The interpreter's whole use of the adapter's answer is one field.
+    """The interpreter reads only the classification off the attempt's answer.
 
-    `transcript_path` is evidence for a human, so the workflow may carry it into
-    history but must never read it — a path is a string an agent can influence,
-    and a workflow that inspected one would have a second input to node state.
+    `adapter_result` (the binding in `_run_node`) is consulted for its
+    `termination` alone. The measured spend, `last_snapshot`, is read off the
+    activity's own return value inside `_attempt` and handed straight to teardown
+    — a number the proxy reported, never an agent's claim. `transcript_path` is
+    evidence for a human, so the workflow may carry it into history but must
+    never read it — a path is a string an agent can influence, and a workflow
+    that inspected one would have a second input to node state (FR-012).
     """
     tree = parse(WORKFLOW_MODULE)
     read = {

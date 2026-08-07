@@ -99,7 +99,11 @@ from typing import Sequence
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError, ApplicationError
+from temporalio.exceptions import (
+    ActivityError,
+    ApplicationError,
+    TimeoutError as ActivityTimeoutError,
+)
 
 with workflow.unsafe.imports_passed_through():
     from factory.activities.agent_activities import (
@@ -700,7 +704,6 @@ class EpicWorkflow:
                     session_id=str(workflow.uuid4()),
                     timeout_s=resolved.timeout_s,
                 ),
-                poll_interval_s=request.poll_interval_s,
             )
             # `None` is the attempt the kill cancelled: the adapter re-raises on
             # its KILLED path rather than reporting a termination the workflow
@@ -788,22 +791,30 @@ class EpicWorkflow:
         record: NodeRecord,
         lease: KeyLease,
         context: AttemptContext,
-        *,
-        poll_interval_s: int,
     ) -> AdapterResult | None:
-        """Run one agent attempt, reading its spend while it works (R3).
+        """Run one agent attempt, and hand its measured spend to teardown.
 
-        The adapter's output cannot carry usage numbers (D-018), so the workflow
-        polls beside it and keeps the newest reading: an unreadable proxy at
-        teardown then records the figure that was true a beat ago rather than
-        none at all (constitution V). The poll is a read with no consequence —
-        nothing here branches on a dollar figure, at any magnitude (D-021).
+        Observation lives inside the activity (plan US1): the adapter reads the
+        proxy on its own cadence and carries the newest snapshot as heartbeat
+        details, and the normal path returns it on the `AdapterResult`. The
+        workflow no longer polls beside the attempt, so an attempt's history
+        cost is a constant — no per-interval timer, no `poll_usage` activity
+        (FR-001, FR-002).
 
-        The same loop is where a kill lands: the flag is checked on every beat,
-        so an operator's stop takes effect within one poll interval rather than
-        at the end of an attempt that may be hours long. `None` is returned for
-        the attempt that was cancelled — there is no result, and the caller
-        supplies the classification.
+        The wait is `wait_condition(timeout=None)`, which creates **no Temporal
+        timer** (FR-002) while still re-evaluating the condition on every
+        workflow activation: an operator's kill lands within a beat's response
+        and the attempt's completion is picked up in the same breath. A kill
+        still stops the adapter, and because the SDK does not surface heartbeat
+        details on a cancellation the workflow itself requested, the bracket
+        reads the proxy once before it closes rather than records NULL (FR-003,
+        constitution V) — a constant cost per kill, not per interval.
+
+        A worker death surfaces as an `ActivityError` whose cause is a heartbeat
+        `TimeoutError` carrying the last heartbeat payload; the workflow reads
+        that figure off it and reports the attempt TIMEOUT so it is verified like
+        any other (FR-012). `None` is returned for the attempt a kill cancelled —
+        there is no result, and the caller supplies the classification.
         """
         record.state = NodeState.RUNNING
         agent = workflow.start_activity(
@@ -816,21 +827,60 @@ class EpicWorkflow:
             retry_policy=_AGENT_RETRIES,
         )
 
-        while True:
-            try:
-                await workflow.wait_condition(
-                    lambda: agent.done() or self._kill_requested,
-                    timeout=timedelta(seconds=poll_interval_s),
+        await workflow.wait_condition(
+            lambda: agent.done() or self._kill_requested,
+            timeout=None,
+        )
+
+        if self._kill_requested and not agent.done():
+            await self._cancel(agent)
+            # The SDK does not surface heartbeat details on a cancellation the
+            # workflow itself requested, so the bracket is closed with a single
+            # proxy read rather than with a fabricated NULL (FR-003).
+            record.last_snapshot = await workflow.execute_activity(
+                poll_usage, lease, **_FAST
+            )
+            return None
+
+        try:
+            result = await agent
+        except ActivityError as exc:
+            return self._attempt_timeout(record, exc)
+        record.last_snapshot = result.last_snapshot
+        return result
+
+    def _attempt_timeout(
+        self, record: NodeRecord, exc: ActivityError
+    ) -> AdapterResult:
+        """Turn a dead attempt into a TIMEOUT result, keeping its last measurement.
+
+        The one ending that is not the adapter's word: the worker died and the
+        activity heartbeated no more, so Temporal reports a heartbeat timeout.
+        The figure that was true a beat ago rode the final heartbeat, and the SDK
+        exposes it here (`TimeoutError.last_heartbeat_details`) — a teardown that
+        can no longer reach the proxy still records what was measured, never a
+        fabricated zero (constitution V). A heartbeat-timeout attempt is verified
+        like any other (FR-012), so this returns an ordinary `AdapterResult`
+        rather than letting the error escape.
+        """
+        timeout = exc.cause
+        snapshot: UsageSnapshot | None = None
+        if isinstance(timeout, ActivityTimeoutError):
+            details = list(timeout.last_heartbeat_details)
+            if details and isinstance(details[0], dict):
+                # The heartbeat payload round-trips as a dict on the workflow
+                # side, not as the dataclass (the activity encoded it, the
+                # workflow decodes to the JSON shape).
+                payload = details[0]
+                snapshot = UsageSnapshot(
+                    spend_usd=payload["spend_usd"],
+                    captured_at=payload["captured_at"],
                 )
-            except asyncio.TimeoutError:
-                record.last_snapshot = await workflow.execute_activity(
-                    poll_usage, lease, **_FAST
-                )
-                continue
-            if self._kill_requested and not agent.done():
-                await self._cancel(agent)
-                return None
-            return await agent
+        record.last_snapshot = snapshot
+        # No transcript: the worker died before the adapter could archive one,
+        # so `transcript_path` stays its empty default rather than this module
+        # inventing a path for an ending that produced no archive (FR-012).
+        return AdapterResult(termination=Termination.TIMEOUT, last_snapshot=snapshot)
 
     async def _cancel(self, agent: workflow.ActivityHandle[AdapterResult]) -> None:
         """Stop the running attempt and wait for the cancellation to be recorded.
