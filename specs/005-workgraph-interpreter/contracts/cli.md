@@ -34,9 +34,15 @@ Invalid graph → errors printed, exit 1, no workflow started.
 
 ## `factory-epic status <epic-id> [--json]`
 
-Query `epic_status` on `epic-<epic-id>`. Human output: epic state line, then one
-line per node (`<node_id>  <state>  attempt <n>  <branch>`), declaration order.
-`--json`: the query result verbatim. Unknown workflow → clear message, exit 1.
+Query `epic_status` on `epic-<epic-id>` and read the execution's Temporal status
+via `describe()` (FR-010). The human output's epic line reports both the epic's
+internal state and the execution status
+(`epic <id>  <epic_state>  execution <execution_status>`), then one line per node
+(`<node_id>  <state>  attempt <n>  <branch>`), declaration order. `--json`: the
+query result verbatim, with `execution_status` added as a **sibling** key beside
+it — the existing query payload is never restructured, so a `--json` consumer
+that reads the `epic_state`/`nodes` keys is unchanged. Unknown workflow → clear
+message, exit 1.
 
 ## Exit codes
 

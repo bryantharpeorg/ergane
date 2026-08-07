@@ -619,6 +619,25 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
             f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
         ) from error
 
+    try:
+        # FR-010: the Temporal execution status. A query against a closed
+        # workflow succeeds and returns its final internal state — which is why
+        # today's `status` could print RUNNING for a workflow already FAILED —
+        # so the truth has to come from `describe()`, not from the query. It is
+        # a sibling to the query's document, never merged into it (acceptance 3).
+        described = await handle.describe()
+        status = described.status
+        if status is None:
+            raise _OperatorError(
+                f"cannot read epic '{epic_id}': no execution status reported",
+                EXIT_TRANSPORT,
+            )
+        execution_status = status.name
+    except RPCError as error:
+        raise _OperatorError(
+            f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
+        ) from error
+
     # US1-S4: the query cannot carry live spend (observation rides the agent
     # heartbeat, which Temporal stores on the pending activity's mutable details,
     # not in workflow state), so the CLI reads it as a sibling from the server's
@@ -627,15 +646,20 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
     # untouched. Read before the human render so both formats see the same figure.
     live_spend = await _live_spend(client, handle, document)
     if as_json:
-        # The query result stays byte-identical under its own keys; live spend is
-        # a *sibling* key, never merged into the query's document (contracts/cli.md
-        # § status, and plan US5's sibling-key rule).
+        # The query result stays byte-identical under its own keys; execution
+        # status and live spend are *sibling* keys, never merged into the query's
+        # document (contracts/cli.md § status, and plan US5's sibling-key rule).
         rendered: Any = dict(document)
+        rendered["execution_status"] = execution_status
         if live_spend:
             rendered["live_spend"] = live_spend
         print(json.dumps(rendered, indent=2))
     else:
-        print(render_status(epic_id, document, live_spend=live_spend))
+        print(
+            render_status(
+                epic_id, document, execution_status, live_spend=live_spend
+            )
+        )
     return EXIT_OK
 
 
@@ -705,6 +729,7 @@ async def _live_spend(
 def render_status(
     epic_id: str,
     document: Mapping[str, Any],
+    execution_status: str,
     *,
     live_spend: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
@@ -716,15 +741,22 @@ def render_status(
     an operator reading a killed node should not need a second command to learn
     where its work went.
 
-    A node whose attempt is running shows its live spend (US1-S4) after the
-    branch, so an operator mid-epic sees dollars move instead of a blank line.
+    The epic's line reports both the internal state and the Temporal execution
+    status (FR-010), so a closed workflow never reads as a bare `RUNNING`: the
+    execution status is the ground truth and the internal state is what the epic
+    had in memory when the run last advanced. A node whose attempt is running
+    shows its live spend (US1-S4) after the branch, so an operator mid-epic sees
+    dollars move instead of a blank line.
     """
     nodes: Mapping[str, Mapping[str, Any]] = document["nodes"]
     id_width = max((len(node_id) for node_id in nodes), default=0)
     state_width = max((len(str(node["state"])) for node in nodes.values()), default=0)
     live = live_spend or {}
 
-    lines = [f"epic {epic_id}  {document['epic_state']}"]
+    lines = [
+        f"epic {epic_id}  {document['epic_state']}  "
+        f"execution {execution_status}"
+    ]
     for node_id, node in nodes.items():
         # An existence check, never a magnitude check: whether the running
         # attempt has measured anything yet, not how much (SC-005).

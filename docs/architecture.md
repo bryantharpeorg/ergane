@@ -205,7 +205,16 @@ enforced by validation, which keeps the operator on the upstream upgrade path.
 - `start <workgraph.json>` — start the epic as workflow id `epic-<epic_id>`, which
   is what makes a run findable without anyone writing down a run id; Temporal's id
   uniqueness *is* the one-epic-at-a-time rule.
-- `status <epic-id>` — the `epic_status` query, human-readable or `--json`.
+- `status <epic-id>` — the `epic_status` query plus the execution's Temporal
+  status, human-readable or `--json`. Because a query against a *closed* workflow
+  still succeeds and returns its final internal state, the internal `epic_state`
+  alone could read `RUNNING` for an execution Temporal has already `FAILED` — so
+  the CLI reads the execution status from `describe()` and reports it alongside
+  the internal state (FR-010): the epic line carries both, and `--json` adds it
+  as a sibling `execution_status` key beside the query's document, never merged
+  into it, so no `--json` consumer breaks. The execution status is the ground
+  truth; the internal state is what the epic had in memory when the run last
+  advanced.
 
 `TEMPORAL_ADDRESS` / `TEMPORAL_NAMESPACE` are honored throughout. Temporal's Web UI
 remains the dashboard for anything deeper.
