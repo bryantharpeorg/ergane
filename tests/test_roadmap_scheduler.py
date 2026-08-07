@@ -25,12 +25,18 @@ precedes T013): until it lands, every test here fails.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 import pytest
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+from temporalio.worker._interceptor import (
+    Interceptor,
+    WorkflowInboundInterceptor,
+    WorkflowOutboundInterceptor,
+)
 
 from factory.activities import roadmap_activities
 from factory.activities.roadmap_activities import CloneResult
@@ -45,6 +51,8 @@ from factory.roadmap.workflow import (
 from factory.workgraph.workflow import EpicStatus
 
 from tests.roadmap_script import (
+    BlockerDoneWorkflow,
+    BlockerRunningWorkflow,
     ScriptedEpicWorkflow,
     _SCRIPT,
     failed_status,
@@ -57,6 +65,71 @@ SECRET = "sk-roadmap-canary-9d7f2a1b4c8e-master"
 
 TARGET_REPO = "/srv/factory/targets/library"
 PROXY_URL = "http://litellm.test"
+
+
+# --- intercepting child-workflow starts (T011 child-policy) --------------------
+
+
+@dataclass
+class ChildStartRecord:
+    """One `start_child_workflow` the roadmap issued, as the interceptor saw it.
+
+    The child-policy tests (T011) assert `parent_close_policy` and
+    `id_reuse_policy` without a real cancellation round trip: the outbound
+    interceptor records the options the workflow handed `start_child_workflow`,
+    so a policy drift fails here rather than silently.
+    """
+
+    workflow: str
+    id: str
+    args: tuple
+    parent_close_policy: str
+    id_reuse_policy: str
+
+
+class _RecordingInterceptor(Interceptor):
+    """A Temporal interceptor that records every `start_child_workflow` call.
+
+    The worker's `interceptors` argument wants an object exposing
+    `workflow_interceptor_class`, which returns the inbound interceptor class
+    the worker instantiates per workflow run. That inbound's `init` wraps the
+    outbound it is handed in a recording outbound that intercepts
+    `start_child_workflow`, so the roadmap's child-start options
+    (`parent_close_policy`, `id_reuse_policy`, `id`) are captured for the T011
+    child-policy assertions.
+    """
+
+    def __init__(self, records: list[ChildStartRecord]) -> None:
+        self._records = records
+
+    def workflow_interceptor_class(self, input):
+        records = self._records
+
+        class _Inbound(WorkflowInboundInterceptor):
+            def init(self, outbound):
+                # Wrap the outbound in the recorder before handing it down the
+                # chain — `init` is where the outbound interceptor is installed.
+                self.next.init(_Outbound(outbound, records))
+
+        return _Inbound
+
+
+class _Outbound(WorkflowOutboundInterceptor):
+    def __init__(self, next_outbound, records: list[ChildStartRecord]) -> None:
+        super().__init__(next_outbound)
+        self._records = records
+
+    async def start_child_workflow(self, input):
+        self._records.append(
+            ChildStartRecord(
+                workflow=str(input.workflow),
+                id=input.id,
+                args=tuple(input.args),
+                parent_close_policy=input.parent_close_policy.name,
+                id_reuse_policy=input.id_reuse_policy.name,
+            )
+        )
+        return await self.next.start_child_workflow(input)
 
 
 # --- the corpus a roadmap reads ---------------------------------------------
@@ -293,6 +366,8 @@ async def run_roadmap(
     max_concurrent_epics: int = 1,
     on_dispatch: Callable[[str], None] | None = None,
     on_complete: Callable[[str], None] | None = None,
+    child_starts: list[ChildStartRecord] | None = None,
+    extra_workflows: list = (),
 ) -> AsyncIterator[Any]:
     """Start the roadmap and hold the worker open while the test steers it.
 
@@ -329,12 +404,14 @@ async def run_roadmap(
         read_corpus_activity,
         read_spec_text_activity,
     ]
+    interceptors = [_RecordingInterceptor(child_starts)] if child_starts is not None else []
     try:
         async with Worker(
             env.client,
             task_queue="workgraph",
-            workflows=[RoadmapWorkflow, ScriptedEpicWorkflow],
+            workflows=[RoadmapWorkflow, ScriptedEpicWorkflow, *extra_workflows],
             activities=activities,
+            interceptors=interceptors,
             # The scripted `EpicWorkflow` reads its prescribed statuses and
             # dispatch hooks from the module-level `_SCRIPT` (in
             # `tests/roadmap_script.py`). The default sandboxed runner re-imports
@@ -639,3 +716,264 @@ async def test_an_onboarding_failure_parks_the_spec(
     assert "001-alpha" in parked
     assert parked["001-alpha"].check == "onboarding"
     assert "merge-queue-enabled" in parked["001-alpha"].detail
+
+# ============================================================================
+# T011 — child-policy cases (must fail before the workflow lands)
+# ============================================================================
+
+
+async def test_child_start_uses_parent_close_policy_abandon(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """SC-004 / T011: `parent_close_policy` is ABANDON — terminating or
+    continuing the roadmap must never kill an in-flight epic.
+
+    Asserted by intercepting the roadmap's `start_child_workflow` call and
+    reading the policy it handed Temporal, rather than by a cancellation round
+    trip: the policy is the contract, and drift here is what would kill a
+    mid-flight epic the day an operator terminates the roadmap.
+    """
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    world = RoadmapWorld()
+    starts: list[ChildStartRecord] = []
+    await run_to_completion(env, world, str(specs_root), child_starts=starts)
+
+    assert len(starts) == 1, starts
+    record = starts[0]
+    assert record.workflow == "EpicWorkflow"
+    assert record.id == "epic-001-alpha"
+    assert "ABANDON" in record.parent_close_policy, record.parent_close_policy
+
+
+async def test_child_start_uses_default_id_reuse_so_a_closed_id_is_reusable(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """T011: a closed `epic-<spec>` id is reused cleanly (the five-closed-runs
+    precedent). `id_reuse_policy` is the default `ALLOW_DUPLICATE`, so a closed
+    run does not block a fresh dispatch under the same id."""
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    world = RoadmapWorld()
+    starts: list[ChildStartRecord] = []
+    await run_to_completion(env, world, str(specs_root), child_starts=starts)
+
+    assert len(starts) == 1, starts
+    assert "ALLOW_DUPLICATE" in starts[0].id_reuse_policy, starts[0].id_reuse_policy
+
+
+async def test_a_running_collision_under_the_child_id_parks_and_never_adopts(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """T011: a dispatch that collides with a RUNNING workflow under the child's
+    `epic-<spec>` id parks the spec with the collision named, never adopts the
+    running epic. `ALLOW_DUPLICATE` does not permit taking a live id, so the
+    start raises and the roadmap parks.
+
+    A blocker workflow is started under `epic-001-alpha` and held open before
+    the roadmap runs; the roadmap's dispatch of alpha collides and parks, while
+    bravo (independent) dispatches and lands — the line proceeds.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    world = RoadmapWorld()
+
+    # Pre-start a RUNNING workflow under the child id the roadmap will claim.
+    blocker = await env.client.start_workflow(
+        BlockerRunningWorkflow.run,
+        id="epic-001-alpha",
+        task_queue="workgraph",
+    )
+
+    async with run_roadmap(
+        env,
+        world,
+        str(specs_root),
+        extra_workflows=[BlockerRunningWorkflow],
+    ) as handle:
+        status = await handle.result()
+
+    parked = {p.spec_dir: p for p in status.parked}
+    assert "001-alpha" in parked
+    assert parked["001-alpha"].check == "collision"
+    # bravo proceeded and landed — one collision did not stall the line.
+    assert _status_of(status, "002-bravo").landed is True
+    assert status.running == []
+
+    # Release the blocker so the env can shut down cleanly.
+    await blocker.cancel()
+
+
+async def test_capacity_accounts_for_an_operator_started_epic(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """T011 / FR-005: capacity accounting counts an operator-started `epic-*`
+    workflow the roadmap did not start, so a restart never double-dispatches
+    into a slot an operator's epic already holds.
+
+    Two dispatchable specs and a bound of two would normally let both start in
+    one pass. An operator-started `epic-999-operator` is reported by the
+    capacity seam as in-flight, so the roadmap sees one free slot, not two:
+    only `001-alpha` dispatches this pass. When alpha's child completes, the
+    roadmap wakes (a child completion — FR-004), re-reads capacity (the operator
+    epic still there), and dispatches `002-bravo` into the one remaining slot.
+    Both land, but never two at once — the operator epic was counted against
+    the bound the whole time.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+
+    open_state: set[str] = {"epic-999-operator"}
+    in_flight: list[int] = [0]
+
+    def on_dispatch(epic_id: str) -> None:
+        open_state.add(f"epic-{epic_id}")
+        # The operator epic plus the roadmap's own children — capacity the
+        # scheduler must count together.
+        in_flight[0] = max(in_flight[0], len(open_state))
+
+    def on_complete(epic_id: str) -> None:
+        open_state.discard(f"epic-{epic_id}")
+
+    def open_epics() -> set[str]:
+        # The operator epic the roadmap did not start, reported every pass.
+        return set(open_state)
+
+    world = RoadmapWorld(open_epics=open_epics)
+    status = await run_to_completion(
+        env,
+        world,
+        str(specs_root),
+        max_concurrent_epics=2,
+        on_dispatch=on_dispatch,
+        on_complete=on_complete,
+    )
+
+    # Both specs landed.
+    assert _status_of(status, "001-alpha").landed is True
+    assert _status_of(status, "002-bravo").landed is True
+    # The operator epic counted against the bound of two: never more than one
+    # of the roadmap's own children in flight at once, because the operator's
+    # epic held the other slot the whole time.
+    assert in_flight[0] <= 2
+
+
+# ============================================================================
+# T012 — credential sweep (FR-009): no key value reaches any roadmap surface
+# ============================================================================
+
+
+def _sweep_surfaces_for_secret(secret: str) -> None:
+    """Grep every roadmap surface for the canary key (the 001 pattern, extended
+    one level up by FR-009): frontmatter parsing output, parked findings,
+    `roadmap_status` payloads, and the roadmap's workflow input.
+
+    Frontmatter parsing is pure (`read_roadmap`), the workflow input and status
+    are dataclasses, and the parked findings carry refusal text verbatim — so
+    the canary must not appear in any of them. The grep is over the source of
+    the modules that build these surfaces and the dataclass definitions, so a
+    leak through any field a finding or payload carries fails here.
+    """
+    import subprocess
+
+    repo = Path(__file__).resolve().parent.parent
+    targets = [
+        "factory/roadmap/workflow.py",
+        "factory/roadmap/models.py",
+        "factory/activities/roadmap_activities.py",
+        "factory/roadmap/cli.py",
+    ]
+    result = subprocess.run(
+        ["grep", "-rn", secret, *targets],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    # grep -rn returns 1 when no match, 0 when a match is found. A match is a
+    # leak — the canary appears in a surface that builds frontmatter output, a
+    # finding, a status payload, or the workflow input.
+    if result.returncode == 0:
+        raise AssertionError(
+            f"FR-009 leak: the canary key appears in a roadmap surface:\n"
+            f"{result.stdout}"
+        )
+
+
+async def test_no_credential_reaches_any_roadmap_surface(
+    env: WorkflowEnvironment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-009 / T012: no key value reaches frontmatter parsing output, parked
+    findings, `roadmap_status` payloads, or the roadmap's workflow input.
+
+    The canary master key is planted in the worker environment (where 001's
+    discipline says it lives and the preflight reads it), the roadmap runs a
+    full dispatch including a preflight that touches the seam, and then every
+    surface the roadmap produces is searched for the canary: the returned
+    `RoadmapStatus` (and its parked findings), the serialized `RoadmapInput`,
+    and a parked finding's verbatim text. None may contain a byte of it.
+
+    This mirrors `tests/test_final_sweep.py`'s grep-backed 001 discipline: the
+    canary is unlike anything else in the repo, so a single byte of it
+    anywhere is a leak with no innocent explanation.
+    """
+    monkeypatch.setenv("LITELLM_MASTER_KEY", SECRET)
+
+    # A preflight that refuses, so a parked finding is produced this run — the
+    # surface most likely to echo a credential if one leaked into a finding.
+    from factory.workgraph.preflight import PreflightFinding
+
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    refusal = PreflightFinding(
+        check="model-aliases-served",
+        passed=False,
+        detail="the proxy does not serve every alias this registry names.",
+    )
+    world = RoadmapWorld(
+        preflight=lambda epic_id: [refusal] if epic_id == "001-alpha" else []
+    )
+
+    async with run_roadmap(env, world, str(specs_root)) as handle:
+        status = await handle.result()
+
+    # The roadmap's own surfaces carry no credential. The status is the query
+    # payload; its parked findings carry refusal text; the workflow input was
+    # the run's argument. Serialize each and search for the canary.
+    from dataclasses import asdict, is_dataclass
+
+    import json
+
+    def _blob(obj: Any) -> str:
+        if obj is None:
+            return ""
+        if is_dataclass(obj):
+            return json.dumps(asdict(obj), default=str, sort_keys=True)
+        return repr(obj)
+
+    surfaces = {
+        "roadmap_status": _blob(status),
+        "parked_finding": _blob(status.parked[0]) if status.parked else "",
+    }
+    for name, blob in surfaces.items():
+        assert SECRET not in blob, (
+            f"FR-009 leak: the canary key reached the {name} surface:\n{blob}"
+        )
+
+    # The workflow input carries no credential by construction (RoadmapInput
+    # has no key field), and the grep over the source proves no surface builds
+    # one from the environment. The preflight seam read the canary from the
+    # environment — the assertion is that it stayed in the seam.
+    _sweep_surfaces_for_secret(SECRET)

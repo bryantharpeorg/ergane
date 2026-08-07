@@ -96,3 +96,51 @@ class ScriptedEpicWorkflow:
         if _SCRIPT.on_complete is not None:
             _SCRIPT.on_complete(epic_id)
         return status
+
+
+# --- blocker workflows for the T011 child-policy tests ------------------------
+#
+# Two helpers the collision/closed-id-reuse cases need: a workflow that holds
+# an `epic-*` id open (so a roadmap dispatch collides with a RUNNING workflow)
+# and one that completes immediately (so the id is a closed run the roadmap can
+# reuse). Both live here, not in the test module, for the same reason
+# `ScriptedEpicWorkflow` does: the workflow sandbox traces the defining module.
+
+
+@workflow.defn(name="BlockerRunningWorkflow")
+class BlockerRunningWorkflow:
+    """Hold its workflow id open until a `release` signal arrives.
+
+    Started under an `epic-<spec>` id before the roadmap runs, so the roadmap's
+    `start_child_workflow(EpicWorkflow.run, id=epic-<spec>)` collides with a
+    RUNNING workflow — the case T011 parks with the collision named, never
+    adopts (the `ALLOW_DUPLICATE` policy does not let a new run take a live id).
+    """
+
+    @workflow.run
+    async def run(self) -> str:
+        await workflow.wait_condition(lambda: False)
+        return "unreachable"
+
+    @workflow.signal
+    def release(self) -> None:
+        """No-op signal so the blocker can be released if a test needs it."""
+        # `wait_condition(lambda: False)` never resolves, so the blocker only
+        # ends when the test cancels it; the signal exists so the worker accepts
+        # a release call without an unknown-signal error.
+        return None
+
+
+@workflow.defn(name="BlockerDoneWorkflow")
+class BlockerDoneWorkflow:
+    """Complete immediately, leaving a closed run under its id.
+
+    Started under an `epic-<spec>` id, it returns at once, so the id is a closed
+    run when the roadmap later starts `epic-<spec>` — the `ALLOW_DUPLICATE`
+    policy lets the new run reuse the closed id cleanly (tonight's
+    five-closed-runs precedent, T011).
+    """
+
+    @workflow.run
+    async def run(self) -> str:
+        return "done"
