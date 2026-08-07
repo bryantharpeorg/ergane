@@ -110,7 +110,7 @@ import asyncio
 import hashlib
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Callable, Sequence
 
@@ -3257,6 +3257,63 @@ async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(
     assert ready[0].node.id == "us1"
 
 
+def test_a_merge_gated_edge_stays_locked_while_its_dependency_is_enqueued(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-006 acceptance 2 (the mechanism): a `depends_on_merged` edge is
+    unsatisfied while its dependency is verified-but-enqueued, and satisfied only
+    once the dependency has MERGED.
+
+    White-box: `_edges_satisfied` is the gate, so this asserts it directly rather
+    than racing the poll task's timer — the case fan-out makes easy to get wrong.
+    A dependent becomes *ready* the moment its dependency verifies, and only this
+    gate stops it dispatching while the dependency's landing is still riding the
+    queue alongside any number of other landings (FR-006).
+    """
+    wf = EpicWorkflow()
+    us1 = make_node("us1", "US1")
+    us2 = make_node("us2", "US2", depends_on_merged=["us1"])
+
+    def resolved_for(node: WorkNode) -> ResolvedNode:
+        return ResolvedNode(
+            node=node,
+            model_alias="implementer-alias",
+            models=["implementer-alias"],
+            write_scope="worktree",
+            timeout_s=1,
+        )
+
+    # us1 verified but its landing is merely ENQUEUED — the state fan-out
+    # produces for every concurrent landing until the queue merges it.
+    wf._nodes["us1"] = NodeRecord(
+        node_id="us1",
+        branch=branch_name(EPIC_ID, "us1"),
+        state=NodeState.ENQUEUED,
+        verified=True,
+        landing=Landing(
+            node_id="us1",
+            branch=branch_name(EPIC_ID, "us1"),
+            pr_number=1,
+            state=LandingState.ENQUEUED,
+        ),
+    )
+    wf._nodes["us2"] = NodeRecord(node_id="us2", branch=branch_name(EPIC_ID, "us2"))
+
+    # Verified is not merged: the merge-gated edge stays locked, so us2 is not
+    # ready — regardless of how many other landings are in flight.
+    assert wf._edges_satisfied(us2) is False
+    assert us2.id not in {
+        r.node.id for r in wf._ready_set([resolved_for(us1), resolved_for(us2)])
+    }
+
+    # The dependency merges and the edge unlocks — us2 may now dispatch.
+    wf._nodes["us1"].state = NodeState.MERGED
+    wf._nodes["us1"].landing = replace(
+        wf._nodes["us1"].landing, state=LandingState.MERGED
+    )
+    assert wf._edges_satisfied(us2) is True
+
+
 # --- US1: the widened scheduler (FR-001/002/003/004) --------------------------
 
 
@@ -3510,6 +3567,267 @@ async def test_replay_with_several_nodes_in_flight_dispatches_nothing_twice(
     script = ScriptedWorld(
         all_passing(), client=env.client, agent_sleep_s=0.3
     )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+    history = await script.handle.fetch_history()
+
+    before = list(script.calls)
+    keys_before = [(r.node_id, r.attempt) for r in script.key_requests]
+    attempts_before = len(script.attempts)
+
+    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+
+    assert script.calls == before
+    assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
+    assert len(script.attempts) == attempts_before
+
+
+# --- US3: concurrent landings settle (FR-006) ---------------------------------
+
+
+def _merge_gated_graph() -> list[WorkNode]:
+    """`us1` independent, `us2` merge-gated on `us1` — declared in that order.
+
+    `us2` carries a `depends_on_merged` edge on `us1`: it is ready the moment
+    `us1` *verifies*, but may not dispatch until `us1` has *merged*. That is the
+    edge fan-out makes easy to get wrong (acceptance scenario 2) — a dependent
+    becomes ready while its dependency's landing is merely enqueued, and only the
+    merge-gate stops it.
+    """
+    return [
+        make_node("us1", "US1"),
+        make_node("us2", "US2", depends_on_merged=["us1"]),
+    ]
+
+
+async def test_concurrent_passes_each_open_one_pr_and_enqueue_and_the_epic_waits(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-006 acceptance 1: several nodes reaching PASS together each open
+    exactly one PR and enqueue, and the epic completes only when every landing
+    is terminal.
+
+    Three independent nodes, cap 3: all three verify and land concurrently. Each
+    opens exactly one PR and enqueues exactly once, and the epic does not
+    complete until every one of the three landings has reached a terminal state
+    — here MERGED for all three, scripted so the queue answers each on its first
+    poll. A scheduler that completed on node-terminal alone, or that serialised
+    the landings, would either finish early or never overlap them.
+    """
+    script = ScriptedWorld(all_passing(), client=env.client, agent_sleep_s=0.3)
+
+    status = await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
+    }
+    # Each node opened exactly one PR (FR-006: one landing per node, not per
+    # poll) and enqueued exactly once.
+    prs_by_node: dict[str, int] = {}
+    for request in script.landing_requests:
+        prs_by_node[request.node_id] = prs_by_node.get(request.node_id, 0) + 1
+    assert prs_by_node == {"us1": 1, "us2": 1, "us3": 1}
+    enq_by_node: dict[str, int] = {}
+    for request in script.enqueue_requests:
+        node_id = _node_of_pr(request.pr_number)
+        enq_by_node[node_id] = enq_by_node.get(node_id, 0) + 1
+    assert enq_by_node == {"us1": 1, "us2": 1, "us3": 1}
+    # All three nodes were genuinely in flight at once — fan-out reached the
+    # landing phase, not just the agent phase.
+    assert any(len(running) == 3 for running in script.running_sets), (
+        f"never saw all three nodes in flight; running_sets={script.running_sets}"
+    )
+    # Every landing reached a terminal state (MERGED), and the epic waited for
+    # all of them — the completion condition is "every landing terminal", not
+    # "every node terminal".
+    for node_id in ("us1", "us2", "us3"):
+        assert status.nodes[node_id].landing_state == LandingState.MERGED
+
+
+async def test_the_epic_does_not_complete_until_every_concurrent_landing_settles(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-006 acceptance 1 (the waiting half): with landings settling at
+    different rates, the epic completes only when the *last* landing is terminal.
+
+    `us1` merges on its first poll; `us3` is held pending then merged on its
+    second. The epic must not complete while `us3`'s landing is still riding the
+    queue — even though every node has long since verified — because "every
+    landing terminal" is the exit condition, and a landing still open is a
+    history the factory is still writing against a repo it does not control.
+    """
+    script = ScriptedWorld(all_passing(), client=env.client, agent_sleep_s=0.3)
+    # us1 settles immediately; us3 parks one poll, then merges.
+    script.script_landing("us1", merged_snapshot())
+    script.script_landing("us3", pending_snapshot(), merged_snapshot())
+
+    status = await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
+    }
+    # us3 was polled twice (pending then merged) — its landing was not terminal
+    # until the second poll, and the epic waited for it.
+    us3_polls = [r for r in script.poll_requests if _node_of_pr(r.pr_number) == "us3"]
+    assert len(us3_polls) == 2
+
+
+async def test_a_merge_gated_dependent_does_not_dispatch_while_its_dependency_is_enqueued(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-006 acceptance 2: a `depends_on_merged` dependent does not dispatch
+    while its dependency is merely enqueued — regardless of how many other
+    landings are open.
+
+    `us1` is merge-gating `us2`; `us3` is independent. The cap is wide (3), so
+    `us1` and `us3` run and land together. `us1`'s landing rides the queue for
+    one pending poll before it merges; `us3` merges at once. `us2` — ready the
+    instant `us1` verified — must still wait, because its edge gates on
+    `state == MERGED`, not on `verified`. The status observed from inside `us2`'s
+    own agent attempt is the proof: by the time `us2` dispatches, `us1` is
+    already `MERGED`, never merely `ENQUEUED`. A scheduler that confused
+    "verified" with "merged" would dispatch `us2` while `us1` was still enqueued,
+    and `observed["us2"]` would show it.
+    """
+    nodes = _merge_gated_graph() + [make_node("us3", "US3")]
+    script = ScriptedWorld(
+        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        agent_sleep_s=0.3,
+    )
+    # us1 enqueues, sits one poll, then merges; us3 merges at once. us2 cannot
+    # dispatch until us1 has MERGED, so it trails both.
+    script.script_landing("us1", pending_snapshot(), merged_snapshot())
+    script.script_landing("us3", merged_snapshot())
+
+    status = await run_epic(
+        env,
+        script,
+        graph=make_graph(nodes),
+        max_concurrent_nodes=3,
+    )
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
+    }
+    # The gate: us2 dispatched only after us1 merged. The status read from inside
+    # us2's agent attempt shows us1 already MERGED — never merely enqueued — so
+    # the merge-gate held while us1's landing was riding the queue alongside
+    # us3's, regardless of how many landings were in flight.
+    assert "us2" in script.observed
+    during_us2 = states(script.observed["us2"])
+    assert during_us2["us1"] == NodeState.MERGED
+    # us2 dispatched after us1 — the merge-gate is the only reason it waited.
+    assert script.dispatched.index("us1") < script.dispatched.index("us2")
+    # us1 was polled while pending before it merged, so the enqueued window the
+    # gate must hold through was genuinely open.
+    us1_polls = [r for r in script.poll_requests if _node_of_pr(r.pr_number) == "us1"]
+    assert len(us1_polls) >= 2
+
+
+async def test_a_rejected_landing_recovers_without_stalling_the_others(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-006 acceptance 3: a concurrent landing the queue rejects recovers
+    without stalling the other landings.
+
+    Three independent nodes land at once (cap 3). `us1`'s landing is rejected for
+    CHECKS_FAILED and routed to recovery; `us2` and `us3` merge on their first
+    poll. The no-stall proof is that `us2` and `us3` each reach MERGED — their
+    poll tasks ride the queue on their own beat, and a recovery that blocked the
+    scheduler (or held the other landings' polls) would leave them stranded: the
+    epic would either hang or finish with `us2`/`us3` short of terminal. Here
+    every landing reaches a terminal state and the epic completes, with `us1`
+    recovered and merged alongside the other two. `us1`'s recovery ran a sync
+    and a second attempt — the rejection was routed, not terminal — and it did
+    not block `us2`/`us3` from settling.
+    """
+    script = ScriptedWorld(
+        # us1 verifies, then its recovery re-verifies — two attempts.
+        {"us1": [passing(), passing()], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        agent_sleep_s=0.3,
+    )
+    # us1 is rejected then merges after recovery; us2 and us3 merge at once.
+    script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_landing("us2", merged_snapshot())
+    script.script_landing("us3", merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    status = await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
+    }
+    assert attempt_counts(status) == {"us1": 2, "us2": 1, "us3": 1}
+    # us1's recovery ran a sync and re-enqueued — the rejection was routed, not
+    # terminal.
+    assert [s.node_id for s in script.sync_requests] == ["us1"]
+    # The no-stall proof: us2 and us3 each reached MERGED on their own poll task
+    # (their worktrees were swept, which only happens at MERGED), and us1's
+    # recovery re-enqueued and merged too — none blocked the others, and the
+    # epic completed rather than hanging on the rejected landing.
+    removed = {node_id for node_id, name in script.node_calls if name == "remove_worktree"}
+    assert {"us1", "us2", "us3"} <= removed
+    # us1 re-enqueued after recovery (two enqueues for us1: first landing, then
+    # the recovery re-enqueue), proving the recovery cycle completed and the
+    # landing was back on the queue — not stranded in REJECTED.
+    us1_enqueues = [
+        r for r in script.enqueue_requests if _node_of_pr(r.pr_number) == "us1"
+    ]
+    assert len(us1_enqueues) == 2
+
+
+async def test_concurrent_landings_survive_replay(env: WorkflowEnvironment) -> None:
+    """FR-006 / SC-001: a fan-out to the landing phase replays identically.
+
+    Several nodes PASS, land, and settle (one rejected into recovery) in one
+    recorded run; replaying that history against the workflow code re-runs every
+    scheduling and landing decision and no side effect — a landing-phase
+    scheduling that consulted a clock or raced on shared state would diverge
+    here, and the scripted world proves no activity ran a second time.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        agent_sleep_s=0.3,
+    )
+    script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_landing("us2", merged_snapshot())
+    script.script_landing("us3", merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
 
     await run_epic(
         env,

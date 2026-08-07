@@ -117,7 +117,7 @@ completes.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T014 [US3] Write `tests/test_interpreter.py` landing-concurrency cases FIRST: N
+- [x] T014 [US3] Write `tests/test_interpreter.py` landing-concurrency cases FIRST: N
       nodes reaching PASS together each open exactly one PR and enqueue; the epic completes
       only when every landing is terminal; a rejected landing recovers without stalling the
       others; a `depends_on_merged` dependent does not dispatch while its dependency is
