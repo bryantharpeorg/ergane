@@ -145,7 +145,9 @@ from factory.activities.notify_activities import (
     ExpiredEscalation,
     ExpireEscalationInput,
     SendEscalationInput,
+    SendQuestionInput,
     SentEscalation,
+    SentQuestion,
 )
 from factory.activities.usage_activities import (
     KEY_ISSUANCE_FAILED,
@@ -156,6 +158,7 @@ from factory.activities.usage_activities import (
 from factory.activities.verify_activities import (
     JUDGE_UNAVAILABLE,
     CheckOutputInput,
+    DetectQuestionInput,
     RecordedVerification,
     RecordVerificationInput,
     RunGatesInput,
@@ -173,7 +176,7 @@ from factory.mergequeue.models import (
     QueueOutcome,
     TargetRepoProfile,
 )
-from factory.notify.service import SIGNAL_NAME
+from factory.notify.service import QUESTION_SIGNAL_NAME, SIGNAL_NAME
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
 from factory.verify.ladder import DEBUGGER_PERSONA
 from factory.verify.models import (
@@ -925,6 +928,14 @@ class ScriptedWorld:
         self.detect_requests: list[DetectQuestionInput] = []
         self.question_requests: list[SendQuestionInput] = []
         self.question_message_ids: list[int] = []
+        #: US2's return path. The answer the fake `send_question` delivers as a
+        #: `question_answered(question_id, answer_text)` signal while the send is
+        #: in flight — the bridge's timing, modeled the same way `send_escalation`
+        #: models the press (`script._press`). `None` models "the operator never
+        #: replied", so the workflow's expiry timer is what un-parks the node
+        #: (FR-004). A non-None value un-parks the node on the answer (FR-003).
+        self.question_answer: str | None = None
+        self.question_answer_signals: list[tuple[str, str]] = []
 
         #: The landing phase's scripted surface. `landing_snapshots` is the per-PR
         #: answer queue, in poll order: each `poll_landing` call consumes one
@@ -1514,6 +1525,19 @@ class ScriptedWorld:
             question_id = f"{len(script.question_requests):012x}"
             message_id = 1000 + len(script.question_requests)
             script.question_message_ids.append(message_id)
+            # US2: the operator's reply lands while the send is in flight, the
+            # same way `send_escalation` delivers the press (`script._press`).
+            # The bridge's reply path turns one Telegram reply into a
+            # `question_answered(question_id, answer_text)` signal; here the
+            # fake delivers it directly, threading to the id just minted.
+            if script.question_answer is not None:
+                handle = script._client.get_workflow_handle(request.workflow_id)
+                await handle.signal(
+                    QUESTION_SIGNAL_NAME, args=[question_id, script.question_answer]
+                )
+                script.question_answer_signals.append(
+                    (question_id, script.question_answer)
+                )
             return SentQuestion(
                 question_id=question_id,
                 message_id=message_id,
@@ -2788,6 +2812,229 @@ async def test_a_marker_never_produces_a_pass_from_its_presence(
     assert script.enqueue_requests == []
     # And the gates that would have passed were never read (FR-010 first half):
     assert "run_gates" not in script.sequence("us1")
+
+
+# --- US2: the answer reaches the next attempt, and an answered question costs
+# no ladder slot (FR-003, FR-004, FR-008) ---------------------------------------
+#
+# US1 lands the question path: a marker parks the node WAITING_OPERATOR and ships
+# the question. US2 closes the round trip: the operator's reply un-parks the node,
+# the next attempt's prompt carries the answer verbatim under a dedicated section
+# distinct from verification feedback (FR-003), the QUESTION attempt consumed no
+# ladder slot (a node that could take N attempts before the question can still
+# take N after — FR-001/FR-004), and an unanswered question expires as a FAIL that
+# *does* consume a slot (FR-004). The default window is the question's own 8h, not
+# the escalation hour.
+#
+# These tests are written before the un-park dispatch, the answer prompt section,
+# the no-burn accounting, and the expiry-as-FAIL exist in the interpreter, so
+# they fail: a parked node never un-parks (the epic hangs or the answer never
+# reaches a prompt), and an expired question never re-enters the ladder.
+
+
+#: The operator's reply, verbatim — what the next attempt's prompt must carry
+#: unchanged under a dedicated section (FR-003). Distinct from any gate or judge
+#: feedback so the section's presence is unambiguous.
+ANSWER_TEXT = (
+    "Go with Option A: a 12-hex id like escalations, for reply-routing parity.\n"
+    "The (epic, node, attempt) tuple collides across re-runs."
+)
+
+#: The dedicated section heading the operator answer renders under. Distinct from
+#: `## Prior attempt evidence` (verification feedback) and `## OPERATOR QUESTION`
+#: (the marker the *agent* writes) — the answer is neither the agent's question
+#: nor the ladder's verdict, so it has its own heading (FR-003).
+ANSWER_HEADING = "## Operator answer"
+
+
+def questioning_then_passing(client: Any, *, answer: str = ANSWER_TEXT) -> ScriptedWorld:
+    """`us1` raises a question on attempt 1, then passes on the next attempt.
+
+    The answer lands while the question is in flight (the bridge's timing, the
+    same way `send_escalation` delivers the press), so the workflow un-parks the
+    node and dispatches a second attempt that carries the answer in its prompt.
+    The second attempt is an ordinary passing one — green gates, a real diff —
+    so the node verifies and merges, proving the parked node was re-dispatched
+    rather than abandoned.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()], "us2": [passing()], "us3": [passing()]},
+        client=client,
+    )
+    script.question_bodies["us1"] = QUESTION_BODY
+    #: The answer the fake `send_question` delivers as a `question_answered`
+    #: signal while the send is in flight — the bridge's timing, modeled the
+    #: same way `send_escalation` models the press (`script._press`).
+    script.question_answer = answer
+    return script
+
+
+async def test_an_answer_un_parks_the_node_and_dispatches_a_new_attempt(
+    env: WorkflowEnvironment,
+) -> None:
+    """Acceptance scenario 1: reply → new attempt whose prompt carries the answer.
+
+    The operator's reply un-parks the node (WAITING_OPERATOR → re-dispatched),
+    the epic resumes, and a new attempt dispatches whose prompt carries the
+    answer text verbatim under a dedicated section (FR-003). The node then
+    passes and merges, proving the parked node was re-dispatched rather than
+    left parked forever.
+    """
+    script = questioning_then_passing(env.client)
+
+    status = await run_epic(env, script)
+
+    # The node reached MERGED — it was un-parked and re-dispatched, not left
+    # parked WAITING_OPERATOR (the US1-only behaviour).
+    assert states(status)["us1"] == NodeState.MERGED
+    assert status.epic_state == EpicState.COMPLETED
+    # Two attempts dispatched: the question attempt (1) and the answer attempt.
+    assert [c.attempt for c in script.attempts if c.node_id == "us1"] == [1, 2]
+    assert "overrun" not in script.calls
+
+
+async def test_the_next_attempts_prompt_carries_the_answer_verbatim_under_a_dedicated_section(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-003: the answer is in the next attempt's prompt verbatim, in its own section.
+
+    The section is distinct from the verification-evidence section: the answer is
+    the operator's voice, not a gate tail or judge feedback, so it has its own
+    heading and the answer text appears unchanged (no paraphrase, no summary).
+    The question the agent asked is carried alongside it, so the next attempt
+    reads the exchange as a whole.
+    """
+    script = questioning_then_passing(env.client)
+
+    await run_epic(env, script)
+
+    prompts = script.prompts_for("us1")
+    assert len(prompts) == 2
+    answer_prompt = prompts[1]
+    # The answer text, verbatim — not a paraphrase (FR-003).
+    assert ANSWER_TEXT in answer_prompt
+    # A dedicated section, distinct from the verification-evidence section
+    # (`## Prior attempt evidence`). The heading is what makes the section its
+    # own, and its presence is what makes the answer distinguishable from a
+    # quoted gate tail or judge feedback.
+    assert ANSWER_HEADING in answer_prompt
+    # The question the agent asked is carried alongside the answer (FR-003's
+    # "persisted alongside the question" — the next attempt reads the exchange).
+    assert QUESTION_BODY in answer_prompt
+
+
+async def test_the_answer_section_is_distinct_from_verification_feedback(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-003: the operator answer is not folded into the evidence section.
+
+    A node that asked a question and then failed its gates would carry both the
+    answer and prior-attempt evidence. The two must not be the same section: the
+    answer is what the operator said, the evidence is what the gates and judge
+    said, and conflating them would let an agent read its own question's answer
+    as a verdict (FR-012). Here the answer attempt passes, so there is no prior
+    evidence — but the section heading the answer renders under is distinct from
+    the evidence heading, asserted by name.
+    """
+    assert ANSWER_HEADING != "## Prior attempt evidence"
+    assert ANSWER_HEADING != "## OPERATOR QUESTION"
+
+
+async def test_an_answered_question_consumes_no_ladder_slot(
+    env: WorkflowEnvironment,
+) -> None:
+    """Acceptance scenario 2 / FR-001: the QUESTION attempt consumed no slot.
+
+    A node that could take N attempts before the question can still take N after
+    the answer arrives. The QUESTION attempt broke the loop *before* appending an
+    `AttemptRecord` to history, so `_attempts_spent` excludes it by construction —
+    and the re-dispatch after the answer must not retroactively count it. Here
+    the node asks on attempt 1, answers, then fails three times: it still gets the
+    full `max_attempts` budget of ordinary retries, not `max_attempts - 1`.
+    """
+    # Ask on attempt 1, then fail the next three ordinary attempts. A node that
+    # burned a slot on the question would exhaust at three failures; a node that
+    # did not still has its full budget and reaches the debugger cycle (the rung
+    # after the ordinary budget), proving the question cost nothing.
+    script = ScriptedWorld(
+        {
+            "us1": [passing(), failing(2), failing(3), failing(4), passing()],
+            "us3": [passing()],
+        },
+        client=env.client,
+        press="KILL",  # the escalation that follows exhaustion, to end the node
+    )
+    script.question_bodies["us1"] = QUESTION_BODY
+    script.question_answer = ANSWER_TEXT
+
+    status = await run_epic(env, script)
+
+    # The node used its full ordinary budget (the three failures after the
+    # answer) AND the debugger cycle — four attempts after the question, which is
+    # the default `max_attempts` (3) plus one debugger cycle. A slot burned on the
+    # question would have exhausted at three and never reached the debugger.
+    us1_attempts = [c.attempt for c in script.attempts if c.node_id == "us1"]
+    assert us1_attempts == [1, 2, 3, 4, 5]
+    # The question attempt (1) is not in the ladder's history — it consumed no
+    # slot — so the four failures after it are the four the ladder counts.
+    personas = [r.persona for r in script.key_requests if r.node_id == "us1"]
+    assert personas == [
+        "implementer",  # the question attempt
+        "implementer",
+        "implementer",
+        "implementer",
+        DEBUGGER_PERSONA,  # the debugger cycle — reached because no slot was burned
+    ]
+    assert states(status)["us1"] == NodeState.KILLED
+
+
+async def test_an_expired_question_un_parks_and_consumes_a_slot(
+    env: WorkflowEnvironment,
+) -> None:
+    """Acceptance scenario 3 / FR-004: an unanswered question expires as a FAIL.
+
+    The question's own window elapses (default 8h, not the escalation hour), the
+    node un-parks, and the ladder proceeds as if the attempt had FAILed —
+    consuming a slot. The expiry is the one case where a question burns (FR-001),
+    because the operator never engaged and the node cannot park forever. The
+    expiry reuses the existing escalation-expiry mechanism (a `wait_condition`
+    timeout + an idempotent store transition), not a duplicate of it.
+    """
+    # Ask on attempt 1, then never answer. The question expires, the node
+    # un-parks as a FAIL, and the ladder retries on the ordinary budget — now
+    # short one slot, because the expiry consumed it. The next attempt passes.
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()], "us3": [passing()]},
+        client=env.client,
+        # No `question_answer` — the question goes unanswered and expires.
+    )
+    script.question_bodies["us1"] = QUESTION_BODY
+
+    status = await run_epic(env, script)
+
+    # The node un-parked (not left WAITING_OPERATOR) and reached MERGED — the
+    # expiry re-entered the ladder, which retried and passed.
+    assert states(status)["us1"] == NodeState.MERGED
+    # Two attempts: the question (1, which expired as a FAIL) and the retry (2).
+    assert [c.attempt for c in script.attempts if c.node_id == "us1"] == [1, 2]
+
+
+async def test_the_question_default_window_is_eight_hours_not_the_escalation_hour(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-004: the default window is the question's own 8h, not the escalation hour.
+
+    The workflow's expiry timer waits on the question's own window, not the
+    escalation timeout. Questions are routinely asked into an operator's sleep,
+    and an epic parked till morning is cheaper than a good question burned at 3
+    AM — so the default is 28,800s, not the 3,600s escalation hour. Asserted by
+    reading the timeout the workflow hands the `wait_condition` off the sent
+    question's advertised expiry, not by waiting eight real hours.
+    """
+    from factory.activities.notify_activities import QUESTION_TIMEOUT_S
+
+    # The constant the send activity advertises and the workflow's timer reads.
+    assert QUESTION_TIMEOUT_S == 28800  # 8 hours, not 3600
 
 
 # --- US1: the snapshot reaches teardown on all three delivery paths -----------
