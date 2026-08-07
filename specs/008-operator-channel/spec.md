@@ -234,15 +234,25 @@ round trip US1+US2 create, and it waits on 006-US1's monitor-loop changes
 landing so the two features edit the adapter's loop sequentially, not in
 parallel (the same conflict-avoidance argument as 006's US4-after-US1).
 
+Both edges are `depends_on_merged`, not `depends_on` (003 FR-009): US2
+*imports* what US1 lands and US3 edits what US2 lands, so each dependent's
+worktree must be cloned from a base that already contains its predecessor's
+merge. A pass-edge dispatches on the judge's PASS, minutes before the queue
+merges — 009-us2 was dispatched exactly that way on 2026-08-07 and built
+without the module it imports, at a cost of one killed attempt. The deriver
+requires `depends_on: []` spelled out even when empty.
+
 ```yaml
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-005, FR-006, FR-007]
 US2:
-  depends_on: [US1]
+  depends_on: []
+  depends_on_merged: [US1]
   implements: [FR-003, FR-004, FR-008, FR-010]
 US3:
-  depends_on: [US2]
+  depends_on: []
+  depends_on_merged: [US2]
   implements: [FR-009]
 ```
 

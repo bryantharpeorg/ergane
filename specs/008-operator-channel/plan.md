@@ -30,25 +30,27 @@ spec/plan/tasks only, so contracts an implementer node needs are inlined here.
 **Primary Dependencies**: `temporalio`, `httpx`, `pyyaml`, `python-telegram-bot`
 — all roster items, all already in use. **This feature adds no dependency.**
 
-**Verified reuse inventory** (file:line as of 2026-08-07):
+**Verified reuse inventory** (file:line as of 2026-08-07, re-verified
+against the post-007/009 tree at aa220ea before deriving — every fact held;
+only line anchors had drifted, corrected below):
 
 - **The final message's real home**: the adapter streams the agent's combined
-  stdout/stderr live into the attempt archive (`factory/workgraph/adapter.py:36`,
+  stdout/stderr live into the attempt archive (`factory/workgraph/adapter.py:299`,
   `STDOUT_LOG_NAME = "stdout.log"` at `:67`), and `AdapterResult.transcript_path`
-  points at that directory (`factory/workgraph/models.py:249-261`). The output
+  points at that directory (`factory/workgraph/models.py:280-301`). The output
   check does NOT read it — `check_output` is a diff/artifact check only
-  (`factory/activities/verify_activities.py:270-310`). Marker detection is
+  (`factory/activities/verify_activities.py:293-310`). Marker detection is
   therefore a new, read-only verification-side reader over the archived
   `stdout.log`, keyed off `transcript_path`.
 - **The rule this feature must amend, not evade**: `AdapterResult` is narrow by
   design — "No diff, no usage numbers, no parsed verdict … FR-012 forbids any
   agent-reported signal from reaching node state. `transcript_path` is
-  evidence, never an input to a decision" (`models.py:250-258`, D-018). A
+  evidence, never an input to a decision" (`models.py:286-301`, D-018). A
   question marker that produces a QUESTION classification is an agent-authored
   signal reaching state. The spec records the scoped amendment (spec
   § Decision): exactly one signal, park-only, never a verdict.
 - **Escalation store — pattern yes, table no**: the `escalations` schema
-  (`factory/verify/store.py:116-133`) hard-CHECKs
+  (`factory/verify/store.py:120-135`) hard-CHECKs
   `resolution IN ('RETRY','KILL','PAUSE_EPIC','EXPIRED')` and
   `resolved_via IN ('BUTTON','TIMEOUT')`, stores `choices` as a JSON list of
   `EscalationChoice` (StrEnum `RETRY|KILL|PAUSE_EPIC`,
@@ -59,7 +61,7 @@ spec/plan/tasks only, so contracts an implementer node needs are inlined here.
   `message_id` (Telegram, for reply routing), `sent_at`, `expires_at`,
   `resolution IN ('ANSWERED','EXPIRED')`, `answer_text`, `resolved_at` — reusing
   the store's idempotent `_transition` shape and expiry discipline
-  (`store.py:482-527`: "True if this call is what resolved it"), not the
+  (`store.py:522`: "True if this call is what resolved it"), not the
   constrained table.
 - **Bridge**: `CallbackBridge.handle` (`factory/notify/service.py:118-148`) is
   callback-query-only and validates a press against the record's offered
@@ -70,7 +72,7 @@ spec/plan/tasks only, so contracts an implementer node needs are inlined here.
   through the enum-validated escalation path — overloading it with free text
   was this plan's first idea and the store's CHECK constraints falsify it.
   **New signal `question_answered(question_id, answer_text)`** on
-  `EpicWorkflow`, mirroring the `escalation_resolved` shape (`workflow.py:414-423`).
+  `EpicWorkflow`, mirroring the `escalation_resolved` shape (`workflow.py:497-498`).
 - **Send path template**: `send_escalation`
   (`factory/activities/notify_activities.py:158`) with `SendEscalationInput`
   (workflow_id/epic_id/node_id/history_summary; deliberately no credential —
@@ -80,11 +82,11 @@ spec/plan/tasks only, so contracts an implementer node needs are inlined here.
   from the send **is captured into the questions table** — the escalation path
   never stores it, and reply routing needs it.
 - **The answer's road into the next prompt — verified real**: the ladder
-  threads `prior_feedback` between attempts (`factory/workgraph/workflow.py:643`,
-  `:729-732` — "if verdict is not None and verdict.feedback: prior_feedback =
+  threads `prior_feedback` between attempts (`factory/workgraph/workflow.py:1033`,
+  `:1118-1121` — "if verdict is not None and verdict.feedback: prior_feedback =
   verdict.feedback") and the prompt assembler renders verification evidence
-  sections (`factory/workgraph/prompt.py:147-152`, judge feedback quoted at
-  `:392-393`). The operator answer becomes a **sibling section** in that same
+  sections (`factory/workgraph/prompt.py:175`, judge feedback quoted at
+  `:448-449`). The operator answer becomes a **sibling section** in that same
   assembly — a decision, rendered distinctly from a diagnosis.
 
 **Storage**: the new `questions` table above; the ledger is untouched (FR-006
