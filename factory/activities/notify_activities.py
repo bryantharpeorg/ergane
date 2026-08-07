@@ -210,6 +210,35 @@ class SentQuestion:
 
 
 @dataclass(frozen=True)
+class FindFerriedQuestionInput:
+    """The attempt a ferried question would be attributed to (008-US3).
+
+    The workflow asks the store — not the adapter result — whether a question
+    for this attempt already exists before it re-sends on the US1 degrade path.
+    D-018's hole stays at one signal (the marker): the ferry's question id is
+    evidence in the store, never a second field on the adapter result.
+    """
+
+    epic_id: str
+    node_id: str
+    attempt: int
+
+
+@dataclass(frozen=True)
+class FindFerriedQuestion:
+    """What the store said about a prior ferry for this attempt (008-US3).
+
+    `question_id` is the id of the unanswered row the ferry wrote, or ``None``
+    when no ferry shipped for this attempt (the US1 path sends fresh, as it did
+    before). Only the id is carried back: the message id, timestamps, and text
+    are the row's, not the workflow's, and the workflow reuses the row rather
+    than re-paging the operator about it.
+    """
+
+    question_id: str | None
+
+
+@dataclass(frozen=True)
 class ExpireQuestionInput:
     question_id: str
 
@@ -447,6 +476,21 @@ async def send_question(request: SendQuestionInput) -> SentQuestion:
     should proceed with no reply-routing key, the way `delivered=False` is the
     signal an escalation applies the fail-safe default immediately.
     """
+    return await _deliver_question(request)
+
+
+async def _deliver_question(request: SendQuestionInput) -> SentQuestion:
+    """Record a question and page the operator — the core both paths share (US3).
+
+    The US1 terminal path calls this from the ``send_question`` activity; the
+    US3 in-attempt ferry calls it from the ``run_agent_attempt`` activity's
+    ferry callable, so a question ferried up mid-flight is recorded and paged
+    exactly the way a question asked at the end is (FR-002). The row-first
+    ordering and the message-id capture are the same, and so is the
+    ``QUESTION_NOT_RECORDED`` raise: a ferry that cannot record a row must not
+    silently ship nothing, and the adapter's isolation turns the raise into a
+    skipped beat rather than a hung attempt (FR-009).
+    """
     record = _pending_question(request)
 
     with closing(_connect_question()) as conn:
@@ -494,6 +538,107 @@ async def expire_question(request: ExpireQuestionInput) -> ExpiredQuestion:
     if record is None or record.resolution is None:
         return ExpiredQuestion(final_state=None)
     return ExpiredQuestion(final_state=record.resolution)
+
+
+# --- the in-attempt ferry (008-US3) -------------------------------------------
+#
+# The ferry ships an in-flight question up and the answer down, so an agent
+# that asks mid-flight keeps its process and context alive while the answer
+# travels (US3). The send half reuses `_deliver_question` — a ferried question
+# is recorded and paged exactly the way a terminal one is (FR-002). The answer
+# half reads the store the bridge wrote to: a `message_id`-routed reply (US2)
+# resolves the row `ANSWERED` with the operator's text, and this poll returns
+# it. Both are callables the `run_agent_attempt` activity hands the adapter,
+# the way `_usage_reader` is the spend callable — the adapter is a library leaf
+# that owns the monitor loop, not the store or the notifier.
+
+
+async def ferry_send_question(
+    workflow_id: str, epic_id: str, node_id: str, attempt: int, question_text: str
+) -> str:
+    """Ship an in-flight question up: record the row and page the operator (US3).
+
+    The ferry callable the adapter calls the moment it sees the agent's
+    `question` file. Returns the `question_id` the adapter polls for the answer
+    with, so the round trip routes by id and not by recency (FR-008). A send
+    that fails to record raises `QUESTION_NOT_RECORDED`, which the adapter's
+    isolation turns into a skipped beat — the question ships on the next beat,
+    and the agent degrades to the US1 path if the window elapses first (FR-009).
+    """
+    sent = await _deliver_question(
+        SendQuestionInput(
+            workflow_id=workflow_id,
+            epic_id=epic_id,
+            node_id=node_id,
+            attempt=attempt,
+            question_text=question_text,
+        )
+    )
+    return sent.question_id
+
+
+async def ferry_read_answer(question_id: str) -> str | None:
+    """Poll the store for the operator's reply to a ferried question (US3).
+
+    The answer half of the ferry: returns the operator's verbatim answer once
+    the bridge has routed the reply to this question (US2's
+    `message_id`-threaded resolution), or ``None`` while it has not arrived. A
+    store that cannot be read returns ``None`` rather than raising — the
+    adapter's isolation would swallow a raise anyway, and ``None`` is the
+    signal "not yet, keep polling" the same way an unreadable spend read keeps
+    the previous snapshot (FR-009: a dead read never becomes a hang).
+    """
+    try:
+        with closing(store.connect(_store_path())) as conn:
+            record = store.get_question(conn, question_id)
+    except (sqlite3.Error, OSError):
+        logger.warning(
+            "ferry: question %s unreadable; polling again", question_id
+        )
+        return None
+    if record is None or record.resolution is None:
+        return None
+    return record.answer_text
+
+
+@activity.defn
+async def find_ferried_question(
+    request: FindFerriedQuestionInput,
+) -> FindFerriedQuestion:
+    """Did the in-attempt ferry already ship a question for this attempt? (US3).
+
+    The dedup the US1 degrade path asks before it re-sends: a question row the
+    ferry wrote mid-flight (and that is still unanswered, because the agent
+    degraded before an answer arrived) means the row and the page are already
+    done, and the workflow reuses that `question_id` instead of paging the
+    operator a second time. ``None`` means no ferry shipped for this attempt,
+    and the US1 path sends fresh, exactly as it did before the ferry existed.
+
+    A store that cannot be read returns ``None`` — the same posture as
+    `ferry_read_answer`: a dead read degrades to the fresh send (the US1 path),
+    never a hang (FR-009). The duplicate page that a read failure risks is a
+    tolerable, rare failure mode; a hang is not.
+    """
+    try:
+        with closing(store.connect(_store_path())) as conn:
+            record = store.find_pending_question_by_attempt(
+                conn,
+                epic_id=request.epic_id,
+                node_id=request.node_id,
+                attempt=request.attempt,
+            )
+    except (sqlite3.Error, OSError):
+        logger.warning(
+            "ferry: pending-question lookup for %s/%s/%s unreadable; "
+            "sending fresh",
+            request.epic_id,
+            request.node_id,
+            request.attempt,
+        )
+        return FindFerriedQuestion(question_id=None)
+    return FindFerriedQuestion(
+        question_id=record.question_id if record is not None else None
+    )
 
 
 # --- the row ----------------------------------------------------------------

@@ -449,6 +449,35 @@ def test_the_operator_question_contract_states_the_marker_and_the_bar() -> None:
     assert "never passes" in section.lower() or "not a verdict" in section.lower()
 
 
+def test_the_operator_question_contract_teaches_the_in_flight_ferry() -> None:
+    """008-US3: the contract teaches the in-attempt ferry and its degradation.
+
+    The ferry is the in-flight path: the agent writes its question to
+    `$ATTEMPT_ARCHIVE/question`, polls for `answer`, and keeps its process and
+    context alive while the answer travels (US3's whole point). The contract
+    names the archive directory (never the worktree — salvage would commit a
+    file left there, FR-007), the two ferry file names, and the bounded window:
+    a question with no answer degrades to the US1 marker path, never a hang
+    (FR-009). The marker path is still taught as the fallback, so an agent with
+    no work to keep doing or a window that elapsed asks the same way US1 did.
+    """
+    section = section_of(build(), "## If you are blocked, ask the operator")
+
+    # The ferry channel: the archive directory and the two file names.
+    assert "$ATTEMPT_ARCHIVE" in section, (
+        "the contract must name the archive directory the ferry files live in"
+    )
+    assert "$ATTEMPT_ARCHIVE/question" in section
+    assert "$ATTEMPT_ARCHIVE/answer" in section
+    # The ferry never writes to the worktree (FR-007): salvage would commit it.
+    assert "worktree" in section.lower()
+    # The ferry degrades to the marker path, never a hang (FR-009).
+    assert "marker" in section.lower()
+    assert "hang" in section.lower()
+    # The marker path is still taught as the fallback.
+    assert "## OPERATOR QUESTION" in section
+
+
 # --- standards directive (R11) ------------------------------------------------
 
 

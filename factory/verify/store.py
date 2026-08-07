@@ -748,6 +748,39 @@ def pending_questions(conn: sqlite3.Connection) -> list[QuestionRecord]:
     return [_question_from_row(row) for row in rows]
 
 
+def find_pending_question_by_attempt(
+    conn: sqlite3.Connection,
+    *,
+    epic_id: str,
+    node_id: str,
+    attempt: int,
+) -> QuestionRecord | None:
+    """The unanswered question row for one (epic, node, attempt), or None.
+
+    008-US3: the in-attempt ferry may ship a question mid-flight and then degrade
+    to the marker path before an answer arrives. When the workflow then reaches
+    the US1 send path, it asks the store — not the adapter result — whether a
+    question for this attempt already exists, so it can reuse that row instead
+    of paging the operator a second time. The store is the source of truth for
+    "did the ferry already ask," which keeps D-018's hole at one signal: the
+    marker. The ferry's question id is evidence in the store, never a second
+    field on the adapter result.
+
+    A pending question (resolution IS NULL) is the one a degrade would reuse; a
+    question already ANSWERED belongs to an answered ferry window, where the
+    agent resumed rather than degrading, so the US1 send path is never reached.
+    """
+    row = conn.execute(
+        f"{_SELECT_QUESTION_SQL} "
+        "WHERE epic_id = ? AND node_id = ? AND attempt = ? "
+        "AND resolution IS NULL "
+        "ORDER BY sent_at DESC, question_id DESC "
+        "LIMIT 1",
+        (epic_id, node_id, attempt),
+    ).fetchone()
+    return _question_from_row(row) if row is not None else None
+
+
 def resolve_question(
     conn: sqlite3.Connection,
     question_id: str,

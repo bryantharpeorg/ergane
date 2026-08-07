@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -58,19 +59,24 @@ from factory.verify.models import (
     JudgeVerdict,
     OutputCheck,
     OverallVerdict,
+    QuestionRecord,
     VerificationForm,
     VerificationResult,
 )
 from factory.verify.store import (
+    ANSWERED,
     BUSY_TIMEOUT_MS,
     SCHEMA_VERSION,
     connect,
     expire_escalation,
+    find_pending_question_by_attempt,
     get_escalation,
     insert_escalation,
+    insert_question,
     node_history,
     pending_escalations,
     resolve_escalation,
+    resolve_question,
     upsert_result,
 )
 
@@ -946,3 +952,140 @@ def test_pending_escalations_is_empty_when_nothing_awaits_a_decision(
     store: sqlite3.Connection,
 ) -> None:
     assert pending_escalations(store) == []
+
+
+# --- 008-US3: find a pending question by attempt (the ferry's dedup) ----------
+#
+# The workflow's US1 degrade path asks the store — not the adapter result —
+# whether the in-attempt ferry already shipped a question for this attempt, so
+# it can reuse that row instead of paging the operator a second time. Only a
+# *pending* row is the one to reuse: an answered row was a ferry window that
+# closed the other way (the agent resumed), so the US1 send path is never
+# reached. The store is the source of truth, keeping D-018's hole at one signal.
+
+
+def _make_question(
+    *,
+    question_id: str = "q1234567890ab",
+    epic_id: str = "epic-008",
+    node_id: str = "us1",
+    attempt: int = 1,
+) -> QuestionRecord:
+    """A pending question row, the way `insert_question` wants one."""
+    return QuestionRecord(
+        question_id=question_id,
+        workflow_id="wf-008-run-1",
+        epic_id=epic_id,
+        node_id=node_id,
+        attempt=attempt,
+        question_text="which option?",
+        message_id=None,
+        sent_at="2026-08-07T09:31:00Z",
+        expires_at="2026-08-07T17:31:00Z",
+    )
+
+
+def test_find_pending_question_by_attempt_returns_the_row_when_one_is_pending(
+    store: sqlite3.Connection,
+) -> None:
+    insert_question(store, _make_question(question_id="ferryaaaaaa", attempt=1))
+
+    found = find_pending_question_by_attempt(
+        store, epic_id="epic-008", node_id="us1", attempt=1
+    )
+    assert found is not None
+    assert found.question_id == "ferryaaaaaa"
+    assert found.resolution is None
+
+
+def test_find_pending_question_by_attempt_returns_none_when_no_row_exists(
+    store: sqlite3.Connection,
+) -> None:
+    assert (
+        find_pending_question_by_attempt(
+            store, epic_id="epic-008", node_id="us1", attempt=1
+        )
+        is None
+    )
+
+
+def test_find_pending_question_by_attempt_distinguishes_attempts(
+    store: sqlite3.Connection,
+) -> None:
+    """A question for attempt 2 is not this attempt's ferry (FR-002 attribution)."""
+    insert_question(store, _make_question(question_id="ferrybbbbbb", attempt=2))
+
+    assert (
+        find_pending_question_by_attempt(
+            store, epic_id="epic-008", node_id="us1", attempt=1
+        )
+        is None
+    )
+    found = find_pending_question_by_attempt(
+        store, epic_id="epic-008", node_id="us1", attempt=2
+    )
+    assert found is not None and found.question_id == "ferrybbbbbb"
+
+
+def test_find_pending_question_by_attempt_distinguishes_nodes(
+    store: sqlite3.Connection,
+) -> None:
+    insert_question(
+        store, _make_question(question_id="ferrycccccc", node_id="us2", attempt=1)
+    )
+
+    assert (
+        find_pending_question_by_attempt(
+            store, epic_id="epic-008", node_id="us1", attempt=1
+        )
+        is None
+    )
+
+
+def test_find_pending_question_by_attempt_ignores_an_answered_row(
+    store: sqlite3.Connection,
+) -> None:
+    """An ANSWERED row was a ferry that got its reply — the agent resumed, not
+    degraded, so it is not the row the US1 degrade path reuses.
+    """
+    insert_question(store, _make_question(question_id="ferrydddddd", attempt=1))
+    assert resolve_question(
+        store, "ferrydddddd", answer_text="option A", resolved_at="2026-08-07T10:00:00Z"
+    )
+
+    assert (
+        find_pending_question_by_attempt(
+            store, epic_id="epic-008", node_id="us1", attempt=1
+        )
+        is None
+    )
+
+
+def test_find_pending_question_by_attempt_picks_the_newest_pending_row(
+    store: sqlite3.Connection,
+) -> None:
+    """When more than one pending row exists for an attempt, the newest ships.
+
+    A rare race (two ferry beats shipped before the first recorded), the store
+    resolves it deterministically: the latest send is the one the operator saw
+    last, so its id is the one to reuse.
+    """
+    insert_question(
+        store,
+        replace(
+            _make_question(question_id="ferryeeeeee", attempt=1),
+            sent_at="2026-08-07T09:00:00Z",
+        ),
+    )
+    insert_question(
+        store,
+        replace(
+            _make_question(question_id="ferryffffff", attempt=1),
+            sent_at="2026-08-07T10:00:00Z",
+        ),
+    )
+
+    found = find_pending_question_by_attempt(
+        store, epic_id="epic-008", node_id="us1", attempt=1
+    )
+    assert found is not None and found.question_id == "ferryffffff"

@@ -155,6 +155,7 @@ with workflow.unsafe.imports_passed_through():
         DEFAULT_CHOICES,
         ExpireEscalationInput,
         ExpireQuestionInput,
+        FindFerriedQuestionInput,
         QUESTION_TIMEOUT_S,
         SendEscalationInput,
         SendQuestionInput,
@@ -162,6 +163,7 @@ with workflow.unsafe.imports_passed_through():
         SentQuestion,
         expire_escalation,
         expire_question,
+        find_ferried_question,
         send_escalation,
         send_question,
     )
@@ -1235,17 +1237,48 @@ class EpicWorkflow:
                     # The question ships once, attributed to its epic/node/attempt
                     # (FR-002). The send happens after salvage, so the branch the
                     # operator might be asked about is the one the question names.
-                    sent = await workflow.execute_activity(
-                        send_question,
-                        SendQuestionInput(
-                            workflow_id=workflow.info().workflow_id,
+                    #
+                    # 008-US3: when the in-attempt ferry already shipped this
+                    # question mid-flight (and the agent then degraded to the
+                    # marker path before an answer arrived), the row and the page
+                    # are already done — a ferried question for this attempt is in
+                    # the store. Reuse it instead of re-sending, so the operator
+                    # is paged once about one question, not twice. The ferry's row
+                    # carries the same text (the agent wrote it to the `question`
+                    # file before it wrote the marker), so the question the
+                    # operator sees is the question they would have. The store is
+                    # the source of truth for "did the ferry already ask," not the
+                    # adapter result — D-018's hole stays at one signal (the
+                    # marker), and the ferry's question id is evidence in the
+                    # store, not a second field on the result.
+                    ferried = await workflow.execute_activity(
+                        find_ferried_question,
+                        FindFerriedQuestionInput(
                             epic_id=graph.epic_id,
                             node_id=node.id,
                             attempt=record.attempt,
-                            question_text=marker.text,
                         ),
                         **_FAST,
                     )
+                    if ferried.question_id is not None:
+                        sent = SentQuestion(
+                            question_id=ferried.question_id,
+                            message_id=None,
+                            sent_at="",
+                            expires_at="",
+                        )
+                    else:
+                        sent = await workflow.execute_activity(
+                            send_question,
+                            SendQuestionInput(
+                                workflow_id=workflow.info().workflow_id,
+                                epic_id=graph.epic_id,
+                                node_id=node.id,
+                                attempt=record.attempt,
+                                question_text=marker.text,
+                            ),
+                            **_FAST,
+                        )
                     # Park the node and pause the epic — the operator's answer
                     # (US2) is what un-parks it. WAITING_OPERATOR is non-terminal
                     # and not a dead edge, so dependents stay PENDING; the pause
