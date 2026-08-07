@@ -1,0 +1,222 @@
+{
+  "source": "audit-2026-08-07",
+  "comment": "The 2026-08-07 repo/spec audit, in the findings grammar (FR-001). SC-001's corpus and US1's largest fixture. Keys are stable identities: B/T/C/F card numbering from the review artifact is preserved in notes, not keys.",
+  "findings": [
+    {
+      "key": "interpreter/fire-and-forget-node-tasks",
+      "category": "interpreter",
+      "severity": "critical",
+      "summary": "Node coroutines are dispatched fire-and-forget and the reaper never awaits task.result(), so node exceptions vanish; PENDING re-dispatch mints fresh virtual keys for a node whose task may still be alive.",
+      "refs": ["factory/workgraph/workflow.py:647-652", "factory/workgraph/workflow.py:685-690"],
+      "notes": "B1. Cheap partial (await task.result() in the reaper) belongs to the bugfix epic; the structural fix is owned by the node-child-workflows epic (T1)."
+    },
+    {
+      "key": "interpreter/key-lease-leak-on-verify-raise",
+      "category": "interpreter",
+      "severity": "critical",
+      "summary": "The judge key lease in _verify has no try/finally bracket: a raise between issue and delete leaks the virtual key for its 24h TTL and drops the usage-ledger row for the attempt.",
+      "refs": ["factory/workgraph/workflow.py:1057-1135", "factory/workgraph/workflow.py:1469", "factory/workgraph/workflow.py:1964-2007"],
+      "notes": "B2. The agent-key path at :1469 is the good example; the recovery path at :1964-2007 shares the gap."
+    },
+    {
+      "key": "interpreter/gh-subprocess-blocks-event-loop",
+      "category": "interpreter",
+      "severity": "warning",
+      "summary": "gh CLI calls run via subprocess.run with no timeout on the workflow worker's thread, blocking the event loop against the 5s agent heartbeat and manufacturing false TIMEOUT classifications.",
+      "refs": ["factory/mergequeue/gh.py:300", "factory/workgraph/workflow.py:350"],
+      "notes": "B3. Bugfix epic."
+    },
+    {
+      "key": "interpreter/dead-landing-poll-parks-epic",
+      "category": "interpreter",
+      "severity": "warning",
+      "summary": "The landing poll's dead branch plus a timeout-less wait_condition can park an epic forever with no escalation when a landing neither merges nor fails cleanly.",
+      "refs": ["factory/workgraph/workflow.py:663-667", "factory/workgraph/workflow.py:1723-1725"],
+      "notes": "B4. Bugfix epic; interacts with the landing long-poll idea (T5)."
+    },
+    {
+      "key": "interpreter/cancel-bypasses-kill-sequence",
+      "category": "interpreter",
+      "severity": "warning",
+      "summary": "A Temporal cancel of EpicWorkflow bypasses the kill_epic salvage sequence (no CancelledError handling), so cancellation skips salvage, key cleanup, and evidence recording.",
+      "refs": ["factory/workgraph/workflow.py"],
+      "notes": "B5. Bugfix epic."
+    },
+    {
+      "key": "interpreter/dead-plumbing-config-keys",
+      "category": "interpreter",
+      "severity": "info",
+      "summary": "gate_timeout_s and poll_interval_s are read into config but nothing consumes them — dead plumbing that misleads the operator into believing the dials work.",
+      "refs": ["factory/workgraph/workflow.py:1359"],
+      "notes": "B6. Bugfix epic."
+    },
+    {
+      "key": "temporal/node-child-workflows",
+      "category": "temporal",
+      "severity": "warning",
+      "summary": "Every node attempt runs inside one EpicWorkflow history (~2 MiB per judged attempt, zero continue-as-new, 50 MB terminate threshold); a child workflow per node bounds history and fixes fire-and-forget structurally.",
+      "refs": ["factory/workgraph/workflow.py"],
+      "notes": "T1 -> node-child-workflows epic. Cheap partial available first: pass diffs by reference."
+    },
+    {
+      "key": "temporal/host-affinity-task-queues",
+      "category": "temporal",
+      "severity": "warning",
+      "summary": "All activities share one task queue though worktrees and stores are host-local; host-affinity queues (workgraph-<hostname>, asserted via activity.info().task_queue) are the Temporal-native fix, and 001's usage-ledger queue was never implemented.",
+      "refs": ["factory/usage/store.py:17", "factory/worker.py"],
+      "notes": "T2 -> host-affinity epic."
+    },
+    {
+      "key": "temporal/bridge-unsupervised",
+      "category": "temporal",
+      "severity": "warning",
+      "summary": "The Telegram bridge process is unsupervised: its death silently converts every escalation into a 1h-expiry KILL; a NotifierWorkflow or host supervision would make bridge death loud.",
+      "refs": ["factory/notify/service.py"],
+      "notes": "T3. Fold into the stack-supervision work Bryan already prioritized."
+    },
+    {
+      "key": "temporal/escalations-as-updates",
+      "category": "temporal",
+      "severity": "info",
+      "summary": "Escalation resolution rides signals plus store races; workflow Updates with validators would delete the race, and epic-<epic_id> fits Telegram's 64-byte callback_data.",
+      "refs": ["factory/workgraph/workflow.py", "factory/notify/service.py"],
+      "notes": "T4."
+    },
+    {
+      "key": "temporal/landing-long-poll",
+      "category": "temporal",
+      "severity": "info",
+      "summary": "Landing status polling emits ~11 history events/min; the D-029 heartbeat-details long-poll pattern would cut this to ~3 per landing.",
+      "refs": ["factory/workgraph/workflow.py:663-667"],
+      "notes": "T5. Rider on any interpreter work."
+    },
+    {
+      "key": "temporal/resume-reconciliation",
+      "category": "temporal",
+      "severity": "warning",
+      "summary": "Epic resume after partial landings requires hand-authored remainder workgraphs (violating D-025) — no epic has ever been observed COMPLETED with all nodes MERGED across a split; start-time git reconciliation plus a retry_node signal closes it.",
+      "refs": ["specs/007-parallel-dispatch/workgraph-remainder.json", "specs/009-roadmap-scheduler/workgraph-remainder.json"],
+      "notes": "T6. Also resolves 009's continue-as-new vs child-completion tension."
+    },
+    {
+      "key": "temporal/worker-versioning",
+      "category": "temporal",
+      "severity": "warning",
+      "summary": "Worker deploys mid-epic run stale code until restart (the e5c5569 landing failure); a drain-before-deploy runbook rule now, Build-ID worker versioning or workflow.patched later.",
+      "refs": ["factory/worker.py"],
+      "notes": "T7. The runbook rule is a zero-code rider; the doctor's stale-worker probe detects the condition."
+    },
+    {
+      "key": "temporal/smaller-native-wins",
+      "category": "temporal",
+      "severity": "info",
+      "summary": "Small Temporal-native wins: search attributes for epic/node state, the 009 preflight moved from CLI to activity, gate resume from heartbeat details.",
+      "refs": ["factory/workgraph/cli.py", "factory/activities/verify_activities.py"],
+      "notes": "T8. Riders."
+    },
+    {
+      "key": "ci/trigger-direction-push-out-poll-in",
+      "category": "ci",
+      "severity": "info",
+      "summary": "Provider-neutral CI triggering is already the architecture: git push is the outbound trigger, polling the check rollup is the inbound path — no webhook, no public endpoint, matching D-011/D-028.",
+      "refs": ["docs/decisions.md"],
+      "notes": "C1 -> ci-provider-port epic. This is the answer to the webhook question; the finding records the design so it survives as doctrine."
+    },
+    {
+      "key": "ci/closed-gate-namespace",
+      "category": "ci",
+      "severity": "warning",
+      "summary": "KNOWN_GATES is a closed set ('test','lint','typecheck') enforced bidirectionally at onboarding — the single blocker to richer CI; v2 needs open gate names with tier local|ci|both, an advisory flag, and structured output over the 32KiB tail.",
+      "refs": ["factory/verify/factory_yaml.py:59", "factory/mergequeue/onboard.py:160-186"],
+      "notes": "C2 -> ci-provider-port epic. THE blocker."
+    },
+    {
+      "key": "ci/checkprovider-port",
+      "category": "ci",
+      "severity": "warning",
+      "summary": "gh.py is the one GitHub-coupled module and classify.py is already pure; a CheckProvider port (open_pr/enqueue/snapshot/dispatch/fetch_artifacts) makes AzDO pluggable — with the D-007 caveat that AzDO has no merge queue.",
+      "refs": ["factory/mergequeue/gh.py", "factory/mergequeue/classify.py:50-90"],
+      "notes": "C3 -> ci-provider-port epic."
+    },
+    {
+      "key": "ci/render-pipelines-from-factory-yaml",
+      "category": "ci",
+      "severity": "warning",
+      "summary": "CI pipeline definitions should render from factory.yaml (onboard --write-ci github|azdo) so the gate set and the provider pipeline can never drift apart.",
+      "refs": ["factory/mergequeue/onboard.py", "factory/verify/factory_yaml.py"],
+      "notes": "C4 -> ci-provider-port epic."
+    },
+    {
+      "key": "ci/two-tier-verification",
+      "category": "ci",
+      "severity": "warning",
+      "summary": "Verification splits per D-008: fast local gates (ruff, bandit, pip-audit, gitleaks) in-factory; deep CI (CodeQL/semgrep, SBOM, matrix) provider-side; the judge never in CI.",
+      "refs": ["factory/verify/gates.py", ".github/workflows/test.yml"],
+      "notes": "C5 -> ci-provider-port epic."
+    },
+    {
+      "key": "ci/evidence-loop-attestation",
+      "category": "ci",
+      "severity": "info",
+      "summary": "CI artifacts (SBOM, SARIF, attestations) should flow back as evidence: fetch_check_artifacts on the port, attestation bundle as git note or PR attachment; sigstore/cosign is the provider-neutral signing path vs GitHub-specific attest actions.",
+      "refs": ["factory/mergequeue/gh.py"],
+      "notes": "C6 -> ci-provider-port epic."
+    },
+    {
+      "key": "hardening/agent-sandbox",
+      "category": "hardening",
+      "severity": "critical",
+      "summary": "Agents run with --dangerously-skip-permissions and an inherited HOME — a coding agent can read ~/.config/gh and every host credential; the runtime seam exists but is dead code, and GateExecutor is the natural enforcement seam.",
+      "refs": ["factory/workgraph/models.py:187", "factory/verify/gates.py:153-156"],
+      "notes": "F1 -> agent-sandbox epic. #1 blast radius."
+    },
+    {
+      "key": "hardening/gitleaks-on-node-diff",
+      "category": "hardening",
+      "severity": "warning",
+      "summary": "No secret scan runs on generated node diffs before they become PRs; gitleaks on the diff is a cheap gate that keeps an agent-pasted credential out of the repo forever.",
+      "refs": ["factory/verify/diffcheck.py"],
+      "notes": "F2. Rider on the bugfix or sandbox epic; also a v2 gate candidate."
+    },
+    {
+      "key": "hardening/ruff-mypy-constitution",
+      "category": "hardening",
+      "severity": "info",
+      "summary": "ruff and mypy are absent from the factory's own gate set; adopting them is a constitution III amendment plus factory.yaml gates.",
+      "refs": ["factory.yaml:17-21"],
+      "notes": "F3. Rider."
+    },
+    {
+      "key": "hardening/workflow-hygiene",
+      "category": "hardening",
+      "severity": "warning",
+      "summary": "test.yml lacks a permissions: block and SHA-pinned actions; zizmor and Dependabot would hold the line mechanically.",
+      "refs": [".github/workflows/test.yml"],
+      "notes": "F4. Rider; also a ci-provider-port concern."
+    },
+    {
+      "key": "hardening/litestream-evidence-stores",
+      "category": "hardening",
+      "severity": "warning",
+      "summary": "The SQLite evidence stores (ledger.db, verification.db, doctor.db) have no replication; litestream gives point-in-time recovery for the factory's memory at near-zero cost.",
+      "refs": ["factory/verify/store.py", "factory/usage/ledger.py"],
+      "notes": "F5."
+    },
+    {
+      "key": "hardening/snapshot-personas-at-epic-start",
+      "category": "hardening",
+      "severity": "warning",
+      "summary": "personas.yaml is read at dispatch, so a mid-epic persona swap changes models between attempts of one epic — which actually happened 2026-08-07; snapshotting personas at epic start makes an epic's model choices an artifact.",
+      "refs": ["personas.yaml", "factory/workgraph/workflow.py"],
+      "notes": "F6."
+    },
+    {
+      "key": "hardening/stack-supervision",
+      "category": "hardening",
+      "severity": "critical",
+      "summary": "The dev stack (Temporal dev server, worker, bridge) runs unsupervised in tmux — a five-hour undetected Temporal death has already occurred; systemd user units plus a probe-to-Telegram heartbeat are the fix, with compose'd Temporal per D-006.",
+      "refs": ["scripts/", "docs/architecture.md"],
+      "notes": "F7. Bryan's stated trigger: soon after the in-workflow heartbeats break for the first time. Homelab change more than an epic."
+    }
+  ]
+}
