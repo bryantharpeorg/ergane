@@ -1,5 +1,15 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-07 17:02 UTC. Three stories, three GLM
+# first-attempt judge PASSes, PRs #8/#9/#10 squash-merged by the queue.
+# Split across two runs: us1's run was killed by the classifier's
+# auto-merge heuristic 4s before PR #8 merged (fixed, 701a7f5); the
+# remainder run (us2+us3) completed with the workflow believing both
+# landings — the factory's first epic to verify, land, and record MERGED
+# end-to-end with zero operator touches. us3 needed a debugger recovery
+# cycle: its worktree was pinned to the clone's stale HEAD (fetch-on-pin
+# fix followed), conflicted with us2's squash at PR #10, self-healed in
+# one sync+debugger pass ($0.74).
 # Run order decided 2026-08-07: 007 → 009 → 008. 007 and this spec share
 # workgraph/models.py (_find_cycle), so they run sequentially. 006's
 # requirement is story-level (us1 heartbeat, us2 preflight), carried by
