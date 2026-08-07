@@ -784,17 +784,18 @@ class ScriptedWorld:
         delivered: bool = True,
         press: str | None = None,
         expiry_state: str | None = EXPIRED,
-        wait_for_poll: bool = False,
         signal_during: dict[str, str] | None = None,
         await_cancel: bool = False,
         scenarios: bool = False,
+        adapter_snapshot: UsageSnapshot | None = None,
+        heartbeat_then_block: bool = False,
+        agent_sleep_s: float = 0.0,
     ) -> None:
         self._script = script
         self._client = client
         self._delivered = delivered
         self._press = press
         self._expiry_state = expiry_state
-        self._wait_for_poll = wait_for_poll
         #: Whether `snapshot_criteria` hands back criteria the judge can score.
         #: False is not "the judge is disabled" — it is a node owing only
         #: `FR-###` bullets, for which `judge_required` is false by 002's own
@@ -805,6 +806,20 @@ class ScriptedWorld:
         #: flight. Any other timing tests a different thing.
         self._signal_during = signal_during or {}
         self._await_cancel = await_cancel
+        #: The snapshot the fake adapter carries on its heartbeat and returns on
+        #: the `AdapterResult` (US1: observation rides the agent activity, D-018).
+        #: `None` models "never measured", which teardown records as NULL.
+        self.adapter_snapshot = adapter_snapshot
+        #: Whether the fake agent heartbeats its snapshot once and then blocks —
+        #: the worker-death shape that makes Temporal fire a heartbeat timeout
+        #: whose `last_heartbeat_details` the workflow reads (US1 delivery 2).
+        self.heartbeat_then_block = heartbeat_then_block
+        #: How long the fake agent sleeps before returning, in real seconds.
+        #: Under time-skipping the activity runs real-time, so the history-cost
+        #: test keeps this tiny: it measures the workflow's event count, not wall
+        #: time, and a long real sleep would only slow the suite without changing
+        #: the count.
+        self._agent_sleep_s = agent_sleep_s
 
         #: Activity names in call order, and the same log with the node each call
         #: belonged to — "what happened to us1" is a list rather than an offset
@@ -898,7 +913,6 @@ class ScriptedWorld:
         self._node = ""
         self._attempt = 0
         self._spend = 0.0
-        self._polled = asyncio.Event()
 
         #: Aliases with a live key behind them, issue-to-teardown. The fake
         #: enforces what the real proxy enforces — a duplicate alias will not
@@ -1146,6 +1160,15 @@ class ScriptedWorld:
                 # names anything at all (US3-S2, US3-S3).
                 await handle.signal(steer)
 
+            if script.heartbeat_then_block:
+                # The worker-death shape (US1 delivery 2): the adapter beats its
+                # newest snapshot once and then stops — nothing beats again, so
+                # Temporal fires a heartbeat timeout whose `last_heartbeat_details`
+                # the workflow reads. The block is real, so the test pays one
+                # heartbeat timeout (5s) and no more.
+                activity.heartbeat(script.adapter_snapshot)
+                await asyncio.Event().wait()
+
             if script._await_cancel and steer is not None:
                 # The adapter's kill path (R2): it waits, heartbeating, and on
                 # cancellation archives the transcript and re-raises. Bounded, so
@@ -1153,7 +1176,7 @@ class ScriptedWorld:
                 # hanging the suite — and the overrun is recorded, because
                 # "the attempt ran to completion" is exactly the bug.
                 for _ in range(int(WAIT_TIMEOUT_S / 0.05)):
-                    activity.heartbeat()
+                    activity.heartbeat(script.adapter_snapshot)
                     try:
                         await asyncio.sleep(0.05)
                     except asyncio.CancelledError:
@@ -1161,21 +1184,23 @@ class ScriptedWorld:
                         raise
                 script.calls.append("never_cancelled")
 
-            if script._wait_for_poll:
-                # Bounded, so a workflow with no poll loop fails the assertion
-                # instead of hanging the suite.
-                try:
-                    await asyncio.wait_for(script._polled.wait(), timeout=10)
-                except asyncio.TimeoutError:
-                    pass
+            if script._agent_sleep_s:
+                # A real-time wait standing in for a longer attempt. History cost
+                # is what the test measures, so the sleep itself is tiny even when
+                # it represents hours: the workflow's event count is what must not
+                # grow, and a long real sleep would only slow the suite.
+                await asyncio.sleep(script._agent_sleep_s)
 
-            return AdapterResult(
-                termination=script._current.termination,
-                transcript_path=(
+            result_kwargs: dict[str, Any] = {
+                "termination": script._current.termination,
+                "transcript_path": (
                     f"/srv/factory/.factory/transcripts/{context.epic_id}/"
                     f"{context.node_id}/attempt-{context.attempt}"
                 ),
-            )
+            }
+            if "last_snapshot" in AdapterResult.__dataclass_fields__:
+                result_kwargs["last_snapshot"] = script.adapter_snapshot
+            return AdapterResult(**result_kwargs)
 
         @activity.defn(name="poll_usage")
         async def poll_usage(lease: KeyLease) -> UsageSnapshot:
@@ -1185,7 +1210,6 @@ class ScriptedWorld:
                 spend_usd=script._spend, captured_at="2026-08-05T09:31:00Z"
             )
             script.polls.append((lease.node_id, lease.attempt, snapshot))
-            script._polled.set()
             return snapshot
 
         @activity.defn(name="run_gates")
@@ -1429,6 +1453,7 @@ async def start_epic(
     script: ScriptedWorld,
     *,
     graph: WorkGraph | None = None,
+    workflow_id: str = WORKFLOW_ID,
     **input_overrides: Any,
 ) -> AsyncIterator[Any]:
     """Start one epic and hold the worker open while the test steers it.
@@ -1437,6 +1462,11 @@ async def start_epic(
     epic *between* two of its decisions, and every assertion about what an
     activity saw has to be made before shutdown cancels whatever is still
     running.
+
+    `workflow_id` lets a test run two epics in one environment (the history-cost
+    comparison) without colliding on the shared default; the fake agent still
+    queries the fixed `WORKFLOW_ID` to observe the one in flight, so only a test
+    that runs a *second* workflow in the same env passes a distinct id.
     """
     request: dict[str, Any] = {
         "graph": graph if graph is not None else make_graph(),
@@ -1453,7 +1483,7 @@ async def start_epic(
         handle = await env.client.start_workflow(
             EpicWorkflow.run,
             EpicInput(**request),
-            id=WORKFLOW_ID,
+            id=workflow_id,
             task_queue=TASK_QUEUE,
         )
         script.handle = handle
@@ -2115,34 +2145,6 @@ async def test_the_teardown_carries_the_terminations_the_adapter_reported(
 # --- R3: the poll loop's snapshot reaches teardown ----------------------------
 
 
-async def test_the_poll_loop_retains_the_last_snapshot_for_teardown(
-    env: WorkflowEnvironment,
-) -> None:
-    """Usage is polled while the agent runs, and the latest read survives (R3).
-
-    D-018 caps the adapter's output at a termination and a transcript path, so
-    the snapshot cannot ride back through it. Teardown's fallback figure is
-    whatever the last poll saw — an unreadable proxy at teardown must record the
-    number that was true 30 seconds ago rather than none at all (constitution V).
-    """
-    script = ScriptedWorld(
-        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
-        client=env.client,
-        wait_for_poll=True,
-    )
-
-    await run_epic(env, script, poll_interval_s=1)
-
-    assert script.polls, "the workflow never polled usage while the agent ran"
-
-    for node_id, attempt, _ in script.polls:
-        assert (node_id, attempt) in {
-            (context.node_id, context.attempt) for context in script.attempts
-        }
-
-    node_polls = [poll for poll in script.polls if poll[0] == "us1"]
-    assert node_polls
-    assert script.teardown_for("us1", 1).last_snapshot == node_polls[-1][2]
 
 
 # --- US1-S4: replay ------------------------------------------------------------
@@ -2433,6 +2435,222 @@ async def test_kill_cancels_the_attempt_salvages_and_kills_every_node(
     assert [(r.node_id, r.target_repo) for r in script.removals] == [
         ("us1", TARGET_REPO)
     ]
+
+
+# --- US1: the snapshot reaches teardown on all three delivery paths -----------
+#
+# US1 moves observation onto the agent activity's heartbeat (plan US1). Teardown
+# keeps the same `last_snapshot` field and the same meaning — the fallback figure
+# when the proxy is unreadable — but the figure now arrives three ways: on the
+# returned `AdapterResult` (normal), read off a heartbeat-timeout's
+# `last_heartbeat_details` (worker death), and read once at kill (the SDK gives
+# the workflow no details on a cancellation it requested). A path that silently
+# stops populating the field records NULL and loses a dollar figure no existing
+# test would catch, so each is asserted independently (plan's "trap").
+
+SNAPSHOT = UsageSnapshot(spend_usd=6.25, captured_at="2026-08-05T09:31:00Z")
+
+
+async def test_a_normal_attempt_delivers_its_snapshot_to_teardown(
+    env: WorkflowEnvironment,
+) -> None:
+    """Delivery 1: the attempt's last observation rides home on the returned
+    `AdapterResult`, and the workflow hands it to teardown — zero extra events.
+
+    The node verifies and the bracket closes with the measured figure, not NULL.
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        adapter_snapshot=SNAPSHOT,
+    )
+
+    await run_epic(env, script)
+
+    assert script.teardown_for("us1", 1).last_snapshot == SNAPSHOT
+
+
+async def test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown(
+    env: WorkflowEnvironment,
+) -> None:
+    """Delivery 2: a worker death beats the snapshot once and stops; Temporal
+    fires the heartbeat timeout carrying `last_heartbeat_details`, which the
+    workflow reads and hands to teardown.
+
+    The attempt's bracket still closes (FR-004) with the figure that was true a
+    beat ago — not NULL — and the node still verifies (FR-012).
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        adapter_snapshot=SNAPSHOT,
+        heartbeat_then_block=True,
+    )
+
+    status = await run_epic(env, script)
+
+    assert script.teardown_for("us1", 1).last_snapshot == SNAPSHOT
+    assert script.teardown_for("us1", 1).termination == Termination.TIMEOUT
+    assert "run_gates" in script.sequence("us1")
+    assert states(status)["us1"] == NodeState.PASSED
+
+
+async def test_a_kill_delivers_a_snapshot_to_teardown(
+    env: WorkflowEnvironment,
+) -> None:
+    """Delivery 3: a kill cancels the attempt and tears down with a non-NULL
+    figure — the SDK does not surface heartbeat details on a cancellation the
+    workflow itself requested, so the bracket reads the proxy once before it
+    closes rather than recording NULL.
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        signal_during={"us1": KILL_SIGNAL},
+        await_cancel=True,
+        adapter_snapshot=SNAPSHOT,
+    )
+
+    async with start_epic(env, script) as handle:
+        status = await handle.result()
+        await wait_for(
+            lambda: bool(script.cancellations),
+            what="the adapter's attempt to be cancelled",
+        )
+
+    assert script.cancellations == ["us1"]
+    assert status.epic_state == EpicState.KILLED
+    assert script.teardown_for("us1", 1).termination == Termination.KILLED
+    assert script.teardown_for("us1", 1).last_snapshot is not None
+
+
+# --- US1: an attempt's history cost is O(1), not O(duration) ------------------
+#
+# The whole story's defect (spec.md, plan.md): the poll loop fired a
+# `wait_condition` timer and a `poll_usage` activity every `poll_interval_s`,
+# so a four-hour attempt grew its history without bound — ~5,300 events, one
+# heartbeat timeout from Temporal's ceiling. US1 replaces that with a plain
+# `await agent`: observation rides the agent heartbeat, and the workflow's
+# history for an attempt is a fixed constant no matter how long the attempt
+# runs. This test runs two otherwise-identical epics whose attempts differ only
+# in their configured duration and asserts their history counts are within a
+# small constant, and that neither the four-hour attempt's history carries a
+# timer nor a `poll_usage` activity (FR-001, FR-002).
+
+
+#: The numeric `HistoryEventType` members the history-cost test keys off.
+_EVENT_TIMER_STARTED = 17
+_EVENT_TIMER_FIRED = 18
+_EVENT_ACTIVITY_SCHEDULED = 10
+
+#: Poll interval the history-cost test runs both epics at. Small enough that the
+#: poll loop fires several times over the longer sleep (so its per-interval
+#: growth is observable) yet coarse enough that the loop completes under time
+#: skipping; the exact value is a test constant, not a production default.
+_HISTORY_POLL_INTERVAL_S = 1.0
+
+
+def _history_event_count(history: Any) -> dict[int, int]:
+    """`event_type -> count` for one run's whole history."""
+    counts: dict[int, int] = {}
+    for event in history.events:
+        counts[event.event_type] = counts.get(event.event_type, 0) + 1
+    return counts
+
+
+def _scheduled_activity_names(history: Any) -> list[str]:
+    """The activity types scheduled across the run, in order."""
+    names: list[str] = []
+    for event in history.events:
+        if event.event_type == _EVENT_ACTIVITY_SCHEDULED:
+            names.append(event.activity_task_scheduled_event_attributes.activity_type.name)
+    return names
+
+
+async def _attempt_history(
+    label: str, *, agent_sleep_s: float
+) -> tuple[int, dict[int, int], list[str]]:
+    """Run one one-node epic in its own environment and return
+    (total events, event counts, activities).
+
+    Duration is modelled by `agent_sleep_s`, the real seconds the fake adapter
+    stands in for the attempt (spec.md: the agent runs in real time under time
+    skipping, so the poll loop's growth is driven by how many poll intervals
+    elapse while it runs). The poll interval is fixed small enough that the
+    poll loop fires more than once over the longer sleep (so its growth is
+    observable) yet coarse enough that the loop completes — a duration axis
+    that must not change the event count.
+
+    The workflow id is a module constant and the fake agent queries that fixed
+    id, so a test may not run two epics in one environment. Each call therefore
+    starts its own Temporal environment, making the id unique per run.
+    """
+    env = await WorkflowEnvironment.start_time_skipping()
+    try:
+        script = ScriptedWorld(
+            {"us1": [passing()]}, client=env.client, agent_sleep_s=agent_sleep_s
+        )
+        await run_epic(
+            env,
+            script,
+            graph=make_graph([make_node("us1", "US1")]),
+            poll_interval_s=_HISTORY_POLL_INTERVAL_S,
+        )
+        history = await script.handle.fetch_history()
+        return (
+            sum(_history_event_count(history).values()),
+            _history_event_count(history),
+            _scheduled_activity_names(history),
+        )
+    finally:
+        await env.shutdown()
+
+
+async def test_an_attempts_history_cost_does_not_grow_with_its_duration() -> None:
+    """FR-001/FR-002: a four-hour attempt and a one-minute attempt contribute
+    history event counts within a small constant.
+
+    Under time-skipping the agent runs in real seconds, so "duration" is modelled
+    by `agent_sleep_s`: the four-hour attempt is the longer real-time stand-in
+    (many poll intervals elapse while it runs), the one-minute attempt the short
+    one. That is the axis the poll loop grew history along — this is the story's
+    whole defect (spec.md). Under the plain await neither attempt's history moves
+    with its duration.
+
+    Two epics, two runs — the workflow id is a module constant and the fake agent
+    queries that fixed id, so a test may not run two epics in one environment.
+    Each case runs in its own fresh environment (built inside `_attempt_history`),
+    and the two compare their counts against the same constant.
+    """
+    hours_count, _, _ = await _attempt_history("hours", agent_sleep_s=4.0)
+    minutes_count, _, _ = await _attempt_history("minutes", agent_sleep_s=1.0)
+
+    assert abs(hours_count - minutes_count) <= 6, (
+        f"history cost grew with duration: hours={hours_count}, "
+        f"minutes={minutes_count}"
+    )
+
+
+async def test_an_attempts_history_has_no_timer_and_no_poll_activity() -> None:
+    """FR-002: the four-hour attempt's history carries neither a timer pair nor a
+    `poll_usage` activity — the two things that made the old loop's cost grow.
+
+    This is the other half of the duration-independence proof: not only is the
+    count bounded, the mechanisms that used to grow it are gone.
+    """
+    _, hours_events, hours_activity = await _attempt_history(
+        "hours", agent_sleep_s=4.0
+    )
+
+    assert _EVENT_TIMER_STARTED not in hours_events, (
+        "the four-hour attempt emitted a timer"
+    )
+    assert _EVENT_TIMER_FIRED not in hours_events, (
+        "the four-hour attempt emitted a timer"
+    )
+    assert "poll_usage" not in hours_activity, (
+        "the four-hour attempt scheduled a poll_usage activity"
+    )
 
 
 # --- the judge path (002's flow invariant 2, wired) ---------------------------

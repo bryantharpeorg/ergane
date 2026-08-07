@@ -608,13 +608,16 @@ def test_the_attempt_context_round_trips_as_json() -> None:
 def test_the_adapter_result_carries_nothing_but_outcome_and_evidence() -> None:
     """D-018's narrow output, asserted as a closed field set (FR-005).
 
-    No diff, no usage numbers, no parsed verdict: the diff is read from the
-    worktree and usage from the ledger, and FR-012 forbids any agent-reported
-    signal reaching node state. A field added here is the seam widening.
+    No diff, no parsed verdict: the diff is read from the worktree and FR-012
+    forbids any agent-reported signal reaching node state. `last_snapshot` is
+    the one deliberate exception (plan US1) — a number the proxy reported, never
+    one the workflow or adapter invented — so observation can ride the attempt's
+    heartbeat without a per-interval poll (FR-001).
     """
     assert [field.name for field in dataclasses.fields(AdapterResult)] == [
         "termination",
         "transcript_path",
+        "last_snapshot",
     ]
 
 

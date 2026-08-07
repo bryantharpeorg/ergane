@@ -56,9 +56,9 @@ import re
 import shutil
 import signal
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
-from factory.usage.models import Termination
+from factory.usage.models import Termination, UsageSnapshot
 from factory.workgraph.models import AdapterResult, AttemptContext
 
 #: The agent's combined stdout and stderr, streamed live into the attempt's
@@ -97,7 +97,31 @@ DEFAULT_GRACE_S = 10.0
 #: monitor loop is already awake to check the deadline.
 DEFAULT_HEARTBEAT_INTERVAL_S = 1.0
 
+#: Seconds between usage reads while the agent works (R3, plan US1). Much slower
+#: than the beat: the read is a proxy round trip, throttled to its own cadence so
+#: an hours-long attempt issues a bounded number of `/key/info` calls. The same
+#: value the old loop polled at, so moving the read inside the activity does not
+#: change how often the proxy is queried — it only stops charging the workflow's
+#: history for it (FR-001, FR-002).
+DEFAULT_POLL_INTERVAL_S = 30
+
 _NON_ALNUM = re.compile(r"[^a-zA-Z0-9]")
+
+
+async def _invoke_heartbeat(
+    heartbeat: Callable[[UsageSnapshot | None], Awaitable[None] | None],
+    snapshot: UsageSnapshot | None,
+) -> None:
+    """Fire the beat, tolerating a sync or async callback.
+
+    Temporal's `activity.heartbeat` is sync; a test's spy may be `async def`.
+    The snapshot is the beat's details — the only reason a callback is ever
+    interesting is what it carries, so a callback that raises is a real defect
+    (unlike a spend read failing) and propagates.
+    """
+    result = heartbeat(snapshot)
+    if result is not None:
+        await result
 
 
 class AdapterError(RuntimeError):
@@ -133,8 +157,10 @@ class AgentAdapter(Protocol):
         context: AttemptContext,
         *,
         factory_root: Path | str,
-        heartbeat: Callable[[], None] | None = ...,
+        heartbeat: Callable[[UsageSnapshot | None], Awaitable[None] | None] | None = ...,
         heartbeat_interval_s: float = ...,
+        read_usage: Callable[[], Awaitable[UsageSnapshot]] | None = ...,
+        poll_interval_s: float = ...,
     ) -> AdapterResult: ...
 
 
@@ -248,8 +274,10 @@ class ClaudeCodeAdapter:
         context: AttemptContext,
         *,
         factory_root: Path | str,
-        heartbeat: Callable[[], None] | None = None,
+        heartbeat: Callable[[UsageSnapshot | None], Awaitable[None] | None] | None = None,
         heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
+        read_usage: Callable[[], Awaitable[UsageSnapshot]] | None = None,
+        poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     ) -> AdapterResult:
         """Run one attempt to its end, whatever that end is.
 
@@ -273,11 +301,13 @@ class ClaudeCodeAdapter:
             _write_pid_file(pids, process.pid)
             feeder = asyncio.ensure_future(_feed_prompt(process, context.prompt))
             try:
-                termination = await self._monitor(
+                termination, last_snapshot = await self._monitor(
                     process,
                     timeout_s=context.timeout_s,
                     heartbeat=heartbeat,
                     interval_s=heartbeat_interval_s,
+                    read_usage=read_usage,
+                    poll_interval_s=poll_interval_s,
                 )
             except BaseException:
                 # Cancellation (the workflow's kill) and any failure of the
@@ -293,7 +323,11 @@ class ClaudeCodeAdapter:
 
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
-        return AdapterResult(termination=termination, transcript_path=str(archive))
+        return AdapterResult(
+            termination=termination,
+            transcript_path=str(archive),
+            last_snapshot=last_snapshot,
+        )
 
     # -- launch ---------------------------------------------------------------
 
@@ -347,19 +381,34 @@ class ClaudeCodeAdapter:
         process: asyncio.subprocess.Process,
         *,
         timeout_s: int,
-        heartbeat: Callable[[], None] | None,
+        heartbeat: Callable[[UsageSnapshot | None], Awaitable[None] | None] | None,
         interval_s: float,
-    ) -> Termination:
+        read_usage: Callable[[], Awaitable[UsageSnapshot]] | None,
+        poll_interval_s: float,
+    ) -> tuple[Termination, UsageSnapshot | None]:
         """Wait for the agent, beating as it goes, and end it at its deadline.
 
         The wait is chopped into heartbeat-sized pieces rather than one long
         `wait_for`: the beat is what keeps the activity alive in Temporal's eyes
         and what lets a cancellation land within a beat instead of at the
         deadline.
+
+        Observation rides the beat (plan US1): every `poll_interval_s` the proxy
+        is read once for the attempt's spend so far, and the newest snapshot (or
+        `None` before any reading succeeded) is carried as the beat's details. A
+        read that raises leaves the previous snapshot in place and the beat still
+        fires — liveness and spend share one channel, and spend must never be
+        able to kill liveness (constitution V).
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
         exited = asyncio.ensure_future(process.wait())
+
+        snapshot: UsageSnapshot | None = None
+        # The first read waits one full poll interval, so the first beat (one
+        # heartbeat interval in) necessarily carries `None` — the attempt has
+        # not been measured yet (constitution V: unknown, not zero).
+        next_read = loop.time() + poll_interval_s
 
         try:
             while True:
@@ -371,20 +420,32 @@ class ClaudeCodeAdapter:
                         asyncio.shield(exited), timeout=min(interval_s, remaining)
                     )
                 except (asyncio.TimeoutError, TimeoutError):
+                    now = loop.time()
+                    if read_usage is not None and now >= next_read:
+                        # A dead spend read must not kill liveness: keep the
+                        # previous snapshot and let the beat fire anyway.
+                        try:
+                            snapshot = await read_usage()
+                        except BaseException:
+                            pass
+                        next_read = now + poll_interval_s
                     if heartbeat is not None:
-                        heartbeat()
+                        await _invoke_heartbeat(heartbeat, snapshot)
                     continue
                 return (
-                    Termination.COMPLETED
-                    if process.returncode == 0
-                    else Termination.AGENT_ERROR
+                    (
+                        Termination.COMPLETED
+                        if process.returncode == 0
+                        else Termination.AGENT_ERROR
+                    ),
+                    snapshot,
                 )
         except BaseException:
             exited.cancel()
             raise
 
         await self._reclaim(process)
-        return Termination.TIMEOUT
+        return Termination.TIMEOUT, snapshot
 
     async def _reclaim(self, process: asyncio.subprocess.Process) -> None:
         """SIGTERM the agent's process group, then SIGKILL what survives.
