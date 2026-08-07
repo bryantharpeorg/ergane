@@ -66,7 +66,7 @@ US3 — US2 runs the scheduler to quiescence and returns its status.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Callable
 
@@ -151,6 +151,12 @@ class RoadmapInput:
     unchanged — the roadmap does not choose a ladder or a landing policy, it
     forwards the operator's.
 
+    `carry_over` is US3's durability seam (FR-007): a run that resumes after a
+    continue-as-new receives the previous run's observed landings, parked
+    findings, promotions, and pause flag here, so the new run's empty instance
+    fields are repopulated and the roadmap does not re-dispatch work whose
+    result the carry-over already holds. `None` for the first run.
+
     No credential (FR-009): the master key lives in the worker environment and
     is read inside the preflight activity's seam, never here.
     """
@@ -162,6 +168,7 @@ class RoadmapInput:
     landing_config: LandingConfig = LandingConfig()
     config: VerificationConfig = VerificationConfig()
     poll_interval_s: int = 30
+    carry_over: "RoadmapCarryOver | None" = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +189,67 @@ class ParkedFinding:
 
 
 @dataclass(frozen=True)
+class RoadmapCarryOver:
+    """US3's explicit state across a continue-as-new boundary (FR-007).
+
+    The one moment continue-as-new is safe is quiescence — zero children open
+    — and the carry-over is the fixed-size input the new run receives so it
+    does not re-dispatch work the previous run already did. Everything *not*
+    here is re-read on the new run (the corpus, the capacity), which is what
+    makes "restarting re-reads the world" true for free (SC-004): a spec
+    edited to `ready` between runs is seen, but a spec already observed-landed
+    or already parked is not re-dispatched.
+
+    `landed` and `parked` are the observed-landed and parked-finding maps the
+    run accumulated; `promotions` are the spec dirs the operator promoted by
+    signal (FR-008); `paused` is the pause flag (FR-008); `max_concurrent_epics`
+    is the bound (FR-005), carried so a restart honours the operator's knob.
+
+    No credential reaches any field (FR-009): `ParkedFinding.detail` carries a
+    refusal's text, never a key; the maps hold spec dirs and `LandedStatus`es.
+    """
+
+    landed: tuple[tuple[str, LandedStatus], ...] = ()
+    parked: tuple[ParkedFinding, ...] = ()
+    promotions: tuple[str, ...] = ()
+    paused: bool = False
+    max_concurrent_epics: int = 1
+
+    @classmethod
+    def from_state(
+        cls,
+        *,
+        landed: dict[str, LandedStatus],
+        parked: dict[str, ParkedFinding],
+        promotions: dict[str, None] | set[str],
+        paused: bool,
+        max_concurrent_epics: int,
+    ) -> "RoadmapCarryOver":
+        """Build a carry-over from the run's live (mutable) state.
+
+        The run holds its state in dicts (for `workflow.wait_condition`
+        closures); the carry-over is frozen and ordered so the boundary
+        payload is deterministic and serializable across the run.
+        """
+        return cls(
+            landed=tuple(sorted(landed.items())),
+            parked=tuple(parked[d] for d in sorted(parked)),
+            promotions=tuple(sorted(set(promotions))),
+            paused=paused,
+            max_concurrent_epics=max_concurrent_epics,
+        )
+
+    def landed_map(self) -> dict[str, LandedStatus]:
+        return dict(self.landed)
+
+    def parked_map(self) -> dict[str, ParkedFinding]:
+        return {p.spec_dir: p for p in self.parked}
+
+    def promotion_set(self) -> set[str]:
+        return set(self.promotions)
+
+
+@dataclass(frozen=True)
 class RoadmapSpecStatus:
     """One spec as an operator reads it (the `roadmap_status` query's answer).
 
@@ -190,7 +258,14 @@ class RoadmapSpecStatus:
     itself observed-landed (a child returned COMPLETED with every landing
     MERGED); `unlanded` names dependencies that ran but did not land — the
     finished-but-not-landed report acceptance 4 demands, a subset of
-    `blockers`.
+    `blockers`. `landed_kind` is *how* this spec is landed — `ATTESTED`
+    (frontmatter `state: landed`) or `OBSERVED` (a child returned landed) —
+    `None` when it is not landed, so a report says why an edge is satisfied,
+    not just that it is (FR-003, acceptance 5). `satisfied_as` carries the
+    same distinction per satisfied dependency. `promoted` is US3's signal
+    (FR-008): a draft the operator promoted is reported as promoted, not as
+    `ready` in the file (the file remains the authority of record; the
+    signal covers the gap until its next edit).
     """
 
     spec_dir: str
@@ -199,6 +274,9 @@ class RoadmapSpecStatus:
     blockers: list[str]
     landed: bool
     unlanded: list[str]
+    landed_kind: LandedKind | None = None
+    satisfied_as: dict[str, LandedKind] = field(default_factory=dict)
+    promoted: bool = False
 
 
 @dataclass(frozen=True)
@@ -209,13 +287,17 @@ class RoadmapStatus:
     `specs` is every spec in sorted order, `running` is the spec dirs whose
     child epics are in flight, `parked` is the specs refused this run with
     their findings verbatim, and `max_concurrent_epics` is the bound in force
-    (FR-005). No credential reaches any field (FR-009, asserted in T012).
+    (FR-005). `paused` is US3's pause flag (FR-008): a roadmap between epics
+    reports it is not dispatching because the operator parked it, not because
+    nothing is ready. No credential reaches any field (FR-009, asserted in
+    T012).
     """
 
     specs: list[RoadmapSpecStatus]
     running: list[str]
     parked: list[ParkedFinding]
     max_concurrent_epics: int
+    paused: bool = False
 
 
 #: Reads and small writes: a corpus parse, a spec read, a derivation, the
@@ -279,10 +361,20 @@ async def read_spec_text_activity(request: ReadSpecInput) -> str:
 class RoadmapWorkflow:
     """One roadmap, from corpus read to every dispatchable spec's child landed.
 
-    US2 runs the scheduler to quiescence and returns its status; US3 will wrap
-    the loop in continue-as-new at quiescence so no run's history grows with
-    the number of epics (SC-003). The child-start contract — ABANDON on
-    parent close, default id reuse — is decided here and verified in T011.
+    US2 runs the scheduler to quiescence and returns its status; US3 wraps the
+    loop in continue-as-new at quiescence so no run's history grows with the
+    number of epics (SC-003, FR-007), and exposes `pause_roadmap`,
+    `resume_roadmap`, and `promote_spec` signals plus a `roadmap_status` query
+    (FR-008). The child-start contract — ABANDON on parent close, default id
+    reuse — is decided here and verified in T011; ABANDON is also what makes
+    terminating the roadmap safe for a mid-flight child (SC-004).
+
+    Continue-as-new fires *only* at quiescence — zero children open — the one
+    moment no completion event can be lost across the run boundary. The new run
+    receives the old run's state as an explicit `RoadmapCarryOver` input and
+    re-reads everything else, which is what makes "restarting re-reads the
+    world" true for free: a spec edited to `ready` between runs is seen, but a
+    spec already observed-landed or already parked is not re-dispatched.
     """
 
     def __init__(self) -> None:
@@ -302,15 +394,57 @@ class RoadmapWorkflow:
         #: these — never polls — so a completion is the event that wakes it.
         self._children: dict[str, Any] = {}
         self._max_concurrent_epics = 1
+        #: US3 operator surface (FR-008). `pause_roadmap` parks dispatch
+        #: between epics — the in-flight child finishes (the epic pause
+        #: contract, one level up); `promote_spec` records a draft the
+        #: operator promoted so the next pass treats it as ready. Both are
+        #: history events, so replay rebuilds them exactly where the recorded
+        #: run had them (the same rule the epic's `_paused`/`_kill_requested`
+        #: follow), and both ride the carry-over across continue-as-new.
+        self._paused = False
+        self._promotions: dict[str, None] = {}
 
-    # --- query ----------------------------------------------------------------
+    # --- signals and query (FR-008) -------------------------------------------
+
+    @workflow.signal
+    def pause_roadmap(self) -> None:
+        """Park dispatch between epics; the in-flight child finishes (FR-008).
+
+        Only the scheduler is suspended — the child in flight keeps its ladder
+        to the end, the same contract `pause_epic` honours one level down. A
+        paused roadmap with no child in flight waits for `resume_roadmap`
+        before dispatching; a paused roadmap with a child in flight lets the
+        child land, then parks. Idempotent: pausing a paused roadmap is what
+        an operator does when they are not sure the first one landed.
+        """
+        self._paused = True
+
+    @workflow.signal
+    def resume_roadmap(self) -> None:
+        """Release the scheduler. A resume that arrives first never parks."""
+        self._paused = False
+
+    @workflow.signal
+    def promote_spec(self, spec_dir: str) -> None:
+        """Treat a named draft as ready on the next pass (FR-008, acceptance 3).
+
+        The file remains the authority of record — the signal covers the gap
+        until the frontmatter's next edit. The promotion applies while the
+        spec's current frontmatter state is `draft`; if the operator edits the
+        file to `ready`/`deferred`/`landed`, the file's state wins and the
+        promotion is moot (the re-read sees the new state). Idempotent:
+        promoting a spec twice is one promotion.
+        """
+        self._promotions[spec_dir] = None
 
     @workflow.query
     def roadmap_status(self) -> RoadmapStatus:
         """Every spec's state, the running children, parked findings, the bound.
 
-        Read-only: no activity, no mutation. No credential reaches any field
-        (FR-009, asserted in T012).
+        US3 (FR-008, acceptance 5): also reports the pause flag, per-spec
+        promotions, and attested-vs-observed landings (FR-003's two kinds,
+        surfaced in `landed_kind` and `satisfied_as`). Read-only: no activity,
+        no mutation. No credential reaches any field (FR-009, asserted in T012).
         """
         roadmap = self._roadmap
         if roadmap is None:
@@ -319,6 +453,7 @@ class RoadmapWorkflow:
                 running=[],
                 parked=[],
                 max_concurrent_epics=self._max_concurrent_epics,
+                paused=self._paused,
             )
         readiness = compute_readiness(roadmap, landed_for=self._observed_resolver())
         specs: list[RoadmapSpecStatus] = []
@@ -329,9 +464,22 @@ class RoadmapWorkflow:
                 for dep in r.blockers
                 if dep in self._landed and not self._landed[dep].landed
             ]
-            own_landed = (
-                entry.spec_dir in self._landed and self._landed[entry.spec_dir].landed
-            )
+            # A spec's own landed state: observed takes precedence (the stronger,
+            # derived fact), then attested (frontmatter `state: landed` — the
+            # operator's word, FR-003's two kinds). `satisfied_as` already carries
+            # the same precedence for dependencies; this mirrors it for the spec
+            # itself, so an attested-landed spec reports `landed=True` with
+            # `landed_kind=ATTESTED` and an observed one reports `OBSERVED`.
+            own = self._landed.get(entry.spec_dir)
+            if own is not None and own.landed:
+                own_landed = True
+                own_kind: LandedKind | None = own.kind
+            elif entry.state is SpecState.LANDED:
+                own_landed = True
+                own_kind = LandedKind.ATTESTED
+            else:
+                own_landed = False
+                own_kind = None
             specs.append(
                 RoadmapSpecStatus(
                     spec_dir=entry.spec_dir,
@@ -340,6 +488,9 @@ class RoadmapWorkflow:
                     blockers=r.blockers,
                     landed=own_landed,
                     unlanded=unlanded,
+                    landed_kind=own_kind,
+                    satisfied_as=dict(r.satisfied_as),
+                    promoted=entry.spec_dir in self._promotions,
                 )
             )
         return RoadmapStatus(
@@ -347,6 +498,7 @@ class RoadmapWorkflow:
             running=sorted(self._children),
             parked=[self._parked[d] for d in sorted(self._parked)],
             max_concurrent_epics=self._max_concurrent_epics,
+            paused=self._paused,
         )
 
     # --- the main loop ---------------------------------------------------------
@@ -355,13 +507,16 @@ class RoadmapWorkflow:
     async def run(self, request: RoadmapInput) -> RoadmapStatus:
         """Dispatch every dispatchable spec as a child, woken by completions.
 
-        Reads the corpus, computes readiness against observed-landed facts,
-        and dispatches dispatchable specs in spec-directory order while
-        capacity is free. Parks any spec whose pre-dispatch refuses, with the
-        finding verbatim, and continues. Waits on child completions — never
-        polls — to recompute readiness and dispatch newly-unblocked specs in
-        the same pass. Returns when no spec is dispatchable and none is in
-        flight (quiescence).
+        Reads the corpus, computes readiness against observed-landed facts
+        (and the operator's promotions), and dispatches dispatchable specs in
+        spec-directory order while capacity is free and the roadmap is not
+        paused. Parks any spec whose pre-dispatch refuses, with the finding
+        verbatim, and continues. Waits on child completions — never polls — to
+        recompute readiness and dispatch newly-unblocked specs in the same
+        pass. At quiescence (zero children open) after a child has concluded,
+        continues-as-new carrying the run's state, so no run's history grows
+        with the number of epics (FR-007); when nothing is dispatchable and
+        none is in flight, returns.
         """
         if not isinstance(request.max_concurrent_epics, int) or isinstance(
             request.max_concurrent_epics, bool
@@ -372,6 +527,22 @@ class RoadmapWorkflow:
                 non_retryable=True,
             )
         self._max_concurrent_epics = request.max_concurrent_epics
+        # US3: repopulate the run's state from the carry-over (FR-007). The
+        # first run has no carry-over; a run resuming after continue-as-new
+        # receives the previous run's landings, parked findings, promotions,
+        # and pause flag so it does not re-dispatch work already done.
+        if request.carry_over is not None:
+            self._landed = request.carry_over.landed_map()
+            self._parked = request.carry_over.parked_map()
+            self._promotions = {d: None for d in request.carry_over.promotion_set()}
+            self._paused = request.carry_over.paused
+            self._max_concurrent_epics = request.carry_over.max_concurrent_epics
+
+        # Whether any child concluded this run — the gate for continue-as-new.
+        # CAN fires at quiescence only after a child has concluded, so a run
+        # that finds nothing dispatchable returns rather than CAN-looping, and
+        # every run that CANs did one epic's worth of work (the bound, FR-007).
+        completed_this_run = False
 
         while True:
             self._roadmap = await workflow.execute_activity(
@@ -379,6 +550,12 @@ class RoadmapWorkflow:
                 ReadCorpusInput(specs_root=request.specs_root),
                 **_FAST,
             )
+            # Apply the operator's promotions: a draft the operator promoted
+            # by signal is treated as ready this pass (FR-008, acceptance 3).
+            # The file remains the authority of record — a promotion only
+            # applies while the current frontmatter state is `draft`, so an
+            # edit to `ready`/`deferred`/`landed` makes the file's state win.
+            self._roadmap = self._apply_promotions(self._roadmap)
             readiness = compute_readiness(
                 self._roadmap, landed_for=self._observed_resolver()
             )
@@ -402,9 +579,10 @@ class RoadmapWorkflow:
             # Capacity: count every open epic-* workflow (the roadmap's own
             # children plus any operator-started epic), then fill free slots.
             # One read per pass, triggered by a completion — never an interval
-            # poll (FR-004).
+            # poll (FR-004). A paused roadmap reads capacity but dispatches
+            # nothing: the in-flight child finishes, then dispatch parks.
             free = 0
-            if dispatchable:
+            if dispatchable and not self._paused:
                 open_result = await workflow.execute_activity(
                     count_open_epics, CountOpenInput(), **_FAST
                 )
@@ -433,16 +611,30 @@ class RoadmapWorkflow:
                     # `done()` guard above makes the value available now.
                     status: EpicStatus = handle.result()
                     self._landed[spec_dir] = self._landed_status_for(status)
+                    completed_this_run = True
+                # A child concluded and zero are open now: continue-as-new at
+                # quiescence (FR-007). The boundary is safe only here — no
+                # completion event can be lost across it because no child is in
+                # flight. The carry-over is the run's state as an explicit input
+                # to the new run, which re-reads everything else.
+                if not self._children and completed_this_run:
+                    return await self._continue_as_new(request)
                 continue
 
-            # No child is in flight. If free capacity exists and a dispatchable
-            # spec remains un-tried (one that parked a slot-free refusal above
-            # but left others, or the bound held the rest), loop to reach it;
-            # if capacity is zero we cannot make progress this run (every slot
-            # is held by an epic the roadmap cannot observe completing), so we
-            # stop rather than spin. Otherwise nothing is dispatchable and
-            # nothing is in flight — quiescence (US2 returns; US3 will
-            # continue-as-new here instead).
+            # No child is in flight. A paused roadmap parks here: wait for
+            # resume before dispatching again (FR-008). The in-flight child (if
+            # any) has already finished above; with no child open, a paused
+            # roadmap has nothing to wait on but the resume signal.
+            if self._paused:
+                await workflow.wait_condition(lambda: not self._paused)
+                continue
+
+            # If free capacity exists and a dispatchable spec remains un-tried
+            # (one that parked a slot-free refusal above but left others, or
+            # the bound held the rest), loop to reach it; if capacity is zero
+            # we cannot make progress this run (every slot is held by an epic
+            # the roadmap cannot observe completing), so we stop rather than
+            # spin. Otherwise nothing is dispatchable and nothing is in flight.
             if free > 0 and any(
                 entry.spec_dir not in self._parked
                 and entry.spec_dir not in self._landed
@@ -450,9 +642,81 @@ class RoadmapWorkflow:
                 for entry in dispatchable
             ):
                 continue
+            # A child concluded this run and the roadmap is now quiescent —
+            # continue-as-new to bound history (FR-007). The new run re-reads
+            # the world and either dispatches the next spec or returns.
+            if completed_this_run:
+                return await self._continue_as_new(request)
             break
 
         return self.roadmap_status()
+
+    # --- continue-as-new: the durability boundary (FR-007) -------------------
+
+    async def _continue_as_new(self, request: RoadmapInput) -> RoadmapStatus:
+        """Continue-as-new at quiescence, carrying the run's state (FR-007).
+
+        Called only when zero children are open and a child has concluded this
+        run — the one moment the boundary is safe. Builds the carry-over from
+        the run's live state and continues-as-new with the same dispatch
+        arguments plus the carry-over, so the new run resumes the roadmap without
+        re-dispatching work whose result the carry-over holds. `continue_as_new`
+        raises `NoReturn`, so the return annotation is the status the new run
+        will eventually produce (the SDK surfaces it to the caller across the
+        chain).
+        """
+        carry = RoadmapCarryOver.from_state(
+            landed=self._landed,
+            parked=self._parked,
+            promotions=self._promotions,
+            paused=self._paused,
+            max_concurrent_epics=self._max_concurrent_epics,
+        )
+        return await workflow.continue_as_new(
+            RoadmapInput(
+                specs_root=request.specs_root,
+                target_repo=request.target_repo,
+                proxy_url=request.proxy_url,
+                max_concurrent_epics=request.max_concurrent_epics,
+                landing_config=request.landing_config,
+                config=request.config,
+                poll_interval_s=request.poll_interval_s,
+                carry_over=carry,
+            ),
+        )
+
+    def _apply_promotions(self, roadmap: Roadmap) -> Roadmap:
+        """Return a roadmap where promoted drafts are treated as ready (FR-008).
+
+        A promotion by signal covers the gap between a draft's frontmatter and
+        its next edit (acceptance 3): while the spec's current state is
+        `draft`, the promotion makes it `ready` for readiness computation, so
+        it dispatches once its edges are satisfied. The file is the authority
+        of record — if the operator edits the state away from `draft`, the
+        file's state wins and the promotion is moot (the re-read sees the new
+        state, and this function does not override it). A promoted spec is
+        reported as `promoted` in `roadmap_status` regardless, so the operator
+        sees the signal landed.
+        """
+        if not self._promotions:
+            return roadmap
+        entries = []
+        for entry in roadmap.entries:
+            if (
+                entry.spec_dir in self._promotions
+                and entry.state is SpecState.DRAFT
+            ):
+                entries.append(
+                    SpecEntry(
+                        spec_dir=entry.spec_dir,
+                        state=SpecState.READY,
+                        depends_on_landed=list(entry.depends_on_landed),
+                        source=entry.source,
+                    )
+                )
+            else:
+                entries.append(entry)
+        return Roadmap(specs_root=roadmap.specs_root, entries=entries)
 
     # --- dispatch: pre-dispatch, then start the child --------------------------
 

@@ -103,18 +103,12 @@ async def test_pause_roadmap_parks_dispatch_between_epics(
         },
     )
 
-    # Hold each child open until the test releases it, so the pause lands while
-    # alpha is in flight and bravo is still waiting.
-    alpha_done = False
-
-    def on_dispatch(epic_id: str) -> None:
-        # Pause as soon as alpha has dispatched and is in flight.
-        pass
+    # Hold alpha's child open until the test releases it, so the pause lands
+    # while alpha is in flight and bravo is still waiting.
+    _SCRIPT.hold = {"001-alpha"}
 
     world = RoadmapWorld()
-    async with run_roadmap(
-        env, world, str(specs_root), on_dispatch=on_dispatch
-    ) as handle:
+    async with run_roadmap(env, world, str(specs_root)) as handle:
         # Wait for alpha to start (it is in flight), then pause.
         import asyncio
 
@@ -127,8 +121,10 @@ async def test_pause_roadmap_parks_dispatch_between_epics(
 
         await asyncio.wait_for(_alpha_started(), timeout=30)
         await handle.signal("pause_roadmap")
-        # Wait for alpha to land (the in-flight child finishes under its own
-        # contract), and assert the roadmap parks — bravo does not dispatch.
+        # Release alpha — the in-flight child finishes under its own contract.
+        await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+        # Wait for alpha to land and assert the roadmap parks — bravo does not
+        # dispatch.
         async def _alpha_landed_and_parked() -> RoadmapStatus:
             while True:
                 status = await handle.query("roadmap_status", result_type=RoadmapStatus)
@@ -162,15 +158,41 @@ async def test_resume_roadmap_releases_a_parked_roadmap(
     epic contract's rule).
     """
     specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    # Hold alpha's child so the roadmap is alive and parked (not already
+    # returned) when the resume lands — without the hold the scripted epic
+    # lands instantly and the pause/resume race a finished workflow.
+    _SCRIPT.hold = {"001-alpha"}
     world = RoadmapWorld()
     async with run_roadmap(env, world, str(specs_root)) as handle:
-        # Pause before alpha completes, then resume — alpha still lands because
-        # the in-flight child finishes regardless, and a resume releases the
-        # (empty) dispatch queue.
+        import asyncio
+
+        # Wait for alpha to be in flight.
+        async def _alpha_running() -> None:
+            while True:
+                status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+                if "001-alpha" in status.running:
+                    return
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_alpha_running(), timeout=30)
+        # Pause, then release the child — the in-flight child finishes, and the
+        # roadmap parks (paused, no child) rather than dispatching anything else.
         await handle.signal("pause_roadmap")
+        await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+
+        async def _paused_and_empty() -> RoadmapStatus:
+            while True:
+                status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+                if status.paused and not status.running:
+                    return status
+                await asyncio.sleep(0.01)
+
+        parked = await asyncio.wait_for(_paused_and_empty(), timeout=30)
+        assert parked.paused is True
+        assert _status_of(parked, "001-alpha").landed is True
+        # Resume releases the parked roadmap; with no further work it returns.
         await handle.signal("resume_roadmap")
         final = await handle.result()
-    assert _status_of(final, "001-alpha").landed is True
     assert final.paused is False
 
 
@@ -201,25 +223,35 @@ async def test_promote_spec_makes_a_draft_dispatchable_next_pass(
             ),
         },
     )
+    # Hold alpha's child open so the roadmap is alive and waiting on it: the
+    # operator can promote the draft *while* alpha is in flight, then release
+    # alpha. The promotion rides the continue-as-new to the next run, where 002
+    # is treated as ready and dispatches once alpha has landed. Without the hold
+    # the scripted epic lands instantly and the roadmap reaches terminal return
+    # before the operator can promote.
+    _SCRIPT.hold = {"001-alpha"}
     world = RoadmapWorld()
     async with run_roadmap(env, world, str(specs_root)) as handle:
-        # Wait for alpha to land, then promote the draft so it dispatches.
         import asyncio
 
-        async def _alpha_landed() -> bool:
+        # Wait for alpha to be in flight.
+        async def _alpha_running() -> None:
             while True:
                 status = await handle.query("roadmap_status", result_type=RoadmapStatus)
-                if _status_of(status, "001-alpha").landed:
-                    return True
+                if "001-alpha" in status.running:
+                    return
                 await asyncio.sleep(0.01)
 
-        await asyncio.wait_for(_alpha_landed(), timeout=30)
+        await asyncio.wait_for(_alpha_running(), timeout=30)
         # Before promotion, the draft is not dispatchable (and not promoted).
         before = await handle.query("roadmap_status", result_type=RoadmapStatus)
         assert _status_of(before, "002-draft").dispatchable is False
         assert _status_of(before, "002-draft").promoted is False
 
+        # Promote the draft while alpha is in flight (the roadmap is alive and
+        # will carry the promotion across continue-as-new), then release alpha.
         await handle.signal("promote_spec", "002-draft")
+        await env.client.get_workflow_handle("epic-001-alpha").signal("release")
         final = await handle.result()
 
     # The promoted draft dispatched and landed.
@@ -251,8 +283,9 @@ async def test_roadmap_status_reports_every_spec_state_running_parked_and_bound(
         },
     )
 
-    # Hold the ready spec's child in flight by not auto-completing: the default
-    # scripted epic returns landed immediately, so query fast while it runs.
+    # Hold the ready spec's child in flight so its `running` status is
+    # observable (the default scripted epic returns landed instantly).
+    _SCRIPT.hold = {"001-ready"}
     world = RoadmapWorld()
     async with run_roadmap(
         env, world, str(specs_root), max_concurrent_epics=2
@@ -267,6 +300,8 @@ async def test_roadmap_status_reports_every_spec_state_running_parked_and_bound(
                 await asyncio.sleep(0.01)
 
         status = await asyncio.wait_for(_ready_running(), timeout=30)
+        # Release the child so the roadmap can finish and the context exits.
+        await env.client.get_workflow_handle("epic-001-ready").signal("release")
 
     # Every spec's state is reported.
     assert _status_of(status, "001-ready").state is SpecState.READY
@@ -350,6 +385,10 @@ async def test_terminating_the_roadmap_does_not_kill_a_child_in_flight(
     child is still running afterward (not cancelled with the parent).
     """
     specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    # Hold the child open so it is genuinely in flight when the roadmap is
+    # cancelled; without the hold the scripted epic lands instantly and the
+    # test would observe nothing.
+    _SCRIPT.hold = {"001-alpha"}
     world = RoadmapWorld()
     async with run_roadmap(env, world, str(specs_root)) as handle:
         import asyncio
@@ -373,8 +412,8 @@ async def test_terminating_the_roadmap_does_not_kill_a_child_in_flight(
     from temporalio.client import WorkflowExecutionStatus
 
     # The child is still running or has completed on its own — either way it
-    # was not cancelled with the parent (which would be status CANCELLED).
-    assert desc.status is not WorkflowExecutionStatus.CANCELLED, (
+    # was not cancelled with the parent (which would be status CANCELED).
+    assert desc.status is not WorkflowExecutionStatus.CANCELED, (
         f"the child epic was cancelled with the roadmap (status {desc.status}) "
         "— parent_close_policy is not ABANDON"
     )
