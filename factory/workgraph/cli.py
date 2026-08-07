@@ -350,6 +350,27 @@ def workflow_id(epic_id: str) -> str:
     return f"epic-{epic_id}"
 
 
+def _positive_int(value: str) -> int:
+    """An argparse type: a positive integer, or a usage error (FR-002).
+
+    `0`, negatives and non-integers are rejected rather than coerced — a cap the
+    operator did not type is a cap the operator did not choose, and a cap of 0
+    would mean "dispatch nothing". `argparse` turns the raised `ArgumentTypeError`
+    into a usage error on stderr with exit status 1.
+    """
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"max-concurrent-nodes must be a positive integer, got {value!r}"
+        )
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(
+            f"max-concurrent-nodes must be a positive integer, got {value!r}"
+        )
+    return parsed
+
+
 # --- derive: text in, artifact out, nothing on failure (US3-S4, SC-006) -------
 
 
@@ -484,10 +505,12 @@ def start_command(args: argparse.Namespace) -> int:
             "honored at the proxy, so no epic can be started without it"
         )
 
-    return asyncio.run(_start_epic(graph, proxy_url))
+    return asyncio.run(_start_epic(graph, proxy_url, args.max_concurrent_nodes))
 
 
-async def _start_epic(graph: WorkGraph, proxy_url: str) -> int:
+async def _start_epic(
+    graph: WorkGraph, proxy_url: str, max_concurrent_nodes: int = 1
+) -> int:
     client = await _connect()
 
     try:
@@ -509,7 +532,11 @@ async def _start_epic(graph: WorkGraph, proxy_url: str) -> int:
     try:
         await client.start_workflow(
             EpicWorkflow.run,
-            EpicInput(graph=graph, proxy_url=proxy_url),
+            EpicInput(
+                graph=graph,
+                proxy_url=proxy_url,
+                max_concurrent_nodes=max_concurrent_nodes,
+            ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,
         )
@@ -864,6 +891,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
     start = commands.add_parser("start", help="start the epic a compiled graph declares")
     start.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
+    start.add_argument(
+        "--max-concurrent-nodes",
+        type=_positive_int,
+        default=1,
+        help=(
+            "how many ready nodes the scheduler may have in flight at once "
+            "(default: 1 — today's sequential dispatch)"
+        ),
+    )
     start.set_defaults(run=start_command)
 
     status = commands.add_parser("status", help="what one epic is doing right now")

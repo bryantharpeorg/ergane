@@ -1828,7 +1828,21 @@ async def test_unserved_alias_names_each_offender_not_just_the_first(
     result = await run_async("start", str(workgraph_json))
 
     assert result.code == 1
-    for alias in ("ollama-cloud/deepseek-v4-flash", "ollama-cloud/glm-5.2", "local/qwen3.6-27b"):
+    # Derived from the shipped registry, not hardcoded: the aliases named for
+    # a valid_epic's personas (implementer + judge, models and fallbacks) are
+    # whatever personas.yaml says today — a persona swap must not break this
+    # test's premise (learned 2026-08-07, when exactly that happened).
+    from factory.config import load_personas
+
+    personas = load_personas()
+    expected = {
+        alias
+        for p in (personas["implementer"], personas["judge"])
+        for alias in (p.model, p.fallback)
+        if alias
+    }
+    assert expected
+    for alias in expected:
         assert alias in result.stderr
 
 
@@ -1926,7 +1940,11 @@ async def test_preflight_wording_states_what_was_checked_not_worker_resolution(
     finding names the registry as the thing checked.
     """
     fake: FakeLiteLLM = temporal_env.fake
-    fake.served_models.discard("ollama-cloud/deepseek-v4-flash")
+    # Unserve whatever model the registry names for the implementer today —
+    # hardcoding the alias broke this test the night the persona swapped.
+    from factory.config import load_personas
+
+    fake.served_models.discard(load_personas()["implementer"].model)
 
     result = await run_async("start", str(workgraph_json))
 
@@ -2212,3 +2230,110 @@ def test_the_ledger_attributes_concurrent_attempts_to_each_node_alone(
     assert groups[f"{EPIC_ID}:us2"]["spend_usd"] == pytest.approx(7.75)
     # The epic total is the sum of both, not one charged for two.
     assert by_node["totals"]["spend_usd"] == pytest.approx(10.25)
+
+
+# --- US1: the concurrency cap (FR-002) ----------------------------------------
+
+
+async def test_start_accepts_a_positive_max_concurrent_nodes(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """`--max-concurrent-nodes` is a positive integer the CLI accepts (FR-002).
+
+    The cap is a property of the epic's dispatch, supplied at `factory-epic
+    start` — the machine's capacity, not the repo's. A positive value parses and
+    reaches the workflow's `EpicInput`; the workflow id is still the only thing
+    printed, so the operator's surface is unchanged.
+    """
+    script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+
+    async with worker_for(temporal_env, script):
+        result = await run_async("start", "--max-concurrent-nodes", "3", str(workgraph_json))
+        await settle_epic(temporal_env)
+
+    assert result.code == 0
+    assert result.stdout.strip() == WORKFLOW_ID
+    # The fixture graph is `us1 → us2` with `us3` independent, so a cap of 3
+    # runs `us1` and `us3` concurrently — their activity-execution order is
+    # timing-dependent and replays in completion order, not creation order
+    # (spec § Technical Context). The contract is that every node dispatched,
+    # not the sequence; the sequence is the cap-of-1 test's concern below.
+    assert set(script.dispatched) == set(NODE_IDS)
+
+
+async def test_start_rejects_zero_max_concurrent_nodes(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """A cap of 0 is not a positive integer — refused, never coerced (FR-002).
+
+    Zero would mean "dispatch nothing", which is not a concurrency cap an
+    operator can mean; the CLI rejects it as a usage error rather than starting
+    an epic that silently never dispatches.
+    """
+    result = await run_async("start", "--max-concurrent-nodes", "0", str(workgraph_json))
+
+    assert result.code == 1
+    assert "max-concurrent-nodes" in result.stderr
+    with pytest.raises(RPCError):
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+
+
+async def test_start_rejects_a_negative_max_concurrent_nodes(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """A negative cap is refused the same way — not a positive integer (FR-002)."""
+    result = await run_async("start", "--max-concurrent-nodes", "-1", str(workgraph_json))
+
+    assert result.code == 1
+    assert "max-concurrent-nodes" in result.stderr
+    with pytest.raises(RPCError):
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+
+
+async def test_start_rejects_a_non_integer_max_concurrent_nodes(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """A non-integer cap is refused, not coerced to an int (FR-002).
+
+    `"2.5"` and `"abc"` are not positive integers; the CLI must not silently
+    round or default them, because a cap the operator did not type is a cap the
+    operator did not choose.
+    """
+    for bad in ("2.5", "abc"):
+        result = await run_async("start", "--max-concurrent-nodes", bad, str(workgraph_json))
+        assert result.code == 1
+        assert "max-concurrent-nodes" in result.stderr
+        with pytest.raises(RPCError):
+            await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+
+
+async def test_start_defaults_max_concurrent_nodes_to_one(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """Absent the flag, the cap is 1 — today's sequential behaviour (SC-002).
+
+    Fan-out is opt-in: an epic that does not ask for it gets exactly the
+    sequential dispatch it always had, which is what makes the cap-of-1
+    equivalence true by construction.
+    """
+    script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+
+    async with worker_for(temporal_env, script):
+        result = await run_async("start", str(workgraph_json))
+        await settle_epic(temporal_env)
+
+    assert result.code == 0
+    assert result.stdout.strip() == WORKFLOW_ID
+    assert script.dispatched == NODE_IDS

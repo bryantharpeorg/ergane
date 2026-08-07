@@ -57,6 +57,21 @@ from factory.verify.models import GateResult, GateStatus, VerificationConfig
 #: edits, and a second literal here would let tuning it silently do nothing.
 DEFAULT_GATE_TIMEOUT_S: int = VerificationConfig().gate_timeout_s
 
+#: How many gate subprocesses may run at once across the whole host (007 FR-005).
+#:
+#: The hazard fan-out introduces: N nodes' gates on one host contend for CPU, so
+#: the same suite takes longer purely because neighbours exist, and a fixed
+#: wall-clock timeout converts that stretch into a spurious FAIL — a verdict
+#: that is not a fact about the node's code. Bounding gate concurrency *below*
+#: node concurrency fixes the property rather than tolerating it: a node's
+#: agent runs in parallel while its gates take a turn, and a gate's wall-clock
+#: measures its own work, never the queue it waited in. The default of one is
+#: the strongest form — gates serialize across the host — and is below any
+#: `max_concurrent_nodes` above one. It is a process-level bound because gates
+#: already run through the worker's thread path (`asyncio.to_thread`), so a
+#: semaphore here is the one limiter all of them cross.
+DEFAULT_GATE_CONCURRENCY: int = 1
+
 #: How much of a gate's combined output is kept as evidence (R3).
 OUTPUT_TAIL_LIMIT = 32 * 1024
 
@@ -139,6 +154,60 @@ class GateExecutor(Protocol):
     """The one thing a gate backend does (R3): run an invocation, report back."""
 
     def run(self, invocation: GateInvocation) -> ExecutionOutcome: ...
+
+
+# Gate concurrency (007 FR-005) ------------------------------------------------
+
+
+class GateConcurrencyLimiter:
+    """A process-level bound on how many gates run at once (007 FR-005).
+
+    `run_gates` calls live in worker threads (`asyncio.to_thread` in the
+    activity), so a `threading.Semaphore` is the one limiter every gate crosses
+    regardless of which node dispatched it. A gate acquires a slot before its
+    process starts and releases it when the process is done; the wall-clock
+    bound is enforced inside that window, so a gate that waits for its turn
+    measures only its own work, never the queue. That is what makes the verdict
+    load-*independent* rather than load-*tolerant*.
+
+    `acquire()` returns how many *other* gates were in flight when this one got
+    its slot — the contention marker recorded on the `GateResult`, so a slow
+    verdict is auditable afterwards. Zero means the gate had the budget to
+    itself.
+    """
+
+    def __init__(self, bound: int = DEFAULT_GATE_CONCURRENCY) -> None:
+        if bound < 1:
+            raise ValueError(
+                f"gate concurrency bound must be >= 1, not {bound}"
+            )
+        self._bound = bound
+        self._slots = threading.BoundedSemaphore(bound)
+        self._in_flight = 0
+        self._lock = threading.Lock()
+
+    @property
+    def bound(self) -> int:
+        return self._bound
+
+    def acquire(self) -> int:
+        """Take a slot; return the count of *other* gates now in flight."""
+        self._slots.acquire()
+        with self._lock:
+            peers = self._in_flight
+            self._in_flight += 1
+        return peers
+
+    def release(self) -> None:
+        with self._lock:
+            self._in_flight = max(0, self._in_flight - 1)
+        self._slots.release()
+
+
+#: The limiter `run_gates` uses when a caller does not supply one. Module-level
+#: so two `run_gates` calls in two worker threads — the shape fan-out produces
+#: — share the same bound rather than each racing unbounded.
+_default_limiter = GateConcurrencyLimiter(DEFAULT_GATE_CONCURRENCY)
 
 
 # Environment ----------------------------------------------------------------
@@ -322,6 +391,7 @@ def run_gates(
     manifest_path: Path | str | None = None,
     executor: GateExecutor | None = None,
     timeout_overrides: Mapping[str, int] | None = None,
+    concurrency_limiter: GateConcurrencyLimiter | None = None,
 ) -> list[GateResult]:
     """Run every gate the manifest declares, in declaration order, and report each.
 
@@ -334,6 +404,13 @@ def run_gates(
     the manifest unreadable from anywhere but the worktree. An unusable manifest
     — absent, unparseable, or schema-invalid — returns exactly one
     `CONFIG_ERROR` result and runs nothing at all.
+
+    `concurrency_limiter` bounds how many gates run at once across the host
+    (007 FR-005): a gate acquires its slot before its process starts, so its
+    wall-clock bound measures the gate's own work and never the queue it waited
+    in — which is what keeps a neighbour's load from moving this node's verdict.
+    Defaults to the process-level limiter, so two `run_gates` calls in two
+    worker threads (the shape fan-out produces) share one bound.
     """
     worktree = Path(worktree)
     manifest = (
@@ -348,6 +425,7 @@ def run_gates(
     backend = executor if executor is not None else SubprocessGateExecutor()
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
+    limiter = concurrency_limiter if concurrency_limiter is not None else _default_limiter
 
     results: list[GateResult] = []
     for name, command in config.gates.items():
@@ -358,7 +436,12 @@ def run_gates(
             timeout_s=_resolve_timeout(name, config.timeouts, overrides),
             env=env,
         )
-        results.append(_to_result(invocation, backend.run(invocation)))
+        peers = limiter.acquire()
+        try:
+            outcome = backend.run(invocation)
+        finally:
+            limiter.release()
+        results.append(_to_result(invocation, outcome, peers))
     return results
 
 
@@ -376,12 +459,21 @@ def _resolve_timeout(
     return declared.get(name, DEFAULT_GATE_TIMEOUT_S)
 
 
-def _to_result(invocation: GateInvocation, outcome: ExecutionOutcome) -> GateResult:
+def _to_result(
+    invocation: GateInvocation,
+    outcome: ExecutionOutcome,
+    concurrent_gates: int = 0,
+) -> GateResult:
     """Turn one execution into the evidence the verdict truth table reads.
 
     `tail_output` is applied here as well as in the executor: the cap is a
     property of a `GateResult`, and a future executor across the `GateExecutor`
     seam should not be able to widen it by forgetting.
+
+    `concurrent_gates` is the contention marker (007 FR-005): how many *other*
+    gates were in flight when this one got its turn. Zero for a gate that ran
+    alone; a count for one that ran alongside peers, so a slow verdict is
+    auditable rather than mysterious.
     """
     if outcome.timed_out:
         status, exit_code = GateStatus.TIMEOUT, None
@@ -397,4 +489,5 @@ def _to_result(invocation: GateInvocation, outcome: ExecutionOutcome) -> GateRes
         exit_code=exit_code,
         duration_s=outcome.duration_s,
         output_tail=tail_output(outcome.output),
+        concurrent_gates=concurrent_gates,
     )
