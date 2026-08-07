@@ -13,11 +13,17 @@ The table is the plan's verbatim:
 |---|---|
 | `merged_at` set | `MERGED` — however it merged |
 | `state == CLOSED`, not merged | `DEQUEUED_BY_HUMAN` |
-| OPEN, auto-merge gone, failing required checks | `CHECKS_FAILED` |
 | OPEN, `merge_state_status == DIRTY` | `CONFLICT` |
-| OPEN, auto-merge gone, no failing checks, not dirty | `DEQUEUED_BY_HUMAN` |
-| OPEN, auto-merge still requested | pending (`None`) |
+| OPEN, failing required checks | `CHECKS_FAILED` |
+| OPEN otherwise | pending (`None`) |
 | pending beyond `stall_after_s` | `STALLED` |
+
+One row from the plan's original table is deliberately gone: "auto-merge gone,
+clean and open → DEQUEUED_BY_HUMAN". A merge-queue PR reports
+`autoMergeRequest: null` for its whole ride through the queue (proved live
+2026-08-07 by PR #8, killed by that row four seconds before it merged), so
+auto-merge absence is not evidence of anything and the stall guard bounds
+every open wait instead.
 
 The order is the plan's order, and the order is load-bearing: `merged_at` is
 checked first so a late-landing PR is reconciled as MERGED rather than re-read
@@ -62,19 +68,22 @@ def classify(
     if snapshot.state == "CLOSED":
         return QueueOutcome.DEQUEUED_BY_HUMAN
 
-    if not snapshot.auto_merge_requested:
-        # The queue is no longer holding it. Distinguish the *why* the plan can
-        # see from a poll: a dirty branch is a conflict the node can recover
-        # from; failing required checks are a rejection worth a recovery cycle;
-        # clean-and-open with auto-merge gone is the remaining known dequeuer.
-        if snapshot.merge_state_status == "DIRTY":
-            return QueueOutcome.CONFLICT
-        if snapshot.failing_required_checks:
-            return QueueOutcome.CHECKS_FAILED
-        return QueueOutcome.DEQUEUED_BY_HUMAN
+    # The positive rejection signals a poll CAN see: a dirty branch is a
+    # conflict the node can recover from; failing required checks are a
+    # rejection worth a recovery cycle.
+    if snapshot.merge_state_status == "DIRTY":
+        return QueueOutcome.CONFLICT
+    if snapshot.failing_required_checks:
+        return QueueOutcome.CHECKS_FAILED
 
-    # The queue is still on it. The stall guard runs last so a PR that merged
-    # inside the window (or a moment after it) is MERGED, not STALLED.
+    # `auto_merge_requested` deliberately decides NOTHING here. A merge-queue
+    # PR reports `autoMergeRequest: null` for its whole ride through the queue
+    # — proved live 2026-08-07, when the old "auto-merge gone, clean and open
+    # means a human dequeued it" heuristic killed 009-us1's landing four
+    # seconds before GitHub merged PR #8. Queue membership is not visible on
+    # this gh's poll surface, so clean-and-open is *pending*, and the stall
+    # guard is the bounded exit for every wait — a genuinely dequeued PR
+    # surfaces as STALLED → escalation, never as an instant wrong kill.
     if _pending_past_stall(snapshot, landing, config):
         return QueueOutcome.STALLED
 
