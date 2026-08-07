@@ -3313,7 +3313,13 @@ async def test_all_ready_nodes_are_in_flight_at_once_up_to_the_cap(
     assert any(len(running) == 3 for running in script.running_sets), (
         f"never saw all three nodes in flight; running_sets={script.running_sets}"
     )
-    assert script.dispatched == ["us1", "us2", "us3"]
+    # Every node dispatched an agent — order unspecified under genuine
+    # concurrency: `asyncio.create_task` starts the three `_run_node` tasks in
+    # declaration order, but which one's `run_agent_attempt` activity the
+    # worker picks up first is timing-dependent and replays in *completion*
+    # order (spec § Technical Context). SC-001's claim is simultaneity, not
+    # sequence — the set is the contract, the order is not.
+    assert set(script.dispatched) == {"us1", "us2", "us3"}
 
 
 async def test_a_slot_is_refilled_the_moment_a_node_reaches_terminal(
@@ -3359,26 +3365,62 @@ async def test_elapsed_time_tracks_the_slowest_node_not_the_sum(
     sequential scheduler would elapse ~three. The virtual clock is read from the
     history's own event times, so the assertion is about the workflow's clock,
     not about wall time.
+
+    The landing poll is taken out of the measurement (`poll_interval_s=0`) so the
+    floor is the agent work alone: the landing phase is a US3 concern, and its
+    60s default poll would swamp the one-second agent sleeps the test needs to
+    distinguish "the slowest" from "the sum". The same graph at cap 1 — run in a
+    second environment so the fixed `WORKFLOW_ID` does not collide — elapses the
+    sum, which is the contrast the claim turns on.
     """
     sleep_s = 1.0
+    instant_landing = LandingConfig(poll_interval_s=0)
+
     script = ScriptedWorld(
         all_passing(), client=env.client, agent_sleep_s=sleep_s
     )
-
     await run_epic(
         env,
         script,
         graph=make_graph(_independent_three()),
         max_concurrent_nodes=3,
+        landing_config=instant_landing,
     )
-    history = await script.handle.fetch_history()
-    elapsed = _virtual_elapsed_s(history)
+    parallel_elapsed = _virtual_elapsed_s(await script.handle.fetch_history())
 
     # Three sleeps in parallel ≈ one sleep; sequential would be ≈ three.
-    assert elapsed < 2.0 * sleep_s, (
-        f"elapsed {elapsed:.2f}s looks like the sum of three {sleep_s}s sleeps, "
-        "not the slowest one"
+    assert parallel_elapsed < 2.0 * sleep_s, (
+        f"parallel elapsed {parallel_elapsed:.2f}s looks like the sum of three "
+        f"{sleep_s}s sleeps, not the slowest one"
     )
+
+    # The contrast: the same graph dispatched one at a time elapses the sum,
+    # which is what "tracks the slowest, not the sum" is the negation of. Run in
+    # its own environment because the fake agent queries the fixed WORKFLOW_ID.
+    sequential_env = await WorkflowEnvironment.start_time_skipping()
+    try:
+        sequential_script = ScriptedWorld(
+            all_passing(), client=sequential_env.client, agent_sleep_s=sleep_s
+        )
+        await run_epic(
+            sequential_env,
+            sequential_script,
+            graph=make_graph(_independent_three()),
+            max_concurrent_nodes=1,
+            landing_config=instant_landing,
+        )
+        sequential_elapsed = _virtual_elapsed_s(
+            await sequential_script.handle.fetch_history()
+        )
+    finally:
+        await sequential_env.shutdown()
+
+    assert sequential_elapsed > 2.5 * sleep_s, (
+        f"sequential elapsed {sequential_elapsed:.2f}s looks parallel — a cap of "
+        "1 should serialise three sleeps into ~the sum, not the slowest"
+    )
+    # The whole claim: parallel is markedly faster than sequential.
+    assert parallel_elapsed < sequential_elapsed - sleep_s
 
 
 async def test_cap_of_one_reproduces_todays_sequential_dispatch(
@@ -3440,7 +3482,12 @@ async def test_no_node_is_dispatched_with_an_unmet_dependency_under_fan_out(
     )
 
     assert status.epic_state == EpicState.COMPLETED
-    assert states(status)["us1"] == NodeState.FAILED
+    # `us1` exhausted its ladder and the fail-safe escalation default (no
+    # operator press) ends it KILLED — the same terminal the sequential loop
+    # reaches for this script at any cap, so the fan-out has not changed the
+    # node's own outcome. The lock-out propagates KILLED to `us2`, whose edge
+    # is now dead.
+    assert states(status)["us1"] == NodeState.KILLED
     assert states(status)["us2"] == NodeState.KILLED
     assert states(status)["us3"] == NodeState.MERGED
     # us2 never dispatched an agent — its dependency failed before it could.

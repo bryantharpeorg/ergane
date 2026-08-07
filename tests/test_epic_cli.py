@@ -1961,7 +1961,12 @@ async def test_start_accepts_a_positive_max_concurrent_nodes(
 
     assert result.code == 0
     assert result.stdout.strip() == WORKFLOW_ID
-    assert script.dispatched == NODE_IDS
+    # The fixture graph is `us1 → us2` with `us3` independent, so a cap of 3
+    # runs `us1` and `us3` concurrently — their activity-execution order is
+    # timing-dependent and replays in completion order, not creation order
+    # (spec § Technical Context). The contract is that every node dispatched,
+    # not the sequence; the sequence is the cap-of-1 test's concern below.
+    assert set(script.dispatched) == set(NODE_IDS)
 
 
 async def test_start_rejects_zero_max_concurrent_nodes(
