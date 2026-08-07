@@ -79,7 +79,10 @@ from factory.workgraph.adapter import (
 )
 from factory.workgraph.models import AdapterResult, AttemptContext
 from tests.stub_agent import (
+    ATTEMPT_ARCHIVE_ENV,
     BANNER,
+    FERRY_ANSWER_FILE,
+    FERRY_QUESTION_FILE,
     STUB_AGENT_PATH,
     TRANSCRIPT_END,
     TRANSCRIPT_START,
@@ -334,7 +337,13 @@ async def test_the_child_environment_is_exactly_the_allowlist(
     factory_root: Path,
     fake_home: Path,
 ) -> None:
-    """Six variables, no more: the table in contracts/adapter.md § Environment."""
+    """Seven variables, no more: the table in contracts/adapter.md § Environment.
+
+    The six the worker supplies (the two attempt credentials plus the four
+    passthroughs) plus `ATTEMPT_ARCHIVE` — the attempt's archive directory,
+    which the adapter constructs rather than passthroughs, the way it
+    constructs the two attempt credentials (008-US3).
+    """
     write_control(fake_home)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -347,6 +356,7 @@ async def test_the_child_environment_is_exactly_the_allowlist(
         "HOME",
         "LANG",
         "TERM",
+        "ATTEMPT_ARCHIVE",
     }
     assert env["ANTHROPIC_BASE_URL"] == PROXY_URL
     assert env["ANTHROPIC_AUTH_TOKEN"] == VIRTUAL_KEY
@@ -354,6 +364,8 @@ async def test_the_child_environment_is_exactly_the_allowlist(
     assert env["HOME"] == str(fake_home)
     assert env["LANG"] == "en_US.UTF-8"
     assert env["TERM"] == "dumb"
+    # 008-US3: the archive directory the agent writes its ferry question to.
+    assert env["ATTEMPT_ARCHIVE"] == str(archive_dir(factory_root))
 
 
 async def test_no_worker_credential_reaches_the_agent(
@@ -971,3 +983,300 @@ async def test_the_heartbeat_payload_round_trips_the_default_data_converter() ->
 
     assert decoded[0] == _usage_snapshot()
     assert decoded[1] is None
+
+
+# --- US3: the in-attempt ferry (FR-009) ----------------------------------------
+#
+# An agent that asks mid-flight keeps its process and its context alive while
+# the answer travels. The channel is the filesystem the agent already owns
+# (its archive directory, never the worktree) and the beat that already runs:
+# the agent writes a `question` file and polls for an `answer` file; the
+# adapter's monitor loop ferries the question up (a callable the activity wires
+# to `send_question`) and the answer down (a callable that polls the store the
+# bridge writes to). The ferry is bounded: a question with no answer in the
+# window degrades to the US1 final-message path — the agent writes the
+# OPERATOR QUESTION marker and exits — so the ferry can only improve the round
+# trip, never hang it (FR-009).
+#
+# The same isolation 006-US1 requires of the usage read applies to the ferry
+# read: a dead ferry call must never kill the liveness beat. The beat still
+# fires while the question is in flight, and a `send_ferry_question` or
+# `read_ferry_answer` that raises leaves the beat and the deadline intact.
+
+#: A question body the stub writes to its ferry file. Distinctive so a leak into
+#: the wrong surface is greppable, and long enough to be a real question.
+FERRY_QUESTION = (
+    "Should the ledger row key on (epic, node, attempt) or (epic, node, "
+    "attempt, persona)? The plan says the former; the debugger re-entry (US2) "
+    "re-issues under the same persona, which collides. My lean: add persona."
+)
+
+#: An answer the test's ferry callable returns, as the operator (via the
+#: bridge) would. Distinctive from the question so "the answer reached the
+#: agent" is observable in the stub's output.
+FERRY_ANSWER = "Key on (epic, node, attempt, persona) — the collision is real."
+
+
+async def _wait_for_question(factory_root: Path, timeout_s: float = PATIENCE_S) -> Path:
+    """Block until the attempt's `question` ferry file appears in the archive.
+
+    The stub writes it the moment its ferry logic runs, so this is the
+    rendezvous: by the time it returns, the monitor loop's question read is
+    about to fire (or already has).
+    """
+    archive = archive_dir(factory_root)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        path = archive / FERRY_QUESTION_FILE
+        if path.is_file():
+            return path
+        await asyncio.sleep(0.01)
+    raise AssertionError("the stub never wrote its ferry question file")
+
+
+def _write_answer(factory_root: Path, answer: str) -> None:
+    """Drop the answer file the polling agent is waiting for, as the monitor loop would."""
+    archive = archive_dir(factory_root)
+    (archive / FERRY_ANSWER_FILE).write_text(answer, encoding="utf-8")
+
+
+async def test_the_attempt_archive_path_is_handed_to_the_agent(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    worktree: Path,
+) -> None:
+    """The agent learns its archive directory from the environment the adapter
+    builds, not from a worker path in the prompt (the prompt carries none).
+
+    `$ATTEMPT_ARCHIVE` is the one place the agent can write a ferry file that
+    salvage will never commit — it lives under `.factory/`, never in the
+    worktree, the same discipline `stdout.log` already lives by (FR-007).
+    """
+    write_control(fake_home)
+
+    await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    env = last_invocation(worktree).env
+    assert ATTEMPT_ARCHIVE_ENV in env, (
+        "the adapter did not hand the agent its archive directory"
+    )
+    assert env[ATTEMPT_ARCHIVE_ENV] == str(archive_dir(factory_root))
+
+
+async def test_a_ferry_question_ships_upward_once(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """The monitor loop reads the question file and ships it up exactly once.
+
+    A callable the activity wires to `send_question` receives the question text
+    verbatim; the questions row + Telegram send are its concern, not the
+    adapter's. Shipped once: the monitor loop does not re-send a question it
+    already ferried, the way a heartbeat does not re-fire a beat it already
+    fired.
+    """
+    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=3.0)
+    shipped: list[str] = []
+
+    async def send_ferry_question(text: str) -> str:
+        shipped.append(text)
+        return "q-ferried"
+
+    run = asyncio.create_task(
+        adapter.run_attempt(
+            attempt(),
+            factory_root=factory_root,
+            send_ferry_question=send_ferry_question,
+        )
+    )
+    await _wait_for_question(factory_root)
+    # Give the monitor loop a beat to read the file and ship it up.
+    await wait_until(lambda: len(shipped) >= 1, what="the question to ship up")
+    _write_answer(factory_root, FERRY_ANSWER)
+    result = await run
+
+    assert shipped == [FERRY_QUESTION], (
+        f"the question shipped {len(shipped)} times, not once: {shipped}"
+    )
+    assert result.termination == Termination.COMPLETED
+
+
+async def test_an_answer_is_delivered_to_the_polling_agent(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """The monitor loop ferries the answer down: it writes the answer file the
+    polling agent reads, and the same process resumes and proceeds.
+
+    The answer arrives via the activity's `read_ferry_answer` callable (the
+    bridge wrote it to the store); the adapter writes it to the archive's
+    `answer` file, and the in-flight agent reads it and commits work — no
+    second dispatch, no cold re-read of the worktree (US3's whole point).
+    """
+    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=5.0)
+
+    async def send_ferry_question(text: str) -> str:
+        return "q-ferried"
+
+    answered = {"n": 0}
+
+    async def read_ferry_answer(question_id: str) -> str | None:
+        answered["n"] += 1
+        # The first poll sees no answer; a later one sees it, the way the store
+        # fills when the bridge routes the operator's reply.
+        return FERRY_ANSWER if answered["n"] >= 2 else None
+
+    run = asyncio.create_task(
+        adapter.run_attempt(
+            attempt(),
+            factory_root=factory_root,
+            send_ferry_question=send_ferry_question,
+            read_ferry_answer=read_ferry_answer,
+        )
+    )
+    await _wait_for_question(factory_root)
+    result = await run
+
+    assert result.termination == Termination.COMPLETED
+    # The agent read its answer and proceeded (no marker, no hang).
+    log = stdout_log(factory_root)
+    assert "## OPERATOR QUESTION" not in log, (
+        "a ferry that got an answer degraded to the marker path anyway"
+    )
+    assert answered["n"] >= 2, "the adapter never polled for the answer"
+
+
+async def test_an_unanswered_ferry_degrades_to_the_us1_marker_path(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """FR-009: an in-attempt ferry with no answer in the window degrades to the
+    US1 final-message path — marker + QUESTION termination — never a hang or a
+    timeout burn.
+
+    The stub polls for an answer it is never given; when its window elapses it
+    writes the OPERATOR QUESTION marker to stdout and exits 0. The adapter
+    classifies COMPLETED (exit 0), and the marker in the archived log is what
+    US1's detector would pick up — the ferry improved nothing and broke
+    nothing, which is the whole guarantee.
+    """
+    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=0.3)
+
+    async def send_ferry_question(text: str) -> str:
+        return "q-ferried"
+
+    async def read_ferry_answer(question_id: str) -> str | None:
+        # The operator never engages.
+        return None
+
+    started = time.monotonic()
+    result = await adapter.run_attempt(
+        attempt(timeout_s=GENEROUS_TIMEOUT_S),
+        factory_root=factory_root,
+        send_ferry_question=send_ferry_question,
+        read_ferry_answer=read_ferry_answer,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.termination == Termination.COMPLETED, (
+        "an unanswered ferry burned the deadline rather than degrading"
+    )
+    # The agent proceeded to the US1 path: the marker is in the archived log,
+    # which is what US1's detector scans (FR-009 — degrade to v0, never a hang).
+    assert "## OPERATOR QUESTION" in stdout_log(factory_root)
+    assert FERRY_QUESTION in stdout_log(factory_root)
+    # The deadline was not burned: the stub gave up well before the generous
+    # timeout. A ferry that hung would still be alive at GENEROUS_TIMEOUT_S.
+    assert elapsed < 5.0, (
+        f"the unanswered ferry did not degrade promptly ({elapsed:.1f}s)"
+    )
+
+
+async def test_the_ferry_read_never_blocks_or_kills_the_liveness_beat(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """The ferry read is isolated the way the usage read is (006-US1): a
+    `send_ferry_question` or `read_ferry_answer` that raises leaves the previous
+    state in place and the beat still fires — liveness and the ferry share one
+    channel, and the ferry must not be able to kill liveness.
+
+    Every ferry call raises; the agent still runs, still beats, and still
+    degrades to the US1 path when its window elapses (FR-009). A ferry that
+    could kill the beat would convert a question into a hang, which is exactly
+    what the rule forbids.
+    """
+    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=0.4)
+    beats: list[UsageSnapshot | None] = []
+
+    async def send_ferry_question(text: str) -> str:
+        raise RuntimeError("notify unreachable")
+
+    async def read_ferry_answer(question_id: str) -> str | None:
+        raise RuntimeError("store unreadable")
+
+    result = await adapter.run_attempt(
+        attempt(),
+        factory_root=factory_root,
+        heartbeat=beats.append,
+        heartbeat_interval_s=0.02,
+        send_ferry_question=send_ferry_question,
+        read_ferry_answer=read_ferry_answer,
+    )
+
+    assert result.termination == Termination.COMPLETED, (
+        "a failing ferry read burned the deadline rather than degrading"
+    )
+    assert len(beats) >= 3, (
+        f"a failing ferry read killed the beat; got {len(beats)} beats"
+    )
+    # The question shipped, but every answer read failed; the agent degraded to
+    # the marker path the moment its window elapsed, the way FR-009 requires.
+    assert "## OPERATOR QUESTION" in stdout_log(factory_root)
+
+
+async def test_the_ferry_window_does_not_extend_the_attempts_deadline(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """Acceptance scenario 1: the same process resumes and the attempt's timeout
+    clock is unaffected. The ferry polls on its own cadence inside the
+    attempt's existing runtime — the deadline is the one the context declared,
+    and a question in flight does not pause it.
+    """
+    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=2.0)
+
+    async def send_ferry_question(text: str) -> str:
+        return "q-ferried"
+
+    async def read_ferry_answer(question_id: str) -> str | None:
+        return None
+
+    # A deadline shorter than the ferry window: the attempt times out before the
+    # agent gives up on its own, proving the clock was never paused for the
+    # ferry (a paused clock would let the agent finish within the window).
+    started = time.monotonic()
+    result = await adapter.run_attempt(
+        attempt(timeout_s=1),
+        factory_root=factory_root,
+        send_ferry_question=send_ferry_question,
+        read_ferry_answer=read_ferry_answer,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.termination == Termination.TIMEOUT, (
+        "the ferry window paused the deadline; the clock must be unaffected"
+    )
+    assert elapsed < PATIENCE_S, "the deadline was not enforced against the ferry"

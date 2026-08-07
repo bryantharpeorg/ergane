@@ -81,6 +81,18 @@ STDIN_FILE = "stdin.txt"
 PROCESS_FILE = "process.json"
 SIGNALS_FILE = "signals.log"
 
+#: 008-US3 ferry file names — the contract the adapter's monitor loop and the
+#: agent share, lived in the attempt's archive directory (`$ATTEMPT_ARCHIVE`).
+#: The agent writes `question`, polls for `answer`; the adapter ferries the
+#: question up and the answer down (FR-009). Named here so the test helpers and
+#: the stub agree on them, the way `STDOUT_LOG_NAME` is named in the adapter.
+FERRY_QUESTION_FILE = "question"
+FERRY_ANSWER_FILE = "answer"
+#: The env var the adapter sets to the attempt's archive directory, so the agent
+#: knows where to write its question and poll for its answer without a worker
+#: path ever entering the prompt (the prompt carries no worker path).
+ATTEMPT_ARCHIVE_ENV = "ATTEMPT_ARCHIVE"
+
 #: Always printed, so `stdout.log` has an assertable line even when a test
 #: scripts no output of its own.
 BANNER = "stub-agent: launched"
@@ -128,6 +140,17 @@ class Control:
     ignore_sigterm: bool = False
     spawn_child: bool = False
     child_sleep_s: float = 300.0
+    #: 008-US3 ferry: if non-empty, the stub writes this text to the attempt's
+    #: `question` ferry file (under `$ATTEMPT_ARCHIVE`) and polls for an `answer`
+    #: file. An answer arriving within `ferry_window_s` is read and the stub
+    #: exits 0 — the in-flight process resumed and proceeded. No answer in the
+    #: window is the US1 degradation: the stub writes the `## OPERATOR QUESTION`
+    #: marker and the question body to stdout and exits 0, so the attempt falls
+    #: through to marker detection rather than hanging or burning the deadline
+    #: (FR-009). Empty (the default) is no ferry — the happy path the rest of
+    #: this file already covers.
+    ferry_question: str = ""
+    ferry_window_s: float = 5.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -139,6 +162,8 @@ class Control:
             "ignore_sigterm": self.ignore_sigterm,
             "spawn_child": self.spawn_child,
             "child_sleep_s": self.child_sleep_s,
+            "ferry_question": self.ferry_question,
+            "ferry_window_s": self.ferry_window_s,
         }
 
 
@@ -384,6 +409,18 @@ def main(argv: list[str]) -> int:
     if control.write_transcript:
         _write_transcript(home, cwd, session_id, TRANSCRIPT_START)
 
+    # 008-US3 ferry: the in-flight agent asks a question and polls for the
+    # answer, keeping its process and context alive while the answer travels.
+    # The stub writes the question to the archive directory and polls for the
+    # answer file the adapter's monitor loop writes back. An answer in the
+    # window is the resume path — exit 0 having "committed work." No answer in
+    # the window is the US1 degradation: write the OPERATOR QUESTION marker to
+    # stdout and exit 0, so the attempt falls through to marker detection
+    # rather than hanging or burning the deadline (FR-009).
+    ferry = _run_ferry(control, os.environ.get(ATTEMPT_ARCHIVE_ENV))
+    if ferry is not None:
+        print(ferry, flush=True)
+
     if control.sleep_s:
         time.sleep(control.sleep_s)
 
@@ -391,6 +428,46 @@ def main(argv: list[str]) -> int:
         _write_transcript(home, cwd, session_id, TRANSCRIPT_END)
 
     return control.exit_code
+
+
+def _run_ferry(control: Control, archive: str | None) -> str | None:
+    """The in-flight question round trip, as the stub agent would do it (US3).
+
+    Writes the question to ``$ATTEMPT_ARCHIVE/question`` and polls for
+    ``answer`` once per ~50ms until ``control.ferry_window_s`` elapses. An answer
+    is the resume path: the stub proceeds to "commit work" (returns ``None`` so
+    the caller exits 0 with no marker). A timeout is the US1 degradation: the
+    stub returns the ``## OPERATOR QUESTION`` marker plus the question body, so
+    the archived ``stdout.log`` carries the marker the detector scans for.
+
+    Returns ``None`` when the ferry is not scripted (the happy path).
+    """
+    if not control.ferry_question:
+        return None
+    if not archive:
+        # No archive path means no ferry channel: degrade to the US1 path
+        # immediately, the way an agent told to ask with nowhere to write would.
+        return _marker(control.ferry_question)
+    directory = Path(archive)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / FERRY_QUESTION_FILE).write_text(control.ferry_question, encoding="utf-8")
+
+    deadline = time.monotonic() + control.ferry_window_s
+    answer_path = directory / FERRY_ANSWER_FILE
+    while time.monotonic() < deadline:
+        if answer_path.is_file():
+            # The same process resumed and read its answer: proceed to commit.
+            answer_path.read_text(encoding="utf-8")
+            return None
+        time.sleep(0.05)
+    # No answer in the window: the ferry degrades to the US1 final-message path
+    # (FR-009) — marker + body, so the attempt is classified QUESTION, not hung.
+    return _marker(control.ferry_question)
+
+
+def _marker(question: str) -> str:
+    """The US1 final-message shape: the fixed heading plus the question body."""
+    return f"## OPERATOR QUESTION\n{question}"
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess
