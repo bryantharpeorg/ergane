@@ -44,7 +44,7 @@ from factory.usage.models import Termination, UsageRecord
 
 #: Bumping this means the DDL below changed shape and existing ledgers need a
 #: migration path. Recorded in the database so a reader can tell.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: R6: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent teardown, short enough that a genuinely wedged
@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
     spend_usd              REAL,                             -- NULL only if no snapshot ever taken
     final_usage_confirmed  INTEGER NOT NULL CHECK (final_usage_confirmed IN (0, 1)),
     termination            TEXT    NOT NULL CHECK (termination IN
-                               ('completed', 'agent_error', 'timeout', 'killed')),
+                               ('completed', 'agent_error', 'timeout', 'killed',
+                                'question')),
     issued_at              TEXT    NOT NULL,                 -- ISO 8601 UTC
     torn_down_at           TEXT    NOT NULL                  -- ISO 8601 UTC
 );

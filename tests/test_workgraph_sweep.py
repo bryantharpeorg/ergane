@@ -1151,9 +1151,16 @@ def test_a_node_state_is_written_from_the_ladders_action_alone() -> None:
     assert owner_name(owner, grant) == "_run_node"
 
 
-#: Every way an attempt can end, as the adapter classifies it — including the
-#: two the workflow supplies when it is the one that ended the attempt.
-_TERMINATIONS = list(Termination)
+#: Every way an attempt can end that the ladder *grades*. The four
+#: process-derived terminations (completed/agent_error/timeout/killed) all run
+#: the gates — an agent's fate is never its verdict (FR-012). `QUESTION` is the
+#: one deliberate exception (008-US1's narrowest hole in D-018/FR-012, FR-010):
+#: it is workflow-derived from the marker, not adapter-derived from the process,
+#: and its only effect is to park — the gates are never consulted for it because
+#: there is nothing to grade. The guard that a marker can never influence a
+#: verdict is held separately, and specifically, by the QUESTION routing tests
+#: (a marker parks; a marker plus a substantive diff still gets no PASS).
+_TERMINATIONS = [t for t in Termination if t is not Termination.QUESTION]
 
 
 @pytest.mark.parametrize("termination", _TERMINATIONS, ids=lambda t: t.value)

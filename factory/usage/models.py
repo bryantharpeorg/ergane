@@ -44,6 +44,14 @@ class Termination(StrEnum):
     AGENT_ERROR = "agent_error"
     TIMEOUT = "timeout"
     KILLED = "killed"
+    #: The one termination the workflow derives rather than the adapter: an
+    #: attempt whose final message carried the `## OPERATOR QUESTION` marker
+    #: (008-US1, the narrowest hole in D-018/FR-012). The adapter still classifies
+    #: the process's own fate (completed/agent_error/timeout/killed); the workflow
+    #: reads the marker from the archived transcript and reclassifies the attempt
+    #: QUESTION. Its ladder routing is park — never a verdict — so it is the one
+    #: termination that does not run the gates (FR-010).
+    QUESTION = "question"
 
 
 @dataclass(frozen=True)

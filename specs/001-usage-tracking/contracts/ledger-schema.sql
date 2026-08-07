@@ -1,5 +1,9 @@
 -- Ledger schema: the documented direct-SQL surface (FR-012).
--- SQLite, WAL mode. One row per node attempt teardown. Version 1.
+-- SQLite, WAL mode. One row per node attempt teardown. Version 2.
+-- Version 2 adds 'question' to the termination CHECK (008-US1): a QUESTION
+-- attempt is a termination class with a ledger row, not an accounting exemption
+-- (FR-006), so the storage layer admits the value the workflow derives from the
+-- marker.
 
 PRAGMA journal_mode = WAL;
 
@@ -23,7 +27,8 @@ CREATE TABLE IF NOT EXISTS usage_records (
     spend_usd              REAL,                             -- NULL only if no snapshot ever taken
     final_usage_confirmed  INTEGER NOT NULL CHECK (final_usage_confirmed IN (0, 1)),
     termination            TEXT    NOT NULL CHECK (termination IN
-                               ('completed', 'agent_error', 'timeout', 'killed')),
+                               ('completed', 'agent_error', 'timeout', 'killed',
+                                'question')),
     issued_at              TEXT    NOT NULL,                 -- ISO 8601 UTC
     torn_down_at           TEXT    NOT NULL                  -- ISO 8601 UTC
 );
