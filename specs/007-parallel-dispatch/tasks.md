@@ -117,7 +117,7 @@ completes.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T014 [US3] Write `tests/test_interpreter.py` landing-concurrency cases FIRST: N
+- [x] T014 [US3] Write `tests/test_interpreter.py` landing-concurrency cases FIRST: N
       nodes reaching PASS together each open exactly one PR and enqueue; the epic completes
       only when every landing is terminal; a rejected landing recovers without stalling the
       others; a `depends_on_merged` dependent does not dispatch while its dependency is
@@ -125,7 +125,7 @@ completes.
 
 ### Implementation for User Story 3
 
-- [ ] T015 [US3] Make the landing phase concurrency-safe in
+- [x] T015 [US3] Make the landing phase concurrency-safe in
       `factory/workgraph/workflow.py` until T014 passes. **Any wait condition added here
       must have its test fixtures updated in the same task.** 003's T020 added an unbounded
       `wait_condition` on "all landings terminal" and left the pre-landing `ScriptedEpic`

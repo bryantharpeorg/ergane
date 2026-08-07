@@ -1828,7 +1828,21 @@ async def test_unserved_alias_names_each_offender_not_just_the_first(
     result = await run_async("start", str(workgraph_json))
 
     assert result.code == 1
-    for alias in ("ollama-cloud/deepseek-v4-flash", "ollama-cloud/glm-5.2", "local/qwen3.6-27b"):
+    # Derived from the shipped registry, not hardcoded: the aliases named for
+    # a valid_epic's personas (implementer + judge, models and fallbacks) are
+    # whatever personas.yaml says today — a persona swap must not break this
+    # test's premise (learned 2026-08-07, when exactly that happened).
+    from factory.config import load_personas
+
+    personas = load_personas()
+    expected = {
+        alias
+        for p in (personas["implementer"], personas["judge"])
+        for alias in (p.model, p.fallback)
+        if alias
+    }
+    assert expected
+    for alias in expected:
         assert alias in result.stderr
 
 
@@ -1926,7 +1940,11 @@ async def test_preflight_wording_states_what_was_checked_not_worker_resolution(
     finding names the registry as the thing checked.
     """
     fake: FakeLiteLLM = temporal_env.fake
-    fake.served_models.discard("ollama-cloud/deepseek-v4-flash")
+    # Unserve whatever model the registry names for the implementer today —
+    # hardcoding the alias broke this test the night the persona swapped.
+    from factory.config import load_personas
+
+    fake.served_models.discard(load_personas()["implementer"].model)
 
     result = await run_async("start", str(workgraph_json))
 
