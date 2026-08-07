@@ -668,15 +668,29 @@ async def _live_spend(
     handle: Any,
     document: Mapping[str, Any],
 ) -> dict[str, Mapping[str, Any]]:
-    """The running attempt's newest heartbeat snapshot, per node (US1-S4).
+    """Each running attempt's newest heartbeat snapshot, per node (US1-S4, US5).
 
     Observation rides the agent activity's heartbeat (plan US1), and Temporal
     stores heartbeat *details* on the pending activity's mutable state — visible
     to a client's `describe`, never on the workflow's event log. So the one
-    mid-attempt spend surface is this read: decode the pending
+    mid-attempt spend surface is this read: decode each pending
     `run_agent_attempt`'s heartbeat payload and hand the figure to the renderer.
 
-    A missing figure is not an error — the attempt has not measured spend yet
+    Attribution is by the activity's own id, not by "the running node". The
+    workflow stamps `activity_id` with the node id when it starts the attempt
+    (US5), so a wide epic with N nodes in flight has N pending
+    `run_agent_attempt` activities each carrying its own node — and each node's
+    spend is charged to it alone (FR-011). The earlier single-node assumption —
+    resolve "the" RUNNING node and charge every pending attempt to it — collapsed
+    a fan-out onto one line, which is the failure mode US5 exists to stop; the
+    RUNNING states in the query document are now a cross-check, never the key.
+
+    A pending activity whose `activity_id` names no node in the document is
+    skipped rather than guessed at: an `activity_id` this renderer does not
+    recognize is either an attempt from before US5 stamped ids (a workflow still
+    running from before the change) or something this CLI does not model, and
+    either way charging it to an arbitrary node would be the bug revisited. A
+    missing figure is not an error — the attempt has not measured spend yet
     (constitution V: unknown, not zero) or the workflow is not in an attempt. A
     `describe` that fails is likewise surfaced as no figure rather than a crashed
     status: the query already answered, and this is a sibling read.
@@ -691,23 +705,20 @@ async def _live_spend(
     except Exception:
         converter = None
 
+    nodes: Mapping[str, Mapping[str, Any]] = document["nodes"]
     live: dict[str, Mapping[str, Any]] = {}
     for activity_info in pending:
         if not activity_info.HasField("activity_type"):
             continue
         if activity_info.activity_type.name != "run_agent_attempt":
             continue
-        # The node id is not directly on the pending info; the running attempt is
-        # the one whose node is RUNNING, resolved from the query document so the
-        # two views name the same node.
-        running = [
-            node_id
-            for node_id, node in document["nodes"].items()
-            if node["state"] == "RUNNING"
-        ]
-        if not running or converter is None or not activity_info.HasField(
-            "heartbeat_details"
-        ):
+        if converter is None or not activity_info.HasField("heartbeat_details"):
+            continue
+        # The node id is stamped on the activity when it is started (US5), so a
+        # pending attempt is attributed to its own node even when several run at
+        # once. An id that names no node in the query is not charged to a guess.
+        node_id = activity_info.activity_id
+        if node_id not in nodes:
             continue
         try:
             decoded = await converter.decode(
@@ -719,7 +730,7 @@ async def _live_spend(
         snapshot = decoded[0]
         if snapshot is None:
             continue
-        live[running[0]] = {
+        live[node_id] = {
             "spend_usd": snapshot.spend_usd,
             "captured_at": snapshot.captured_at,
         }
