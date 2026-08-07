@@ -2492,7 +2492,10 @@ async def test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown(
     assert script.teardown_for("us1", 1).last_snapshot == SNAPSHOT
     assert script.teardown_for("us1", 1).termination == Termination.TIMEOUT
     assert "run_gates" in script.sequence("us1")
-    assert states(status)["us1"] == NodeState.PASSED
+    # MERGED, not PASSED: on the landed tree a verified node rides the scripted
+    # landing to its terminal state (003's semantics — PASSED now means
+    # "verified, landing not terminal").
+    assert states(status)["us1"] == NodeState.MERGED
 
 
 async def test_a_kill_delivers_a_snapshot_to_teardown(
@@ -2632,22 +2635,27 @@ async def test_an_attempts_history_cost_does_not_grow_with_its_duration() -> Non
 
 
 async def test_an_attempts_history_has_no_timer_and_no_poll_activity() -> None:
-    """FR-002: the four-hour attempt's history carries neither a timer pair nor a
+    """FR-002: the attempt contributes no duration-driven timer and no
     `poll_usage` activity — the two things that made the old loop's cost grow.
 
-    This is the other half of the duration-independence proof: not only is the
-    count bounded, the mechanisms that used to grow it are gone.
+    On the landed tree the landing phase legitimately fires a bounded number of
+    poll timers *after* the attempt completes, so absolute timer absence is no
+    longer the honest claim. What US1 forbids is timers that grow with the
+    attempt's duration — so the four-hour and one-minute attempts must carry
+    identical timer counts — and the poll activity itself, which must be gone
+    outright.
     """
     _, hours_events, hours_activity = await _attempt_history(
         "hours", agent_sleep_s=4.0
     )
+    _, minute_events, _ = await _attempt_history("minute", agent_sleep_s=1.0)
 
-    assert _EVENT_TIMER_STARTED not in hours_events, (
-        "the four-hour attempt emitted a timer"
-    )
-    assert _EVENT_TIMER_FIRED not in hours_events, (
-        "the four-hour attempt emitted a timer"
-    )
+    assert hours_events.get(_EVENT_TIMER_STARTED, 0) == minute_events.get(
+        _EVENT_TIMER_STARTED, 0
+    ), "timer count grew with attempt duration"
+    assert hours_events.get(_EVENT_TIMER_FIRED, 0) == minute_events.get(
+        _EVENT_TIMER_FIRED, 0
+    ), "timer count grew with attempt duration"
     assert "poll_usage" not in hours_activity, (
         "the four-hour attempt scheduled a poll_usage activity"
     )

@@ -1846,7 +1846,6 @@ class EpicWorkflow:
                 session_id=str(workflow.uuid4()),
                 timeout_s=resolved.timeout_s,
             ),
-            poll_interval_s=request.poll_interval_s,
         )
         if adapter_result is None or self._kill_requested:
             termination = (
