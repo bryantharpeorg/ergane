@@ -143,7 +143,9 @@ from factory.activities.merge_activities import (
 )
 from factory.activities.notify_activities import (
     ExpiredEscalation,
+    ExpiredQuestion,
     ExpireEscalationInput,
+    ExpireQuestionInput,
     SendEscalationInput,
     SendQuestionInput,
     SentEscalation,
@@ -282,6 +284,7 @@ GATE_TAIL = {
     2: "E   TypeError: attempt-two Catalogue.borrow() missing 1 argument",
     3: "E   AssertionError: attempt-three refused an available book",
     4: "E   AssertionError: attempt-four debugger left the ledger unwritten",
+    5: "E   AssertionError: attempt-five debugger still left the ledger unwritten",
 }
 
 
@@ -936,6 +939,9 @@ class ScriptedWorld:
         #: (FR-004). A non-None value un-parks the node on the answer (FR-003).
         self.question_answer: str | None = None
         self.question_answer_signals: list[tuple[str, str]] = []
+        #: 008-US2: every `expire_question` call, in order — the timeout path
+        #: that re-enters the ladder as a FAIL when the operator never replied.
+        self.question_expirations: list[str] = []
 
         #: The landing phase's scripted surface. `landing_snapshots` is the per-PR
         #: answer queue, in poll order: each `poll_landing` call consumes one
@@ -1507,9 +1513,16 @@ class ScriptedWorld:
             # the marker, and the body is what ships. No node id travels in the
             # input (the detector owns nothing but the read), so the current node
             # is read from the scripted attempt counter the agent activity set.
+            # 008-US2: the marker is in the transcript of the one attempt that
+            # asked — the re-dispatch after an answer (or an expiry) is a fresh
+            # attempt whose transcript does not carry it — so the body is popped
+            # once read, and a second attempt for the same node finds no marker
+            # and proceeds to the gates. Without this, an answered node would
+            # re-ask on every re-dispatch and loop forever (the answer is buffered
+            # for every send, the marker arms every detection).
             script._log("detect_operator_question_activity", script._node)
             script.detect_requests.append(request)
-            body = script.question_bodies.get(script._node)
+            body = script.question_bodies.pop(script._node, None)
             if body is None:
                 return QuestionMarker(is_question=False, text="")
             return QuestionMarker(is_question=True, text=body)
@@ -1545,6 +1558,19 @@ class ScriptedWorld:
                 expires_at="2026-08-07T17:31:00Z",
             )
 
+        @activity.defn(name="expire_question")
+        async def expire_question(
+            request: ExpireQuestionInput,
+        ) -> ExpiredQuestion:
+            # The mirror of `expire_escalation`: marks the question EXPIRED iff it
+            # is still pending, hands back ANSWERED if an operator already replied
+            # (the race the store's guarded UPDATE decides). The fake records the
+            # expiry and reports the scripted state — the workflow applies the
+            # FAIL either way, so the test only needs the call to have happened.
+            script._log("expire_question")
+            script.question_expirations.append(request.question_id)
+            return ExpiredQuestion(final_state=EXPIRED)
+
         return [
             resolve_graph,
             resolve_persona,
@@ -1573,6 +1599,7 @@ class ScriptedWorld:
             expire_escalation,
             detect_operator_question_activity,
             send_question,
+            expire_question,
         ]
 
 
@@ -2955,10 +2982,14 @@ async def test_an_answered_question_consumes_no_ladder_slot(
     # Ask on attempt 1, then fail the next three ordinary attempts. A node that
     # burned a slot on the question would exhaust at three failures; a node that
     # did not still has its full budget and reaches the debugger cycle (the rung
-    # after the ordinary budget), proving the question cost nothing.
+    # after the ordinary budget), proving the question cost nothing. The debugger
+    # cycle fails too (the 5th script entry is a gate failure, not a pass), so the
+    # ladder escalates and the operator's KILL press ends the node — the same
+    # shape as `test_the_ladder_exhausts_into_an_escalation`, only reached one rung
+    # later because the question burned nothing.
     script = ScriptedWorld(
         {
-            "us1": [passing(), failing(2), failing(3), failing(4), passing()],
+            "us1": [passing(), failing(2), failing(3), failing(4), failing(5)],
             "us3": [passing()],
         },
         client=env.client,
