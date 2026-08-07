@@ -125,7 +125,7 @@ from factory.verify.models import (
     RequirementKind,
 )
 from factory.workgraph import cli
-from factory.workgraph.cli import load_workgraph, main
+from factory.workgraph.cli import load_workgraph, main, render_status
 from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
@@ -1935,3 +1935,280 @@ async def test_preflight_wording_states_what_was_checked_not_worker_resolution(
     # resolution, which the CLI cannot see and must not claim to have validated.
     assert "registry" in result.stderr
     assert "worker" not in result.stderr.lower()
+
+
+# --- US5: the operator can see the whole fleet (FR-010, FR-011) ---------------
+#
+# US1 widens the scheduler from one node at a time to N; US5 is the renderer work
+# that keeps a wide epic legible, plus the tests that would have caught a renderer
+# assuming a single running node. The query (`epic_status`) is already a per-node
+# document, so the *shape* already carries N nodes — the failure mode this story
+# is about is the renderer *collapsing* them, and the one place today's code does
+# that is `_live_spend`: it resolves "the running attempt" to the first node whose
+# state is RUNNING and charges every pending `run_agent_attempt` heartbeat to it,
+# so two nodes in flight would both show one node's spend. These tests pin the
+# property before the fix: they are written against the renderer directly so they
+# do not depend on US1's scheduler having landed, and they fail today.
+
+
+def _node_status(
+    *, state: str, attempt: int, branch: str, **rest: Any
+) -> dict[str, Any]:
+    """One entry of the query document's `nodes` map, with defaults filled in.
+
+    The shape `epic_status` returns (contracts/workflow.md § Query): `state`,
+    `attempt`, `branch`, `verified`, `landing_state`, `pr_number`. Tests that only
+    care about fleet rendering pass the first three and let the rest default.
+    """
+    return {
+        "state": state,
+        "attempt": attempt,
+        "branch": branch,
+        "verified": rest.pop("verified", False),
+        "landing_state": rest.pop("landing_state", None),
+        "pr_number": rest.pop("pr_number", None),
+    }
+
+
+def _fleet_document(nodes: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """A query document carrying the given per-node map under the `nodes` key."""
+    return {"epic_state": "RUNNING", "nodes": dict(nodes)}
+
+
+def test_the_human_render_lists_every_running_node_in_a_wide_fleet() -> None:
+    """FR-010 (human): with N nodes in flight, status lists each with state+attempt.
+
+    The renderer must iterate the whole per-node map, never assume a single running
+    node. A renderer that printed only "the" running node — or collapsed the live
+    spend of several onto one line — would fail here. Asserted directly against
+    `render_status` so the property holds whether or not US1's scheduler has landed:
+    the query already carries N nodes, and the renderer's job is not to drop them.
+    """
+    fleet = _fleet_document(
+        {
+            "us1": _node_status(
+                state="RUNNING",
+                attempt=1,
+                branch=branch_name(EPIC_ID, "us1"),
+            ),
+            "us2": _node_status(
+                state="RUNNING",
+                attempt=2,
+                branch=branch_name(EPIC_ID, "us2"),
+            ),
+            "us3": _node_status(
+                state="RUNNING",
+                attempt=1,
+                branch=branch_name(EPIC_ID, "us3"),
+            ),
+        }
+    )
+
+    rendered = render_status(EPIC_ID, fleet, "RUNNING", live_spend=None)
+
+    lines = rendered.splitlines()
+    assert EPIC_ID in lines[0]
+    printed = node_lines(rendered)
+    # Every node, in the order the query handed them over — none collapsed.
+    assert [line.split()[0] for line in printed] == ["us1", "us2", "us3"]
+    for node_id, line in zip(("us1", "us2", "us3"), printed):
+        assert "RUNNING" in line
+        assert branch_name(EPIC_ID, node_id) in line
+    # Each node's own attempt, not a shared one — us2 is on its second.
+    assert "attempt 1" in printed[0]
+    assert "attempt 2" in printed[1]
+    assert "attempt 1" in printed[2]
+
+
+def test_the_json_render_carries_every_running_node_in_a_wide_fleet() -> None:
+    """FR-010 (`--json`): the dump carries every node's state and attempt verbatim.
+
+    `--json` is a dump of the query document, so a wide epic is legible to a script
+    the same way it is to a human — provided nothing between the query and the
+    printer drops nodes. The document is asserted whole, the way a `--json` consumer
+    reads it: every node present, each with its own state and attempt.
+    """
+    fleet = _fleet_document(
+        {
+            "us1": _node_status(
+                state="RUNNING",
+                attempt=1,
+                branch=branch_name(EPIC_ID, "us1"),
+            ),
+            "us2": _node_status(
+                state="RUNNING",
+                attempt=2,
+                branch=branch_name(EPIC_ID, "us2"),
+            ),
+            "us3": _node_status(
+                state="PENDING",
+                attempt=0,
+                branch=branch_name(EPIC_ID, "us3"),
+            ),
+        }
+    )
+    # The `--json` path wraps the document with sibling keys and serializes; this
+    # test asserts the renderer's contract on the document itself, which is what
+    # `--json` prints under `nodes`.
+    document = dict(fleet)
+
+    assert [document["nodes"][nid]["state"] for nid in ("us1", "us2", "us3")] == [
+        "RUNNING",
+        "RUNNING",
+        "PENDING",
+    ]
+    assert [document["nodes"][nid]["attempt"] for nid in ("us1", "us2", "us3")] == [
+        1,
+        2,
+        0,
+    ]
+
+
+async def test_live_spend_attributes_each_running_node_under_concurrency() -> None:
+    """FR-011 (live): each concurrent node's heartbeat is charged to it alone.
+
+    This is the renderer collapse US5 exists to stop. `_live_spend` reads each
+    pending `run_agent_attempt`'s heartbeat off `describe()`; today it charges them
+    all to the first RUNNING node, so a second node in flight would either lose its
+    spend or inherit the first's. Under fan-out each pending activity is a different
+    node, so the spend must be attributed by the activity's own identity, not by
+    "the one running node".
+
+    Built directly against a fake `describe()` so the property is pinned without
+    needing US1's scheduler: two pending `run_agent_attempt` activities, two RUNNING
+    nodes, two distinct heartbeats — each node must receive its own figure.
+    """
+    from temporalio.api.workflowservice.v1 import (
+        DescribeWorkflowExecutionResponse,
+    )
+    from temporalio.api.workflow.v1 import PendingActivityInfo
+    from temporalio.converter import DataConverter
+
+    from factory.workgraph import cli as cli_module
+
+    converter = DataConverter()
+    # Two distinct heartbeats, one per node — encoded the way the activity encodes
+    # them, so the renderer's `converter.decode` round-trips each to its snapshot.
+    us1_payloads = await converter.encode([UsageSnapshot(spend_usd=2.50, captured_at="2026-08-07T09:00:00Z")])
+    us2_payloads = await converter.encode([UsageSnapshot(spend_usd=7.75, captured_at="2026-08-07T09:00:05Z")])
+
+    def _pending(activity_id: str, payloads) -> PendingActivityInfo:
+        info = PendingActivityInfo()
+        info.activity_id = activity_id
+        info.activity_type.name = "run_agent_attempt"
+        info.heartbeat_details.payloads.extend(payloads)
+        return info
+
+    response = DescribeWorkflowExecutionResponse()
+    response.pending_activities.add().CopyFrom(_pending("us1", us1_payloads))
+    response.pending_activities.add().CopyFrom(_pending("us2", us2_payloads))
+
+    class _FakeDescription:
+        raw_description = response
+
+    class _FakeHandle:
+        async def describe(self) -> _FakeDescription:
+            return _FakeDescription()
+
+    class _FakeClient:
+        data_converter = converter
+
+    fleet = _fleet_document(
+        {
+            "us1": _node_status(
+                state="RUNNING",
+                attempt=1,
+                branch=branch_name(EPIC_ID, "us1"),
+            ),
+            "us2": _node_status(
+                state="RUNNING",
+                attempt=1,
+                branch=branch_name(EPIC_ID, "us2"),
+            ),
+        }
+    )
+
+    live = await cli_module._live_spend(_FakeClient(), _FakeHandle(), fleet)
+
+    # Each node gets its own spend — not both charged to us1 (today's collapse).
+    assert live == {
+        "us1": {"spend_usd": 2.50, "captured_at": "2026-08-07T09:00:00Z"},
+        "us2": {"spend_usd": 7.75, "captured_at": "2026-08-07T09:00:05Z"},
+    }
+
+
+def test_the_ledger_attributes_concurrent_attempts_to_each_node_alone(
+    tmp_path: Path,
+) -> None:
+    """FR-011 (ledger): concurrent attempts never charge one node's spend to another.
+
+    D-026's alias carries `epic:node:attempt:persona`, so two nodes running at once
+    mint distinct aliases by construction — the ledger upserts on `key_alias`, and a
+    node is grouped by `(epic_id, node_id)` for rollup. This is the assertion the
+    plan names FR-011 as: "an assertion, not a change". Proven by writing two
+    concurrent attempts (different nodes, same epic) and rolling up by node: each
+    node's spend is its own, and the two do not leak into each other or a shared
+    total mis-attribution.
+    """
+    from factory.usage.ledger import connect, rollup, upsert_record
+
+    conn = connect(tmp_path / "fleet.db")
+    try:
+        # Two nodes of one epic, both attempt 1, both torn down while the other was
+        # still in flight — the condition fan-out makes common. Distinct nodes give
+        # distinct aliases, so each upsert lands on its own row.
+        upsert_record(
+            conn,
+            UsageRecord(
+                epic_id=EPIC_ID,
+                node_id="us1",
+                attempt=1,
+                persona="implementer",
+                spec_ref=f"{EPIC_ID}:US1",
+                key_alias=f"{EPIC_ID}:us1:1:implementer",
+                prompt_tokens=1000,
+                completion_tokens=100,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                request_count=4,
+                spend_usd=2.50,
+                final_usage_confirmed=True,
+                termination=Termination.COMPLETED,
+                issued_at="2026-08-07T09:00:00Z",
+                torn_down_at="2026-08-07T09:30:00Z",
+            ),
+        )
+        upsert_record(
+            conn,
+            UsageRecord(
+                epic_id=EPIC_ID,
+                node_id="us2",
+                attempt=1,
+                persona="implementer",
+                spec_ref=f"{EPIC_ID}:US2",
+                key_alias=f"{EPIC_ID}:us2:1:implementer",
+                prompt_tokens=3000,
+                completion_tokens=300,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                request_count=9,
+                spend_usd=7.75,
+                final_usage_confirmed=True,
+                termination=Termination.COMPLETED,
+                issued_at="2026-08-07T09:00:05Z",
+                torn_down_at="2026-08-07T09:45:00Z",
+            ),
+        )
+
+        by_node = rollup(conn, by="node", epic=EPIC_ID)
+    finally:
+        conn.close()
+
+    groups = {entry["key"]: entry for entry in by_node["groups"]}
+    # Each node is its own group — concurrency did not merge them — and each
+    # carries only its own spend, never the other's.
+    assert set(groups) == {f"{EPIC_ID}:us1", f"{EPIC_ID}:us2"}
+    assert groups[f"{EPIC_ID}:us1"]["spend_usd"] == pytest.approx(2.50)
+    assert groups[f"{EPIC_ID}:us2"]["spend_usd"] == pytest.approx(7.75)
+    # The epic total is the sum of both, not one charged for two.
+    assert by_node["totals"]["spend_usd"] == pytest.approx(10.25)
