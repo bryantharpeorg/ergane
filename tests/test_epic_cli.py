@@ -1262,7 +1262,7 @@ async def test_status_reads_live_spend_off_the_running_attempt(
         mid_human = await run_async("status", EPIC_ID)
 
         script.release()
-        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        await settle_epic(temporal_env)
 
     assert mid_json.code == 0
     # The query result is untouched; the live spend is a sibling read, so a
@@ -1447,9 +1447,12 @@ async def test_the_running_epics_human_output_is_unchanged(
     assert [line.split()[0] for line in printed] == NODE_IDS
     # The per-node lines are byte-identical to the pre-US5 renderer: node id,
     # state, attempt and branch, and nothing else.
+    # us1 reads ENQUEUED, not PASSED: on the landed tree a verified node enters
+    # the landing phase, and the pause on us2 freezes the virtual clock before
+    # us1's landing poll can ride it to MERGED (003's semantics, post-landing).
     assert printed[0].split() == [
         "us1",
-        "PASSED",
+        "ENQUEUED",
         "attempt",
         "1",
         branch_name(EPIC_ID, "us1"),
@@ -1503,6 +1506,16 @@ async def test_status_output_never_carries_a_credential(
     # renderings; a transport failure is the other error path.
     outputs: list[tuple[str, str]] = []
 
+    # completed — runs first: it is the one block that needs the virtual clock
+    # unlocked (settle_epic), and a terminated run left under the same id makes
+    # the time-skipping server refuse the unlock sleep with an RPC timeout.
+    script2 = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+    async with worker_for(temporal_env, script2):
+        await run_async("start", str(workgraph_json))
+        await settle_epic(temporal_env)
+        completed = await run_async("status", EPIC_ID, "--json")
+        outputs.append((completed.stdout, completed.stderr))
+
     script = ScriptedEpic(
         spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
         pause_at="us2",
@@ -1517,14 +1530,6 @@ async def test_status_output_never_carries_a_credential(
         await temporal_env.client.get_workflow_handle(WORKFLOW_ID).terminate("sweep")
         terminated = await run_async("status", EPIC_ID, "--json")
         outputs.append((terminated.stdout, terminated.stderr))
-
-    # completed
-    script2 = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
-    async with worker_for(temporal_env, script2):
-        await run_async("start", str(workgraph_json))
-        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
-        completed = await run_async("status", EPIC_ID, "--json")
-        outputs.append((completed.stdout, completed.stderr))
 
     # failed
     script3 = ScriptedEpic(
@@ -1901,7 +1906,7 @@ async def test_a_fully_valid_config_starts_exactly_as_today(
 
     async with worker_for(temporal_env, script):
         result = await run_async("start", str(workgraph_json))
-        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        await settle_epic(temporal_env)
 
     assert result.code == 0
     assert result.stdout.strip() == WORKFLOW_ID
