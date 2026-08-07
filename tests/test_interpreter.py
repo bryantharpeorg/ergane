@@ -901,6 +901,12 @@ class ScriptedWorld:
         #: only place a mid-epic view of the graph can be taken.
         self.observed: dict[str, Any] = {}
 
+        #: The set of nodes whose state was RUNNING at the moment each agent
+        #: attempt started, in dispatch order. The concurrency claim — "N nodes
+        #: in flight at once" — is asserted from these snapshots, taken while the
+        #: workflow is genuinely parked on the attempt activities (US1, SC-001).
+        self.running_sets: list[set[str]] = []
+
         #: Nodes whose attempt was cancelled by the workflow (the adapter's kill
         #: path, R2). Kept out of the call log because it is recorded by the
         #: activity worker while the workflow is already salvaging: an ordering
@@ -1149,8 +1155,14 @@ class ScriptedWorld:
             # flight: the workflow is parked on this activity and answers the
             # query from the same state it is scheduling from.
             handle = script._client.get_workflow_handle(WORKFLOW_ID)
-            script.observed[context.node_id] = await handle.query(
-                EpicWorkflow.epic_status
+            status = await handle.query(EpicWorkflow.epic_status)
+            script.observed[context.node_id] = status
+            script.running_sets.append(
+                {
+                    node_id
+                    for node_id, node in status.nodes.items()
+                    if node.state == NodeState.RUNNING
+                }
             )
 
             steer = script._signal_during.get(context.node_id)
@@ -3202,7 +3214,7 @@ async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(
 ) -> None:
     """A REJECTED node's recovery dispatches before a fresh PENDING node (plan § US2).
 
-    White-box: `_next_ready` is the picker, so this asserts its ordering directly
+    White-box: `_ready_set` is the picker, so this asserts its ordering directly
     rather than racing the poll task's timer. A node whose landing is REJECTED
     (verified work stranded) is picked before an independent PENDING node — the
     more expensive kind of idle.
@@ -3239,7 +3251,280 @@ async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(
     # us3 is fresh and ready (no dependencies).
     wf._nodes["us3"] = NodeRecord(node_id="us3", branch=branch_name(EPIC_ID, "us3"))
 
-    ready = wf._next_ready([resolved_for(us1), resolved_for(us3)])
+    ready = wf._ready_set([resolved_for(us1), resolved_for(us3)])
 
-    assert ready is not None
-    assert ready.node.id == "us1"
+    assert ready
+    assert ready[0].node.id == "us1"
+
+
+# --- US1: the widened scheduler (FR-001/002/003/004) --------------------------
+
+
+def _virtual_elapsed_s(history: Any) -> float:
+    """The epic's virtual wall-clock, from the history's own timestamps.
+
+    Under time skipping the workflow's clock advances by the real time the
+    scripted agent sleeps, so a graph whose nodes run in parallel elapses about
+    the slowest node's sleep, while a sequential graph elapses the sum. The
+    claim "elapsed tracks the slowest node, not the sum" (SC-001) is asserted
+    from these event times — the same clock the workflow itself reads.
+    """
+    started = completed = None
+    for event in history.events:
+        if event.event_type == 1:  # WorkflowExecutionStarted
+            started = event.event_time.ToDatetime()
+        elif event.event_type == 7:  # WorkflowExecutionCompleted
+            completed = event.event_time.ToDatetime()
+    assert started is not None and completed is not None
+    return (completed - started).total_seconds()
+
+
+def _independent_three() -> list[WorkNode]:
+    """`us1`, `us2`, `us3` — all independent, declared in that order (R10)."""
+    return [
+        make_node("us1", "US1"),
+        make_node("us2", "US2"),
+        make_node("us3", "US3"),
+    ]
+
+
+async def test_all_ready_nodes_are_in_flight_at_once_up_to_the_cap(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-001/SC-001: with the cap at N and N independent ready nodes, all N run
+    at once.
+
+    The scripted agent sleeps real seconds, so the three attempts genuinely
+    overlap; the `running_sets` snapshots — taken while the workflow is parked on
+    the attempt activities — must at some moment contain all three nodes. A
+    scheduler that serialised them would never record a set of size 3.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=0.5
+    )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+
+    assert any(len(running) == 3 for running in script.running_sets), (
+        f"never saw all three nodes in flight; running_sets={script.running_sets}"
+    )
+    # Every node dispatched an agent — order unspecified under genuine
+    # concurrency: `asyncio.create_task` starts the three `_run_node` tasks in
+    # declaration order, but which one's `run_agent_attempt` activity the
+    # worker picks up first is timing-dependent and replays in *completion*
+    # order (spec § Technical Context). SC-001's claim is simultaneity, not
+    # sequence — the set is the contract, the order is not.
+    assert set(script.dispatched) == {"us1", "us2", "us3"}
+
+
+async def test_a_slot_is_refilled_the_moment_a_node_reaches_terminal(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-001: with the cap below the ready count, a slot frees the instant any
+    node reaches a terminal state and a new ready node takes it.
+
+    Cap 2 over three independent nodes: `us1` and `us2` start together, and
+    `us3` — which cannot start until a slot frees — must dispatch only after one
+    of them has finished. No moment may ever have more than two in flight.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=0.5
+    )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=2,
+    )
+
+    assert all(len(running) <= 2 for running in script.running_sets), (
+        f"more than two nodes in flight under a cap of 2: {script.running_sets}"
+    )
+    assert script.dispatched == ["us1", "us2", "us3"]
+    # us3's attempt started only after a slot freed — i.e. after us1 or us2
+    # reached a terminal state. Its running-set snapshot must show at most one
+    # of us1/us2 still in flight alongside it.
+    us3_snapshot = script.running_sets[2]
+    assert "us3" in us3_snapshot
+    assert len(us3_snapshot) <= 2
+
+
+async def test_elapsed_time_tracks_the_slowest_node_not_the_sum(
+    env: WorkflowEnvironment,
+) -> None:
+    """SC-001: a graph of N independent nodes with the cap at N elapses about
+    the slowest node, not the sum of all of them.
+
+    Three nodes each sleeping `agent_sleep_s` in parallel elapse ~one sleep; a
+    sequential scheduler would elapse ~three. The virtual clock is read from the
+    history's own event times, so the assertion is about the workflow's clock,
+    not about wall time.
+
+    The landing poll is taken out of the measurement (`poll_interval_s=0`) so the
+    floor is the agent work alone: the landing phase is a US3 concern, and its
+    60s default poll would swamp the one-second agent sleeps the test needs to
+    distinguish "the slowest" from "the sum". The same graph at cap 1 — run in a
+    second environment so the fixed `WORKFLOW_ID` does not collide — elapses the
+    sum, which is the contrast the claim turns on.
+    """
+    sleep_s = 1.0
+    instant_landing = LandingConfig(poll_interval_s=0)
+
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=sleep_s
+    )
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+        landing_config=instant_landing,
+    )
+    parallel_elapsed = _virtual_elapsed_s(await script.handle.fetch_history())
+
+    # Three sleeps in parallel ≈ one sleep; sequential would be ≈ three.
+    assert parallel_elapsed < 2.0 * sleep_s, (
+        f"parallel elapsed {parallel_elapsed:.2f}s looks like the sum of three "
+        f"{sleep_s}s sleeps, not the slowest one"
+    )
+
+    # The contrast: the same graph dispatched one at a time elapses the sum,
+    # which is what "tracks the slowest, not the sum" is the negation of. Run in
+    # its own environment because the fake agent queries the fixed WORKFLOW_ID.
+    sequential_env = await WorkflowEnvironment.start_time_skipping()
+    try:
+        sequential_script = ScriptedWorld(
+            all_passing(), client=sequential_env.client, agent_sleep_s=sleep_s
+        )
+        await run_epic(
+            sequential_env,
+            sequential_script,
+            graph=make_graph(_independent_three()),
+            max_concurrent_nodes=1,
+            landing_config=instant_landing,
+        )
+        sequential_elapsed = _virtual_elapsed_s(
+            await sequential_script.handle.fetch_history()
+        )
+    finally:
+        await sequential_env.shutdown()
+
+    assert sequential_elapsed > 2.5 * sleep_s, (
+        f"sequential elapsed {sequential_elapsed:.2f}s looks parallel — a cap of "
+        "1 should serialise three sleeps into ~the sum, not the slowest"
+    )
+    # The whole claim: parallel is markedly faster than sequential.
+    assert parallel_elapsed < sequential_elapsed - sleep_s
+
+
+async def test_cap_of_one_reproduces_todays_sequential_dispatch(
+    env: WorkflowEnvironment,
+) -> None:
+    """SC-002: with the cap at 1, dispatch order and observable state are
+    identical to today's sequential loop.
+
+    The chain-plus-leaf graph (`us1 → us2`, `us3` independent) is the shape that
+    distinguishes "declaration order" from "readiness": under a cap of 1, `us3` —
+    ready from the start — must still wait its turn behind `us1` and `us2`,
+    exactly as the sequential scheduler always did.
+    """
+    script = ScriptedWorld(all_passing(), client=env.client)
+
+    status = await run_epic(env, script, max_concurrent_nodes=1)
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
+    }
+    assert script.dispatched == ["us1", "us2", "us3"]
+    # Never more than one node in flight — the sequential loop's invariant.
+    assert all(len(running) <= 1 for running in script.running_sets), (
+        f"cap of 1 dispatched concurrently: {script.running_sets}"
+    )
+    # The in-flight observations match the sequential expectations: while us1
+    # runs, us2 and us3 are still PENDING.
+    during_us1 = states(script.observed["us1"])
+    assert during_us1["us1"] == NodeState.RUNNING
+    assert during_us1["us2"] == NodeState.PENDING
+    assert during_us1["us3"] == NodeState.PENDING
+
+
+async def test_no_node_is_dispatched_with_an_unmet_dependency_under_fan_out(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-003/SC-003: with several nodes in flight, a node whose dependency
+    fails is never dispatched — even while other nodes are mid-ladder.
+
+    `us1 → us2`, `us3` independent, cap 2. `us1` fails its gate; `us2` must never
+    dispatch (its dependency failed), while `us3` — independent — still runs.
+    The ready set is recomputed against current state every time a slot frees,
+    so a node whose dependency just failed cannot slip through the gap.
+    """
+    script = ScriptedWorld(
+        {"us1": [failing(1)], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        agent_sleep_s=0.3,
+    )
+
+    status = await run_epic(
+        env,
+        script,
+        graph=make_graph(chain_and_leaf()),
+        max_concurrent_nodes=2,
+    )
+
+    assert status.epic_state == EpicState.COMPLETED
+    # `us1` exhausted its ladder and the fail-safe escalation default (no
+    # operator press) ends it KILLED — the same terminal the sequential loop
+    # reaches for this script at any cap, so the fan-out has not changed the
+    # node's own outcome. The lock-out propagates KILLED to `us2`, whose edge
+    # is now dead.
+    assert states(status)["us1"] == NodeState.KILLED
+    assert states(status)["us2"] == NodeState.KILLED
+    assert states(status)["us3"] == NodeState.MERGED
+    # us2 never dispatched an agent — its dependency failed before it could.
+    assert "us2" not in script.dispatched
+    assert "us3" in script.dispatched
+
+
+async def test_replay_with_several_nodes_in_flight_dispatches_nothing_twice(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-004/SC-005: a worker restart with several nodes in flight re-derives
+    the epic and dispatches nothing twice.
+
+    The recorded history is replayed against the workflow code with no worker
+    attached; a scheduler that consulted a clock, a set's iteration order, or
+    anything outside the SDK's deterministic event loop fails here, and the
+    scripted world proves no activity ran a second time — no node re-dispatched,
+    no key re-issued.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=0.3
+    )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+    history = await script.handle.fetch_history()
+
+    before = list(script.calls)
+    keys_before = [(r.node_id, r.attempt) for r in script.key_requests]
+    attempts_before = len(script.attempts)
+
+    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+
+    assert script.calls == before
+    assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
+    assert len(script.attempts) == attempts_before
