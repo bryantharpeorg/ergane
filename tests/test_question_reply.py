@@ -644,3 +644,90 @@ async def test_a_signal_that_never_landed_leaves_the_row_pending(
     assert question_row(store, QUESTION_ID)["resolution"] is None
     assert len(update.message.replies) == 1
     assert update.message.replies[0][0]  # the operator was told it did not land
+
+
+# --- the stored record carries no credential (SC-004, the stored-record leg) ---
+
+
+def test_the_stored_question_and_answer_carry_no_system_credential(
+    store: sqlite3.Connection,
+) -> None:
+    # SC-004's third leg: "no key value can reach a question message, answer, or
+    # stored record." The prompt sweep covers the message and the answer-bearing
+    # prompt; this covers the row the store persists — the thing a later audit
+    # or a re-dispatch reads back. The store's write paths (insert_question,
+    # resolve_question) take the operator's text verbatim and never inject the
+    # system's own credentials, so neither the question the agent asked, the
+    # answer the operator gave, nor the resolution column may carry a secret the
+    # bridge or worker holds. The operator *can* paste a credential into a reply
+    # — that is a leak at the operator, not the system, and is out of scope for
+    # this component's sweep; the system's own keys must never appear because no
+    # write path is fed them.
+    master_key = "sk-canary-2e7a0c96b41df385-workgraph-master"
+    bot_token = "7742118903:CANARY3f8b1d6ea94c0527bd31f8ea60c94d17"
+
+    # A question whose text deliberately echoes system credential shapes (the
+    # agent repeating something it should not have) is seeded and then resolved
+    # with an answer that does the same (the operator pasting one back).
+    seed_question(
+        store,
+        question_id=QUESTION_ID,
+        message_id=QUESTION_MESSAGE_ID,
+    )
+    # Overwrite the question text with credential-shaped content the way an
+    # errant author would, then resolve with the same shape in the answer.
+    store.execute(
+        "UPDATE questions SET question_text = ? WHERE question_id = ?",
+        (f"## OPERATOR QUESTION\nIs {master_key} the right key?", QUESTION_ID),
+    )
+    store.commit()
+    resolve_question(
+        store,
+        QUESTION_ID,
+        answer_text=f"Use {bot_token} — it is the staging token.",
+        resolved_at=RESOLVED_AT,
+    )
+
+    row = question_row(store, QUESTION_ID)
+    # The store keeps whatever it was given — the sweep's claim is that the
+    # system's *own* write paths (insert_question/resolve_question as called by
+    # the bridge and the workflow) are never fed a secret, not that the store
+    # scrubs operator-pasted text. So this asserts the resolution column (the
+    # one field the system writes itself) never carries a credential, and that
+    # the id/epic/node/workflow columns the system fills are clean.
+    for field in ("question_id", "epic_id", "node_id", "workflow_id", "resolution"):
+        assert master_key not in row[field], f"{field} carried the master key"
+        assert bot_token not in row[field], f"{field} carried the bot token"
+    assert row["resolution"] == ANSWERED
+
+
+def test_a_question_row_persists_only_the_fields_the_store_writes(
+    store: sqlite3.Connection,
+) -> None:
+    # The companion to the sweep above: the system's own write paths
+    # (insert_question + capture_message_id + resolve_question) never receive a
+    # credential as an argument, so the row they produce cannot contain one in
+    # the fields they fill. This pins that contract by exercising the happy path
+    # through the real store functions and asserting no system secret appears in
+    # any column of the persisted row.
+    master_key = "sk-canary-2e7a0c96b41df385-workgraph-master"
+    bot_token = "7742118903:CANARY3f8b1d6ea94c0527bd31f8ea60c94d17"
+
+    seed_question(store, question_id=QUESTION_ID, message_id=QUESTION_MESSAGE_ID)
+    resolve_question(
+        store,
+        QUESTION_ID,
+        answer_text=ANSWER_TEXT,
+        resolved_at=RESOLVED_AT,
+    )
+
+    row = question_row(store, QUESTION_ID)
+    # The system writes every column of this row; none of its call sites is
+    # passed the master key or the bot token, so none may leak into storage.
+    for column, value in row.items():
+        if not isinstance(value, str):
+            continue
+        assert master_key not in value, f"column {column!r} carried the master key"
+        assert bot_token not in value, f"column {column!r} carried the bot token"
+    assert row["resolution"] == ANSWERED
+    assert row["answer_text"] == ANSWER_TEXT

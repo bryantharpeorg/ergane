@@ -605,6 +605,48 @@ through `notify.messages`. The landing escalation is the *escalation* form (`RET
 `PAUSE_EPIC` inline buttons); the manual-intervention notice is the *notice* form
 (no buttons — a fact to be told, not a decision to be asked).
 
+### The operator-question channel (008)
+
+Escalations are **button presses**: a small fixed enum (`RETRY`/`KILL`/`PAUSE_EPIC`) that
+cannot carry free text. When an agent's final message ends in a `## OPERATOR QUESTION`
+marker, it is asking something a button cannot answer, so a **sibling channel** carries
+the question out and the free-text reply back (spec 008, US1+US2). The two share the
+bridge and the store's discipline (row-before-send, signal-before-resolve, expire as the
+backstop) but never touch the `escalations` table: a free-text answer has nowhere to live
+in a CHECK-pinned enum, so a sibling `questions` table holds it.
+
+- **The question path (US1).** The agent's `## OPERATOR QUESTION` marker is detected from
+  the attempt's final message — the one agent-authored signal permitted to reach node
+  state (D-018/FR-012 amendment, FR-010), and the only thing it can do is **park** the
+  node `WAITING_OPERATOR` and page the operator: it never produces, influences, or
+  substitutes for a verdict. `send_question` inserts the `questions` row *before* the
+  Telegram message goes (R11), the node task parks on
+  `wait_condition(question_id in answers, timeout=8h)`, and the scheduler pauses new
+  dispatch while one of its nodes is parked. An answered question costs **no ladder
+  slot**: the QUESTION attempt `continue`s before appending to `record.history`, so
+  `_attempts_spent` naturally excludes it — the next attempt is the same attempt number,
+  now carrying the answer.
+- **The answer path (US2).** The `CallbackBridge.handle_reply` turn threads a free-text
+  reply back to the question by the Telegram `reply_to_message_id` (FR-008) — routing by
+  id, never by recency — and signals `question_answered(question_id, answer_text)` to the
+  waiting workflow, verbatim, *before* the guarded `resolve_question` UPDATE settles the
+  race against the question's own 8h expiry (FR-004). The workflow un-parks, builds the
+  next attempt's prompt with a dedicated `## Operator answer` section distinct from the
+  `## Prior attempt evidence` the marker rode in on, and re-dispatches — same attempt
+  number, full ceiling intact.
+- **Expiry as FAIL (FR-004).** A question nobody answers does not park the node forever:
+  the 8h `wait_condition` timeout fires, `expire_question` makes the store transition,
+  and the workflow appends a FAIL `AttemptRecord` to `record.history` so the expired
+  question **does** consume a slot — the unanswered question is reclassified as a burned
+  FAIL, and the ladder proceeds. The node un-parks and the epic resumes without operator
+  action (SC-003).
+- **Credentials.** The operator-answer section reproduces the agent's question and the
+  operator's reply verbatim, so SC-004 extends the credential sweep to the answer-bearing
+  prompt and to the stored `questions` row: no system key value (master key, bot token,
+  virtual key) reaches a question message, an answer, or a stored record. The bot token is
+  read from the worker environment inside the send activity only — never in inputs,
+  results, rows, or logs (001/D-022 discipline, extended to the question channel).
+
 ## 10. Security notes
 
 - Master key: worker-host env only; activities redact it from errors; never in Temporal

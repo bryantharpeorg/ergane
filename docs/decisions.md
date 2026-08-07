@@ -453,3 +453,73 @@ running child, parked findings, the pause flag, attested-vs-observed landings
 (`landed_kind`/`satisfied_as`, FR-003's two kinds), and the bound in force.
 Terminating the roadmap never terminates a child in flight (`parent_close_policy`
 ABANDON, SC-004) — the child survives and finishes under its own contract.
+
+## D-032 · The operator-question channel: a free-text sibling to the button escalation (decided)
+
+Decided 2026-08-06 (Bryan), recorded at epic 008's US2 landing. Escalations
+(§9) are button presses — a small fixed enum (`RETRY`/`KILL`/`PAUSE_EPIC`)
+that cannot carry free text. When an agent's final message ends in a
+`## OPERATOR QUESTION` marker it is asking something a button cannot answer,
+so a **sibling channel** carries the question out and the free-text reply back.
+The two were the two live shapes: send the question as a Telegram message and
+answer into the *next* attempt's prompt (v0 — US1+US2), or keep the asking
+attempt alive and ferry the answer back into the same process (v1 — US3).
+
+1. **v0 first; v1 explicitly deferred behind it.** The bridge, the expiry
+   semantics, and the retry-feedback prompt slot all exist, so v0 is nearly pure
+   reuse; the ferry adds adapter machinery whose value depends on how often
+   questions actually occur — a frequency nobody has measured yet, one live
+   occurrence in. A fresh dispatch carrying the answer recovers everything
+   except warm process context, and warm context is worth paying for only if
+   questions turn out to be common. US3 is the optional v1 optimization,
+   sequenced behind 006-US1's monitor-loop changes so the two features edit the
+   adapter's loop sequentially.
+2. **A sibling `questions` table, not the `escalations` table.** The
+   escalations `resolution` is CHECK-pinned to `RETRY`/`KILL`/`PAUSE_EPIC`/
+   `EXPIRED`; a free-text answer has nowhere to live in a pinned enum, which is
+   the whole reason the sibling table exists. The two channels share the
+   bridge's discipline (row-before-send, signal-before-resolve, expire as the
+   backstop) and never touch each other's table.
+3. **Routing by message id, never by recency (FR-008).** A free-text reply threads
+   back to the question by the Telegram `reply_to_message_id` the send returned,
+   not to the most recent open question. With two questions open, recency would
+   route a reply to the wrong one regardless of the thread; the message id is
+   the one fact about a question that can only be known after Telegram accepts
+   it, and it is the reply-routing key.
+
+The answer reaches the next attempt verbatim under a dedicated `## Operator
+answer` prompt section, distinct from the `## Prior attempt evidence` the marker
+rode in on, and an answered question costs **no ladder slot**: the QUESTION
+attempt breaks the ladder loop before appending to `record.history`, so
+`_attempts_spent` excludes it — the next attempt is the same attempt number,
+now carrying the answer. An unanswered question expires (default 8h) and is
+reclassified as a burned FAIL that *does* consume a slot, so the node un-parks
+and the epic finishes without operator action (SC-003).
+
+## D-033 · One hole in FR-012 — the QUESTION marker parks, never grades (decided)
+
+Decided 2026-08-07 (Bryan), recorded at epic 008's US2 landing (FR-010). D-018
+keeps `AdapterResult` narrow and FR-012 forbids any agent-reported signal from
+reaching node state — the rule that stops an agent from grading itself, and the
+reason `transcript_path` is documented as "evidence, never an input to a
+decision." A question marker read out of the agent's final message **is** an
+agent-authored signal reaching state, and this decision does not pretend
+otherwise: it amends the rule with the narrowest possible hole rather than
+routing around it.
+
+1. **Exactly one signal exists, with exactly one effect.** The `## OPERATOR
+   QUESTION` marker is the one agent-authored signal that may reach node state,
+   and its only possible effect is to park the node `WAITING_OPERATOR` and page
+   the operator. It can never produce, influence, or substitute for a verdict:
+   gates and judge are not consulted for a QUESTION attempt because there is
+   nothing to grade, and a marker on an attempt that *also* claims completion
+   changes nothing about how that completion is judged.
+2. **The distinction that keeps the rule's purpose intact.** FR-012 exists to
+   stop agents from awarding themselves outcomes, and "I cannot proceed without
+   the operator" awards nothing — it is the one statement whose truth the
+   speaker is the sole authority on. The hole is scoped to that statement and
+   nothing wider: park-only, never a verdict.
+
+See spec 008 § "Decision: one hole in FR-012" for the surfaced reasoning; this
+entry claims the D-number at landing, as 008's spec said it would ("this spec
+claims two entries at landing: the channel itself, and the FR-012 amendment").
