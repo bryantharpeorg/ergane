@@ -52,7 +52,11 @@ and assert the history event count is within a constant of a one-minute attempt.
    **Then** it carries an explicit NULL spend rather than a fabricated zero (001
    FR-005 preserved), or the last measured figure if one is available at no history cost.
 4. **Given** an epic status query mid-attempt, **When** the operator asks, **Then**
-   spend visibility is no worse than today for the operator's purposes.
+   spend visibility is no worse than today for the operator's purposes — satisfied
+   at the status CLI, which reads the newest heartbeat snapshot off the running
+   activity via `describe()` and renders it beside the epic's internal state; no
+   workflow change, no history events (mechanism decided 2026-08-07, after
+   attempt 2 deleted the poll without a replacement and the judge caught it).
 
 ---
 

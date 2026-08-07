@@ -166,6 +166,23 @@ Delivery to teardown, all three paths:
 `poll_usage` stays a registered activity — 001 owns it and the judge path has no poller —
 but the workflow no longer schedules it per interval.
 
+**S4's mechanism — mid-attempt visibility moves to the CLI (decided by the
+operator 2026-08-07, after attempt 2's RETRY on exactly this)**: deleting the
+poll deletes the only thing that updated `record.last_snapshot` mid-attempt, so
+US1-S4 needs a replacement, and the replacement must not reintroduce history
+events. Do NOT try to read heartbeat details from inside the workflow —
+`workflow.info()` has no pending-activity accessor in the installed SDK
+(verified 2026-08-07; attempt 2's judge feedback suggested
+`workflow.info().pending_activity_info()`, which does not exist). The mechanism
+is the US5 pattern one step further: `status_command` already holds a client and
+a workflow handle, and `describe()`'s
+`raw_description.pending_activities[*].heartbeat_details` carries the newest
+`UsageSnapshot` payload the adapter publishes on every beat (field verified
+against the installed SDK; the CLI's client decodes it with its data converter —
+T004 already proves the payload round-trips). The CLI merges it into both
+renderings beside the epic's internal state; the query payload stays a dump
+(US5's sibling-key discipline). Zero history events, zero workflow change.
+
 **The trap**: `_teardown` is reached from several call sites (`workflow.py:717`, `:746`)
 that each pass `record.last_snapshot`. If any path stops populating that field, teardown
 silently records NULL and the ledger quietly loses a dollar figure — a regression no

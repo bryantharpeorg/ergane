@@ -78,6 +78,19 @@ assert its history event count is within a small constant of a one-minute attemp
       path, and on the kill path take the snapshot from the KILLED `AdapterResult` the
       adapter now returns (T005(c) decision), until T005 and T006 pass. `poll_usage` stays registered — 001 owns
       it and the judge path has no poller — it is simply no longer scheduled per interval.
+- [ ] T009a [US1] Write `tests/test_epic_cli.py` cases FIRST (US1-S4): with an
+      attempt in flight, `factory-epic status` renders the newest heartbeat
+      snapshot's spend read from `describe()`'s pending-activity heartbeat
+      details, in human and `--json` output, beside the epic's internal state;
+      with no beating activity or no snapshot yet, status renders exactly
+      today's view; a failing describe read never breaks status (visibility is
+      best-effort; the query's document stays the authority) — must fail.
+- [ ] T009b [US1] Implement the describe-side read in `factory/workgraph/cli.py`
+      `status_command` until T009a passes. Decode with the client's data
+      converter (T004 proves the payload round-trips). Never read heartbeat
+      details inside the workflow — `workflow.info()` has no pending-activity
+      accessor in the installed SDK (verified 2026-08-07); plan § US1 records
+      the mechanism decision.
 - [ ] T010 [US1] Correct `TeardownInput.last_snapshot`'s docstring in
       `factory/activities/usage_activities.py`: it no longer describes a polled value, and
       leaving that sentence is a lie the next reader inherits. State that a NULL spend now
