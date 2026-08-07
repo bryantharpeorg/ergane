@@ -62,11 +62,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Optional
 
 import pytest
+from temporalio.converter import DataConverter
 
-from factory.usage.models import Termination
+from factory.usage.models import Termination, UsageSnapshot
 from factory.workgraph.adapter import (
     STDOUT_LOG_NAME,
     AdapterError,
@@ -812,9 +813,161 @@ async def test_the_adapter_beats_while_it_waits(
     result = await adapter.run_attempt(
         attempt(),
         factory_root=factory_root,
-        heartbeat=lambda: beats.append(1),
+        heartbeat=lambda _snapshot: beats.append(1),
         heartbeat_interval_s=0.05,
     )
 
     assert result.termination == Termination.COMPLETED
     assert len(beats) >= 3, f"expected repeated beats over a 1s run, got {len(beats)}"
+
+
+# --- US1: the heartbeat carries the usage snapshot ----------------------------
+#
+# Observation moves inside the adapter (plan US1): the monitor beats once per
+# `heartbeat_interval_s` and reads the proxy once per `poll_interval_s`, carrying
+# the newest snapshot (or `None` before any reading exists) as the heartbeat's
+# details. The heartbeat signature gains the snapshot, and the usage read is a
+# callable the adapter is handed — failure-isolated so a dead spend read can
+# never kill liveness (the beat still fires).
+
+
+def _usage_snapshot(spend: float = 1.25) -> UsageSnapshot:
+    return UsageSnapshot(spend_usd=spend, captured_at="2026-08-05T09:31:00Z")
+
+
+async def test_the_heartbeat_carries_none_then_a_snapshot(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """Before the first successful read the beat carries `None`; after it, the
+    snapshot — so teardown's fallback can tell "never measured" from "measured".
+
+    The first beat fires one `heartbeat_interval_s` in, before the first read
+    (`poll_interval_s`) has completed, so it is necessarily `None`; every later
+    beat carries the reading once one exists.
+    """
+    write_control(fake_home, sleep_s=0.4)
+    seen: list[UsageSnapshot | None] = []
+
+    async def read_usage() -> UsageSnapshot:
+        return _usage_snapshot()
+
+    result = await adapter.run_attempt(
+        attempt(),
+        factory_root=factory_root,
+        heartbeat=seen.append,
+        heartbeat_interval_s=0.02,
+        poll_interval_s=0.1,
+        read_usage=read_usage,
+    )
+
+    assert result.termination == Termination.COMPLETED
+    assert seen[0] is None, "the first beat predates any usage reading"
+    assert any(isinstance(s, UsageSnapshot) for s in seen), (
+        "no beat ever carried a snapshot once a reading existed"
+    )
+
+
+async def test_a_failing_usage_read_leaves_the_previous_snapshot_and_still_beats(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """A spend read that raises keeps the previous snapshot in place and never
+    kills the beat: liveness and spend share one channel, and spend must not be
+    able to kill liveness (plan US1).
+
+    The first read succeeds; every subsequent one fails. Beats after the first
+    failed read must still fire and must still carry the first snapshot — the
+    number that was true a beat ago, not `None` (constitution V).
+    """
+    write_control(fake_home, sleep_s=0.4)
+    seen: list[UsageSnapshot | None] = []
+    calls = {"n": 0}
+
+    async def read_usage() -> UsageSnapshot:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _usage_snapshot()
+        raise RuntimeError("proxy unreachable")
+
+    result = await adapter.run_attempt(
+        attempt(),
+        factory_root=factory_root,
+        heartbeat=seen.append,
+        heartbeat_interval_s=0.02,
+        poll_interval_s=0.05,
+        read_usage=read_usage,
+    )
+
+    assert result.termination == Termination.COMPLETED
+    assert calls["n"] > 1, "expected more than one usage read over the run"
+    assert len(seen) >= 3, f"a failing read killed the beat; got {len(seen)} beats"
+    assert seen[-1] == _usage_snapshot(), (
+        "a failing read discarded the previous snapshot and beat carried None"
+    )
+
+
+async def test_the_proxy_is_read_at_most_once_per_poll_interval(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """The proxy is read once per `poll_interval_s`, whatever the beat interval.
+
+    The beat is what makes an attempt cancellable and may fire many times per
+    proxy read; the read is a proxy round trip and is throttled to its own, much
+    slower cadence (plan US1). A beat that outnumbers reads proves the read is
+    bounded independently of the beat.
+    """
+    write_control(fake_home, sleep_s=0.4)
+    beats: list[UsageSnapshot | None] = []
+    calls = {"n": 0}
+
+    async def read_usage() -> UsageSnapshot:
+        calls["n"] += 1
+        return _usage_snapshot()
+
+    result = await adapter.run_attempt(
+        attempt(),
+        factory_root=factory_root,
+        heartbeat=beats.append,
+        heartbeat_interval_s=0.01,
+        poll_interval_s=0.1,
+        read_usage=read_usage,
+    )
+
+    assert result.termination == Termination.COMPLETED
+    # ~0.4s at one read per 0.1s is at most 4-5 reads, against ~40 beats.
+    assert calls["n"] <= 5, f"proxy read not bounded by poll_interval: {calls['n']} reads"
+    assert len(beats) > calls["n"], (
+        "the proxy was read at least as often as the beat fired; "
+        "the read cadence is not independent of the beat"
+    )
+
+
+# --- US1: the heartbeat payload round-trips the data converter -----------------
+#
+# The snapshot rides the activity's heartbeat, whose payload crosses Temporal's
+# data converter both ways. A payload that fails to serialise degrades the beat
+# to liveness-only *silently* (plan US1), so the round-trip is asserted directly
+# rather than inferred — a beat that still fires but carries nothing would pass
+# every liveness test and fail teardown's fallback.
+
+
+async def test_the_heartbeat_payload_round_trips_the_default_data_converter() -> None:
+    """`UsageSnapshot | None`, as carried on the heartbeat, survives Temporal's
+    default converter unchanged — the value teardown falls back to when the
+    proxy is unreadable must be the value that was measured, not a serialised
+    ghost of it."""
+    payloads = await DataConverter.default.encode([_usage_snapshot(), None])
+    decoded = await DataConverter.default.decode(
+        payloads, [UsageSnapshot, Optional[UsageSnapshot]]
+    )
+
+    assert decoded[0] == _usage_snapshot()
+    assert decoded[1] is None
