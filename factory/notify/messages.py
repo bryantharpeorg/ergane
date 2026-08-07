@@ -290,7 +290,13 @@ def _render_attempt(result: VerificationResult) -> str:
 def _gate_line(gate: GateResult) -> str:
     status = _value(gate.status)
     exit_code = "no exit" if gate.exit_code is None else f"exit {gate.exit_code}"
-    return f"  gate {gate.name}: {status} ({exit_code}, {gate.duration_s:.1f}s)"
+    line = f"  gate {gate.name}: {status} ({exit_code}, {gate.duration_s:.1f}s)"
+    # The contention marker (007 FR-005): a non-zero count says this gate ran
+    # alongside neighbours, so a slow verdict is auditable in the escalation
+    # message an operator actually reads — not only in the evidence store.
+    if gate.concurrent_gates:
+        line += f" [contended: {gate.concurrent_gates} peer(s)]"
+    return line
 
 
 def _output_check_line(check: OutputCheck) -> str:

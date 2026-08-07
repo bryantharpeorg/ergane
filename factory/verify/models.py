@@ -213,6 +213,15 @@ class GateResult:
     its deadline (TIMEOUT) or never ran (CONFIG_ERROR, where `name` is `config`).
     `output_tail` is the last ≤32 KiB of combined stdout+stderr, and it is
     load-bearing: the retry prompt quotes it verbatim (FR-006, SC-004).
+
+    `concurrent_gates` is the contention marker (007 FR-005): how many *other*
+    gate executions were in flight when this one ran. Zero means the gate had
+    the host's gate budget to itself — its verdict cannot have moved with
+    neighbour load. A non-zero count means it ran alongside peers, so a slow
+    verdict is auditable: an operator reading the evidence sees whether load
+    was a fact about this run rather than having to guess. The default of zero
+    keeps every caller that predates fan-out honest — an uncontended gate is
+    the only kind a sequential loop ever produced.
     """
 
     name: str
@@ -221,6 +230,7 @@ class GateResult:
     exit_code: int | None
     duration_s: float
     output_tail: str
+    concurrent_gates: int = 0
 
 
 # Diff/artifact entities -----------------------------------------------------
