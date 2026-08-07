@@ -3403,7 +3403,15 @@ async def test_a_slot_is_refilled_the_moment_a_node_reaches_terminal(
     assert all(len(running) <= 2 for running in script.running_sets), (
         f"more than two nodes in flight under a cap of 2: {script.running_sets}"
     )
-    assert script.dispatched == ["us1", "us2", "us3"]
+    # Under genuine concurrency the dispatch order of the first two is timing-
+    # dependent (the set is the contract, not the sequence — see
+    # `test_all_ready_nodes_are_in_flight_at_once_up_to_the_cap`), so only the
+    # cap-induced ordering is asserted: `us3` — which cannot start until a slot
+    # frees — dispatches after one of `us1`/`us2` has reached a terminal state.
+    assert set(script.dispatched) == {"us1", "us2", "us3"}
+    assert script.dispatched.index("us3") > min(
+        script.dispatched.index("us1"), script.dispatched.index("us2")
+    )
     # us3's attempt started only after a slot freed — i.e. after us1 or us2
     # reached a terminal state. Its running-set snapshot must show at most one
     # of us1/us2 still in flight alongside it.
