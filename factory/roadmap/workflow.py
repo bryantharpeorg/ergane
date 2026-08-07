@@ -72,7 +72,7 @@ from typing import Any, Callable
 
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
-from temporalio.exceptions import ApplicationError
+from temporalio.exceptions import ApplicationError, FailureError
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
@@ -383,47 +383,74 @@ class RoadmapWorkflow:
                 self._roadmap, landed_for=self._observed_resolver()
             )
             # Dispatchable, in spec-directory order, excluding specs already
-            # running or parked this run. Lexicographic order is `read_roadmap`'s
-            # sorted order, which the numbered directories make the declared
-            # order (FR-005, acceptance 5).
+            # running, parked, or observed this run. A spec whose child has
+            # concluded is recorded in `_landed` (landed or finished-but-not-
+            # landed); neither re-dispatches — a landed spec is done, and a
+            # finished-but-not-landed spec's dependents stay blocked by
+            # acceptance 4 (the line does not retry it forever, FR-006).
+            # Lexicographic order is `read_roadmap`'s sorted order, which the
+            # numbered directories make the declared order (FR-005, acceptance 5).
             dispatchable = [
                 entry
                 for entry in self._roadmap.entries
                 if readiness.spec(entry.spec_dir).dispatchable
                 and entry.spec_dir not in self._children
                 and entry.spec_dir not in self._parked
+                and entry.spec_dir not in self._landed
             ]
 
             # Capacity: count every open epic-* workflow (the roadmap's own
             # children plus any operator-started epic), then fill free slots.
             # One read per pass, triggered by a completion — never an interval
             # poll (FR-004).
-            free = request.max_concurrent_epics
+            free = 0
             if dispatchable:
                 open_result = await workflow.execute_activity(
                     count_open_epics, CountOpenInput(), **_FAST
                 )
                 free = request.max_concurrent_epics - len(open_result.open_ids)
+                # Dispatch in declaration order up to the free slots. A spec
+                # that parks inside `_dispatch` consumes no slot, so the loop
+                # below re-reads capacity and reaches the next dispatchable spec
+                # in the same run — one bad spec never stalls the line (FR-006).
                 for entry in dispatchable[: max(0, free)]:
                     await self._dispatch(entry, request)
 
-            if not self._children:
-                # Quiescence: nothing dispatchable, nothing in flight. US2
-                # returns; US3 will continue-as-new here instead.
-                break
+            if self._children:
+                # Wait for any child to complete — the event that wakes the
+                # scheduler (FR-004). Reap finished children, record their landed
+                # status, and loop to recompute readiness against the new facts.
+                await workflow.wait_condition(
+                    lambda: any(handle.done() for handle in self._children.values())
+                )
+                for spec_dir, handle in list(self._children.items()):
+                    if not handle.done():
+                        continue
+                    del self._children[spec_dir]
+                    # `result()` is a non-async accessor on a workflow future —
+                    # the sandbox resolves the child's return value into it, so
+                    # awaiting it raises (an `EpicStatus` is not awaitable). The
+                    # `done()` guard above makes the value available now.
+                    status: EpicStatus = handle.result()
+                    self._landed[spec_dir] = self._landed_status_for(status)
+                continue
 
-            # Wait for any child to complete — the event that wakes the
-            # scheduler (FR-004). Reap finished children, record their landed
-            # status, and loop to recompute readiness against the new facts.
-            await workflow.wait_condition(
-                lambda: any(handle.done() for handle in self._children.values())
-            )
-            for spec_dir, handle in list(self._children.items()):
-                if not handle.done():
-                    continue
-                del self._children[spec_dir]
-                status: EpicStatus = await handle.result()
-                self._landed[spec_dir] = self._landed_status_for(status)
+            # No child is in flight. If free capacity exists and a dispatchable
+            # spec remains un-tried (one that parked a slot-free refusal above
+            # but left others, or the bound held the rest), loop to reach it;
+            # if capacity is zero we cannot make progress this run (every slot
+            # is held by an epic the roadmap cannot observe completing), so we
+            # stop rather than spin. Otherwise nothing is dispatchable and
+            # nothing is in flight — quiescence (US2 returns; US3 will
+            # continue-as-new here instead).
+            if free > 0 and any(
+                entry.spec_dir not in self._parked
+                and entry.spec_dir not in self._landed
+                and entry.spec_dir not in self._children
+                for entry in dispatchable
+            ):
+                continue
+            break
 
         return self.roadmap_status()
 
@@ -441,13 +468,17 @@ class RoadmapWorkflow:
         child_workflow_id = _epic_id_for(spec_dir)
 
         # 1. Fresh clone at the current default branch (FR-006, acceptance 1).
+        # A git failure surfaces as an `ActivityError` (a `FailureError`, not an
+        # `ApplicationError`), so the catch is the `FailureError` base — a clone
+        # that cannot be refreshed parks the spec rather than failing the
+        # roadmap (FR-006: one bad spec must not stall the line).
         try:
             await workflow.execute_activity(
                 clone_target,
                 CloneInput(target_repo=request.target_repo, spec_dir=spec_dir),
                 **_GIT,
             )
-        except ApplicationError as exc:
+        except FailureError as exc:
             self._park(spec_dir, "clone", str(exc))
             return
 
@@ -470,7 +501,10 @@ class RoadmapWorkflow:
                 ),
                 **_FAST,
             )
-        except ApplicationError as exc:
+        except FailureError as exc:
+            # The derive activity re-raises a `DerivationError` as a
+            # non-retryable `ApplicationError` (a `FailureError`), so the
+            # refusal's verbatim message is what parks the spec (FR-006).
             self._park(spec_dir, "derive", _derivation_detail(exc))
             return
 
@@ -518,9 +552,10 @@ class RoadmapWorkflow:
                 parent_close_policy=ParentClosePolicy.ABANDON,
                 id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
             )
-        except ApplicationError as exc:
-            # A running collision under the child's id: park with the collision
-            # named, never adopt the running epic (T011).
+        except FailureError as exc:
+            # A running collision under the child's id surfaces as a
+            # `WorkflowAlreadyStartedError` (a `FailureError`): park with the
+            # collision named, never adopt the running epic (T011).
             self._park(spec_dir, "collision", str(exc))
             return
         self._children[spec_dir] = handle
@@ -570,13 +605,19 @@ class RoadmapWorkflow:
 # --- finding renderers (the verbatim-in-parked-finding discipline) ------------
 
 
-def _derivation_detail(exc: ApplicationError) -> str:
+def _derivation_detail(exc: FailureError) -> str:
     """The deriver's rejection, verbatim — the `DerivationError` message.
 
-    The activity wraps a `DerivationError` in an `ApplicationError`; the
-    workflow parks the spec with the deriver's message so the operator is told
-    which spec and which rejection, not "activity failed".
+    The activity wraps a `DerivationError` in a non-retryable
+    `ApplicationError`, which Temporal wraps again into an `ActivityError`
+    whose own message is the generic "Activity task failed". The verbatim
+    rejection rides on the inner cause (the same discipline the workgraph
+    workflow uses to surface `resolve_graph`'s `GRAPH_INVALID` message), so the
+    parked finding names the rejection — not "activity failed" (FR-006).
     """
+    inner = exc.cause
+    if isinstance(inner, ApplicationError):
+        return inner.message or str(exc)
     return str(exc)
 
 

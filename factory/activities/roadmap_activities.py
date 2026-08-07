@@ -157,14 +157,26 @@ async def derive_spec(request: DeriveInput) -> WorkGraph:
     read files, so derivation — which a spec that does not compile refuses —
     runs as an activity whose `DerivationError` the workflow catches and parks
     verbatim (FR-006). Returns the compiled `WorkGraph` on success.
+
+    A `DerivationError` is a *deterministic* refusal (a spec that does not
+    compile the same way every time), so it is re-raised as a non-retryable
+    `ApplicationError` — the workflow parks it on the first attempt rather than
+    retrying a refusal that cannot change (and the activity's retry policy
+    would otherwise burn three attempts before the workflow ever saw it). The
+    workflow reads the original message off the `ApplicationError` verbatim.
     """
-    return derive_workgraph(
-        request.spec_text,
-        epic_id=request.epic_id,
-        feature=request.feature,
-        specs_root=request.specs_root,
-        target_repo=request.target_repo,
-    )
+    try:
+        return derive_workgraph(
+            request.spec_text,
+            epic_id=request.epic_id,
+            feature=request.feature,
+            specs_root=request.specs_root,
+            target_repo=request.target_repo,
+        )
+    except DerivationError as exc:
+        from temporalio.exceptions import ApplicationError
+
+        raise ApplicationError(str(exc), non_retryable=True, type="DerivationError")
 
 
 # --- preflight: the shared alias checks behind the proxy seam -----------------

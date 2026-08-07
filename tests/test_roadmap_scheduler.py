@@ -30,7 +30,7 @@ from typing import Any, AsyncIterator, Callable
 
 import pytest
 from temporalio.testing import WorkflowEnvironment
-from temporalio.worker import Worker
+from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
 from factory.activities import roadmap_activities
 from factory.activities.roadmap_activities import CloneResult
@@ -335,6 +335,23 @@ async def run_roadmap(
             task_queue="workgraph",
             workflows=[RoadmapWorkflow, ScriptedEpicWorkflow],
             activities=activities,
+            # The scripted `EpicWorkflow` reads its prescribed statuses and
+            # dispatch hooks from the module-level `_SCRIPT` (in
+            # `tests/roadmap_script.py`). The default sandboxed runner re-imports
+            # that module into an isolated namespace, so a fresh `_Script()` is
+            # born inside the sandbox and the test's mutations to the *outer*
+            # `_SCRIPT` never reach it — every child would return the default
+            # landed status and `on_dispatch`/`on_complete` would never fire.
+            # The unsandboxed runner executes the workflow functions against the
+            # worker process's own modules, so `_SCRIPT` is the one object the
+            # test mutates. The real `RoadmapWorkflow` is unaffected: it is
+            # deterministic and side-effect-free in workflow code either way, so
+            # running it unsandboxed changes nothing the scheduler tests observe.
+            # (The established `ScriptedWorld` pattern in `test_interpreter.py`
+            # avoids this by scripting *activities* — whose inputs are
+            # serialized across the boundary — rather than a workflow; the
+            # roadmap's child is a workflow, so it needs the shared state.)
+            workflow_runner=UnsandboxedWorkflowRunner(),
         ):
             handle = await env.client.start_workflow(
                 RoadmapWorkflow.run,
