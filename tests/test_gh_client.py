@@ -133,7 +133,7 @@ def test_nonzero_exit_is_classified_not_crashed(
 ) -> None:
     gh = FakeGh()
     gh.expect(
-        "pr", "merge", "7", "--auto", "--squash",
+        "pr", "merge", "7", "--auto",
         stderr=stderr, returncode=exit_code,
     )
     client = GhClient(runner=gh, repo=TARGET_CLONE)
@@ -148,7 +148,7 @@ def test_refused_carries_the_stderr_tail() -> None:
     """GH_REFUSED is actionable — it quotes the last of what `gh` refused with."""
     gh = FakeGh()
     gh.expect(
-        "pr", "merge", "7", "--auto", "--squash",
+        "pr", "merge", "7", "--auto",
         stderr="gh: error: merge queue is disabled for this repository",
         returncode=1,
     )
@@ -181,16 +181,18 @@ def _raising_runner(argv, cwd):  # type: ignore[no-untyped-def]
 def test_the_only_merge_form_is_auto_or_disable_auto() -> None:
     """No direct merge ever: enqueue is `--auto`, kill cleanup is `--disable-auto`."""
     gh = FakeGh()
-    gh.expect("pr", "merge", "7", "--auto", "--squash")
+    gh.expect("pr", "merge", "7", "--auto")
     gh.expect("pr", "merge", "7", "--disable-auto")
     client = GhClient(runner=gh, repo=TARGET_CLONE)
 
     client.enqueue_pr(7, merge_method="squash")
     client.disable_auto_merge(7)
 
+    # Flagless: a queue-ruleset branch owns its merge method (proved live
+    # 2026-08-07 — gh refuses the strategy flag on queue-governed branches).
     merge_forms = [c.args for c in gh.calls]
     assert merge_forms == [
-        ("pr", "merge", "7", "--auto", "--squash"),
+        ("pr", "merge", "7", "--auto"),
         ("pr", "merge", "7", "--disable-auto"),
     ]
 
