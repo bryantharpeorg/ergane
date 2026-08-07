@@ -410,3 +410,46 @@ is a consequence, not a separate mechanism: `epic_status` was already a per-node
 document, so the renderer's only widening was attributing each pending
 `run_agent_attempt`'s heartbeat to the node its `activity_id` names rather than to
 "the" running node — the cap is what makes several of those pending at once.
+
+## D-031 · 009 supersedes D-002's "one workflow" — the roadmap scheduler is the factory's second workflow type (decided)
+
+Decided 2026-08-07 (Bryan), recorded at epic 009's US3 landing. D-002 named a
+single generic WorkGraph interpreter the factory's one workflow; 009 adds the
+roadmap scheduler, so the factory now has two workflow types and D-002's "one"
+no longer holds. The decision to record is the supersession itself, and the
+two naming questions it settles.
+
+1. **D-002 is superseded on the count, not the architecture.** The epic remains
+   the unit of work and `EpicWorkflow` remains the generic interpreter D-002
+   specified — `RoadmapWorkflow` dispatches dispatchable specs *as* child
+   `EpicWorkflow` runs, ABANDON on parent close (SC-004), so the roadmap is a
+   scheduler one level above the interpreter, not a replacement for it. D-002's
+   "one generic WorkGraph interpreter" is still true of the epic; what changed is
+   that it is no longer the only workflow type. The worker registers both names
+   (`WORKFLOWS = [EpicWorkflow, RoadmapWorkflow]`) because Temporal dispatches by
+   name over the one queue.
+2. **The bound is `max_concurrent_epics`, not `max_workers` or `max_requests`.**
+   "Worker" names the Temporal worker *process* (D-030's precedent one level
+   down), so a `max_workers` knob collides with that meaning. "Request" is the
+   D-021 trap — children are *dispatches*/*children*, never *requests* — and the
+   knob never branches on `cost` or `tokens`. The thing bounded is the count of
+   in-flight child epics, so the name says what it counts. It defaults to `1`
+   (fan-out is opt-in), is validated in the workflow (a positive integer; `0`,
+   negatives, and bools rejected, never coerced), and rides the carry-over across
+   continue-as-new.
+
+Continue-as-new (FR-007) fires at quiescence — zero children open, after a child
+concluded this run — carrying the run's state in an explicit `RoadmapCarryOver`
+input (landed, parked, promotions, paused, the bound). The boundary is safe only
+at that moment: no completion event can be lost across it because no child is in
+flight, and the new run restores the carry-over and re-reads everything else —
+which is what makes "a restart re-reads the world and does not double-dispatch"
+true for free. The operator surface (FR-008) models the epic's one level up:
+`pause_roadmap` parks dispatch between epics (the in-flight child finishes),
+`resume_roadmap` releases it, `promote_spec` treats a named draft as ready on the
+next pass (the file remains the authority of record; the signal covers the gap
+until its next edit), and `roadmap_status` reports every spec's state, the
+running child, parked findings, the pause flag, attested-vs-observed landings
+(`landed_kind`/`satisfied_as`, FR-003's two kinds), and the bound in force.
+Terminating the roadmap never terminates a child in flight (`parent_close_policy`
+ABANDON, SC-004) — the child survives and finishes under its own contract.

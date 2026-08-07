@@ -121,8 +121,12 @@ Layout, all under the single `factory` package (D-004):
 | `factory/workgraph/adapter.py` | the D-018 seam — `AgentAdapter` + `ClaudeCodeAdapter` (§8) |
 | `factory/workgraph/workflow.py` | `EpicWorkflow`: the interpreter itself, pure decisions only |
 | `factory/workgraph/cli.py` | `factory-epic derive \| start \| status` (§3.2) |
+| `factory/roadmap/models.py` | `SpecState` / `LandedKind` / `LandedStatus` / `SpecReadiness`, pure frontmatter reader (`read_roadmap`) and readiness (`compute_readiness`) with the attested/observed seam (FR-003) |
+| `factory/roadmap/workflow.py` | `RoadmapWorkflow`: the scheduler, one level above the interpreter — dispatches dispatchable specs as child `EpicWorkflow` runs, continue-as-new at quiescence (FR-007), `pause`/`resume`/`promote` signals + `roadmap_status` query (FR-008) |
+| `factory/activities/roadmap_activities.py` | `clone_target` / `derive_spec` / `preflight_spec` / `onboard_target` / `count_open_epics` — the roadmap's pre-dispatch surface, scripted through its seams in tests |
+| `factory/roadmap/cli.py` | `factory-roadmap render` — the offline roadmap render (US1) |
 | `factory/activities/agent_activities.py` | `resolve_graph` / `resolve_persona` / `prepare_worktree` / `run_agent_attempt` / `read_worktree_diff` / `salvage_worktree` / `remove_worktree` |
-| `factory/worker.py` | runnable `python -m factory.worker` — registers `EpicWorkflow` plus all three components' activities |
+| `factory/worker.py` | runnable `python -m factory.worker` — registers `EpicWorkflow` + `RoadmapWorkflow` (D-031) plus every component's activities |
 
 A node carries: `id`, `persona`, `spec_ref` (feature + requirement keys — also
 the work-attribution key for usage tracking), `requirement_keys` (the acceptance
