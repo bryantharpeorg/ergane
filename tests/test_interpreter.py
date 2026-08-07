@@ -901,6 +901,12 @@ class ScriptedWorld:
         #: only place a mid-epic view of the graph can be taken.
         self.observed: dict[str, Any] = {}
 
+        #: The set of nodes whose state was RUNNING at the moment each agent
+        #: attempt started, in dispatch order. The concurrency claim — "N nodes
+        #: in flight at once" — is asserted from these snapshots, taken while the
+        #: workflow is genuinely parked on the attempt activities (US1, SC-001).
+        self.running_sets: list[set[str]] = []
+
         #: Nodes whose attempt was cancelled by the workflow (the adapter's kill
         #: path, R2). Kept out of the call log because it is recorded by the
         #: activity worker while the workflow is already salvaging: an ordering
@@ -1149,8 +1155,14 @@ class ScriptedWorld:
             # flight: the workflow is parked on this activity and answers the
             # query from the same state it is scheduling from.
             handle = script._client.get_workflow_handle(WORKFLOW_ID)
-            script.observed[context.node_id] = await handle.query(
-                EpicWorkflow.epic_status
+            status = await handle.query(EpicWorkflow.epic_status)
+            script.observed[context.node_id] = status
+            script.running_sets.append(
+                {
+                    node_id
+                    for node_id, node in status.nodes.items()
+                    if node.state == NodeState.RUNNING
+                }
             )
 
             steer = script._signal_during.get(context.node_id)
@@ -3243,3 +3255,229 @@ async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(
 
     assert ready is not None
     assert ready.node.id == "us1"
+
+
+# --- US1: the widened scheduler (FR-001/002/003/004) --------------------------
+
+
+def _virtual_elapsed_s(history: Any) -> float:
+    """The epic's virtual wall-clock, from the history's own timestamps.
+
+    Under time skipping the workflow's clock advances by the real time the
+    scripted agent sleeps, so a graph whose nodes run in parallel elapses about
+    the slowest node's sleep, while a sequential graph elapses the sum. The
+    claim "elapsed tracks the slowest node, not the sum" (SC-001) is asserted
+    from these event times — the same clock the workflow itself reads.
+    """
+    started = completed = None
+    for event in history.events:
+        if event.event_type == 1:  # WorkflowExecutionStarted
+            started = event.event_time.ToDatetime()
+        elif event.event_type == 7:  # WorkflowExecutionCompleted
+            completed = event.event_time.ToDatetime()
+    assert started is not None and completed is not None
+    return (completed - started).total_seconds()
+
+
+def _independent_three() -> list[WorkNode]:
+    """`us1`, `us2`, `us3` — all independent, declared in that order (R10)."""
+    return [
+        make_node("us1", "US1"),
+        make_node("us2", "US2"),
+        make_node("us3", "US3"),
+    ]
+
+
+async def test_all_ready_nodes_are_in_flight_at_once_up_to_the_cap(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-001/SC-001: with the cap at N and N independent ready nodes, all N run
+    at once.
+
+    The scripted agent sleeps real seconds, so the three attempts genuinely
+    overlap; the `running_sets` snapshots — taken while the workflow is parked on
+    the attempt activities — must at some moment contain all three nodes. A
+    scheduler that serialised them would never record a set of size 3.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=0.5
+    )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+
+    assert any(len(running) == 3 for running in script.running_sets), (
+        f"never saw all three nodes in flight; running_sets={script.running_sets}"
+    )
+    assert script.dispatched == ["us1", "us2", "us3"]
+
+
+async def test_a_slot_is_refilled_the_moment_a_node_reaches_terminal(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-001: with the cap below the ready count, a slot frees the instant any
+    node reaches a terminal state and a new ready node takes it.
+
+    Cap 2 over three independent nodes: `us1` and `us2` start together, and
+    `us3` — which cannot start until a slot frees — must dispatch only after one
+    of them has finished. No moment may ever have more than two in flight.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=0.5
+    )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=2,
+    )
+
+    assert all(len(running) <= 2 for running in script.running_sets), (
+        f"more than two nodes in flight under a cap of 2: {script.running_sets}"
+    )
+    assert script.dispatched == ["us1", "us2", "us3"]
+    # us3's attempt started only after a slot freed — i.e. after us1 or us2
+    # reached a terminal state. Its running-set snapshot must show at most one
+    # of us1/us2 still in flight alongside it.
+    us3_snapshot = script.running_sets[2]
+    assert "us3" in us3_snapshot
+    assert len(us3_snapshot) <= 2
+
+
+async def test_elapsed_time_tracks_the_slowest_node_not_the_sum(
+    env: WorkflowEnvironment,
+) -> None:
+    """SC-001: a graph of N independent nodes with the cap at N elapses about
+    the slowest node, not the sum of all of them.
+
+    Three nodes each sleeping `agent_sleep_s` in parallel elapse ~one sleep; a
+    sequential scheduler would elapse ~three. The virtual clock is read from the
+    history's own event times, so the assertion is about the workflow's clock,
+    not about wall time.
+    """
+    sleep_s = 1.0
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=sleep_s
+    )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+    history = await script.handle.fetch_history()
+    elapsed = _virtual_elapsed_s(history)
+
+    # Three sleeps in parallel ≈ one sleep; sequential would be ≈ three.
+    assert elapsed < 2.0 * sleep_s, (
+        f"elapsed {elapsed:.2f}s looks like the sum of three {sleep_s}s sleeps, "
+        "not the slowest one"
+    )
+
+
+async def test_cap_of_one_reproduces_todays_sequential_dispatch(
+    env: WorkflowEnvironment,
+) -> None:
+    """SC-002: with the cap at 1, dispatch order and observable state are
+    identical to today's sequential loop.
+
+    The chain-plus-leaf graph (`us1 → us2`, `us3` independent) is the shape that
+    distinguishes "declaration order" from "readiness": under a cap of 1, `us3` —
+    ready from the start — must still wait its turn behind `us1` and `us2`,
+    exactly as the sequential scheduler always did.
+    """
+    script = ScriptedWorld(all_passing(), client=env.client)
+
+    status = await run_epic(env, script, max_concurrent_nodes=1)
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
+    }
+    assert script.dispatched == ["us1", "us2", "us3"]
+    # Never more than one node in flight — the sequential loop's invariant.
+    assert all(len(running) <= 1 for running in script.running_sets), (
+        f"cap of 1 dispatched concurrently: {script.running_sets}"
+    )
+    # The in-flight observations match the sequential expectations: while us1
+    # runs, us2 and us3 are still PENDING.
+    during_us1 = states(script.observed["us1"])
+    assert during_us1["us1"] == NodeState.RUNNING
+    assert during_us1["us2"] == NodeState.PENDING
+    assert during_us1["us3"] == NodeState.PENDING
+
+
+async def test_no_node_is_dispatched_with_an_unmet_dependency_under_fan_out(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-003/SC-003: with several nodes in flight, a node whose dependency
+    fails is never dispatched — even while other nodes are mid-ladder.
+
+    `us1 → us2`, `us3` independent, cap 2. `us1` fails its gate; `us2` must never
+    dispatch (its dependency failed), while `us3` — independent — still runs.
+    The ready set is recomputed against current state every time a slot frees,
+    so a node whose dependency just failed cannot slip through the gap.
+    """
+    script = ScriptedWorld(
+        {"us1": [failing(1)], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        agent_sleep_s=0.3,
+    )
+
+    status = await run_epic(
+        env,
+        script,
+        graph=make_graph(chain_and_leaf()),
+        max_concurrent_nodes=2,
+    )
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status)["us1"] == NodeState.FAILED
+    assert states(status)["us2"] == NodeState.KILLED
+    assert states(status)["us3"] == NodeState.MERGED
+    # us2 never dispatched an agent — its dependency failed before it could.
+    assert "us2" not in script.dispatched
+    assert "us3" in script.dispatched
+
+
+async def test_replay_with_several_nodes_in_flight_dispatches_nothing_twice(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-004/SC-005: a worker restart with several nodes in flight re-derives
+    the epic and dispatches nothing twice.
+
+    The recorded history is replayed against the workflow code with no worker
+    attached; a scheduler that consulted a clock, a set's iteration order, or
+    anything outside the SDK's deterministic event loop fails here, and the
+    scripted world proves no activity ran a second time — no node re-dispatched,
+    no key re-issued.
+    """
+    script = ScriptedWorld(
+        all_passing(), client=env.client, agent_sleep_s=0.3
+    )
+
+    await run_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    )
+    history = await script.handle.fetch_history()
+
+    before = list(script.calls)
+    keys_before = [(r.node_id, r.attempt) for r in script.key_requests]
+    attempts_before = len(script.attempts)
+
+    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+
+    assert script.calls == before
+    assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
+    assert len(script.attempts) == attempts_before
