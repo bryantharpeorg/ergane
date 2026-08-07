@@ -1,5 +1,13 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-07 20:35 UTC. Three stories, three first-attempt
+# judge PASSes, PRs #11/#12/#13 squash-merged by the queue, one story per
+# hour on the hour (dispatched 17:26, 18:24, 19:25; merged 18:23, 19:24,
+# 20:34). The whole epic ran on merge-edges over the fetch-fixed worktree
+# pin (ab54279) — us2's pin was verified live as the remote's fresh head
+# while the local clone sat stale. Workflow record and GitHub agree on
+# every landing; epic COMPLETED believing all three. Epic spend $68.25,
+# zero operator touches from dispatch to close.
 # Run order decided 2026-08-07: 007 → 009 → 008. All three share files
 # (workflow.py with 007, workgraph/models.py with 009), so they run
 # sequentially. 006-US1 is also required — but only by US3, story-level,
