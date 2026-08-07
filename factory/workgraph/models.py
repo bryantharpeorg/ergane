@@ -249,16 +249,22 @@ class AttemptContext:
 class AdapterResult:
     """D-018's narrow output — nothing else crosses back.
 
-    No diff, no usage numbers, no parsed verdict: the diff is read from the
-    worktree and usage from the ledger, and FR-012 forbids any agent-reported
-    signal from reaching node state. `termination` is a process-outcome
-    classification, not a reading of what the agent said it accomplished.
-    `transcript_path` is the archived attempt directory under `.factory/`, which
-    is evidence, never an input to a decision.
+    No diff, no parsed verdict: the diff is read from the worktree and FR-012
+    forbids any agent-reported signal from reaching node state. `termination` is
+    a process-outcome classification, not a reading of what the agent said it
+    accomplished. `transcript_path` is the archived attempt directory under
+    `.factory/`, which is evidence, never an input to a decision.
+
+    `last_snapshot` is the exception, and a deliberate one (plan US1): usage is
+    read *inside* the attempt (the heartbeat), and the newest reading rides home
+    in the return value on the normal path — zero extra history events (FR-001).
+    It is a number the proxy reported, never one the workflow or adapter
+    invented, and `None` means the proxy was never read (constitution V).
     """
 
     termination: Termination
     transcript_path: str
+    last_snapshot: UsageSnapshot | None = None
 
 
 # Validation (FR-002) ---------------------------------------------------------

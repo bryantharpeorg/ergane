@@ -62,13 +62,16 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError, CancelledError
 
+from factory.activities.usage_activities import open_client
 from factory.config import ConfigError, Persona, load_personas
-from factory.usage.models import Termination
+from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     FactoryConfigError,
@@ -157,6 +160,36 @@ def factory_root() -> Path:
     exactly the way 001's ledger and 002's evidence store do.
     """
     return Path(os.environ.get(FACTORY_ROOT_ENV) or DEFAULT_FACTORY_ROOT)
+
+
+def _usage_reader(key: str) -> Callable[[], Awaitable[UsageSnapshot]]:
+    """A spend read for `key`, one client per call (plan US1, R9).
+
+    The adapter's monitor reads usage on its own `poll_interval_s` cadence and
+    carries the newest snapshot as heartbeat details; this is the production
+    closure the workflow's poll activity used to be. It reads the attempt's
+    virtual key through the proxy's master-key client, opens and closes a client
+    per read so a long attempt does not hold a connection open, and stamps the
+    snapshot with the moment it was true — a value teardown may record hours
+    later is only honest if its staleness is visible.
+
+    A failure raises the client's own `LiteLLMError`; the adapter isolates it so
+    a dead spend read never kills the beat.
+    """
+    async def read() -> UsageSnapshot:
+        client = open_client()
+        try:
+            spend_usd = await client.get_spend(key)
+        finally:
+            await client.aclose()
+        return UsageSnapshot(
+            spend_usd=spend_usd,
+            captured_at=datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
+        )
+
+    return read
 
 
 # --- resolve_graph (the registry snapshot) ------------------------------------
@@ -375,6 +408,7 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
             factory_root=root,
             heartbeat=activity.heartbeat,
             heartbeat_interval_s=HEARTBEAT_INTERVAL_S,
+            read_usage=_usage_reader(context.virtual_key),
         )
     except asyncio.CancelledError:
         raise CancelledError(

@@ -301,7 +301,7 @@ class ClaudeCodeAdapter:
             _write_pid_file(pids, process.pid)
             feeder = asyncio.ensure_future(_feed_prompt(process, context.prompt))
             try:
-                termination = await self._monitor(
+                termination, last_snapshot = await self._monitor(
                     process,
                     timeout_s=context.timeout_s,
                     heartbeat=heartbeat,
@@ -323,7 +323,11 @@ class ClaudeCodeAdapter:
 
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
-        return AdapterResult(termination=termination, transcript_path=str(archive))
+        return AdapterResult(
+            termination=termination,
+            transcript_path=str(archive),
+            last_snapshot=last_snapshot,
+        )
 
     # -- launch ---------------------------------------------------------------
 
@@ -381,7 +385,7 @@ class ClaudeCodeAdapter:
         interval_s: float,
         read_usage: Callable[[], Awaitable[UsageSnapshot]] | None,
         poll_interval_s: float,
-    ) -> Termination:
+    ) -> tuple[Termination, UsageSnapshot | None]:
         """Wait for the agent, beating as it goes, and end it at its deadline.
 
         The wait is chopped into heartbeat-sized pieces rather than one long
@@ -429,16 +433,19 @@ class ClaudeCodeAdapter:
                         await _invoke_heartbeat(heartbeat, snapshot)
                     continue
                 return (
-                    Termination.COMPLETED
-                    if process.returncode == 0
-                    else Termination.AGENT_ERROR
+                    (
+                        Termination.COMPLETED
+                        if process.returncode == 0
+                        else Termination.AGENT_ERROR
+                    ),
+                    snapshot,
                 )
         except BaseException:
             exited.cancel()
             raise
 
         await self._reclaim(process)
-        return Termination.TIMEOUT
+        return Termination.TIMEOUT, snapshot
 
     async def _reclaim(self, process: asyncio.subprocess.Process) -> None:
         """SIGTERM the agent's process group, then SIGKILL what survives.
