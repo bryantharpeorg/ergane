@@ -745,8 +745,9 @@ class SentQuestion:
     """
 
     question_id: str
-    message_id: int
+    message_id: int | None
     sent_at: str
+    expires_at: str
 
 
 def _node_of_pr(pr_number: int) -> str:
@@ -1484,8 +1485,8 @@ class ScriptedWorld:
             script.expirations.append(request.escalation_id)
             return ExpiredEscalation(final_state=script._expiry_state)
 
-        @activity.defn(name="detect_operator_question")
-        async def detect_operator_question(
+        @activity.defn(name="detect_operator_question_activity")
+        async def detect_operator_question_activity(
             request: DetectQuestionInput,
         ) -> QuestionMarker:
             # The detector is a read-only scan over the archived stdout.log the
@@ -1495,7 +1496,7 @@ class ScriptedWorld:
             # the marker, and the body is what ships. No node id travels in the
             # input (the detector owns nothing but the read), so the current node
             # is read from the scripted attempt counter the agent activity set.
-            script._log("detect_operator_question", script._node)
+            script._log("detect_operator_question_activity", script._node)
             script.detect_requests.append(request)
             body = script.question_bodies.get(script._node)
             if body is None:
@@ -1517,6 +1518,7 @@ class ScriptedWorld:
                 question_id=question_id,
                 message_id=message_id,
                 sent_at="2026-08-07T09:31:00Z",
+                expires_at="2026-08-07T17:31:00Z",
             )
 
         return [
@@ -1545,7 +1547,7 @@ class ScriptedWorld:
             validate_target_repo,
             send_escalation,
             expire_escalation,
-            detect_operator_question,
+            detect_operator_question_activity,
             send_question,
         ]
 
@@ -1777,6 +1779,7 @@ async def test_one_nodes_lifecycle_composes_the_verification_contract(
         "prepare_worktree",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
+        "detect_operator_question_activity",
         "run_gates",
         "check_output",
         "record_verification",
@@ -2360,6 +2363,7 @@ async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
             "prepare_worktree",
             "issue_attempt_key:implementer",
             "run_agent_attempt",
+            "detect_operator_question_activity",
             "run_gates",
             "check_output",
             "record_verification",
@@ -2743,7 +2747,7 @@ async def test_the_judge_is_never_invoked_for_a_question_attempt(
     assert script.judge_requests == []
     assert script.gate_requests == []
     # Detection ran — the read-only scan that is the whole of the marker's path.
-    assert "detect_operator_question" in seq
+    assert "detect_operator_question_activity" in seq
 
 
 async def test_a_marker_never_produces_a_pass_from_its_presence(
@@ -3060,6 +3064,7 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
         "prepare_worktree",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
+        "detect_operator_question_activity",
         "run_gates",
         "check_output",
         "read_worktree_diff",
@@ -3414,6 +3419,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "prepare_worktree",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
+        "detect_operator_question_activity",
         "run_gates",
         "check_output",
         "record_verification",

@@ -1014,17 +1014,31 @@ def test_the_adapter_returns_a_classification_and_evidence_and_nothing_else() ->
 
 
 def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None:
-    """The interpreter reads only the classification off the attempt's answer.
+    """The interpreter reads only the classification off the attempt's answer —
+    with the one deliberate, scoped exception the 008 amendment drills (FR-010).
 
     `adapter_result` (the binding in `_run_node`) is consulted for its
     `termination` alone. The measured spend, `last_snapshot`, is read off the
     activity's own return value inside `_attempt` and handed straight to teardown
     — a number the proxy reported, never an agent's claim. `transcript_path` is
-    evidence for a human, so the workflow may carry it into history but must
-    never read it — a path is a string an agent can influence, and a workflow
-    that inspected one would have a second input to node state (FR-012).
+    evidence for a human, and the rule it never reaches a decision (D-018/FR-012)
+    is what stops an agent from grading itself by writing into its own transcript.
+
+    008-US1 amends that rule with the narrowest possible hole (spec § Decision):
+    the operator-question marker is the one agent-authored signal that reaches
+    node state, and its only effect is to *park* the node — never to grade. So
+    the workflow may read `adapter_result.transcript_path`, but only to hand it
+    to the read-only marker detector, and that read must live in code that breaks
+    to a QUESTION before the gates or judge are ever consulted: the marker can
+    park a node and can never produce, influence, or substitute for a verdict
+    (FR-010). The guard that the hole goes no wider is held right here — the read
+    set is exactly `{termination, transcript_path}`, the `transcript_path` read
+    is owned by the QUESTION-detection block in `_run_node`, and a positive
+    marker must break out of the loop before `_verify` runs.
     """
     tree = parse(WORKFLOW_MODULE)
+    owner = enclosing_functions(tree)
+
     read = {
         node.attr
         for node in ast.walk(tree)
@@ -1032,17 +1046,39 @@ def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None
         and isinstance(node.value, ast.Name)
         and node.value.id == "adapter_result"
     }
-    assert read == {"termination"}, (
+    assert read == {"termination", "transcript_path"}, (
         f"the workflow reads {sorted(read)} off the adapter's result; only the "
-        "process classification may reach node state (FR-012)"
+        "process classification may reach node state, and the one amendment hole "
+        "is the marker's read of transcript_path (FR-012, FR-010)"
+    )
+
+    # The amendment hole is fenced: the `transcript_path` read must be owned by
+    # the QUESTION-detection block in `_run_node`, the one place a marker parks.
+    transcript_reads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "adapter_result"
+        and node.attr == "transcript_path"
+    ]
+    assert transcript_reads, (
+        "the marker's read of adapter_result.transcript_path is gone — the "
+        "QUESTION path cannot detect a marker without it (FR-010)"
+    )
+    readers = {owner_name(owner, read) for read in transcript_reads}
+    assert readers == {"_run_node"}, (
+        f"adapter_result.transcript_path is read in {sorted(readers)}; the "
+        "amendment hole is fenced to _run_node's marker detection (FR-010)"
     )
 
     # Every name by which the agent's own output could be reached. `output` on
     # its own is deliberately absent: 002's `check_output` is the write-scope
     # diff check, which reads the *worktree* — what the attempt produced, not
-    # what it claimed (FR-004).
+    # what it claimed (FR-004). `transcript_path` is the one deliberate spelling,
+    # owned by the fenced marker read above; the rest stay banned.
     spoken = identifiers(tree) | code_strings(tree)
-    for forbidden in ("transcript_path", "stdout", "stderr", "returncode", "exit_code"):
+    for forbidden in ("stdout", "stderr", "returncode", "exit_code"):
         assert forbidden not in spoken, (
             f"factory/workgraph/workflow.py spells {forbidden!r}; nothing the "
             "agent produced is an input to a scheduling or state decision (FR-012)"

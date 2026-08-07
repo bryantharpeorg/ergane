@@ -482,13 +482,18 @@ def test_node_states_are_exactly_the_state_machine() -> None:
     The landing phase (FR-004) adds the states a verified node moves through on
     its way to the queue terminal: `PR_OPEN` → `ENQUEUED` → `MERGED`, matching
     architecture §1's lifecycle, with `PASSED` now meaning *verified, landing
-    not terminal*.
+    not terminal*. `WAITING_OPERATOR` (008-US1) is the one non-terminal park:
+    a node whose attempt asked a blocking question sits there, dependents held
+    PENDING, until the operator's answer un-parks it (US2) or its question
+    expires to a burned FAIL (FR-004). It is deliberately not a `NextAction`
+    and not in `_UNREACHABLE`, so the parked node stays alive rather than dead.
     """
     assert {state.name for state in NodeState} == {
         "PENDING",
         "KEY_ISSUED",
         "RUNNING",
         "VERIFYING",
+        "WAITING_OPERATOR",
         "PASSED",
         "PR_OPEN",
         "ENQUEUED",

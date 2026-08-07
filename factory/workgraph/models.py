@@ -66,6 +66,7 @@ class NodeState(StrEnum):
     ```
     PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED → PR_OPEN → ENQUEUED → MERGED
                                               ↘ FAILED
+                                              ↘ WAITING_OPERATOR
     any non-terminal ───────────────────────────────────────────────→ KILLED
     ```
 
@@ -75,11 +76,15 @@ class NodeState(StrEnum):
     phase's states, and `MERGED` is the new terminal a verified node reaches when
     the queue confirms it. `FAILED` (parked by a PAUSE_EPIC resolution) and
     `KILLED` remain terminals reachable from any non-terminal state, a landing
-    interrupted included. The ladder's `RETRY`/`DEBUGGER`/`ESCALATE` are
-    deliberately absent — they are `NextAction` values that route a node back
-    into `KEY_ISSUED` or forward to a terminal state. Giving them membership here
-    would create a second place the ladder's outcome is represented, one of which
-    a node could be parked in.
+    interrupted included. `WAITING_OPERATOR` is the non-terminal park a QUESTION
+    attempt ends in (008-US1): the marker stopped the node, the operator's answer
+    (US2) is what un-parks it, and the epic pauses the way a `PAUSE_EPIC` press
+    pauses it. It is deliberately not in `_UNREACHABLE` — a parked question is not
+    a dead edge, so its dependents stay PENDING rather than being KILLED. The
+    ladder's `RETRY`/`DEBUGGER`/`ESCALATE` are deliberately absent — they are
+    `NextAction` values that route a node back into `KEY_ISSUED` or forward to a
+    terminal state. Giving them membership here would create a second place the
+    ladder's outcome is represented, one of which a node could be parked in.
     """
 
     PENDING = "PENDING"
@@ -92,6 +97,11 @@ class NodeState(StrEnum):
     MERGED = "MERGED"
     FAILED = "FAILED"
     KILLED = "KILLED"
+    #: The node has asked a question and is parked on the operator's answer
+    #: (008-US1, FR-001). Non-terminal: US2's answer un-parks it, so it is not a
+    #: dead edge and its dependents are not locked out. The epic pauses while it
+    #: waits, the way a `PAUSE_EPIC` press pauses it.
+    WAITING_OPERATOR = "WAITING_OPERATOR"
 
 
 class EpicState(StrEnum):

@@ -112,9 +112,22 @@ ACTIVITIES = [
     verify_activities.check_output,
     verify_activities.run_judge,
     verify_activities.record_verification,
+    # 008 — the operator-question marker: a read-only scan over the archived
+    # transcript (FR-010). Registered beside the ladder it runs before, so a
+    # node that asks a blocking question parks rather than hangs on a missing
+    # activity.
+    verify_activities.detect_operator_question_activity,
     # 002 — the human in the loop.
     notify_activities.send_escalation,
     notify_activities.expire_escalation,
+    # 008 — the question send and its expiry: the escalation mirror with no
+    # keyboard, whose Telegram message id is captured for reply routing (US2).
+    # `expire_question` is the sibling of `expire_escalation`; the workflow does
+    # not invoke it until US2 wires the question timer, but the worker serves the
+    # whole component surface (the registration is data, like `run_judge` before
+    # its branch landed), so the day that wiring lands takes no worker edit.
+    notify_activities.send_question,
+    notify_activities.expire_question,
     # 003 — the landing surface: prepare the body, push, open, enqueue, poll,
     # disable, and US2's recovery sync.
     merge_activities.prepare_landing_pr,
