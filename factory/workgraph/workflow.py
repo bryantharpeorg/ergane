@@ -1216,6 +1216,14 @@ class EpicWorkflow:
         agent = workflow.start_activity(
             run_agent_attempt,
             context,
+            # The activity's id *is* the node id (US5): `factory-epic status`
+            # reads each pending `run_agent_attempt`'s heartbeat off `describe()`
+            # and attributes the spend to the node named by `activity_id`, so a
+            # wide epic with several attempts in flight charges each node alone
+            # (FR-011). A node runs one attempt at a time, so the id is unique
+            # among concurrently-pending agent activities by construction; it is
+            # replay-safe because it is a fixed string, not a derived value.
+            activity_id=context.node_id,
             start_to_close_timeout=timedelta(
                 seconds=context.timeout_s + _ADAPTER_GRACE_S
             ),

@@ -131,12 +131,17 @@ The graph is validated in full before anything dispatches — duplicate ids, dan
 edges, cycles, unresolvable personas, and producing nodes whose persona resolves no
 timeout are all start-time rejections.
 
-**Scheduling is sequential.** The interpreter walks ready nodes in declaration order
-and runs them one at a time; a node is ready only when every dependency reports
-`PASSED`. Parallel node execution, verifier nodes, and multi-epic scheduling are
-deferred — the bootstrap runs single-digit node counts, and sequencing keeps
-workflow history small and the one-epic-at-a-time `.factory/` SQLite constraint
-honest.
+**Scheduling runs up to `max_concurrent_nodes` nodes at once.** The interpreter
+computes the whole ready set — nodes whose every dependency has reported `PASSED`
+(or `MERGED`, for `depends_on_merged` edges) — and dispatches them concurrently up
+to the cap, in declaration order as the tiebreak. The cap defaults to `1`, so an
+epic that does not ask for fan-out runs exactly as the sequential loop did: one
+node at a time, the first ready one in declaration order, re-evaluated after each
+terminal state. The cap is supplied per epic at `factory-epic start` (an
+`EpicInput` field, not a `factory.yaml` key) because how many agents a host can
+carry is a fact about the host, not about the target repo. Parallel multi-epic
+scheduling remains out of scope; the one-epic-at-a-time `.factory/` SQLite
+constraint still holds.
 
 Per node: `PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED | FAILED`, with
 `KILLED` reachable from any non-terminal state. Every attempt is bracketed by
@@ -151,13 +156,14 @@ runs on every termination path before cleanup (principle VI). Epic states are
 `RUNNING ⇄ PAUSED`, `→ KILLED`, `→ COMPLETED` (every node terminal — which does not
 imply every node passed; the run's result carries the per-node outcomes).
 
-**Signals and query.** `pause_epic` stops new dispatch while the in-flight node
-finishes its full ladder; `resume_epic` continues; `kill_epic` cancels the in-flight
-attempt, salvages, tears down keys, and marks every non-terminal node `KILLED`. The
-notifier's `escalation_resolved` signal (§9) carries a human's answer back into the
-ladder — a `PAUSE_EPIC` resolution parks the node `FAILED` and pauses the epic. The
-`epic_status` query answers with the epic state plus per-node status keyed in
-declaration order, so reading it top to bottom reads the epic in the order it was
+**Signals and query.** `pause_epic` stops new dispatch while the in-flight nodes
+finish their full ladders; `resume_epic` continues; `kill_epic` cancels every
+in-flight attempt, salvages each, tears down keys, and marks every non-terminal
+node `KILLED`. The notifier's `escalation_resolved` signal (§9) carries a human's
+answer back into the ladder — a `PAUSE_EPIC` resolution parks the node `FAILED`
+and pauses the epic. The `epic_status` query answers with the epic state plus
+per-node status keyed in declaration order, so reading it top to bottom reads the
+epic in the order it was
 authored to run.
 
 **Transcript archiving.** Every attempt's evidence lands under
@@ -214,7 +220,10 @@ enforced by validation, which keeps the operator on the upstream upgrade path.
   as a sibling `execution_status` key beside the query's document, never merged
   into it, so no `--json` consumer breaks. The execution status is the ground
   truth; the internal state is what the epic had in memory when the run last
-  advanced.
+  advanced. Live mid-attempt spend is read the same way — each pending
+  `run_agent_attempt`'s heartbeat off `describe()`, attributed to the node its
+  `activity_id` names so a wide epic charges each node alone (FR-011) — and added
+  as a sibling `live_spend` key, never merged into the query document.
 
 `TEMPORAL_ADDRESS` / `TEMPORAL_NAMESPACE` are honored throughout. Temporal's Web UI
 remains the dashboard for anything deeper.
