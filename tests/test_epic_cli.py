@@ -70,11 +70,14 @@ from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
 
 import pytest
 from temporalio import activity
+from temporalio.client import WorkflowFailureError
+from temporalio.exceptions import ApplicationError
 from temporalio.service import RPCError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from factory.activities.agent_activities import (
+    GRAPH_INVALID,
     LoadPromptSourcesInput,
     PrepareWorktreeInput,
     PromptSources,
@@ -423,9 +426,12 @@ class ScriptedEpic:
     node is genuinely RUNNING, rather than a terminal snapshot after the fact.
     """
 
-    def __init__(self, *, spec_text: str, pause_at: str | None = None) -> None:
+    def __init__(
+        self, *, spec_text: str, pause_at: str | None = None, fail_resolve: bool = False
+    ) -> None:
         self._spec_text = spec_text
         self._pause_at = pause_at
+        self._fail_resolve = fail_resolve
 
         self.graphs: list[WorkGraph] = []
         self.prompt_source_requests: list[LoadPromptSourcesInput] = []
@@ -456,6 +462,18 @@ class ScriptedEpic:
         @activity.defn(name="resolve_graph")
         async def resolve_graph(graph: WorkGraph) -> list[ResolvedNode]:
             script.graphs.append(graph)
+            if script._fail_resolve:
+                # The same non-retryable failure the real worker raises for a
+                # graph its registry cannot dispatch (FR-002) — the one way an
+                # epic is genuinely FAILED with no node ever issued. The workflow
+                # never reached a node state, so its internal `epic_state` stays
+                # the RUNNING it initialized to; that stale value is exactly the
+                # lie US5 exists to stop the CLI from telling.
+                raise ApplicationError(
+                    "persona 'implementer' is not in the registry",
+                    type=GRAPH_INVALID,
+                    non_retryable=True,
+                )
             # The real validator, against a real registry: what the CLI accepted
             # the worker accepts too, or the epic fails before it dispatches.
             validate_workgraph(graph, PERSONAS)
@@ -1014,7 +1032,13 @@ async def test_status_reads_a_live_epic_mid_flight(
 
     assert start.code == 0
     assert mid_flight.code == 0
-    assert mid_flight.json == {
+    # The query's own payload, byte-identical to what it was before US5 — the
+    # `execution_status` sibling is added beside it, never merged into it
+    # (FR-010, acceptance 3: "the existing payload is not restructured").
+    assert {
+        "epic_state": mid_flight.json["epic_state"],
+        "nodes": mid_flight.json["nodes"],
+    } == {
         "epic_state": "RUNNING",
         "nodes": {
             "us1": {
@@ -1034,7 +1058,9 @@ async def test_status_reads_a_live_epic_mid_flight(
             },
         },
     }
+    assert mid_flight.json["execution_status"] == "RUNNING"
     assert final.json["epic_state"] == "COMPLETED"
+    assert final.json["execution_status"] == "COMPLETED"
     assert [node["state"] for node in final.json["nodes"].values()] == [
         "PASSED",
         "PASSED",
@@ -1053,7 +1079,8 @@ async def test_status_json_is_the_query_result_verbatim(
     A renderer that rebuilt the document would be a second place the query's
     shape is stated, free to drift from `EpicStatus`. So the whole document is
     asserted, and it is asserted to be the whole of stdout — a `--json` consumer
-    never parses around a header.
+    never parses around a header. US5's `execution_status` is a sibling added at
+    the CLI's edge, never merged into that document (FR-010).
     """
     script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
 
@@ -1073,6 +1100,7 @@ async def test_status_json_is_the_query_result_verbatim(
             }
             for node_id in NODE_IDS
         },
+        "execution_status": "COMPLETED",
     }
 
 
@@ -1107,6 +1135,125 @@ async def test_the_human_status_is_an_epic_line_then_one_line_per_node(
         assert "PASSED" in line
         assert "attempt 1" in line
         assert branch_name(EPIC_ID, node_id) in line
+
+
+# --- status: US5 — the Temporal execution status is reported (FR-010) ---------
+
+
+async def test_status_of_a_failed_workflow_reports_execution_status(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """The bug US5 exists to fix: a closed workflow must not read as RUNNING.
+
+    `resolve_graph` fails the epic before any node is issued, so the workflow's
+    internal `epic_state` is whatever it initialized to — RUNNING — even though
+    Temporal has closed the execution as FAILED. Today `status` would print that
+    stale `RUNNING`; US5 surfaces the execution status alongside it so the two
+    are distinguishable (FR-010, acceptance 1).
+    """
+    script = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
+        fail_resolve=True,
+    )
+
+    async with worker_for(temporal_env, script):
+        start = await run_async("start", str(workgraph_json))
+        # The workflow fails with no result to return; wait until Temporal has
+        # closed the execution as FAILED so the status below is read from a
+        # genuinely closed workflow — the exact situation the story is about.
+        with pytest.raises(WorkflowFailureError):
+            await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        failed = await run_async("status", EPIC_ID, "--json")
+
+    assert start.code == 0
+    assert failed.code == 0
+    # The internal state is stale RUNNING — exactly what misled — while the
+    # execution status is the ground truth, and the two are distinguishable.
+    assert failed.json["epic_state"] == "RUNNING"
+    assert failed.json["execution_status"] == "FAILED"
+
+
+async def test_status_of_a_terminated_workflow_reports_execution_status(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """TERMINATED is distinguishable from RUNNING (independent test).
+
+    An operator who kills an epic from the Web UI sees the execution status say
+    so, rather than an internal epic_state that never reached KILLED.
+    """
+    script = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
+        pause_at="us2",
+    )
+
+    async with worker_for(temporal_env, script):
+        await run_async("start", str(workgraph_json))
+        await script.wait_for_pause()
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).terminate(
+            "operator killed it"
+        )
+        terminated = await run_async("status", EPIC_ID, "--json")
+
+    assert terminated.code == 0
+    assert terminated.json["execution_status"] == "TERMINATED"
+
+
+async def test_the_running_epics_human_output_is_unchanged(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """Acceptance 2: a running epic's per-node output is byte-identical to today.
+
+    US5 must not disturb what an operator already reads mid-flight. The epic line
+    gains the execution status on a fresh word; the per-node lines — the part the
+    acceptance scenario names — are exactly what they were before this story.
+    """
+    script = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
+        pause_at="us2",
+    )
+
+    async with worker_for(temporal_env, script):
+        await run_async("start", str(workgraph_json))
+        await script.wait_for_pause()
+        result = await run_async("status", EPIC_ID)
+
+    assert result.code == 0
+    lines = result.stdout.splitlines()
+    assert lines[0].split()[0:3] == ["epic", EPIC_ID, "RUNNING"]
+    printed = node_lines(result.stdout)
+    assert [line.split()[0] for line in printed] == NODE_IDS
+    # The per-node lines are byte-identical to the pre-US5 renderer: node id,
+    # state, attempt and branch, and nothing else.
+    assert printed[0].split() == [
+        "us1",
+        "PASSED",
+        "attempt",
+        "1",
+        branch_name(EPIC_ID, "us1"),
+    ]
+    assert printed[1].split() == [
+        "us2",
+        "RUNNING",
+        "attempt",
+        "1",
+        branch_name(EPIC_ID, "us2"),
+    ]
+    assert printed[2].split() == [
+        "us3",
+        "PENDING",
+        "attempt",
+        "0",
+        branch_name(EPIC_ID, "us3"),
+    ]
 
 
 async def test_status_of_an_epic_nobody_started_is_exit_1(

@@ -327,11 +327,32 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
             f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
         ) from error
 
-    print(json.dumps(document, indent=2) if as_json else render_status(epic_id, document))
+    try:
+        # FR-010: the Temporal execution status. A query against a closed
+        # workflow succeeds and returns its final internal state — which is why
+        # today's `status` could print RUNNING for a workflow already FAILED —
+        # so the truth has to come from `describe()`, not from the query. It is
+        # a sibling to the query's document, never merged into it (acceptance 3).
+        described = await handle.describe()
+        execution_status = described.status.name
+    except RPCError as error:
+        raise _OperatorError(
+            f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
+        ) from error
+
+    view = dict(document)
+    view["execution_status"] = execution_status
+    print(
+        json.dumps(view, indent=2)
+        if as_json
+        else render_status(epic_id, document, execution_status)
+    )
     return EXIT_OK
 
 
-def render_status(epic_id: str, document: Mapping[str, Any]) -> str:
+def render_status(
+    epic_id: str, document: Mapping[str, Any], execution_status: str
+) -> str:
     """The human view: the epic's line, then one line per node, in query order.
 
     `<node_id>  <state>  attempt <n>  <branch>`. The branch is on the line
@@ -339,12 +360,20 @@ def render_status(epic_id: str, document: Mapping[str, Any]) -> str:
     is swept the branch is the whole account of the node's attempts (SC-004), and
     an operator reading a killed node should not need a second command to learn
     where its work went.
+
+    The epic's line reports both the internal state and the Temporal execution
+    status (FR-010), so a closed workflow never reads as a bare `RUNNING`: the
+    execution status is the ground truth and the internal state is what the epic
+    had in memory when the run last advanced.
     """
     nodes: Mapping[str, Mapping[str, Any]] = document["nodes"]
     id_width = max((len(node_id) for node_id in nodes), default=0)
     state_width = max((len(str(node["state"])) for node in nodes.values()), default=0)
 
-    lines = [f"epic {epic_id}  {document['epic_state']}"]
+    lines = [
+        f"epic {epic_id}  {document['epic_state']}  "
+        f"execution {execution_status}"
+    ]
     lines += [
         f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
         f"attempt {node['attempt']}  {node['branch']}"
