@@ -509,15 +509,22 @@ def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main") 
     )
     fake.expect_json(
         "api", f"repos/OWNER/REPO/rules/branches/{default_branch}",
+        # The real rulesets payload carries the required checks in a *sibling*
+        # `required_status_checks` rule, not inside `merge_queue` (proved live
+        # 2026-08-07 against bryantharpeorg/ergane's factory-queue ruleset).
         payload=[
             {
                 "type": "merge_queue",
+                "parameters": {"merge_method": "SQUASH", "grouping_strategy": "ALLGREEN"},
+            },
+            {
+                "type": "required_status_checks",
                 "parameters": {"required_status_checks": [
                     {"context": "lint"},
                     {"context": "test"},
                     {"context": "typecheck"},
                 ]},
-            }
+            },
         ],
     )
 
@@ -635,6 +642,49 @@ async def test_validate_target_repo_falls_back_to_classic_protection_for_checks(
     gate_finding = next(f for f in profile.findings if f.check == "gate_check:lint")
     assert gate_finding.passed is False
     assert "lint" in gate_finding.detail
+
+
+async def test_validate_target_repo_treats_unprotected_classic_as_no_checks(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A classic-protection 404 means "no checks configured there", never a
+    failed read.
+
+    A queue-enabled repo that names no checks in its rules and has no classic
+    protection answers the fallback with `Branch not protected (HTTP 404)` —
+    a legitimate "none", proved live 2026-08-07. The profile must fail on the
+    unchecked gates, not on repo_read.
+    """
+    fake = FakeGh()
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
+    )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO/rules/branches/main",
+        payload=[{"type": "merge_queue", "parameters": {"merge_method": "SQUASH"}}],
+    )
+    fake.expect_error(
+        "api", "repos/OWNER/REPO/branches/main/protection",
+        stderr="gh: Branch not protected (HTTP 404)", returncode=1,
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.queue_enabled is True
+    assert profile.required_checks == ()
+    # The repo was readable; what fails is the gates having no queue check.
+    assert not any(f.check == "repo_read" for f in profile.findings if not f.passed)
+    gate_finding = next(f for f in profile.findings if f.check == "gate_check:test")
+    assert gate_finding.passed is False
 
 
 async def test_validate_target_repo_a_gh_failure_is_a_failed_validation_not_a_pass(

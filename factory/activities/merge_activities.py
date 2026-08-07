@@ -489,8 +489,17 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
         if required_checks is None:
             # The queue is enabled but carries no checks in the rules payload:
             # fall back to classic branch protection for the required checks.
-            protection = client.classic_branch_protection(owner_repo, default_branch)
-            required_checks = _classic_contexts(protection)
+            try:
+                protection = client.classic_branch_protection(
+                    owner_repo, default_branch
+                )
+                required_checks = _classic_contexts(protection)
+            except GhError as error:
+                if error.kind != GH_NOT_FOUND:
+                    raise
+                # "Branch not protected" is an answer, not a failure (proved
+                # live 2026-08-07): the repo simply configures no checks there.
+                required_checks = []
     except GhError as error:
         # The rules call failed — a repo the factory cannot read is not dispatchable.
         return _profile_from_gh_failure(
@@ -513,27 +522,34 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
 def _queue_from_rules(rules: list[dict[str, Any]]) -> tuple[bool, list[str] | None]:
     """The merge-queue rule from a branch-rules list, and its required checks.
 
-    Returns `(queue_enabled, required_checks)`. `required_checks` is `None` when
-    the queue rule is present but names no checks (so the caller falls back to
-    classic protection); it is `[]` when the queue rule is absent.
+    Returns `(queue_enabled, required_checks)`. In the real rulesets payload
+    the required checks ride a *sibling* `required_status_checks` rule (proved
+    live 2026-08-07); a queue rule may also embed them, and both places are
+    read. `required_checks` is `None` when the queue is enabled but no rule
+    names a check (so the caller falls back to classic protection); it is `[]`
+    when the queue rule is absent.
     """
+    queue_enabled = False
+    contexts: list[str] = []
     for rule in rules:
-        if str(rule.get("type") or "") != "merge_queue":
-            continue
+        rule_type = str(rule.get("type") or "")
         parameters = rule.get("parameters")
+        if rule_type == "merge_queue":
+            queue_enabled = True
+        elif rule_type != "required_status_checks":
+            continue
         if not isinstance(parameters, dict):
-            return True, None
+            continue
         checks = parameters.get("required_status_checks")
         if isinstance(checks, list):
-            contexts = [
-                str(c.get("context") or c) for c in checks if isinstance(c, dict)
+            contexts += [
+                str(c.get("context") or "") for c in checks if isinstance(c, dict)
             ]
-            # An empty checks list means the queue rule names no checks — the
-            # repo likely configures them via classic protection, so the caller
-            # falls back (plan.md § US3).
-            return True, contexts or None
-        return True, None
-    return False, []
+    if not queue_enabled:
+        return False, []
+    # No rule named a check — the repo may configure them via classic
+    # protection, so the caller falls back (plan.md § US3).
+    return True, [c for c in contexts if c] or None
 
 
 def _classic_contexts(protection: dict[str, Any]) -> list[str]:
