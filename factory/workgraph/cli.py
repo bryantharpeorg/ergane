@@ -334,7 +334,13 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
         # so the truth has to come from `describe()`, not from the query. It is
         # a sibling to the query's document, never merged into it (acceptance 3).
         described = await handle.describe()
-        execution_status = described.status.name
+        status = described.status
+        if status is None:
+            raise _OperatorError(
+                f"cannot read epic '{epic_id}': no execution status reported",
+                EXIT_TRANSPORT,
+            )
+        execution_status = status.name
     except RPCError as error:
         raise _OperatorError(
             f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT

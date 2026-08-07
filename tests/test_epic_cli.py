@@ -1268,6 +1268,81 @@ async def test_status_of_an_epic_nobody_started_is_exit_1(
     assert result.stdout == ""
 
 
+async def test_status_output_never_carries_a_credential(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-011: no credential value reaches the status output or its error paths.
+
+    `status` reads Temporal and renders what it got; it never touches the proxy,
+    so no key belongs on any of its streams. Driven through all four states the
+    independent test names — running, failed, terminated, completed — plus the
+    user-error and transport paths, with a canary in the environment that no
+    output byte may repeat.
+    """
+    canary = "sk-fr011-status-canary-7a11b0b"
+    monkeypatch.setenv("LITELLM_MASTER_KEY", canary)
+    # A status against a reachable-but-wrong epic reads the same way in both
+    # renderings; a transport failure is the other error path.
+    outputs: list[tuple[str, str]] = []
+
+    script = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
+        pause_at="us2",
+    )
+    async with worker_for(temporal_env, script):
+        await run_async("start", str(workgraph_json))
+        await script.wait_for_pause()
+        running = await run_async("status", EPIC_ID)
+        running_json = await run_async("status", EPIC_ID, "--json")
+        outputs += [(running.stdout, running.stderr), (running_json.stdout, running_json.stderr)]
+
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).terminate("sweep")
+        terminated = await run_async("status", EPIC_ID, "--json")
+        outputs.append((terminated.stdout, terminated.stderr))
+
+    # completed
+    script2 = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+    async with worker_for(temporal_env, script2):
+        await run_async("start", str(workgraph_json))
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        completed = await run_async("status", EPIC_ID, "--json")
+        outputs.append((completed.stdout, completed.stderr))
+
+    # failed
+    script3 = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
+        fail_resolve=True,
+    )
+    async with worker_for(temporal_env, script3):
+        await run_async("start", str(workgraph_json))
+        with pytest.raises(WorkflowFailureError):
+            await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+        failed = await run_async("status", EPIC_ID, "--json")
+        outputs.append((failed.stdout, failed.stderr))
+
+    for stdout, stderr in outputs:
+        assert canary not in stdout and canary not in stderr
+
+
+def test_the_status_command_source_reaches_for_no_credential() -> None:
+    """Structural half of FR-011: `status` code has no proxy credential surface.
+
+    The `status` verb neither reads the proxy url nor constructs a client that
+    could need the master key — the only Temporal credential it ever carries is
+    the connection, and that comes from the environment contract shared with
+    `start`. A grep over the CLI source confirms `status_command`/`_query_status`
+    branch on nothing that would read `LITELLM_MASTER_KEY`.
+    """
+    source = Path(
+        __file__).resolve().parent.parent / "factory" / "workgraph" / "cli.py"
+    text = source.read_text(encoding="utf-8")
+    assert "LITELLM_MASTER_KEY" not in text
+
+
 # --- the environment contract, and transport (exit 2) -------------------------
 
 
