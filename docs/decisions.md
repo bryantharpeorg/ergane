@@ -346,3 +346,33 @@ The interpreter's landing phase, the classifier, and the four landing activities
 exercised under time skipping and against a `FakeGh`; a `@pytest.mark.live_merge` smoke
 drives one real branch through the sample repo's queue behind `FACTORY_SAMPLE_REPO` so a
 broken queue assumption surfaces at run time, not at 3am.
+
+## D-029 · Usage observation rides the agent heartbeat; visibility moves to the CLI (decided)
+
+Decided 2026-08-06/07 (Bryan), recorded at landing per 006's T001. The interpreter's
+per-30s `wait_condition` timeout + `poll_usage` loop cost ~11 history events per
+interval (~1,320/hour/attempt) to keep a spend figure whose only consumer was the
+teardown fallback. The trade was whether to keep any figure between polls at all.
+
+1. **The heartbeat carries observation.** The adapter's monitor loop already beats
+   every second for liveness; it gains a bounded usage read on the old `poll_interval_s`
+   cadence and carries the newest `UsageSnapshot` as heartbeat *details* — mutable
+   server state, zero history events. A failed read leaves the previous snapshot and
+   never kills the beat: liveness and spend share a channel, and spend must not be able
+   to kill liveness.
+2. **Three delivery paths to teardown, each tested for a non-NULL spend.** Normal
+   completion on `AdapterResult.last_snapshot`; timeout via
+   `TimeoutError.last_heartbeat_details` off the caught `ActivityError`; kill by
+   **return-on-cancel** (operator decision 2026-08-06, superseding the plan's first
+   draft): the adapter catches cancellation and *returns* a KILLED `AdapterResult`
+   carrying the snapshot, because reading heartbeat details off a cancelled activity's
+   error is unverified in the installed SDK. A NULL spend row now means "never
+   measured", a strictly stronger claim than the polling loop could make.
+3. **Mid-attempt visibility moves to the CLI (decided 2026-08-07, after the judge
+   failed a green-gated attempt on exactly this).** Deleting the poll deleted the only
+   mid-attempt spend surface; the replacement must not reintroduce history events, and
+   the workflow cannot read its own activity's heartbeat (`workflow.info()` has no
+   pending-activity accessor in the installed SDK). `factory-epic status` reads
+   `describe()`'s pending-activity heartbeat details — a client-side RPC, no history
+   event — and renders live spend as a sibling of the query document, never merged
+   into it.
