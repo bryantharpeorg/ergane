@@ -1,7 +1,9 @@
 ---
-state: ready
-# 006-US1 (the heartbeat rewrite) is also required — story-level, carried by
-# tasks.md T001; this grammar's edges are spec-level.
+# Attested landed 2026-08-07 (operator): all five stories judge-passed on
+# first attempts and merged to the default branch via the queue (PRs #3–#7),
+# but across three epic runs — no single run observed COMPLETED-with-all-
+# MERGED, so this is the attestation path 009's grammar defines.
+state: landed
 depends_on_landed: [003-merge-queue]
 ---
 
