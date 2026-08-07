@@ -61,7 +61,7 @@ import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from temporalio.client import Client
 from temporalio.exceptions import WorkflowAlreadyStartedError
@@ -75,6 +75,7 @@ from factory.notify.service import (
     TEMPORAL_NAMESPACE_ENV,
 )
 from factory.usage.litellm_client import PROXY_URL_ENV
+from factory.usage.models import UsageSnapshot
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import (
     WorkGraph,
@@ -327,11 +328,95 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
             f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
         ) from error
 
-    print(json.dumps(document, indent=2) if as_json else render_status(epic_id, document))
+    # US1-S4: the query cannot carry live spend (observation rides the agent
+    # heartbeat, which Temporal stores on the pending activity's mutable details,
+    # not in workflow state), so the CLI reads it as a sibling from the server's
+    # description of the running workflow. A client-side `describe` is an RPC over
+    # server state — it emits no workflow history event, so FR-001/FR-002 are
+    # untouched. Read before the human render so both formats see the same figure.
+    live_spend = await _live_spend(client, handle, document)
+    if as_json:
+        # The query result stays byte-identical under its own keys; live spend is
+        # a *sibling* key, never merged into the query's document (contracts/cli.md
+        # § status, and plan US5's sibling-key rule).
+        rendered: Any = dict(document)
+        if live_spend:
+            rendered["live_spend"] = live_spend
+        print(json.dumps(rendered, indent=2))
+    else:
+        print(render_status(epic_id, document, live_spend=live_spend))
     return EXIT_OK
 
 
-def render_status(epic_id: str, document: Mapping[str, Any]) -> str:
+async def _live_spend(
+    client: Client,
+    handle: Any,
+    document: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    """The running attempt's newest heartbeat snapshot, per node (US1-S4).
+
+    Observation rides the agent activity's heartbeat (plan US1), and Temporal
+    stores heartbeat *details* on the pending activity's mutable state — visible
+    to a client's `describe`, never on the workflow's event log. So the one
+    mid-attempt spend surface is this read: decode the pending
+    `run_agent_attempt`'s heartbeat payload and hand the figure to the renderer.
+
+    A missing figure is not an error — the attempt has not measured spend yet
+    (constitution V: unknown, not zero) or the workflow is not in an attempt. A
+    `describe` that fails is likewise surfaced as no figure rather than a crashed
+    status: the query already answered, and this is a sibling read.
+    """
+    try:
+        description = await handle.describe()
+    except RPCError:
+        return {}
+    pending = description.raw_description.pending_activities
+    try:
+        converter = client.data_converter
+    except Exception:
+        converter = None
+
+    live: dict[str, Mapping[str, Any]] = {}
+    for activity_info in pending:
+        if not activity_info.HasField("activity_type"):
+            continue
+        if activity_info.activity_type.name != "run_agent_attempt":
+            continue
+        # The node id is not directly on the pending info; the running attempt is
+        # the one whose node is RUNNING, resolved from the query document so the
+        # two views name the same node.
+        running = [
+            node_id
+            for node_id, node in document["nodes"].items()
+            if node["state"] == "RUNNING"
+        ]
+        if not running or converter is None or not activity_info.HasField(
+            "heartbeat_details"
+        ):
+            continue
+        try:
+            decoded = await converter.decode(
+                list(activity_info.heartbeat_details.payloads),
+                [Optional[UsageSnapshot]],
+            )
+        except Exception:
+            continue
+        snapshot = decoded[0]
+        if snapshot is None:
+            continue
+        live[running[0]] = {
+            "spend_usd": snapshot.spend_usd,
+            "captured_at": snapshot.captured_at,
+        }
+    return live
+
+
+def render_status(
+    epic_id: str,
+    document: Mapping[str, Any],
+    *,
+    live_spend: Mapping[str, Mapping[str, Any]] | None = None,
+) -> str:
     """The human view: the epic's line, then one line per node, in query order.
 
     `<node_id>  <state>  attempt <n>  <branch>`. The branch is on the line
@@ -339,17 +424,27 @@ def render_status(epic_id: str, document: Mapping[str, Any]) -> str:
     is swept the branch is the whole account of the node's attempts (SC-004), and
     an operator reading a killed node should not need a second command to learn
     where its work went.
+
+    A node whose attempt is running shows its live spend (US1-S4) after the
+    branch, so an operator mid-epic sees dollars move instead of a blank line.
     """
     nodes: Mapping[str, Mapping[str, Any]] = document["nodes"]
     id_width = max((len(node_id) for node_id in nodes), default=0)
     state_width = max((len(str(node["state"])) for node in nodes.values()), default=0)
+    live = live_spend or {}
 
     lines = [f"epic {epic_id}  {document['epic_state']}"]
-    lines += [
-        f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
-        f"attempt {node['attempt']}  {node['branch']}"
-        for node_id, node in nodes.items()
-    ]
+    for node_id, node in nodes.items():
+        # An existence check, never a magnitude check: whether the running
+        # attempt has measured anything yet, not how much (SC-005).
+        figure = live.get(node_id)
+        spend_token = (
+            f"  spend ${figure['spend_usd']:.2f}" if figure is not None else ""
+        )
+        lines.append(
+            f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
+            f"attempt {node['attempt']}  {node['branch']}{spend_token}"
+        )
     return "\n".join(lines)
 
 

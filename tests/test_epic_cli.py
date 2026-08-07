@@ -423,9 +423,19 @@ class ScriptedEpic:
     node is genuinely RUNNING, rather than a terminal snapshot after the fact.
     """
 
-    def __init__(self, *, spec_text: str, pause_at: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        spec_text: str,
+        pause_at: str | None = None,
+        live_snapshot: UsageSnapshot | None = None,
+    ) -> None:
         self._spec_text = spec_text
         self._pause_at = pause_at
+        #: The snapshot the paused agent heartbeats while it waits (US1-S4): a
+        #: mid-flight `status` must read this off the pending activity's heartbeat
+        #: details, so the operator sees live spend rather than a blank.
+        self.live_snapshot = live_snapshot
 
         self.graphs: list[WorkGraph] = []
         self.prompt_source_requests: list[LoadPromptSourcesInput] = []
@@ -527,6 +537,12 @@ class ScriptedEpic:
         async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
             script.attempts.append(context)
             if script._pause_at == context.node_id:
+                # The adapter's real beat: while the attempt waits it heartbeats
+                # its newest usage snapshot, which Temporal stores on the pending
+                # activity's details — the live-spend surface `status` reads
+                # (US1-S4).
+                if script.live_snapshot is not None:
+                    activity.heartbeat(script.live_snapshot)
                 script.paused.set()
                 # Bounded, so a test that forgets to release fails on its own
                 # assertion rather than hanging the suite.
@@ -1040,6 +1056,51 @@ async def test_status_reads_a_live_epic_mid_flight(
         "PASSED",
         "PASSED",
     ]
+
+
+async def test_status_reads_live_spend_off_the_running_attempt(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """US1-S4: an operator asking mid-attempt sees spend at least as fresh as the
+    poll loop's `record.last_snapshot`.
+
+    Observation now rides the agent activity's heartbeat (plan US1), which lives
+    on the pending activity's mutable details rather than in workflow state — so
+    the workflow's own query cannot see it, and neither could the poll loop's
+    figure after US1 deleted it. The CLI therefore reads the live figure off the
+    server's description of the running activity (`describe`), where Temporal
+    stores the heartbeat payload, and reports it beside the query result — a
+    client-side RPC that emits no workflow history event (FR-002).
+    """
+    snapshot = UsageSnapshot(spend_usd=6.25, captured_at="2026-08-05T09:31:00Z")
+    script = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
+        pause_at="us2",
+        live_snapshot=snapshot,
+    )
+
+    async with worker_for(temporal_env, script):
+        await run_async("start", str(workgraph_json))
+        await script.wait_for_pause()
+
+        mid_json = await run_async("status", EPIC_ID, "--json")
+        mid_human = await run_async("status", EPIC_ID)
+
+        script.release()
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+
+    assert mid_json.code == 0
+    # The query result is untouched; the live spend is a sibling read, so a
+    # consumer of the query doc is not broken (contracts/cli.md § status).
+    assert mid_json.json["nodes"]["us2"]["state"] == "RUNNING"
+    assert mid_json.json["live_spend"]["us2"] == {
+        "spend_usd": 6.25,
+        "captured_at": "2026-08-05T09:31:00Z",
+    }
+    assert "6.25" in mid_human.stdout
 
 
 async def test_status_json_is_the_query_result_verbatim(
