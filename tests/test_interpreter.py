@@ -3854,3 +3854,275 @@ async def test_concurrent_landings_survive_replay(env: WorkflowEnvironment) -> N
     assert script.calls == before
     assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
     assert len(script.attempts) == attempts_before
+
+
+# --- US4: pause, kill and lock-out stay correct with N nodes in flight --------
+#
+# US1 widened the scheduler to fan out up to `max_concurrent_nodes`; the three
+# properties the operator's emergency controls guarantee for one in-flight node
+# must hold for N. Each scenario puts several nodes genuinely in flight at once
+# (independent nodes + a cap that admits them + real-time agent sleeps so the
+# attempts overlap) before the control lands, and asserts the N-safe reading
+# rather than the single-node one (FR-007/008/009, SC-006).
+
+
+async def test_pause_with_n_in_flight_starts_nothing_new_and_lets_all_finish(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-007/SC-1: `pause_epic` with several nodes in flight stops new dispatch
+    and lets every in-flight node complete its whole ladder.
+
+    Three independent nodes, cap 3, all in flight at once when the pause signal
+    lands on `us1`'s attempt. The strong reading of "in-flight nodes finish"
+    (R10) is the N-safe one: each of the three runs its gates, records its
+    verdict, tears down its key, salvages, and opens + enqueues its landing —
+    the key/worktree bracket stays atomic for all three — and only then does the
+    epic park, with nothing further dispatched. A scheduler that treated pause
+    as advisory, or that parked the moment the signal arrived and left nodes
+    half-finished, would fail one of the per-node ladder assertions or the
+    no-new-dispatch assertion.
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        signal_during={"us1": PAUSE_SIGNAL},
+        agent_sleep_s=0.5,
+    )
+
+    async with start_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    ) as handle:
+        # The signal lands while all three agents are still sleeping, so the
+        # epic parks only after every in-flight node has drained to a terminal
+        # landing state. Each node opened and enqueued its landing (the whole
+        # ladder, not a suspended half), then the scheduler parked.
+        paused = await wait_for_status(
+            handle,
+            lambda s: (
+                s.epic_state == EpicState.PAUSED
+                and all(
+                    s.nodes[nid].state == NodeState.ENQUEUED
+                    for nid in ("us1", "us2", "us3")
+                )
+            ),
+            what="the epic to park after all three in-flight nodes finished their ladders",
+        )
+
+        # All three ran their whole ladder — verified, recorded, torn down,
+        # salvaged, landed — not one of them parked halfway.
+        for node_id in ("us1", "us2", "us3"):
+            sequence = script.sequence(node_id)
+            assert sequence[:4] == [
+                "snapshot_criteria",
+                "prepare_worktree",
+                "issue_attempt_key:implementer",
+                "run_agent_attempt",
+            ], f"{node_id} did not run its full pre-landing ladder"
+            assert "run_gates" in sequence, f"{node_id} did not finish its gates"
+            assert "record_verification" in sequence, f"{node_id} recorded no verdict"
+            assert "teardown_attempt:implementer" in sequence, (
+                f"{node_id} did not close its key bracket"
+            )
+            assert "salvage_worktree" in sequence, f"{node_id} was not salvaged"
+            assert "enqueue_landing" in sequence, f"{node_id} did not open its landing"
+
+        assert states(paused) == {
+            "us1": NodeState.ENQUEUED,
+            "us2": NodeState.ENQUEUED,
+            "us3": NodeState.ENQUEUED,
+        }
+        # All three were genuinely in flight together when the signal landed.
+        assert any(len(running) == 3 for running in script.running_sets), (
+            f"never saw all three in flight; running_sets={script.running_sets}"
+        )
+        # Pause stopped dispatch: the three independent nodes are the whole
+        # graph, so nothing further could dispatch anyway — the assertion is
+        # that none did, and that the epic stays parked through a quiet window.
+        assert set(script.dispatched) == {"us1", "us2", "us3"}
+        await asyncio.sleep(SETTLE_S)
+        still = await handle.query(EpicWorkflow.epic_status)
+        assert still.epic_state == EpicState.PAUSED
+
+        await handle.signal(RESUME_SIGNAL)
+        status = await handle.result()
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.MERGED,
+        "us2": NodeState.MERGED,
+        "us3": NodeState.MERGED,
+    }
+    assert "overrun" not in script.calls
+
+
+async def test_kill_with_n_in_flight_salvages_every_one_before_terminating(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-008/SC-006: `kill_epic` with several nodes in flight cancels and
+    salvages *every one* before the epic terminates, with every branch reachable.
+
+    Three independent nodes, cap 3, all in flight at once when the kill signal
+    lands on `us1`'s attempt. Salvage-always (constitution VI) is per node, so
+    N kills must all complete their bracket — teardown, salvage, sweep — before
+    the epic ends. A kill that salvages three of four is a lost-work bug; here
+    the guard is that all three in-flight nodes appear in the salvage log and
+    the teardown log, every branch is still named in the final status, and the
+    epic does not terminate KILLED until the drain is done.
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        signal_during={"us1": KILL_SIGNAL},
+        await_cancel=True,
+        agent_sleep_s=2.0,
+    )
+
+    async with start_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=3,
+    ) as handle:
+        status = await handle.result()
+        # The node the signal landed on ran the adapter's kill path (R2): it
+        # waits, heartbeating, and on cancellation archives the transcript and
+        # re-raises — recorded here, and bounded so a workflow that never
+        # cancels fails rather than hangs. The other two were sleeping when the
+        # kill reached them, so their cancellation surfaced as a CancelledError
+        # out of the sleep rather than out of the await-cancel loop; their
+        # salvage is the durable proof, and is asserted below.
+        await wait_for(
+            lambda: "us1" in script.cancellations,
+            what="the signalled node's attempt to be cancelled",
+        )
+
+    # All three were genuinely in flight together when the kill landed.
+    assert any(len(running) == 3 for running in script.running_sets), (
+        f"never saw all three in flight; running_sets={script.running_sets}"
+    )
+    assert status.epic_state == EpicState.KILLED
+    assert states(status) == {
+        "us1": NodeState.KILLED,
+        "us2": NodeState.KILLED,
+        "us3": NodeState.KILLED,
+    }
+    # Every node is accounted for, and every branch is still named — a kill
+    # leaves no node unaccounted for and removes no branch (FR-008).
+    assert list(status.nodes) == ["us1", "us2", "us3"]
+    for node_id in ("us1", "us2", "us3"):
+        assert status.nodes[node_id].branch == branch_name(EPIC_ID, node_id), (
+            f"{node_id}'s branch is not reachable after kill"
+        )
+
+    # The lost-work guard (SC-006): every in-flight node closed its bracket
+    # (teardown) and was salvaged (constitution VI), not just the one the
+    # signal landed on. A kill that salvages three of four is a lost-work bug;
+    # here all three in-flight nodes must appear in both logs.
+    salvaged_nodes = {s.node_id for s in script.salvages}
+    assert salvaged_nodes == {"us1", "us2", "us3"}, (
+        f"kill salvaged only {salvaged_nodes}, not all three in-flight nodes"
+    )
+    torn_down_nodes = {t.lease.node_id for t in script.teardowns}
+    assert torn_down_nodes == {"us1", "us2", "us3"}, (
+        f"kill tore down only {torn_down_nodes}, not all three in-flight keys"
+    )
+    removed_nodes = {r.node_id for r in script.removals}
+    assert removed_nodes == {"us1", "us2", "us3"}, (
+        f"kill swept only {removed_nodes}, not all three in-flight worktrees"
+    )
+    # Every bracket closed on the operator's decision — teardown carries KILLED
+    # for each, whatever the agent was doing when it was told to stop.
+    for teardown in script.teardowns:
+        assert teardown.termination == Termination.KILLED
+    # No in-flight node ran its gates or recorded a verdict: the operator asked
+    # the epic to stop, and a gate suite against a worktree nobody will read is
+    # the opposite of stopping (FR-008). The bracket still closed for each.
+    assert "run_gates" not in script.calls
+    assert "record_verification" not in script.calls
+    assert script.records == []
+    # The signalled node's adapter ran its kill path to the cancel; the others
+    # were cancelled out of their sleep. None was left to run on.
+    assert "us1" in script.cancellations
+    assert "never_cancelled" not in script.calls
+
+
+async def test_a_failing_node_locks_out_only_its_own_dependents_under_fan_out(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-009/SC-3: a node ending non-PASSED while others run locks out only its
+    own dependents; an unrelated in-flight node is untouched.
+
+    `us1` fails its gates (non-PASSED) while the independent `us3` runs
+    alongside it under a cap of 2. `us2` depends on `us1`, so the moment `us1`
+    ends FAILED `us2` is marked KILLED without ever being dispatched — the edge
+    stayed locked, so there is nothing to salvage and nothing to sweep. `us3`
+    depends on nothing and is unrelated to the failed edge, so it must keep its
+    ladder and reach MERGED, undisturbed by the lock-out. This is the subtlest
+    change in the epic: `_lock_out_dependents` must be a statement about the
+    finishing node's dependents alone, never about an unrelated in-flight node.
+    """
+    nodes = [
+        make_node("us1", "US1"),
+        make_node("us2", "US2", depends_on=["us1"]),
+        make_node("us3", "US3"),
+    ]
+    script = ScriptedWorld(
+        {
+            "us1": [failing(1)],
+            "us2": [passing()],
+            "us3": [passing()],
+        },
+        client=env.client,
+        agent_sleep_s=0.5,
+    )
+
+    status = await run_epic(
+        env,
+        script,
+        graph=make_graph(nodes),
+        max_concurrent_nodes=2,
+    )
+
+    # us1 ended non-PASSED (KILLED — this codebase's spelling for a node the
+    # ladder did not pass, distinct from the FAILED a PAUSE_EPIC park produces),
+    # us2's edge died with it, us3 was never us1's concern.
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {
+        "us1": NodeState.KILLED,
+        "us2": NodeState.KILLED,
+        "us3": NodeState.MERGED,
+    }
+    # us2 never dispatched: no worktree, no key, no attempt — the edge stayed
+    # locked, so lock-out is bookkeeping alone (FR-009).
+    assert attempt_counts(status)["us2"] == 0
+    assert script.sequence("us2") == []
+    assert "us2" not in [r.node_id for r in script.prepare_requests]
+    assert "us2" not in [r.node_id for r in script.key_requests]
+    assert "us2" not in {s.node_id for s in script.salvages}
+
+    # us3 ran its whole ladder and landed — the lock-out of us2 did not touch
+    # the unrelated in-flight node.
+    us3_sequence = script.sequence("us3")
+    assert "run_gates" in us3_sequence
+    assert "record_verification" in us3_sequence
+    assert "enqueue_landing" in us3_sequence
+
+    # us1 and us3 were genuinely in flight together — the failure happened
+    # while an unrelated node was mid-ladder, which is the condition the
+    # scoped lock-out must not disturb. The running-set snapshot taken when
+    # us3's attempt started must show us1 still RUNNING alongside it.
+    during_us3 = states(script.observed["us3"])
+    assert during_us3["us1"] == NodeState.RUNNING, (
+        f"us3 was not in flight alongside us1; observed={during_us3}"
+    )
+    # us1's failure salvaged its own work (constitution VI), then swept.
+    us1_sequence = script.sequence("us1")
+    assert "salvage_worktree" in us1_sequence
+    assert "remove_worktree" in us1_sequence
+    assert us1_sequence.index("salvage_worktree") < us1_sequence.index(
+        "remove_worktree"
+    )
+

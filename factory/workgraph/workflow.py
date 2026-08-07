@@ -53,17 +53,27 @@ Seven orderings are this module's own contribution, and each is load-bearing:
    travels to teardown and to the salvage subject, and nowhere else.
 
 6. **The steering wheel turns the scheduler, not the node** (FR-008). `pause`
-   stops dispatch and nothing else: the node already in flight keeps its whole
-   ladder, because its key lease and its worktree are one bracket and suspending
-   a node halfway through would leave a key issued against work nobody is doing.
-   `kill` is the single exception and the only path that interrupts an attempt —
-   it cancels the adapter (whose KILLED path archives the transcript first, R2),
-   closes the bracket the attempt opened, salvages and sweeps, and then marks
-   every node the epic never reached KILLED, so a killed epic still accounts for
-   its whole graph. A `PAUSE_EPIC` press is where the two meet: the ladder can
-   only end the node, so the node parks FAILED — terminal, salvaged, swept, and
-   distinguishable from the node an operator abandoned — and the epic-level half
-   of that answer, stopping the scheduler, is supplied here.
+   stops dispatch and nothing else: every node already in flight keeps its whole
+   ladder, because each key lease and worktree is one bracket and suspending a
+   node halfway through would leave a key issued against work nobody is doing.
+   With N in flight the scheduler drains every in-flight task to its terminal
+   state — reaping each, applying the lock-out its ending demands — *before* it
+   parks, so the sentence stays true of N rather than being quietly reinterpreted
+   to one (FR-007). `kill` is the single exception and the only path that
+   interrupts an attempt — it cancels the adapter (whose KILLED path archives the
+   transcript first, R2), closes the bracket the attempt opened, salvages and
+   sweeps, and then marks every node the epic never reached KILLED, so a killed
+   epic still accounts for its whole graph. With N in flight the same drain runs
+   for kill: each in-flight node closes its own bracket on the way out (the
+   `_kill_requested` flag each `_attempt` polls), so salvage runs per node and a
+   kill that salvages some-but-not-all is a lost-work bug the drain prevents
+   (FR-008). `_lock_out_dependents` is scoped to the finishing node's edge: it
+   only ever marks a `PENDING` node whose *own* dependency is unreachable, so an
+   unrelated in-flight node (RUNNING, never PENDING) is never touched (FR-009).
+   A `PAUSE_EPIC` press is where the two meet: the ladder can only end the node,
+   so the node parks FAILED — terminal, salvaged, swept, and distinguishable from
+   the node an operator abandoned — and the epic-level half of that answer,
+   stopping the scheduler, is supplied here.
 
 7. **The judge is asked last, and only while it can still change the answer**
    (FR-003, 002's flow invariant 2). `judge_required` is the guard: gates green,
