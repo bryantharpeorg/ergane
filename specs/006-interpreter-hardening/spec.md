@@ -1,3 +1,8 @@
+---
+state: ready
+depends_on_landed: [003-merge-queue, 005-workgraph-interpreter]
+---
+
 # Feature Specification: Interpreter Hardening
 
 **Feature Branch**: `006-interpreter-hardening`

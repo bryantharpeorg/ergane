@@ -88,3 +88,26 @@ Every gate script appends its name to `.factory-gate-order.log`, which the
 skeleton's `.gitignore` excludes: execution order is recoverable
 (`tests/target_repo.py:gate_order`) without a gate run leaving a diff that a
 diff-check test would read as agent work.
+
+## `roadmap/` — roadmap grammar + readiness corpus (009-US1, T003/T004)
+
+One directory per fixture case, each holding a `specs/` tree of
+`<spec-dir>/spec.md` files — the same layout as the real `specs/` root, so the
+reader is exercised against the shape it ships against. Frontmatter is the new
+field (FR-001/FR-002); the `**Status**:` prose every spec already carries is
+dead text the reader never consults (plan § US1 trap).
+
+| fixture | expectation |
+|---|---|
+| `valid` | Parses. Five specs: `001-alpha` attests `landed`; `002-bravo` has no frontmatter and reads `draft` (FR-002); `003-ready` is `ready` on the attested `001-alpha` (dispatchable); `004-blocked` is `ready` on the draft `002-bravo` (blocked, edge named); `006-deferred` is `deferred`. |
+| `cycle` | Rejected (`cycle`): `001-a` ⇄ `002-b` is the cycle; `003-c` is outside it and must not appear in the finding. |
+| `unknown_key` | Rejected (`unknown_key`): `001-x` carries `priority`, a key the closed grammar (`state`, `depends_on_landed`) does not admit. Names the key and the file. |
+| `unknown_state` | Rejected (`unknown_state`): `001-x` declares `state: building` — only the system may say `building`. Names the value and the file. |
+| `non_mapping` | Rejected (`non_mapping`): frontmatter is a YAML sequence, not a mapping. Names the file. |
+| `dangling_dep` | Rejected (`dangling_dep`): `001-x` depends on `002-nowhere`, a spec directory this corpus does not hold. An edge to nothing can never be satisfied. |
+
+The reader is pure over the corpus (the `test_derivation_opens_no_file`
+pattern): it walks the `specs/` root it is handed and reads each `spec.md`, and
+nothing else. Readiness is computed separately over the parsed roadmap
+(`compute_readiness`); the observed-landed seam (FR-003) is exercised by
+injecting a `landed_for` resolver, the surface US2 fills against Temporal + git.

@@ -1,3 +1,11 @@
+---
+# Attested landed 2026-08-07 (operator): the bootstrap usage-tracking
+# component — ledger, keys, polling — shipped before the roadmap grammar
+# existed, so nothing will ever observe it landing. This is the attestation
+# path 009's grammar defines for work that predates the roadmap.
+state: landed
+---
+
 # Feature Specification: Per-Node Usage Tracking
 
 **Feature Branch**: `001-usage-tracking`
