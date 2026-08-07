@@ -43,7 +43,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -467,7 +467,15 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
         repo_view = client.repo_view()
         owner_repo = str(repo_view.get("nameWithOwner") or "")
         visibility = str(repo_view.get("visibility") or "")
-        default_branch = str(repo_view.get("defaultBranchRef") or "")
+        # `defaultBranchRef` is an object (`{"name": ...}`), not a bare string —
+        # stringifying the dict sent the rules query to a branch named
+        # "{'name': 'ergane-buildout'}" on the first real onboarding run.
+        default_ref = repo_view.get("defaultBranchRef") or {}
+        default_branch = (
+            str(default_ref.get("name") or "")
+            if isinstance(default_ref, Mapping)
+            else str(default_ref)
+        )
     except GhError as error:
         return _profile_from_gh_failure(
             target_repo, visibility="", default_branch="", owner_repo="",

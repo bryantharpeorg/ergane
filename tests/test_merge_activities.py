@@ -501,7 +501,10 @@ def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main") 
         payload={
             "nameWithOwner": "OWNER/REPO",
             "visibility": "PUBLIC",
-            "defaultBranchRef": default_branch,
+            # The real gh returns an object here, not a bare string — the
+            # 2026-08-07 onboarding run against bryantharpeorg/ergane proved it,
+            # after string-shaped fakes had hidden the parse bug.
+            "defaultBranchRef": {"name": default_branch},
         },
     )
     fake.expect_json(
@@ -565,7 +568,7 @@ async def test_validate_target_repo_reports_a_queue_missing_repo_as_failing(
     fake = FakeGh()
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
-        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": "main"},
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     fake.expect_json(
         "api", "repos/OWNER/REPO/rules/branches/main", payload=[]
@@ -601,7 +604,7 @@ async def test_validate_target_repo_falls_back_to_classic_protection_for_checks(
     fake = FakeGh()
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
-        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": "main"},
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     # Rules list has a merge_queue rule but no required checks within it.
     fake.expect_json(
@@ -671,7 +674,7 @@ async def test_validate_target_repo_loads_the_clones_factory_yaml(
     fake = FakeGh()
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
-        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": "main"},
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     # The fixture declares gates lint/test/typecheck; script the queue with a
     # matching rule so the only variable under test is the manifest load.
