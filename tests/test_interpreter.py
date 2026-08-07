@@ -3346,10 +3346,18 @@ async def test_a_slot_is_refilled_the_moment_a_node_reaches_terminal(
     assert all(len(running) <= 2 for running in script.running_sets), (
         f"more than two nodes in flight under a cap of 2: {script.running_sets}"
     )
-    assert script.dispatched == ["us1", "us2", "us3"]
+    # The set is the contract, not the order: `asyncio.create_task` starts the
+    # first two `_run_node` tasks in declaration order, but which one's
+    # `run_agent_attempt` activity the worker picks up first is timing-dependent
+    # and replays in completion order (spec § Technical Context). Under a cap of
+    # 2 all three eventually dispatch and no more than two are ever in flight.
+    assert set(script.dispatched) == {"us1", "us2", "us3"}
+    assert len(script.dispatched) == 3
     # us3's attempt started only after a slot freed — i.e. after us1 or us2
     # reached a terminal state. Its running-set snapshot must show at most one
-    # of us1/us2 still in flight alongside it.
+    # of us1/us2 still in flight alongside it. us3 is the last to dispatch
+    # because it could not start until a slot freed, so it is the final entry.
+    assert script.dispatched[-1] == "us3"
     us3_snapshot = script.running_sets[2]
     assert "us3" in us3_snapshot
     assert len(us3_snapshot) <= 2
