@@ -1,3 +1,8 @@
+---
+state: deferred
+depends_on_landed: [001-usage-tracking]
+---
+
 # Feature Specification: Budget Enforcement (DEFERRED)
 
 **Feature Branch**: `004-budget-enforcement`

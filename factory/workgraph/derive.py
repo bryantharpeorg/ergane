@@ -52,7 +52,12 @@ from factory.verify.criteria import (
     section_end,
 )
 from factory.verify.models import RequirementKind
-from factory.workgraph.models import WorkGraph, WorkGraphDeclaration, WorkNode
+from factory.workgraph.models import (
+    WorkGraph,
+    WorkGraphDeclaration,
+    WorkNode,
+    find_cycle,
+)
 
 #: The section that declares the graph. A level-2 header, found with the
 #: fence-masked scan the criteria parser uses: a `## Work Graph` quoted inside a
@@ -509,7 +514,12 @@ def _cross_validate(
             )
     rejections.raise_if_any()
 
-    cycle = _find_cycle(declarations)
+    cycle = find_cycle(
+        {
+            story_id: [*declaration.depends_on, *declaration.depends_on_merged]
+            for story_id, declaration in declarations.items()
+        }
+    )
     if cycle is not None:
         rejections.add(
             "acyclic",
@@ -591,43 +601,6 @@ def _check_implements(
             declaration.story_id,
             f"implements {_quoted(unknown)}, which this spec does not declare",
         )
-
-
-def _find_cycle(
-    declarations: Mapping[str, WorkGraphDeclaration]
-) -> list[str] | None:
-    """One cycle as the path that closes it, or None.
-
-    Only the cycle's members appear: the author's next move is to delete one of
-    those edges, and naming every story in the graph would leave them to re-derive
-    the cycle by hand, which is the work this just did.
-    """
-    finished: set[str] = set()
-    path: list[str] = []
-    on_path: set[str] = set()
-
-    def visit(story_id: str) -> list[str] | None:
-        path.append(story_id)
-        on_path.add(story_id)
-        declaration = declarations[story_id]
-        for dependency in [*declaration.depends_on, *declaration.depends_on_merged]:
-            if dependency in on_path:
-                return path[path.index(dependency) :] + [dependency]
-            if dependency not in finished:
-                cycle = visit(dependency)
-                if cycle is not None:
-                    return cycle
-        path.pop()
-        on_path.discard(story_id)
-        finished.add(story_id)
-        return None
-
-    for story_id in declarations:
-        if story_id not in finished:
-            cycle = visit(story_id)
-            if cycle is not None:
-                return cycle
-    return None
 
 
 def _quoted(values: Sequence[str]) -> str:

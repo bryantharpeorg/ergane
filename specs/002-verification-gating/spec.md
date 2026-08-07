@@ -1,3 +1,12 @@
+---
+# Attested landed 2026-08-07 (operator): the verification-gating component —
+# mechanical Spec Kit criteria parser, two-tier verify, the escalation path —
+# shipped before the roadmap grammar existed, so nothing will ever observe it
+# landing. This is the attestation path 009's grammar defines for work that
+# predates the roadmap.
+state: landed
+---
+
 # Feature Specification: Verification Gating
 
 **Feature Branch**: `002-verification-gating`
