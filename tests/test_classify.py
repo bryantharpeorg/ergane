@@ -129,11 +129,14 @@ def test_dirty_merge_state_status_is_conflict() -> None:
     )
 
 
-def test_auto_merge_gone_clean_and_open_is_dequeued_by_human() -> None:
-    """The remaining known dequeuer: nobody pulled auto-merge, nothing failed.
+def test_clean_and_open_with_no_auto_merge_is_pending_the_pr8_regression() -> None:
+    """A queued merge-queue PR reports `autoMergeRequest: null` — proved live.
 
-    A heuristic, flagged in the plan — but the queue is no longer going to land
-    it, so it is not worth waiting on as pending.
+    The old heuristic read auto-merge absence as "dequeued by a human" and
+    killed 009-us1's landing four seconds before GitHub merged PR #8
+    (2026-08-07). Queue membership is not visible on this gh's poll surface,
+    so a clean, open, unmerged PR is *pending* — the stall guard, not a
+    heuristic, is the bounded exit.
     """
     snapshot = _snapshot(
         auto_merge_requested=False,
@@ -141,9 +144,23 @@ def test_auto_merge_gone_clean_and_open_is_dequeued_by_human() -> None:
         merge_state_status="CLEAN",
     )
 
-    assert classify(snapshot, _landing(), LandingConfig(), now="2026-08-06T10:05:00Z") == (
-        QueueOutcome.DEQUEUED_BY_HUMAN
+    assert classify(snapshot, _landing(), LandingConfig(), now="2026-08-06T10:05:00Z") is None
+
+
+def test_clean_and_open_with_no_auto_merge_still_stalls_past_the_window() -> None:
+    """The stall guard is what bounds the no-signal wait (SC-002), auto-merge
+    requested or not: a genuinely dequeued PR surfaces as STALLED → escalation
+    rather than as an instant, wrong DEQUEUED_BY_HUMAN."""
+    snapshot = _snapshot(
+        auto_merge_requested=False,
+        failing_required_checks=(),
+        merge_state_status="CLEAN",
+        observed_at="2026-08-06T13:00:00Z",
     )
+
+    assert classify(
+        snapshot, _landing(), LandingConfig(stall_after_s=7200), now="2026-08-06T13:00:00Z"
+    ) == QueueOutcome.STALLED
 
 
 def test_auto_merge_still_requested_is_pending() -> None:
