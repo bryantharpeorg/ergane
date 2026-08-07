@@ -376,3 +376,37 @@ teardown fallback. The trade was whether to keep any figure between polls at all
    `describe()`'s pending-activity heartbeat details — a client-side RPC, no history
    event — and renders live spend as a sibling of the query document, never merged
    into it.
+
+## D-030 · The fan-out cap is `max_concurrent_nodes` on `EpicInput`, supplied at `factory-epic start` (decided)
+
+Decided 2026-08-07 (Bryan), recorded at epic 007's US5 landing. The scheduler
+widens from one node at a time to N behind an operator-set cap, and two naming
+questions had to be settled before the field landed.
+
+1. **`max_concurrent_nodes`, not `max_workers`.** "Worker" already names the
+   Temporal worker *process* — the host process that polls a task queue and runs
+   activities — so a `max_workers` knob would collide with that established
+   meaning and read as "how many worker processes." The thing being bounded is
+   the count of in-flight `_run_node` tasks inside one workflow execution, which
+   are nodes of the work graph, so the name says what it counts. The cap sits
+   above the worker process, not beside it: one worker runs N concurrent node
+   tasks through the SDK's deterministic event loop.
+2. **On `EpicInput`, not in `factory.yaml`.** `factory.yaml` is a property of the
+   *target repo* — its runtime image, its gates, its standards file — and the
+   number of agents a host can carry is a property of the *host*, not of the repo
+   being built. Putting host capacity in `factory.yaml` would make the same repo
+   dispatch differently from two hosts, and would couple a deployment fact to a
+   file the target repo owns. `EpicInput` is the epic's dispatch argument, supplied
+   per `factory-epic start`, so the operator who knows the host sets the cap when
+   they start the epic — and an epic moved to a bigger host is restarted with a
+   bigger cap, not re-derived.
+
+The cap defaults to `1`, which is what makes fan-out opt-in (SC-002): an epic that
+does not name the flag runs exactly as the sequential loop did, and the existing
+suite is green against the default. It is validated in the CLI (positive integer;
+`0` and negatives rejected, never coerced) and again in the workflow, because
+`EpicInput` can be constructed without the CLI. The fleet-visibility story (US5)
+is a consequence, not a separate mechanism: `epic_status` was already a per-node
+document, so the renderer's only widening was attributing each pending
+`run_agent_attempt`'s heartbeat to the node its `activity_id` names rather than to
+"the" running node — the cap is what makes several of those pending at once.
