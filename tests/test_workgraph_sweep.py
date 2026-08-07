@@ -1252,7 +1252,7 @@ def test_a_node_is_picked_in_one_place_and_an_agent_started_in_one_place() -> No
 
     A second scheduler is how "dispatches only when dependencies passed" becomes
     true of one path and false of another, so the claim is first that there is
-    only one path: `_next_ready` is the only thing that selects a node,
+    only one path: `_ready_set` is the only thing that selects a node,
     `_run_node` is the only thing that runs one, and `run_agent_attempt` is
     started in exactly one function.
     """
@@ -1262,7 +1262,7 @@ def test_a_node_is_picked_in_one_place_and_an_agent_started_in_one_place() -> No
     def callers(name: str) -> set[str]:
         return {owner_name(owner, node) for node in calls_to(tree, name)}
 
-    assert callers("_next_ready") == {"run"}
+    assert callers("_ready_set") == {"run"}
     assert callers("_run_node") == {"run"}
     assert callers("run_agent_attempt") == set(), (
         "the activity is referenced, never called, inside workflow code"
