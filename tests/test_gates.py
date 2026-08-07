@@ -45,6 +45,7 @@ module lands, every test here fails at import.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,10 +55,12 @@ import pytest
 
 from factory.verify.factory_yaml import MANIFEST_NAME
 from factory.verify.gates import (
+    DEFAULT_GATE_CONCURRENCY,
     DEFAULT_GATE_TIMEOUT_S,
     OUTPUT_TAIL_LIMIT,
     SCRUBBED_ENV_ALLOWLIST,
     ExecutionOutcome,
+    GateConcurrencyLimiter,
     GateInvocation,
     SubprocessGateExecutor,
     run_gates,
@@ -586,3 +589,214 @@ def test_a_vanished_worktree_is_a_config_error_not_a_crash(tmp_path: Path) -> No
     assert len(results) == 1
     assert results[0].status is GateStatus.CONFIG_ERROR
     assert str(worktree / MANIFEST_NAME) in results[0].output_tail
+
+
+# --- US2: a verdict does not depend on its neighbours (FR-005) ---------------
+#
+# Fan-out puts N nodes' gates on one host at once, and a fixed wall-clock
+# timeout converts neighbour load into a FAIL — a verdict that is not a fact
+# about the node's code. The fix bounds gate concurrency below node
+# concurrency: a node's agent runs in parallel while its gates take a turn, so
+# a gate's wall-clock measures its own work and never the queue it waited in.
+# The contention marker records whether a gate ran alongside others, so a slow
+# verdict is auditable rather than mysterious.
+#
+# Contention is a fact *between* nodes, not within one: a single `run_gates`
+# call runs its gates in sequence. So these tests run two `run_gates` calls in
+# two threads sharing one limiter — the shape the workflow produces when N
+# nodes verify at once — and read the results back on the main thread.
+
+
+def _run_two_concurrent(
+    worktree: Path,
+    *,
+    executor_a: Callable,
+    executor_b: Callable,
+    limiter: GateConcurrencyLimiter,
+) -> tuple[list[GateResult], list[GateResult]]:
+    """Run two `run_gates` calls in parallel threads sharing one limiter.
+
+    This is the topology fan-out produces: N nodes, each in its own worker
+    thread, each calling `run_gates` against its own worktree. Two is the
+    smallest N that contends.
+    """
+    out: dict[str, list[GateResult]] = {}
+
+    def run(tag: str, executor: Callable) -> None:
+        out[tag] = run_gates(worktree, executor=executor, concurrency_limiter=limiter)
+
+    threads = [
+        threading.Thread(target=run, args=("a", executor_a), name="gate-node-a"),
+        threading.Thread(target=run, args=("b", executor_b), name="gate-node-b"),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30.0)
+    return out["a"], out["b"]
+
+
+class _BarrierExecutor:
+    """An executor that holds a gate mid-flight until a peer arrives.
+
+    The barrier is sized for two, so a gate that runs alone breaks the barrier
+    after a short timeout and proceeds uncontended; a gate that runs while a
+    peer is also in flight releases the barrier immediately and the two are
+    observed running at once. `gate_work_s` is the work the gate does once it
+    has its turn — the part the wall-clock bound is meant to measure.
+    """
+
+    def __init__(
+        self,
+        outcome: ExecutionOutcome,
+        *,
+        gate_work_s: float,
+        barrier: threading.Barrier,
+    ) -> None:
+        self._outcome = outcome
+        self._gate_work_s = gate_work_s
+        self._barrier = barrier
+        self.invocations: list[GateInvocation] = []
+
+    def run(self, invocation: GateInvocation) -> ExecutionOutcome:
+        self.invocations.append(invocation)
+        try:
+            self._barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        time.sleep(self._gate_work_s)
+        return self._outcome
+
+
+def test_the_default_gate_concurrency_is_one() -> None:
+    """Gates serialize across the host by default — the strongest form of
+    load-independence, and below any node concurrency above one."""
+    assert DEFAULT_GATE_CONCURRENCY == 1
+
+
+def test_an_uncontended_gate_records_no_contention(
+    node_worktree: Callable[..., Path],
+) -> None:
+    """A gate that ran alone carries a contention marker of zero, so an
+    operator reading the evidence sees 'this verdict was not under load'
+    rather than having to guess (FR-005 acceptance 3)."""
+    worktree = node_worktree("passing")
+    executor = RecordingExecutor()
+
+    results = run_gates(worktree, executor=executor)
+
+    assert results, "the fixture declares gates"
+    for result in results:
+        assert result.concurrent_gates == 0
+
+
+def test_a_gate_passes_alone_and_passes_contended(
+    node_worktree: Callable[..., Path],
+) -> None:
+    """FR-005 acceptance 1: a node whose gates pass when run alone still pass
+    when run at full concurrency.
+
+    The gate's true verdict is PASS and its own work is fast; what would push
+    its wall-clock past the bound is a neighbour holding the CPU. Bounding gate
+    concurrency means the gate waits for its turn rather than racing for it —
+    its wall-clock measures its own work, so the verdict does not move with
+    load. We run the *same* gate alone and alongside one busy neighbour and
+    assert identical PASS verdicts; the neighbour's presence only stretches the
+    wall-clock the runner waited, never the status."""
+    worktree = node_worktree("passing")
+    passing = ExecutionOutcome(
+        exit_code=0, output="ok", duration_s=0.2, timed_out=False
+    )
+
+    # Alone: no neighbour, no contention. The barrier breaks on its timeout
+    # because no peer ever arrives, and the gate passes on its own merits.
+    alone_barrier = threading.Barrier(2, timeout=0.5)
+    alone = run_gates(
+        worktree,
+        executor=_BarrierExecutor(passing, gate_work_s=0.05, barrier=alone_barrier),
+    )
+    assert [r.status for r in alone] == [GateStatus.PASS] * 3
+    assert all(r.concurrent_gates == 0 for r in alone)
+
+    # Contended: a second node's gates run alongside the first's, sharing a
+    # limiter that bounds gate concurrency at one. Gates take turns rather than
+    # race for the CPU; both nodes still PASS because the bound measures each
+    # gate's own work, not the queue it waited in.
+    contended_barrier = threading.Barrier(2, timeout=5.0)
+    limiter = GateConcurrencyLimiter(DEFAULT_GATE_CONCURRENCY)
+    a, b = _run_two_concurrent(
+        worktree,
+        executor_a=_BarrierExecutor(passing, gate_work_s=0.05, barrier=contended_barrier),
+        executor_b=_BarrierExecutor(passing, gate_work_s=0.05, barrier=contended_barrier),
+        limiter=limiter,
+    )
+    assert [r.status for r in a] == [GateStatus.PASS] * 3, (
+        "a passing gate's verdict must not move with neighbour load"
+    )
+    assert [r.status for r in b] == [GateStatus.PASS] * 3
+
+
+def test_a_genuinely_hanging_gate_is_still_detected_under_contention(
+    node_worktree: Callable[..., Path],
+) -> None:
+    """FR-005 acceptance 2: the protection loosens contention sensitivity, it
+    does not remove timeouts. A gate that genuinely hangs past its bound is
+    still detected and failed — even when other gates are queued behind it.
+
+    Uses the real subprocess executor against the hanging-gate fixture so the
+    deadline enforcement (SIGTERM then SIGKILL) is exercised for real, under a
+    concurrency limiter that would let a queued neighbour wait too. The bound
+    is short; the gate sleeps 30s; the verdict must be TIMEOUT promptly."""
+    worktree = node_worktree("hanging-gate")
+    limiter = GateConcurrencyLimiter(DEFAULT_GATE_CONCURRENCY)
+
+    started = time.monotonic()
+    results = run_gates(
+        worktree,
+        executor=SubprocessGateExecutor(grace_s=0.5),
+        timeout_overrides={"test": 1, "typecheck": 1},
+        concurrency_limiter=limiter,
+    )
+    elapsed = time.monotonic() - started
+
+    by_name = results_by_name(results)
+    assert by_name["test"].status is GateStatus.TIMEOUT
+    assert by_name["test"].exit_code is None
+    assert elapsed < KILL_DEADLINE_S, "the bound still ends a hang promptly"
+
+
+def test_a_contended_gate_records_its_contention(
+    node_worktree: Callable[..., Path],
+) -> None:
+    """FR-005 acceptance 3: whether a gate ran contended is on its result and
+    readable afterwards, so a slow verdict is auditable.
+
+    Two nodes' gates share a limiter that admits both at once, so each gate
+    runs alongside a peer and `concurrent_gates` records that count. The
+    barrier forces the overlap to actually happen — without it two fast gates
+    might miss each other on a timing fluke and the marker would read zero for
+    the wrong reason. The marker is what makes a slow verdict something an
+    operator can explain rather than something they have to explain away."""
+    worktree = node_worktree("passing")
+    passing = ExecutionOutcome(
+        exit_code=0, output="ok", duration_s=0.2, timed_out=False
+    )
+    barrier = threading.Barrier(2, timeout=5.0)
+    # A limiter that admits two gate executions at once — wider than the
+    # default of one — so a gate genuinely runs alongside a neighbour.
+    limiter = GateConcurrencyLimiter(2)
+
+    a, b = _run_two_concurrent(
+        worktree,
+        executor_a=_BarrierExecutor(passing, gate_work_s=0.1, barrier=barrier),
+        executor_b=_BarrierExecutor(passing, gate_work_s=0.1, barrier=barrier),
+        limiter=limiter,
+    )
+
+    contended = [r for r in [*a, *b] if r.concurrent_gates > 0]
+    assert contended, (
+        "a gate that ran alongside another must record the contention"
+    )
+    # The contended gate saw exactly one peer in flight alongside it.
+    for result in contended:
+        assert result.concurrent_gates == 1
