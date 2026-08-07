@@ -1,3 +1,11 @@
+---
+# Attested landed 2026-08-07 (operator): the minimal WorkGraph interpreter
+# (spec 005) shipped via the ralph Run 3 bootstrap before the roadmap grammar
+# existed, so nothing will ever observe it landing. This is the attestation
+# path 009's grammar defines for work that predates the roadmap.
+state: landed
+---
+
 # Feature Specification: Minimal WorkGraph Interpreter
 
 **Feature Branch**: `005-workgraph-interpreter`
