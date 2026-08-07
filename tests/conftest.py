@@ -88,11 +88,17 @@ class FakeLiteLLM:
         # key -> alias; retained after delete so alias filtering still resolves.
         self.aliases: dict[str, str] = {}
 
+        # The aliases `/v1/models` advertises (US2 preflight FR-004).
+        self.served_models: set[str] = set()
+
         self.calls: list[RecordedCall] = []
 
         # Test levers.
         self.max_page_size: int | None = None
         self.enforce_alias_uniqueness = False
+        # A transport that drops every request, for the unreachable-proxy path
+        # (FR-005): set by `make_unreachable`.
+        self._refuse_requests = False
 
         self._failures: dict[str, list[tuple[int, str]]] = {}
         self._issued = 0
@@ -165,6 +171,10 @@ class FakeLiteLLM:
         queue = self._failures.setdefault(path, [])
         queue.extend([(status, f"injected {status} for {path}")] * times)
 
+    def make_unreachable(self) -> None:
+        """Drop every request, as if the address were dead (US2 FR-005)."""
+        self._refuse_requests = True
+
     def key_for_alias(self, alias: str) -> str | None:
         for key, key_alias in self.aliases.items():
             if key_alias == alias:
@@ -185,6 +195,11 @@ class FakeLiteLLM:
     # --- request handling ---------------------------------------------------
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
+        if self._refuse_requests:
+            # The connection-refused shape: an httpx.HTTPError the client maps
+            # to a credential-free error with status None (FR-005).
+            raise httpx.ConnectError("connection refused", request=request)
+
         body = self._json_body(request)
         path = request.url.path
         self.calls.append(
@@ -213,7 +228,38 @@ class FakeLiteLLM:
             return self._key_delete(body)
         if route == ("GET", "/spend/logs/v2"):
             return self._spend_logs(dict(request.url.params))
+        if route == ("GET", "/v1/models"):
+            return self._models()
+        if route == ("GET", "/key/list"):
+            return self._key_list()
         return self._error(404, f"unknown route {request.method} {path}")
+
+    def _models(self) -> httpx.Response:
+        """`GET /v1/models`: the aliases the proxy says it can route (FR-004)."""
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"id": alias} for alias in sorted(self.served_models)]
+            },
+        )
+
+    def _key_list(self) -> httpx.Response:
+        """`GET /key/list`: every *live* key's alias (US2 FR-006 preflight).
+
+        Live only: a deleted key is gone from `/key/list` the way it is on the
+        real proxy, so an orphaned alias that would collide with an epic's first
+        attempt is exactly one that is still live (a dead worker that never ran
+        teardown) — never a key that already tore down.
+        """
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"key_alias": self.aliases[key], "key": key}
+                    for key in self.keys
+                ]
+            },
+        )
 
     def _key_generate(self, body: dict[str, Any] | None) -> httpx.Response:
         body = body or {}

@@ -111,7 +111,7 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
-from factory.usage.litellm_client import PROXY_URL_ENV
+from factory.usage.litellm_client import PROXY_URL_ENV, LiteLLMClient
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
 from factory.verify.models import (
     CriteriaSet,
@@ -121,6 +121,7 @@ from factory.verify.models import (
     Requirement,
     RequirementKind,
 )
+from factory.workgraph import cli
 from factory.workgraph.cli import load_workgraph, main
 from factory.workgraph.models import (
     AdapterResult,
@@ -133,6 +134,7 @@ from factory.workgraph.models import (
 )
 from factory.workgraph.worktree import PreparedWorktree, branch_name
 from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
+from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
 from tests.test_interpreter import merged_snapshot
 
 CORPUS = Path(__file__).resolve().parent / "fixtures" / "workgraph"
@@ -710,15 +712,44 @@ async def env() -> AsyncIterator[WorkflowEnvironment]:
 async def temporal_env(
     env: WorkflowEnvironment, monkeypatch: pytest.MonkeyPatch
 ) -> WorkflowEnvironment:
-    """Point the CLI's environment contract at the test server.
+    """Point the CLI's environment contract at the test server and a fake proxy.
 
     The namespace is the interesting one: the test server serves `default` and
     the CLI's own default is `factory`, so a CLI that ignored
     `TEMPORAL_NAMESPACE` could not talk to this server at all.
+
+    The preflight (US2) reads the proxy before dispatching, so this fixture
+    stands up the shared fake proxy and wires the preflight's client to it:
+    the fake serves exactly the aliases the CLI's own `personas.yaml` names for
+    an epic of implementer nodes plus the judge, and holds no keys — so a valid
+    epic preflights clean. Tests that want a misconfigured proxy override these
+    fields on `temporal_env.fake`.
     """
     monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, env.client.service_client.config.target_host)
     monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, env.client.namespace)
     monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+    monkeypatch.setenv("LITELLM_MASTER_KEY", FAKE_MASTER_KEY)
+
+    fake = FakeLiteLLM(base_url=PROXY_URL, master_key=FAKE_MASTER_KEY)
+    # The aliases `factory/config.py`'s shipped registry names for the personas
+    # a valid_epic dispatches (implementer nodes + the judge). Serving exactly
+    # these keeps the preflight honest: it passes only because every alias the
+    # CLI's own registry names is genuinely on the list.
+    fake.served_models = {
+        "ollama-cloud/deepseek-v4-flash",
+        "local/qwen3.6-27b",
+        "ollama-cloud/glm-5.2",
+    }
+
+    def preflight_client() -> LiteLLMClient:
+        return LiteLLMClient(
+            base_url=fake.base_url,
+            master_key=fake.master_key,
+            transport=fake.transport,
+        )
+
+    monkeypatch.setattr(cli, "_open_preflight_client", preflight_client)
+    env.fake = fake  # type: ignore[attr-defined]
     return env
 
 
@@ -1460,3 +1491,160 @@ def test_onboard_a_nonexistent_clone_is_exit_1_with_the_manifest_finding(
     assert result.code == 1
     assert "factory_yaml" in result.stdout
     assert "factory.yaml" in result.stdout
+
+
+# --- preflight (US2: FR-004/005/006, T012/T013) ------------------------------
+
+
+def _first_attempt_alias(epic_id: str, node_id: str, persona: str) -> str:
+    return f"{epic_id}:{node_id}:1:{persona}"
+
+
+async def test_an_unserved_alias_refuses_before_dispatch_naming_alias_and_personas(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-004: a registry alias the proxy does not serve stops `start` (exit 1).
+
+    The alias is reported with *every* persona that names it — `local/qwen3.6-27b`
+    is the fallback for both `implementer` and `judge`, so both must be named —
+    and no workflow exists and no key is issued: the cost is one message.
+    """
+    fake: FakeLiteLLM = temporal_env.fake
+    fake.served_models.discard("local/qwen3.6-27b")
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 1
+    assert "local/qwen3.6-27b" in result.stderr
+    # Every persona naming the unserved alias, not a bare alias.
+    assert "implementer" in result.stderr
+    assert "judge" in result.stderr
+    assert result.stdout == ""
+    with pytest.raises(RPCError):
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+    # No key was minted by the preflight or anything after it.
+    assert fake.keys == {}
+
+
+async def test_unserved_alias_names_each_offender_not_just_the_first(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """The whole list at once: an operator fixes one round trip, not several."""
+    fake: FakeLiteLLM = temporal_env.fake
+    fake.served_models = set()  # nothing served
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 1
+    for alias in ("ollama-cloud/deepseek-v4-flash", "ollama-cloud/glm-5.2", "local/qwen3.6-27b"):
+        assert alias in result.stderr
+
+
+async def test_an_unreachable_proxy_is_a_distinct_finding_naming_the_address(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """FR-005: "nothing is listening" reads as exit 2 and names the address.
+
+    Distinct from "not served": one is the operator's config to fix (1), the
+    other is the server to go look at (2). The address the CLI actually tried is
+    in the message.
+    """
+    fake: FakeLiteLLM = temporal_env.fake
+    fake.make_unreachable()
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 2
+    assert PROXY_URL in result.stderr
+    assert result.stdout == ""
+    with pytest.raises(RPCError):
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+
+
+async def test_a_colliding_first_attempt_key_alias_is_reported_with_its_remedy(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-006: an orphaned key alias colliding with the first attempt is caught.
+
+    The deterministic alias `<epic>:us1:1:implementer` is already live (an orphan
+    from a dead worker), so `start` refuses before dispatch, naming the alias and
+    its remedy rather than surfacing as a mid-flight uniqueness failure.
+    """
+    fake: FakeLiteLLM = temporal_env.fake
+    alias = _first_attempt_alias(EPIC_ID, "us1", "implementer")
+    fake.keys["sk-fake-orphan"] = {
+        "key": "sk-fake-orphan",
+        "key_alias": alias,
+        "models": [],
+        "metadata": {},
+        "duration": "24h",
+        "spend": 0.0,
+        "max_budget": None,
+    }
+    fake.aliases["sk-fake-orphan"] = alias
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 1
+    assert alias in result.stderr
+    assert "revoke" in result.stderr.lower()
+    assert result.stdout == ""
+    with pytest.raises(RPCError):
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
+
+
+async def test_a_fully_valid_config_starts_exactly_as_today(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """US2 acceptance 4: a passing preflight adds no dispatch-path behaviour.
+
+    The fake serves exactly the aliases the CLI's own registry names and holds no
+    keys, so the epic starts, runs to completion, and produces the workflow id —
+    byte-for-byte the behaviour before preflight existed (SC-006).
+    """
+    script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
+
+    async with worker_for(temporal_env, script):
+        result = await run_async("start", str(workgraph_json))
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).result()
+
+    assert result.code == 0
+    assert result.stdout.strip() == WORKFLOW_ID
+    assert script.dispatched == NODE_IDS
+
+
+async def test_preflight_wording_states_what_was_checked_not_worker_resolution(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    workgraph_json: Path,
+) -> None:
+    """US2 honesty (R8): preflight validates the CLI's own registry, and says so.
+
+    The CLI and the worker resolve personas from different `personas.yaml` files
+    by design, so preflight can only confirm the aliases *this registry* names
+    are served — it must not claim the worker's resolution was validated. The
+    finding names the registry as the thing checked.
+    """
+    fake: FakeLiteLLM = temporal_env.fake
+    fake.served_models.discard("ollama-cloud/deepseek-v4-flash")
+
+    result = await run_async("start", str(workgraph_json))
+
+    assert result.code == 1
+    # The finding names the *registry* as the thing checked — not the worker's
+    # resolution, which the CLI cannot see and must not claim to have validated.
+    assert "registry" in result.stderr
+    assert "worker" not in result.stderr.lower()

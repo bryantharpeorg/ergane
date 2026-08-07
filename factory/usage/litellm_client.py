@@ -290,6 +290,55 @@ class LiteLLMClient:
             raise
         return True
 
+    # --- preflight reads (US2 FR-004/005/006) --------------------------------
+
+    async def list_model_ids(self) -> set[str]:
+        """Every alias the proxy advertises it can route, whole (`/v1/models`).
+
+        US2 FR-004: `factory-epic start` refuses before dispatching when a
+        registry alias is not served. The answer is the whole `data` array —
+        a caller that stopped at the first page would let an unserved alias
+        through, and an epic that starts burns an attempt discovering it.
+
+        Aliases only, never a credential: this is a preflight read under
+        FR-009, so no key value can leave through it.
+        """
+        body = await self._call("GET", "/v1/models")
+
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise LiteLLMError("/v1/models returned no model array")
+        return {
+            entry["id"]
+            for entry in data
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        }
+
+    async def list_key_aliases(self) -> set[str]:
+        """Every live virtual key's alias (`/key/list`) — never its token.
+
+        US2 FR-006: the epic's first attempts mint deterministic aliases
+        (`<epic>:<node>:1:<persona>`), so a collision with a live key is
+        knowable before dispatch. The alias is the key's identity here; the
+        token is FR-009's business and stays off this path.
+
+        Distinguishes "the proxy answered and says the list is this" from
+        "nothing is listening": the latter surfaces as `LiteLLMError` with
+        `status is None`, which FR-005 demands the preflight report as a
+        distinct finding rather than as a served-alias verdict.
+        """
+        body = await self._call("GET", "/key/list")
+
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise LiteLLMError("/key/list returned no key array")
+        return {
+            entry["key_alias"]
+            for entry in data
+            if isinstance(entry, dict) and isinstance(entry.get("key_alias"), str)
+        }
+
+
     # --- plumbing -----------------------------------------------------------
 
     async def _call(
