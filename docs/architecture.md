@@ -582,20 +582,37 @@ sufficient:
    was computed against a possibly-stale base and proves little on its own — the
    merge-group build is the real gate.
 
-**Known limitation — a queue ejection is invisible to the poller.** GitHub reports
-a queued PR as `autoMergeRequest: null`, open, and clean for its entire ride
-(queue membership is absent from `gh pr view`'s surface — this is why the
-classifier decides nothing from auto-merge's absence, §7 above). A PR ejected
-because its merge group failed therefore looks identical to one still riding, and
-it does not surface as a failing required check either, because the poll reads
-`statusCheckRollup` on the PR head while a merge-group check attaches to the
-`gh-readonly-queue/…` ref. An ejection consequently falls through to the stall
-guard and surfaces as `STALLED` → escalation after `stall_after_s` (default 7200).
-Concurrency is thus safe for the branch and expensive for the node: the cost of an
-ejection is wasted wall clock plus an operator page, never a corrupted trunk.
-Lower `stall_after_s` for unattended concurrent runs so the page arrives in
-minutes rather than hours. This path has never fired — every landing through
-2026-08-07 was serial, and the queue has never held two entries.
+**Known limitation — a queue ejection is invisible to the poll surface we chose.**
+GitHub reports a queued PR as `autoMergeRequest: null`, open, and clean for its
+entire ride, and queue membership is absent from `gh pr view`'s fields (which is
+why the classifier decides nothing from auto-merge's absence, §7 above). A PR
+ejected because its merge group failed therefore looks identical to one still
+riding, and it does not surface as a failing required check either, because the
+poll reads `statusCheckRollup` on the PR head while a merge-group check attaches
+to the `gh-readonly-queue/…` ref. An ejection consequently falls through to the
+stall guard and surfaces as `STALLED` → escalation after `stall_after_s`
+(default 7200, SC-002's bound). Concurrency is thus safe for the branch and
+expensive for the node: the cost of an ejection is wasted wall clock plus an
+operator page, never a corrupted trunk. This path has never fired — every
+landing through 2026-08-07 was serial, and the queue has never held two entries.
+
+The limitation is **not** a GitHub API limit, and that matters for whoever fixes
+it. `gh pr view` cannot see the queue, but GraphQL can:
+
+```graphql
+repository(owner:…, name:…) { mergeQueue(branch: "<default>") {
+  entries(first: 20) { nodes { position state enqueuedAt pullRequest { number } } } } }
+```
+
+`MergeQueueEntryState` is `QUEUED | AWAITING_CHECKS | MERGEABLE | UNMERGEABLE |
+LOCKED`, so `UNMERGEABLE` is a *positive* ejection signal and disappearance from
+`entries` without a `mergedAt` is a second one. Reading it would convert the
+two-hour stall guess into an immediate, correctly-classified outcome — the same
+shape of fix as 701a7f5, which removed a wrong inference rather than adding a
+timeout. Until then, an operator running concurrent nodes unattended can watch
+that query from outside the factory; there is no operator path to shorten
+`stall_after_s`, since `EpicInput.landing_config` is never set by `factory-epic
+start` and the 7200 default is asserted by `tests/test_mergequeue_models.py`.
 
 ## 8. Agents: the adapter seam
 
