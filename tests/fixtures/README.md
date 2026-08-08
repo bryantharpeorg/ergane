@@ -111,3 +111,14 @@ pattern): it walks the `specs/` root it is handed and reads each `spec.md`, and
 nothing else. Readiness is computed separately over the parsed roadmap
 (`compute_readiness`); the observed-landed seam (FR-003) is exercised by
 injecting a `landed_for` resolver, the surface US2 fills against Temporal + git.
+
+## `remainders/` — hand-trimmed remainder graphs (016 SC-002 ground truth)
+
+Byte-verbatim copies of the two `workgraph-remainder.json` files an operator
+hand-trimmed on 2026-08-07 to resume split epics — 007 (us1/us2 landed,
+us3/us4/us5 remaining, us3's satisfied edge deleted by hand) and 009 (us1
+landed, us2/us3 remaining). Each was a manually computed delta and a D-025
+violation; 016-delta-derivation's SC-002 requires `derive_delta` to reproduce
+them node-for-node and edge-for-edge. They are the only record of what the
+operator's judgment computed — banked here per 016 T001 before a `git clean`
+could erase them.

@@ -1,0 +1,41 @@
+{
+  "epic_id": "009-roadmap-scheduler",
+  "feature": "009-roadmap-scheduler",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane-009-target",
+  "nodes": [
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "009-roadmap-scheduler:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-009"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "009-roadmap-scheduler:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-007",
+        "FR-008",
+        "FR-010"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us2"
+      ],
+      "timeout_override_s": null
+    }
+  ]
+}
