@@ -1,11 +1,18 @@
 """The factory-doctor command surface.
 
-`factory-doctor report|list|resolve` is US1's operator CLI over the findings
-ledger. It mirrors the other factory CLIs' exit-code contract:
+`factory-doctor report|list|resolve|check` is the operator CLI over the
+findings ledger and the probe registry. It mirrors the other factory CLIs'
+exit-code contract:
 
 - 0 success
-- 1 operator-fixable refusal (bad grammar, unknown key, missing flags)
-- 2 service not answering (reserved; US2's `check` is the first user)
+- 1 operator-fixable refusal (bad grammar, unknown key, missing flags) or a
+  newly filed `critical` finding from a probe
+- 2 service not answering or a probe that was skipped because a service it needs
+  did not answer
+
+When a run both files a new critical finding and skips a probe, the exit is 2:
+an incomplete examination outranks a bad one, because the operator's next action
+is to re-run with the service up, not to read the finding (FR-007).
 
 The store path resolves from the working directory the same way the ledger and
 verification stores do.
@@ -21,7 +28,8 @@ from pathlib import Path
 from typing import Sequence
 
 from factory.doctor.models import Finding, Severity, Status, parse_findings_batch
-from factory.doctor.store import connect, list_findings, report, resolve
+from factory.doctor.probes import REGISTRY, FindingReport, Probe, ServiceNotAnswering
+from factory.doctor.store import connect, get_finding, list_findings, report, resolve
 
 EXIT_OK = 0
 EXIT_USER = 1
@@ -94,6 +102,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     resolve_parser.add_argument("--key", required=True, help="finding to resolve")
     resolve_parser.add_argument("--reason", required=True, help="why it is resolved")
     resolve_parser.set_defaults(run=_resolve_command)
+
+    check_parser = subparsers.add_parser("check", help="run all registered probes")
+    check_parser.set_defaults(run=_check_command)
 
     return parser.parse_args(argv)
 
@@ -176,3 +187,55 @@ def _resolve_command(args: argparse.Namespace, conn: sqlite3.Connection) -> int:
     if not resolve(conn, args.key, reason=args.reason, resolved_at=seen_at):
         raise _UserError(f"finding {args.key!r} is not known or already resolved")
     return EXIT_OK
+
+
+def _check_command(_args: argparse.Namespace, conn: sqlite3.Connection) -> int:
+    """Run every registered probe, file findings, and compute the exit code.
+
+    A skipped probe (its service did not answer) is reported and forces exit 2.
+    A new critical finding forces exit 1. If both happen, skip wins (FR-007).
+    """
+    seen_at = _utcnow()
+    skipped_services: list[str] = []
+    new_findings: list[Finding] = []
+
+    for probe in REGISTRY:
+        reports = _run_probe(probe, skipped_services)
+        if reports is None:
+            # Probe was skipped; the service name is already printed.
+            continue
+        for report in reports:
+            finding = report.to_finding(source=probe.name)
+            was_new = _report_if_new(conn, finding, seen_at=seen_at)
+            if was_new and finding.severity is Severity.CRITICAL:
+                new_findings.append(finding)
+
+    if skipped_services:
+        return EXIT_TRANSPORT
+    if new_findings:
+        return EXIT_USER
+    return EXIT_OK
+
+
+def _run_probe(
+    probe: Probe, skipped_services: list[str]
+) -> list[FindingReport] | None:
+    """Gather and evaluate one probe. Returns None when the probe is skipped."""
+    try:
+        snapshot = probe.gather()
+    except ServiceNotAnswering as exc:
+        print(f"check: {probe.name}: skipped ({exc.service} not answering)", file=sys.stderr)
+        skipped_services.append(exc.service)
+        return None
+    except Exception as exc:  # pragma: no cover - probe bugs propagate
+        raise
+    return probe.evaluate(snapshot)
+
+
+def _report_if_new(
+    conn: sqlite3.Connection, finding: Finding, *, seen_at: str
+) -> bool:
+    """File a finding if it is new this run. Returns True when a row was inserted."""
+    prior = get_finding(conn, finding.key)
+    report(conn, finding, seen_at=seen_at)
+    return prior is None
