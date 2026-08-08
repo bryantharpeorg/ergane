@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from factory.doctor.models import Finding, FindingEvent, Severity, Status
 
@@ -266,6 +266,102 @@ def resolve(
             "resolved",
         )
     return True
+
+
+def resolve_by_spec(
+    conn: sqlite3.Connection,
+    key: str,
+    *,
+    spec_dir: str,
+    resolved_at: str,
+) -> bool:
+    """Resolve a promoted finding because its spec's frontmatter attests landed.
+
+    Returns True when the row existed, was promoted, and is now resolved. The
+    spec directory is recorded as the resolution.
+    """
+    with conn:
+        row = conn.execute(
+            "SELECT status FROM findings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return False
+
+        status = Status(row[0])
+        if status is Status.RESOLVED:
+            return False
+
+        conn.execute(
+            """
+            UPDATE findings
+            SET status = 'resolved', resolved_at = ?, resolution = ?
+            WHERE key = ?
+            """,
+            (resolved_at, spec_dir, key),
+        )
+        _insert_event(
+            conn,
+            key,
+            resolved_at,
+            "roadmap",
+            Severity.INFO,
+            "resolved",
+        )
+    return True
+
+
+def promote(
+    conn: sqlite3.Connection,
+    keys: Sequence[str],
+    *,
+    spec_dir: str,
+    seen_at: str,
+) -> list[str]:
+    """Mark the named findings `promoted` with `spec_dir` in one transaction.
+
+    Refuses unknown keys and findings that are already promoted or resolved.
+    A regressed finding may be promoted again. Raises `ValueError` naming every
+    refused key; on success returns the list of promoted keys and appends a
+    `promoted` event for each.
+    """
+    allowed = {Status.OPEN.value, Status.REGRESSED.value}
+    promoted: list[str] = []
+    refused: list[str] = []
+
+    with conn:
+        for key in keys:
+            row = conn.execute(
+                "SELECT status, severity FROM findings WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                refused.append(f"{key}: not known")
+                continue
+            status_value, severity_value = row
+            if status_value not in allowed:
+                refused.append(f"{key}: status is {status_value}")
+                continue
+
+            conn.execute(
+                """
+                UPDATE findings
+                SET status = 'promoted', promoted_spec = ?
+                WHERE key = ?
+                """,
+                (spec_dir, key),
+            )
+            _insert_event(
+                conn,
+                key,
+                seen_at,
+                "doctor",
+                Severity(severity_value),
+                "promoted",
+            )
+            promoted.append(key)
+
+    if refused:
+        raise ValueError("promote refused:\n" + "\n".join(refused))
+    return promoted
 
 
 # --- reads --------------------------------------------------------------------

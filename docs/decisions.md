@@ -556,3 +556,38 @@ universally. The decision to record is the supersession itself.
    shells git (constitution IV). The existing `DeriveInput` already carried
    `target_repo`, so `derive_spec` needed no new argument — only a new baseline
    read inside the activity.
+
+---
+
+## D-035 · Detection is durable, remediation is work: the factory-doctor ledger (decided)
+
+Decided 2026-08-07 (Bryan), recorded at epic 015-factory-doctor landing. The
+2026-08-07 audit produced 27 findings on a review page that scrolls out of
+memory; the doctor gives them a durable home and a mechanical path into the
+factory's own build order. The decision is the five calls from spec 015 §
+"Decision: detection is durable, remediation is work".
+
+1. **The ledger is the durable home of triage.** Findings live in
+   `.factory/doctor.db` with identity, recurrence, and status, not in chat
+   artifacts or runbook memory.
+
+2. **The doctor is CLI verbs, not a workflow type.** A scheduled `check` may
+   arrive later, but the core surface (`report`, `list`, `resolve`, `check`,
+   `promote`) needs no long-lived process to be useful.
+
+3. **Probes detect; they never remediate.** An orphaned key is deleted by an
+   operator or by an epic the finding becomes — a diagnostic tool that mutates
+   the system under diagnosis becomes a disease. This is enforced structurally:
+   the `factory/doctor/` package imports no key-revocation, worktree-removal,
+   or process-control surfaces.
+
+4. **Promotion writes `draft` and stops.** The deriver guarantees the scaffold's
+   structure before anything is renamed into place; a human owns the prose and
+   the readiness flip. The loop closes through the roadmap grammar: a promoted
+   finding whose spec attests `state: landed` resolves automatically on the
+   next doctor invocation, and a re-report afterward files as `regressed`.
+
+5. **Severity and status are closed sets; category is open.** Recurrence
+   arithmetic and exit codes compute over severity and status, so they are
+   grammar. Categories are open taxonomy; refusing a new taxonomy word would
+   make the ledger resist exactly the findings it exists to collect.
