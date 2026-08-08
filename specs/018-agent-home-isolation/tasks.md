@@ -32,13 +32,11 @@ most of them here, since all three stories converge on
       **(2) The agent cannot commit.** `git commit` in the worktree under that
       environment failed `Author identity unknown` (exit 128). FR-005 is a
       confirmed defect of the isolated home, not a precaution.
-      **(3) The transcript directory is still unconfirmed.** The probe ran from
-      the wrong cwd, so the CLI keyed its transcript to that directory
-      (`~/.claude/projects/-home-admin/<session>.jsonl`) — correct behaviour,
-      wrong question. It does establish that the
-      `$HOME/.claude/projects/<project-dir>/<session>.jsonl` shape holds under a
-      factory-owned home with the right session id. T009 must assert the
-      directory component by reading the archive, not by trusting this.
+      **(3) The archive composes.** Re-probed with the worktree as cwd, the CLI
+      wrote `<home>/.claude/projects/-tmp-…-worktree/<session-id>.jsonl`, 10,895
+      bytes — the exact path `_archive_session` resolves from the child's
+      `HOME`. FR-006 costs nothing to keep. T009 still asserts it by reading the
+      archive, now as a regression guard rather than a discovery.
       Out of scope but found here and filed:
       `adapter/agent-model-window-unrecognized` — the CLI does not recognize the
       `ollama-cloud/*` aliases and assumes a 200k window with auto-compact on

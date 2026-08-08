@@ -203,11 +203,13 @@ If the CLI genuinely cannot start without something the factory should not
 fabricate, that is a blocking question for the operator (008's channel), not a
 judgement call to make inside the attempt.
 
-Trap: prove the archive composes. `_archive_session` reading the child's `HOME`
-means it *should* just work, and "should just work" is how a silent evidence
-loss ships. The acceptance is a completed attempt whose transcript directory
-holds both files, asserted by reading the directory — not a unit test on the
-path expression.
+The archive composes — observed, not reasoned. T001's re-probe wrote
+`<home>/.claude/projects/-tmp-…-worktree/<session-id>.jsonl` from a
+factory-owned home, which is the exact path `_archive_session` resolves. Keep
+the test anyway, and keep its shape: the acceptance is a completed attempt whose
+transcript directory holds both files, asserted by reading the directory, not a
+unit test on the path expression. "Should just work" is how a silent evidence
+loss ships, and this one is now one observation away from that, not zero.
 
 ### US3 — the assertion and the boundary (FR-007..008)
 

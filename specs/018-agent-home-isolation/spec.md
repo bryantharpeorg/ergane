@@ -338,14 +338,14 @@ US3:
   agent on a factory-owned home cannot commit its own work until the home
   carries an identity. This is the one thing in this spec that would otherwise
   have been discovered as a burned attempt.
-- **The transcript path is the one part still open.** The probe's first run
-  invoked the CLI from the wrong working directory, so it wrote to
-  `~/.claude/projects/-home-admin/<session>.jsonl` — correct behaviour for that
-  cwd, and no evidence either way about a worktree cwd. What it does establish
-  is that the `$HOME/.claude/projects/<project-dir>/<session>.jsonl` shape holds
-  under a factory-owned home with the right session id; only the directory
-  component is unconfirmed. T009 asserts it by reading the archive rather than
-  by trusting this.
+- **The archive composes, observed rather than reasoned.** Re-probed from the
+  worktree as cwd, the CLI wrote
+  `<home>/.claude/projects/-tmp-…-worktree/<session-id>.jsonl` — the exact path
+  `_archive_session` resolves, under a home the factory owns. FR-006 therefore
+  costs nothing to keep, and T009's job is to guard the composition rather than
+  to discover it. The home also gained a `projects/<project-dir>/memory/`
+  directory, which is per-home and empty: an agent on an isolated home starts
+  with no memory, where today it starts with the operator's.
 - **Persona registry, prompt assembly, and the judge are untouched.** The
   agent's model, its standards path, and its verification are all unchanged;
   only the directory it calls home moves.
