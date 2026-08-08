@@ -43,6 +43,7 @@ asserts each surface.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from temporalio import activity
@@ -50,7 +51,7 @@ from temporalio import activity
 from factory.config import Persona, load_personas
 from factory.mergequeue.models import TargetRepoProfile
 from factory.usage.litellm_client import LiteLLMClient
-from factory.workgraph.derive import DerivationError, derive_workgraph
+from factory.workgraph.derive import DerivationError
 from factory.workgraph.models import WorkGraph
 from factory.workgraph.preflight import PreflightFinding, check_aliases
 from factory.workgraph.workflow import JUDGE_PERSONA
@@ -151,12 +152,14 @@ class DeriveInput:
 
 @activity.defn
 async def derive_spec(request: DeriveInput) -> WorkGraph:
-    """Compile one spec into the graph the child epic runs (FR-006).
+    """Compile one spec into the delta graph the child epic runs (FR-010).
 
-    A thin activity around the pure `derive_workgraph`: the workflow cannot
-    read files, so derivation — which a spec that does not compile refuses —
-    runs as an activity whose `DerivationError` the workflow catches and parks
-    verbatim (FR-006). Returns the compiled `WorkGraph` on success.
+    A thin activity around the pure `derive_delta`: the workflow cannot read
+    files or shell git, so derivation — which a spec that does not compile refuses
+    — runs as an activity whose `DerivationError` the workflow catches and parks
+    verbatim (FR-006). The delta baseline is read from the refreshed target repo
+    by `landed_facts` inside the activity; the workflow receives only the result.
+    Returns the compiled `WorkGraph` on success.
 
     A `DerivationError` is a *deterministic* refusal (a spec that does not
     compile the same way every time), so it is re-raised as a non-retryable
@@ -165,18 +168,120 @@ async def derive_spec(request: DeriveInput) -> WorkGraph:
     would otherwise burn three attempts before the workflow ever saw it). The
     workflow reads the original message off the `ApplicationError` verbatim.
     """
+    from pathlib import Path
+
+    from factory.workgraph.delta import derive_delta
+    from factory.workgraph.landed import landed_facts
+
+    runner = _derive_runner
+    if runner is not None:
+        return runner(request)
+
     try:
-        return derive_workgraph(
+        facts = landed_facts(
+            request.target_repo,
+            request.epic_id,
+            default_branch=_default_branch(Path(request.target_repo)),
+        )
+        baseline = {
+            story_key: {
+                "commit": fact.commit,
+                "fingerprint": _fingerprint_for_spec(
+                    request.target_repo, request.epic_id, fact.commit, story_key
+                ),
+            }
+            for story_key, fact in facts.items()
+        }
+        delta = derive_delta(
             request.spec_text,
+            baseline=baseline,
             epic_id=request.epic_id,
             feature=request.feature,
             specs_root=request.specs_root,
             target_repo=request.target_repo,
         )
+        return delta.graph
     except DerivationError as exc:
         from temporalio.exceptions import ApplicationError
 
         raise ApplicationError(str(exc), non_retryable=True, type="DerivationError")
+
+
+#: Test seam for derive_spec: production is `None` so the real delta path runs;
+#: scheduler tests set this to a scripted runner so they can drive the graph that
+#: reaches the child without a real target clone.
+_derive_runner: Callable[[DeriveInput], WorkGraph] | None = None
+
+
+def _default_branch(repo: Path) -> str:
+    """The repo's default branch, or "main" as a safe fallback."""
+    from factory.workgraph.worktree import _default_branch as worktree_default_branch
+
+    try:
+        return worktree_default_branch(repo)
+    except Exception:
+        return "main"
+
+
+def _fingerprint_for_spec(repo: str | Path, spec_dir: str, rev: str, story_key: str):
+    """Pinned fingerprint of one story at a landing commit."""
+    from factory.workgraph.landed import fingerprint
+
+    return fingerprint(repo, rev, spec_dir, story_key)
+
+
+# --- drift: read-only fingerprint comparison for render -----------------------
+
+
+@dataclass(frozen=True)
+class DriftInput:
+    """Inputs for drift detection: which spec and which repo to compare against."""
+
+    target_repo: str
+    spec_dir: str
+    spec_text: str
+
+
+#: The drift seam — production computes from git; tests script a boolean so the
+#: scheduler tests do not need a real target clone at `TARGET_REPO`.
+_drift_runner: Callable[[DriftInput], bool] | None = None
+
+
+@activity.defn
+async def drift_for_spec(request: DriftInput) -> bool:
+    """Return True when the spec's fingerprints differ from their landed baseline.
+
+    Read-only and repo-authoritative: computes per-story landed facts from the
+    refreshed target repo, pins each fact's fingerprint at its landing commit,
+    and compares it to the current spec text. A spec whose frontmatter is not
+    `landed` is never drifted. The workflow uses this via `compute_readiness`
+    so the render can show `amended` without dispatching (FR-009).
+    """
+    runner = _drift_runner
+    if runner is not None:
+        return runner(request)
+
+    from factory.workgraph.delta import fingerprint_for
+    from factory.workgraph.landed import landed_facts
+
+    repo_path = Path(request.target_repo)
+    default = _default_branch(repo_path)
+    facts = landed_facts(request.target_repo, request.spec_dir, default_branch=default)
+    if not facts:
+        return False
+
+    current_by_key = {
+        story_key: fingerprint_for(request.spec_text, story_key)
+        for story_key in facts
+    }
+    for story_key, fact in facts.items():
+        pinned = _fingerprint_for_spec(
+            request.target_repo, request.spec_dir, fact.commit, story_key
+        )
+        current = current_by_key.get(story_key)
+        if current is None or pinned.digest != current.digest:
+            return True
+    return False
 
 
 # --- preflight: the shared alias checks behind the proxy seam -----------------

@@ -255,11 +255,22 @@ class RoadmapWorld:
         preflight: Callable[[str], list] | None = None,
         onboarding_profile: TargetRepoProfile | None = None,
         open_epics: Callable[[], set[str]] | None = None,
+        derive_runner: Callable[..., Any] | None = None,
+        drift_runner: Callable[..., bool] | None = None,
     ) -> None:
         self.clone_ok = clone_ok
         self.preflight = preflight or (lambda epic_id: [])
         self.onboarding_profile = onboarding_profile or _passing_profile()
         self.open_epics = open_epics or (lambda: set())
+        # US4: `derive_spec` now reads the target repo's git history. Existing
+        # scheduler tests have no real clone at `TARGET_REPO`, so default to a
+        # runner that derives the full graph (the pre-delta behavior) unless a
+        # test explicitly passes a runner — US4 tests pass a delta runner.
+        self.derive_runner = derive_runner or self._derive_full
+        # US4: drift detection reads git in `drift_for_spec`. Existing scheduler
+        # tests have no real clone, so default to no-drift unless a test scripts
+        # a runner (US4-S5 exercises the real git-backed path directly).
+        self.drift_runner = drift_runner or (lambda request: False)
         # What the clone seam was asked to refresh — the scheduler dispatches a
         # fresh clone per spec (FR-006), so the count is the dispatch count.
         self.clone_calls: list[str] = []
@@ -275,6 +286,8 @@ class RoadmapWorld:
 
         self._saved = (
             roadmap_activities._clone_runner,
+            roadmap_activities._derive_runner,
+            roadmap_activities._drift_runner,
             roadmap_activities._preflight_registry,
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
@@ -283,6 +296,9 @@ class RoadmapWorld:
             preflight_mod.check_aliases,
         )
         roadmap_activities._clone_runner = self._clone
+        if self.derive_runner is not None:
+            roadmap_activities._derive_runner = self.derive_runner
+        roadmap_activities._drift_runner = self.drift_runner
         roadmap_activities._preflight_registry = lambda: {}
         roadmap_activities._preflight_client = lambda proxy_url: None
         roadmap_activities._onboard = self._onboard
@@ -306,6 +322,8 @@ class RoadmapWorld:
 
         (
             roadmap_activities._clone_runner,
+            roadmap_activities._derive_runner,
+            roadmap_activities._drift_runner,
             roadmap_activities._preflight_registry,
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
@@ -321,16 +339,32 @@ class RoadmapWorld:
             except AttributeError:
                 pass
         preflight_mod.check_aliases = saved_preflight_check
+        roadmap_activities._derive_runner = None
+        roadmap_activities._drift_runner = None
 
     def _clone(self, target_repo: str) -> CloneResult:
         self.clone_calls.append(target_repo)
-        return CloneResult(path=target_repo, default_branch="main", head_ref="abc123")
+        return CloneResult(
+            path=target_repo, default_branch="main", head_ref="abc123"
+        )
 
     async def _onboard(self, target_repo: str) -> TargetRepoProfile:
         return self.onboarding_profile
 
     async def _open_epics_provider(self) -> set[str]:
         return set(self.open_epics())
+
+    def _derive_full(self, request) -> Any:
+        """Default derive seam: the full pre-delta graph, no git baseline."""
+        from factory.workgraph.derive import derive_workgraph
+
+        return derive_workgraph(
+            request.spec_text,
+            epic_id=request.epic_id,
+            feature=request.feature,
+            specs_root=request.specs_root,
+            target_repo=request.target_repo,
+        )
 
 
 # --- the harness -------------------------------------------------------------
@@ -389,6 +423,7 @@ async def run_roadmap(
         clone_target,
         count_open_epics,
         derive_spec,
+        drift_for_spec,
         onboard_target,
         preflight_spec,
     )
@@ -400,6 +435,7 @@ async def run_roadmap(
     activities = [
         clone_target,
         derive_spec,
+        drift_for_spec,
         preflight_spec,
         onboard_target,
         count_open_epics,

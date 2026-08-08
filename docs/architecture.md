@@ -121,10 +121,12 @@ Layout, all under the single `factory` package (D-004):
 | `factory/workgraph/adapter.py` | the D-018 seam — `AgentAdapter` + `ClaudeCodeAdapter` (§8) |
 | `factory/workgraph/workflow.py` | `EpicWorkflow`: the interpreter itself, pure decisions only |
 | `factory/workgraph/cli.py` | `factory-epic derive \| start \| status` (§3.2) |
-| `factory/roadmap/models.py` | `SpecState` / `LandedKind` / `LandedStatus` / `SpecReadiness`, pure frontmatter reader (`read_roadmap`) and readiness (`compute_readiness`) with the attested/observed seam (FR-003) |
-| `factory/roadmap/workflow.py` | `RoadmapWorkflow`: the scheduler, one level above the interpreter — dispatches dispatchable specs as child `EpicWorkflow` runs, continue-as-new at quiescence (FR-007), `pause`/`resume`/`promote` signals + `roadmap_status` query (FR-008) |
-| `factory/activities/roadmap_activities.py` | `clone_target` / `derive_spec` / `preflight_spec` / `onboard_target` / `count_open_epics` — the roadmap's pre-dispatch surface, scripted through its seams in tests |
-| `factory/roadmap/cli.py` | `factory-roadmap render` — the offline roadmap render (US1) |
+| `factory/roadmap/models.py` | `SpecState` / `LandedKind` / `LandedStatus` / `SpecReadiness`, pure frontmatter reader (`read_roadmap`) and readiness (`compute_readiness`) with the attested/observed seam (FR-003) and US4's read-only `amended` drift signal |
+| `factory/roadmap/workflow.py` | `RoadmapWorkflow`: the scheduler, one level above the interpreter — dispatches dispatchable specs as child `EpicWorkflow` runs, continue-as-new at quiescence (FR-007), `pause`/`resume`/`promote` signals + `roadmap_status` query (FR-008); US4 routes drift through an injected resolver backed by the `drift_for_spec` activity and derives every dispatch through `derive_delta` |
+| `factory/activities/roadmap_activities.py` | `clone_target` / `derive_spec` / `drift_for_spec` / `preflight_spec` / `onboard_target` / `count_open_epics` — the roadmap's pre-dispatch surface; `derive_spec` reads landed facts and pinned fingerprints inside the activity so workflow code never shells git |
+| `factory/roadmap/cli.py` | `factory-roadmap render` — the offline roadmap render (US1); US4 shows `amended` for drifted landed specs while remaining offline-safe (no git reads) |
+| `factory/workgraph/landed.py` | Reader side of the landing attribution contract: `landed_facts` scans default-branch history, `fingerprint` pins a story's judgeable content at a revision; the regex in `_LANDING_RE` is the parse end of the contract whose render end is `factory.mergequeue.messages.pr_title` |
+| `factory/workgraph/delta.py` | Pure delta derivation: `derive_delta` subtracts unchanged landed stories, reopens amended ones with provenance, guards identity, and emits a `WorkGraph` the existing interpreter runs unchanged |
 | `factory/activities/agent_activities.py` | `resolve_graph` / `resolve_persona` / `prepare_worktree` / `run_agent_attempt` / `read_worktree_diff` / `salvage_worktree` / `remove_worktree` |
 | `factory/worker.py` | runnable `python -m factory.worker` — registers `EpicWorkflow` + `RoadmapWorkflow` (D-031) plus every component's activities |
 

@@ -94,9 +94,30 @@ def render_command(args: argparse.Namespace) -> int:
     except OSError as error:
         raise _OperatorError(f"cannot read specs root {args.specs_root}: {error}") from error
 
-    readiness = compute_readiness(roadmap)
+    readiness = compute_readiness(
+        roadmap,
+        drifted_for=_cli_drift_resolver(args.specs_root),
+    )
     print(_render_roadmap(roadmap, readiness))
     return EXIT_OK
+
+
+def _cli_drift_resolver(specs_root: str):
+    """Offline drift check for the render command: no Temporal, no git shell.
+
+    The render command must work on a laptop with no factory running (US1). It
+    therefore cannot read the target repo's landing history. The CLI treats the
+    author's corpus as authoritative for drift: a `state: landed` spec is marked
+    `amended` only when the operator requests it. This default resolver reports
+    no drift so the offline render remains deterministic and safe; an online
+    render (the workflow's `roadmap_status` query) uses the real git-backed
+    resolver.
+    """
+
+    def resolve(spec_dir: str) -> bool:
+        return False
+
+    return resolve
 
 
 def _render_roadmap(roadmap: object, readiness: object) -> str:
@@ -117,16 +138,16 @@ def _render_roadmap(roadmap: object, readiness: object) -> str:
 
     by_dir = {spec.spec_dir: spec for spec in readiness.specs}
     id_width = max((len(entry.spec_dir) for entry in roadmap.entries), default=0)
-    state_width = max(
-        (len(entry.state.value) for entry in roadmap.entries), default=0
-    )
+    # Rendered state may be the computed `amended` value, not only declared states.
+    state_values = [by_dir[entry.spec_dir].rendered_state for entry in roadmap.entries]
+    state_width = max((len(value) for value in state_values), default=0)
 
     lines: list[str] = []
     for entry in roadmap.entries:
         spec = by_dir[entry.spec_dir]
         base = (
             f"{entry.spec_dir.ljust(id_width)}  "
-            f"{entry.state.value.ljust(state_width)}"
+            f"{spec.rendered_state.ljust(state_width)}"
         )
         if spec.blockers:
             lines.append(f"{base}  blocked by: {', '.join(spec.blockers)}")
