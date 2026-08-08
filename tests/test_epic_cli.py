@@ -336,9 +336,13 @@ def _spec(
         front += f"state: {state}\n"
     front += "---\n"
     body = "# Feature\n\n"
-    if stories:
-        body += "## Requirements *(mandatory)*\n\n- **FR-001**: The system MUST do one thing.\n\n"
     stories = stories or []
+    # FR bullets: one per story so every `implements` declaration resolves.
+    if stories:
+        body += "## Requirements *(mandatory)*\n\n"
+        for number in range(1, len(stories) + 1):
+            body += f"- **FR-{number:03d}**: The system MUST do thing {number}.\n"
+        body += "\n"
     for number, title in enumerate(stories, start=1):
         body += (
             f"### User Story {number} - {title} (Priority: P{number})\n\n"
@@ -1298,7 +1302,7 @@ def test_derive_delta_writes_the_remainder_graph(
     assert [node["id"] for node in graph["nodes"]] == ["us3"]
     assert [node["story_key"] for node in graph["nodes"]] == ["US3"]
     # Provenance is also printed: US1/US2 satisfied, and US2's edge removed.
-    assert "satisfied_by" in result.stdout
+    assert "satisfied by" in result.stdout
 
 
 def test_derive_delta_refuses_on_broken_identity_and_writes_nothing(

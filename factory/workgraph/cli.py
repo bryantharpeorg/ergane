@@ -78,7 +78,9 @@ from factory.notify.service import (
 )
 from factory.usage.litellm_client import PROXY_URL_ENV, LiteLLMClient
 from factory.usage.models import UsageSnapshot
+from factory.workgraph.delta import DeltaResult, derive_delta
 from factory.workgraph.derive import DerivationError, derive_workgraph
+from factory.workgraph.landed import LandedKind, fingerprint, landed_facts
 from factory.workgraph.models import (
     WorkGraph,
     WorkGraphError,
@@ -198,11 +200,47 @@ def main(argv: Sequence[str] | None = None) -> int:
     except _OperatorError as error:
         print(f"factory-epic: {error}", file=sys.stderr)
         return error.code
+    except KeyboardInterrupt:
+        return EXIT_USER
 
 
 def workflow_id(epic_id: str) -> str:
     """The one id convention (R12): predictable from the spec directory's name."""
     return f"epic-{epic_id}"
+
+
+# --- landed: report a spec's current baseline (US3, FR-008) -------------------
+
+
+def landed_command(args: argparse.Namespace) -> int:
+    """Print every landed fact for a spec, one per line.
+
+    The output is deterministic, ordered by story key, and marks observed vs
+    attested provenance so an operator can audit the baseline. Unlanded stories
+    are silent — the grammar is the contract.
+    """
+    spec_dir = Path(args.spec_dir)
+    spec_path = spec_dir / SPEC_NAME
+    try:
+        spec_text = spec_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise _OperatorError(f"cannot read {spec_path}: {error}") from error
+
+    epic_id = spec_dir.resolve().name
+    repo = _target_repo_for_spec(spec_dir)
+    try:
+        facts = landed_facts(repo, epic_id, default_branch=args.default_branch)
+    except Exception as error:
+        raise _OperatorError(
+            f"cannot read landed facts for {epic_id}: {error}"
+        ) from error
+
+    for story_key, fact in sorted(facts.items()):
+        print(f"{story_key} landed at {fact.commit[:12]} ({fact.kind.value})")
+    return EXIT_OK
+
+
+# --- derive: text in, artifact out, nothing on failure (US3-S4, SC-006) -------
 
 
 def _positive_int(value: str) -> int:
@@ -245,17 +283,43 @@ def derive_command(args: argparse.Namespace) -> int:
         raise _OperatorError(f"cannot read {spec_path}: {error}") from error
 
     epic_id = spec_dir.resolve().name
-    try:
-        graph = derive_workgraph(
-            spec_text,
-            epic_id=epic_id,
-            feature=epic_id,
-            specs_root=args.specs_root,
-            target_repo=args.target_repo,
-        )
-    except DerivationError as error:
-        # The whole list, at the point the author can act on all of it at once.
-        raise _OperatorError(f"{spec_path}: {error}") from error
+    if args.delta:
+        # The caller wants the remainder graph. Build a baseline from default-branch
+        # landed facts: every landed story pinned at its landing commit.
+        baseline = _build_baseline(spec_text, spec_dir, epic_id)
+        try:
+            result = derive_delta(
+                spec_text,
+                baseline=baseline,
+                epic_id=epic_id,
+                feature=epic_id,
+                specs_root=args.specs_root,
+                target_repo=args.target_repo,
+            )
+        except DerivationError as error:
+            raise _OperatorError(f"{spec_path}: {error}") from error
+
+        if not result.graph.nodes:
+            # An empty delta is success: everything requested is already built and
+            # unchanged (FR-008 acceptance 3). No file, no artifact path, just the
+            # message the operator reads.
+            print("nothing to build: all stories are already landed and unchanged")
+            return EXIT_OK
+
+        graph = result.graph
+        _print_provenance(result)
+    else:
+        try:
+            graph = derive_workgraph(
+                spec_text,
+                epic_id=epic_id,
+                feature=epic_id,
+                specs_root=args.specs_root,
+                target_repo=args.target_repo,
+            )
+        except DerivationError as error:
+            # The whole list, at the point the author can act on all of it at once.
+            raise _OperatorError(f"{spec_path}: {error}") from error
 
     destination = Path(args.output) if args.output else spec_dir / ARTIFACT_NAME
     try:
@@ -267,6 +331,77 @@ def derive_command(args: argparse.Namespace) -> int:
 
     print(destination)
     return EXIT_OK
+
+
+def _build_baseline(
+    spec_text: str, spec_dir: Path, epic_id: str
+) -> dict[str, dict[str, Any]]:
+    """A delta baseline from the default-branch landed facts.
+
+    Each fact carries the spec story's fingerprint as it stood at the landing
+    commit, so drift is detected commit-to-current, not working-tree-to-current.
+    The repo is the target clone of the epic (the place landings happen), which
+    the CLI does not yet know at derive time; today we read it from the spec's
+    sibling directory, the same convention the roadmap will use (US4).
+    """
+    repo = _target_repo_for_spec(spec_dir)
+    default_branch = "main"
+    try:
+        facts = landed_facts(repo, epic_id, default_branch=default_branch)
+    except Exception as error:
+        raise _OperatorError(
+            f"cannot read landed facts for {epic_id}: {error}"
+        ) from error
+
+    baseline: dict[str, dict[str, Any]] = {}
+    for story_key, fact in facts.items():
+        try:
+            pinned = fingerprint(repo, fact.commit, epic_id, story_key)
+        except Exception as error:
+            raise _OperatorError(
+                f"cannot fingerprint {story_key} at {fact.commit}: {error}"
+            ) from error
+        baseline[story_key] = {
+            "commit": fact.commit,
+            "fingerprint": pinned,
+            "kind": fact.kind.value,
+        }
+    return baseline
+
+
+def _target_repo_for_spec(spec_dir: Path) -> Path:
+    """The repo holding the spec directory.
+
+    The spec lives at `<repo>/specs/<epic>/spec.md`; delta derivation reads the
+    landing history from the same repo. The target clone used at dispatch may be
+    elsewhere, but for a human running `factory-epic derive --delta` from a working
+    copy this is the repo they are standing in.
+    """
+    # Walk up until we find a .git directory, or fall back to the spec's parent.
+    path = spec_dir.resolve()
+    while path != path.parent:
+        if (path / ".git").is_dir():
+            return path
+        path = path.parent
+    return spec_dir.parent.parent.parent
+
+
+def _print_provenance(result: DeltaResult) -> None:
+    """Print each remainder node's delta provenance to stdout.
+
+    Provenance is a sibling to the artifact path: the operator sees why each
+    node is still in the graph, and the path still points at the compiled file.
+    """
+    for node_id, prov in result.provenance.items():
+        if "satisfied_by" in prov:
+            print(f"{node_id} satisfied by {prov['satisfied_by']}")
+        if "satisfied_edge_to" in prov:
+            print(
+                f"{node_id} edge to {prov['satisfied_edge_to']} "
+                f"satisfied by {prov['by']}"
+            )
+        if prov.get("reopened"):
+            print(f"{node_id} reopened: {prov['what_changed']}")
 
 
 # --- onboard: validate a target repo before anything dispatches (US3, FR-010) --
@@ -339,6 +474,10 @@ def start_command(args: argparse.Namespace) -> int:
     virtual key will be honored at is present. Only then is a client built — so a
     transport failure is always about the server, never about the file.
 
+    A zero-node graph is refused before any of that: it is not dispatchable, and
+    the only honest thing to tell the operator is "nothing to build" — not a
+    Temporal connection or a key issuance (FR-008 edge cases, FR-010).
+
     The proxy is also where the preflight happens (US2): the model aliases this
     registry names and the first-attempt key aliases this epic will mint are
     checked against it *before* the workflow starts, so a misconfigured epic
@@ -346,6 +485,16 @@ def start_command(args: argparse.Namespace) -> int:
     """
     try:
         graph = load_workgraph(args.graph)
+    except WorkGraphError as error:
+        raise _OperatorError(str(error)) from error
+
+    if not graph.nodes:
+        raise _OperatorError(
+            f"workgraph '{graph.epic_id}' has zero nodes — nothing to build; "
+            "use `factory-epic derive` to compile a non-empty graph"
+        )
+
+    try:
         validate_workgraph(graph, _persona_registry(graph))
     except WorkGraphError as error:
         raise _OperatorError(str(error)) from error
@@ -726,7 +875,27 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         default=None,
         help=f"write the artifact here instead of <spec-dir>/{ARTIFACT_NAME}",
     )
+    derive.add_argument(
+        "--delta",
+        action="store_true",
+        help=(
+            "derive only the work that remains: unlanded stories and stories whose "
+            "fingerprint changed since their landing commit"
+        ),
+    )
     derive.set_defaults(run=derive_command)
+
+    landed = commands.add_parser(
+        "landed",
+        help=f"report landed facts for <spec-dir>/{SPEC_NAME}",
+    )
+    landed.add_argument("spec_dir", help="the feature directory holding spec.md")
+    landed.add_argument(
+        "--default-branch",
+        default="main",
+        help="default branch to scan for landing attributions (default: main)",
+    )
+    landed.set_defaults(run=landed_command)
 
     onboard = commands.add_parser(
         "onboard",
