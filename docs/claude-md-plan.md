@@ -1,9 +1,9 @@
 # Plan — a `CLAUDE.md` for operator sessions
 
-**Status**: planned, not written. Produced 2026-08-08 from a grilling session with the
-operator. This document is the agreed shape and the reasoning behind it; delete it once
-`CLAUDE.md` and its test exist, or keep it as the ADR-shaped record of why the file looks
-the way it does.
+**Status**: written. Produced 2026-08-08 from a grilling session with the operator, and
+built the same day as `CLAUDE.md` (108 lines) plus `tests/test_claude_md.py`. Kept as the
+ADR-shaped record of *why* the file looks the way it does — the reasoning below is not
+repeated in the file itself, which states its conclusions and moves on.
 
 **Goal**: an agent waking into this repo should learn, without being told, what Ergane is,
 what it can do, and where its own leverage is.
