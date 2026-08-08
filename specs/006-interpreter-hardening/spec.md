@@ -232,7 +232,13 @@ workflows; assert each is distinguishable.
 - **FR-008**: The agent activity's heartbeat timeout MUST be derived from the attempt's
   configured timeout rather than fixed at a small multiple of the beat interval.
 - **FR-009**: Key issuance retry MUST tolerate a transient proxy outage on the order of
-  a real restart before failing the epic.
+  a real restart before failing the epic — and MUST do so through a retry policy of
+  issuance's own, not by widening a shared one. The four seconds this story objects to
+  come from `_RETRIES` (`factory/workgraph/workflow.py`), which `_PROXY` shares with
+  `_GIT` and every other activity option in that module. Raising it in place would
+  silently change git's and the store's failure behaviour too — a change no scenario
+  here asks for and no test would catch. Give issuance a named policy; leave `_RETRIES`
+  as it stands.
 - **FR-010**: `factory-epic status` MUST report the workflow's Temporal execution status
   in both human and `--json` output, distinguishable from the epic's internal state.
 - **FR-011**: No requirement here may weaken 001's credential discipline: the master key
@@ -275,6 +281,15 @@ implemented first would be recovering a condition nothing yet names. US4 waits o
 both tune constants that live in the attempt loop US1 rewrites, and sequencing them
 avoids a merge conflict rather than a logical dependency. US5 is a leaf on the CLI.
 
+**US4 chains on US3 merged (added 2026-08-08, before the remainder run).** With
+US1/US2/US5 landed, US3 and US4 are the whole remainder and both would otherwise be
+edge-free — dispatchable as a concurrent pair. They must not be. Both edit key
+issuance: US3 recovers an orphaned alias at `issue_attempt_key`, US4 changes the retry
+policy around the same call site. Two worktrees editing one function is a merge-queue
+conflict where the second lander rebases blind. The edge is content, not ordering, so
+it is `depends_on_merged`: US4's worktree must clone a base that already contains US3's
+recovery code.
+
 Attempt timeouts resolve from the persona registry; no story here argues for an override.
 
 ```yaml
@@ -289,6 +304,7 @@ US3:
   implements: [FR-007]
 US4:
   depends_on: [US1]
+  depends_on_merged: [US3]
   implements: [FR-008, FR-009]
 US5:
   depends_on: []
