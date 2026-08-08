@@ -2735,12 +2735,25 @@ async def test_a_question_attempt_salvages_and_preserves_committed_work(
     script = questioning(env.client)
 
     async with start_epic(env, script) as handle:
+        # Wait for the pause, not just the park — this test asserts the question
+        # shipped, and the send happens *after* the node first reads
+        # WAITING_OPERATOR. `_close_out(..., state=WAITING_OPERATOR)` salvages and
+        # parks the node, and only then does the workflow dedup and send; the
+        # pause is the last thing the park block sets, after the send. A predicate
+        # that stops at the park can therefore win the race, exit this context
+        # manager, terminate the workflow before the send activity runs, and find
+        # `question_requests` empty — which is exactly what CI hit on 53eae60,
+        # and what cost 016/us1 an attempt on 2026-08-08. Observing the pause is
+        # a barrier for everything ordered before it.
         await wait_for_status(
             handle,
-            lambda status: states(status).get("us1") == NodeState.WAITING_OPERATOR
+            lambda status: (
+                states(status).get("us1") == NodeState.WAITING_OPERATOR
+                and status.epic_state == EpicState.PAUSED
+            )
             if hasattr(NodeState, "WAITING_OPERATOR")
             else False,
-            what="us1 to park WAITING_OPERATOR",
+            what="us1 to park WAITING_OPERATOR and the epic to pause",
         )
 
     # Salvage precedes removal (FR-005, constitution VI) — the work is on the
