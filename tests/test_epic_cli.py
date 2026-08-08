@@ -138,7 +138,7 @@ from factory.workgraph.models import (
     validate_workgraph,
 )
 from factory.workgraph.worktree import PreparedWorktree, branch_name
-from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
+from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicWorkflow
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
 from tests.test_interpreter import merged_snapshot
 
@@ -776,14 +776,23 @@ async def temporal_env(
     monkeypatch.setenv("LITELLM_MASTER_KEY", FAKE_MASTER_KEY)
 
     fake = FakeLiteLLM(base_url=PROXY_URL, master_key=FAKE_MASTER_KEY)
-    # The aliases `factory/config.py`'s shipped registry names for the personas
-    # a valid_epic dispatches (implementer nodes + the judge). Serving exactly
-    # these keeps the preflight honest: it passes only because every alias the
-    # CLI's own registry names is genuinely on the list.
+    # The aliases the CLI's own registry names for the personas a valid_epic
+    # dispatches (implementer nodes + the judge). Serving exactly these keeps
+    # the preflight honest: it passes only because every alias the registry
+    # names is genuinely on the list.
+    #
+    # Read from the registry, never listed literally. A hardcoded set is a
+    # second source of truth that rots silently the next time `personas.yaml`
+    # changes, and it did: moving the implementer to kimi (c56b0c5) left this
+    # set naming a model the registry no longer used, so preflight refused, the
+    # CLI never dispatched, and fourteen tests here failed hunting a workflow
+    # that was never started — six hours red before anyone looked.
+    registry = cli._preflight_registry()
     fake.served_models = {
-        "ollama-cloud/deepseek-v4-flash",
-        "local/qwen3.6-27b",
-        "ollama-cloud/glm-5.2",
+        alias
+        for name in ("implementer", JUDGE_PERSONA)
+        for alias in (registry[name].model, registry[name].fallback)
+        if alias
     }
 
     def preflight_client() -> LiteLLMClient:
