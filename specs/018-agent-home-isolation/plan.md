@@ -176,12 +176,15 @@ badly.
 
 ### US2 — starting, committing, and being archived on it (FR-004..006)
 
-Seed the home in the same place it is created, from module constants. The
-minimum content is **T001's finding, not this plan's guess**: the drafting
-probe was not completed, so the plan states the constraint rather than the
-answer. Whatever it turns out to be, it is written by the factory — a literal
-dict serialized to JSON, a literal `.gitconfig` — and the seeding function takes
-no argument that could carry a path into the operator's home.
+Seed the home in the same place it is created, from module constants. T001
+answered what that means, and the answer is *almost nothing*: on a bare home the
+CLI started without prompting and wrote its own `.claude.json`, `plugins/`,
+`projects/`, `sessions/` and `backups/`. So the only thing the factory must put
+there is a git identity, and the only thing it must never put there is anything
+of the operator's. Resist growing this story back to the size it looked before
+the probe — an oversized story is this factory's most expensive failure mode,
+and the seeding function should take no argument that could carry a path into
+the operator's home.
 
 Git identity: write `[user] name/email` into the home's `.gitconfig` from
 `SALVAGE_AUTHOR_NAME`/`SALVAGE_AUTHOR_EMAIL`, imported from

@@ -109,22 +109,24 @@ As the factory operator, an attempt on a factory-owned home starts without
 prompting, commits its own work, and produces the same evidence it produces
 today, so that isolating the home costs the factory nothing it currently has.
 
-Whatever the agent CLI needs in order to start non-interactively, the factory
-writes from its own constants. It is never copied from, read from, or seeded
-against the operator's configuration: copying would re-import precisely what
-this spec removes, `oauthAccount` included. If the CLI needs to be marked
-onboarded, or a directory marked trusted, that is a fact the factory asserts
-about a directory it owns, not a fact it borrows.
+The agent CLI needs less than this story originally assumed: probed on a bare
+home it started and answered without prompting, and created its own
+configuration and state directories. So the factory's obligation is mostly
+negative — the home must exist and be writable, and its contents must never be
+copied from, read from, or seeded against the operator's configuration, because
+copying would re-import precisely what this spec removes, `oauthAccount`
+included. If some later CLI version does need a fact asserted, it is a fact the
+factory asserts about a directory it owns, not a fact it borrows.
 
-Git identity is the part most likely to be discovered the expensive way. Salvage
-already carries its own (`_SALVAGE_IDENTITY`, `factory/workgraph/worktree.py`),
-so constitution VI is safe under a fresh home — the worktree tests have run with
-an empty `HOME` and silenced global config since they were written. The agent's
-*own* commits are not covered by that: they run in the child environment, which
-carries no identity, and a fresh home has no `~/.gitconfig` to fall back on. An
-agent that cannot commit still has its work salvaged, so nothing is lost — but
-it loses the incremental history the prompt asks it to keep, and it will spend
-its attempt discovering why.
+Git identity is the exception, and it is not hypothetical: the same probe's
+`git commit` inside the worktree failed with `Author identity unknown`. Salvage
+is unaffected — it carries its own (`_SALVAGE_IDENTITY`,
+`factory/workgraph/worktree.py`), so constitution VI holds and the worktree
+tests have run with an empty `HOME` since they were written. The agent's *own*
+commits are what break: they run in the child environment, which carries no
+identity, and a fresh home has no `~/.gitconfig` to fall back on. Such an agent
+still has its work salvaged, so nothing is lost — but it loses the incremental
+history the prompt asks it to keep, and it spends its attempt finding out why.
 
 **Why this priority**: US1 without this is an isolated home that may not run an
 agent. The two together are the feature.
@@ -322,11 +324,28 @@ US3:
   reserved number would collide with F1's own triage later.
 - **No new dependency.** The change is a path helper, a constructed directory,
   and a name in an existing allowlist.
-- **The agent CLI's onboarding behaviour on a fresh home is the one unverified
-  input.** A probe against a scratch home was attempted at drafting time and not
-  completed, so T001 owns it: establish empirically what the CLI needs before
-  US2 is dispatched, because that answer sets the size of FR-004 and nothing
-  else in this spec depends on it.
+- **The agent CLI's behaviour on a fresh home was probed on 2026-08-08 and is
+  no longer an assumption.** Run with the live implementer alias, an empty
+  `HOME`, and exactly the six environment names `attempt_env` builds, the CLI
+  **started and answered without prompting** (exit 0) and created its own
+  `.claude.json`, `.claude/plugins/`, `.claude/projects/`, `.claude/sessions/`
+  and `.claude/backups/`. FR-004 is therefore mostly a prohibition rather than a
+  construction: the home must exist and be writable, and the factory must not
+  put the operator's configuration in it. Two live consequences came out of the
+  same probe — see the next two bullets.
+- **FR-005 is confirmed, not anticipated.** A `git commit` inside the worktree
+  under that environment failed with `Author identity unknown` (exit 128). An
+  agent on a factory-owned home cannot commit its own work until the home
+  carries an identity. This is the one thing in this spec that would otherwise
+  have been discovered as a burned attempt.
+- **The transcript path is the one part still open.** The probe's first run
+  invoked the CLI from the wrong working directory, so it wrote to
+  `~/.claude/projects/-home-admin/<session>.jsonl` — correct behaviour for that
+  cwd, and no evidence either way about a worktree cwd. What it does establish
+  is that the `$HOME/.claude/projects/<project-dir>/<session>.jsonl` shape holds
+  under a factory-owned home with the right session id; only the directory
+  component is unconfirmed. T009 asserts it by reading the archive rather than
+  by trusting this.
 - **Persona registry, prompt assembly, and the judge are untouched.** The
   agent's model, its standards path, and its verification are all unchanged;
   only the directory it calls home moves.

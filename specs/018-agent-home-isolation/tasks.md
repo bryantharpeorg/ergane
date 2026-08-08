@@ -17,25 +17,37 @@ most of them here, since all three stories converge on
 
 ## Phase 1: Setup (operator preflight — dispatched to no node)
 
-- [ ] T001 Operator: **resolve the one unverified input before US2 is
-      dispatched.** Establish empirically what the agent CLI needs in a home it
-      has never seen: create a scratch directory, run the adapter's own argv
-      shape (`claude -p --dangerously-skip-permissions --model <alias>
-      --session-id <uuid>`, prompt on stdin) with an environment of exactly
+- [x] T001 Operator: **probed 2026-08-08, recorded here as the gate's evidence.**
+      The adapter's own argv shape (`claude -p --dangerously-skip-permissions
+      --model ollama-cloud/kimi-k2.7-code --session-id <uuid>`, prompt on stdin)
+      was run against an empty `HOME` with an environment of exactly
       `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `PATH`, `HOME`, `LANG`,
-      `TERM`, and record three facts: whether it starts without prompting,
-      whether it writes `<home>/.claude/projects/<project-dir>/<session>.jsonl`
-      where `_archive_session` looks for it, and whether a `git commit` inside
-      the worktree under that same environment succeeds. Whatever it needs is
-      FR-004's content and sizes US2. A probe was attempted at drafting time and
-      not completed, which is why this is a gate rather than an assumption.
-      Also re-verify plan.md's reuse inventory against this worktree — in
-      particular that `PASSTHROUGH_ENV` still holds four names, that
-      `_archive_session` still resolves from the child's `HOME`, and that
-      `tests/test_workgraph_sweep.py`'s env assertion still pins the exact dict.
-      STOP and report blocked if the CLI cannot start on a home the factory can
-      legitimately construct — that is an operator question (008's channel), not
-      an implementer's judgement call.
+      `TERM`. Three findings:
+      **(1) It starts.** Exit 0, answered, no prompt, no onboarding wall. The
+      CLI created its own `.claude.json`, `.claude/plugins/`,
+      `.claude/projects/`, `.claude/sessions/` and `.claude/backups/`. FR-004 is
+      therefore small and mostly negative — the home must exist and be writable,
+      and nothing of the operator's may be put in it. **US2 is smaller than
+      drafted; do not pad it back out.**
+      **(2) The agent cannot commit.** `git commit` in the worktree under that
+      environment failed `Author identity unknown` (exit 128). FR-005 is a
+      confirmed defect of the isolated home, not a precaution.
+      **(3) The transcript directory is still unconfirmed.** The probe ran from
+      the wrong cwd, so the CLI keyed its transcript to that directory
+      (`~/.claude/projects/-home-admin/<session>.jsonl`) — correct behaviour,
+      wrong question. It does establish that the
+      `$HOME/.claude/projects/<project-dir>/<session>.jsonl` shape holds under a
+      factory-owned home with the right session id. T009 must assert the
+      directory component by reading the archive, not by trusting this.
+      Out of scope but found here and filed:
+      `adapter/agent-model-window-unrecognized` — the CLI does not recognize the
+      `ollama-cloud/*` aliases and assumes a 200k window with auto-compact on
+      **every attempt the factory has ever run**, independent of this spec.
+      Still owed at dispatch time: re-verify plan.md's reuse inventory against
+      the implementer's worktree — that `PASSTHROUGH_ENV` still holds four
+      names, that `_archive_session` still resolves from the child's `HOME`, and
+      that `tests/test_workgraph_sweep.py`'s env assertion still pins the exact
+      dict.
 
 ---
 
