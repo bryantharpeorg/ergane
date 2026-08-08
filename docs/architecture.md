@@ -446,7 +446,29 @@ factory/
 │   └── messages.py        # pure: PR title + body renderer (deterministic, secret-free)
 └── activities/
     └── merge_activities.py  # prepare / open / enqueue / poll / disable / sync — the landing + recovery surface; validate_target_repo — onboarding
+    └── doctor_activities.py  # (reserved) future scheduled-sweep surface; currently empty — all doctor logic is in CLI and store
 ```
+
+### Component 4 — factory doctor (`specs/015-factory-doctor/`)
+
+Read-only diagnostic ledger plus a mechanical bridge from accepted findings to the
+intent layer. Layout:
+
+```text
+factory/
+├── doctor/
+│   ├── store.py           # SQLite ledger: finding identity, recurrence, promotion, resolution
+│   ├── scaffold.py        # pure: findings + roadmap grammar → draft spec directory
+│   └── cli.py             # `factory-doctor report | list | resolve | check | promote`
+```
+
+The doctor never mutates the factory or target system. Probes detect and report;
+promotion scaffolds a `state: draft` spec directory under a temp path, verifies it
+through the same `derive_workgraph` the factory uses, and only renames into place on a
+clean compile. A top-of-command sweep resolves promoted findings whose spec frontmatter
+attests `state: landed`; observed-landed facts inside `RoadmapWorkflow` state are out of
+bounds for a cheap offline sweep (D-035). A credential sweep (`sk-…` pattern) runs over
+findings, event history, probe snapshots, scaffolds, and all command output.
 
 The landing lifecycle, in the plan's order — salvage first, then push, then open, then
 enqueue, then poll-until-terminal:
