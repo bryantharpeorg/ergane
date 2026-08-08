@@ -1,0 +1,21 @@
+{
+  "source": "operator-test",
+  "findings": [
+    {
+      "key": "ops/test-one",
+      "category": "ops",
+      "severity": "critical",
+      "summary": "first",
+      "refs": ["a:1"],
+      "notes": "n1"
+    },
+    {
+      "key": "ops/test-one",
+      "category": "ops",
+      "severity": "warning",
+      "summary": "second copy",
+      "refs": ["b:2"],
+      "notes": "dup"
+    }
+  ]
+}

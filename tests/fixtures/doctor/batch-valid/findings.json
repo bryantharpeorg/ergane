@@ -1,0 +1,22 @@
+{
+  "source": "operator-test",
+  "comment": "optional, ignored",
+  "findings": [
+    {
+      "key": "ops/test-one",
+      "category": "ops",
+      "severity": "critical",
+      "summary": "first",
+      "refs": ["a:1"],
+      "notes": "n1"
+    },
+    {
+      "key": "ops/test-two",
+      "category": "ops",
+      "severity": "warning",
+      "summary": "second",
+      "refs": ["b:2"],
+      "notes": "n2"
+    }
+  ]
+}
