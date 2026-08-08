@@ -1,0 +1,13 @@
+{
+  "source": "operator-test",
+  "findings": [
+    {
+      "key": "ops/test-one",
+      "category": "ops",
+      "severity": "fatal",
+      "summary": "first",
+      "refs": ["a:1"],
+      "notes": "n1"
+    }
+  ]
+}

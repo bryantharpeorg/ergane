@@ -1,0 +1,13 @@
+{
+  "comment": "missing top-level source",
+  "findings": [
+    {
+      "key": "ops/test-one",
+      "category": "ops",
+      "severity": "critical",
+      "summary": "first",
+      "refs": ["a:1"],
+      "notes": "n1"
+    }
+  ]
+}
