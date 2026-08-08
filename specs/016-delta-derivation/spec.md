@@ -1,5 +1,25 @@
 ---
-state: ready
+state: landed
+# LANDED 2026-08-08 4:20 AM CT. Four stories, PRs #14–#17, $135.74, zero
+# operator touches. The night's shape: us1 took three attempts (a1 read a
+# subprocess returncode directly, tripping the FR-012 structural sweep; a2
+# regressed an 008 question test; a3 followed the plan's `_git`-helper
+# guidance and passed), us2 and us3 passed first try, and us4 took two — its
+# first attempt ran two hours and $78.73 with **green gates**, 1784 tests
+# passing, and the judge failed it anyway because US4-S5 declared the
+# re-entrant loop and no test demonstrated it. That is the clearest case yet
+# for judge verification sitting on top of a green suite.
+#
+# US3 and US4 dispatched concurrently — the factory's first deliberate
+# --max-concurrent-nodes 2 run. Both pinned base 64af18d (us2's merge) in
+# separate worktrees on separate branches, and the merge queue never held two
+# entries because us3 finished while us4 was still working, so the ejection
+# blind spot in docs/architecture.md §7.1 stayed untested.
+#
+# First use of what it built: `factory-epic landed specs/009-roadmap-scheduler`
+# resolves US1 as attested at aa220eac and US2/US3 as observed at their own
+# squashes — the per-story fallback resolving the exact gap in 009's history
+# that motivated FR-002. The feature works on the data that forced it.
 # Readied 2026-08-07 ~11:55 PM CT after a full verification pass against the
 # post-008 tree. Five corrections, in order of consequence: the attribution
 # grammar covers ten of eleven landed stories, not eleven (009/us1's squash is
