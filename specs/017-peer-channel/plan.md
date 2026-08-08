@@ -42,6 +42,28 @@ landed and live:
 - **Telegram mirror** — the notify bridge's plain-notification path (no
   keyboard, no reply key), already used for lifecycle notices.
 
+## Reuse inventory — US4 consults
+
+- **Ephemeral spawn machinery is every attempt**: `adapter_for` +
+  `run_attempt` (`factory/workgraph/adapter.py:219-249`) already dispatch,
+  monitor, classify, and tear down a one-shot `claude -p`. A consult is
+  `run_attempt` with no verification ladder behind it — the reply is the
+  final message, classification is reply-or-not.
+- **The judge is the persona precedent** for one-request lifetimes and for
+  context-in-prompt over worktree access: v0 consults get no worktree —
+  message, spec, plan, and asker identity are assembled into the prompt
+  (the registry can grant a worktree later without touching the seam).
+- **Key issuance bracket**: consults get their own scoped virtual key,
+  issued and torn down inside the spawn bracket (constitution V — no key
+  outlives its work), and the usage read meters them exactly as attempts,
+  attributed to the asking node (FR-015, D-013).
+- **Memory layer**: an MCP config file written per consult pointing at the
+  factory-owned Hindsight bank (FR-014) — endpoint from operator-owned
+  factory config, absent means no MCP config is written and the consult
+  runs bare. The credential sweep covers the written config file. Retain,
+  if used, verifies extraction (`memory_unit_count > 0`), never the ack —
+  the bank's own outage history is the reason.
+
 ## New modules
 
 - `factory/notify/peers.py` — registry load/validate (`peers.yaml`, sibling
@@ -56,7 +78,11 @@ landed and live:
 - Workflow additions — `message_delivered`/`message_replied` signal(s)
   sibling to `question_answered`; per-node outstanding-message counters for
   the FR-006 cap; addressee resolution table (node ids + registry names +
-  epic ids, one namespace, collisions refused at load).
+  epic ids + persona names, one namespace, collisions refused at load).
+- `factory/activities/consult_activities.py` (US4) — the consult runner:
+  context assembly, MCP config write, spawn bracket (key + adapter +
+  teardown), reply extraction, spawn-bound enforcement. No verdict types
+  imported: a consult cannot reach the ladder by construction.
 
 ## Traps (named so the implementer does not rediscover them)
 
@@ -78,7 +104,16 @@ landed and live:
   as a terminal peer.
 - **Ledger discipline**: message exchanges change no accounting — QUESTION's
   no-burn rule already covers the park; a ferried in-flight exchange costs
-  nothing but tokens, which the usage read already meters.
+  nothing but tokens, which the usage read already meters. Consults are the
+  exception that proves it: they DO spend, so they are metered and
+  attributed like attempts (FR-015) while consuming no ladder slot.
+- **No consult recursion** (US4-S3): a consult's output is scanned for the
+  marker only to refuse it — consults answer or decline, and a consult that
+  wants help is a decline. Without this rule a consult chain is an unbounded
+  spawn tree.
+- **The memory bank is optional equipment** (FR-014): every consult test
+  must pass with no bank configured — the factory must never require a
+  Hindsight server to route a message.
 
 ## Structure
 
@@ -87,4 +122,6 @@ US1: grammar + routing + store + degradation + cap + sweep extension
 US2: `peers.py` + mailbox transport + mirror + registry refusals
 (`peer_activities.py`, one workflow seam for outbox sweep on the expiry
 beat). US3: cross-epic signal + namespace completion + decision-log and
-architecture-doc entries. No new dependency; no new store; no new clock.
+architecture-doc entries. US4: `consult_activities.py` + the consult rung
+in routing + memory config — parallel to US2/US3, merged after US1. No new
+dependency; no new store; no new clock.

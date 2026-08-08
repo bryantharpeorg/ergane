@@ -24,7 +24,10 @@ in any order. Tasks without it are sequential because they share a file.
       and guarded resolution (`factory/verify/store.py:136-163,609+`), and
       the bridge reply path (`factory/notify/service.py:198-297`). Decide
       the mailbox root for the homelab peer (outside every repo working
-      tree) and record it in the registry entry; correct the plan before
+      tree) and record it in the registry entry. For US4: provision the
+      factory-owned Hindsight bank, verify a recall round trip against it,
+      and record its endpoint in factory config — or record that the memory
+      layer starts absent (FR-014 permits it). Correct the plan before
       deriving, not the nodes after.
 
 ---
@@ -133,21 +136,67 @@ a cross-epic round trip; absent sibling degrades; docs name the channel.
 
 ---
 
+## Phase 5: User Story 4 — A message with no live recipient spawns its answerer (Priority: P2)
+
+**Goal**: the consult rung — ephemeral persona spawn, reply-or-degrade,
+spend attributed, bounded; the two-layer memory split wired and optional.
+
+**Independent Test**: scripted-adapter consult round trip with ledger
+attribution; failure, decline, recursion, and bound cases all end at the
+operator path or a refusal.
+
+### Tests for User Story 4 (write FIRST, must fail)
+
+- [ ] T014 [P] [US4] Write consult-spawn cases FIRST with a scripted
+      adapter: a persona-addressed message with no live attempt spawns
+      exactly one consult with that persona's registry model and the
+      assembled context (message, spec, plan, asker identity) in its
+      prompt; the reply threads back by message id; a terminal-node
+      addressee consults with the node's persona; failure, timeout, and
+      decline each degrade to the operator question path; a consult output
+      carrying a peer-addressed marker is refused; spawns beyond the
+      configured bound refuse into the operator path; the consult's key is
+      issued and torn down inside the spawn bracket and its spend lands in
+      the ledger attributed to the asking node — must fail.
+- [ ] T015 [P] [US4] Write memory-layer cases FIRST: with a bank endpoint
+      configured, the consult's written MCP config names only the
+      factory-owned bank (assert no other endpoint can appear — sweep
+      style); with no endpoint configured, no MCP config is written and the
+      consult runs and answers; the credential sweep covers the config
+      file; consult behavior is identical under both except for the tool's
+      presence — must fail.
+
+### Implementation for User Story 4
+
+- [ ] T016 [US4] Implement `factory/activities/consult_activities.py` and
+      the consult rung in routing until T014, T015 pass.
+- [ ] T017 [US4] Docs: record the consult decision and the two-layer memory
+      split (§ Decision) alongside US3's claimed entries — coordinate the
+      decision-log numbers with whichever of US3/US4 lands second — and add
+      the consult runner to `docs/architecture.md`'s module table.
+
+---
+
 ## Dependencies & Execution Order
 
 - Phase 1 is operator work and gates everything — including the mailbox
-  root decision the registry entry needs.
+  root decision the registry entry needs and the memory-bank decision the
+  consult runner reads.
 - Phase 2 (US1) is the MVP seam: the address, the routing, and the floor.
 - Phase 3 (US2) imports US1's routing and store — merged, not passed.
 - Phase 4 (US3) imports both and completes the namespace — merged,
-  sequential, carries the docs.
+  sequential, carries the docs with Phase 5.
+- Phase 5 (US4) imports only US1 — merged after it, parallel to Phases 3–4.
 
 ## Implementation Strategy
 
 US1 alone already self-answers the question class that burned 006-us1: an
 implementer can ask its architect instead of the operator's phone. US2 is
 the operator's named want — the homelab peer — and rides entirely on US1's
-semantics. US3 completes the topology when concurrency makes it real. The
+semantics. US4 is the escalation vision completed: "ask the architect"
+works with no architect running, the machine is always tried before the
+human, and what the consults learn accrues in the factory's own memory
+bank. US3 completes the topology when concurrency makes it real. The
 operator path is the floor under every story: nothing in this spec can make
 a question die unheard, because every failure branch lands on the channel
 008 proved in production.

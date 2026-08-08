@@ -86,8 +86,9 @@ are what they were before the exchange.
    common case and the compatibility contract.
 5. **Given** a peer message addressed to a terminal node, to an unknown name,
    or unanswered at its expiry, **When** routing or the expiry loop evaluates
-   it, **Then** the message degrades to the 008 operator-question path — a
-   peer message may go unanswered, it must never hang a node or vanish.
+   it and no consult is available for the addressee (US4), **Then** the
+   message degrades to the 008 operator-question path — a peer message may go
+   unanswered, it must never hang a node or vanish.
 
 ---
 
@@ -176,6 +177,59 @@ channel.
 
 ---
 
+### User Story 4 - A message with no live recipient spawns its answerer (Priority: P2)
+
+As the factory operator, when a message names a persona — or a node whose
+attempts are done — the factory spins up an ephemeral consult to answer it:
+one process, dispatched with that persona's model, read-only, alive exactly
+long enough to produce the reply, then discarded, so that "ask the architect"
+works whether or not an architect happens to be running, and the operator
+rung is reached only when a machine genuinely could not answer.
+
+The factory already runs this shape everywhere: every attempt is an ephemeral
+agent an activity spawns, monitors, and tears down, and the judge is a whole
+persona that lives one request at a time. A consult is an attempt with the
+ladder removed — no gates, no judge, no verdict, no diff expected — whose
+entire output contract is the reply. Its context is assembled from what the
+factory already knows deterministically (the message, the epic's spec and
+plan, the asker's identity and branch), and its longer memory is the second
+layer: recall against a factory-owned memory bank, never the operator's
+personal one, so cross-epic knowledge accumulates without the operator's
+bank silting up with machine churn (§ Decision).
+
+**Why this priority**: This is the escalation vision the channel exists for —
+questions answered by the cheapest competent answerer, with the operator as
+the floor rather than the default. It is P2 because it rides entirely on
+US1's routing, threading, and degradation.
+
+**Independent Test**: With a scripted consult adapter, a persona-addressed
+message spawns exactly one consult, the reply threads back to the asker, the
+consult's spend lands in the ledger attributed to the asking node, and a
+failing consult degrades to an operator question.
+
+**Acceptance Scenarios**:
+
+1. **Given** a message addressed to a persona with no live attempt, or to a
+   node whose attempts are terminal, **When** routing evaluates it and a
+   consult is available, **Then** exactly one ephemeral consult spawns with
+   that persona's registry model, its reply threads back by message id, and
+   its process, key, and context are discarded after the reply.
+2. **Given** a consult that fails, times out, or declines to answer, **When**
+   its attempt ends, **Then** the message degrades to the 008 operator
+   question path — the consult rung sits above the floor, never replaces it.
+3. **Given** a consult whose own output carries a peer-addressed marker,
+   **When** routing evaluates it, **Then** the marker is refused — consults
+   answer, they do not converse, and their unanswerable case is scenario 2.
+4. **Given** a consult with the factory memory bank configured, **When** it
+   runs, **Then** recall is available against that bank and nothing grants
+   any factory agent the operator's personal bank; **Given** no bank is
+   configured, **Then** the consult still answers from assembled context.
+5. **Given** consult spawns reaching the configured bound, **When** one more
+   is requested, **Then** it is refused and the message degrades to the
+   operator — spawning is bounded by configuration, not by message volume.
+
+---
+
 ### Edge Cases
 
 - Two nodes message each other and both park waiting: each side's expiry
@@ -195,6 +249,11 @@ channel.
   undeliverable to the asker (US2-S4); routing must never hang on a disk.
 - An operator reply and a peer reply racing for the same degraded question:
   first-wins through the store's guarded resolution, the 008 rule unchanged.
+- A consult asked something only a human can decide: it declines, and the
+  decline is scenario US4-S2 — one consult's worth of tokens spent to route
+  a question correctly is the price of trying the machine first.
+- A flood of persona-addressed messages: the spawn bound (FR-015) refuses
+  the excess into the operator path — consults amplify answers, never spend.
 
 ## Requirements *(mandatory)*
 
@@ -239,6 +298,20 @@ channel.
 - **FR-012**: The channel's transport decision and the FR-012-amendment
   extension MUST be recorded in the decision log at landing, and the
   architecture docs MUST name the peer channel and its registry.
+- **FR-013**: A message addressed to a persona, or to a node with no live or
+  future attempt, MUST be answerable by an ephemeral consult when one is
+  available: spawned read-only with the persona registry's model, no gates,
+  no judge, no verdict; its reply MUST thread back by message id and its
+  process, key, and context MUST be discarded after the reply. A consult
+  that fails, expires, or declines MUST degrade per FR-004, and a consult
+  MUST NOT send peer messages.
+- **FR-014**: Consult memory access MUST be scoped to a factory-owned memory
+  bank named in operator-owned configuration; no factory agent may be
+  granted the operator's personal bank; and a consult with no bank
+  configured MUST still answer from assembled context alone.
+- **FR-015**: Consult spawns MUST be bounded by configuration, and each
+  consult's spend MUST be metered and attributed in the ledger to the asking
+  node exactly as any attempt is metered.
 
 ### Key Entities
 
@@ -250,6 +323,9 @@ channel.
   transport, address, expiry. The A2A seam lives in `transport`.
 - **Degradation** — the conversion of an undelivered or expired message into
   an 008 operator question; the floor every path lands on.
+- **Consult** — an ephemeral answering attempt: a persona's model spawned for
+  one message, read-only, ladder-free, discarded after its reply. The middle
+  rung between a dead peer and the operator's phone.
 
 ## Success Criteria *(mandatory)*
 
@@ -272,6 +348,10 @@ channel.
   mirrors shows no key value can reach any of them.
 - **SC-006**: The full existing suite stays green; every 008 test keeps its
   meaning unchanged — the addressee-less path is bit-compatible.
+- **SC-007**: A persona-addressed question with no live peer completes its
+  round trip through exactly one consult spawn with the spend visible in the
+  ledger against the asking node, and the same question with consults
+  disabled reaches the operator — both demonstrated by test.
 
 ## Work Graph
 
@@ -281,7 +361,10 @@ transport under an existing channel, not a new channel. US3 depends on US2
 because the cross-epic hop reuses the routing activity US1 lands and the
 addressee grammar US2 finishes (registry names and epic names share one
 namespace that must exist before a third kind of address joins it), and
-because it carries the closing documentation duties. Both edges are
+because it carries the closing documentation duties. US4 depends only on US1:
+the consult rung slots into US1's degradation ladder and threads replies
+through US1's ids, touching neither the registry nor the cross-epic hop, so
+it may land in parallel with the US2→US3 chain. All edges are
 `depends_on_merged` (003 FR-009): each dependent imports modules its
 predecessor lands, so its worktree must clone a base already containing the
 predecessor's merge. The deriver requires `depends_on: []` spelled out even
@@ -299,6 +382,10 @@ US3:
   depends_on: []
   depends_on_merged: [US2]
   implements: [FR-011, FR-012]
+US4:
+  depends_on: []
+  depends_on_merged: [US1]
+  implements: [FR-013, FR-014, FR-015]
 ```
 
 ## Assumptions
@@ -313,6 +400,10 @@ US3:
   every external send to the operator.
 - Epic concurrency stays at the operator's configured cap; US3 is valuable at
   cap > 1 and harmless below it.
+- A Hindsight server is reachable on the LAN and a factory-owned bank can be
+  provisioned for it; provisioning and the endpoint value are operator
+  preflight (T001), and FR-014 makes the whole memory layer optional — a
+  factory with no bank configured still consults, from assembled context.
 
 ## Decision: Temporal signals as the spine, A2A at the edge, no MCP tool (decided 2026-08-08, Bryan + assistant)
 
@@ -347,6 +438,34 @@ widening the FR-012 surface — agent-authored calls mutating factory state —
 that D-018 deliberately keeps at one marker. The ferry file grammar keeps
 the adapter in control of what leaves an attempt and keeps the amendment's
 hole at "park and route".
+
+## Decision: ephemeral consults, and the two-layer memory split (decided 2026-08-08, Bryan)
+
+The operator asked whether Temporal could spin up an agent to process a
+message when none is attached to receive it, discard it afterward, and lean
+on Temporal plus Hindsight for what such ephemeral agents remember.
+**Decided: yes, as US4, with the memory split drawn deliberately.**
+
+The spawn is not new machinery — every attempt in this factory is already an
+ephemeral agent an activity dispatches, monitors, and tears down, and the
+judge is a persona that lives one request at a time. What US4 adds is an
+attempt with the ladder removed, whose output contract is a reply instead of
+a diff.
+
+Memory splits in two layers. **Deterministic, epic-scoped context comes from
+Temporal and the repo** — the message, the spec and plan, the asker's
+identity, the workflow's own question history — assembled into the consult's
+prompt from records the factory already keeps, replay-safe and free.
+**Durable cross-epic memory comes from Hindsight, through a factory-owned
+bank** — never the operator's personal bank, which stays closed to headless
+agents so machine churn cannot silt up what the operator reads (the
+operator's standing rule, adopted here as factory policy: FR-014). This is
+also the channel's first agent-facing MCP surface, and it does not reopen
+the messaging-tool rejection above: recall reads memory and retain writes
+memory — neither touches node state, so the FR-012 hole stays at "park and
+route". One operational lesson is inherited from the bank's own history: a
+retain acknowledgment cannot distinguish "stored" from "extracted", so any
+factory retain path verifies extraction, never the ack.
 
 ## Decision: the operator is the floor, never the ceiling (decided 2026-08-08)
 
