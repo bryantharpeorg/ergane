@@ -553,6 +553,50 @@ what is wrong and what to change: a private repo, a missing merge queue, a decla
 with no matching required check, or a required check no gate declares. Deterministic only —
 an LLM judge never enters CI (FR-003).
 
+### 7.1 What keeps concurrent nodes from conflicting
+
+`max_concurrent_nodes > 1` (007) puts several agents on the tree at once. Four
+layers hold, and they are worth stating together because no single one of them is
+sufficient:
+
+1. **Filesystem isolation.** One real git worktree per node at
+   `.factory/worktrees/<epic>/<node>` on branch `factory/<epic>/<node>`, each with
+   its own `HOME`, virtual key, and gate run. Concurrent agents never share a
+   directory, so none can observe another's half-written file.
+2. **Base pinning.** Each node pins the **fetched** head of `origin/<default>` at
+   first dispatch, records it in `<node>.json` beside the worktree, and reuses it
+   across attempts (FR-013). `capture_base_ref` fetches before reading precisely
+   because the clone's own HEAD is stale exactly when a sibling has just landed —
+   an unfetched pin makes a concurrent node's diff revert its sibling's merge.
+3. **Merge-edges for the predictable conflicts.** `depends_on_merged` makes a
+   story wait for its predecessor to *land*, so its pin contains that code. Plain
+   `depends_on` is ordering only and carries no content guarantee.
+4. **The merge queue for the unpredictable ones.** `.github/workflows/test.yml`
+   triggers on `merge_group:` as well as `pull_request:`, so GitHub builds the
+   speculative merge of the queued PRs onto the branch tip and runs the suite
+   against that combined tree; the `factory-queue` ruleset groups `ALLGREEN` and
+   builds up to five entries. Two stories that touch different files and each pass
+   alone but break together are therefore caught **before either merges**, and the
+   offender is ejected rather than landed. The trunk cannot go red from concurrent
+   landings. The corollary matters when reading evidence: a PR-level green check
+   was computed against a possibly-stale base and proves little on its own — the
+   merge-group build is the real gate.
+
+**Known limitation — a queue ejection is invisible to the poller.** GitHub reports
+a queued PR as `autoMergeRequest: null`, open, and clean for its entire ride
+(queue membership is absent from `gh pr view`'s surface — this is why the
+classifier decides nothing from auto-merge's absence, §7 above). A PR ejected
+because its merge group failed therefore looks identical to one still riding, and
+it does not surface as a failing required check either, because the poll reads
+`statusCheckRollup` on the PR head while a merge-group check attaches to the
+`gh-readonly-queue/…` ref. An ejection consequently falls through to the stall
+guard and surfaces as `STALLED` → escalation after `stall_after_s` (default 7200).
+Concurrency is thus safe for the branch and expensive for the node: the cost of an
+ejection is wasted wall clock plus an operator page, never a corrupted trunk.
+Lower `stall_after_s` for unattended concurrent runs so the page arrives in
+minutes rather than hours. This path has never fired — every landing through
+2026-08-07 was serial, and the queue has never held two entries.
+
 ## 8. Agents: the adapter seam
 
 Per D-018 and Bernstein's `CLIAdapter`: the adapter's only job is **launch, monitor,
