@@ -1,5 +1,32 @@
 ---
-state: ready
+state: landed
+# LANDED 2026-08-08 5:48 AM CT. Three stories, PRs #18–#20, $34.45, all three
+# first-attempt PASS, 78 minutes — the cleanest epic the factory has run, and
+# the cheapest per story ($11.48 against 016's $33.94).
+#
+# Proven live after landing: `factory-doctor report --batch
+# specs/015-factory-doctor/seed-findings.json` ingested all 27 audit findings
+# through the batch envelope FR-004 defines, and `list` renders them in the
+# specified order (severity, occurrences descending, key).
+#
+# BUT `factory-doctor check` — the epic's headline command — raises
+# RuntimeError on its first real invocation. The key-list probe's `gather`
+# awaits `_closed_epics_from_temporal` inside a running event loop
+# (`probes.py:308`) and that helper calls `asyncio.run` itself (`:521`). Exit
+# code is 1, so it fails loudly rather than silently.
+#
+# Worth recording *why* verification missed it, because the cause is
+# structural rather than careless: FR-005 requires each probe to split a thin
+# snapshot gather from a pure evaluation "so its judgment is testable against
+# scripted snapshots". The tests duly script the snapshots — which means the
+# evaluation is well covered and `gather()` never executes under test. The
+# seam that made the judgment testable is the seam that hid the defect. A
+# green suite of 1784 tests and three PASS verdicts sat on top of a command
+# that cannot run.
+#
+# Filed into the doctor's own ledger as `doctor/check-crashes-on-nested-
+# asyncio-run` (critical) rather than hand-patched — converting a finding into
+# a spec is what this epic is for, and it should be its own first customer.
 # Readied 2026-08-08 ~12:15 AM CT after a full verification pass. The trio was
 # drafted after 008/009 attested, so `git diff` against factory/ was empty and
 # nearly every reuse anchor verified exact. Five corrections: FR-009 narrowed
