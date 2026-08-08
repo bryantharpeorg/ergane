@@ -40,7 +40,12 @@ LANDED_BY = "Ergane Factory"
 
 
 def pr_title(*, epic_id: str, node_id: str, story_title: str) -> str:
-    """`<epic>/<node>: <story title>` — the plan's exact title shape."""
+    """`<epic>/<node>: <story title>` — the plan's exact title shape.
+
+    This is the render end of the landing-attribution contract; the parse end is
+    `factory.workgraph.landed._LANDING_RE`. A change to either side must change
+    both (016-delta-derivation FR-001/FR-002, D-034).
+    """
     return f"{epic_id}/{node_id}: {story_title}"
 
 

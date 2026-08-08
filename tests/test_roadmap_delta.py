@@ -548,3 +548,97 @@ def _status_of(status: Any, spec_dir: str) -> Any:
         if spec.spec_dir == spec_dir:
             return spec
     raise AssertionError(f"{spec_dir} not in roadmap status")
+
+
+# --- re-entrant loop: a delta landing closes drift ----------------------------
+
+
+async def _real_drifted(
+    target_repo: Path, spec_dir: str, spec_text: str
+) -> bool:
+    """The real git-backed drift resolver used by the roadmap workflow."""
+    from factory.activities.roadmap_activities import DriftInput, drift_for_spec
+
+    return await drift_for_spec(
+        DriftInput(target_repo=str(target_repo), spec_dir=spec_dir, spec_text=spec_text)
+    )
+
+
+async def test_delta_landing_closes_drift_loop(
+    repo_builder: Callable[..., Path], tmp_path: Path
+) -> None:
+    """US4 acceptance 5: after a delta epic lands, facts recomputed from the new
+    landing commits match the current spec and the roadmap renders the spec
+    `landed` again.
+
+    The operator amends the spec in both the declared corpus and the target repo
+    (the spec file is part of the factory repo). The real `drift_for_spec`
+    activity detects the drift. The delta landing is represented by an attributed
+    empty commit on top of the amended spec. Recomputing drift through the same
+    real git-backed resolver then returns False, and `compute_readiness` renders
+    the spec as `landed` — the loop is closed and re-entrant.
+    """
+    from factory.roadmap.models import SpecState, compute_readiness, read_roadmap
+    from factory.workgraph.landed import LandedKind, landed_facts
+
+    spec_dir = "016-delta-derivation"
+    base_text = _landed_spec_with_one_story(spec_dir)
+    repo = repo_builder(spec_dir, base_text)
+    git_env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    original_commit = _commit(
+        repo, f"{spec_dir}/us1: US1 (#1)", env=git_env, allow_empty=True
+    )
+
+    specs_root = tmp_path / "specs"
+    spec_path = specs_root / spec_dir / "spec.md"
+    spec_path.parent.mkdir(parents=True)
+    amended_text = base_text.replace(
+        "**Then** it works.", "**Then** it works differently."
+    )
+    spec_path.write_text(amended_text, encoding="utf-8")
+
+    # The amendment must also be present in the target repo, because the pinned
+    # fingerprint at the new landing commit is read from the refreshed target repo.
+    repo_spec_path = repo / "specs" / spec_dir / "spec.md"
+    repo_spec_path.write_text(amended_text, encoding="utf-8")
+    _git(repo, "add", "-A", env=git_env)
+    _commit(repo, "operator amends US1", env=git_env)
+
+    # Before the delta lands: real git-backed drift is detected.
+    drifted_before = await _real_drifted(repo, spec_dir, amended_text)
+    assert drifted_before is True
+    roadmap = read_roadmap(str(specs_root))
+    ready_before = compute_readiness(
+        roadmap,
+        drifted_for=lambda s: s == spec_dir and drifted_before,
+    )
+    spec_before = ready_before.spec(spec_dir)
+    assert spec_before.state is SpecState.LANDED
+    assert spec_before.rendered_state == "amended"
+    assert spec_before.drifted is True
+
+    # The delta epic lands the re-work as an attributed empty commit.
+    delta_commit = _commit(
+        repo, f"{spec_dir}/us1: US1 (#2)", env=git_env, allow_empty=True
+    )
+    assert delta_commit != original_commit
+
+    # After the delta lands: recomputed drift is gone.
+    drifted_after = await _real_drifted(repo, spec_dir, amended_text)
+    assert drifted_after is False
+
+    # Landed facts point at the newest attributed commit, observed.
+    facts = landed_facts(repo, spec_dir, default_branch="main")
+    assert facts["US1"].commit == delta_commit
+    assert facts["US1"].kind is LandedKind.OBSERVED
+
+    # The roadmap renders the spec as landed again.
+    roadmap = read_roadmap(str(specs_root))
+    ready_after = compute_readiness(
+        roadmap,
+        drifted_for=lambda s: s == spec_dir and drifted_after,
+    )
+    spec_after = ready_after.spec(spec_dir)
+    assert spec_after.state is SpecState.LANDED
+    assert spec_after.rendered_state == "landed"
+    assert spec_after.drifted is False
