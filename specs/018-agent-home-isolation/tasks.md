@@ -115,7 +115,11 @@ worktree under the child environment succeeds with the factory's attribution.
       that could carry one** — the negative assertion is the point of this task
       (plan.md § US2, first trap). Include the case that would catch the
       shortcut: a seeded home must contain no `oauthAccount` key, no MCP server
-      the factory did not write, and no `CLAUDE.md` — must fail.
+      the factory did not write, and no instruction file whose content did not
+      come from this module's constants. Assert **provenance, not absence** —
+      today that means no `CLAUDE.md` at all, because the factory composes none,
+      but a later spec that seeds a factory-authored briefing must be able to
+      keep this test rather than delete it — must fail.
 - [ ] T008 [P] [US2] Write git-identity cases FIRST: a commit made inside a
       fixture worktree under the child environment succeeds where it would
       otherwise fail for want of an identity, and the resulting commit's author
