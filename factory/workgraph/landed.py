@@ -277,6 +277,9 @@ def _story_parts(
     """The three fingerprint components for a story.
 
     Returns (scenario raw texts, FR-key -> body, declaration YAML text).
+    The story title is part of the fingerprint too: a renumbered story can keep
+    the scenarios and declaration of another while changing only the title,
+    and identity guard must detect that.
     """
     requirements = parse_spec(spec_text)
     story = None
@@ -288,8 +291,12 @@ def _story_parts(
             story = requirement
 
     scenarios: list[str] = []
+    title = ""
     if story is not None:
-        scenarios = [_normalize(scenario.raw_text) for scenario in story.scenarios]
+        title = _normalize(story.title)
+        scenarios = [
+            _normalize(scenario.raw_text) for scenario in story.scenarios
+        ]
 
     declaration = _declaration_text(spec_text, story_key)
 
@@ -304,7 +311,7 @@ def _story_parts(
     implemented_bodies = {
         key: body for key, body in functional.items() if key in implements
     }
-    return scenarios, implemented_bodies, declaration
+    return [title, *scenarios], implemented_bodies, declaration
 
 
 def _declaration_text(spec_text: str, story_key: str) -> str | None:
