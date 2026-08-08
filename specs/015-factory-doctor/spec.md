@@ -1,5 +1,19 @@
 ---
-state: draft
+state: ready
+# Readied 2026-08-08 ~12:15 AM CT after a full verification pass. The trio was
+# drafted after 008/009 attested, so `git diff` against factory/ was empty and
+# nearly every reuse anchor verified exact. Five corrections: FR-009 narrowed
+# from "observed or attested" to attested frontmatter only (observed-landed
+# facts live only inside a live RoadmapWorkflow's state, so the cheap
+# per-command sweep could not read them); FR-007 now says a skipped probe
+# outranks a critical finding when both occur, since the FR is what the judge
+# grades; FR-004 defines the batch envelope the seed corpus already uses
+# (top-level source/comment/findings) so T005 has a grammar to test against;
+# FR-008 requires a failed promotion to leave nothing behind, which the
+# refuse-existing rule would otherwise turn into a permanently blocked slug;
+# and contracts/doctor-store.sql's header was reworded because the plan copies
+# it verbatim into a module constant, where the word it used would have failed
+# the D-021 sweep.
 # Drafted 2026-08-07 from the operator's request: turn the repo/spec audit
 # practice into a durable SRE surface — a `doctor` CLI category that keeps a
 # recurrence-tracking findings ledger, probes the factory for known incident
@@ -80,9 +94,12 @@ batch refusal, and deterministic listing.
    all-or-nothing: one malformed entry refuses the whole batch naming the
    offending entry and rule, and the store is unchanged (the deriver's
    collection discipline, applied to ingestion).
-5. **Given** `factory-doctor list`, **When** rendered, **Then** output is
-   deterministic — ordered by severity, then occurrences descending, then key
-   — and every finding shows key, severity, status, occurrences, and age.
+5. **Given** `factory-doctor list`, **When** rendered, **Then** the *ordering*
+   is deterministic — severity, then occurrences descending, then key — and
+   every finding shows key, severity, status, occurrences, and age. Ordering,
+   not bytes: `age` is derived from `last_seen` against the current clock, so
+   a byte-identical assertion would be a test of the clock. Pin it in tests by
+   freezing the clock or matching the field's shape.
 
 ---
 
@@ -181,9 +198,13 @@ on the promoted spec resolves them on the next doctor run.
    `list` shows the association.
 4. **Given** a promote naming a spec directory that already exists, **When**
    it runs, **Then** it refuses before writing anything.
-5. **Given** a promoted finding whose spec's roadmap state reads landed
-   (observed or attested), **When** any doctor command next runs, **Then**
-   the finding resolves automatically, recording the spec that resolved it.
+5. **Given** a promoted finding whose spec's frontmatter reads `state:
+   landed`, **When** any doctor command next runs, **Then** the finding
+   resolves automatically, recording the spec that resolved it.
+6. **Given** a promote whose scaffold fails derivation, **When** it aborts,
+   **Then** nothing it wrote survives — the finding stays unpromoted *and*
+   the directory is gone, so retrying the same slug is not blocked by the
+   refuse-existing-directory rule.
 
 ---
 
@@ -236,7 +257,12 @@ on the promoted spec resolves them on the next doctor run.
   `list` (deterministic order: severity, occurrences descending, key), and
   `resolve` (manual, with a reason); exit codes MUST follow the existing
   contract — `0` success, `1` operator-fixable refusal, `2` service not
-  answering.
+  answering. The batch file's envelope is part of the grammar: a required
+  top-level `source` string applying to every entry in the file, an optional
+  `comment` that is ignored, and a required `findings` list whose entries carry
+  `key`, `category`, `severity`, `summary`, `refs`, and `notes` — no per-entry
+  `source` override, so a file has exactly one provenance. `seed-findings.json`
+  in this spec's directory is the grammar's first and largest instance.
 - **FR-005**: Probes MUST live in a registry the `check` driver iterates —
   adding a probe MUST NOT require changing the driver — and each probe MUST
   split a thin snapshot gather from a pure evaluation so its judgment is
@@ -251,19 +277,31 @@ on the promoted spec resolves them on the next doctor run.
   when any new `critical` finding is filed, and `2` when any probe was
   skipped because a service it needs did not answer; a skipped probe MUST be
   reported with the service named and MUST NOT prevent other probes from
-  running.
+  running. When a run both files a new critical finding and skips a probe, the
+  exit MUST be `2`: an incomplete examination outranks a bad one, because the
+  operator's next action is to re-run with the service up, not to read the
+  finding.
 - **FR-008**: `promote` MUST scaffold a spec directory from named findings —
   frontmatter `state: draft`, one story per finding carrying its evidence
   verbatim, FR stubs, and a `## Work Graph` section — MUST verify the
   scaffold compiles by running derivation before reporting success, MUST
   refuse an existing directory before writing, and MUST NOT write any state
-  other than `draft`: flipping to `ready` is the operator's act alone.
+  other than `draft`: flipping to `ready` is the operator's act alone. A
+  scaffold that fails its own derivation check MUST leave nothing behind —
+  write to a temporary location and rename on success, or remove what was
+  written — because a half-written directory would collide with the
+  refuse-existing rule and permanently block retrying that slug.
 - **FR-009**: Promotion MUST record the spec directory on each promoted
-  finding; a promoted finding whose spec's roadmap state is landed (observed
-  or attested, read through the roadmap grammar) MUST resolve automatically
-  on the next doctor invocation, recording what resolved it; promoting an
-  already-promoted finding MUST be refused, while promoting a `regressed`
-  finding MUST be allowed.
+  finding; a promoted finding whose spec is **attested** landed — frontmatter
+  `state: landed`, read through the roadmap's own frontmatter grammar — MUST
+  resolve automatically on the next doctor invocation, recording what resolved
+  it; promoting an already-promoted finding MUST be refused, while promoting a
+  `regressed` finding MUST be allowed. Attested only, deliberately:
+  observed-landed facts exist solely inside a live `RoadmapWorkflow`'s state,
+  reachable only by a Temporal query against a workflow that may have
+  continued-as-new or closed, which no cheap sweep at the top of every doctor
+  command can rely on. Closing on observation is a follow-on finding, not this
+  requirement.
 - **FR-010**: No credential value may ever appear in findings, event
   history, probe snapshots, scaffolds, or any doctor output; the sweep MUST
   assert each surface (001's grep-backed pattern).

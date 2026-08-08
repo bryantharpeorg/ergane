@@ -8,9 +8,12 @@
 -- Identity is the finding key. `findings` holds current state (one row per
 -- identity, upsert target for at-least-once reporting); `finding_events` holds
 -- the recurrence trail (append-only, one row per observation). Severity and
--- status are closed sets enforced here so the arithmetic that computes over
--- them (list ordering, check exit codes, regression transitions) rests on the
--- schema rather than on caller care. Category is deliberately unconstrained:
+-- status are closed sets held by the schema, so the arithmetic that computes
+-- over them (list ordering, check exit codes, regression transitions) rests on
+-- the schema rather than on caller care. (Wording matters: this header is
+-- copied verbatim into a module-level DDL constant, and a non-docstring string
+-- literal containing the D-021 sweep's vocabulary would fail
+-- test_final_sweep.py.) Category is deliberately unconstrained:
 -- taxonomy is open, grammar is closed (spec § Decision, call 5).
 
 CREATE TABLE IF NOT EXISTS schema_version (

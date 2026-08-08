@@ -62,10 +62,13 @@ connect path. **This feature adds none.**
   that is its own finding (`ops/no-worker-running`), severity `info` — a
   laptop run is not an incident.
 - **Scaffold self-check**: `derive_workgraph` (`factory/workgraph/derive.py`,
-  pure: text in, `WorkGraph` out) is invoked directly by `promote` on the
-  scaffold text before anything reports success — the same function the CLI's
-  `derive` verb wraps, so "compiles for promote" and "compiles for dispatch"
-  are one fact. `parse_spec` (`factory/verify/criteria.py:122`) defines the
+  pure) is invoked directly by `promote` on the scaffold text before anything
+  reports success — the same function the CLI's `derive` verb wraps, so
+  "compiles for promote" and "compiles for dispatch" are one fact. Its
+  signature is not text-only: `derive_workgraph(spec_text, *, epic_id, feature,
+  specs_root, target_repo)`, so promote must supply the four identity
+  keywords — for a scaffold, the slug it just chose and the operator's
+  specs-root and target-repo. `parse_spec` (`factory/verify/criteria.py:122`) defines the
   story/FR shapes the scaffold must emit: `### User Story N - Title
   (Priority: PX)` headers (`_STORY_RE`, :74), `**Acceptance Scenarios**:`
   marker (:83), `- **FR-NNN**:` bullets with MUST/SHALL obligation keywords
@@ -83,7 +86,7 @@ connect path. **This feature adds none.**
   `[project.scripts]` beside `factory-usage`/`factory-epic`/
   `factory-roadmap` (:13-16).
 - **Rejection style**: the deriver's staged `_Rejections` collection
-  (`factory/workgraph/derive.py:125`) is the template for batch-ingestion
+  (`factory/workgraph/derive.py:126`) is the template for batch-ingestion
   refusal — every defect named at once, nothing partially ingested; the
   fixture-corpus pattern (`tests/fixtures/README.md`) is the test template.
 - **Seed corpus**: `seed-findings.json` in this directory — 27 findings from
@@ -159,11 +162,16 @@ finding at P2 with evidence folded verbatim into the narrative and a
 scenario stub per ref; one `- **FR-NNN**: ... MUST ...` bullet per finding;
 `## Work Graph` block with `depends_on: []`/`implements` per story; plan.md
 and tasks.md skeletons pointing back at finding keys). `promote` in the CLI:
-refuse-existing-dir, write, run `derive_workgraph` on the written spec text,
-report the compile result; on success mark findings `promoted` in one
+refuse-existing-dir, write to a temporary directory, run `derive_workgraph` on
+the written spec text, and **rename into place only on a clean compile** — on
+rejection the temporary directory is removed and nothing survives, because a
+half-written directory would trip the refuse-existing rule and block every
+retry of that slug (US3-S6). On success mark findings `promoted` in one
 transaction. Loop closure runs as a cheap sweep at the top of every doctor
-command: promoted findings' specs read through the roadmap grammar; landed →
-resolve with the spec named.
+command: promoted findings' specs read through the roadmap's frontmatter
+grammar; `state: landed` → resolve with the spec named. Attested state only —
+observed-landed lives in `RoadmapWorkflow`'s in-memory state and would cost a
+Temporal query against a possibly-closed workflow on every command (FR-009).
 
 Trap: the scaffold's scenario stubs must satisfy `_STEP_RE` (bold
 Given/When/Then) and the story headers `_STORY_RE` exactly — derive's

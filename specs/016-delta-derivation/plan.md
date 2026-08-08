@@ -30,13 +30,20 @@ subprocess, which the codebase already shells to throughout
 **Verified reuse inventory** (file:line as of drafting; T001 re-checks):
 
 - **Attribution grammar**: landing squash subjects are
-  `<epic_id>/<node_id>: <STORY_KEY> (#<pr>)` — verified uniform across all
-  eleven landed stories of 007/008/009 on `ergane-buildout` (e.g.
-  `009-roadmap-scheduler/us2: US2 (#9)`). Rendered by `prepare_landing_pr`
-  (`factory/activities/merge_activities.py:301-307`, title returned and
-  passed to `open_pr` at :343); GitHub appends the `(#N)` suffix at squash.
-  The reader's regex and this renderer are two ends of one contract — note
-  the cross-reference in both files.
+  `<epic_id>/<node_id>: <STORY_KEY> (#<pr>)` — uniform across every
+  *reachable* attributed landing of 007/008/009 on `ergane-buildout`, which is
+  ten of eleven stories (e.g. `009-roadmap-scheduler/us2: US2 (#9)` =
+  `7d9f207`). The eleventh, `5f6aef1` (`009-roadmap-scheduler/us1: US1 (#8)`),
+  is **not reachable** from the branch: the 2026-08-07 009 recovery rewrote
+  past that squash and us1's content re-entered inside us2's. This is the
+  motivating case for FR-002's per-story attestation fallback, and T004 owns it.
+  Rendered by `pr_title` (`factory/mergequeue/messages.py`) as
+  `f"{epic_id}/{node_id}: {story_title}"`, with `story_title=node.story_key`
+  threaded from the interpreter; `prepare_landing_pr`
+  (`factory/activities/merge_activities.py`) merely calls it, and the title
+  reaches `client.create_pr` via `open_landing_pr`. GitHub appends the `(#N)`
+  suffix at squash. The reader's regex and `pr_title` are the two ends of one
+  contract — put the cross-reference in `messages.py`, not in the activity.
 - **Reading history**: `git log --format=%H%x09%s <default-branch>` and
   `git show <rev>:specs/<dir>/spec.md` — plumbing invocations in the
   `_git`-helper style of `factory/workgraph/worktree.py` (its `_git`
@@ -54,12 +61,12 @@ subprocess, which the codebase already shells to throughout
   wraps it: derive fully, then subtract per the baseline, refusing by name
   through the same `Rejection`/`DerivationError` types so the CLI renders
   delta refusals exactly as derive refusals.
-- **The remainder fixtures**: `specs/007-parallel-dispatch/
-  workgraph-remainder.json` and `specs/009-roadmap-scheduler/
-  workgraph-remainder.json` — the 2026-08-07 hand-trims, currently
-  untracked. Commit them under `tests/fixtures/` as SC-002's expected
-  outputs before they are lost; they are the only ground truth of the
-  operator judgment this feature mechanizes.
+- **The remainder fixtures**: banked byte-verbatim at
+  `tests/fixtures/remainders/007-parallel-dispatch-remainder.json` and
+  `.../009-roadmap-scheduler-remainder.json` (commit `8d57b86`, provenance in
+  `tests/fixtures/README.md`). T009 replays against those paths. They are the
+  only ground truth of the operator judgment this feature mechanizes; the
+  untracked originals still sit beside their specs and are not the fixture.
 - **Roadmap surface**: `factory/roadmap/models.py` (frontmatter reader,
   `_KNOWN_KEYS`, :107 — unchanged: amended is computed, never written),
   render in `factory/roadmap/cli.py` (deterministic listing to extend with
@@ -110,16 +117,28 @@ they wrap; roadmap changes stay in `factory/roadmap/`.
 `factory/workgraph/landed.py`: `landed_facts(repo, spec_dir, default_branch)
 -> dict[str, LandedFact]` — one `git log` scan, subject regex anchored to
 the spec's epic id, newest-first so the first match per story wins (FR-001's
-latest-wins). Attestation fallback: no attributed commits and frontmatter
-`state: landed` → `git log --follow -1` for the commit introducing the
-attestation, every story landed there, `attested=True`. `fingerprint(repo,
-rev, spec_dir, story_key) -> Fingerprint` — `git show` + `parse_spec` + the
-deriver's block parser, structural hash as inventoried above.
+latest-wins). Attestation fallback is **per story**: for each story with no
+reachable attributed commit, if the frontmatter is attested `state: landed`,
+baseline at the commit that introduced the attestation with `attested=True`.
+Writing it as a spec-level `if not any(attributed)` branch is the bug T004
+exists to catch — 009 has attributed commits *and* a gap.
+`fingerprint(repo, rev, spec_dir, story_key) -> Fingerprint` — `git show` +
+`parse_spec` + the deriver's block parser, structural hash as inventoried.
 
 Trap: `git show <rev>:<path>` needs the path as of that revision. Spec dirs
 never move today; assert the file exists at the revision and refuse with a
 named finding if not — a missing historical file is a fact worth a loud
 answer, not an empty fingerprint.
+
+Trap: **reachability is the whole question, so the ref must be fresh.** Reading
+the clone's local branch ref repeats the defect `ab54279` fixed in
+`capture_base_ref` — the clone's own HEAD is stale exactly when a landing just
+happened, which is exactly when facts are asked for. Mirror that discipline:
+fetch origin when the repo has one, resolve against `origin/<default>`, fall
+back to local HEAD only for a remote-less repo, and raise rather than silently
+reading a stale ref. The roadmap path is already safe (its clone step fetches
+and resets before deriving), but the standalone `factory-epic landed` verb runs
+against whatever clone the operator names.
 
 ### US2 — the delta function (FR-004..007)
 
@@ -140,17 +159,39 @@ whose `depends_on_merged` named a subtracted story has that edge *satisfied*
 Never rewrite an edge to point elsewhere; satisfaction removes, amendment
 re-opens, nothing re-targets.
 
-### US3 — CLI verbs and roadmap reconciliation (FR-008..011)
+### US3 — the CLI verbs (FR-008)
 
-CLI: `factory-epic landed <spec>` renders facts; delta mode on derivation
-writes `workgraph.json` from `DeltaResult` and prints provenance; empty
-delta → success, message, no file, and `start` refuses a zero-node graph
-before any clone (FR-010's cheap half lives in the CLI too). Roadmap:
-render marks `landed` specs with drifted fingerprints as amended (computed
-in the pure layer beside readiness); the pre-dispatch derivation activity
-calls the delta path — same input, same refusal rendering. Docs: decision
-number claimed, remainder-file supersession recorded, runbook trim step
-deleted.
+`factory-epic landed <spec>` renders facts (observed vs attested marked);
+delta mode on derivation writes `workgraph.json` from `DeltaResult` and prints
+provenance; an empty delta is success with a message and no file. `start`
+refuses a zero-node graph — genuinely before any clone or Temporal connection,
+because the CLI has cloned nothing at that point. Nothing today validates
+non-empty `nodes` (the model's checks are per-node), so this is new behaviour.
+
+Owns `factory/workgraph/cli.py` and its test file, and nothing else — that
+disjointness is what lets US3 and US4 run as siblings.
+
+### US4 — roadmap reconciliation (FR-009..011)
+
+Render marks `landed` specs with drifted fingerprints as amended, computed in
+the pure layer beside readiness. The pre-dispatch derivation activity
+(`derive_spec` in `factory/activities/roadmap_activities.py`) calls the delta
+path — its `DeriveInput` already carries `target_repo`, so the signature is
+unchanged, but note the activity stops being pure once it reads git, and its
+docstring should say so. Docs: decision number claimed, remainder-file
+supersession recorded, runbook trim step deleted, `messages.py` cross-reference
+added.
+
+Trap: a workflow may not shell git — determinism forbids it. Drift facts must
+reach `RoadmapWorkflow` the way readiness facts already do, through the
+injected resolver seam (the `landed_for` parameter pattern), or through a new
+activity. Computing drift inside the workflow body would be a non-deterministic
+replay hazard, not merely slow.
+
+Trap: FR-010's refusal point differs by caller. In the roadmap the clone comes
+first and the delta is computed against it — it must, since facts are read from
+the refreshed target repo — so the zero-node refusal there is before child-epic
+start, not before the clone. Only the CLI's refusal is pre-clone.
 
 Trap: drift detection on every render shells `git show` per landed story —
 fine for ten specs, but batch the log scan (one pass, all specs) rather

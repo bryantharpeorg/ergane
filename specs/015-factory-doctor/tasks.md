@@ -57,10 +57,15 @@ transitions, all-or-nothing refusal, deterministic listing.
       concurrent connections (plan.md § US1 trap) — must fail.
 - [ ] T005 [P] [US1] Write batch-grammar cases FIRST against a fixture corpus
       (one directory per fixture, the `tests/fixtures/README.md` convention),
-      `seed-findings.json` among them: the seed corpus parses to 27 findings;
-      a malformed entry (missing field, unknown severity, key duplicated
-      within the batch) refuses the whole batch with staged findings naming
-      every offender at once, and the store is unchanged — must fail.
+      `seed-findings.json` among them. The envelope is per FR-004: required
+      top-level `source` applied to every entry, optional ignored `comment`,
+      required `findings` list; entries carry no `source` of their own, so the
+      file's provenance is the row's. Assert the seed corpus parses to 27
+      findings, each taking `source: "audit-2026-08-07"` from the envelope; and
+      that a malformed entry (missing field, unknown severity, key duplicated
+      within the batch) or a missing top-level `source` refuses the whole batch
+      with staged findings naming every offender at once, store unchanged — must
+      fail.
 - [ ] T006 [US1] Write CLI cases FIRST driving `main(argv)`: `report` via
       flags and via `--batch`; `list` deterministic (severity rank,
       occurrences desc, key) showing key, severity, status, occurrences, age;
@@ -149,12 +154,17 @@ landed-state auto-resolution.
       (plan.md § US3 trap: generate against the parser, test against both) —
       must fail.
 - [ ] T016 [P] [US3] Write promote/loop cases FIRST: promote writes the
-      directory then verifies via `derive_workgraph` and marks findings
-      `promoted` with the spec dir in one transaction; an existing target
-      directory refuses before any write; an already-promoted finding
-      refuses naming its spec while a `regressed` finding promotes again; a
-      promoted finding whose spec frontmatter reads `state: landed` resolves
-      on the next doctor invocation recording the spec — must fail.
+      scaffold, verifies it via `derive_workgraph` (supplying the four
+      identity keywords the signature requires — `epic_id`, `feature`,
+      `specs_root`, `target_repo`), and marks findings `promoted` with the
+      spec dir in one transaction; an existing target directory refuses before
+      any write; **a scaffold that fails derivation leaves nothing behind, and
+      re-promoting the same slug afterwards is not blocked** (write-to-temp
+      then rename, or remove on failure); an already-promoted finding refuses
+      naming its spec while a `regressed` finding promotes again; a promoted
+      finding whose spec frontmatter reads `state: landed` resolves on the next
+      doctor invocation recording the spec. Attested frontmatter only — no
+      Temporal query for observed-landed (FR-009) — must fail.
 - [ ] T017 [P] [US3] Write the credential sweep FIRST (FR-010): no key value
       can reach findings, events, snapshots, scaffold text, or CLI output —
       the grep-backed 001 pattern across the doctor module — must fail.
