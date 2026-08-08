@@ -1,4 +1,4 @@
-"""The operator's steering wheel: derive, start, status.
+"""The operator's steering wheel: compile a spec, start an epic, read its state.
 
 `factory-epic` is the whole human surface of the interpreter (FR-009, US3).
 Everything richer — history, stack traces, per-activity timing — is Temporal's
@@ -66,6 +66,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
@@ -237,6 +240,121 @@ EXPECTED_ARTIFACT: dict[str, Any] = {
 }
 
 
+# --- US3 helpers: fixture git repositories for landed-facts/delta tests --------
+
+
+#: Identity and timestamps fixed so fixture commit hashes are reproducible.
+_FIXTURE_IDENTITY = ("Ergane Fixture", "fixture@ergane.invalid")
+_FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
+
+
+def _git_env(home: Path) -> dict[str, str]:
+    """A git environment that ignores the host operator's configuration."""
+    name, email = _FIXTURE_IDENTITY
+    return {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": str(home),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": name,
+        "GIT_AUTHOR_EMAIL": email,
+        "GIT_AUTHOR_DATE": _FIXTURE_TIMESTAMP,
+        "GIT_COMMITTER_NAME": name,
+        "GIT_COMMITTER_EMAIL": email,
+        "GIT_COMMITTER_DATE": _FIXTURE_TIMESTAMP,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
+def _git(repo: Path, *args: str, env: dict[str, str]) -> str:
+    """Run one git command in `repo`, returning stdout; raise on failure."""
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    return completed.stdout
+
+
+def _commit(
+    repo: Path,
+    subject: str,
+    *,
+    env: dict[str, str],
+    body: str = "",
+    allow_empty: bool = False,
+) -> str:
+    """Commit and return the full sha of the new commit."""
+    message = subject if not body else f"{subject}\n\n{body}"
+    args = ["commit", "--quiet", "-m", message]
+    if allow_empty:
+        args.append("--allow-empty")
+    _git(repo, *args, env=env)
+    return _git(repo, "rev-parse", "HEAD", env=env).strip()
+
+
+@pytest.fixture
+def repo_builder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Path]:
+    """Factory that builds a fresh git repo with one or more spec files."""
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+
+    def build(specs: dict[str, str], *, default_branch: str = "main") -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = _git_env(empty_home)
+        for key in (
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        _git(repo, "init", "-b", default_branch, "--quiet", env=env)
+        specs_dir = repo / "specs" / "016-delta-derivation"
+        specs_dir.mkdir(parents=True)
+        for name, text in specs.items():
+            (specs_dir / name).write_text(text, encoding="utf-8")
+        _git(repo, "add", "-A", env=env)
+        _commit(repo, "fixture skeleton", env=env)
+        return repo
+
+    return build
+
+
+def _spec(
+    *,
+    state: str | None = None,
+    stories: list[str] | None = None,
+    work_graph: str = "",
+) -> str:
+    """A minimal Spec Kit feature spec with the requested pieces."""
+    front = "---\n"
+    if state is not None:
+        front += f"state: {state}\n"
+    front += "---\n"
+    body = "# Feature\n\n"
+    stories = stories or []
+    # FR bullets: one per story so every `implements` declaration resolves.
+    if stories:
+        body += "## Requirements *(mandatory)*\n\n"
+        for number in range(1, len(stories) + 1):
+            body += f"- **FR-{number:03d}**: The system MUST do thing {number}.\n"
+        body += "\n"
+    for number, title in enumerate(stories, start=1):
+        body += (
+            f"### User Story {number} - {title} (Priority: P{number})\n\n"
+            "As the operator, I want this.\n\n"
+            "**Acceptance Scenarios**:\n"
+            "1. **Given** a thing, **When** I act, **Then** it works.\n\n"
+        )
+    if work_graph:
+        body += "## Work Graph\n\n```yaml\n" + work_graph + "\n```\n"
+    return front + body
+
+
 # --- the epic's authored text (what the scripted `load_prompt_sources` reads) --
 
 
@@ -314,7 +432,7 @@ def run_async(
 ) -> Callable[..., Awaitable[Run]]:
     """Run one server-touching invocation without blocking the test's loop.
 
-    `main` is the console script's own function and owns its `asyncio.run`, which
+    `main` is the console script's own function and owns its own `asyncio.run`, which
     cannot be called from inside a running loop — so it goes to a worker thread
     while the Temporal worker keeps serving on the test's loop. The entry point
     under test is the one the operator runs, not an async-shaped internal.
@@ -386,6 +504,70 @@ def workgraph_json(
     result = run("derive", str(epic_dir), "--target-repo", TARGET_REPO)
     assert result.code == 0, result.stderr
     return epic_dir / "workgraph.json"
+
+
+# --- US3: landed-facts and delta-mode fixture builders ------------------------
+
+
+@pytest.fixture
+def delta_repo(repo_builder: Callable[..., Path]) -> Path:
+    """A repo with two landed stories (US1, US2) and one unlanded (US3)."""
+    spec = _spec(
+        state="ready",
+        stories=["US1", "US2", "US3"],
+        work_graph=(
+            "US1:\n"
+            "  depends_on: []\n"
+            "  implements: [FR-001]\n"
+            "US2:\n"
+            "  depends_on: [US1]\n"
+            "  implements: [FR-002]\n"
+            "US3:\n"
+            "  depends_on: []\n"
+            "  implements: [FR-003]\n"
+        ),
+    )
+    repo = repo_builder({"spec.md": spec})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _commit(repo, "016-delta-derivation/us1: US1 (#1)", env=env, allow_empty=True)
+    _commit(repo, "016-delta-derivation/us2: US2 (#2)", env=env, allow_empty=True)
+    return repo
+
+
+@pytest.fixture
+def attested_repo(tmp_path: Path) -> Path:
+    """A spec attested `state: landed` with no attributed commits."""
+    initial_spec = _spec(
+        state="ready",
+        stories=["US1"],
+        work_graph="US1:\n  depends_on: []\n  implements: [FR-001]\n",
+    )
+    attested_spec = _spec(
+        state="landed",
+        stories=["US1"],
+        work_graph="US1:\n  depends_on: []\n  implements: [FR-001]\n",
+    )
+    repo = tmp_path / "attested-repo"
+    repo.mkdir()
+    env = _git_env(tmp_path / "empty-home")
+    for key in (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ):
+        os.environ.pop(key, None)
+    _git(repo, "init", "-b", "main", "--quiet", env=env)
+    specs_dir = repo / "specs" / "016-delta-derivation"
+    specs_dir.mkdir(parents=True)
+    (specs_dir / "spec.md").write_text(initial_spec, encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "fixture skeleton", env=env)
+    (specs_dir / "spec.md").write_text(attested_spec, encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "attest landed", env=env)
+    _commit(repo, "operator edit after attestation", env=env, allow_empty=True)
+    return repo
 
 
 # --- the scripted world -------------------------------------------------------
@@ -760,8 +942,8 @@ async def temporal_env(
     """Point the CLI's environment contract at the test server and a fake proxy.
 
     The namespace is the interesting one: the test server serves `default` and
-    the CLI's own default is `factory`, so a CLI that ignored
-    `TEMPORAL_NAMESPACE` could not talk to this server at all.
+    the CLI's own default is `factory`, so a CLI that ignored `TEMPORAL_NAMESPACE`
+    could not talk to this server at all.
 
     The preflight (US2) reads the proxy before dispatching, so this fixture
     stands up the shared fake proxy and wires the preflight's client to it:
@@ -822,7 +1004,7 @@ async def settle_epic(env: WorkflowEnvironment) -> Any:
     The CLI's `start` returns only the workflow id — not the `start_workflow`
     handle the time-skipping harness reclasses. Under `start_time_skipping`,
     `env.client` is wrapped in an interceptor that unlocks the virtual clock only
-    inside the handle `.result()` of *its own* `start_workflow` return value; a
+    inside the handle `.result()` of *its* own `start_workflow` return value; a
     plain `get_workflow_handle(id).result()` never unlocks it, so the landing
     poll timers (a `wait_condition(timeout=60s)` beat) never fire and an epic
     whose work is otherwise done parks forever on `_all_landings_terminal()`.
@@ -1046,6 +1228,204 @@ def test_a_failed_derive_says_nothing_on_stdout(
     assert result.code == 1
     assert result.stdout == ""
     assert result.stderr != ""
+
+
+# --- US3: landed-facts and delta-mode CLI verbs (FR-008) -----------------------
+
+
+def test_landed_renders_observed_and_attested_facts(
+    run: Callable[..., Run], delta_repo: Path, attested_repo: Path
+) -> None:
+    """`factory-epic landed <spec>` reports each story's landing commit and kind.
+
+    The output is deterministic, one line per story, with observed vs attested
+    marked so an operator can audit the baseline.
+    """
+    result = run("landed", str(delta_repo / "specs" / "016-delta-derivation"))
+    assert result.code == 0
+    assert "US1" in result.stdout
+    assert "US2" in result.stdout
+    assert "observed" in result.stdout
+    assert "US3" not in result.stdout  # unlanded stories are not reported
+
+    attested = run("landed", str(attested_repo / "specs" / "016-delta-derivation"))
+    assert attested.code == 0
+    assert "US1" in attested.stdout
+    assert "attested" in attested.stdout
+
+
+def test_landed_needs_no_temporal_server(
+    run: Callable[..., Run], delta_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Landed facts are an offline read from git and corpus."""
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+
+    result = run("landed", str(delta_repo / "specs" / "016-delta-derivation"))
+
+    assert result.code == 0
+    assert "US1" in result.stdout
+
+
+def test_landed_on_bad_path_is_exit_1(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """A missing spec directory names the path and exits 1."""
+    missing = tmp_path / "no-such-feature"
+
+    result = run("landed", str(missing))
+
+    assert result.code == 1
+    assert "spec.md" in result.stderr
+
+
+def test_derive_delta_writes_the_remainder_graph(
+    run: Callable[..., Run], delta_repo: Path
+) -> None:
+    """Delta mode compiles only the unlanded/remaining work and prints provenance.
+
+    With US1 and US2 landed, the delta is just US3. The artifact is written in
+    the existing schema, and provenance is printed to stdout.
+    """
+    spec_dir = delta_repo / "specs" / "016-delta-derivation"
+    result = run(
+        "derive",
+        "--delta",
+        str(spec_dir),
+        "--target-repo",
+        TARGET_REPO,
+    )
+
+    artifact = spec_dir / "workgraph.json"
+    assert result.code == 0, result.stderr
+    assert str(artifact) in result.stdout
+    graph = json.loads(artifact.read_text(encoding="utf-8"))
+    assert [node["id"] for node in graph["nodes"]] == ["us3"]
+    assert [node["story_key"] for node in graph["nodes"]] == ["US3"]
+    # Provenance is also printed: US1/US2 satisfied, and US2's edge removed.
+    assert "satisfied by" in result.stdout
+
+
+def test_derive_delta_refuses_on_broken_identity_and_writes_nothing(
+    run: Callable[..., Run], delta_repo: Path
+) -> None:
+    """A baseline claiming a story the current spec does not declare is exit 1.
+
+    The all-or-nothing rule: no artifact, nothing on stdout.
+    """
+    # Add a fake baseline entry by editing the spec frontmatter is not enough;
+    # use a repo whose attribution claims a story not in the spec.
+    bad_spec = _spec(
+        state="ready",
+        stories=["US1"],  # US2 claimed by history, US3 absent from spec
+        work_graph="US1:\n  depends_on: []\n  implements: [FR-001]\n",
+    )
+    bad_repo = repo_builder_2(delta_repo, {"spec.md": bad_spec})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _commit(bad_repo, "016-delta-derivation/us2: US2 (#2)", env=env, allow_empty=True)
+    spec_dir = bad_repo / "specs" / "016-delta-derivation"
+
+    result = run("derive", "--delta", str(spec_dir), "--target-repo", TARGET_REPO)
+
+    assert result.code == 1
+    assert not (spec_dir / "workgraph.json").exists()
+    assert "US2" in result.stderr
+
+
+def test_derive_delta_empty_is_success_with_no_file(
+    run: Callable[..., Run], delta_repo: Path
+) -> None:
+    """An empty delta reports success and writes nothing (FR-008)."""
+    spec = _spec(
+        state="ready",
+        stories=["US1", "US2", "US3"],
+        work_graph=(
+            "US1:\n  depends_on: []\n  implements: [FR-001]\n"
+            "US2:\n  depends_on: [US1]\n  implements: [FR-002]\n"
+            "US3:\n  depends_on: []\n  implements: [FR-003]\n"
+        ),
+    )
+    # All three stories are landed.
+    full_repo = repo_builder_2(delta_repo, {"spec.md": spec})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _commit(full_repo, "016-delta-derivation/us1: US1 (#1)", env=env, allow_empty=True)
+    _commit(full_repo, "016-delta-derivation/us2: US2 (#2)", env=env, allow_empty=True)
+    _commit(full_repo, "016-delta-derivation/us3: US3 (#3)", env=env, allow_empty=True)
+    spec_dir = full_repo / "specs" / "016-delta-derivation"
+
+    result = run("derive", "--delta", str(spec_dir), "--target-repo", TARGET_REPO)
+
+    assert result.code == 0
+    assert not (spec_dir / "workgraph.json").exists()
+    assert "nothing to build" in result.stdout.lower() or "empty" in result.stdout.lower()
+
+
+def repo_builder_2(base_repo: Path, specs: dict[str, str]) -> Path:
+    """Build a sibling repo from the same empty_home as `base_repo`."""
+    # The repo_builder fixture is bound to its tmp_path; for tests that need a
+    # second repo, reuse its empty_home by reaching through the path structure.
+    tmp = base_repo.parent
+    empty_home = tmp / "empty-home"
+    repo = tmp / "repo2"
+    repo.mkdir()
+    env = _git_env(empty_home)
+    subprocess.run(
+        ["git", "-C", str(repo), "init", "-b", "main", "--quiet"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    specs_dir = repo / "specs" / "016-delta-derivation"
+    specs_dir.mkdir(parents=True)
+    for name, text in specs.items():
+        (specs_dir / name).write_text(text, encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "-A"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--quiet", "-m", "fixture skeleton"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    return repo
+
+
+# --- start: zero-node refusal (FR-010 CLI side) ------------------------------
+
+
+def test_start_refuses_zero_node_graph_before_temporal(
+    run: Callable[..., Run], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zero-node `workgraph.json` is refused before any server contact.
+
+    Point `TEMPORAL_ADDRESS` at a dead port: if the refusal happens after the
+    connection attempt, the test would see exit 2. The desired refusal is exit 1
+    and names the empty graph.
+    """
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+    monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+
+    empty_graph = {
+        "epic_id": "empty-feature",
+        "feature": "empty-feature",
+        "specs_root": "specs",
+        "target_repo": TARGET_REPO,
+        "nodes": [],
+    }
+    graph_path = tmp_path / "workgraph.json"
+    graph_path.write_text(json.dumps(empty_graph), encoding="utf-8")
+
+    result = run("start", str(graph_path))
+
+    assert result.code == 1
+    assert "zero" in result.stderr.lower() or "empty" in result.stderr.lower()
+    assert "node" in result.stderr.lower()
 
 
 # --- start (US3-S1) -----------------------------------------------------------
@@ -1347,7 +1727,7 @@ async def test_the_human_status_is_an_epic_line_then_one_line_per_node(
 ) -> None:
     """`<node_id>  <state>  attempt <n>  <branch>`, in declaration order.
 
-    The branch is on the line because it is the one thing that survives every
+    The branch is on the line because it is the one thing that outlives every
     sweep: once `.factory/` is cleaned the branch is the whole account of the
     node's attempts (SC-004), and an operator reading a killed node needs its
     name without a second command.
@@ -1670,11 +2050,7 @@ def test_the_graph_the_cli_starts_is_the_one_validation_accepts(
 
 
 def _script_conforming_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
-    """Script `gh` for a fully conforming repo (public, queue enabled, checks match).
-
-    The fixture target repo declares gates `lint`, `test`, `typecheck`; the
-    scripted queue requires checks of exactly those names.
-    """
+    """Script `gh` for a fully conforming repo (public, queue enabled, checks match)."""
     from tests.fake_gh import FakeGh
 
     fake.expect_json(
@@ -1691,6 +2067,8 @@ def _script_conforming_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
 
 def _script_queue_less_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
     """Script `gh` for a repo with the merge queue not enabled (rules list empty)."""
+    from tests.fake_gh import FakeGh
+
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
         payload={"nameWithOwner": owner_repo, "visibility": "PUBLIC", "defaultBranchRef": "main"},
@@ -1981,8 +2359,8 @@ async def test_preflight_wording_states_what_was_checked_not_worker_resolution(
 # US1 widens the scheduler from one node at a time to N; US5 is the renderer work
 # that keeps a wide epic legible, plus the tests that would have caught a renderer
 # assuming a single running node. The query (`epic_status`) is already a per-node
-# document, so the *shape* already carries N nodes — the failure mode this story
-# is about is the renderer *collapsing* them, and the one place today's code does
+# document, so the *shape* already carries N nodes — the failure mode this story is
+# about is the renderer *collapsing* them, and the one place today's code does
 # that is `_live_spend`: it resolves "the running attempt" to the first node whose
 # state is RUNNING and charges every pending `run_agent_attempt` heartbeat to it,
 # so two nodes in flight would both show one node's spend. These tests pin the
