@@ -523,3 +523,36 @@ routing around it.
 See spec 008 § "Decision: one hole in FR-012" for the surfaced reasoning; this
 entry claims the D-number at landing, as 008's spec said it would ("this spec
 claims two entries at landing: the channel itself, and the FR-012 amendment").
+
+## D-034 · The roadmap reconciles instead of ignoring: delta derivation supersedes hand-authored remainder graphs (decided)
+
+Decided 2026-08-08, recorded at epic 016-delta-derivation US4 landing. The
+007 and 009 splits were continued by hand-trimming remainder `workgraph.json`
+files (2026-08-07), twice violating D-025's rule that a workgraph is never
+hand-authored. US2's `derive_delta` already computed the remainder from git
+facts and pinned fingerprints; US4 closes the loop by making the roadmap use it
+universally. The decision to record is the supersession itself.
+
+1. **Hand-trimmed remainder graphs are retired from the runbook.** The two
+   2026-08-07 remainder files remain banked as fixtures (`tests/fixtures/remainders/`,
+   commit `8d57b86`) so SC-002 can replay them as ground truth, but no operator
+   step ever trims a remainder again. The roadmap and the `factory-epic` CLI both
+   derive through the same delta path; a re-readied partially-landed spec
+   dispatches its computed remainder, and an amended landed spec dispatches only
+   its delta.
+
+2. **Attribution is a two-ended contract.** The landing squash subject is
+   rendered by `factory.mergequeue.messages.pr_title` as
+   `<epic_id>/<node_id>: <story title>`; GitHub appends `(#<pr>)`, and
+   `factory.workgraph.landed._LANDING_RE` parses the same shape. The renderer
+   and the reader are the two ends of one contract — a change to either side
+   must change both, and the regex anchors on `epic_id` so commits from other
+   epics do not leak into a spec's baseline.
+
+3. **No store and no new dependency.** Landed facts, pinned fingerprints, and
+   deltas are computed from git and the corpus on demand, every time. Drift is
+   a read-only signal (`amended`) rendered by `compute_readiness`; the workflow
+   reads it through the `drift_for_spec` activity because workflow code never
+   shells git (constitution IV). The existing `DeriveInput` already carried
+   `target_repo`, so `derive_spec` needed no new argument — only a new baseline
+   read inside the activity.

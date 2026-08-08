@@ -281,8 +281,7 @@ byte-compatible with today's.
   starts (FR-010).
 - The two 2026-08-07 remainder files are SC-002's replay ground truth, banked
   at `tests/fixtures/remainders/` in `8d57b86`; the feature retires them from
-  the *runbook*, not from the fixtures. The operator step "trim the remainder
-  by hand" is deleted, not documented.
+  the *runbook*, not from the fixtures.
 - A story attested rather than observed fingerprints against the attesting
   commit — coarser than a per-story landing commit, but honest, and reported
   as such in provenance. After a branch rewrite this is the only baseline

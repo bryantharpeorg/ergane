@@ -179,8 +179,7 @@ the pure layer beside readiness. The pre-dispatch derivation activity
 path — its `DeriveInput` already carries `target_repo`, so the signature is
 unchanged, but note the activity stops being pure once it reads git, and its
 docstring should say so. Docs: decision number claimed, remainder-file
-supersession recorded, runbook trim step deleted, `messages.py` cross-reference
-added.
+supersession recorded, `messages.py` cross-reference added.
 
 Trap: a workflow may not shell git — determinism forbids it. Drift facts must
 reach `RoadmapWorkflow` the way readiness facts already do, through the

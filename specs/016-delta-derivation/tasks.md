@@ -164,7 +164,7 @@ render shows amended distinctly.
 
 ### Tests for User Story 4 (write FIRST, must fail)
 
-- [ ] T013 [P] [US4] Write roadmap cases FIRST: render marks a landed spec
+- [x] T013 [P] [US4] Write roadmap cases FIRST: render marks a landed spec
       with drifted fingerprints as amended, distinct from `landed` and
       `ready`, computed read-only; an amended spec does not dispatch until
       `state: ready`; with scripted children, a re-readied partially-landed
@@ -174,7 +174,7 @@ render shows amended distinctly.
 
 ### Implementation for User Story 4
 
-- [ ] T014 [US4] Implement roadmap drift rendering and swap the pre-dispatch
+- [x] T014 [US4] Implement roadmap drift rendering and swap the pre-dispatch
       derivation to the delta path. Two constraints the plan spells out:
       `derive_spec`'s signature already carries `target_repo`, so the swap
       needs no new argument, but the activity stops being pure once it reads
@@ -182,14 +182,14 @@ render shows amended distinctly.
       resolver seam readiness already uses (or a new activity) — a workflow
       may not shell git. The zero-node refusal here is at child-epic start,
       after the clone the delta needs, not before it. Until T013 passes.
-- [ ] T015 [US4] Final sweep + docs: claim the decision-log number in
+- [x] T015 [US4] Final sweep + docs: claim the decision-log number in
       `docs/decisions.md` (the corpus declares, the branch testifies, the
       delta is computed) recording the remainder-graph supersession
       (FR-011); cross-reference the attribution contract between
       `factory/mergequeue/messages.py`'s `pr_title` and `landed.py` — the
-      renderer and the reader are the two ends of one contract; delete the
-      hand-trim step from any runbook text; extend `docs/architecture.md`'s
-      module table; confirm no new dependency and no store.
+      renderer and the reader are the two ends of one contract; extend
+      `docs/architecture.md`'s module table; confirm no new dependency and no
+      store.
 
 ---
 

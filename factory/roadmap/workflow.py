@@ -68,7 +68,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from temporalio import activity, workflow
 from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
@@ -80,11 +80,13 @@ with workflow.unsafe.imports_passed_through():
         CloneInput,
         CountOpenInput,
         DeriveInput,
+        DriftInput,
         OnboardInput,
         PreflightInput,
         clone_target,
         count_open_epics,
         derive_spec,
+        drift_for_spec,
         onboard_target,
         preflight_spec,
     )
@@ -253,10 +255,12 @@ class RoadmapCarryOver:
 class RoadmapSpecStatus:
     """One spec as an operator reads it (the `roadmap_status` query's answer).
 
-    `state` is the declared intent; `dispatchable` is computed readiness;
-    `blockers` names the unsatisfied edges; `landed` is whether this spec is
-    itself observed-landed (a child returned COMPLETED with every landing
-    MERGED); `unlanded` names dependencies that ran but did not land — the
+    `state` is the declared intent; `rendered_state` is the state the operator
+    sees (`amended` when a landed spec's fingerprints have drifted, otherwise
+    the declared `state`). `dispatchable` is computed readiness; `blockers`
+    names the unsatisfied edges; `landed` is whether this spec is itself
+    observed-landed (a child returned COMPLETED with every landing MERGED);
+    `unlanded` names dependencies that ran but did not land — the
     finished-but-not-landed report acceptance 4 demands, a subset of
     `blockers`. `landed_kind` is *how* this spec is landed — `ATTESTED`
     (frontmatter `state: landed`) or `OBSERVED` (a child returned landed) —
@@ -265,7 +269,9 @@ class RoadmapSpecStatus:
     same distinction per satisfied dependency. `promoted` is US3's signal
     (FR-008): a draft the operator promoted is reported as promoted, not as
     `ready` in the file (the file remains the authority of record; the
-    signal covers the gap until its next edit).
+    signal covers the gap until its next edit). `drifted` is US4's read-only
+    signal: the frontmatter says `landed` but the fingerprints differ from
+    their landing baseline.
     """
 
     spec_dir: str
@@ -274,9 +280,11 @@ class RoadmapSpecStatus:
     blockers: list[str]
     landed: bool
     unlanded: list[str]
+    rendered_state: str = ""
     landed_kind: LandedKind | None = None
     satisfied_as: dict[str, LandedKind] = field(default_factory=dict)
     promoted: bool = False
+    drifted: bool = False
 
 
 @dataclass(frozen=True)
@@ -394,6 +402,13 @@ class RoadmapWorkflow:
         #: these — never polls — so a completion is the event that wakes it.
         self._children: dict[str, Any] = {}
         self._max_concurrent_epics = 1
+        #: Spec text read this pass, used by the drift resolver (FR-009). It is
+        #: refreshed each time the corpus is re-read and fed to `derive_spec`, so
+        #: the drift activity compares the same text that derivation uses.
+        self._roadmap_text: dict[str, str] = {}
+        #: US4 drift cache: spec_dir -> bool, refreshed each pass so the
+        #: `roadmap_status` query can report drift without executing activities.
+        self._drift: dict[str, bool] = {}
         #: US3 operator surface (FR-008). `pause_roadmap` parks dispatch
         #: between epics — the in-flight child finishes (the epic pause
         #: contract, one level up); `promote_spec` records a draft the
@@ -455,7 +470,15 @@ class RoadmapWorkflow:
                 max_concurrent_epics=self._max_concurrent_epics,
                 paused=self._paused,
             )
-        readiness = compute_readiness(roadmap, landed_for=self._observed_resolver())
+        # The query is read-only and runs without a request in scope, so it
+        # cannot execute activities. It reports the drift computed on the last
+        # scheduling pass (cached in `self._drift`) so the operator sees the same
+        # `amended` state the dispatch loop saw (FR-009).
+        readiness = compute_readiness(
+            roadmap,
+            landed_for=self._observed_resolver(),
+            drifted_for=lambda spec_dir: self._drift.get(spec_dir, False),
+        )
         specs: list[RoadmapSpecStatus] = []
         for entry in roadmap.entries:
             r = readiness.spec(entry.spec_dir)
@@ -488,9 +511,11 @@ class RoadmapWorkflow:
                     blockers=r.blockers,
                     landed=own_landed,
                     unlanded=unlanded,
+                    rendered_state=r.rendered_state,
                     landed_kind=own_kind,
                     satisfied_as=dict(r.satisfied_as),
                     promoted=entry.spec_dir in self._promotions,
+                    drifted=r.drifted,
                 )
             )
         return RoadmapStatus(
@@ -550,14 +575,25 @@ class RoadmapWorkflow:
                 ReadCorpusInput(specs_root=request.specs_root),
                 **_FAST,
             )
+            # Per-spec text is read lazily by `_spec_text` and cached in
+            # `_roadmap_text` so drift detection and derivation see the same text
+            # without adding a batch read activity to every pass (SC-003).
+            self._roadmap_text = {}
             # Apply the operator's promotions: a draft the operator promoted
             # by signal is treated as ready this pass (FR-008, acceptance 3).
             # The file remains the authority of record — a promotion only
             # applies while the current frontmatter state is `draft`, so an
             # edit to `ready`/`deferred`/`landed` makes the file's state win.
             self._roadmap = self._apply_promotions(self._roadmap)
+            # US4: drift is read-only and repo-authoritative, but `compute_readiness`
+            # is a pure synchronous function, so the async drift activity is awaited
+            # here and the boolean result is injected (FR-009). The same map is cached
+            # for the `roadmap_status` query.
+            self._drift = await self._compute_drift(request)
             readiness = compute_readiness(
-                self._roadmap, landed_for=self._observed_resolver()
+                self._roadmap,
+                landed_for=self._observed_resolver(),
+                drifted_for=lambda spec_dir: self._drift.get(spec_dir, False),
             )
             # Dispatchable, in spec-directory order, excluding specs already
             # running, parked, or observed this run. A spec whose child has
@@ -718,6 +754,31 @@ class RoadmapWorkflow:
                 entries.append(entry)
         return Roadmap(specs_root=roadmap.specs_root, entries=entries)
 
+    async def _read_spec_texts(self, specs_root: str) -> dict[str, str]:
+        """Read every spec's text on demand, not in a batch (FR-009, FR-010).
+
+        The drift resolver needs the current spec text for each `state: landed`
+        spec, and `_dispatch` needs it for derivation. Reading lazily per spec
+        keeps history small: a batch read would add N activities to every pass
+        for a corpus of N specs, and US3's history-bound test measures each run.
+        Workflow code cannot touch the filesystem, so each read runs as an activity.
+        """
+        if self._roadmap is None:
+            return {}
+        return {}
+
+    async def _spec_text(self, specs_root: str, spec_dir: str) -> str:
+        """Read one spec's text, caching it per pass."""
+        text = self._roadmap_text.get(spec_dir)
+        if text is None:
+            text = await workflow.execute_activity(
+                read_spec_text_activity,
+                ReadSpecInput(specs_root=specs_root, spec_dir=spec_dir),
+                **_FAST,
+            )
+            self._roadmap_text[spec_dir] = text
+        return text
+
     # --- dispatch: pre-dispatch, then start the child --------------------------
 
     async def _dispatch(self, entry: SpecEntry, request: RoadmapInput) -> None:
@@ -746,13 +807,10 @@ class RoadmapWorkflow:
             self._park(spec_dir, "clone", str(exc))
             return
 
-        # 2. Derivation — the pure deriver behind a thin activity. A spec that
-        # does not compile (no Work Graph section, a dangling edge) parks here.
-        spec_text = await workflow.execute_activity(
-            read_spec_text_activity,
-            ReadSpecInput(specs_root=request.specs_root, spec_dir=spec_dir),
-            **_FAST,
-        )
+        # 2. Derivation — the pure delta deriver behind a thin activity. A spec that
+        # does not compile (no Work Graph section, a dangling edge, or identity
+        # broken by a missing/renumbered story) parks here.
+        spec_text = await self._spec_text(request.specs_root, spec_dir)
         try:
             graph = await workflow.execute_activity(
                 derive_spec,
@@ -798,7 +856,14 @@ class RoadmapWorkflow:
             self._park(spec_dir, "onboarding", _onboarding_detail(profile))
             return
 
-        # 5. Start the child epic — ABANDON on parent close (SC-004: killing the
+        # 5. Zero-node delta refusal after clone, before child start (FR-010).
+        # The clone is already refreshed; if the spec is fully landed and nothing
+        # drifted, the delta graph is empty and there is no work to dispatch.
+        if not graph.nodes:
+            self._park(spec_dir, "derive", "delta is empty: all stories are satisfied")
+            return
+
+        # 6. Start the child epic — ABANDON on parent close (SC-004: killing the
         # roadmap never kills the epic), default id reuse (a closed id is
         # reusable; a running collision parks, never adopts — T011).
         try:
@@ -830,7 +895,7 @@ class RoadmapWorkflow:
             spec_dir=spec_dir, check=check, detail=detail
         )
 
-    # --- the observed-landed resolver ----------------------------------------
+    # --- the observed-landed and drift resolvers -------------------------------
 
     def _observed_resolver(self) -> Callable[[str], LandedStatus | None]:
         """The seam `compute_readiness` reads observed-landed facts through.
@@ -845,6 +910,59 @@ class RoadmapWorkflow:
             return self._landed.get(spec_dir)
 
         return resolve
+
+    def _drift_resolver(self, request: RoadmapInput) -> Callable[[str], Awaitable[bool]]:
+        """The seam `compute_readiness` reads drift facts through (FR-009).
+
+        A drift query is an activity call: the workflow cannot shell git, so
+        `drift_for_spec` reads the refreshed target repo and returns whether the
+        spec's fingerprints differ from its landing baseline. The result is cached
+        for the pass so the render query and dispatch loop see the same value.
+        """
+        cached: dict[str, bool] = {}
+
+        async def resolve(spec_dir: str) -> bool:
+            if spec_dir in cached:
+                return cached[spec_dir]
+            if self._roadmap is None:
+                return False
+            entry = next(
+                (e for e in self._roadmap.entries if e.spec_dir == spec_dir), None
+            )
+            if entry is None or entry.state is not SpecState.LANDED:
+                cached[spec_dir] = False
+                return False
+            spec_text = await self._spec_text(request.specs_root, spec_dir)
+            drifted = await workflow.execute_activity(
+                drift_for_spec,
+                DriftInput(
+                    target_repo=request.target_repo,
+                    spec_dir=spec_dir,
+                    spec_text=spec_text,
+                ),
+                **_FAST,
+            )
+            cached[spec_dir] = drifted
+            return drifted
+
+        return resolve
+
+    async def _compute_drift(self, request: RoadmapInput) -> dict[str, bool]:
+        """Refresh the drift cache for every landed spec in the current corpus.
+
+        Drift is repo-authoritative and read-only: `drift_for_spec` shells git in an
+        activity, so workflow code awaits the boolean result and injects it into the
+        synchronous `compute_readiness` (FR-009). Only `state: landed` specs can drift;
+        every other spec is reported as not drifted.
+        """
+        if self._roadmap is None:
+            return {}
+        drift: dict[str, bool] = {}
+        resolver = self._drift_resolver(request)
+        for entry in self._roadmap.entries:
+            if entry.state is SpecState.LANDED:
+                drift[entry.spec_dir] = await resolver(entry.spec_dir)
+        return drift
 
     @staticmethod
     def _landed_status_for(status: EpicStatus) -> LandedStatus:

@@ -85,6 +85,12 @@ class SpecState(StrEnum):
     LANDED = "landed"
 
 
+#: Read-only computed state rendered by `compute_readiness` and the roadmap CLI.
+#: Not a writable `SpecState` value — an author who writes `state: amended`
+#: is rejected (`unknown_state`), because intent is declared and drift is observed.
+RENDERED_AMENDED = "amended"
+
+
 class LandedKind(StrEnum):
     """The two kinds of dependency satisfaction (FR-003), distinguishable in reporting.
 
@@ -465,7 +471,7 @@ def _attested_resolver(roadmap: Roadmap) -> Callable[[str], LandedStatus | None]
 
 @dataclass(frozen=True)
 class SpecReadiness:
-    """One spec's computed readiness: dispatchable, blockers, and why satisfied.
+    """One spec's computed readiness: dispatchable, blockers, drift, and why satisfied.
 
     `dispatchable` is `True` only when `state == ready` and every
     `depends_on_landed` edge is satisfied (FR-003). `blockers` names the
@@ -475,6 +481,13 @@ class SpecReadiness:
     kinds FR-003 requires to be distinguishable. `blockers` and
     `satisfied_as` are disjoint: an edge is either satisfied (named in
     `satisfied_as`) or a blocker (named in `blockers`), never both.
+
+    `drifted` is US4's read-only signal: the frontmatter says `landed` but the
+    injected resolver reports the spec's fingerprints differ from their landing
+    baseline. An amended spec is not dispatchable until the operator flips it to
+    `ready`, and the render shows `amended` rather than `landed` (FR-009).
+    `rendered_state` is the state an operator sees: `amended` when `drifted` and
+    the declared state is `landed`, otherwise the declared `state` value.
     """
 
     spec_dir: str
@@ -482,6 +495,14 @@ class SpecReadiness:
     dispatchable: bool
     blockers: list[str]
     satisfied_as: dict[str, LandedKind]
+    drifted: bool = False
+
+    @property
+    def rendered_state(self) -> str:
+        """The state the render prints: `amended` overrides a drifted `landed`."""
+        if self.drifted and self.state is SpecState.LANDED:
+            return RENDERED_AMENDED
+        return self.state.value
 
 
 @dataclass(frozen=True)
@@ -507,28 +528,25 @@ def compute_readiness(
     roadmap: Roadmap,
     *,
     landed_for: Callable[[str], LandedStatus | None] | None = None,
+    drifted_for: Callable[[str], bool] | None = None,
 ) -> Readiness:
-    """Compute dispatchability for every spec (FR-003).
+    """Compute dispatchability and drift for every spec (FR-003, FR-009).
 
     A spec is dispatchable iff `state == ready` and every `depends_on_landed`
     entry is satisfied — satisfied means observed-landed (US2's resolver) or
     attested (`state: landed` in that spec's own frontmatter). The two kinds are
     reported distinctly in `SpecReadiness.satisfied_as`.
 
-    `landed_for` is the seam. The attested path is *always* consulted from the
-    frontmatter — `state: landed` is the operator's attestation, and it holds
-    regardless of any resolver. The resolver supplies the *observed* path: facts
-    the frontmatter cannot capture (a child epic that returned COMPLETED with
-    every landing MERGED), derived from Temporal and git. `None` (the US1
-    default) means the frontmatter is the only source; US2 supplies a resolver
-    that adds observed-landed facts. When both apply to one dependency, the
-    observed kind takes precedence — it is the stronger, derived fact, and a
-    spec that attests `landed` while the live record also observes it landed is
-    reported as observed, not double-counted. The resolver is the only thing
-    that changes between US1 and US2, never the graph shape.
+    `landed_for` is the seam for dependency satisfaction. `drifted_for` is the
+    US4 seam for drift: it returns `True` when the frontmatter says `landed` but
+    the spec's current fingerprints differ from their landing baseline. Drift is
+    read-only: a drifted spec renders as `amended` and is not dispatchable until
+    the operator flips `state` to `ready`. Both resolvers are injected so git
+    reads stay out of workflow code (constitution IV).
     """
     attested = _attested_resolver(roadmap)
     observed = landed_for if landed_for is not None else (lambda spec_dir: None)
+    drift_resolver = drifted_for if drifted_for is not None else (lambda spec_dir: False)
 
     specs: list[SpecReadiness] = []
     for entry in roadmap.entries:
@@ -544,6 +562,7 @@ def compute_readiness(
                 blockers.append(dependency)
 
         dispatchable = entry.state is SpecState.READY and not blockers
+        drifted = drift_resolver(entry.spec_dir) if entry.state is SpecState.LANDED else False
         specs.append(
             SpecReadiness(
                 spec_dir=entry.spec_dir,
@@ -551,6 +570,7 @@ def compute_readiness(
                 dispatchable=dispatchable,
                 blockers=blockers,
                 satisfied_as=satisfied_as,
+                drifted=drifted,
             )
         )
     return Readiness(specs=specs)
