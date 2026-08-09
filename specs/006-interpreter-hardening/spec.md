@@ -1,27 +1,29 @@
 ---
-state: draft
-# Demoted from `ready` 2026-08-09 while this spec's own epic is mid-run. Not a
-# scope change — `ready` had become an invitation to collide. The remainder was
-# dispatched by hand from a pruned `workgraph-remainder.json`, and a roadmap
-# that read `ready` would try to start a second `epic-006-interpreter-hardening`
-# against the running one.
+state: landed
+# Attested landed 2026-08-09 12:05 UTC (operator). All five stories are in the
+# tree; `epic-006-interpreter-hardening` reached COMPLETED with us3 and us4 both
+# MERGED. This is an attestation rather than an observation because three of the
+# five landed under a grammar the reader cannot see — see below.
 #
-# Where the five stories actually stand:
-#   us1, us2, us5  landed pre-queue, subject `Merge branch
+# Where the five stories landed, and under which grammar:
+#   us1, us2, us5  pre-queue, subject `Merge branch
 #                  'factory/006-interpreter-hardening/usN' into ergane-buildout`
-#                  — a grammar `landed_facts` does not recognize, so they are
-#                  invisible to `factory-epic landed` and `derive --delta`
-#   us3            landed 2026-08-09 under the queue grammar (PR #21), visible
-#   us4            RUNNING at time of writing
+#                  — invisible to `landed_facts`, so `factory-epic landed`
+#                  under-reports this spec by three stories until 020 lands
+#   us3            2026-08-09, queue grammar (PR #21), attempt 1 — visible
+#   us4            2026-08-09, queue grammar, attempt 3 — visible
 #
 # That invisibility is why `derive --delta` emitted all five and the remainder
-# had to be hand-pruned; 020-landing-attribution is the fix, and its SC-001 and
-# SC-002 are literally this spec's landed facts and delta.
+# had to be hand-pruned from `workgraph-remainder.json`.
+# 020-landing-attribution is the fix, and its SC-001 and SC-002 are literally
+# this spec's landed facts and delta. Until 020 lands, treat this attestation as
+# the authority and the reader as wrong.
 #
-# **This does not go back to `ready`.** If us4 lands, all five stories are in
-# the tree and the honest next state is attested `state: landed`. Only a failed
-# or killed us4 leaves a real remainder. Either way, land 020 first or the
-# reader will keep under-reporting this spec by three stories.
+# Effort note (tokens, not dollars): us4 took three attempts and 229,384,275
+# input tokens over 2,222 calls, of which attempt 1 alone spent 197M and failed.
+# us1 showed the same shape earlier. Two data points now for "the first attempt
+# spirals, a later one closes it cheaply" — worth a look before the next spec of
+# this size is written.
 depends_on_landed: [003-merge-queue, 005-workgraph-interpreter]
 ---
 
