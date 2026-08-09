@@ -103,9 +103,19 @@ both the declared branch.
       `"main"`, and `_build_baseline` reads the manifest instead of assigning the
       literal. Both already hold the repo path via `_target_repo_for_spec`, so
       neither needs a new argument.
-- [ ] T012 [US1] Declare `landing_branch: ergane-buildout` in this repository's
-      own `factory.yaml`, beside `standards`. This is the change that makes every
-      other command in the repo start telling the truth, and it is one line.
+- [ ] T012 **OPERATOR ONLY — NO NODE MAY DO THIS.** Declaring
+      `landing_branch: ergane-buildout` in this repository's own `factory.yaml`
+      is one line, and it **killed the 2026-08-09 run of this story**. Read plan
+      trap 1 before touching that file. The config gate parses a node's
+      `factory.yaml` with the **worker's installed parser**, not the worktree's,
+      so a node that declares the key is rejected with `CONFIG_ERROR` at 0.0s
+      before any gate command runs — no matter that its own worktree contains a
+      parser which accepts it. Four attempts failed identically and the epic was
+      parked.
+      The key may be declared only after (a) US1's parser change has **landed**
+      and (b) the worker has been **restarted** on it. Neither can happen inside
+      this epic, so this is not US1's task, not US2's, and not any node's. The
+      operator does it afterwards, in a plain commit.
 
 ---
 

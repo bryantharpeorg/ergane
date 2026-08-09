@@ -205,6 +205,13 @@ delta derivation emits only the stories that are genuinely absent.
   naming the branch the factory lands on. Absent MUST mean `"main"`, so no
   existing target repository is required to change. Declared-but-empty or
   non-string MUST fail the load naming the key, in the same shape as `standards`.
+  "Accept" here means **the parser accepts it**, demonstrated against fixture
+  manifests. This repository's own `factory.yaml` MUST NOT be changed by any
+  node implementing this spec — the config gate validates a node's manifest with
+  the worker's installed parser, so declaring the key before the parser has
+  landed and the worker has restarted fails every attempt at `CONFIG_ERROR`
+  before a single gate command runs. See plan trap 1; it is the failure that
+  killed this story's first run.
 - **FR-002**: Every reader of landed facts MUST take its default branch from the
   manifest: `factory-epic landed`'s flag default and the delta baseline
   (`_build_baseline`), which today has no flag at all. An explicit
