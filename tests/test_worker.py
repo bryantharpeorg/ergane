@@ -42,6 +42,7 @@ import ast
 import asyncio
 import importlib
 import inspect
+from datetime import timedelta
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -328,6 +329,23 @@ async def env() -> AsyncIterator[WorkflowEnvironment]:
         yield environment
     finally:
         await environment.shutdown()
+
+
+async def test_the_worker_caps_heartbeat_throttle_to_hold_kill_latency(
+    env: WorkflowEnvironment,
+) -> None:
+    """US4: the kill-latency half of FR-008.
+
+    A heartbeat timeout derived from a multi-hour attempt timeout would let a
+    killed agent keep spending for minutes unless the worker's heartbeat
+    throttle cap is set independently. The factory chooses a 5-second cap so a
+    kill still reaches the agent within about that window, and the default cap
+    is not larger.
+    """
+    built = worker_module.build_worker(env.client)
+    cfg = built.config()
+    assert cfg["max_heartbeat_throttle_interval"] == timedelta(seconds=5)
+    assert cfg["default_heartbeat_throttle_interval"] <= timedelta(seconds=5)
 
 
 async def test_temporal_accepts_the_registration(env: WorkflowEnvironment) -> None:
