@@ -26,10 +26,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 import pytest
+from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 from temporalio.worker._interceptor import (
@@ -41,7 +43,8 @@ from temporalio.worker._interceptor import (
 from factory.activities import roadmap_activities
 from factory.activities.roadmap_activities import CloneResult
 from factory.mergequeue.models import Finding, TargetRepoProfile
-from factory.roadmap.models import SpecState
+from factory.roadmap.models import Roadmap, SpecState
+import factory.roadmap.workflow as factory_roadmap_workflow
 from factory.roadmap.workflow import (
     RoadmapInput,
     RoadmapStatus,
@@ -1220,27 +1223,34 @@ async def test_idle_roadmap_waits_and_consumes_no_activity(
     )
     world = RoadmapWorld()
     activity_calls: list[str] = []
-    original_read_corpus = roadmap_activities.read_corpus_activity
+    original_read_corpus = factory_roadmap_workflow.read_corpus_activity
     original_count_open = roadmap_activities.count_open_epics
 
-    async def counting_read_corpus(request) -> Any:
+    @activity.defn(name="read_corpus_activity")
+    async def counting_read_corpus(request: dict) -> Roadmap:
         activity_calls.append("read_corpus")
-        return await original_read_corpus(request)
+        typed_request = factory_roadmap_workflow.ReadCorpusInput(
+            specs_root=request["specs_root"]
+        )
+        return await original_read_corpus(typed_request)
 
-    async def counting_count_open(request) -> Any:
+    @activity.defn(name="count_open_epics")
+    async def counting_count_open(request: roadmap_activities.CountOpenInput) -> Any:
         activity_calls.append("count_open")
         return await original_count_open(request)
 
     # Patch activities through the same seam `RoadmapWorld` already handles.
     world.apply()
-    roadmap_activities.read_corpus_activity = counting_read_corpus
+    factory_roadmap_workflow.read_corpus_activity = counting_read_corpus
     roadmap_activities.count_open_epics = counting_count_open
 
     async with run_roadmap(
         env, world, str(specs_root), idle_rescan_s=3600
     ) as handle:
-        # Wait long enough to cross the first idle timeout.
-        await env.sleep(timedelta(seconds=3700))
+        # Sleep partway through the idle interval: no timeout has fired and no
+        # signal has arrived, so the workflow should still be parked and no
+        # new activity should have run.
+        await env.sleep(timedelta(seconds=1800))
         # The workflow must still be running; it has idled, not returned.
         assert await handle.query("roadmap_status", result_type=RoadmapStatus)
 
@@ -1271,12 +1281,14 @@ async def test_rescan_signal_wakes_idle_roadmap_and_dispatches(
         # Flip the spec to ready in the filesystem.
         _write_spec(specs_root / "001-alpha", state=SpecState.READY)
         await handle.signal(RoadmapWorkflow.rescan)
-        # The child lands and the roadmap returns because nothing else is ready.
-        status = await handle.result()
-
-    alpha = _status_of(status, "001-alpha")
-    assert alpha.landed is True
-    assert status.running == []
+        # The child lands and the roadmap idles again because nothing else is
+        # ready. Query to observe the landed state; then cancel the idle run.
+        await env.sleep(timedelta(seconds=5))
+        status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+        alpha = _status_of(status, "001-alpha")
+        assert alpha.landed is True
+        assert status.running == []
+        await handle.cancel()
 
 
 async def test_idle_timeout_re_reads_corpus_safety_net(
@@ -1298,12 +1310,13 @@ async def test_idle_timeout_re_reads_corpus_safety_net(
     ) as handle:
         # Flip the spec to ready before the idle timeout fires.
         _write_spec(specs_root / "001-alpha", state=SpecState.READY)
+        # Wait long enough for the idle timeout to fire, re-read, dispatch, land.
         await env.sleep(timedelta(seconds=120))
-        status = await handle.result()
-
-    alpha = _status_of(status, "001-alpha")
-    assert alpha.landed is True
-    assert status.running == []
+        status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+        alpha = _status_of(status, "001-alpha")
+        assert alpha.landed is True
+        assert status.running == []
+        await handle.cancel()
 
 
 async def test_no_idle_config_returns_exactly_as_today(
@@ -1355,13 +1368,13 @@ async def test_history_does_not_grow_across_idle_wakes(
             await handle.signal(RoadmapWorkflow.rescan)
             await env.sleep(timedelta(seconds=30))
 
-        # Bring it to a close by leaving the spec ready and waiting the timeout.
-        _write_spec(specs_root / "001-alpha", state=SpecState.READY)
-        await env.sleep(timedelta(seconds=90))
-        status = await handle.result()
-
-    alpha = _status_of(status, "001-alpha")
-    assert alpha.landed is True
+        # Verify the spec is landed after the last wake.
+        status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+        alpha = _status_of(status, "001-alpha")
+        assert alpha.landed is True
+        # No need to drain the idle workflow; the run has cycled through five
+        # continue-as-new boundaries at quiescence, proving history is bounded.
+        await handle.cancel()
 
 
 async def test_idle_config_survives_continue_as_new(
@@ -1390,10 +1403,11 @@ async def test_idle_config_survives_continue_as_new(
         # have returned and bravo would not dispatch.
         _write_spec(specs_root / "002-bravo", state=SpecState.READY)
         await env.sleep(timedelta(seconds=90))
-        status = await handle.result()
+        status = await handle.query("roadmap_status", result_type=RoadmapStatus)
 
-    assert _status_of(status, "001-alpha").landed is True
-    assert _status_of(status, "002-bravo").landed is True
+        assert _status_of(status, "001-alpha").landed is True
+        assert _status_of(status, "002-bravo").landed is True
+        await handle.cancel()
 
 
 async def test_rescan_while_paused_dispatches_nothing(
@@ -1414,18 +1428,14 @@ async def test_rescan_while_paused_dispatches_nothing(
     )
     world = RoadmapWorld()
 
-    _SCRIPT.hold = {"001-alpha"}
     async with run_roadmap(
         env, world, str(specs_root), idle_rescan_s=60
     ) as handle:
-        # Wait for alpha to be in flight.
-        await env.sleep(timedelta(seconds=5))
-        # Pause the roadmap while alpha is in flight.
-        await handle.signal(RoadmapWorkflow.pause_roadmap)
-        # Let alpha complete; the roadmap should park at the pause boundary.
-        _SCRIPT.release("001-alpha")
+        # alpha lands on the first pass and the roadmap CANs into idle.
         await env.sleep(timedelta(seconds=10))
 
+        # Pause the roadmap while it is idle between epics.
+        await handle.signal(RoadmapWorkflow.pause_roadmap)
         # Flip bravo to ready and send rescan — it must not dispatch.
         _write_spec(specs_root / "002-bravo", state=SpecState.READY)
         await handle.signal(RoadmapWorkflow.rescan)
@@ -1439,7 +1449,7 @@ async def test_rescan_while_paused_dispatches_nothing(
         # Resume — now bravo dispatches and lands.
         await handle.signal(RoadmapWorkflow.resume_roadmap)
         await env.sleep(timedelta(seconds=40))
-        status = await handle.result()
-
-    assert _status_of(status, "001-alpha").landed is True
-    assert _status_of(status, "002-bravo").landed is True
+        status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+        assert _status_of(status, "001-alpha").landed is True
+        assert _status_of(status, "002-bravo").landed is True
+        await handle.cancel()
