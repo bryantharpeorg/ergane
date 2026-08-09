@@ -60,6 +60,31 @@ class _CapacityProbeWorkflow:
         self._release = True
 
 
+@workflow.defn(name="CapacityContinueAsNewProbeWorkflow")
+class _ContinueAsNewProbeWorkflow:
+    """Probe that continues-as-new once, then waits for a release signal.
+
+    The original run ends with status ``CONTINUED_AS_NEW``; the new run keeps
+    the same workflow id and becomes ``RUNNING``. This lets the live test prove
+    the capacity read does not count a continued-as-new execution as open once
+    the chain finishes.
+    """
+
+    def __init__(self) -> None:
+        self._release = False
+
+    @workflow.run
+    async def run(self, iteration: int = 0) -> str:
+        if iteration == 0:
+            workflow.continue_as_new(1)
+        await workflow.wait_condition(lambda: self._release)
+        return "released"
+
+    @workflow.signal
+    def release(self) -> None:
+        self._release = True
+
+
 def _parse_address(address: str) -> tuple[str, int]:
     """Split ``host:port``; default to the Temporal dev-server port."""
     if ":" in address:
@@ -112,7 +137,7 @@ async def _probe_worker(client: Client):
     async with Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[_CapacityProbeWorkflow],
+        workflows=[_CapacityProbeWorkflow, _ContinueAsNewProbeWorkflow],
         workflow_runner=UnsandboxedWorkflowRunner(),
     ):
         yield
@@ -130,6 +155,16 @@ async def _start_probe(
     return await client.start_workflow(
         _CapacityProbeWorkflow.run,
         id=workflow_id,
+        task_queue=TASK_QUEUE,
+    )
+
+
+async def _start_can_probe(client: Client, workflow_id: str) -> object:
+    """Start the continue-as-new probe at iteration 0 and return its handle."""
+    return await client.start_workflow(
+        _ContinueAsNewProbeWorkflow.run,
+        id=workflow_id,
+        arg=0,
         task_queue=TASK_QUEUE,
     )
 
@@ -227,6 +262,51 @@ async def test_capacity_read_finds_open_epic_workflows_and_excludes_others() -> 
             await open_handle.result()
             await non_epic_handle.signal(_CapacityProbeWorkflow.release)
             await non_epic_handle.result()
+
+
+@pytest.mark.live_capacity
+async def test_capacity_read_excludes_continued_as_new_chain() -> None:
+    """Acceptance 5: a continued-as-new execution is not counted as open.
+
+    A workflow run that calls ``continue_as_new`` ends with status
+    ``CONTINUED_AS_NEW``; the new run keeps the same workflow id. The capacity
+    read must not count the finished original run once the new run also
+    completes.
+    """
+    client = await _live_client()
+
+    async with _probe_worker(client):
+        can_id = _probe_id("epic-capacity-can")
+        can_handle = await _start_can_probe(client, can_id)
+
+        try:
+            # The first run continues as new; the second run is RUNNING and
+            # waiting on the release signal.
+            await asyncio.sleep(_VISIBILITY_SETTLE_SECONDS)
+
+            found_while_running = await _running_ids(client)
+            assert can_id in found_while_running, (
+                f"capacity read did not find the continued-as-new chain's active "
+                f"run {can_id!r}; found {sorted(found_while_running)}"
+            )
+
+            # Release the second run and let it complete.
+            await can_handle.signal(_ContinueAsNewProbeWorkflow.release)
+            await can_handle.result()
+
+            await asyncio.sleep(_VISIBILITY_SETTLE_SECONDS)
+            found_after_chain = await _running_ids(client)
+            assert can_id not in found_after_chain, (
+                f"continued-as-new workflow {can_id!r} still counted as open after "
+                f"the chain completed; found {sorted(found_after_chain)}"
+            )
+        finally:
+            # Best-effort cleanup if the test failed mid-chain.
+            try:
+                await can_handle.signal(_ContinueAsNewProbeWorkflow.release)
+                await can_handle.result()
+            except Exception:
+                pass
 
 
 @pytest.mark.live_capacity
