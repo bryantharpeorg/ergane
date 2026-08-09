@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import uuid
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -36,8 +37,6 @@ from factory.notify.service import (
     TEMPORAL_NAMESPACE_ENV,
 )
 from factory.workgraph.workflow import TASK_QUEUE
-
-pytestmark = pytest.mark.live_capacity
 
 #: Seconds to wait for visibility to converge after a workflow starts. Temporal
 #: advanced visibility indexing is near-real-time locally; a short wait is
@@ -61,13 +60,41 @@ class _CapacityProbeWorkflow:
         self._release = True
 
 
+def _parse_address(address: str) -> tuple[str, int]:
+    """Split ``host:port``; default to the Temporal dev-server port."""
+    if ":" in address:
+        host, port_str = address.rsplit(":", 1)
+        return host, int(port_str)
+    return address, 7233
+
+
+def _temporal_reachable(address: str) -> bool:
+    """Positive reachability probe: open a TCP socket to the gRPC port.
+
+    A guard that enumerates exception types misses the next SDK release.
+    A socket probe catches every "no server there" failure mode, including the
+    ``RuntimeError`` the Temporal Python SDK raises against a refused port.
+    """
+    host, port = _parse_address(address)
+    try:
+        with socket.create_connection((host, port), timeout=2.0):
+            return True
+    except OSError:
+        return False
+
+
 async def _live_client() -> Client:
     """Connect to the operator's Temporal, or skip with a named reason."""
     address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
     namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
+    if not _temporal_reachable(address):
+        pytest.skip(
+            f"live capacity read needs a Temporal server at {address} "
+            f"(namespace {namespace!r}); the port is unreachable"
+        )
     try:
         return await Client.connect(address, namespace=namespace)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         pytest.skip(
             f"live capacity read needs a Temporal server at {address} "
             f"(namespace {namespace!r}); could not connect: {exc}"
@@ -113,6 +140,32 @@ async def _running_ids(client: Client) -> set[str]:
     return await env.run(roadmap_activities._list_open_epics)
 
 
+async def test_capacity_seam_is_scriptable() -> None:
+    """FR-003 / acceptance 4: the capacity read stays behind a scripted seam.
+
+    Removing ``_open_epics_provider`` would make the time-skipping workflow tests
+    red, because the time-skipping server cannot answer the production visibility
+    query. This test asserts the seam exists, can be replaced and restored, and
+    that ``count_open_epics`` routes through it.
+    """
+    import factory.activities.roadmap_activities as ra
+
+    original = ra._open_epics_provider
+
+    async def scripted_provider() -> set[str]:
+        return {"epic-seam-a", "epic-seam-b"}
+
+    ra._open_epics_provider = scripted_provider
+    try:
+        result = await ActivityEnvironment().run(
+            roadmap_activities.count_open_epics, None
+        )
+        assert result.open_ids == ("epic-seam-a", "epic-seam-b")
+    finally:
+        ra._open_epics_provider = original
+
+
+@pytest.mark.live_capacity
 async def test_capacity_read_finds_open_epic_workflows_and_excludes_others() -> None:
     """FR-001 / acceptance 1: the production read returns open `epic-*` ids.
 
@@ -176,6 +229,7 @@ async def test_capacity_read_finds_open_epic_workflows_and_excludes_others() -> 
             await non_epic_handle.result()
 
 
+@pytest.mark.live_capacity
 async def test_capacity_read_fails_under_shipped_uppercase_spelling() -> None:
     """Acceptance 2: the live test fails when the query is reverted.
 
