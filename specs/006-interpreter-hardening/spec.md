@@ -1,5 +1,27 @@
 ---
-state: ready
+state: draft
+# Demoted from `ready` 2026-08-09 while this spec's own epic is mid-run. Not a
+# scope change — `ready` had become an invitation to collide. The remainder was
+# dispatched by hand from a pruned `workgraph-remainder.json`, and a roadmap
+# that read `ready` would try to start a second `epic-006-interpreter-hardening`
+# against the running one.
+#
+# Where the five stories actually stand:
+#   us1, us2, us5  landed pre-queue, subject `Merge branch
+#                  'factory/006-interpreter-hardening/usN' into ergane-buildout`
+#                  — a grammar `landed_facts` does not recognize, so they are
+#                  invisible to `factory-epic landed` and `derive --delta`
+#   us3            landed 2026-08-09 under the queue grammar (PR #21), visible
+#   us4            RUNNING at time of writing
+#
+# That invisibility is why `derive --delta` emitted all five and the remainder
+# had to be hand-pruned; 020-landing-attribution is the fix, and its SC-001 and
+# SC-002 are literally this spec's landed facts and delta.
+#
+# **This does not go back to `ready`.** If us4 lands, all five stories are in
+# the tree and the honest next state is attested `state: landed`. Only a failed
+# or killed us4 leaves a real remainder. Either way, land 020 first or the
+# reader will keep under-reporting this spec by three stories.
 depends_on_landed: [003-merge-queue, 005-workgraph-interpreter]
 ---
 

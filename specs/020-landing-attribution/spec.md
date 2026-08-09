@@ -1,5 +1,10 @@
 ---
-state: draft
+state: ready
+# Readied 2026-08-09 (Bryan). This is the unblocker on the critical path: it
+# frees 006 (whose delta re-emits three landed stories without it) and 019
+# (which declares a frontmatter edge on it, because 020 rewrites the same
+# parsers 019 ports). Both of those sit at `draft` until this lands.
+#
 # Drafted 2026-08-09 from an operator finding of 2026-08-08: the landed-facts
 # reader points at the wrong history in two independent ways, and the two were
 # folded into one decision because fixing either alone leaves the reader wrong.
