@@ -1695,6 +1695,10 @@ async def start_epic(
         task_queue=TASK_QUEUE,
         workflows=[EpicWorkflow],
         activities=script.activities(),
+        # 006-US4: mirror the production heartbeat-throttle cap so tests that
+        # exercise heartbeat timeouts finish in seconds rather than minutes.
+        max_heartbeat_throttle_interval=timedelta(seconds=5),
+        default_heartbeat_throttle_interval=timedelta(seconds=5),
     ):
         handle = await env.client.start_workflow(
             EpicWorkflow.run,
@@ -2446,8 +2450,8 @@ async def test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout(
     graph = make_graph(
         nodes=[
             make_node("us1", "US1", timeout_override_s=20),
-            make_node("us2", "US2"),
-            make_node("us3", "US3"),
+            make_node("us2", "US2", timeout_override_s=20),
+            make_node("us3", "US3", timeout_override_s=20),
         ]
     )
 
@@ -3301,11 +3305,14 @@ async def test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown(
         adapter_snapshot=SNAPSHOT,
         heartbeat_then_block=True,
     )
+    # All nodes that use heartbeat_then_block need a short timeout; the default
+    # persona timeout now yields a 45-minute heartbeat bound, and the test is
+    # about the delivery path, not the wait.
     graph = make_graph(
         nodes=[
             make_node("us1", "US1", timeout_override_s=20),
-            make_node("us2", "US2"),
-            make_node("us3", "US3"),
+            make_node("us2", "US2", timeout_override_s=20),
+            make_node("us3", "US3", timeout_override_s=20),
         ]
     )
 

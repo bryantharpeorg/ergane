@@ -304,6 +304,17 @@ _AGENT_RETRIES = RetryPolicy(
     maximum_attempts=2,
 )
 
+#: Key issuance retries. A proxy restart is minutes, not seconds, and the only
+#: thing this policy backs is `issue_attempt_key` (FR-009). `_RETRIES` stays
+#: untouched because it is shared by `_FAST`, `_GIT`, `_GATES`, and `_JUDGE`, and
+#: `teardown_attempt` keeps the old budget — the new tolerance is issuance-only.
+_ISSUE_KEY_RETRIES = RetryPolicy(
+    initial_interval=timedelta(seconds=2),
+    maximum_interval=timedelta(seconds=60),
+    maximum_attempts=8,
+    backoff_coefficient=2.0,
+)
+
 #: Reads and small writes: a registry parse, a spec parse, a git diff, a SQLite
 #: upsert, two API calls.
 _FAST = {
@@ -312,6 +323,8 @@ _FAST = {
 }
 
 #: Proxy round trips that page spend logs on the way (001 R3).
+#: Issuance now has its own retry budget (FR-009); `_PROXY` is kept on `_RETRIES`
+#: for `teardown_attempt`, whose budget is unchanged.
 _PROXY = {
     "start_to_close_timeout": timedelta(minutes=5),
     "retry_policy": _RETRIES,
@@ -359,11 +372,23 @@ _ADAPTER_GRACE_S = 120
 #: the operator sends it. That is the binding purpose: detecting a dead worker a
 #: minute later costs nothing (the epic is stalled either way), while an agent
 #: that runs on for a minute after "stop" is spending model time nobody wants
-#: and holding the worktree the workflow is about to salvage (US3-S3). Five
-#: beats, at the adapter's `HEARTBEAT_INTERVAL_S`, is the slack a healthy attempt
-#: on a busy worker needs — derived from that constant so the two can never
-#: drift into a bound shorter than the beat it is bounding.
-_AGENT_HEARTBEAT_TIMEOUT = timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
+#: and holding the worktree the workflow is about to salvage (US3-S3).
+#:
+#: The bound is derived from the attempt's own timeout so a multi-hour attempt
+#: survives a multi-second Temporal blip (FR-008), but it is floored at five
+#: beats so a short attempt never collapses below the beat it is bounding.
+#: The worker's `max_heartbeat_throttle_interval` is set independently to keep
+#: the actual cancellation latency small; without that cap, a 45-minute timeout
+#: would let a killed agent bill for minutes.
+_AGENT_HEARTBEAT_TIMEOUT_FLOOR = timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
+
+
+def _agent_heartbeat_timeout(timeout_s: float) -> timedelta:
+    """Heartbeat timeout for one attempt: half its deadline, floored at five beats."""
+    return max(
+        timedelta(seconds=timeout_s / 2),
+        _AGENT_HEARTBEAT_TIMEOUT_FLOOR,
+    )
 
 
 @dataclass(frozen=True)
@@ -1169,7 +1194,8 @@ class EpicWorkflow:
                     spec_ref=node.spec_ref,
                     models=list(resolved.models),
                 ),
-                **_PROXY,
+                start_to_close_timeout=_PROXY["start_to_close_timeout"],
+                retry_policy=_ISSUE_KEY_RETRIES,
             )
             record.state = NodeState.KEY_ISSUED
             # A snapshot of some earlier attempt's key is not this attempt's
@@ -1498,7 +1524,7 @@ class EpicWorkflow:
             start_to_close_timeout=timedelta(
                 seconds=context.timeout_s + _ADAPTER_GRACE_S
             ),
-            heartbeat_timeout=_AGENT_HEARTBEAT_TIMEOUT,
+            heartbeat_timeout=_agent_heartbeat_timeout(context.timeout_s),
             retry_policy=_AGENT_RETRIES,
         )
 
@@ -1735,7 +1761,8 @@ class EpicWorkflow:
                 # without constraint (constitution V).
                 models=list(judge.models),
             ),
-            **_PROXY,
+            start_to_close_timeout=_PROXY["start_to_close_timeout"],
+            retry_policy=_ISSUE_KEY_RETRIES,
         )
         try:
             for judge_attempt in range(1, request.config.max_judge_retries + 2):
@@ -2242,7 +2269,8 @@ class EpicWorkflow:
                 spec_ref=node.spec_ref,
                 models=list(resolved.models),
             ),
-            **_PROXY,
+            start_to_close_timeout=_PROXY["start_to_close_timeout"],
+            retry_policy=_ISSUE_KEY_RETRIES,
         )
         record.last_snapshot = None
 

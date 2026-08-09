@@ -55,6 +55,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import timedelta
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -173,6 +174,12 @@ def build_worker(client: Client) -> Worker:
         task_queue=TASK_QUEUE,
         workflows=WORKFLOWS,
         activities=ACTIVITIES,
+        # 006-US4: cap how long the server may wait between heartbeat round-trips.
+        # The heartbeat timeout itself is derived from the attempt timeout and
+        # can be minutes long; the throttle governs the *latency* with which a
+        # kill or cancellation reaches the agent process.
+        max_heartbeat_throttle_interval=timedelta(seconds=5),
+        default_heartbeat_throttle_interval=timedelta(seconds=5),
     )
 
 
