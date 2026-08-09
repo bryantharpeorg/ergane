@@ -1,5 +1,16 @@
 ---
-state: draft
+state: landed
+# Landed 2026-08-09 2:35 PM CT. Four stories, PRs #24-#26 and #28. us1, us2 and
+# us4 first attempt; us3 attempt 2, its first landing rejected by a flaky
+# concurrency test in tests/test_interpreter.py that its diff never touched
+# (ci/flaky-concurrency-test-is-a-random-epic-killer). Worker restarted on the
+# result at 2:46 PM, which is when the capacity fix became live.
+#
+# ATTESTATION CAVEAT: `factory-epic landed` reports US1, US2 and US3 only. US4 is
+# fully in the tree at e4e90c3 but its merge subject is a salvage line, because
+# PR #28 held exactly one commit and GitHub's squash rule used it -- see
+# targets/salvage-only-pr-lands-invisible. Do NOT read the missing US4 as
+# unlanded, and do not run a delta over this spec until that setting is fixed.
 # Drafted 2026-08-09 from the roadmap's first real run, which failed 24 times in
 # six hours and dispatched nothing. The scheduler landed in 009, was registered
 # in the worker, passed a 1947-test suite, and had never completed a single pass

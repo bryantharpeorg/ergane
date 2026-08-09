@@ -443,7 +443,14 @@ def test_erganes_own_manifest_loads() -> None:
     assert config.runtime
     assert config.gates["test"] == "uv run pytest -q"
     assert config.standards == ".specify/memory/constitution.md"
-    assert config.landing_branch == "main"
+    # 020-US1 landed the key; the operator declared it afterwards, which is the
+    # only order that works — the config gate parses a node's manifest with the
+    # worker's installed parser, so a story declaring this key in its own
+    # worktree is refused at CONFIG_ERROR before any gate command runs (020's
+    # T012, and the four attempts that proved it). This line therefore asserts
+    # an operator action, not a node's: it moved from "main" to the declared
+    # branch on 2026-08-09, after US1 merged at 438cfd0 and the worker restarted.
+    assert config.landing_branch == "ergane-buildout"
 
 
 def test_erganes_declared_standards_document_exists() -> None:

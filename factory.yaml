@@ -27,3 +27,17 @@ gates:
 # at dispatch in `prepare_worktree`. Ergane's standards are its constitution:
 # test-first, no unapproved dependencies, no credentials in code or logs.
 standards: .specify/memory/constitution.md
+
+# The branch the factory lands on, declared rather than guessed (020-US1). Three
+# parts of the tree used to disagree about this — `capture_base_ref` read the
+# clone's checked-out branch, `derive --delta` hardcoded "main", and the CLI's
+# `--default-branch` defaulted to "main" — so a clone left on the wrong branch
+# quietly decided what every node of an epic built from. Absent, this still means
+# "main", which is why every other target repo is unaffected.
+#
+# Declared by the operator, never by a node: the config gate parses a node's
+# manifest with the *worker's* installed parser, not the worktree's, so a story
+# that adds this key to its own manifest is rejected at CONFIG_ERROR in 0.0s
+# before any gate command runs. 020's US1 died four times proving it. The key is
+# safe here only because US1 landed (438cfd0) and the worker was restarted on it.
+landing_branch: ergane-buildout

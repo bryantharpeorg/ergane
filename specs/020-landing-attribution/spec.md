@@ -1,5 +1,17 @@
 ---
-state: ready
+state: landed
+# Landed 2026-08-09 2:45 PM CT. Two stories, PRs #27 and #29. us1 first attempt
+# -- after five earlier deaths, four to the manifest deadlock this spec's own
+# T012 caused and a fifth to a relaunch that inherited the dead run's worktree
+# (interpreter/relaunched-epic-resumes-the-dead-runs-tree). us2 took three
+# attempts and landed on the debugger rung: gates were green all three times
+# (exit 0, ~346s) and the judge correctly refused twice on US2-S6, an acceptance
+# scenario no task in this spec's tasks.md ever asked for
+# (cli/no-check-that-every-scenario-has-a-task).
+#
+# T012 executed by the operator after the worker restart, not by any node:
+# `landing_branch: ergane-buildout` is declared in factory.yaml as of this
+# attestation, and `factory-epic landed` now resolves the branch with no flag.
 # Readied 2026-08-09 (Bryan). This is the unblocker on the critical path: it
 # frees 006 (whose delta re-emits three landed stories without it) and 019
 # (which declares a frontmatter edge on it, because 020 rewrites the same
