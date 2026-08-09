@@ -19,24 +19,64 @@ any order. Tasks without it are sequential because they share a file.
 
 ## Phase 1: Setup (operator preflight — dispatched to no node)
 
-- [ ] T001 Operator: re-verify plan.md's reuse inventory against the tree that
-      will host the work, and settle the one open design call. Line numbers were
-      taken 2026-08-09; 019 and 020 may move them.
-      (a) `factory/activities/roadmap_activities.py` still holds the query at
-      `:443-445`, the comment at `:440-442`, the seam at `:454`;
-      (b) `RoadmapInput` still lacks a node bound and `_dispatch`'s `EpicInput`
-      at `:870` still omits one;
-      (c) the loop tail is still `break` at `:686`, and the post-child
-      continue-as-new at `:656-657` is untouched by anything since;
-      (d) `RoadmapCarryOver`'s field list, so US2 and US3 know what they are
-      extending;
-      (e) the name of 009's roadmap workflow test module, since T004 and T009
-      must keep it green.
-      **Decide and record here: US4's shape** — supervising surface, or
-      try/except at the loop boundary (plan § US4). The supervising option
-      covers a failure during continue-as-new; the cheap option does not. Write
-      the choice and the reason into this task before deriving, because US4's
-      tasks below are written to whichever is chosen.
+- [x] T001 Operator preflight — **DONE 2026-08-09, against
+      `ergane-buildout` @ `85c333f`.** Every line number in plan.md verified
+      unchanged in the tree that hosts this work. Findings, which supersede
+      plan.md where they differ:
+
+      (a) **Confirmed exactly.** `factory/activities/roadmap_activities.py`:
+      comment `:440-442`, the `list_workflows('ExecutionStatus = "RUNNING"')`
+      call `:443-445`, `_open_epics_provider` `:454`, `count_open_epics` `:458`.
+
+      (b) **Confirmed.** `RoadmapInput` `:144-173` carries no node bound; its
+      fields end at `carry_over`. `_dispatch`'s `start_child_workflow` is at
+      `:870` and the `EpicInput(...)` literal at `:872-877` — `graph`,
+      `proxy_url`, `config`, `poll_interval_s`, `landing_config`, no node bound.
+
+      (c) **Confirmed.** `break` at `:686`; the `if completed_this_run:` CAN
+      immediately above at `:684-685`; the post-child quiescence CAN at
+      `:656-657`; the pause wait at `:664-666`. US3 replaces `:686` only.
+
+      (d) `RoadmapCarryOver` is at `:194`, fields at `:214-218`: `landed`,
+      `parked`, `promotions`, `paused`, `max_concurrent_epics`. It is an
+      explicit allowlist with a `from_state` classmethod at `:220` whose
+      **keyword-only signature must also grow** — adding a field to the
+      dataclass alone leaves `from_state` dropping it silently (trap 4).
+
+      (e) **plan.md is wrong to say "module", singular — there are eight.**
+      `tests/test_roadmap_{scheduler,durability,cli,delta,grammar,operator_surface,readiness}.py`
+      plus the `tests/roadmap_script.py` helper. The seam is scripted in
+      **`tests/test_roadmap_scheduler.py` only** (`:294`, `:305`, `:330`,
+      `:354`) — that is T004's subject. `tests/test_roadmap_durability.py`
+      (357 lines) is the continue-as-new suite T008 and T012 extend.
+
+      (f) **T005's first instruction is already answered — do not re-litigate
+      it.** `WorkflowExecutionStatus` is imported at `:436`, so it is the
+      obvious candidate. It does not work. Measured on this tree:
+      `S.RUNNING.name` is `'RUNNING'`, `.value` is `1`, `str()` is `'1'` —
+      none is the `Running` the grammar accepts. `.name.title()` appears to
+      work for `RUNNING` and **breaks for every multi-word member**
+      (`CONTINUED_AS_NEW` → `Continued_As_New`, not `ContinuedAsNew`), so a
+      derivation built on it is a worse defect than the literal. Use a
+      module-level constant pinned by the live test, and say in the comment
+      that the SDK enum was checked and does not round-trip.
+
+      **US4's shape — DECIDED: try/except at the loop boundary.** Reasons, in
+      order: (1) the failure this spec exists to repair happened at the first
+      activity *inside* the loop, so the cheap shape covers the actual observed
+      defect class; (2) `send_escalation`
+      (`factory/activities/notify_activities.py:256-286`) is already the exact
+      write-before-send precedent to mirror — insert the row, attempt the send,
+      mark delivered best-effort, never raise on a delivery failure — so US4
+      adds a caller, not a mechanism; (3) a supervising surface is a second
+      supervisor, and the prioritised stack-supervision work (systemd user
+      units + a probe heartbeat) is where process-level death belongs — two
+      supervisors that disagree about whether the roadmap is alive is the
+      failure 019 declined to build for `stack`, for the same reason.
+      **State the gap in the code, do not hide it:** this shape does not cover
+      a failure during continue-as-new, a terminated workflow, or a worker that
+      dies. Those are the heartbeat's job. FR-009 is satisfied for failures the
+      run can observe; a comment must say which ones it cannot.
 
 ---
 
@@ -69,19 +109,21 @@ the query is reverted.
       (trap 2) — must fail.
 - [ ] T004 [P] [US1] Write the seam-preservation case FIRST (FR-003): the
       time-skipping workflow tests still script the capacity count through
-      `_open_epics_provider`, and 009's existing roadmap workflow tests stay
-      green. This is a guard against "fixing" the defect by deleting the seam
-      (trap 1) — must fail only if the seam is removed.
+      `_open_epics_provider`, and **`tests/test_roadmap_scheduler.py`** — the
+      one module that scripts the seam, at `:294`, `:305`, `:330`, `:354`
+      (T001e) — stays green. This is a guard against "fixing" the defect by
+      deleting the seam (trap 1) — must fail only if the seam is removed.
 
 ### Implementation for User Story 1
 
-- [ ] T005 [US1] Fix the query until T003 passes. First check whether the SDK
-      exposes a symbol whose string form the visibility grammar accepts; if it
-      does, build the query from it and remove the class of defect rather than
-      this instance. If it does not, use a module-level constant with the live
-      test pinned to it, and say in a comment why a literal was unavoidable.
-      Leave the `:440-442` comment in place but correct it: the production query
-      is now covered, by T003, on the far side of the seam.
+- [ ] T005 [US1] Fix the query until T003 passes. **T001(f) already settled how**
+      — the SDK's `WorkflowExecutionStatus` was measured on this tree and does
+      not round-trip to the grammar's `Running` by any of `.name`, `.value` or
+      `str()`, and `.name.title()` silently breaks on multi-word members. Do
+      not re-derive that; use a module-level constant, pin the live test to it,
+      and say in the comment that the enum was checked and why a literal was
+      unavoidable. Leave the `:440-442` comment in place but correct it: the
+      production query is now covered, by T003, on the far side of the seam.
 
 ---
 
