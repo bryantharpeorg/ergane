@@ -34,6 +34,8 @@ from factory.workgraph.landed import (
 
 DEFAULT_BRANCH = "main"
 
+EPIC_ID = "016-delta-derivation"
+
 #: Fixture identity and timestamps are fixed so commit hashes are reproducible.
 _FIXTURE_IDENTITY = ("Ergane Fixture", "fixture@ergane.invalid")
 _FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
@@ -83,6 +85,15 @@ def _commit(
     if allow_empty:
         args.append("--allow-empty")
     _git(repo, *args, env=env)
+    return _git(repo, "rev-parse", "HEAD", env=env).strip()
+
+
+def _merge(repo: Path, source_branch: str, *, env: dict[str, str], subject: str = "") -> str:
+    """Merge `source_branch` into the current branch and return the merge commit sha."""
+    _git(repo, "merge", "--no-ff", "--no-edit", source_branch, env=env)
+    if subject:
+        # Re-commit with the requested subject so the test controls the merge message.
+        _git(repo, "commit", "--amend", "--no-edit", "-m", subject, env=env)
     return _git(repo, "rev-parse", "HEAD", env=env).strip()
 
 
@@ -193,8 +204,180 @@ def test_subject_must_match_epic_anchor(repo_builder: Callable[..., Path]) -> No
     repo = repo_builder({"spec.md": _spec(stories=["US1"])})
     env = _git_env(Path(os.environ.get("HOME", "/tmp")))
     _commit(repo, "999-other/us1: US1 (#1)", env=env, allow_empty=True)
-    facts = landed_facts(repo, "016-delta-derivation", default_branch=DEFAULT_BRANCH)
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
     assert facts == {}
+
+
+# --- T013: US2 negative cases — these must never look like landings ----------
+
+
+def test_salvage_subject_is_not_a_landing(repo_builder: Callable[..., Path]) -> None:
+    """`salvage(<epic>/<node>): ...` carries the same id pair but is not a landing.
+
+    This subject is the most dangerous near-miss: it has `<epic_id>/<node_id>` in
+    the same order the historical recognizer looks for, and it is in every branch's
+    history.  US2 is wrong if this ever matches.
+    """
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _commit(repo, "salvage(016-delta-derivation/us1): completed attempt 1", env=env, allow_empty=True)
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {}
+
+
+def test_other_salvage_and_operator_subjects_are_not_landings(repo_builder: Callable[..., Path]) -> None:
+    """Other subjects that name an epic and story without a landing must not match."""
+    repo = repo_builder({"spec.md": _spec(stories=["US1", "US4"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _commit(repo, "salvage(003-merge-queue/us1): killed attempt 1", env=env, allow_empty=True)
+    _commit(repo, "017-peer-channel: US4 — ephemeral consults + two-layer memory split", env=env, allow_empty=True)
+    _commit(repo, "016-delta-derivation US1: attempt delivery-path and history-cost tests", env=env, allow_empty=True)
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {}
+
+
+def test_historical_merge_for_other_epic_is_ignored(repo_builder: Callable[..., Path]) -> None:
+    """A git merge sentence for a different epic is ignored for this epic."""
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _git(repo, "checkout", "-b", "factory/999-other/us1", env=env)
+    (repo / "specs" / EPIC_ID / "marker.txt").write_text("branch work", encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "factory/999-other/us1: unrelated work", env=env)
+    _git(repo, "checkout", DEFAULT_BRANCH, env=env)
+    _merge(repo, "factory/999-other/us1", env=env, subject="Merge branch 'factory/999-other/us1' into main")
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {}
+
+
+# --- T014: US2 positive cases — pre-queue merge grammar -----------------------
+
+
+def test_historical_merge_yields_historical_landed_fact(repo_builder: Callable[..., Path]) -> None:
+    """Git's own merge subject for a node branch is read as a historical landing."""
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _git(repo, "checkout", "-b", f"factory/{EPIC_ID}/us1", env=env)
+    (repo / "specs" / EPIC_ID / "us1.txt").write_text("us1", encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, f"factory/{EPIC_ID}/us1: implement US1", env=env)
+    _git(repo, "checkout", DEFAULT_BRANCH, env=env)
+    merge_sha = _merge(
+        repo,
+        f"factory/{EPIC_ID}/us1",
+        env=env,
+        subject=f"Merge branch 'factory/{EPIC_ID}/us1' into main",
+    )
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {"US1": LandedFact(story_key="US1", commit=merge_sha, kind=LandedKind.HISTORICAL)}
+
+
+def test_historical_inferred_key_must_be_declared(repo_builder: Callable[..., Path]) -> None:
+    """A merge for `us9` is ignored when the spec declares no US9."""
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _git(repo, "checkout", "-b", f"factory/{EPIC_ID}/us9", env=env)
+    (repo / "specs" / EPIC_ID / "us9.txt").write_text("us9", encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, f"factory/{EPIC_ID}/us9: orphaned work", env=env)
+    _git(repo, "checkout", DEFAULT_BRANCH, env=env)
+    _merge(
+        repo,
+        f"factory/{EPIC_ID}/us9",
+        env=env,
+        subject=f"Merge branch 'factory/{EPIC_ID}/us9' into main",
+    )
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {}
+
+
+# --- T015: US2 provenance kind and rendering ---------------------------------
+
+
+def test_historical_kind_is_distinct_and_rendered(repo_builder: Callable[..., Path], capsys: pytest.CaptureFixture) -> None:
+    """Historical facts carry their own LandedKind, and `landed_command` prints it."""
+    from factory.workgraph.cli import landed_command
+
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _git(repo, "checkout", "-b", f"factory/{EPIC_ID}/us1", env=env)
+    (repo / "specs" / EPIC_ID / "us1.txt").write_text("us1", encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, f"factory/{EPIC_ID}/us1: implement US1", env=env)
+    _git(repo, "checkout", DEFAULT_BRANCH, env=env)
+    merge_sha = _merge(
+        repo,
+        f"factory/{EPIC_ID}/us1",
+        env=env,
+        subject=f"Merge branch 'factory/{EPIC_ID}/us1' into main",
+    )
+
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {"US1": LandedFact(story_key="US1", commit=merge_sha, kind=LandedKind.HISTORICAL)}
+    assert facts["US1"].kind not in {LandedKind.OBSERVED, LandedKind.ATTESTED}
+
+    class Args:
+        spec_dir = str(repo / "specs" / EPIC_ID)
+        default_branch = DEFAULT_BRANCH
+
+    landed_command(Args())
+    captured = capsys.readouterr()
+    assert "historical" in captured.out
+    assert merge_sha[:12] in captured.out
+
+
+# --- T016: US2 precedence — newer queue landing beats older historical merge --
+
+
+def test_queue_landing_beats_historical_merge(repo_builder: Callable[..., Path]) -> None:
+    """When both grammars land the same story, the newer queue landing wins.
+
+    The rule is: scan newest-first and keep first-seen.  If the loop order ever
+    changes, this test protects the behaviour rather than inheriting it from the
+    implementation.
+    """
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    # Older historical merge.
+    _git(repo, "checkout", "-b", f"factory/{EPIC_ID}/us1", env=env)
+    (repo / "specs" / EPIC_ID / "old.txt").write_text("old", encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, f"factory/{EPIC_ID}/us1: first version", env=env)
+    _git(repo, "checkout", DEFAULT_BRANCH, env=env)
+    historical_sha = _merge(
+        repo,
+        f"factory/{EPIC_ID}/us1",
+        env=env,
+        subject=f"Merge branch 'factory/{EPIC_ID}/us1' into main",
+    )
+    # Newer queue-style landing for the same story.
+    queue_sha = _commit(repo, f"{EPIC_ID}/us1: US1 (#42)", env=env, allow_empty=True)
+
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {"US1": LandedFact(story_key="US1", commit=queue_sha, kind=LandedKind.OBSERVED)}
+    assert facts["US1"].commit != historical_sha
+
+
+# --- T017: US2 end-to-end through real merge commit ---------------------------
+
+
+def test_end_to_end_real_merge_commit(repo_builder: Callable[..., Path]) -> None:
+    """A real git merge commit is read end-to-end; no string-level-only mirage."""
+    repo = repo_builder({"spec.md": _spec(stories=["US1", "US2"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _git(repo, "checkout", "-b", f"factory/{EPIC_ID}/us2", env=env)
+    (repo / "specs" / EPIC_ID / "us2.txt").write_text("us2", encoding="utf-8")
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, f"factory/{EPIC_ID}/us2: implement US2", env=env)
+    _git(repo, "checkout", DEFAULT_BRANCH, env=env)
+    merge_sha = _merge(
+        repo,
+        f"factory/{EPIC_ID}/us2",
+        env=env,
+        subject=f"Merge branch 'factory/{EPIC_ID}/us2' into main",
+    )
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {"US2": LandedFact(story_key="US2", commit=merge_sha, kind=LandedKind.HISTORICAL)}
 
 
 # --- T004: attestation fallback per story, not per spec ----------------------

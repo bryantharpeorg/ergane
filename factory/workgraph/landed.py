@@ -40,15 +40,25 @@ _LANDING_RE = re.compile(
     r"^(?P<epic_id>[^/\s]+)/(?P<node_id>[^:\s]+):\s*(?P<story_key>US\d+)\s*(?:\(#\d+\))?\s*$"
 )
 
+#: The historical landing grammar git wrote before the merge queue existed:
+#: `Merge branch 'factory/<epic_id>/<node_id>' into <branch>`.
+#: Anchored end-to-end so the similar salvage subject (`salvage(...): ...`)
+#: and operator subjects (`<epic>: US4 — ...`) do not match.
+_HISTORICAL_LANDING_RE = re.compile(
+    r"^Merge branch 'factory/(?P<epic_id>[^/\s]+)/(?P<node_id>[^'\s]+)' into "
+    r"(?P<branch>[^']+)$"
+)
+
 #: How `git log` separates hash from subject.
 _LOG_SEP = "\t"
 
 
 class LandedKind(StrEnum):
-    """Whether a landing commit is observed by grammar or supplied by attestation."""
+    """Provenance of a landing fact: observed by queue grammar, attested by spec, or historical git merge."""
 
     OBSERVED = "observed"
     ATTESTED = "attested"
+    HISTORICAL = "historical"
 
 
 @dataclass(frozen=True)
@@ -99,21 +109,44 @@ def landed_facts(
     head = _resolve_default_head(repo_path, default_branch)
 
     # One batch scan over the default branch's history, newest first.
+    # Two grammars are matched in the same pass: the queue's attribution subject
+    # and git's pre-queue merge subject.  Because the scan is newest-first and
+    # this loop keeps first-seen for each story, a newer queue landing naturally
+    # wins over an older historical merge for the same story.  If the loop order
+    # ever changes, that precedence rule (FR-007) must be preserved explicitly.
     observed: dict[str, LandedFact] = {}
+    valid_story_keys = set(_story_keys(_spec_requirements_at(repo_path, head, spec_dir)))
     for commit, subject in _git_log_subjects(repo_path, head):
         match = _LANDING_RE.match(subject)
-        if match is None or match.group("epic_id") != epic_id:
+        if match is not None and match.group("epic_id") == epic_id:
+            story_key = match.group("story_key")
+            if story_key not in observed:
+                observed[story_key] = LandedFact(
+                    story_key=story_key,
+                    commit=commit,
+                    kind=LandedKind.OBSERVED,
+                )
             continue
-        story_key = match.group("story_key")
-        if story_key not in observed:
-            observed[story_key] = LandedFact(
-                story_key=story_key,
-                commit=commit,
-                kind=LandedKind.OBSERVED,
-            )
+
+        # Historical grammar: git's own merge of a node branch.
+        # The story key is inferred by upper-casing the node id.  This is valid
+        # only because the deriver mints node ids as `story_key.lower()`
+        # (factory/workgraph/derive.py:184).  Without that invariant the inference
+        # would be a guess, so a node id that does not map to a declared story is
+        # ignored (spec § Edge Cases).
+        hist = _HISTORICAL_LANDING_RE.match(subject)
+        if hist is not None and hist.group("epic_id") == epic_id:
+            story_key = hist.group("node_id").upper()
+            if story_key in valid_story_keys and story_key not in observed:
+                observed[story_key] = LandedFact(
+                    story_key=story_key,
+                    commit=commit,
+                    kind=LandedKind.HISTORICAL,
+                )
+            continue
 
     # Attestation fallback is per story, not per spec: gap-fill only stories that
-    # did not have a reachable attributed commit. The attesting commit is the one
+    # did not have a reachable attributed or historical commit. The attesting commit is the one
     # that introduced the frontmatter `state: landed`.
     frontmatter = _frontmatter_at(repo_path, head, spec_dir)
     if frontmatter.get("state") == "landed":
