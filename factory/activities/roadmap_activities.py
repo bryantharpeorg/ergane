@@ -433,19 +433,26 @@ async def _list_open_epics() -> set[str]:
     `CONTINUED_AS_NEW` is a closed run (the new run carries a fresh id), so it
     does not count.
     """
-    from temporalio.client import WorkflowExecutionStatus
-
     client = activity.client()
     open_ids: set[str] = set()
     # The list filter is the production query shape; the time-skipping test
     # server does not answer it, which is exactly why the seam below lets a
-    # test script the count instead.
+    # test script the count instead. The SDK's WorkflowExecutionStatus enum
+    # does not round-trip to the grammar's expected spelling by any of .name,
+    # .value, or str(), and .name.title() silently breaks on multi-word
+    # members, so the literal is pinned here and guarded by tests/test_live_capacity.py.
     async for execution in client.list_workflows(
-        'ExecutionStatus = "RUNNING"'
+        f'ExecutionStatus = "{_OPEN_EPIC_STATUS}"'
     ):
         if execution.id.startswith("epic-"):
             open_ids.add(execution.id)
     return open_ids
+
+
+#: The visibility status the production capacity read treats as "open".
+#: Temporal's visibility grammar wants the title-case enum name, not the
+#: uppercase .name of the SDK enum; see the comment in _list_open_epics.
+_OPEN_EPIC_STATUS = "Running"
 
 
 #: The capacity seam — production lists open workflows through the client;
