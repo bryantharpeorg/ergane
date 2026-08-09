@@ -220,10 +220,52 @@ history.** It carries the epic id and node id in the same order the new pattern
 looks for them. It is the negative case that matters most; write it before the
 positive one.
 
+## Traps
+
+1. **Do not declare `landing_branch` in this repository's own `factory.yaml`.
+   This trap is why the 2026-08-09 run of US1 is dead.** The story's whole point
+   is a new manifest key, so adding it to the live manifest feels like finishing
+   the job. It is the one edit that cannot succeed.
+
+   `run_gates` imports `parse_factory_config` at module scope
+   (`factory/verify/gates.py:47`) and calls it **in the worker process** before
+   running any gate command. That process imports `factory/` from the *worker's*
+   checkout, never from your worktree. So the manifest you edit is validated by
+   the very parser you are replacing — which does not know the key yet, returns
+   a single `CONFIG_ERROR`, and per `gates.py:406` **runs nothing at all**:
+
+   ```
+   gate config: CONFIG_ERROR (no exit, 0.0s)
+   factory.yaml: [unknown_key] declares 'landing_branch' at the top level;
+   schema v1 knows only 'version', 'runtime', 'gates', 'timeouts', 'standards'
+   ```
+
+   The 2026-08-09 node had **both halves right** — `landing_branch` in
+   `_TOP_LEVEL_KEYS`, a `_read_landing_branch` reader, and the key in
+   `factory.yaml`. It failed four times in 0.0s each and never ran a test. A
+   retry cannot clear it; the node cannot reach the process that judges it.
+
+   **What to do instead:** teach the parser to *accept* the optional key and
+   prove it with fixture manifests — a temp-dir repo whose `factory.yaml`
+   declares the key is enough for every acceptance scenario, all of which say
+   "a target repository whose manifest declares", not "this repository".
+   `parse_factory_config` takes text, so a fixture costs nothing. Leave this
+   repo's `factory.yaml` **exactly as it is**. T012 is an operator step
+   afterwards, gated on a worker restart, and belongs to no node.
+
+   Filed as `interpreter/manifest-schema-cannot-be-extended-by-a-story`.
+
+2. **`salvage(<epic>/<node>): completed attempt 1` is in every branch's
+   history.** It carries the epic id and node id in the same order the new
+   pattern looks for them. It is the negative case that matters most; write it
+   before the positive one. (Repeated here from § US2 because it is the other
+   way this spec can quietly go wrong.)
+
 ## Complexity Tracking
 
 | Risk | Why it is real | Mitigation |
 |---|---|---|
+| A node declares the key in the live manifest | The story is *about* that key, and T012 used to tell it to | Trap 1: the config gate parses with the worker's parser; fixtures only, and T012 is operator-only |
 | The manifest never wins | `--default-branch` defaults to a truthy string, so the read happens but is discarded | Parser default becomes `None`; the acceptance test passes no flag |
 | A `_default_branch` caller is repointed that should not be | Four of the six sites report an observation about a clone | The call-site table; classify by decision-vs-observation |
 | The push guard keeps reading the clone's branch | It is the least obvious of the four decision sites | Its own acceptance scenario and its own test |
