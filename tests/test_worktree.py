@@ -69,6 +69,7 @@ from factory.workgraph.worktree import (
     capture_base_ref,
     diff,
     ensure,
+    landing_branch,
     push_branch,
     remove,
     salvage,
@@ -323,6 +324,138 @@ def test_capture_base_ref_raises_when_origin_is_unreachable(
 
     with pytest.raises(WorktreeError):
         capture_base_ref(repo)
+
+
+# --- landing_branch resolution (020 US1) --------------------------------------
+
+
+def test_landing_branch_returns_declared_branch_from_manifest(
+    target_repo: Callable[..., Path],
+) -> None:
+    """A repo whose manifest declares a landing branch reports it."""
+    repo = target_repo("landing-branch")
+
+    assert landing_branch(repo) == "ergane-buildout"
+
+
+def test_landing_branch_defaults_to_checked_out_branch_when_no_manifest(
+    target_repo: Callable[..., Path],
+) -> None:
+    """A repo with no manifest keeps today's behaviour: the clone's checked-out branch."""
+    repo = target_repo("missing-manifest")
+
+    assert landing_branch(repo) == "main"
+
+
+def test_landing_branch_defaults_to_checked_out_branch_on_bad_manifest(
+    target_repo: Callable[..., Path],
+) -> None:
+    """A manifest the schema refuses is treated like a missing one: fall back to HEAD.
+
+    Matches `_declared_standards`'s posture in agent_activities.py: a bad manifest
+    is not a fatal error for a branch reader, it is a signal to use today's path.
+    """
+    repo = target_repo("malformed-manifest")
+
+    assert landing_branch(repo) == "main"
+
+
+def test_capture_base_ref_pins_origin_declared_branch_not_checked_out_branch(
+    target_repo: Callable[..., Path],
+    factory_root: Path,
+    tmp_path: Path,
+) -> None:
+    """A clone on an unrelated branch still builds from origin/<declared> (FR-003).
+
+    This is the live failure: the checked-out branch must not decide what the epic
+    builds from. The manifest names the landing branch; the base ref must be
+    origin/<that name>.
+    """
+    repo = target_repo("landing-branch")
+    # Give the repo an origin with both main and the declared landing branch.
+    bare = tmp_path / "origin.git"
+    git(repo, "init", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    git(repo, "checkout", "--quiet", "-b", "ergane-buildout")
+    (repo / "README.md").write_text("buildout\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "--quiet", "-m", "buildout commit")
+    git(repo, "push", "--quiet", "-u", "origin", "ergane-buildout")
+
+    # Move the local clone onto an unrelated branch and push it to origin/main so
+    # the two remote branches diverge.
+    git(repo, "checkout", "--quiet", "main")
+    git(repo, "checkout", "--quiet", "-b", "unrelated-local-work")
+    (repo / "README.md").write_text("unrelated\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "--quiet", "-m", "unrelated commit")
+    git(repo, "push", "--quiet", "origin", "unrelated-local-work:main")
+
+    # The local clone's checked-out branch is unrelated.
+    assert git(repo, "symbolic-ref", "--short", "HEAD").strip() == "unrelated-local-work"
+    # The remote branches diverge: main holds the unrelated commit, the declared
+    # branch holds the buildout commit.
+    assert head(bare, "refs/heads/main") != head(bare, "refs/heads/ergane-buildout")
+
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert prepared.base_ref == head(bare, "refs/heads/ergane-buildout")
+    assert prepared.base_ref != head(bare, "refs/heads/main")
+
+
+def test_push_branch_refuses_declared_landing_branch_even_when_checked_out_elsewhere(
+    target_repo: Callable[..., Path],
+    factory_root: Path,
+    tmp_path: Path,
+) -> None:
+    """A node branch named after the declared landing branch is refused (FR-001).
+
+    The guard reads the declared branch, not the clone's checked-out branch, so a
+    clone checked out on an unrelated branch still protects the landing branch.
+    """
+    repo = target_repo("landing-branch")
+    bare = tmp_path / "origin.git"
+    git(repo, "init", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    git(repo, "checkout", "--quiet", "-b", "ergane-buildout")
+    git(repo, "push", "--quiet", "-u", "origin", "ergane-buildout")
+    git(repo, "checkout", "--quiet", "main")
+    git(repo, "checkout", "--quiet", "-b", "unrelated-local-work")
+
+    with pytest.raises(WorktreeError) as raised:
+        push_branch(repo, EPIC, "ergane-buildout", factory_root=factory_root)
+
+    assert "ergane-buildout" in str(raised.value)
+
+
+def test_prepared_worktree_default_branch_still_reports_checked_out_branch(
+    target_repo: Callable[..., Path],
+    factory_root: Path,
+    tmp_path: Path,
+) -> None:
+    """`PreparedWorktree.default_branch` is an observation about the clone, not a decision.
+
+    It must keep reporting the branch the clone had checked out when prepared,
+    even when the manifest declares a different landing branch. Repointing this
+    field would make it lie about the clone's state.
+    """
+    repo = target_repo("landing-branch")
+    bare = tmp_path / "origin.git"
+    git(repo, "init", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    git(repo, "checkout", "--quiet", "-b", "ergane-buildout")
+    git(repo, "push", "--quiet", "-u", "origin", "ergane-buildout")
+    git(repo, "checkout", "--quiet", "main")
+    git(repo, "checkout", "--quiet", "-b", "unrelated-local-work")
+
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+    # The field records the clone's checked-out branch, not the declared one.
+    assert prepared.default_branch == "unrelated-local-work"
+    assert prepared.default_branch != "ergane-buildout"
 
 
 # --- salvage -----------------------------------------------------------------

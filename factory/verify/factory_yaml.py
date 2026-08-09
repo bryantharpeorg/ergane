@@ -58,7 +58,7 @@ MANIFEST_NAME = "factory.yaml"
 #: checks to gates 1:1. Arbitrary names are a `version: 2` conversation.
 KNOWN_GATES = ("test", "lint", "typecheck")
 
-_TOP_LEVEL_KEYS = ("version", "runtime", "gates", "timeouts", "standards")
+_TOP_LEVEL_KEYS = ("version", "runtime", "gates", "timeouts", "standards", "landing_branch")
 
 _SUPPORTED_VERSION = 1
 
@@ -100,6 +100,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     gates = _read_gates(document, source)
     timeouts = _read_timeouts(document, gates, source)
     standards = _read_standards(document, source)
+    landing_branch = _read_landing_branch(document, source)
 
     return FactoryConfig(
         version=version,
@@ -107,6 +108,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         gates=gates,
         timeouts=timeouts,
         standards=standards,
+        landing_branch=landing_branch,
     )
 
 
@@ -286,6 +288,27 @@ def _read_standards(document: Mapping[Any, Any], source: str) -> str | None:
     # where a missing file fails the dispatch loudly (research R11). Normalising
     # it here would be a filesystem opinion in a pure parser.
     return standards
+
+
+def _read_landing_branch(document: Mapping[Any, Any], source: str) -> str:
+    """The branch the factory lands on, defaulting to 'main' when undeclared.
+
+    D-009's 'declared, never auto-detected' rule applied to the one branch fact
+    the factory otherwise guesses at: absent means today's behaviour, but a
+    manifest that declares the key badly is refused the same way `standards`
+    is — declared means declared.
+    """
+    if "landing_branch" not in document:
+        return "main"
+    landing_branch = document["landing_branch"]
+    if not isinstance(landing_branch, str) or not landing_branch.strip():
+        raise FactoryConfigError(
+            "landing_branch",
+            f"declares `landing_branch: {landing_branch!r}`; when declared it must be a "
+            "non-empty branch name, e.g. `landing_branch: ergane-buildout`",
+            source=source,
+        )
+    return landing_branch
 
 
 # Loading ---------------------------------------------------------------------
