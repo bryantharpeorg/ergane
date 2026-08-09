@@ -5,6 +5,34 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-036 · Landing attribution: declare the branch and read history honestly (decided)
+
+Decided 2026-08-09, claimed at landing of spec `020-landing-attribution`. Two independent
+defects had the same symptom: the reader that decides which spec work remains pointed at the
+wrong branch *and* did not understand the merge commits git wrote before the factory owned the
+merge queue.
+
+1. **The landing branch is declared once.** `factory.yaml` gains an optional `landing_branch`
+   key defaulting to `"main"` when absent, so no existing target repository is forced to change.
+   `capture_base_ref`, `push_branch`, `land`/salvage fetch, `landed_command`, `_build_baseline`,
+   and `drift_for_spec` all read this single declaration; worktree preparation and the roadmap's
+   `CloneResult` keep reporting what the clone had checked out, because those are observations,
+   not decisions.
+
+2. **Pre-queue merges are read as history, not as observed attributions.** `landed_facts`
+   recognizes `Merge branch 'factory/<epic_id>/<node_id>' into <branch>` in the same `git log`
+   pass it already uses. The story key is inferred from the node id by upper-casing, which is
+   valid only because the deriver sets `id=story_key.lower()` (factory/workgraph/derive.py:184).
+   The fact carries its own `LandedKind.HISTORICAL` because collapsing it into `OBSERVED` would
+   lie about provenance: the subject came from git, not from the attribution contract.
+
+3. **This adds no writer.** The historical grammar is closed: exactly three commits in this
+   repository's history use it, all from spec 006, and every landing since has gone through the
+   merge queue. FR-005 is a reader that must understand history the factory already wrote; it
+   does not create a second contract the factory will continue writing.
+
+---
+
 ## D-001 · Intent layer: OpenSpec, vanilla grammar (given + decided)
 
 OpenSpec is the system of record for intent. We will eventually fork its schema to add a
