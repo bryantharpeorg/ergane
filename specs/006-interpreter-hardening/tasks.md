@@ -13,13 +13,34 @@ order. Tasks without it are sequential because they share a file.
 
 ---
 
+## This is a remainder run — read this before you read the phases
+
+**US1, US2 and US5 have already landed** (2026-08-07, on `ergane-buildout`, as
+`Merge branch 'factory/006-interpreter-hardening/us{1,2,5}'`). Their code is in the base
+your worktree was cloned from: the attempt loop no longer polls, `factory-epic start`
+preflights, and `status` reports the Temporal execution status. Their tasks below are
+checked, and you should treat them as history rather than as work.
+
+The remainder is **US3 and US4 only**. The dispatched graph
+(`workgraph-remainder.json`) carries exactly those two nodes, with US3's `depends_on:
+[US2]` and US4's `depends_on: [US1]` dropped as satisfied and US4's
+`depends_on_merged: [US3]` kept.
+
+`factory-epic landed` reports nothing for this spec, and that is a known reader defect,
+not evidence that US1/US2/US5 are missing: the landings predate the merge queue, so their
+commit subjects use a grammar the attribution parser does not yet recognize. Spec 020
+fixes the reader. **Do not treat the empty report as a reason to re-implement anything** —
+check the tree.
+
+---
+
 ## Phase 1: Setup (operator preflight — dispatched to no node)
 
-- [ ] T001 Operator: confirm 003 has landed on the target's default branch — this epic
+- [x] T001 Operator: confirm 003 has landed on the target's default branch — this epic
       assumes `depends_on_merged` exists and that the merge queue, not the D-024 manual
       dance, lands its nodes. Record the decision-log number claimed for the heartbeat
       trade (spec § Decision) in `docs/decisions.md`, taking the next free D-number after
-      whatever 003's T022/T034/T045 consumed.
+      whatever 003's T022/T034/T045 consumed. *(Done — the trade is `D-029`.)*
 
 ---
 
@@ -33,7 +54,7 @@ assert its history event count is within a small constant of a one-minute attemp
 
 ### Tests for User Story 1 (write FIRST, must fail)
 
-- [ ] T002 [US1] Verify prerequisites in this worktree: `uv run pytest -q` is green and
+- [x] T002 [US1] Verify prerequisites in this worktree: `uv run pytest -q` is green and
       `factory/workgraph/workflow.py`, `factory/workgraph/adapter.py`,
       `factory/activities/agent_activities.py`, `factory/activities/usage_activities.py`
       exist — constitution I gate; STOP and report blocked if not satisfied.
@@ -109,26 +130,26 @@ alias is taken; both refuse with zero dispatches and zero keys issued.
 
 ### Tests for User Story 2 (write FIRST, must fail)
 
-- [ ] T011 [P] [US2] Write `tests/test_usage_client.py` cases FIRST against a fake
+- [x] T011 [P] [US2] Write `tests/test_usage_client.py` cases FIRST against a fake
       transport: the client can list served model ids and list key aliases; a non-200 and
       a connection error are each surfaced as distinct, named failures — must fail.
-- [ ] T012 [US2] Write `tests/test_epic_cli.py` preflight cases FIRST: an unserved alias
+- [x] T012 [US2] Write `tests/test_epic_cli.py` preflight cases FIRST: an unserved alias
       exits non-zero naming **each** unserved alias *with every persona that names it*,
       having started no workflow and issued no key; a proxy that does not answer is a
       distinct finding naming the address tried (FR-005), never a pass; a first-attempt
       key alias already present is reported with its remedy (FR-006); a fully valid
       configuration starts exactly as today; exit codes follow the existing contract
       (`1` operator-fixable, `2` service not answering) — must fail.
-- [ ] T013 [US2] Write the honesty case FIRST: preflight validates the registry the CLI
+- [x] T013 [US2] Write the honesty case FIRST: preflight validates the registry the CLI
       can see, while the worker resolves its own (R8, deliberate). Assert the wording
       states what was checked and does not claim the worker's resolution was validated —
       must fail.
 
 ### Implementation for User Story 2
 
-- [ ] T014 [US2] Extend `factory/usage/litellm_client.py` with the two read-only calls
+- [x] T014 [US2] Extend `factory/usage/litellm_client.py` with the two read-only calls
       until T011 passes. No key value may be logged or returned — aliases only.
-- [ ] T015 [US2] Implement preflight in `factory/workgraph/cli.py`'s `start_command`,
+- [x] T015 [US2] Implement preflight in `factory/workgraph/cli.py`'s `start_command`,
       ahead of starting the workflow and after the existing structural re-validation,
       until T012 and T013 pass. Reuse 003's onboarding `Finding` type if importable;
       define a local shape only if it genuinely is not (plan.md § Data Model).
@@ -145,20 +166,24 @@ operator call to the proxy admin API.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T016 [P] [US3] Write `tests/test_usage_activities.py` cases FIRST: an alias whose
-      epic workflow is **closed** is reclaimed (delete-then-reissue) and the attempt
-      proceeds with exactly one live key for that alias; an alias whose epic workflow is
-      **open** is refused, untouched; when the workflow's state cannot be determined
-      (Temporal unreachable) issuance **refuses rather than guesses** — deleting a live
-      epic's key to fix a stopped one breaks a running node; the reclaimed alias's
+- [ ] T016 [P] [US3] Write `tests/test_usage_activities.py` cases FIRST: a colliding
+      alias under the requesting epic's own id is reclaimed (delete-then-reissue) and the
+      attempt proceeds with exactly one live key for that alias; reclaim is **idempotent**,
+      because `_PROXY` retries the activity up to three times and the second try meets the
+      first try's key; an alias whose `epic_id` is **not** the requesting epic's is refused,
+      untouched (FR-007's live-epic guard — see plan.md § US3 for why the current call path
+      cannot produce this case and the guard is still required); the reclaimed alias's
       historical spend remains queryable afterwards (FR-011) — must fail.
 
 ### Implementation for User Story 3
 
 - [ ] T017 [US3] Implement reclaim in `issue_attempt_key`
-      (`factory/activities/usage_activities.py`) until T016 passes, using the epic's
-      workflow id (`epic-<epic_id>`) as the live/dead discriminator. `_CREDENTIAL_REJECTED`
-      stays `{401, 403}` — a rejected credential is a misconfiguration and retrying it
+      (`factory/activities/usage_activities.py`) until T016 passes. **Read plan.md § US3's
+      trap before writing the discriminator**: do NOT ask Temporal whether
+      `epic-<epic_id>` is open — that workflow is the caller's own execution and is always
+      open, so the check refuses every reclaim and defeats FR-007 while looking correct.
+      The reclaim needs no Temporal call. `_CREDENTIAL_REJECTED` stays
+      `frozenset({401, 403})` — a rejected credential is a misconfiguration and retrying it
       only delays the diagnosis.
 
 ---
@@ -179,17 +204,33 @@ outage longer than today's issuance budget; the attempt and the epic both surviv
       attempt survives an unavailability window an order of magnitude longer than today's
       five seconds (SC-004); **a genuinely dead agent is still detected and classified**
       once the looser bound elapses — the bound loosens, it does not vanish — must fail.
+- [ ] T018a [P] [US4] Write the kill-latency case FIRST, which is the half of FR-008 the
+      original tasks missed: under the new bound, a kill still reaches the agent within
+      the story's declared latency. Because Temporal delivers cancellation in a
+      heartbeat's *response*, a bound derived naively from a multi-hour attempt timeout
+      would let a killed agent bill for hours. plan.md § US4 names the mechanism —
+      `Worker`'s `max_heartbeat_throttle_interval` bounds the beat independently of the
+      timeout — and requires the story to *choose* a latency and assert it rather than
+      inherit the 60-second default. Assert the number the story chose — must fail.
 - [ ] T019 [P] [US4] Write issuance-retry cases FIRST: a transient proxy failure lasting
       on the order of a container restart is survived; a 401/403 still fails fast and
-      non-retryably — must fail.
+      non-retryably; **`_RETRIES` is unchanged** and `teardown_attempt`'s budget is
+      unchanged, so the new tolerance reaches issuance and nothing else (FR-009) — must
+      fail.
 
 ### Implementation for User Story 4
 
-- [ ] T020 [US4] Amend `_AGENT_HEARTBEAT_TIMEOUT` and `_RETRIES` in
-      `factory/workgraph/workflow.py` until T018 and T019 pass. Replace the existing
-      comment: it derives five beats from "the slack a healthy attempt on a busy worker
-      needs", which was never about a Temporal outage — the new comment must name what it
-      actually protects against.
+- [ ] T020 [US4] Amend `_AGENT_HEARTBEAT_TIMEOUT` in `factory/workgraph/workflow.py`
+      (and, if the story holds kill latency where it is, the `Worker(...)` construction at
+      `factory/worker.py:171-176`) until T018 and T018a pass. **Read the comment in your
+      worktree before replacing it** — plan.md § US4's trap: US1 rewrote it, and it now
+      names kill latency as the binding purpose. That reasoning is current and must
+      survive; only the busy-worker derivation is stale.
+- [ ] T020a [US4] Give issuance its own retry policy until T019 passes. **Do not widen
+      `_RETRIES`** — FR-009 forbids it in terms. Attach the new policy at all **three**
+      `issue_attempt_key` call sites (`workflow.py:1172`, `:1738`, `:2245` — the last is
+      the judge's key); leaving one behind is a half-fix no test written from T019 alone
+      would catch.
 
 ---
 
@@ -202,7 +243,7 @@ workflows; each is distinguishable.
 
 ### Tests for User Story 5 (write FIRST, must fail)
 
-- [ ] T021 [P] [US5] Write `tests/test_epic_cli.py` cases FIRST: status against a closed
+- [x] T021 [P] [US5] Write `tests/test_epic_cli.py` cases FIRST: status against a closed
       workflow reports its Temporal execution status and is distinguishable from a running
       epic; a running epic's per-node output is byte-identical to today; under `--json` the
       execution status is a **sibling key** and the existing query payload is unchanged, so
@@ -210,9 +251,9 @@ workflows; each is distinguishable.
 
 ### Implementation for User Story 5
 
-- [ ] T022 [US5] Implement execution-status reporting in `status_command`
+- [x] T022 [US5] Implement execution-status reporting in `status_command`
       (`factory/workgraph/cli.py`) via the handle's `describe()`, until T021 passes.
-- [ ] T023 [US5] Final sweep + docs (FR-011): grep-backed assertion that no credential
+- [x] T023 [US5] Final sweep + docs (FR-011): grep-backed assertion that no credential
       value reaches any preflight finding, status output, or error path; update
       `docs/architecture.md` §3 (the attempt loop no longer polls; observation rides the
       heartbeat) and §5 (teardown's fallback provenance and the stronger NULL semantics).

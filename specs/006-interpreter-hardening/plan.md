@@ -217,12 +217,41 @@ a service that is not answering.
 
 Issuance gains recovery on alias collision, in `issue_attempt_key`. The distinction that
 makes it safe: an alias belonging to a **dead** epic may be reclaimed; one belonging to a
-**live** epic must not be touched. Nothing in the alias itself says which.
+**live** epic must not be touched.
 
-The workflow-id is the discriminator. `epic-<epic_id>` is the epic's identity, and
-Temporal knows whether that workflow is open. An orphan is an alias whose epic's workflow
-is closed. If that determination cannot be made — Temporal unreachable — issuance must
-**refuse**, not guess: deleting a live epic's key mid-attempt would break a running node
+**Trap — this plan's original discriminator is wrong, and wrong in the direction that
+silently defeats the story (corrected by the operator 2026-08-09, before the remainder
+run).** The earlier text said to ask Temporal whether `epic-<epic_id>` is open and treat
+an open workflow as a live holder. Do not do that. The alias is built from
+`request.epic_id` inside the activity itself (`usage_activities.py:189`, via
+`key_alias_for` at `:161`), so the workflow that answer describes **is the caller's own
+execution**. It is open by definition — the activity is running inside it. An
+implementation that reads "open" as "a live epic holds this alias" refuses every reclaim
+there will ever be, passes any test written from this plan's old text, and delivers the
+exact opposite of FR-007. The test that catches it is the acceptance scenario run end to
+end: kill an epic, restart it, and watch the reclaim happen.
+
+The sound discriminator needs no Temporal call at all, and the reasoning is what the
+story has to record:
+
+- A colliding alias always names *this* epic, because the alias is constructed from this
+  request's `epic_id` — there is no path by which `issue_attempt_key` asks for another
+  epic's alias.
+- Both dispatch routes mint the same workflow id for a given epic: `factory-epic start`
+  at `cli.py:209` and the roadmap's child at `roadmap/workflow.py:141`, both
+  `epic-<epic_id>`. Temporal permits one open execution per workflow id, and the roadmap
+  parks on a running collision rather than adopting it (`roadmap/workflow.py:868-885`).
+- Therefore the execution that minted a colliding alias is either a **closed earlier run
+  of this same workflow id** or **this run retrying this activity** (`_PROXY` carries
+  `_RETRIES`, three attempts). Both are reclaimable, and the second is why reclaim must
+  be idempotent rather than merely permitted once.
+
+FR-007's "MUST refuse to disturb an alias held by a live epic" therefore survives as a
+**guard on a case the current call path cannot produce** — an alias whose `epic_id` is
+not the requesting epic's. Implement the refusal and assert it; do not delete the
+requirement because the happy path made it unreachable, and do not manufacture a Temporal
+round trip to justify it. If a future check does reach Temporal, the refuse-when-
+undeterminable rule stands: deleting a live epic's key mid-attempt breaks a running node
 to fix a stopped one.
 
 Reclaim is delete-then-reissue, and the dead run's ledger row is already written and
@@ -233,17 +262,49 @@ that the reclaimed alias's historical spend is still queryable afterwards.
 
 `_AGENT_HEARTBEAT_TIMEOUT = timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)` becomes a
 function of the attempt's own timeout, floored so a short attempt keeps a sane bound.
-The existing comment derives 5 beats from "the slack a healthy attempt on a busy worker
-needs" — that reasoning was about a *busy worker*, never about a Temporal outage, and the
-replacement's comment must say what it is actually protecting against.
+
+**Trap — the comment this plan tells you to replace is no longer the comment that is
+there (verified against the tree 2026-08-09, before the remainder run).** When this plan
+was written, `_AGENT_HEARTBEAT_TIMEOUT`'s comment derived five beats from "the slack a
+healthy attempt on a busy worker needs", and the instruction was to replace that stale
+reasoning. US1 rewrote it. The constant now sits at `factory/workgraph/workflow.py:356-366`
+carrying a **second and sharper purpose**, and that one is current, load-bearing and must
+survive this story: Temporal delivers activity cancellation in a heartbeat's *response*,
+so this timeout is also **how long a killed agent goes on spending**. Read the comment in
+your worktree before you touch the line. Deleting the kill-latency paragraph as though it
+were the stale busy-worker rationale is the failure mode this trap exists to prevent, and
+a naive "derive it from the attempt timeout" — a multi-hour attempt yielding a multi-hour
+bound — would make a kill take hours to land while the agent bills the whole time.
+
+**The mechanism that lets both hold, verified against the installed SDK:** heartbeat
+throttling is capped independently of the timeout. `temporalio.worker.Worker` takes
+`max_heartbeat_throttle_interval` (default 60s) and `default_heartbeat_throttle_interval`
+(default 30s), and the effective beat interval is bounded by that cap rather than by
+`0.8 × heartbeat_timeout` alone. So raising the timeout to minutes costs **at most 60
+seconds** of kill latency, not 0.8× the new bound. `factory/worker.py:171-176` constructs
+the worker with neither set, so today's ~4-second kill latency is a consequence of the
+5-second timeout and nothing else. The story must make this an explicit decision and
+assert it: either set `max_heartbeat_throttle_interval` at that call site to hold kill
+latency where it is, or state the bounded regression it accepts and test for that number.
+Leaving it to the default is the one option not open, because the default is what
+silently turns FR-008 into a kill-latency regression.
 
 Liveness detection must survive: a genuinely dead agent is still detected, just later
 (acceptance 2). The bound loosens; it does not vanish.
 
-Issuance retry (`_RETRIES`) gains a budget measured against a real proxy restart rather
-than seconds. Note `_CREDENTIAL_REJECTED = {401, 403}` is correct and must stay — a
-rejected credential is a misconfiguration, and retrying it for minutes only delays the
-diagnosis.
+**Issuance retry — FR-009 already decided this, and it contradicts an earlier line in this
+plan.** `_RETRIES` is *not* to be widened. It is shared, and the shape of the sharing is
+worth knowing before you start: `_RETRIES` backs `_FAST`, `_PROXY`, `_GIT`, `_GATES` and
+`_JUDGE` (`workflow.py:291-341`), and `_PROXY` itself has **four** call sites — three
+`issue_attempt_key` (`:1172`, `:1738`, `:2245`, the last two being the node's key and the
+judge's) and one `teardown_attempt` (`:1598`). Issuance gets a named policy of its own
+attached at those three sites; `_RETRIES` and teardown's budget stay as they are. Changing
+only the two obvious issuance sites leaves the judge's key on the old budget, which is the
+quiet half-fix this paragraph exists to prevent.
+
+`_CREDENTIAL_REJECTED = frozenset({401, 403})` (`usage_activities.py:100`) is correct and
+must stay — a rejected credential is a misconfiguration, and retrying it for minutes only
+delays the diagnosis.
 
 ### US5 — the operator surface reports what is true (FR-010, 011)
 
