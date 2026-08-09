@@ -65,6 +65,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from factory.usage.models import Termination
+from factory.verify.factory_yaml import FactoryConfigError, load_factory_config
 from factory.verify.gates import scrubbed_env
 
 #: Worker-host state directory (plan.md); relative so it resolves against the
@@ -170,10 +171,11 @@ def capture_base_ref(target_repo: Path | str) -> str:
     this exists to prevent.
     """
     repo = Path(target_repo)
+    branch = landing_branch(repo)
     if not _has_remote(repo, "origin"):
         return _git(repo, "rev-parse", "HEAD").strip()
     _git(repo, "fetch", "--quiet", "origin")
-    return _git(repo, "rev-parse", f"origin/{_default_branch(repo)}").strip()
+    return _git(repo, "rev-parse", f"origin/{branch}").strip()
 
 
 def ensure(
@@ -299,12 +301,12 @@ def push_branch(
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
     branch = branch_name(epic_id, node_id)
-    default = _default_branch(repo)
+    default = landing_branch(repo)
 
     if branch == default:
         raise WorktreeError(
             f"refusing to push branch '{branch}' to origin: it is the target "
-            f"repo's default branch '{default}' (FR-001) — a node never pushes "
+            f"repo's landing branch '{default}' (FR-001) — a node never pushes "
             "over the trunk"
         )
 
@@ -360,7 +362,7 @@ def sync_with_target(
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
-    default = _default_branch(repo)
+    default = landing_branch(repo)
 
     if not path.is_dir():
         raise WorktreeError(f"node worktree does not exist: {path}")
@@ -412,6 +414,25 @@ def _conflicted_files(path: Path) -> tuple[str, ...]:
     except WorktreeError:
         return ()
     return tuple(line for line in out.splitlines() if line)
+
+
+def landing_branch(repo: Path | str) -> str:
+    """The branch the target repo declares the factory lands on, or today's path.
+
+    Reads the manifest first; absent or malformed manifest falls back to the
+    clone's currently checked-out branch via `_default_branch`. This is a
+    *decision* about which branch matters for landing, and it replaces the three
+    separate guesses the factory used to make.
+    """
+    from factory.verify.factory_yaml import MANIFEST_NAME
+
+    try:
+        return load_factory_config(Path(repo) / MANIFEST_NAME).landing_branch
+    except (FactoryConfigError, OSError):
+        # Missing manifest or one the schema refuses: preserve today's behaviour.
+        # The gate run will report the bad manifest as a CONFIG_ERROR; a branch
+        # reader should not pre-empt that with a less informative exception.
+        return _default_branch(Path(repo))
 
 
 def _default_branch(repo: Path) -> str:

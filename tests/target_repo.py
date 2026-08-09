@@ -55,6 +55,7 @@ VARIANTS: dict[str, str | None] = {
     "env-probe": "env-probe.yaml",
     "malformed-manifest": "malformed.yaml",
     "unknown-gate": "unknown-gate.yaml",
+    "landing-branch": "landing-branch.yaml",
 }
 
 DEFAULT_BRANCH = "main"

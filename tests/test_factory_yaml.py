@@ -101,6 +101,7 @@ CONTRACT_RULES = frozenset(
         "timeouts",  # timeouts keys declared, values positive int
         "unknown_key",  # no unknown top-level keys
         "standards",  # optional; when declared, a non-empty string path (005 R11)
+        "landing_branch",  # optional; when declared, a non-empty string branch (020 US1)
     }
 )
 
@@ -121,6 +122,7 @@ def test_contract_example_parses_to_the_declared_config() -> None:
             "typecheck": "uv run mypy .",
         },
         timeouts={"test": 600},
+        landing_branch="main",
     )
 
 
@@ -277,6 +279,148 @@ def test_standards_survives_a_round_trip_from_disk(tmp_path: Path) -> None:
     assert load_factory_config(path).standards == ".specify/memory/constitution.md"
 
 
+# Landing branch (020 US1) ----------------------------------------------------
+
+
+def test_landing_branch_is_optional_and_absent_defaults_to_main() -> None:
+    """A manifest that does not declare a landing branch keeps today's behaviour.
+
+    Absent means 'main', so no existing target repository is required to change.
+    """
+    config = parse_factory_config(CONTRACT_EXAMPLE)
+
+    assert config.landing_branch == "main"
+
+
+def test_landing_branch_records_the_declared_name() -> None:
+    """The declared branch is recorded verbatim; readers resolve it later."""
+    config = parse_factory_config(
+        _yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            landing_branch: ergane-buildout
+            """
+        )
+    )
+
+    assert config.landing_branch == "ergane-buildout"
+
+
+def test_landing_branch_does_not_bump_the_schema_version() -> None:
+    """Additive and optional, so a repo already on v1 adopts it by adding a line."""
+    with_branch = parse_factory_config(
+        CONTRACT_EXAMPLE + "landing_branch: ergane-buildout\n"
+    )
+    without = parse_factory_config(CONTRACT_EXAMPLE)
+
+    assert with_branch.version == 1
+    assert with_branch.landing_branch == "ergane-buildout"
+    assert with_branch == FactoryConfig(
+        version=without.version,
+        runtime=without.runtime,
+        gates=without.gates,
+        timeouts=without.timeouts,
+        landing_branch="ergane-buildout",
+    )
+
+
+def test_landing_branch_rejects_empty_string() -> None:
+    """Declared means declared: an empty string is not a default request."""
+    text = _yaml(
+        """
+        version: 1
+        runtime: python:3.11-bookworm
+        gates:
+          test: "uv run pytest -q"
+        landing_branch: ""
+        """
+    )
+
+    with pytest.raises(FactoryConfigError) as excinfo:
+        parse_factory_config(text)
+
+    assert excinfo.value.rule == "landing_branch"
+    assert "''" in str(excinfo.value)
+
+
+def test_landing_branch_rejects_whitespace_only() -> None:
+    """A whitespace-only branch name is the same mistake as an empty one."""
+    text = _yaml(
+        """
+        version: 1
+        runtime: python:3.11-bookworm
+        gates:
+          test: "uv run pytest -q"
+        landing_branch: "   "
+        """
+    )
+
+    with pytest.raises(FactoryConfigError) as excinfo:
+        parse_factory_config(text)
+
+    assert excinfo.value.rule == "landing_branch"
+
+
+def test_landing_branch_rejects_null() -> None:
+    """`landing_branch:` with no value parses to None and must fail loudly."""
+    text = _yaml(
+        """
+        version: 1
+        runtime: python:3.11-bookworm
+        gates:
+          test: "uv run pytest -q"
+        landing_branch:
+        """
+    )
+
+    with pytest.raises(FactoryConfigError) as excinfo:
+        parse_factory_config(text)
+
+    assert excinfo.value.rule == "landing_branch"
+    assert "None" in str(excinfo.value)
+
+
+def test_landing_branch_rejects_non_string() -> None:
+    """A non-string value is a type confusion the same rule must refuse."""
+    text = _yaml(
+        """
+        version: 1
+        runtime: python:3.11-bookworm
+        gates:
+          test: "uv run pytest -q"
+        landing_branch: true
+        """
+    )
+
+    with pytest.raises(FactoryConfigError) as excinfo:
+        parse_factory_config(text)
+
+    assert excinfo.value.rule == "landing_branch"
+    assert "True" in str(excinfo.value)
+
+
+def test_landing_branch_survives_a_round_trip_from_disk(tmp_path: Path) -> None:
+    """A declared landing branch is loadable from disk as well as from a string."""
+    path = tmp_path / MANIFEST_NAME
+    path.write_text(
+        _yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            landing_branch: some-branch
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_factory_config(path).landing_branch == "some-branch"
+
+
 # Ergane's own manifest (005 T029) --------------------------------------------
 
 
@@ -299,6 +443,7 @@ def test_erganes_own_manifest_loads() -> None:
     assert config.runtime
     assert config.gates["test"] == "uv run pytest -q"
     assert config.standards == ".specify/memory/constitution.md"
+    assert config.landing_branch == "main"
 
 
 def test_erganes_declared_standards_document_exists() -> None:
@@ -741,6 +886,61 @@ REJECTIONS: list[Rejection] = [
         ),
         rule="standards",
         names=("docs/STANDARDS.md",),
+    ),
+    Rejection(
+        id="landing-branch-empty",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            landing_branch: ""
+            """
+        ),
+        rule="landing_branch",
+        names=("''",),
+    ),
+    Rejection(
+        id="landing-branch-whitespace-only",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            landing_branch: "   "
+            """
+        ),
+        rule="landing_branch",
+    ),
+    Rejection(
+        id="landing-branch-null",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            landing_branch:
+            """
+        ),
+        rule="landing_branch",
+        names=("None",),
+    ),
+    Rejection(
+        id="landing-branch-not-a-string",
+        text=_yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            landing_branch: true
+            """
+        ),
+        rule="landing_branch",
+        names=("True",),
     ),
 ]
 

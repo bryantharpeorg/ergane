@@ -55,6 +55,7 @@ from factory.workgraph.derive import DerivationError
 from factory.workgraph.models import WorkGraph
 from factory.workgraph.preflight import PreflightFinding, check_aliases
 from factory.workgraph.workflow import JUDGE_PERSONA
+from factory.workgraph.worktree import landing_branch
 
 from factory.activities.merge_activities import (
     ValidateTargetRepoInput,
@@ -181,7 +182,7 @@ async def derive_spec(request: DeriveInput) -> WorkGraph:
         facts = landed_facts(
             request.target_repo,
             request.epic_id,
-            default_branch=_default_branch(Path(request.target_repo)),
+            default_branch=landing_branch(Path(request.target_repo)),
         )
         baseline = {
             story_key: {
@@ -265,7 +266,7 @@ async def drift_for_spec(request: DriftInput) -> bool:
     from factory.workgraph.landed import landed_facts
 
     repo_path = Path(request.target_repo)
-    default = _default_branch(repo_path)
+    default = landing_branch(repo_path)
     facts = landed_facts(request.target_repo, request.spec_dir, default_branch=default)
     if not facts:
         return False

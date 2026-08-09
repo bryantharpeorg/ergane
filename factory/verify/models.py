@@ -203,6 +203,7 @@ class FactoryConfig:
     gates: dict[str, str]
     timeouts: dict[str, int] = field(default_factory=dict)
     standards: str | None = None
+    landing_branch: str = "main"
 
 
 @dataclass(frozen=True)

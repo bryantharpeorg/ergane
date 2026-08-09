@@ -1254,6 +1254,76 @@ def test_landed_renders_observed_and_attested_facts(
     assert "attested" in attested.stdout
 
 
+def test_landed_uses_manifest_declared_branch_with_no_flag(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """US1 acceptance 1: no flag means the manifest's declared branch is scanned."""
+    repo = tmp_path / "declared-repo"
+    repo.mkdir()
+    env = _git_env(tmp_path / "empty-home")
+    _git(repo, "init", "-b", "main", "--quiet", env=env)
+    specs_dir = repo / "specs" / "016-delta-derivation"
+    specs_dir.mkdir(parents=True)
+    spec = _spec(
+        state="ready",
+        stories=["US1", "US2"],
+        work_graph=(
+            "US1:\n  depends_on: []\n  implements: [FR-001]\n"
+            "US2:\n  depends_on: [US1]\n  implements: [FR-002]\n"
+        ),
+    )
+    (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    (repo / "factory.yaml").write_text(
+        "version: 1\nruntime: x\ngates:\n  test: x\nlanding_branch: ergane-buildout\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "fixture skeleton", env=env)
+    # Land US1 on the declared branch, not on main.
+    _git(repo, "checkout", "--quiet", "-b", "ergane-buildout", env=env)
+    _commit(repo, "016-delta-derivation/us1: US1 (#1)", env=env, allow_empty=True)
+
+    result = run("landed", str(specs_dir))
+
+    assert result.code == 0
+    assert "US1" in result.stdout
+    assert "observed" in result.stdout
+
+
+def test_landed_explicit_default_branch_overrides_manifest(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """US1 acceptance 5: an explicit --default-branch wins over the manifest."""
+    repo = tmp_path / "override-repo"
+    repo.mkdir()
+    env = _git_env(tmp_path / "empty-home")
+    _git(repo, "init", "-b", "main", "--quiet", env=env)
+    specs_dir = repo / "specs" / "016-delta-derivation"
+    specs_dir.mkdir(parents=True)
+    spec = _spec(
+        state="ready",
+        stories=["US1", "US2"],
+        work_graph=(
+            "US1:\n  depends_on: []\n  implements: [FR-001]\n"
+            "US2:\n  depends_on: [US1]\n  implements: [FR-002]\n"
+        ),
+    )
+    (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    (repo / "factory.yaml").write_text(
+        "version: 1\nruntime: x\ngates:\n  test: x\nlanding_branch: ergane-buildout\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "fixture skeleton", env=env)
+    # Manifest declares ergane-buildout, but we land US1 on main and ask for main.
+    _commit(repo, "016-delta-derivation/us1: US1 (#1)", env=env, allow_empty=True)
+
+    result = run("landed", "--default-branch", "main", str(specs_dir))
+
+    assert result.code == 0
+    assert "US1" in result.stdout
+
+
 def test_landed_needs_no_temporal_server(
     run: Callable[..., Run], delta_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

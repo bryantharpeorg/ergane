@@ -81,6 +81,7 @@ from factory.usage.models import UsageSnapshot
 from factory.workgraph.delta import DeltaResult, derive_delta
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.landed import LandedKind, fingerprint, landed_facts
+from factory.workgraph.worktree import landing_branch
 from factory.workgraph.models import (
     WorkGraph,
     WorkGraphError,
@@ -228,8 +229,11 @@ def landed_command(args: argparse.Namespace) -> int:
 
     epic_id = spec_dir.resolve().name
     repo = _target_repo_for_spec(spec_dir)
+    # Resolution order: explicit flag, then manifest declaration, then today's
+    # literal "main". The parser default must be None or the manifest can never win.
+    default_branch = args.default_branch or landing_branch(repo)
     try:
-        facts = landed_facts(repo, epic_id, default_branch=args.default_branch)
+        facts = landed_facts(repo, epic_id, default_branch=default_branch)
     except Exception as error:
         raise _OperatorError(
             f"cannot read landed facts for {epic_id}: {error}"
@@ -345,7 +349,7 @@ def _build_baseline(
     sibling directory, the same convention the roadmap will use (US4).
     """
     repo = _target_repo_for_spec(spec_dir)
-    default_branch = "main"
+    default_branch = landing_branch(repo)
     try:
         facts = landed_facts(repo, epic_id, default_branch=default_branch)
     except Exception as error:
@@ -892,8 +896,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     landed.add_argument("spec_dir", help="the feature directory holding spec.md")
     landed.add_argument(
         "--default-branch",
-        default="main",
-        help="default branch to scan for landing attributions (default: main)",
+        default=None,
+        help="default branch to scan for landing attributions (default: read from manifest, else main)",
     )
     landed.set_defaults(run=landed_command)
 
