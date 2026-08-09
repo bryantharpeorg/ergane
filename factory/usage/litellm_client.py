@@ -209,6 +209,38 @@ class LiteLLMClient:
             raise LiteLLMError("/key/generate succeeded but returned no key")
         return key
 
+    async def get_key_info(self, key: str) -> dict[str, Any]:
+        """Raw `/key/info` response for `key`.
+
+        `key` may be the raw credential or its sha256 hash; the proxy accepts
+        both. Exposed so recovery can read the `epic_id` stored as metadata on
+        a key found through `/key/list` (US3 FR-007), where only the hashed
+        token is available.
+        """
+        return await self._call("GET", "/key/info", params={"key": key})
+
+    async def revoke_key(self, key: str) -> bool:
+        """Delete the attempt's key; `True` if this call removed it.
+
+        `False` means it was already gone — an expired TTL, or a teardown
+        Temporal ran twice — which is a normal outcome of the last step of
+        teardown, not a failure (R3, FR-002).
+        """
+        return await self.revoke_key_by_tokens([key])
+
+    async def revoke_key_by_tokens(self, keys: Iterable[str]) -> bool:
+        """Delete one or more keys by raw or hashed token (US3 FR-007)."""
+        key_list = list(keys)
+        if not key_list:
+            return False
+        try:
+            await self._call("POST", "/key/delete", payload={"keys": key_list})
+        except LiteLLMError as exc:
+            if exc.status in _KEY_ALREADY_GONE:
+                return False
+            raise
+        return True
+
     async def get_spend(self, key: str) -> float:
         """The proxy's computed spend for `key` (R9's heartbeat read, R3 step 1).
 

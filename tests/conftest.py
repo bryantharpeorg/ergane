@@ -259,6 +259,9 @@ class FakeLiteLLM:
         """
         entries: list[Any]
         if str(params.get("return_full_object", "")).lower() == "true":
+            # The fake returns `hash-<raw_key>` as the token, matching the
+            # spend-log convention so tests can assert deletion by token. Real
+            # LiteLLM returns the sha256 hex; both are accepted by the proxy.
             entries = [
                 {"key_alias": self.aliases[key], "token": f"hash-{key}"}
                 for key in self.keys
@@ -326,7 +329,10 @@ class FakeLiteLLM:
         key = params.get("key")
         if not key:
             return self._error(400, "key query parameter is required")
+        # Accept either the raw key or the fake's hashed-token form.
         record = self.keys.get(key)
+        if record is None and key.startswith("hash-"):
+            record = self.keys.get(key[len("hash-"):])
         if record is None:
             return self._error(404, "key not found")
 
@@ -351,14 +357,27 @@ class FakeLiteLLM:
         if not isinstance(keys, list) or not keys:
             return self._error(400, "keys must be a non-empty list")
 
-        missing = [key for key in keys if key not in self.keys]
-        if missing:
+        keys_to_delete: list[str] = []
+        for token_or_key in keys:
+            # Accept either the raw key (used by teardown) or the hashed token
+            # returned by /key/list (used by US3 recovery).
+            raw = token_or_key
+            if raw.startswith("hash-"):
+                raw = raw[len("hash-"):]
+            if raw in self.keys:
+                keys_to_delete.append(raw)
+
+        if not keys_to_delete:
             return self._error(404, "no matching keys found")
 
-        for key in keys:
-            # Spend rows and the alias mapping survive deletion (R3).
+        for key in keys_to_delete:
+            # Spend rows survive deletion (R3); the alias mapping does too, so
+            # tests can still resolve spend rows by alias after the key is gone.
+            # A new key with the same alias may be issued, so this entry is
+            # removed to keep the alias-to-key lookup truthful.
+            self.aliases.pop(key, None)
             del self.keys[key]
-        return httpx.Response(200, json={"deleted_keys": list(keys)})
+        return httpx.Response(200, json={"deleted_keys": list(keys_to_delete)})
 
     def _spend_logs(self, params: dict[str, str]) -> httpx.Response:
         # The real proxy REQUIRES the window (probed live 2026-08-05,

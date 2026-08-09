@@ -338,6 +338,141 @@ async def test_a_failed_issuance_leaves_no_ledger_row(
     assert not ledger_path.exists()
 
 
+# --- issuance: orphan recovery (US3 FR-007) --------------------------------
+
+
+async def test_issue_attempt_key_reclaims_an_orphaned_alias_of_the_same_epic(
+    env: ActivityEnvironment, proxy: FakeLiteLLM
+) -> None:
+    """A killed epic's deterministic alias blocks the next run. Recover it."""
+    proxy.enforce_alias_uniqueness = True
+
+    alias = key_alias_for(EPIC, NODE, 1, PERSONA)
+
+    # First run: issue a key for this alias and simulate a never-torn-down kill.
+    first = await issue(env, attempt=1)
+    assert proxy.key_for_alias(alias) == first.key
+
+    # Second run: same epic, same node, same attempt, same persona. Issuance
+    # must delete the orphan and reissue, leaving exactly one live key for the
+    # alias — not two, and not zero.
+    second = await issue(env, attempt=1)
+    assert second.key != first.key
+    assert proxy.key_for_alias(alias) == second.key
+    assert list(proxy.keys) == [second.key], (
+        "exactly one live key must remain for the alias"
+    )
+    assert "POST /key/delete" in proxy.routes
+    assert "POST /key/generate" in proxy.routes
+    delete_call_index = next(
+        i for i, c in enumerate(proxy.calls) if c.path == "/key/delete"
+    )
+    generate_after_delete = next(
+        i
+        for i, c in enumerate(proxy.calls)
+        if c.path == "/key/generate" and i > delete_call_index
+    )
+    assert delete_call_index < generate_after_delete, (
+        "recovery must delete before it reissues"
+    )
+
+
+async def test_issue_attempt_key_recovery_is_idempotent(
+    env: ActivityEnvironment, proxy: FakeLiteLLM
+) -> None:
+    """Temporal retries the activity; the second retry finds its own reissue."""
+    proxy.enforce_alias_uniqueness = True
+    alias = key_alias_for(EPIC, NODE, 1, PERSONA)
+
+    first = await issue(env, attempt=1)
+
+    # First recovery deletes and reissues.
+    second = await issue(env, attempt=1)
+    assert second.key != first.key
+    assert proxy.key_for_alias(alias) == second.key
+
+    # Idempotency: a second call with the same alias finds the live key it just
+    # minted, deletes it, and reissues again. No alias collision is raised.
+    third = await issue(env, attempt=1)
+    assert third.key != second.key
+    assert proxy.key_for_alias(alias) == third.key
+
+
+async def test_issue_attempt_key_refuses_to_disturb_a_live_epic_alias(
+    env: ActivityEnvironment, proxy: FakeLiteLLM
+) -> None:
+    """FR-007 guard: an alias whose epic_id is not the caller's must not be touched."""
+    proxy.enforce_alias_uniqueness = True
+
+    # Issue a key for this alias but with metadata claiming a different epic_id.
+    # A live proxy would not allow this directly, so we mint under our own alias
+    # and then rewrite the key's metadata to simulate an orphan that was left by
+    # another epic (or a future call path that can produce such a collision).
+    other_epic = "epic-8"
+    our_alias = key_alias_for(EPIC, NODE, ATTEMPT, PERSONA)
+    other_key = await env.run(
+        issue_attempt_key, issue_input(epic_id=EPIC)
+    )
+    assert proxy.key_for_alias(our_alias) == other_key.key
+    # Simulate the alias belonging to a different epic's workflow.
+    proxy.keys[other_key.key]["metadata"]["epic_id"] = other_epic
+
+    # This epic attempts to mint its own alias. The colliding alias's stored
+    # epic_id differs from the request's; the guard refuses rather than delete.
+    with pytest.raises(ApplicationError) as excinfo:
+        await issue(env)
+
+    assert excinfo.value.type == KEY_ISSUANCE_FAILED
+    # A live key from another epic is not ours to recover: non-retryable, so
+    # the operator sees a clear refusal rather than a ten-minute retry loop.
+    assert excinfo.value.non_retryable is True
+    assert other_key.key in proxy.keys
+    assert proxy.key_for_alias(our_alias) == other_key.key
+    assert "POST /key/delete" not in proxy.routes
+
+
+async def test_recovered_orphan_keeps_historical_spend_attributable(
+    env: ActivityEnvironment,
+    proxy: FakeLiteLLM,
+    ledger_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dead run's ledger row is immutable; recovery does not merge into it."""
+    proxy.enforce_alias_uniqueness = True
+
+    alias = key_alias_for(EPIC, NODE, 1, PERSONA)
+
+    # First run: issue, spend, tear down. Teardown deletes the key from the
+    # proxy; the ledger row and spend rows remain for attribution.
+    first = await issue(env, attempt=1)
+    spend_rows_for(proxy, first.key)
+
+    first_record = await tear_down(env, first, termination=Termination.KILLED)
+    assert first_record.spend_usd == pytest.approx(0.06)
+    assert first.key not in proxy.keys
+
+    # Second run recovers the orphan by the same alias and spends independently.
+    second = await issue(env, attempt=1)
+    assert second.key != first.key
+    assert proxy.key_for_alias(alias) == second.key
+    proxy.add_spend_row(second.key, prompt_tokens=10, completion_tokens=1, spend=0.001)
+
+    second_record = await tear_down(env, second)
+    assert second_record.spend_usd == pytest.approx(0.001)
+
+    rows = ledger_rows(ledger_path)
+    assert len(rows) == 1, "the alias is the idempotency key: one row per alias"
+    # The second teardown upserted on the same alias; it is still attributable.
+    assert rows[0]["key_alias"] == alias
+    assert rows[0]["spend_usd"] == pytest.approx(0.001)
+
+    # Historical spend is still readable through the proxy's spend log using the
+    # dead run's key token: FR-011 / acceptance 2 says it stays attributable.
+    dead_rows = proxy.rows_for(first.key)
+    assert len(dead_rows) == 3
+    assert sum(row["spend"] for row in dead_rows) == pytest.approx(0.06)
+
+
 # --- teardown, confirmed path ----------------------------------------------
 
 
@@ -350,8 +485,10 @@ async def test_teardown_reads_then_writes_then_deletes_last(
     await tear_down(env, lease)
 
     # R3, in order: the spend-log filters resolve through the live key, so the
-    # key cannot die until everything has been read from it.
+    # key cannot die until everything has been read from it. Recovery prepends
+    # a /key/list probe when no orphan exists (US3 FR-007).
     assert proxy.routes == [
+        "GET /key/list",
         "POST /key/generate",
         "GET /key/info",
         "GET /spend/logs/v2",
@@ -473,7 +610,13 @@ async def test_a_key_already_gone_falls_back_to_the_last_snapshot(
 
     # The spend logs are not consulted for a dead key: their filters resolve
     # through the live token table, so the answer would be untrustworthy (R3).
-    assert proxy.routes == ["POST /key/generate", "GET /key/info", "POST /key/delete"]
+    # Issuance now probes /key/list before minting (US3 FR-007).
+    assert proxy.routes == [
+        "GET /key/list",
+        "POST /key/generate",
+        "GET /key/info",
+        "POST /key/delete",
+    ]
 
     assert record.final_usage_confirmed is False
     assert record.spend_usd == pytest.approx(SNAPSHOT.spend_usd)

@@ -689,6 +689,7 @@ async def test_a_runaway_attempt_is_treated_exactly_like_a_cheap_one(
     # plausibly arrive as.
     assert runaway_routes == modest_routes
     assert runaway_routes == [
+        "GET /key/list",  # US3 FR-007: probe for an orphaned alias before minting
         "POST /key/generate",
         "GET /key/info",  # the heartbeat poll
         "GET /key/info",  # teardown's final read (R3 step 1)
