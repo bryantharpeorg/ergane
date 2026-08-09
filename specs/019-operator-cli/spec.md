@@ -15,7 +15,14 @@ state: draft
 # spec only so the grammar has room for them, and a plan or a task that
 # implements one of them is out of scope. The single exception is stated
 # outright in US4 and is not an accident.
-depends_on_landed: [005-workgraph-interpreter, 009-roadmap-scheduler, 015-factory-doctor]
+#
+# The 020 edge is a sequencing decision, not a code dependency. 020 rewrites
+# `factory-epic landed`'s branch default and `_build_baseline`'s hardcoded
+# "main" — the same parsers US2 and US3 port. Landing 020 second means porting
+# them, then re-verifying this spec's reuse inventory against a moved target,
+# for no gain. Declaring the edge here makes the roadmap enforce the order
+# rather than leaving it to a note somebody has to read.
+depends_on_landed: [005-workgraph-interpreter, 009-roadmap-scheduler, 015-factory-doctor, 020-landing-attribution]
 ---
 
 # Feature Specification: The `ergane` Operator CLI
@@ -155,8 +162,8 @@ most.
 with its state and each blocked spec's unsatisfied edges; `spec validate` exits
 0 on a sound spec and 1 on a spec with a frontmatter error, a derivation
 rejection and an unserved persona — reporting all three at once, not the first;
-`spec landed` resolves the repository's own default branch without being told
-it; every verb's `--json` parses.
+`spec landed` still resolves the branch 020 taught it to resolve, and says which
+one; every verb's `--json` parses.
 
 **Acceptance Scenarios**:
 
@@ -172,10 +179,11 @@ it; every verb's `--json` parses.
 3. **Given** a spec that validates, **When** `ergane spec validate` runs,
    **Then** it exits 0 and says what it checked — a pass that does not name its
    checks is indistinguishable from a pass that checked nothing.
-4. **Given** a repository whose default branch is not `main`, **When** `ergane
-   spec landed <spec-dir>` runs with no branch argument, **Then** it reports
-   against that repository's actual default branch, and the branch it used is
-   named in the output.
+4. **Given** a target repository declaring `landing_branch` in `factory.yaml`
+   (020's key), **When** `ergane spec landed <spec-dir>` runs with no branch
+   argument, **Then** it reports against that declared branch and names it in
+   the output — the port carries 020's resolution across unchanged rather than
+   re-deciding it, and an explicit `--default-branch` still overrides.
 5. **Given** `--json` on any of `list`, `validate`, `derive`, `landed`,
    **When** it runs, **Then** stdout is a single parseable document and the
    human rendering is absent — the two are formats of one answer, never two
@@ -430,9 +438,12 @@ command set moved; the full suite is green.
 - **FR-008**: `ergane spec derive <spec-dir> [--delta]` MUST compile the spec's
   graph, preserving today's derivation and delta provenance output, with
   `--json`.
-- **FR-009**: `ergane spec landed <spec-dir>` MUST resolve the target
-  repository's own default branch when none is given, and MUST name the branch
-  it used in its output. Defaulting to `main` MUST NOT survive this spec.
+- **FR-009**: `ergane spec landed <spec-dir>` MUST preserve 020's
+  manifest-driven branch resolution unchanged — the port MUST NOT reintroduce a
+  hardcoded default — and MUST name the branch it used in its output. The
+  resolution itself is 020's requirement, not this spec's; all that is owed here
+  is that moving the command does not lose it, and that the answer says what it
+  was computed against.
 - **FR-010**: `ergane build start <spec-dir>` MUST run the existing preflight
   ladder — graph parse, structural validation, proxy url presence, alias check
   — before any workflow is started, and a proxy that does not answer MUST exit
@@ -573,6 +584,13 @@ US5:
 - **The daemons stay outside the CLI.** `factory/worker.py` and
   `factory/notify/service.py` remain `python -m` entry points in this spec.
   Wrapping them is `stack`'s job and belongs with supervision.
+- **020-landing-attribution has landed**, declared as a frontmatter edge. It
+  owns branch resolution — `factory.yaml`'s `landing_branch`, `factory-epic
+  landed`'s flag default, and `_build_baseline` — in the same parsers US2 and
+  US3 port. This spec inherits that fix and asserts it survives the move; it
+  does not restate it. Should 020 be abandoned or descoped, FR-009 and trap 2
+  both have to be rewritten before this epic dispatches, because they currently
+  assume the work is already done.
 - **Nothing in this repository shells out to the console scripts**, verified by
   search at drafting time. If T001 finds that has changed, the cutover's blast
   radius has changed with it and the plan must be corrected before deriving.

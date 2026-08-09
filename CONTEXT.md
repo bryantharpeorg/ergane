@@ -12,9 +12,23 @@ glossary and nothing else; behaviour lives in
 
 ### The unit of work
 
+**Spec**:
+The durable text of one feature — `spec.md`, `plan.md`, `tasks.md` in one numbered
+directory — which an operator edits and the factory compiles. A spec is a document that
+outlives every run of it.
+_Avoid_: feature, story set, ticket, epic
+
 **Epic**:
-One spec's worth of work, driven end to end by a single `EpicWorkflow` execution.
-_Avoid_: feature, project, sprint
+One spec's worth of work, driven end to end by a single `EpicWorkflow` execution. A spec
+and its epic share an id and are not the same object: the spec is the text, the epic is
+the run.
+_Avoid_: feature, project, sprint, spec
+
+**Roadmap**:
+The scheduler — the long-lived `RoadmapWorkflow` that reads every spec's declared state,
+computes which are dispatchable, and starts their epics as children. A rendered table of
+the corpus is a *view of what the roadmap reads*, not the roadmap.
+_Avoid_: backlog, plan, schedule
 
 **Node**:
 One user story's unit of dispatch within an epic — the thing an agent is given.
@@ -170,6 +184,8 @@ _Avoid_: style guide, docs
   merge; a **Pass-edge** guarantees nothing about content
 - **Attested** and **Observed landings** are both landings; a spec may carry a mix, and
   each **Node** resolves on its own evidence
+- A **Spec** has at most one **Epic** in flight at a time and may have had many before it;
+  the **Roadmap** decides which spec gets the next one
 - A **Delta** is computed from a spec's text and its **Landings**; a **Remainder** is the
   delta of a partly-landed spec
 - A **Finding** that recurs may be promoted to a **Binding rule**; a **Lesson** reaches
@@ -215,3 +231,18 @@ _Avoid_: style guide, docs
 - **"rule" vs "lesson"** — used interchangeably for anything learned. Resolved above: a
   **Binding rule** constrains implementers and is versioned; a **Lesson** informs the
   operator agent and is not.
+- **"spec" vs "epic"** — conflated wherever an id is passed around, because they share
+  one. The evidence is a shipped command: `factory-epic derive` compiles a **Spec** and
+  never touches an **Epic**. Resolved above; the operator CLI splits them into separate
+  nouns for exactly this reason.
+- **"worktree"** — a per-node build sandbox, created for one node's attempts and swept
+  after **Salvage**. It is never a container of specs, and never a checkout an operator
+  edits in. Reaching for it as "the thing the factory acts on" names the wrong object:
+  the thing an operator acts on is a **Spec**, and the thing the factory runs is an
+  **Epic**.
+- **"promote"** — four senses live in the tree simultaneously. Resolved: the unqualified
+  word means **Promotion** — the operator's fast-forward of `main` — and nothing else.
+  Say **ready a spec** for the draft-to-ready transition, **scaffold a spec from a
+  finding** for the doctor's verb, and **promote into the constitution** — never bare —
+  for a recurring **Finding** becoming a **Binding rule**. This resolves prose only:
+  `promote_spec` and the doctor's `promote` are landed identifiers and keep their names.

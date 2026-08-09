@@ -53,11 +53,16 @@ in any order. Tasks without it are sequential because they share a file.
       Nine of plan.md's file:line anchors were spot-checked the same day and all
       resolve to what the plan says they do — 017 and 018 have not dispatched,
       so nothing under `factory/` has moved since drafting.
-      **Still owed before dispatch, and it is not a code fact:** 020 rewrites
+      **The 020 overlap is now enforced, not remembered.** 020 rewrites
       `factory/workgraph/cli.py`'s `landed` parser (`:895`), its `--default-branch`
       resolution (`:232`) and `_build_baseline`'s hardcoded branch (`:348`) —
-      the same parsers US2 and US3 replace. Land 020 first, or re-verify this
-      inventory against a moved target.
+      the same parsers US2 and US3 replace. Rather than leave the ordering to
+      this note, the spec's frontmatter declares `depends_on_landed:
+      020-landing-attribution`, so the roadmap will not dispatch this epic until
+      020 is landed. What T001 still owes: **re-run the line-anchor spot-check
+      after 020 lands**, because 020 is the one epic guaranteed to move the exact
+      lines this plan cites. FR-009 and trap 2 assume 020's fix is already in the
+      tree — confirm it is before deriving.
 
 ---
 
@@ -145,10 +150,14 @@ today's output; `validate` reports all three layers' refusals in one run;
       passes; a sound spec exits 0 and names what it checked; the command opens
       no socket (assert with the client constructor patched to raise) — must
       fail.
-- [ ] T012 [P] [US2] Write the branch-resolution case FIRST (trap 2): in a
-      repository whose default branch is not `main`, `ergane spec landed
-      <spec-dir>` with no branch argument reports against that branch, and the
-      branch name appears in the output; the old `main` default is gone — must
+- [ ] T012 [P] [US2] Write the branch-resolution **regression** case FIRST
+      (trap 2): against a target declaring `landing_branch` in `factory.yaml`,
+      `ergane spec landed <spec-dir>` with no branch argument reports against
+      the declared branch and names it in the output; an explicit
+      `--default-branch` still overrides; and no `default="main"` appears
+      anywhere in the new parser. This asserts 020's landed fix survives the
+      port — it does not re-implement it. If this test passes before the port
+      exists, that is the old entry point answering; point it at `ergane` — must
       fail.
 - [ ] T013 [P] [US2] Write `--json` cases FIRST for all four verbs: stdout
       parses as a single document, the human rendering is absent, and the
@@ -159,8 +168,9 @@ today's output; `validate` reports all three layers' refusals in one run;
 - [ ] T014 [US2] Implement `factory/cli/spec.py` — `list`, `derive`, `landed`
       as thin wrappers over `render_command`/`_render_roadmap`,
       `derive_command`, `landed_command`, plus `--json` — until T010, T012 and
-      T013 pass. Import the handlers; do not copy them. Fix the branch default
-      at the source so both entry points get it.
+      T013 pass. Import the handlers; do not copy them. The branch default is
+      already correct when this dispatches (020) — carry it across, do not
+      re-derive it, and do not reintroduce `default="main"`.
 - [ ] T015 [US2] Implement `validate` as a sequencer over `read_roadmap`,
       `derive_workgraph` and `validate_workgraph`, collecting every refusal
       before exiting, until T011 passes. No new checking logic — all three

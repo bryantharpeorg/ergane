@@ -292,14 +292,18 @@ failure.
    node that deletes or rewrites `factory/*/cli.py` before US5 breaks the run
    building it.
 
-2. **`landed` defaults to the wrong branch.** The factory lands on
-   `ergane-buildout`; `main` moves only when an operator promotes. Between
-   promotions a `main` default silently under-reports which stories are landed,
-   and this has been filed twice already
-   (`cli/landed-defaults-to-the-wrong-branch`). `ergane spec landed` must
-   resolve the target repository's own default branch and print the branch it
-   used. A correct answer whose basis is invisible is one promotion away from
-   being a wrong answer nobody notices.
+2. **The branch default is 020's fix — do not re-solve it, and do not lose it.**
+   The factory lands on `ergane-buildout`; `main` moves only when an operator
+   promotes, so a `main` default silently under-reports which stories are landed
+   (filed twice as `cli/landed-defaults-to-the-wrong-branch`). **That is spec
+   020's requirement, and this spec's frontmatter waits on it.** By the time this
+   epic dispatches, `factory-epic landed`'s flag default and `_build_baseline`
+   both read `landing_branch` from `factory.yaml`. The hazard here is the
+   opposite of the original one: a port that rewrites the parser and
+   reintroduces `default="main"`, quietly undoing a landed fix. Carry the
+   resolution across untouched, and print the branch the answer was computed
+   against — a correct answer whose basis is invisible is one promotion away
+   from being a wrong answer nobody notices.
 
 3. **`_preflight_exit_code` returns the old constants.** It maps preflight
    findings to `EXIT_TRANSPORT`, which is `2` today and `3` under the new
