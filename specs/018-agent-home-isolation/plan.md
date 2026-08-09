@@ -11,8 +11,13 @@ stops passing the worker's `HOME` and starts passing a per-node directory the
 factory created under `FACTORY_ROOT`; the factory writes into that directory
 whatever the agent CLI needs to start non-interactively, from its own constants;
 and the credential sweep that already asserts what a child receives is extended
-to hold the new rule. Evidence, salvage, personas, prompts and the judge are all
-unchanged — the only thing that moves is the directory the agent calls home.
+to hold the new rule. Evidence, salvage, prompts and the judge are all unchanged.
+
+A fourth story rides along, and the plan is honest about why: US4 lets a persona
+declare its model's context window, which has nothing to do with homes and
+everything to do with the fact that it edits the same dataclass field block and
+the same returned dict. It was found by this plan's own T001 probe. Keeping it
+here costs one story; splitting it out guarantees a textual conflict.
 
 This plan is deliberately self-contained: the prompt assembler ships
 spec/plan/tasks only, so every fact an implementer node needs is inlined, each
@@ -99,6 +104,42 @@ verified at drafting time.
   question.py` and `factory/activities/verify_activities.py:334` read
   `stdout.log` from that directory. None of it moves.
 
+**Verified reuse inventory for US4** (file:line as of 2026-08-09; T001a
+re-checks). The optional `timeout` key is the template at every step, because it
+is the same shape — an optional per-persona integer that becomes part of the
+attempt's context — and following it is cheaper than designing a second way:
+
+- **The registry keys**: `_REQUIRED_FIELDS` and `_OPTIONAL_FIELDS = ("fallback",
+  "skills", "timeout")` at `factory/config.py:46-47`, with the unknown-key
+  rejection at `:124` that makes adding a name to the tuple the whole of "the
+  schema now accepts it".
+- **The validator**: `_optional_timeout(value, fail)` at `factory/config.py:189`,
+  called at `:134`. Positive-integer-or-null, failing through the injected `fail`
+  so the message names the persona.
+- **The `agent: none` rule**: `factory/config.py:149-152` refuses a timeout on a
+  deterministic persona. FR-009's last sentence is the same rule; write it in the
+  same place, in the same shape.
+- **The dataclass field**: `Persona.timeout_s: int | None = None` at
+  `factory/config.py:77`.
+- **The carriers**: `ResolvedNode.timeout_s` (`factory/workgraph/models.py:209`)
+  and `AttemptContext.timeout_s` (`:306`), and the resolution at
+  `factory/activities/agent_activities.py:268` feeding the context at `:283`.
+- **The emit point**: `attempt_env` (`factory/workgraph/adapter.py:306-321`),
+  whose body is a two-key dict unioned with the passthrough comprehension.
+- **The declared personas**: `personas.yaml` — `architect`, `implementer`,
+  `judge`, `debugger` and `researcher` each name an `ollama-cloud/*` model and a
+  `timeout`; `verifier` is the `agent: none` persona with both `model: null` and
+  `timeout: null`, and it is the case FR-009's last sentence is about.
+
+**One place the timeout is *not* the template, and copying it there is a bug**:
+`resolve_timeout_s` (`factory/workgraph/models.py:338`) exists because a *node*
+may override a persona's timeout (`timeout_override_s`), and `models.py:429`
+raises when the resolution is `None` — which is why `ResolvedNode.timeout_s` and
+`AttemptContext.timeout_s` are plain `int`. The context window has no node-level
+override and **must** be allowed to stay unset, so its fields are `int | None`,
+its resolution is `persona.context_window` with no helper, and nothing raises on
+`None`. FR-010's "absent, not defaulted" is the requirement this protects.
+
 **Observed state of the operator's home on the worker host** (2026-08-08,
 structural inspection only — no values read): `~/.claude.json` is 128,331 bytes
 with top-level keys including `oauthAccount`, `userID`, `machineID`,
@@ -121,8 +162,9 @@ the existing `tests/test_workgraph_sweep.py` idiom.
 
 **Project Type**: single Python package. Changes are confined to
 `factory/workgraph/adapter.py` (path helper, `attempt_env`, home creation and
-seeding), `factory/workgraph/models.py` (one `AttemptContext` field), their
-tests, and the two docs in US3.
+seeding), `factory/workgraph/models.py` (`AttemptContext` fields), their tests,
+and the two docs in US3 — plus, for US4 only, `factory/config.py`,
+`factory/activities/agent_activities.py` and `personas.yaml`.
 
 ## Constitution Check
 
@@ -136,7 +178,10 @@ tests, and the two docs in US3.
   credentials, which the allowlist was never written to consider.
 - **VI (salvage)**: unaffected, and provably so — salvage carries its own
   identity and the worktree suite already runs on an empty `HOME`.
-- **VII (persona routing)**: untouched; no model name is read or written here.
+- **VII (persona routing)**: no routing decision changes. US1–US3 read and write
+  no model name at all. US4 adds an optional field to the persona registry, which
+  is the one place a model name is allowed to appear — and its central trap is
+  that no alias-to-window table may be introduced anywhere else.
 
 ## Approach by story
 
@@ -233,9 +278,58 @@ including `~/.config` and the age key that decrypts the homelab secrets. That is
 as "agents are now isolated" would let a future reader skip the epic that
 actually isolates them.
 
+### US4 — the declared context window (FR-009..011)
+
+Walk the `timeout` key end to end and add a sibling at each step. Six edits, and
+the inventory above names the line for each:
+
+| where | what |
+| --- | --- |
+| `personas.yaml` | an optional `context_window:` per persona, documented in the header comment block beside `timeout`; **left unset on every persona** |
+| `factory/config.py` | the name in `_OPTIONAL_FIELDS`, a positive-int-or-null validator beside `_optional_timeout`, `Persona.context_window`, and the `agent: none` refusal |
+| `factory/workgraph/models.py` | `ResolvedNode.context_window: int \| None` and `AttemptContext.context_window: int \| None` |
+| `factory/activities/agent_activities.py` | read `persona.context_window` beside the timeout resolution and put it on the context |
+| `factory/workgraph/adapter.py` | `attempt_env` emits `CLAUDE_CODE_MAX_CONTEXT_TOKENS` **only when the context carries a value** |
+| `tests/test_workgraph_sweep.py` | the exact-dict assertion US3 rewrites gains the conditional name |
+
+Trap: **`attempt_env` must not gain a parameter** — the same trap US1 carries,
+for the same reason. The value arrives on `AttemptContext`, as `model_alias` and
+`timeout_s` already do. The sweep's "read in exactly one function" assertion is
+what makes the credential surface auditable, and it is worded around the
+two-argument signature.
+
+Trap: **no alias-to-window table, anywhere.** The obvious shortcut is a dict in
+the adapter mapping `ollama-cloud/kimi-k2.7-code` to a number. That puts a model
+name in a second place, which constitution VII forbids and which the sweep does
+not currently guard. It also forecloses the case that motivates per-persona
+declaration in the first place: a persona deliberately running below its model's
+ceiling.
+
+Trap: **do not fill in the numbers.** Every persona ships undeclared, and the
+story is complete with the feature inert. There is no source on the worker host
+for the real windows — the proxy reports `max_input_tokens: null` for all three
+`ollama-cloud/*` aliases — so any number an implementer writes is a guess, and a
+guess that is too high converts today's unnecessary compaction into a rejected
+API request. If a task's acceptance seems to require a real number, it needs a
+fixture value in a test, not a value in `personas.yaml`.
+
+Trap: **the environment name is a claim about the CLI, and T001a is what checks
+it.** `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is the variable the CLI's own
+unrecognized-model warning names. That is good evidence and not proof, and the
+whole story is worthless if the variable does not do what the message says. The
+probe runs before dispatch, exactly as T001 did — and T001 paid for itself by
+shrinking US2 before an agent was spent on it.
+
 ## Complexity Tracking
 
-None. One path helper, one dataclass field, one name moved from a passthrough
-tuple to a constructed value, one seeding function, one extended sweep. No new
-dependency, no store, no workflow change, no interpreter change, no change to
-what any agent is asked to do.
+Nearly none. US1–US3 are one path helper, one dataclass field, one name moved
+from a passthrough tuple to a constructed value, one seeding function and one
+extended sweep. US4 is an optional field walked along a path the `timeout` key
+already wore. No new dependency, no store, no workflow change, no interpreter
+change, and no change to what any agent is asked to do.
+
+| Risk | Why it is real | Mitigation |
+|---|---|---|
+| A guessed window larger than the model serves | Converts a wasteful compaction into a rejected request — strictly worse than today | Ship undeclared; the trap above; SC-006 asserts the inert case |
+| The env var is not honoured by the CLI | The name comes from a warning message, not from documentation | T001a probes it before US4 dispatches |
+| An alias→window table sneaks in | It is the shortest path to a passing test | Named as a trap; constitution VII is the standing rule |

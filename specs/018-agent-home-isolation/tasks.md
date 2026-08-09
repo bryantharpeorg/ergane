@@ -8,7 +8,7 @@ passing has found a defect in the test, not a task it may skip.
 
 Tasks marked `[P]` touch disjoint files within their story and may be written in
 any order. Tasks without it are sequential because they share a file — which is
-most of them here, since all three stories converge on
+most of them here, since all four stories converge on
 `factory/workgraph/adapter.py`.
 
 ## Format: `[ID] [P?] [Story] Description`
@@ -46,6 +46,17 @@ most of them here, since all three stories converge on
       names, that `_archive_session` still resolves from the child's `HOME`, and
       that `tests/test_workgraph_sweep.py`'s env assertion still pins the exact
       dict.
+- [ ] T001a Operator, gating **US4 only**: probe `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+      before that story dispatches. Run the adapter's own argv shape against a
+      declared window that is unmistakably not the default — the same one-command
+      bet T001 made, which paid for itself by shrinking US2. Record three things
+      here as the gate's evidence: whether the CLI's unrecognized-model warning
+      changes or disappears; whether the window it reports is the declared number;
+      and whether an unset variable leaves behaviour exactly as it is today. If
+      the variable does not do what the CLI's own warning message claims, **US4's
+      mechanism is wrong and the story must not dispatch** — say so here and stop,
+      rather than letting an agent discover it at attempt price. This gates US4
+      alone; US1–US3 do not wait on it.
 
 ---
 
@@ -179,18 +190,71 @@ with a message naming the rule.
 
 ---
 
+---
+
+## Phase 5: User Story 4 — A persona declares its model's context window (Priority: P2)
+
+**Goal**: an optional per-persona `context_window` reaches the agent as
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and changes nothing at all when undeclared.
+
+**Independent Test**: `attempt_env` for a context whose persona declares a window
+carries that number under the CLI's variable; for a persona declaring none, the
+built environment is exactly what it is without this story.
+
+### Tests for User Story 4 (write FIRST, must fail)
+
+- [ ] T013 [P] [US4] Write registry cases FIRST in the existing config tests:
+      `context_window` is accepted as an optional positive integer and lands on
+      `Persona`; a zero, a negative, a float and a string are each refused with a
+      message naming the persona and the field; the key is refused entirely on an
+      `agent: none` persona; **and a persona declaring nothing yields `None`, not
+      a default** — plan.md § US4's inventory names `_optional_timeout`
+      (`factory/config.py:189`) and the `agent: none` rule (`:149-152`) as the
+      shape to copy — must fail.
+- [ ] T014 [P] [US4] Write carrier cases FIRST: `persona.context_window` reaches
+      `AttemptContext.context_window` through the resolution in
+      `factory/activities/agent_activities.py`, and an undeclared persona yields
+      `None` there. **Do not copy `resolve_timeout_s`**: there is no node-level
+      override, and nothing may raise on `None` — plan.md § US4 states why the
+      timeout is not the template at this one step — must fail.
+- [ ] T015 [US4] Write the environment cases FIRST against `attempt_env`,
+      extending — not replacing — the assertion T011 leaves behind: a context
+      carrying a window yields `CLAUDE_CODE_MAX_CONTEXT_TOKENS` equal to that
+      number as a string; a context carrying `None` yields an environment whose
+      key set is **exactly** the pre-US4 set, with the name absent rather than
+      empty or zero (FR-010, SC-006); `attempt_env` still takes exactly
+      `(context, environ)` — must fail.
+
+### Implementation for User Story 4
+
+- [ ] T016 [US4] Implement the field end to end until T013, T014 and T015 pass:
+      `_OPTIONAL_FIELDS` and the validator in `factory/config.py`, the field on
+      `Persona`, the fields on `ResolvedNode` and `AttemptContext`, the
+      resolution in `factory/activities/agent_activities.py`, and the conditional
+      emit in `attempt_env`. **Leave every persona in `personas.yaml`
+      undeclared** — document the key in the header comment block beside
+      `timeout` and set no value (plan.md § US4, third trap: there is no source
+      for the real numbers and a guess that is too high is worse than today's
+      assumption). **Introduce no alias-to-window table anywhere** (second trap;
+      constitution VII).
+
+---
+
 ## Dependencies & Execution Order
 
 - Phase 1 is operator work and gates everything: T001's finding is FR-004's
   content, so dispatching US2 before it is answered would dispatch a story whose
-  size is unknown.
+  size is unknown. T001a gates US4 alone and nothing else.
 - Phase 2 (US1) has no dependency and is the MVP seam: the home exists and the
   operator's stops reaching the child.
 - Phase 3 (US2) imports US1's helper and edits the same module — **merged, not
   passed**.
 - Phase 4 (US3) asserts what US2 establishes and edits the sweep and the docs —
   merged.
-- This is a chain, not a fan-out, and deliberately: all three stories converge
+- Phase 5 (US4) adds a field beside US1's on `AttemptContext`, a name beside
+  US1's in `attempt_env`, and a case to the sweep assertion US3 rewrites —
+  **merged**, on US3.
+- This is a chain, not a fan-out, and deliberately: all four stories converge
   on `factory/workgraph/adapter.py`, so there is no disjoint pair to dispatch
   concurrently. Do not run any two of these as siblings.
 
@@ -202,7 +266,11 @@ agent — and it can be verified without running an agent at all. US2 is what
 keeps the attempt working on the isolated home, and it is where the real risk
 lives, which is why T001 resolves its central unknown before dispatch rather
 than inside it. US3 is what stops the property being lost in a later diff about
-something else.
+something else. US4 is the cheapest of the four and the least related; if
+anything is cut, cut that one — the factory has run with the 200k assumption
+since its first epic and will survive another week of it.
 
-Nothing here changes what an agent is asked to do: the persona registry, the
-prompt assembler, the standards path, the gates and the judge are all untouched.
+Nothing here changes what an agent is asked to *do*: the prompt assembler, the
+standards path, the gates and the judge are all untouched, and no routing
+decision moves. US4 adds one optional field to the persona registry and changes
+what an agent is *told about its own limits* — not which agent runs, or on what.

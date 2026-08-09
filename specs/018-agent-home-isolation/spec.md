@@ -15,6 +15,13 @@ state: draft
 # Scope is deliberately the HOME half and nothing more. Read the Assumptions
 # before widening it: this spec changes what an agent *loads*, not what an
 # agent *can reach*, and a plan or a test that claims otherwise is wrong.
+#
+# US4 added 2026-08-09, from `adapter/agent-model-window-unrecognized` — found
+# by this spec's own T001 probe and initially filed as out of scope. It is here
+# rather than in its own spec for a mechanical reason, not a thematic one: it
+# adds a field to `AttemptContext` and a name to the dict `attempt_env` returns,
+# which is exactly what US1 does. As separate epics the two conflict textually
+# with certainty. The theme is honestly a stretch and the spec says so.
 ---
 
 # Feature Specification: Agent Home Isolation
@@ -198,6 +205,69 @@ home.
 
 ---
 
+### User Story 4 - A persona declares its model's context window (Priority: P2)
+
+As the factory operator, a persona may declare the context window its model
+actually serves, so that the agent CLI stops assuming 200,000 tokens for a model
+it has never heard of.
+
+Found by this spec's own T001 probe and filed as out of scope at the time
+(`adapter/agent-model-window-unrecognized`). It is in this spec because it edits
+the same two lines US1 edits — a field on `AttemptContext`, a name in the dict
+`attempt_env` builds — and not because it has anything to do with homes.
+
+The CLI does not recognize the `ollama-cloud/*` aliases and says so on every
+attempt the factory has ever run, falling back to a 200,000-token window with
+auto-compaction sized to it. **Nothing can discover the real number.** The proxy
+was queried on 2026-08-08: it carries no window metadata for any custom alias
+(`max_input_tokens: null` for all three `ollama-cloud/*` entries, against
+`1000000` for `anthropic/claude-opus-5`, which LiteLLM's built-in map happens to
+know). So the window has to be **declared**, which is the rule D-009 already
+applies to gates — declared, never auto-detected.
+
+The cost of the assumption runs in both directions, and only one of them has
+been observed. Where the real window is larger, the factory pays for compaction
+it did not need and hands the model a smaller working set than it has. Where the
+real window is *smaller*, the CLI would let a conversation grow past the limit
+instead of compacting, and the API would reject it — that direction is a
+hypothesis with no failure on record, and it is the reason a **guessed** number
+is worse than no number at all.
+
+So the declaration is optional and **unset means exactly today's behaviour**.
+This story ships the mechanism; the numbers are an operator input, and the story
+must not invent them.
+
+**Why this priority**: below the home stories because nothing is broken today
+that this fixes — the factory has always run this way. Above nothing, because it
+is one field and the mechanism is a copy of one that already exists.
+
+**Independent Test**: build the child environment for a context whose persona
+declares a window, and assert the CLI's window variable carries that number;
+build one for a persona that declares none, and assert the environment is
+byte-identical to today's.
+
+**Acceptance Scenarios**:
+
+1. **Given** a persona that declares a context window, **When** an attempt's
+   child environment is built, **Then** it carries `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+   set to the declared value.
+2. **Given** a persona that declares none, **When** the environment is built,
+   **Then** the name is absent entirely and the environment is exactly what it
+   is before this story — an unset declaration is not a zero, an empty string, or
+   a default.
+3. **Given** a persona registry declaring a window that is not a positive
+   integer, **When** it is loaded, **Then** the load fails naming the persona and
+   the field, at the same point and in the same shape as an invalid `timeout`.
+4. **Given** a persona with `agent: none`, **When** the registry is loaded,
+   **Then** declaring a window is refused — the same rule the timeout already
+   carries, because a persona that dispatches no agent has no environment to put
+   it in.
+5. **Given** an attempt whose persona declares a window, **When** its stdout is
+   read, **Then** the unrecognized-model warning no longer claims a 200,000-token
+   assumption.
+
+---
+
 ### Edge Cases
 
 - An attempt whose home cannot be created is an infrastructure failure, named
@@ -252,6 +322,21 @@ home.
   change and MUST state its boundary explicitly: this isolates what an agent
   loads, not what an agent can reach; filesystem confinement remains the open
   `hardening/agent-sandbox` scope.
+- **FR-009**: A persona MAY declare the context window its model serves, as an
+  optional positive integer in the persona registry, validated at load in the
+  same place and the same shape as the existing optional `timeout`. A persona
+  that dispatches no agent MUST NOT declare one.
+- **FR-010**: When a persona declares a window, the attempt's child environment
+  MUST carry it as the agent CLI's context-window variable. When it declares
+  none, that name MUST be **absent** — not empty, not zero, not defaulted — and
+  the built environment MUST be identical to what it is without this feature.
+  The value MUST travel on the attempt's context, exactly as the model alias and
+  the timeout already do; `attempt_env` MUST NOT gain a parameter to receive it.
+- **FR-011**: The window MUST be declared per persona and MUST NOT be inferred
+  from the model alias. No alias-to-window table may be introduced anywhere: the
+  persona registry stays the only place a model name appears (constitution VII),
+  and per-persona declaration is also what lets a persona deliberately run below
+  its model's ceiling.
 
 ### Key Entities
 
@@ -278,15 +363,21 @@ home.
   succeeds and is attributed to the factory identity.
 - **SC-005**: The full suite stays green, no dependency is added, and two nodes
   dispatched at `--max-concurrent-nodes 2` complete without sharing a home.
+- **SC-006**: With no persona declaring a window, the child environment this
+  feature produces is byte-identical to the one produced without US4 — the
+  mechanism is inert until an operator supplies a number.
 
 ## Work Graph
 
 US2 needs US1's home to exist before it can start an agent on one, and both
 edit the adapter, so US2 chains on US1 **merged** rather than riding a pass
 edge — the 009 first-run lesson. US3 asserts the property the other two
-establish and touches the sweep and the docs, so it chains on US2 merged.
+establish and touches the sweep and the docs, so it chains on US2 merged. US4
+chains on US3 merged for the same reason twice over: it adds a field beside the
+one US1 adds to `AttemptContext`, a name beside the one US1 writes in
+`attempt_env`, and a case to the very sweep assertion US3 rewrites.
 
-This is a chain rather than a fan-out on purpose. All three stories converge on
+This is a chain rather than a fan-out on purpose. All four stories converge on
 `factory/workgraph/adapter.py`, and two concurrent worktrees editing one module
 is the collision `--max-concurrent-nodes 2` avoids by disjointness, not by luck.
 
@@ -302,6 +393,10 @@ US3:
   depends_on: []
   depends_on_merged: [US2]
   implements: [FR-007, FR-008]
+US4:
+  depends_on: []
+  depends_on_merged: [US3]
+  implements: [FR-009, FR-010, FR-011]
 ```
 
 ## Assumptions
@@ -346,9 +441,19 @@ US3:
   to discover it. The home also gained a `projects/<project-dir>/memory/`
   directory, which is per-home and empty: an agent on an isolated home starts
   with no memory, where today it starts with the operator's.
-- **Persona registry, prompt assembly, and the judge are untouched.** The
-  agent's model, its standards path, and its verification are all unchanged;
-  only the directory it calls home moves.
+- **Prompt assembly and the judge are untouched.** The agent's standards path
+  and its verification are unchanged. US1–US3 change only the directory an agent
+  calls home; US4 adds one optional field to the persona registry and changes no
+  routing decision — the alias a persona names, and the persona a node resolves
+  to, are exactly what they were.
+- **The real context windows are an operator input this spec does not have.**
+  `kimi-k2.7-code`, `glm-5.2` and `deepseek-v4-flash` all report
+  `max_input_tokens: null` through the proxy, and no other source on the worker
+  host knows the answer. US4 therefore ships with **every persona undeclared**,
+  and the feature does nothing until an operator fills the numbers in. That is a
+  deliberate, stated limitation rather than an oversight: a wrong number is the
+  one outcome worse than today's assumption, because a window declared larger
+  than the model serves turns a compaction into a rejected request.
 
 ## Decision: the agent's home is the factory's, keyed like its worktree (decided 2026-08-08)
 
