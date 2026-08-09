@@ -424,6 +424,11 @@ async def run_roadmap(
     _SCRIPT.on_complete = on_complete
     world.apply()
 
+    from factory.activities.notify_activities import (
+        record_roadmap_failure,
+        reset_roadmap_failures,
+        send_escalation,
+    )
     from factory.activities.roadmap_activities import (
         clone_target,
         count_open_epics,
@@ -446,6 +451,9 @@ async def run_roadmap(
         count_open_epics,
         read_corpus_activity,
         read_spec_text_activity,
+        record_roadmap_failure,
+        reset_roadmap_failures,
+        send_escalation,
     ]
     interceptors = [_RecordingInterceptor(child_starts)] if child_starts is not None else []
     try:

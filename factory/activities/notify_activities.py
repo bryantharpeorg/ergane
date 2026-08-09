@@ -125,6 +125,12 @@ class SendEscalationInput:
     activity input is a credential in the workflow's history forever (FR-009).
     `history_summary` is the full failure history the ladder assembled (SC-005) —
     the store keeps it whole and only the message is ever clipped.
+
+    `escalation_id` is optional: when a caller has already recorded the row
+    (US4's roadmap failure path writes it before attempting delivery so a down
+    notifier loses the message but not the fact), the same id is reused and the
+    insert is skipped. When omitted, `send_escalation` mints a fresh id and
+    inserts the row as usual (R11).
     """
 
     workflow_id: str
@@ -133,6 +139,7 @@ class SendEscalationInput:
     history_summary: str
     choices: list[EscalationChoice] = field(default_factory=lambda: list(DEFAULT_CHOICES))
     timeout_s: int = ESCALATION_TIMEOUT_S
+    escalation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -265,11 +272,23 @@ async def send_escalation(request: SendEscalationInput) -> SentEscalation:
     Raises `ESCALATION_NOT_RECORDED` when the store refuses the row, before any
     message exists. Retryable: nothing was written, so a retry mints a fresh id
     rather than duplicating an escalation.
+
+    When `request.escalation_id` is set, the caller has already recorded the row
+    (US4 writes it before attempting delivery), so `send_escalation` skips the
+    insert and only sends + marks delivered. A missing row is treated as a
+    caller-side race and inserted defensively.
     """
     record = _pending_record(request)
 
     with closing(_connect()) as conn:
-        _insert(conn, record)
+        if request.escalation_id is None:
+            _insert(conn, record)
+        else:
+            # US4: the row was written before this send was attempted. If a retry
+            # or a store rebuild lost it, fall back to inserting defensively.
+            existing = store.get_escalation(conn, record.escalation_id)
+            if existing is None:
+                _insert(conn, record)
 
         delivered = await _send(record)
         if delivered:
@@ -331,13 +350,16 @@ def _pending_record(request: SendEscalationInput) -> EscalationRecord:
     exactly `timeout_s` after the moment it was sent — the workflow's timer runs
     against the same span, and a row that disagreed would have the bridge and the
     workflow answering differently about whether a press was still in time.
+
+    If the caller supplied an `escalation_id`, it is reused (US4 writes the row
+    before the send); otherwise a fresh token is minted.
     """
     sent = datetime.now(timezone.utc).replace(microsecond=0)
 
     return EscalationRecord(
         # 12 hex digits: the whole reason `callback_data` fits in 64 bytes
         # without ever carrying a workflow id (R11).
-        escalation_id=secrets.token_hex(6),
+        escalation_id=request.escalation_id or secrets.token_hex(6),
         workflow_id=request.workflow_id,
         epic_id=request.epic_id,
         node_id=request.node_id,
@@ -425,6 +447,136 @@ async def _send(record: EscalationRecord) -> bool:
         return False
 
     return True
+
+
+# --- roadmap failure count (US4) --------------------------------------------
+
+#: Table that holds the roadmap consecutive-failure count.  It lives alongside
+#: the verification evidence store because the count is evidence about a
+#: workflow, not workflow state (which would be lost when the workflow dies).
+_ROADMAP_FAILURES_DDL = """
+CREATE TABLE IF NOT EXISTS roadmap_failures (
+    roadmap_id        TEXT PRIMARY KEY,
+    consecutive_count INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_count >= 0),
+    last_failure_text TEXT NOT NULL DEFAULT '',
+    updated_at        TEXT NOT NULL
+);
+"""
+
+
+@dataclass(frozen=True)
+class RecordRoadmapFailureInput:
+    """The facts needed to record one roadmap run failure.
+
+    `db_path` is worker-local configuration; the activity opens the store at that
+    path (the same pattern `verify_activities` uses for the verification db).
+    No credential is in any field.
+    """
+
+    db_path: str
+    roadmap_id: str
+    failure_text: str
+
+
+@dataclass(frozen=True)
+class ResetRoadmapFailuresInput:
+    """Reset the consecutive-failure count for one roadmap; returns the prior count."""
+
+    db_path: str
+    roadmap_id: str
+
+
+@dataclass(frozen=True)
+class RecordRoadmapFailureResult:
+    """Result of recording a roadmap failure: the new consecutive count and the
+    escalation id that was written before any send attempt (FR-010)."""
+
+    count: int
+    escalation_id: str
+
+
+@activity.defn
+async def record_roadmap_failure(request: RecordRoadmapFailureInput) -> RecordRoadmapFailureResult:
+    """Record a roadmap failure and return its count + escalation id (FR-010).
+
+    The count is stored in the evidence store, not in workflow state, so it
+    survives workflow restarts and continue-as-new. Repeated identical failures
+    increase the count; a different failure resets it to 1.
+
+    The escalation row is also written here, before any send is attempted, so
+    a notifier that is down loses the message but not the fact. The same id is
+    handed back for the caller to pass to `send_escalation`.
+    """
+    from factory.verify.models import EscalationRecord as _EscalationRecord
+
+    sent = datetime.now(timezone.utc)
+    escalation_id = secrets.token_hex(6)
+    with closing(store.connect(request.db_path)) as conn:
+        conn.executescript(_ROADMAP_FAILURES_DDL)
+        row = conn.execute(
+            "SELECT consecutive_count, last_failure_text FROM roadmap_failures WHERE roadmap_id = ?",
+            (request.roadmap_id,),
+        ).fetchone()
+        if row is None:
+            count = 1
+            conn.execute(
+                "INSERT INTO roadmap_failures (roadmap_id, consecutive_count, last_failure_text, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (request.roadmap_id, count, request.failure_text, _iso(sent)),
+            )
+        elif row[1] == request.failure_text:
+            count = row[0] + 1
+            conn.execute(
+                "UPDATE roadmap_failures SET consecutive_count = ?, last_failure_text = ?, updated_at = ? "
+                "WHERE roadmap_id = ?",
+                (count, request.failure_text, _iso(sent), request.roadmap_id),
+            )
+        else:
+            count = 1
+            conn.execute(
+                "UPDATE roadmap_failures SET consecutive_count = ?, last_failure_text = ?, updated_at = ? "
+                "WHERE roadmap_id = ?",
+                (count, request.failure_text, _iso(sent), request.roadmap_id),
+            )
+        record = _EscalationRecord(
+            escalation_id=escalation_id,
+            workflow_id=request.roadmap_id,
+            epic_id=request.roadmap_id,
+            node_id="roadmap",
+            choices=[EscalationChoice.RETRY, EscalationChoice.KILL],
+            history_summary=request.failure_text,
+            sent_at=_iso(sent),
+            expires_at=_iso(sent + timedelta(seconds=ESCALATION_TIMEOUT_S)),
+            delivered=False,
+        )
+        store.insert_escalation(conn, record)
+        conn.commit()
+    return RecordRoadmapFailureResult(count=count, escalation_id=escalation_id)
+
+
+@activity.defn
+async def reset_roadmap_failures(request: ResetRoadmapFailuresInput) -> int:
+    """Reset the consecutive-failure count and return the prior count (FR-009).
+
+    Returns 0 when there was no record or no prior failures, so the caller can
+    decide whether a recovery message is warranted.
+    """
+    sent = datetime.now(timezone.utc)
+    prior = 0
+    with closing(store.connect(request.db_path)) as conn:
+        conn.executescript(_ROADMAP_FAILURES_DDL)
+        row = conn.execute(
+            "SELECT consecutive_count FROM roadmap_failures WHERE roadmap_id = ?",
+            (request.roadmap_id,),
+        ).fetchone()
+        if row is not None and row[0]:
+            prior = row[0]
+            conn.execute(
+                "UPDATE roadmap_failures SET consecutive_count = 0, updated_at = ? WHERE roadmap_id = ?",
+                (_iso(sent), request.roadmap_id),
+            )
+            conn.commit()
+    return prior
 
 
 # --- small conversions ------------------------------------------------------
