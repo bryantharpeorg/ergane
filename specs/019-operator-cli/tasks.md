@@ -103,6 +103,16 @@ input exits 2, the boundary maps each error class to its code, and no
       walking the parser tree, a bad flag exits 2 — so a noun added later
       without honouring the contract fails here rather than in production
       (FR-002, FR-003, SC-002) — must fail.
+- [ ] T005a [P] [US1] Write the **registry** cases FIRST (FR-022) against a
+      fixture noun package: a module dropped in declaring a `NOUN` appears in
+      `ergane --help` with **no edit to any existing file**, and deleting it
+      removes the noun; two nouns at the same `order` print in the same sequence
+      on repeated runs (ties break by name); a module that raises on import is
+      reported as `noun '<name>' failed to load` on stderr with exit 1 **while
+      the other nouns still work**; and an AST or source scan asserts no literal
+      list of noun names exists anywhere under `factory/cli/`. That last one is
+      the load-bearing assertion — a "safety" fallback list would put US2, US3
+      and US4 back on one file — must fail.
 - [ ] T006 [P] [US1] Write `--version` cases FIRST: exits 0; stdout names the
       package version, a revision, and the Temporal address and proxy url it
       would dial; **no network call is made** (assert with the client
@@ -115,11 +125,16 @@ input exits 2, the boundary maps each error class to its code, and no
       carrying message and exit code, and `run_cli(entry)` implementing
       plan.md's boundary table, until T004 passes. Keep the per-raise exit code
       — `status_command` depends on it to report transport as transport.
-- [ ] T008 [US1] Implement `factory/cli/main.py`: the root parser, the noun
-      registry, `--debug`, and `--version`, until T003, T005 and T006 pass. Use
-      a plain `argparse.ArgumentParser` — **do not** subclass it, and do not
-      override `error()`. A noun whose module fails to import must be reported
-      by name with exit 1, never as an import traceback (spec Edge Cases).
+- [ ] T008 [US1] Implement `factory/cli/main.py` and `factory/cli/nouns/`
+      (an empty package US2–US4 will each drop one file into): the root parser,
+      `pkgutil`-based discovery over the noun package sorted by `(order, name)`,
+      `--debug`, and `--version`, until T003, T005, T005a and T006 pass. Use a
+      plain `argparse.ArgumentParser` — **do not** subclass it, and do not
+      override `error()`. A noun whose module fails to import is named on stderr
+      with exit 1 while the others keep working, never an import traceback.
+      **No literal list of noun names, not even as a fallback** (plan § US1 rule
+      1): the absence of that list is what lets the next three stories run
+      concurrently, and T005a asserts it.
 - [ ] T009 [US1] Register `ergane = "factory.cli.main:main"` in
       `pyproject.toml` **alongside** the four existing scripts. They are not
       removed here — the four CLIs must keep working through US4 (trap 1),
@@ -138,11 +153,16 @@ today's output; `validate` reports all three layers' refusals in one run;
 
 ### Tests for User Story 2 (write FIRST, must fail)
 
-- [ ] T010 [US2] Point `tests/test_roadmap_cli.py`'s render cases and the
-      `derive`/`landed` cases in `tests/test_epic_cli.py` at `ergane spec ...`
-      FIRST, unchanged in every other respect — they must fail on the new
-      entry point and pass on the old one. This is SC-003's mechanism: the old
-      assertions are the definition of "behaviour unchanged".
+- [ ] T010 [US2] Write `tests/test_ergane_spec.py` FIRST, mirroring the
+      assertions in `tests/test_roadmap_cli.py`'s render cases and the
+      `derive`/`landed` cases in `tests/test_epic_cli.py`, pointed at `ergane
+      spec ...`. Same expected output, new entry point — the old assertions are
+      SC-003's definition of "behaviour unchanged".
+      **A new file, not an edit.** `tests/test_epic_cli.py` is also US3's and
+      US4's source material, and this story runs concurrently with both; three
+      worktrees editing it is the collision the fan-out exists to avoid. The old
+      files stay pointed at the old scripts, which keep working until US5 — must
+      fail.
 - [ ] T011 [P] [US2] Write `spec validate` cases FIRST: a spec with a
       frontmatter error **and** a work-graph rejection **and** an unserved
       persona alias reports **all three** in one run and exits 1 — assert the
@@ -190,11 +210,13 @@ answer/resolve list from the store and refuse resolved or expired ids.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T016 [US3] Point `tests/test_epic_cli.py`'s `start` and `status` cases at
-      `ergane build ...` FIRST, unchanged — including the zero-node refusal,
-      the missing-proxy refusal, and the sibling-key rule for `--json`. Add one
-      case the old suite could not have: a preflight refusal caused by the
-      proxy not answering exits **3**, not 2 (trap 3) — must fail.
+- [ ] T016 [US3] Write `tests/test_ergane_build.py` FIRST — a **new file**, not
+      an edit to `tests/test_epic_cli.py`, which US2 and US4 are drawing from at
+      the same time (trap 9). Mirror that file's `start` and `status`
+      assertions, including the zero-node refusal, the missing-proxy refusal,
+      and the sibling-key rule for `--json`. Add one case the old suite could
+      not have: a preflight refusal caused by the proxy not answering exits
+      **3**, not 2 (trap 3) — must fail.
 - [ ] T017 [P] [US3] Write signal cases FIRST against a scripted workflow under
       time skipping: `pause`, `resume` and `kill` each send exactly their own
       signal and no other; `kill` without `--yes` on a declined prompt sends
@@ -245,13 +267,15 @@ nothing; completion emits a script.
 
 ### Tests for User Story 4 (write FIRST, must fail)
 
-- [ ] T023 [US4] Point `tests/test_doctor_cli.py` and `tests/test_cli.py`
-      (usage) at `ergane doctor` / `ergane findings ...` / `ergane usage`
-      FIRST, unchanged, plus the `repo onboard` cases from
-      `tests/test_epic_cli.py`. Add two cases the old suites could not have: a
-      probe that raises a non-service exception is reported as **one line**
-      naming `--debug`, not a traceback (trap 7); a missing ledger exits **3**
-      under the unified contract — must fail.
+- [ ] T023 [US4] Write `tests/test_ergane_ports.py` FIRST — a **new file**, not
+      edits to `tests/test_doctor_cli.py`, `tests/test_cli.py` or
+      `tests/test_epic_cli.py`; the last of those is US2's and US3's source
+      material and this story runs beside them (trap 9). Mirror the doctor,
+      usage and `repo onboard` assertions against `ergane doctor` / `ergane
+      findings ...` / `ergane usage` / `ergane repo onboard`. Add two cases the
+      old suites could not have: a probe that raises a non-service exception is
+      reported as **one line** naming `--debug`, not a traceback (trap 7); a
+      missing ledger exits **3** under the unified contract — must fail.
 - [ ] T024 [P] [US4] Write roadmap-surface cases FIRST: `start` starts
       `RoadmapWorkflow` under the sibling id convention and prints the id; a
       collision with a running roadmap exits 1 naming it and starts nothing;
@@ -342,13 +366,26 @@ CLAUDE.md sweep passes with the new command set; the full suite is green.
   nothing shells out to a console script, which is the assumption the whole
   cutover rests on.
 - Phase 2 (US1) has no dependency and is the MVP: `ergane --help` is the first
-  complete answer this repository has ever had to "what can I do here".
-- Phases 3, 4 and 5 each chain on the previous **merged**, not passed. All
-  three register a noun into the same dispatcher module, and two worktrees
-  editing one module is a collision avoided by disjointness rather than by
-  luck.
-- Phase 6 chains last because it removes the scripts Phases 3–5's tests still
-  invoke.
+  complete answer this repository has ever had to "what can I do here". It also
+  lands FR-022, which is what makes the next three phases concurrent rather than
+  sequential — a US1 that ships without the registry has not finished.
+- **Phases 3, 4 and 5 run concurrently.** Each waits on US1 **merged**, not
+  passed, and on nothing else. This is the first spec since 007 to declare real
+  parallelism: dispatch with `--max-concurrent-nodes 3`.
+  Their disjointness is the whole basis for that, and it is a property to
+  check rather than assume:
+
+  | | creates | and nothing else |
+  | --- | --- | --- |
+  | US2 | `factory/cli/nouns/spec.py`, `tests/test_ergane_spec.py` | — |
+  | US3 | `factory/cli/nouns/build.py`, `tests/test_ergane_build.py` | — |
+  | US4 | `factory/cli/nouns/{roadmap,doctor,findings,usage,repo,system}.py`, `tests/test_ergane_ports.py` | — |
+
+  No file appears twice, and none of them is an existing file. The old test
+  files stay pointed at the old scripts until Phase 6. If a node finds it cannot
+  finish without editing a sibling's file, that is a report, not an edit.
+- Phase 6 waits on all three merged. It removes the scripts Phases 3–5's source
+  material still invokes, and retires the old test files those three mirrored.
 
 ## Implementation Strategy
 
@@ -358,6 +395,15 @@ job. US3 is the money and the operator's grip on it. US4 closes the one room
 with no door. US5 is what makes the epic honest — a front door that leaves four
 side doors open has replaced nothing — and it is last because it is the only
 story that can redden a sibling's worktree.
+
+The shape is `US1 → (US2 ‖ US3 ‖ US4) → US5`, and it is a deliberate reversal.
+This spec was first written as a five-deep chain because all three noun stories
+shared `factory/cli/main.py`. The registry deletes the shared file rather than
+scheduling around it, which is the better of the two fixes: the chain was buying
+safety by giving up parallelism 007 already proved works, on a factory whose
+every spec since has been serial. Watch the first concurrent landing — three
+nodes in the merge queue at once has not been exercised unattended, and a queue
+ejection costs `stall_after_s` (7200s) before anyone is told.
 
 Nothing in this epic changes workflow code, an activity, or a probe. Every
 reach into a running workflow goes through a signal or a query that already

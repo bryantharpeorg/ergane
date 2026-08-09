@@ -168,12 +168,45 @@ table extends rather than bends.
 
 ## Approach by story
 
-### US1 — the dispatcher and the contract (FR-001…FR-005)
+### US1 — the dispatcher, the contract, and the registry (FR-001…FR-005, FR-022)
 
-`factory/cli/main.py` holds the root parser and a noun registry;
+`factory/cli/main.py` holds the root parser and the discovery;
 `factory/cli/errors.py` holds one `OperatorError` (message + exit code, the
 shape `factory/workgraph/cli.py:117` already has) and one `run_cli(entry)`
 boundary that every noun's `main` goes through.
+
+**The registry (FR-022) is what makes US2–US4 concurrent, so it is not
+optional polish.** `factory/cli/nouns/` is a package; each module in it declares
+one module-level `NOUN`:
+
+```python
+@dataclass(frozen=True)
+class Noun:
+    name: str                       # "spec"
+    summary: str                    # the one line in `ergane --help`
+    order: int                      # display rank; ties break by name
+    add_parser: Callable[[Any], None]   # given the subparsers action, build mine
+```
+
+Discovery is `pkgutil.iter_modules(nouns.__path__)`, sorted by `(order, name)`.
+Stdlib, no dependency, no entry-point machinery that would need a reinstall to
+pick up a new file.
+
+Three rules the implementation must not soften:
+
+1. **No literal list of noun names anywhere in `factory/cli/`.** A fallback list
+   "for safety" reintroduces the shared file this design exists to delete, and
+   the fan-out silently becomes a chain again.
+2. **Import failure is named, not swallowed and not fatal to everything.** A
+   module that raises on import is reported as `ergane: noun 'build' failed to
+   load: <error>` on stderr with exit 1; the other nouns still work. Catching
+   and ignoring would make a half-installed tree look like a smaller CLI.
+3. **Order is declared, ties break by name.** Two nouns at the same `order` must
+   print in the same sequence every run, or the help output cannot be diffed.
+
+The contract sweep (FR-002) walks the parser tree returned by discovery rather
+than a fixture list, which is why US2, US3 and US4 inherit the exit-code
+contract without any of them editing US1's test file.
 
 The boundary is the whole contract:
 
@@ -292,6 +325,16 @@ failure.
    node that deletes or rewrites `factory/*/cli.py` before US5 breaks the run
    building it.
 
+9. **US2, US3 and US4 run at the same time in different worktrees.** This is the
+   first spec since 007 to declare real parallelism, and it is only safe while
+   the file sets stay disjoint (spec § Work Graph has the table). Create new
+   files; do not reach into a sibling's. Above all, do not add your noun to a
+   list in `factory/cli/main.py` — there is no list, that is the point, and
+   adding one puts three concurrent worktrees on one file. If your story
+   genuinely cannot be done without editing a file another story owns, stop and
+   say so; the honest answer is to collapse the fan-out, not to edit it and hope
+   the merge queue sorts it out.
+
 2. **The branch default is 020's fix — do not re-solve it, and do not lose it.**
    The factory lands on `ergane-buildout`; `main` moves only when an operator
    promotes, so a `main` default silently under-reports which stories are landed
@@ -358,7 +401,9 @@ failure.
 | A ported handler's behaviour drifts | 943 + 453 + 226 + 198 lines move rooms | The existing per-CLI test files move with their handlers and are not rewritten (SC-003) |
 | Transport errors silently become user errors | `EXIT_TRANSPORT` changes value from 2 to 3 | Trap 3: constants and `_preflight_exit_code` move together, pinned by a test |
 | The contract holds for today's commands and not tomorrow's | Every per-command test passes while the next CLI diverges | FR-002/FR-003: a sweep over the **parser tree**, plus the no-subclass assertion |
-| The cutover lands mid-epic and reddens siblings | US5 deletes scripts US2–US4's tests invoke | The work graph chains US5 last on US4 merged |
+| The cutover lands mid-epic and reddens siblings | US5 deletes scripts US2–US4's tests invoke | US5 waits on all three merged, not merely passed |
+| Three concurrent nodes collide on one file | The fan-out is only as safe as its disjointness | FR-022 removes the shared file; the Work Graph names every file each story owns, and trap 9 tells a node to stop rather than reach across |
+| A concurrent landing stalls unnoticed | A merge-queue ejection is invisible to the landing poller until `stall_after_s` (7200s) classifies it STALLED — untested unattended, and three nodes multiply it | Dispatch with `--max-concurrent-nodes 3` **watched** the first time; lower `stall_after_s` before any unattended concurrent run |
 | A credential reaches `ergane env` | It is a command whose whole job is to report configuration | `env` prints set/not-set for anything credential-shaped, never a value; asserted by the 001 grep pattern |
 | Help text fails the enforcement sweep | Argparse help is a scanned string constant | Trap 4, and the sweep runs in CI already |
 | `ergane` collides with an installed binary | The name is new on this host | T001 checks `command -v ergane` before anything else |

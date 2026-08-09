@@ -72,7 +72,7 @@ is a defect in how they are found, entered and scripted against.
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - One front door, one contract (Priority: P1)
+### User Story 1 - One front door, one contract, and a registry (Priority: P1)
 
 As the factory operator, I type `ergane` and see every noun the factory
 answers to, with one line each; I type `ergane <noun>` and see its verbs; and
@@ -84,6 +84,25 @@ nouns arrive in US2, US3 and US4 — and it is worth landing alone because it
 converts four independent programs into one program with four rooms, and
 because the contract it fixes is the thing every later story must inherit
 rather than re-decide.
+
+**A noun is a file, and the dispatcher finds it.** The root parser holds no
+list of nouns. It walks `factory/cli/nouns/` and loads the `NOUN` each module
+declares — name, one-line description, sort order, and the function that builds
+its subparser. Adding a noun is adding a file; removing one is deleting a file;
+neither is an edit to anything shared.
+
+That is not tidiness, it is the graph. A hand-written registry makes
+`factory/cli/main.py` a file that US2, US3 and US4 must all edit, which forces
+them into a chain — and this repository has already paid for two worktrees
+editing one module. Discovery makes those three stories touch **disjoint sets
+of new files**, so they dispatch as a concurrent fan-out instead of a queue.
+The dispatcher's contract sweep (FR-002) walks the parser tree rather than a
+list, so a noun that arrives later is held to the contract without US1's test
+being touched either.
+
+The cost is honest and bounded: a module that fails to import must be named,
+not swallowed, and the order nouns print in must be declared rather than
+accidental. Both are requirements below.
 
 Four codes, and the reason each exists:
 
@@ -104,35 +123,54 @@ Four codes, and the reason each exists:
 standalone value the day it lands — `ergane --help` is the first complete
 answer to "what can I do here" that has ever existed in this repository.
 
-**Independent Test**: with only the dispatcher registered, `ergane` and
-`ergane --help` list the nouns and exit 0; an unknown noun exits 2 with a usage
-line on stderr and nothing on stdout; a handler that raises the shared operator
-error exits 1 with one line on stderr; a handler that raises an unexpected
-exception exits 1 with one line naming `--debug`, and `--debug` prints the
-traceback; `Ctrl-C` exits 130. No subclass of `argparse.ArgumentParser` exists
-anywhere under `factory/`.
+**Independent Test**: with a fixture noun package, a module dropped into it
+appears in `ergane --help` with no edit to any existing file, and removing it
+removes the noun; two nouns declaring the same order sort deterministically; a
+module that raises on import is named on stderr with exit 1 rather than
+tracebacking. With only the dispatcher registered, `ergane` and `ergane --help`
+list the nouns and exit 0; an unknown noun exits 2 with a usage line on stderr
+and nothing on stdout; a handler that raises the shared operator error exits 1
+with one line on stderr; a handler that raises an unexpected exception exits 1
+with one line naming `--debug`, and `--debug` prints the traceback; `Ctrl-C`
+exits 130. No subclass of `argparse.ArgumentParser` exists anywhere under
+`factory/`.
 
 **Acceptance Scenarios**:
 
 1. **Given** no arguments, **When** `ergane` runs, **Then** it prints every
-   registered noun with a one-line description and exits 0 — a bare invocation
+   discovered noun with a one-line description and exits 0 — a bare invocation
    is a request for orientation, never an error.
-2. **Given** an unknown noun or an unknown flag, **When** the command runs,
+2. **Given** a new module dropped into the noun package declaring a `NOUN`,
+   **When** `ergane --help` runs, **Then** the noun appears with **no edit to
+   any existing file**; and **Given** that module is deleted, **When** it runs
+   again, **Then** the noun is gone. This is the requirement that lets US2, US3
+   and US4 dispatch concurrently — if a noun cannot be added without touching a
+   shared file, they are a chain again.
+3. **Given** two nouns declaring the same sort order, **When** the help is
+   printed twice, **Then** the order is identical both times — ties break by
+   name, because a listing that reshuffles between runs is a listing nobody can
+   diff.
+4. **Given** a noun module that raises on import — a half-installed tree —
+   **When** any `ergane` command runs, **Then** the failure names the noun and
+   exits 1, and no traceback is printed without `--debug`. One broken noun MUST
+   NOT take the whole front door down.
+5. **Given** an unknown noun or an unknown flag, **When** the command runs,
    **Then** it exits **2** with a usage line on stderr and stdout is empty.
-3. **Given** a handler that raises the shared operator error, **When** the
+6. **Given** a handler that raises the shared operator error, **When** the
    command runs, **Then** it exits **1**, the message is one line on stderr,
    and no traceback is printed.
-4. **Given** a handler that raises an unexpected exception, **When** the command
+7. **Given** a handler that raises an unexpected exception, **When** the command
    runs, **Then** it exits **1** with one line on stderr naming `--debug` as
    the way to see more, and **When** the same command runs with `--debug`,
    **Then** the traceback is printed.
-5. **Given** `ergane --version`, **When** it runs, **Then** it prints the
+8. **Given** `ergane --version`, **When** it runs, **Then** it prints the
    package version, the revision of the tree it is running from, and the
    Temporal address and proxy url it *would* dial, without dialling either and
    without printing any credential value.
-6. **Given** any registered subcommand path, **When** it is given a bad flag,
+9. **Given** any discovered subcommand path, **When** it is given a bad flag,
    **Then** it exits 2 — the contract is a property of the dispatcher, not a
-   habit each handler is trusted to keep.
+   habit each handler is trusted to keep, and the sweep walks the parser tree
+   so a noun added after this story is covered without editing its test.
 
 ---
 
@@ -407,10 +445,11 @@ command set moved; the full suite is green.
 ### Functional Requirements
 
 - **FR-001**: A single console script `ergane` MUST be the entry point.
-  `ergane` with no arguments and `ergane --help` MUST list every registered
+  `ergane` with no arguments and `ergane --help` MUST list every discovered
   noun with a one-line description; `ergane <noun>` and `ergane <noun> --help`
   MUST list that noun's verbs; `ergane <noun> <verb> --help` MUST document its
   flags. A bare invocation MUST exit 0.
+  Which nouns exist is FR-022's discovery, never a list written here or in code.
 - **FR-002**: Every subcommand MUST share one exit-code contract: `0` success
   including an empty result, `1` an operator-fixable error, `2` a usage error,
   `3` a service that did not answer, `130` interrupt. The contract MUST hold
@@ -489,6 +528,18 @@ command set moved; the full suite is green.
   supersession of `001/contracts/cli.md`'s and `005/contracts/cli.md`'s
   exit-code tables and of 005's clause scoping signals to the `temporal`
   binary. Neither contract file MUST be edited.
+- **FR-022**: Nouns MUST be **discovered from the filesystem**, not listed in
+  code. Each noun is one module under the noun package declaring a `NOUN` with
+  its name, one-line description, sort order, and subparser builder. Adding a
+  noun MUST require creating exactly one new file and editing none, and the
+  dispatcher MUST hold no literal list of noun names. Display order MUST come
+  from the declared order with ties broken by name, so the listing is stable
+  across runs. A noun module that raises on import MUST be reported by name
+  with exit 1 and MUST NOT prevent the other nouns from working.
+  (US1's requirement, numbered last because it was added after the rest — the
+  numbers are declaration identity, not reading order. It is what makes US2,
+  US3 and US4 a concurrent fan-out instead of a chain, so a US1 that ships
+  without it has not finished: the three stories behind it would collide.)
 
 ### Key Entities
 
@@ -526,41 +577,69 @@ command set moved; the full suite is green.
 
 ## Work Graph
 
-A chain, not a fan-out, and deliberately so. US2, US3 and US4 each register a
-noun into the dispatcher US1 lands, which means all three edit the same module.
-Two concurrent worktrees editing one module is the collision that node
+A diamond: `US1 → (US2 ‖ US3 ‖ US4) → US5`.
+
+The middle three used to be a chain, and FR-001a is what unchained them. A
+hand-written noun list would make `factory/cli/main.py` a file all three must
+edit, and two concurrent worktrees editing one module is the collision node
 concurrency avoids by disjointness rather than by luck — the argument 018 made
 about `adapter.py`, and the reason 009's first run built US2 against a tree
-that had no `factory/roadmap/` in it. The default bound is one node at a time
-anyway, so the chain costs nothing real and removes the hazard entirely.
+that had no `factory/roadmap/` in it. Filesystem discovery removes the shared
+file instead of scheduling around it, which is the better of the two fixes: the
+chain was buying safety by giving up the parallelism 007 already proved works.
+
+Disjointness is a property to check, not to assert, so here is the check. Each
+middle story creates only new files:
+
+| | source | tests |
+| --- | --- | --- |
+| US2 | `nouns/spec.py` | `tests/test_ergane_spec.py` |
+| US3 | `nouns/build.py` | `tests/test_ergane_build.py` |
+| US4 | `nouns/{roadmap,doctor,findings,usage,repo,system}.py` | `tests/test_ergane_ports.py` |
+
+No file appears twice. `pyproject.toml` is US1's and then US5's, never theirs.
+US1's contract sweep walks the parser tree rather than a list, so each new noun
+is held to the exit-code contract without any of the three editing US1's test
+file. If a story finds itself needing to edit a file another story owns, the
+disjointness claim is broken and the fan-out must collapse back to a chain —
+say so rather than editing it.
 
 Every edge is a **merge** edge. A pass edge here would let a node be dispatched
 into a worktree whose base predates the dispatcher it is registering into,
-which is the exact failure the merge edge exists for.
+which is the exact failure the merge edge exists for. The three concurrent
+nodes therefore all pin to a base containing US1's registry, and each lands
+through the queue independently; the merge-group build re-tests the speculative
+merge, which is what keeps three simultaneous landings from reddening trunk.
 
-US5 chains last on US4 because it removes the scripts the other four stories'
-tests still invoke: a cutover that lands before its predecessors turns their
-worktrees red for a reason that has nothing to do with their work.
+US5 waits on all three merged, not merely passed, because it removes the four
+scripts every one of their test files still invokes — and because a cutover
+that lands before its siblings turns their worktrees red for a reason that has
+nothing to do with their work.
+
+This is the first spec in the repository since 007 to declare real parallelism.
+It is worth dispatching with `--max-concurrent-nodes 3`, and worth watching the
+first time, because the landing-poller's stall bound (7200s) is the one part of
+concurrent landing that has never been exercised unattended.
 
 ```yaml
 US1:
   depends_on: []
-  implements: [FR-001, FR-002, FR-003, FR-004, FR-005]
+  implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-022]
 US2:
   depends_on: []
   depends_on_merged: [US1]
   implements: [FR-006, FR-007, FR-008, FR-009]
 US3:
   depends_on: []
-  depends_on_merged: [US2]
+  depends_on_merged: [US1]
   implements: [FR-010, FR-011, FR-012, FR-013, FR-014]
 US4:
   depends_on: []
-  depends_on_merged: [US3]
+  depends_on_merged: [US1]
   implements: [FR-015, FR-016, FR-017, FR-018]
 US5:
   depends_on: []
-  depends_on_merged: [US4]
+  depends_on_merged: [US2, US3, US4]
   implements: [FR-019, FR-020, FR-021]
 ```
 
