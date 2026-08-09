@@ -400,6 +400,7 @@ async def run_roadmap(
     *,
     statuses: dict[str, EpicStatus] | None = None,
     max_concurrent_epics: int = 1,
+    max_concurrent_nodes: int | None = None,
     on_dispatch: Callable[[str], None] | None = None,
     on_complete: Callable[[str], None] | None = None,
     child_starts: list[ChildStartRecord] | None = None,
@@ -468,14 +469,17 @@ async def run_roadmap(
             # roadmap's child is a workflow, so it needs the shared state.)
             workflow_runner=UnsandboxedWorkflowRunner(),
         ):
+            input_kwargs: dict[str, Any] = {
+                "specs_root": specs_root,
+                "target_repo": TARGET_REPO,
+                "proxy_url": PROXY_URL,
+                "max_concurrent_epics": max_concurrent_epics,
+            }
+            if max_concurrent_nodes is not None:
+                input_kwargs["max_concurrent_nodes"] = max_concurrent_nodes
             handle = await env.client.start_workflow(
                 RoadmapWorkflow.run,
-                RoadmapInput(
-                    specs_root=specs_root,
-                    target_repo=TARGET_REPO,
-                    proxy_url=PROXY_URL,
-                    max_concurrent_epics=max_concurrent_epics,
-                ),
+                RoadmapInput(**input_kwargs),
                 id=roadmap_workflow_id(specs_root),
                 task_queue="workgraph",
             )
@@ -1015,3 +1019,177 @@ async def test_no_credential_reaches_any_roadmap_surface(
     # one from the environment. The preflight seam read the canary from the
     # environment — the assertion is that it stayed in the seam.
     _sweep_surfaces_for_secret(SECRET)
+
+
+# ============================================================================
+# T006 / T007 / T008 — US2 node concurrency (must fail before the field lands)
+# ============================================================================
+
+
+async def test_a_dispatchable_spec_receives_the_node_bound_in_its_epic_input(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """Acceptance 1 / FR-004: a roadmap started with a node bound of 3 starts
+    its child with `max_concurrent_nodes=3`."""
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-alpha": dict(state=SpecState.READY)},
+    )
+    starts: list[ChildStartRecord] = []
+    await run_to_completion(
+        env,
+        RoadmapWorld(),
+        str(specs_root),
+        max_concurrent_nodes=3,
+        child_starts=starts,
+    )
+    assert len(starts) == 1, starts
+    child_input: EpicInput = starts[0].args[0]
+    assert child_input.max_concurrent_nodes == 3, child_input
+
+
+async def test_a_dispatchable_spec_receives_default_one_when_no_node_bound_given(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """Acceptance 2 / FR-004: a roadmap started without a node bound starts its
+    child with `max_concurrent_nodes=1` exactly, so the expression is required
+    and the default is not merely a coincidence on both sides."""
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-alpha": dict(state=SpecState.READY)},
+    )
+    starts: list[ChildStartRecord] = []
+    await run_to_completion(
+        env,
+        RoadmapWorld(),
+        str(specs_root),
+        child_starts=starts,
+    )
+    assert len(starts) == 1, starts
+    child_input: EpicInput = starts[0].args[0]
+    assert child_input.max_concurrent_nodes == 1, child_input
+
+
+@pytest.mark.parametrize(
+    "bad_bound, expected_text",
+    [
+        (0, "0"),
+        (-1, "-1"),
+    ],
+)
+async def test_a_bad_node_bound_is_refused_at_start(
+    env: WorkflowEnvironment,
+    tmp_path: Path,
+    bad_bound: Any,
+    expected_text: str,
+) -> None:
+    """Acceptance 3 / FR-005: zero and negative node bounds are refused at
+    roadmap start with the value named."""
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-alpha": dict(state=SpecState.READY)},
+    )
+    with pytest.raises(Exception) as excinfo:
+        await run_to_completion(
+            env,
+            RoadmapWorld(),
+            str(specs_root),
+            max_concurrent_nodes=bad_bound,  # type: ignore[arg-type]
+        )
+    message = str(excinfo.value)
+    # Temporal wraps the workflow exception in WorkflowFailureError, whose
+    # `__cause__` holds the real ApplicationError from the workflow.
+    if excinfo.value.__cause__ is not None:
+        message = str(excinfo.value.__cause__)
+    assert expected_text in message, message
+    assert "max_concurrent_nodes" in message, message
+
+
+@pytest.mark.parametrize(
+    "bad_bound, expected_text",
+    [
+        (True, "True"),
+        ("three", "'three'"),
+        (3.14, "3.14"),
+    ],
+)
+def test_a_non_integer_node_bound_is_refused_by_validation(
+    bad_bound: Any,
+    expected_text: str,
+) -> None:
+    """FR-005: boolean and non-integer node bounds are refused by validation.
+
+    Temporal's payload converter coerces or rejects some of these before the
+    workflow body runs, so this exercises `RoadmapWorkflow._validate_input`
+    directly to prove the guard exists and names the value. The boolean case
+    matters because `isinstance(True, int)` is `True` (trap 5).
+    """
+    from factory.roadmap.workflow import RoadmapWorkflow
+    from temporalio.exceptions import ApplicationError
+
+    request = RoadmapInput(
+        specs_root="/tmp/specs",
+        target_repo="/tmp/target",
+        proxy_url="http://proxy.test",
+        max_concurrent_nodes=bad_bound,  # type: ignore[arg-type]
+    )
+    with pytest.raises(ApplicationError) as excinfo:
+        RoadmapWorkflow._validate_input(request)
+    assert expected_text in str(excinfo.value)
+    assert "max_concurrent_nodes" in str(excinfo.value)
+
+
+async def test_roadmap_status_reports_both_bounds(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """Acceptance 4 / FR-005: `roadmap_status` names the node bound alongside
+    the epic bound so the operator can read the knob they set."""
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-alpha": dict(state=SpecState.READY)},
+    )
+    async with run_roadmap(
+        env,
+        RoadmapWorld(),
+        str(specs_root),
+        max_concurrent_epics=2,
+        max_concurrent_nodes=3,
+    ) as handle:
+        status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+        assert status.max_concurrent_epics == 2, status
+        assert status.max_concurrent_nodes == 3, status
+
+
+async def test_node_bound_survives_continue_as_new(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """FR-004 / trap 4: the node bound rides `RoadmapCarryOver` across a
+    continue-as-new boundary. Without this the first CAN silently reverts it
+    to 1.
+
+    Two dispatchable specs with the bound at one and node bound at 3: the
+    first epic dispatches and lands, the roadmap continues-as-new, and the
+    second epic must still receive `max_concurrent_nodes=3`.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    starts: list[ChildStartRecord] = []
+    status = await run_to_completion(
+        env,
+        RoadmapWorld(),
+        str(specs_root),
+        max_concurrent_nodes=3,
+        child_starts=starts,
+    )
+    # Both dispatched and landed.
+    assert _status_of(status, "001-alpha").landed is True
+    assert _status_of(status, "002-bravo").landed is True
+    assert len(starts) == 2, starts
+    for record in starts:
+        child_input: EpicInput = record.args[0]
+        assert child_input.max_concurrent_nodes == 3, child_input

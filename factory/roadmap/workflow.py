@@ -167,6 +167,11 @@ class RoadmapInput:
     target_repo: str
     proxy_url: str
     max_concurrent_epics: int = 1
+    #: How many ready nodes each child epic may have in flight at once (US2,
+    #: FR-004). Defaulting to 1 preserves today's sequential behaviour for an
+    #: unconfigured roadmap (acceptance 2). Validated in `run` beside the epic
+    #: bound, and forwarded to every child `EpicInput`.
+    max_concurrent_nodes: int = 1
     landing_config: LandingConfig = LandingConfig()
     config: VerificationConfig = VerificationConfig()
     poll_interval_s: int = 30
@@ -205,7 +210,8 @@ class RoadmapCarryOver:
     `landed` and `parked` are the observed-landed and parked-finding maps the
     run accumulated; `promotions` are the spec dirs the operator promoted by
     signal (FR-008); `paused` is the pause flag (FR-008); `max_concurrent_epics`
-    is the bound (FR-005), carried so a restart honours the operator's knob.
+    and `max_concurrent_nodes` are the bounds (FR-005/US2), carried so a restart
+    honours the operator's knobs.
 
     No credential reaches any field (FR-009): `ParkedFinding.detail` carries a
     refusal's text, never a key; the maps hold spec dirs and `LandedStatus`es.
@@ -216,6 +222,7 @@ class RoadmapCarryOver:
     promotions: tuple[str, ...] = ()
     paused: bool = False
     max_concurrent_epics: int = 1
+    max_concurrent_nodes: int = 1
 
     @classmethod
     def from_state(
@@ -226,6 +233,7 @@ class RoadmapCarryOver:
         promotions: dict[str, None] | set[str],
         paused: bool,
         max_concurrent_epics: int,
+        max_concurrent_nodes: int,
     ) -> "RoadmapCarryOver":
         """Build a carry-over from the run's live (mutable) state.
 
@@ -239,6 +247,7 @@ class RoadmapCarryOver:
             promotions=tuple(sorted(set(promotions))),
             paused=paused,
             max_concurrent_epics=max_concurrent_epics,
+            max_concurrent_nodes=max_concurrent_nodes,
         )
 
     def landed_map(self) -> dict[str, LandedStatus]:
@@ -294,17 +303,18 @@ class RoadmapStatus:
 
     `specs` is every spec in sorted order, `running` is the spec dirs whose
     child epics are in flight, `parked` is the specs refused this run with
-    their findings verbatim, and `max_concurrent_epics` is the bound in force
-    (FR-005). `paused` is US3's pause flag (FR-008): a roadmap between epics
-    reports it is not dispatching because the operator parked it, not because
-    nothing is ready. No credential reaches any field (FR-009, asserted in
-    T012).
+    their findings verbatim, and `max_concurrent_epics` and
+    `max_concurrent_nodes` are the bounds in force (FR-005, US2). `paused` is
+    US3's pause flag (FR-008): a roadmap between epics reports it is not
+    dispatching because the operator parked it, not because nothing is ready.
+    No credential reaches any field (FR-009, asserted in T012).
     """
 
     specs: list[RoadmapSpecStatus]
     running: list[str]
     parked: list[ParkedFinding]
     max_concurrent_epics: int
+    max_concurrent_nodes: int
     paused: bool = False
 
 
@@ -402,6 +412,7 @@ class RoadmapWorkflow:
         #: these — never polls — so a completion is the event that wakes it.
         self._children: dict[str, Any] = {}
         self._max_concurrent_epics = 1
+        self._max_concurrent_nodes = 1
         #: Spec text read this pass, used by the drift resolver (FR-009). It is
         #: refreshed each time the corpus is re-read and fed to `derive_spec`, so
         #: the drift activity compares the same text that derivation uses.
@@ -523,10 +534,35 @@ class RoadmapWorkflow:
             running=sorted(self._children),
             parked=[self._parked[d] for d in sorted(self._parked)],
             max_concurrent_epics=self._max_concurrent_epics,
+            max_concurrent_nodes=self._max_concurrent_nodes,
             paused=self._paused,
         )
 
     # --- the main loop ---------------------------------------------------------
+
+    @staticmethod
+    def _validate_input(request: RoadmapInput) -> None:
+        """Refuse bad input at roadmap start, with the offending value named.
+
+        Both bounds must be positive integers, and `bool` is explicitly
+        excluded because `isinstance(True, int)` is `True` (trap 5).
+        """
+        if not isinstance(request.max_concurrent_epics, int) or isinstance(
+            request.max_concurrent_epics, bool
+        ) or request.max_concurrent_epics < 1:
+            raise ApplicationError(
+                f"max_concurrent_epics must be a positive integer, got "
+                f"{request.max_concurrent_epics!r}",
+                non_retryable=True,
+            )
+        if not isinstance(request.max_concurrent_nodes, int) or isinstance(
+            request.max_concurrent_nodes, bool
+        ) or request.max_concurrent_nodes < 1:
+            raise ApplicationError(
+                f"max_concurrent_nodes must be a positive integer, got "
+                f"{request.max_concurrent_nodes!r}",
+                non_retryable=True,
+            )
 
     @workflow.run
     async def run(self, request: RoadmapInput) -> RoadmapStatus:
@@ -543,15 +579,9 @@ class RoadmapWorkflow:
         with the number of epics (FR-007); when nothing is dispatchable and
         none is in flight, returns.
         """
-        if not isinstance(request.max_concurrent_epics, int) or isinstance(
-            request.max_concurrent_epics, bool
-        ) or request.max_concurrent_epics < 1:
-            raise ApplicationError(
-                f"max_concurrent_epics must be a positive integer, got "
-                f"{request.max_concurrent_epics!r}",
-                non_retryable=True,
-            )
+        self._validate_input(request)
         self._max_concurrent_epics = request.max_concurrent_epics
+        self._max_concurrent_nodes = request.max_concurrent_nodes
         # US3: repopulate the run's state from the carry-over (FR-007). The
         # first run has no carry-over; a run resuming after continue-as-new
         # receives the previous run's landings, parked findings, promotions,
@@ -562,6 +592,7 @@ class RoadmapWorkflow:
             self._promotions = {d: None for d in request.carry_over.promotion_set()}
             self._paused = request.carry_over.paused
             self._max_concurrent_epics = request.carry_over.max_concurrent_epics
+            self._max_concurrent_nodes = request.carry_over.max_concurrent_nodes
 
         # Whether any child concluded this run — the gate for continue-as-new.
         # CAN fires at quiescence only after a child has concluded, so a run
@@ -707,6 +738,7 @@ class RoadmapWorkflow:
             promotions=self._promotions,
             paused=self._paused,
             max_concurrent_epics=self._max_concurrent_epics,
+            max_concurrent_nodes=self._max_concurrent_nodes,
         )
         return await workflow.continue_as_new(
             RoadmapInput(
@@ -714,6 +746,7 @@ class RoadmapWorkflow:
                 target_repo=request.target_repo,
                 proxy_url=request.proxy_url,
                 max_concurrent_epics=request.max_concurrent_epics,
+                max_concurrent_nodes=request.max_concurrent_nodes,
                 landing_config=request.landing_config,
                 config=request.config,
                 poll_interval_s=request.poll_interval_s,
@@ -875,6 +908,7 @@ class RoadmapWorkflow:
                     config=request.config,
                     poll_interval_s=request.poll_interval_s,
                     landing_config=request.landing_config,
+                    max_concurrent_nodes=request.max_concurrent_nodes,
                 ),
                 id=child_workflow_id,
                 task_queue=TASK_QUEUE,
