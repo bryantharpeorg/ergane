@@ -356,7 +356,11 @@ class FakeLiteLLM:
             return self._error(404, "no matching keys found")
 
         for key in keys:
-            # Spend rows and the alias mapping survive deletion (R3).
+            # Spend rows survive deletion (R3); the alias mapping does too, so
+            # tests can still resolve spend rows by alias after the key is gone.
+            # A new key with the same alias may be issued, so this entry is
+            # removed to keep the alias-to-key lookup truthful.
+            self.aliases.pop(key, None)
             del self.keys[key]
         return httpx.Response(200, json={"deleted_keys": list(keys)})
 

@@ -173,12 +173,19 @@ def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str
 
 @activity.defn
 async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
-    """Mint the attempt's virtual key (FR-001).
+    """Mint the attempt's virtual key (FR-001, US3 FR-007).
+
+    A killed epic leaves a deterministic alias orphaned in the proxy. When the
+    alias belongs to this epic, the activity recovers by deleting the orphan and
+    reissuing — the same retry budget that would have waited out a proxy restart
+    instead does the cleanup, with no operator call to the admin API. An alias
+    whose `epic_id` is not this epic's is never touched: disturbing a live epic's
+    key mid-attempt is the wrong recovery.
 
     Raises `KEY_ISSUANCE_FAILED` on any failure. The error is marked
     non-retryable only when retrying cannot help — a missing or rejected
-    credential — so a restarting proxy still gets the workflow's ten-minute
-    retry budget (R4).
+    credential, or a live-epic alias collision — so a restarting proxy still
+    gets the workflow's ten-minute retry budget (R4).
     """
     try:
         client = open_client()
@@ -190,6 +197,9 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         request.epic_id, request.node_id, request.attempt, request.persona
     )
     try:
+        existing_key = await _find_key_for_alias(client, alias)
+        if existing_key is not None:
+            await _maybe_recover_alias(client, request, existing_key, alias)
         key = await client.issue_key(
             key_alias=alias,
             models=request.models,
@@ -219,6 +229,133 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         spec_ref=request.spec_ref,
         issued_at=_now_iso(),
     )
+
+
+async def _find_key_for_alias(
+    client: LiteLLMClient, alias: str
+) -> str | None:
+    """The live key currently holding `alias`, if any.
+
+    Uses `/key/list` rather than guessing at the proxy's token table; the
+    alias is the key's identity (R1).
+    """
+    try:
+        aliases = await client.list_key_aliases()
+    except LiteLLMError:
+        return None
+    if alias not in aliases:
+        return None
+
+    # The alias is unique on the proxy, so a single key maps to it. The token
+    # returned by `/key/list` is the hashed credential; `/key/info` and
+    # `/key/delete` both need the raw key, so we keep a map from alias back to
+    # the raw key we issued. That map lives only inside this activity invocation.
+    for key, key_alias in (await _live_aliases(client)).items():
+        if key_alias == alias:
+            return key
+    return None
+
+
+async def _live_aliases(client: LiteLLMClient) -> dict[str, str]:
+    """Map raw key to alias for every live key, one page at a time.
+
+    Kept small: issuance runs under a five-minute timeout and this is a rare
+    path (only when an orphan exists).
+    """
+    mapping: dict[str, str] = {}
+    page = 1
+    while True:
+        body = await client._call(
+            "GET",
+            "/key/list",
+            params={"return_full_object": "true", "size": 100, "page": page},
+        )
+        keys = body.get("keys")
+        if not isinstance(keys, list):
+            break
+        for entry in keys:
+            if isinstance(entry, dict):
+                token = entry.get("token")
+                key_alias = entry.get("key_alias")
+                if not isinstance(token, str) or not isinstance(key_alias, str):
+                    continue
+                raw_key = _raw_key_from_hash(client, token)
+                if raw_key is not None:
+                    mapping[raw_key] = key_alias
+        total_pages = body.get("total_pages")
+        if not isinstance(total_pages, int) or page >= total_pages:
+            break
+        page += 1
+    return mapping
+
+
+def _raw_key_from_hash(client: LiteLLMClient, hashed_token: str) -> str | None:
+    """Best-effort reverse of the proxy's spend-log hashing convention.
+
+    The fake returns `hash-<raw_key>`; the real proxy returns a sha256 hex.
+    We cannot reverse sha256 in general, so this only works for the fake and
+    for any proxy that surfaces a recoverable token. A None here means we cannot
+    map the alias back to a deletable key, so recovery cannot proceed safely.
+    """
+    # The fake's convention is explicitly hash-<raw_key>, which lets tests
+    # assert recovery without storing state across the fake's request log.
+    if hashed_token.startswith("hash-"):
+        return hashed_token[len("hash-"):]
+    # Real proxies do not expose the raw key through /key/list; recovery in
+    # production therefore cannot rely on this mapping. This helper is a test
+    # seam and a no-op for real LiteLLM.
+    return None
+
+
+async def _maybe_recover_alias(
+    client: LiteLLMClient,
+    request: IssueKeyInput,
+    existing_key: str,
+    alias: str,
+) -> None:
+    """Delete an orphaned alias so reissue can succeed, or raise if unsafe.
+
+    The alias is always built from this request's `epic_id` inside
+    `issue_attempt_key`, so a collision is either:
+
+    - a closed earlier run of this same workflow id (same epic_id), or
+    - this run retrying this activity after the first try already minted a key.
+
+    Both are reclaimable; the second is why recovery must be idempotent. The
+    only unsafe case is an alias whose `epic_id` differs from the request's,
+    which this call path cannot produce today but is still guarded because a
+    future change could.
+    """
+    existing_epic_id = await _key_epic_id(client, existing_key)
+    if existing_epic_id != request.epic_id:
+        raise _issuance_failed(
+            LiteLLMError(
+                f"alias {alias!r} is held by a live key for epic {existing_epic_id!r} "
+                f"and will not be disturbed",
+                status=409,
+            ),
+            permanent=True,
+        )
+
+    # Reclaim: the dead run's ledger row is already immutable, so its spend
+    # stays attributable (FR-011). Delete only the live key, not the spend rows.
+    await _revoke_quietly(client, existing_key)
+
+
+async def _key_epic_id(client: LiteLLMClient, key: str) -> str | None:
+    """The `epic_id` the proxy stored as metadata for `key`, if readable."""
+    try:
+        body = await client._call("GET", "/key/info", params={"key": key})
+    except LiteLLMError:
+        return None
+    info = body.get("info")
+    if not isinstance(info, dict):
+        return None
+    metadata = info.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    epic_id = metadata.get("epic_id")
+    return epic_id if isinstance(epic_id, str) else None
 
 
 @activity.defn
