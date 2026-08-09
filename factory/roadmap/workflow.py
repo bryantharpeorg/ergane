@@ -77,6 +77,15 @@ from temporalio.exceptions import ApplicationError, FailureError
 from temporalio.workflow import ParentClosePolicy
 
 with workflow.unsafe.imports_passed_through():
+    from factory.activities.notify_activities import (
+        RecordRoadmapFailureInput,
+        RecordRoadmapFailureResult,
+        ResetRoadmapFailuresInput,
+        SendEscalationInput,
+        record_roadmap_failure,
+        reset_roadmap_failures,
+        send_escalation,
+    )
     from factory.activities.roadmap_activities import (
         CloneInput,
         CountOpenInput,
@@ -91,6 +100,10 @@ with workflow.unsafe.imports_passed_through():
         onboard_target,
         preflight_spec,
     )
+    from factory.activities.verify_activities import (
+        DEFAULT_VERIFICATION_DB_PATH,
+        VERIFICATION_DB_PATH_ENV,
+    )
     from factory.mergequeue.models import LandingConfig, LandingState, TargetRepoProfile
     from factory.roadmap.models import (
         LandedKind,
@@ -102,7 +115,7 @@ with workflow.unsafe.imports_passed_through():
         compute_readiness,
         read_roadmap,
     )
-    from factory.verify.models import VerificationConfig
+    from factory.verify.models import EscalationChoice, VerificationConfig
     from factory.workgraph.models import EpicState
     from factory.workgraph.preflight import PreflightFinding
     from factory.workgraph.workflow import (
@@ -111,6 +124,30 @@ with workflow.unsafe.imports_passed_through():
         EpicStatus,
         EpicWorkflow,
     )
+
+
+#: Sentinel node id for a roadmap-level escalation.  A roadmap run is not a node,
+#: but the escalations table is keyed by (epic_id, node_id); this sentinel keeps
+#: roadmap failures in the same table and queryable as `node_id = 'roadmap'`.
+_ROADMAP_NODE_ID = "roadmap"
+
+
+def _verification_db_path() -> str:
+    """The store path the worker environment names, defaulting to the standard one."""
+    from os import environ
+
+    return environ.get(VERIFICATION_DB_PATH_ENV) or DEFAULT_VERIFICATION_DB_PATH
+
+
+def _should_notify_failure(count: int) -> bool:
+    """Throttle repeated identical failures (FR-009, acceptance 2).
+
+    The first failure is always reported; subsequent identical failures report
+    only when the count is a multiple of three, so 1, 3, 6, 9, ... produce
+    notifications while 2, 4, 5, 7, ... do not. This caps the message rate while
+    still ensuring the count is carried in the next notification.
+    """
+    return count == 1 or count % 3 == 0
 
 
 #: The id convention the roadmap takes: `roadmap-<specs-root-name>`, the sibling
@@ -341,6 +378,15 @@ _RETRIES = RetryPolicy(
     maximum_attempts=3,
 )
 _FAST = {"start_to_close_timeout": timedelta(minutes=2), "retry_policy": _RETRIES}
+
+#: Notification attempts: one try. A notifier that is down is data, not an error
+#: (R11); delivery failures are reported as `delivered=False` and the workflow
+#: moves on. Retrying only stalls the node on a dependency the escalation path
+#: was designed not to have.
+_NOTIFY = {
+    "start_to_close_timeout": timedelta(minutes=1),
+    "retry_policy": RetryPolicy(maximum_attempts=1),
+}
 
 #: git, which may be fetching a large repository for the first time (the same
 #: bound the workgraph workflow's `_GIT` uses, derived from `worktree.GIT_TIMEOUT_S`).
@@ -602,7 +648,23 @@ class RoadmapWorkflow:
         continues-as-new carrying the run's state, so no run's history grows
         with the number of epics (FR-007); when nothing is dispatchable and
         none is in flight, returns.
+
+        US4: a failure anywhere inside the loop is caught at the boundary,
+        recorded durably, and reported to the operator before re-raising.
+        This covers failures the run can observe; it does not cover a failure
+        during continue-as-new, a terminated workflow, or a worker that dies —
+        those are the heartbeat's job.
         """
+        try:
+            return await self._run_inner(request)
+        except Exception as exc:
+            # The loop body failed. Record and report before re-raising so the
+            # operator knows the scheduler is stuck (FR-009/010).
+            await self._report_run_failure(request, exc)
+            raise
+
+    async def _run_inner(self, request: RoadmapInput) -> RoadmapStatus:
+        """The scheduler body, separated from the failure boundary (FR-009)."""
         self._validate_input(request)
         self._max_concurrent_epics = request.max_concurrent_epics
         self._max_concurrent_nodes = request.max_concurrent_nodes
@@ -763,6 +825,9 @@ class RoadmapWorkflow:
                     return await self._continue_as_new(request)
             break
 
+        # A successful run clears any accumulated consecutive-failure count and
+        # reports recovery if there were prior failures (FR-009, acceptance 3).
+        await self._report_run_success(request)
         return self.roadmap_status()
 
     # --- continue-as-new: the durability boundary (FR-007) -------------------
@@ -802,6 +867,94 @@ class RoadmapWorkflow:
                 carry_over=carry,
             ),
         )
+
+    # --- US4 failure reporting (FR-009/010) -----------------------------------
+
+    def _roadmap_failure_message(self, exc: Exception) -> str:
+        """The failure message, verbatim from the exception (FR-009).
+
+        A `FailureError` from an activity carries the useful detail on its
+        cause; otherwise the exception's own string is used. No credential may
+        be added here: the summary must contain only the failure's own text.
+        """
+        if isinstance(exc, FailureError) and exc.cause is not None:
+            return str(exc.cause)
+        return str(exc)
+
+    async def _report_run_failure(self, request: RoadmapInput, exc: Exception) -> None:
+        """Record the failure durably and page the operator before re-raising.
+
+        The count of consecutive failures is kept in the verification store so
+        it survives workflow restarts. The escalation row is written before the
+        send is attempted (FR-010): a notifier that is down loses the message, not
+        the fact. Repetition is throttled so one message carries the count
+        instead of one message per failure (FR-009, acceptance 2).
+        """
+        roadmap_id = workflow.info().workflow_id
+        failure_text = self._roadmap_failure_message(exc)
+
+        result: RecordRoadmapFailureResult = await workflow.execute_activity(
+            record_roadmap_failure,
+            RecordRoadmapFailureInput(
+                db_path=_verification_db_path(),
+                roadmap_id=roadmap_id,
+                failure_text=failure_text,
+            ),
+            **_FAST,
+        )
+
+        if not _should_notify_failure(result.count):
+            return
+
+        summary = (
+            f"Roadmap {roadmap_id} failed ({result.count} consecutive run"
+            + ("s" if result.count != 1 else "")
+            + f"): {failure_text}"
+        )
+        await workflow.execute_activity(
+            send_escalation,
+            SendEscalationInput(
+                workflow_id=roadmap_id,
+                epic_id=roadmap_id,
+                node_id=_ROADMAP_NODE_ID,
+                history_summary=summary,
+                choices=[EscalationChoice.RETRY, EscalationChoice.KILL],
+                escalation_id=result.escalation_id,
+            ),
+            **_NOTIFY,
+        )
+
+    async def _report_run_success(self, request: RoadmapInput) -> None:
+        """Report recovery after prior failures.
+
+        A successful pass resets the consecutive-failure count (FR-009,
+        acceptance 3). If the store shows prior failures, a recovery message is
+        sent so the operator knows the scheduler is healthy again.
+        """
+        roadmap_id = workflow.info().workflow_id
+        prior_count = await workflow.execute_activity(
+            reset_roadmap_failures,
+            ResetRoadmapFailuresInput(
+                db_path=_verification_db_path(),
+                roadmap_id=roadmap_id,
+            ),
+            **_FAST,
+        )
+        if prior_count:
+            summary = f"Roadmap {roadmap_id} recovered after {prior_count} consecutive failure" + (
+                "s" if prior_count != 1 else ""
+            )
+            await workflow.execute_activity(
+                send_escalation,
+                SendEscalationInput(
+                    workflow_id=roadmap_id,
+                    epic_id=roadmap_id,
+                    node_id=_ROADMAP_NODE_ID,
+                    history_summary=summary,
+                    choices=[EscalationChoice.RETRY, EscalationChoice.KILL],
+                ),
+                **_NOTIFY,
+            )
 
     def _apply_promotions(self, roadmap: Roadmap) -> Roadmap:
         """Return a roadmap where promoted drafts are treated as ready (FR-008).

@@ -591,3 +591,44 @@ factory's own build order. The decision is the five calls from spec 015 §
    arithmetic and exit codes compute over severity and status, so they are
    grammar. Categories are open taxonomy; refusing a new taxonomy word would
    make the ledger resist exactly the findings it exists to collect.
+
+---
+
+## D-036 · A scheduler that dies says so: roadmap failure reporting is evidence-first and throttled (decided)
+
+Decided 2026-08-09 (Bryan), recorded at epic 021-roadmap-operability US4 landing.
+A roadmap run that raises inside its scheduling loop must reach the operator
+through the existing notification surface, carrying the failure text verbatim and
+the count of consecutive failures, without one message per failure (FR-009); a
+successful pass resets the count and reports recovery. The failure must be
+recorded durably regardless of whether the notification was delivered (FR-010).
+
+1. **The boundary catches what the loop cannot.** `RoadmapWorkflow.run` wraps the
+   scheduler body in a try/except that records the failure and pages the operator
+   before re-raising. This covers failures the run can observe; it does not cover
+   continue-as-new, termination, or worker death, which remain the heartbeat's job.
+
+2. **The count lives in the evidence store, not workflow state.** Consecutive
+   failures are keyed by roadmap workflow id in the verification store so they
+   survive workflow restarts and continue-as-new. A different failure text resets
+   the count to one; a successful run resets it to zero.
+
+3. **Notifications are throttled, not batched.** The first failure always pages;
+   subsequent identical failures page only when the count is a multiple of three,
+   so the operator receives a message carrying the current count rather than one
+   message per failure.
+
+4. **The row is written before the send is attempted.** `record_roadmap_failure`
+   inserts an escalation row and updates the count before `send_escalation` is
+   called. A notifier that is down loses the message but not the fact. The same
+   `escalation_id` is handed to `send_escalation` so production does not create
+   duplicate rows.
+
+5. **A notifier failure is not retried on the roadmap path.** The run-boundary
+   notification uses a single-attempt retry policy. Delivery failures are data,
+   not errors: the workflow records the fact and raises the original scheduler
+   exception, leaving the next scheduling decision to the operator rather than
+   stalling on the notifier.
+
+6. **No credential reaches the failure surface.** The failure text is derived
+   only from the exception; the escalation carries no token, chat id, or key.
