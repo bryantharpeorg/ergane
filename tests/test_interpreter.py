@@ -111,6 +111,7 @@ import hashlib
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator, Callable, Sequence
 
@@ -123,6 +124,7 @@ from temporalio.worker import Replayer, Worker
 
 from factory.activities.agent_activities import (
     GRAPH_INVALID,
+    HEARTBEAT_INTERVAL_S,
     LoadPromptSourcesInput,
     PrepareWorktreeInput,
     PromptSources,
@@ -1251,8 +1253,10 @@ class ScriptedWorld:
 
             # The one view of the epic taken while a node is genuinely in
             # flight: the workflow is parked on this activity and answers the
-            # query from the same state it is scheduling from.
-            handle = script._client.get_workflow_handle(WORKFLOW_ID)
+            # query from the same state it is scheduling from. Use the activity's
+            # own workflow id so tests that start the epic under a distinct id
+            # (e.g. the US4 heartbeat-timeout comparison) still observe it.
+            handle = script._client.get_workflow_handle(activity.info().workflow_id)
             status = await handle.query(EpicWorkflow.epic_status)
             script.observed[context.node_id] = status
             script.running_sets.append(
@@ -2346,6 +2350,112 @@ async def test_the_teardown_carries_the_terminations_the_adapter_reported(
 
 
 
+# --- US4-S1: heartbeat timeout is derived from the attempt timeout (FR-008) ----
+
+
+async def test_heartbeat_timeout_is_derived_from_attempt_timeout_and_floored(
+    env: WorkflowEnvironment,
+) -> None:
+    """The agent activity's heartbeat timeout comes from the configured attempt
+    timeout, not from a fixed 5-second constant, and short attempts keep a sane
+    floor.
+
+    A multi-hour attempt with the old fixed 5s bound would be declared dead on
+    any Temporal blip longer than a few seconds. The new bound is a function of
+    the attempt's own timeout, so a 90-minute attempt survives a 10-second
+    outage. A deliberately short attempt is floored so the bound never collapse
+    below the beat that it is bounding.
+
+    The assertion reads the scheduled activity's options from the run history:
+    the activity's `heartbeat_timeout` is what the workflow actually asked
+    Temporal for, not an implementation guess.
+    """
+    long_timeout = 5400  # same as the shipped persona default
+    short_timeout = 5  # exercised to prove the floor
+    us1_long = make_node("us1", "US1")
+    us1_short = make_node("us1", "US1", timeout_override_s=short_timeout)
+
+    async def timeout_for(
+        graph: WorkGraph, *, workflow_id: str = WORKFLOW_ID
+    ) -> timedelta:
+        script = ScriptedWorld(
+            {"us1": [passing()]}, client=env.client, agent_sleep_s=0.3
+        )
+        async with start_epic(
+            env, script, graph=graph, workflow_id=workflow_id
+        ) as handle:
+            scheduled = False
+            while not scheduled:
+                history = await handle.fetch_history()
+                scheduled = any(
+                    name == "run_agent_attempt"
+                    for name in _scheduled_activity_names(history)
+                )
+                if not scheduled:
+                    await asyncio.sleep(0.05)
+        for event in history.events:
+            if event.event_type != _EVENT_ACTIVITY_SCHEDULED:
+                continue
+            attrs = event.activity_task_scheduled_event_attributes
+            if attrs.activity_type.name == "run_agent_attempt":
+                return attrs.heartbeat_timeout.ToTimedelta()
+        raise AssertionError("run_agent_attempt was not scheduled")
+
+    long_heartbeat = await timeout_for(
+        make_graph([us1_long]), workflow_id=f"{WORKFLOW_ID}-long"
+    )
+    short_heartbeat = await timeout_for(
+        make_graph([us1_short]), workflow_id=f"{WORKFLOW_ID}-short"
+    )
+
+    # The current derivation is half the attempt timeout, floored at five beats
+    # so short attempts do not collapse below the heartbeat they bound.
+    assert long_heartbeat == timedelta(seconds=long_timeout // 2)
+    assert short_heartbeat == timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
+
+
+async def test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout(
+    env: WorkflowEnvironment,
+) -> None:
+    """US4: liveness detection loosens but does not vanish (FR-008).
+
+    A 20-second attempt gets a 10-second heartbeat bound — longer than the old
+    five seconds, but an agent that stops heartbeating is still classified
+    TIMEOUT and verified so its work is not silently lost.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        adapter_snapshot=SNAPSHOT,
+        heartbeat_then_block=True,
+    )
+    graph = make_graph(
+        nodes=[
+            make_node("us1", "US1", timeout_override_s=20),
+            make_node("us2", "US2"),
+            make_node("us3", "US3"),
+        ]
+    )
+
+    status = await run_epic(env, script, graph=graph)
+
+    assert script.teardown_for("us1", 1).last_snapshot == SNAPSHOT
+    assert script.teardown_for("us1", 1).termination == Termination.TIMEOUT
+    assert "run_gates" in script.sequence("us1")
+    assert states(status)["us1"] == NodeState.MERGED
+
+    # The bound is derived, not the old fixed 5 seconds.
+    history = await script.handle.fetch_history()
+    heartbeat_timeout = next(
+        event.activity_task_scheduled_event_attributes.heartbeat_timeout.ToTimedelta()
+        for event in history.events
+        if event.event_type == _EVENT_ACTIVITY_SCHEDULED
+        and event.activity_task_scheduled_event_attributes.activity_type.name
+        == "run_agent_attempt"
+    )
+    assert heartbeat_timeout == timedelta(seconds=20 // 2)
+
+
 # --- US1-S4: replay ------------------------------------------------------------
 
 
@@ -3142,14 +3252,23 @@ async def test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown(
     The attempt's bracket still closes (FR-004) with the figure that was true a
     beat ago — not NULL — and the node still verifies (FR-012).
     """
+    # Keep the heartbeat timeout short so the test exercises the timeout path
+    # quickly; US4's derivation test checks the long-timeout shape separately.
     script = ScriptedWorld(
-        all_passing(),
+        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
         client=env.client,
         adapter_snapshot=SNAPSHOT,
         heartbeat_then_block=True,
     )
+    graph = make_graph(
+        nodes=[
+            make_node("us1", "US1", timeout_override_s=20),
+            make_node("us2", "US2"),
+            make_node("us3", "US3"),
+        ]
+    )
 
-    status = await run_epic(env, script)
+    status = await run_epic(env, script, graph=graph)
 
     assert script.teardown_for("us1", 1).last_snapshot == SNAPSHOT
     assert script.teardown_for("us1", 1).termination == Termination.TIMEOUT
