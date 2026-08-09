@@ -107,6 +107,14 @@ the query is reverted.
       `ExecutionStatus = "RUNNING"` and record that it fails before you change
       anything — a test that passes under both spellings has covered nothing
       (trap 2) — must fail.
+- [ ] T003a [US1] **Prove the skip guard with the server unreachable** — trap 0,
+      the failure that killed the 2026-08-09 run of this exact story. Run
+      `TEMPORAL_ADDRESS=127.0.0.1:1 uv run pytest -q tests/<your new test>` and
+      paste the result. It must report **skipped**, not error. `Client.connect`
+      raises `RuntimeError` against a dead port, which an `OSError`/`RPCError`
+      guard does not catch; the gate passes on the worker host only because
+      Temporal is running there. This command reproduces CI exactly and costs
+      seconds. Do not mark US1 done without it.
 - [ ] T004 [P] [US1] Write the seam-preservation case FIRST (FR-003): the
       time-skipping workflow tests still script the capacity count through
       `_open_epics_provider`, and **`tests/test_roadmap_scheduler.py`** — the

@@ -195,6 +195,50 @@ success.
 
 ## Traps
 
+0. **This story already killed one epic. Read this trap first.** The
+   2026-08-09 run of US1 produced a correct fix and a good live test, passed
+   every gate and the judge, and then died in CI — taking US2, US3 and US4 with
+   it, none of which ever ran. The diff was right. The skip guard was wrong:
+
+   ```python
+   except OSError as exc:   pytest.skip(...)
+   except RPCError as exc:  pytest.skip(...)
+   ```
+
+   `Client.connect` against a dead port raises **`RuntimeError`**
+   (`Failed client connect: ... ConnectionRefused`), which neither clause
+   catches. The gate command is `uv run pytest -q` in *both* places, so the
+   only difference is the machine: the worker host has Temporal on 7233 and
+   the guard is never exercised; GitHub Actions does not, and the test raises
+   instead of skipping. Local green, CI red, node killed.
+
+   Three consequences, all binding:
+
+   - **Catch what the SDK actually raises.** `RuntimeError` at minimum. Prefer
+     a positive reachability probe (open a socket to the address, skip if it
+     refuses) over enumerating exception types, because the next SDK release
+     may raise a fourth thing.
+   - **Prove the skip, do not reason about it.** Run the suite with the server
+     unreachable — `TEMPORAL_ADDRESS=127.0.0.1:1 uv run pytest -q tests/<your
+     test>` — and show it *skips*, not errors. This is a local command that
+     reproduces CI exactly, so there is no excuse for discovering it on a PR.
+     A guard you have only read is a guard you have not tested.
+   - **Markers deselect nothing here.** `pytestmark = pytest.mark.live_capacity`
+     was declared and changed nothing: `live_capacity` is not in
+     `pyproject.toml`'s `markers` list, and neither CI nor the gate passes
+     `-m` at all. Every live test in this repo skips by *guard*, never by
+     marker. Do not rely on a marker to keep a live test out of CI.
+
+   And know why the retry did not save it: a red required check is
+   `CHECKS_FAILED`, which the interpreter treats as **recovery-eligible** —
+   it syncs the branch onto the new target head and re-enqueues, on the
+   assumption that a failing check means a stale base. **The CI log is never
+   routed back to an agent.** So the "attempt 2" you may see in the status
+   output was a landing recovery, not a re-implementation: it produced a
+   zero-line diff and failed identically. `max_recovery_cycles` is 1, so one
+   cycle later the node was KILLED and its three dependents became
+   unreachable. You get one shot at a green CI run. Spend it on the probe.
+
 1. **Do not delete the seam.** `_open_epics_provider` looks like the thing that
    caused this. It is not — the time-skipping server genuinely cannot answer the
    production query, and removing the seam turns 009's workflow suite red for no
