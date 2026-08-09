@@ -1,5 +1,14 @@
 ---
-state: draft
+state: ready
+# Readied 2026-08-09 3:20 PM CT (Bryan). The 020 edge cleared the same afternoon
+# — 020 landed at 2:45 PM, so all four `depends_on_landed` entries are landed and
+# the sequencing reason below has been served rather than waived. The reuse
+# inventory this spec's plan carries was written against a tree that has moved
+# twice since (020's us1 at 438cfd0 rewrote `landed_command`'s branch default and
+# `_build_baseline`; us2 at 48801de added a second recognizer to
+# `factory/workgraph/landed.py`). Re-verify every citation at preflight; that is
+# exactly the target 020 was landed first to stop moving.
+#
 # Drafted 2026-08-08 from round 2 of the standing audit report — findings U1
 # (no front door) and U2 (three exit-code contracts, one of them accidental).
 # Round 2 was produced by invoking every command rather than by reading source,
