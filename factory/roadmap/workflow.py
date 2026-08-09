@@ -66,6 +66,7 @@ US3 — US2 runs the scheduler to quiescence and returns its status.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Awaitable, Callable
@@ -153,11 +154,16 @@ class RoadmapInput:
     unchanged — the roadmap does not choose a ladder or a landing policy, it
     forwards the operator's.
 
+    `idle_rescan_s` is US3's idle-wait interval (FR-007): when nothing is
+    dispatchable and nothing is in flight, the roadmap waits on a `rescan`
+    signal or this timeout before re-reading the corpus. `None` means today's
+    drain-and-exit behaviour (FR-006, acceptance 5).
+
     `carry_over` is US3's durability seam (FR-007): a run that resumes after a
     continue-as-new receives the previous run's observed landings, parked
-    findings, promotions, and pause flag here, so the new run's empty instance
-    fields are repopulated and the roadmap does not re-dispatch work whose
-    result the carry-over already holds. `None` for the first run.
+    findings, promotions, pause flag, and bounds here, so the new run's empty
+    instance fields are repopulated and the roadmap does not re-dispatch work
+    whose result the carry-over already holds. `None` for the first run.
 
     No credential (FR-009): the master key lives in the worker environment and
     is read inside the preflight activity's seam, never here.
@@ -175,6 +181,8 @@ class RoadmapInput:
     landing_config: LandingConfig = LandingConfig()
     config: VerificationConfig = VerificationConfig()
     poll_interval_s: int = 30
+    #: US3 idle-wait seconds (FR-007). `None` keeps drain-and-exit (FR-006).
+    idle_rescan_s: int | None = None
     carry_over: "RoadmapCarryOver | None" = None
 
 
@@ -210,8 +218,9 @@ class RoadmapCarryOver:
     `landed` and `parked` are the observed-landed and parked-finding maps the
     run accumulated; `promotions` are the spec dirs the operator promoted by
     signal (FR-008); `paused` is the pause flag (FR-008); `max_concurrent_epics`
-    and `max_concurrent_nodes` are the bounds (FR-005/US2), carried so a restart
-    honours the operator's knobs.
+    and `max_concurrent_nodes` are the bounds (FR-005/US2); `idle_rescan_s` is
+    US3's idle configuration (FR-007). All are carried so a restart honours the
+    operator's knobs (trap 4).
 
     No credential reaches any field (FR-009): `ParkedFinding.detail` carries a
     refusal's text, never a key; the maps hold spec dirs and `LandedStatus`es.
@@ -223,6 +232,7 @@ class RoadmapCarryOver:
     paused: bool = False
     max_concurrent_epics: int = 1
     max_concurrent_nodes: int = 1
+    idle_rescan_s: int | None = None
 
     @classmethod
     def from_state(
@@ -234,6 +244,7 @@ class RoadmapCarryOver:
         paused: bool,
         max_concurrent_epics: int,
         max_concurrent_nodes: int,
+        idle_rescan_s: int | None,
     ) -> "RoadmapCarryOver":
         """Build a carry-over from the run's live (mutable) state.
 
@@ -248,6 +259,7 @@ class RoadmapCarryOver:
             paused=paused,
             max_concurrent_epics=max_concurrent_epics,
             max_concurrent_nodes=max_concurrent_nodes,
+            idle_rescan_s=idle_rescan_s,
         )
 
     def landed_map(self) -> dict[str, LandedStatus]:
@@ -423,12 +435,14 @@ class RoadmapWorkflow:
         #: US3 operator surface (FR-008). `pause_roadmap` parks dispatch
         #: between epics — the in-flight child finishes (the epic pause
         #: contract, one level up); `promote_spec` records a draft the
-        #: operator promoted so the next pass treats it as ready. Both are
-        #: history events, so replay rebuilds them exactly where the recorded
-        #: run had them (the same rule the epic's `_paused`/`_kill_requested`
-        #: follow), and both ride the carry-over across continue-as-new.
+        #: operator promoted so the next pass treats it as ready; `rescan`
+        #: wakes an idle roadmap and triggers one corpus re-read. All three
+        #: are history events, so replay rebuilds them exactly where the
+        #: recorded run had them, and all ride the carry-over across
+        #: continue-as-new.
         self._paused = False
         self._promotions: dict[str, None] = {}
+        self._rescan_requested = False
 
     # --- signals and query (FR-008) -------------------------------------------
 
@@ -449,6 +463,16 @@ class RoadmapWorkflow:
     def resume_roadmap(self) -> None:
         """Release the scheduler. A resume that arrives first never parks."""
         self._paused = False
+
+    @workflow.signal
+    def rescan(self) -> None:
+        """Wake an idle roadmap and re-read the corpus in the next pass (FR-007).
+
+        A no-op when the roadmap is not idle: a `rescan` that arrives while a
+        child is in flight is recorded as a flag and consumed at the next
+        quiescence, where the loop re-reads before deciding whether to idle.
+        """
+        self._rescan_requested = True
 
     @workflow.signal
     def promote_spec(self, spec_dir: str) -> None:
@@ -593,6 +617,7 @@ class RoadmapWorkflow:
             self._paused = request.carry_over.paused
             self._max_concurrent_epics = request.carry_over.max_concurrent_epics
             self._max_concurrent_nodes = request.carry_over.max_concurrent_nodes
+            self._rescan_requested = False
 
         # Whether any child concluded this run — the gate for continue-as-new.
         # CAN fires at quiescence only after a child has concluded, so a run
@@ -714,6 +739,28 @@ class RoadmapWorkflow:
             # the world and either dispatches the next spec or returns.
             if completed_this_run:
                 return await self._continue_as_new(request)
+            # US3: idle wait (FR-006/007). With idle configured, wait for a rescan
+            # signal or the timeout at the quiescence boundary — zero children
+            # open, so the boundary is safe and history stays flat. Without idle
+            # config the loop returns exactly as it did before (acceptance 5).
+            if request.idle_rescan_s:
+                while True:
+                    try:
+                        await workflow.wait_condition(
+                            lambda: self._rescan_requested,
+                            timeout=timedelta(seconds=request.idle_rescan_s),
+                        )
+                    except asyncio.TimeoutError:
+                        # Idle safety-net timeout: re-read the corpus once by
+                        # continuing-as-new (the new run re-reads everything).
+                        pass
+                    if self._paused:
+                        # pause_roadmap wins over rescan: stay parked until resume.
+                        # The rescan flag is preserved so the next pass re-reads.
+                        await workflow.wait_condition(lambda: not self._paused)
+                        continue
+                    self._rescan_requested = False
+                    return await self._continue_as_new(request)
             break
 
         return self.roadmap_status()
@@ -739,6 +786,7 @@ class RoadmapWorkflow:
             paused=self._paused,
             max_concurrent_epics=self._max_concurrent_epics,
             max_concurrent_nodes=self._max_concurrent_nodes,
+            idle_rescan_s=request.idle_rescan_s,
         )
         return await workflow.continue_as_new(
             RoadmapInput(
@@ -750,6 +798,7 @@ class RoadmapWorkflow:
                 landing_config=request.landing_config,
                 config=request.config,
                 poll_interval_s=request.poll_interval_s,
+                idle_rescan_s=request.idle_rescan_s,
                 carry_over=carry,
             ),
         )
