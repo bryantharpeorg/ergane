@@ -862,6 +862,7 @@ class ScriptedWorld:
         adapter_snapshot: UsageSnapshot | None = None,
         heartbeat_then_block: bool = False,
         agent_sleep_s: float = 0.0,
+        key_fail_first_n: int = 0,
     ) -> None:
         self._script = script
         self._client = client
@@ -892,6 +893,9 @@ class ScriptedWorld:
         #: time, and a long real sleep would only slow the suite without changing
         #: the count.
         self._agent_sleep_s = agent_sleep_s
+        #: How many times `issue_attempt_key` should transiently fail before it
+        #: succeeds, for exercising the issuance retry policy (US4 FR-009).
+        self._key_fail_first_n = key_fail_first_n
 
         #: Activity names in call order, and the same log with the node each call
         #: belonged to — "what happened to us1" is a list rather than an offset
@@ -1232,6 +1236,16 @@ class ScriptedWorld:
                     f"key_alias '{alias}' already names a live key",
                     type=KEY_ISSUANCE_FAILED,
                     non_retryable=True,
+                )
+            # US4: exercise the issuance retry policy without touching the real
+            # proxy. The failure is transient (non-retryable=False) so the
+            # workflow's policy decides whether the outage is survived.
+            if script._key_fail_first_n > 0:
+                script._key_fail_first_n -= 1
+                raise ApplicationError(
+                    "injected transient issuance failure",
+                    type=KEY_ISSUANCE_FAILED,
+                    non_retryable=False,
                 )
             script._live_aliases.add(alias)
             return KeyLease(
@@ -2454,6 +2468,33 @@ async def test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout(
         == "run_agent_attempt"
     )
     assert heartbeat_timeout == timedelta(seconds=20 // 2)
+
+
+async def test_issuance_retries_through_a_transient_outage(
+    env: WorkflowEnvironment,
+) -> None:
+    """US4: a proxy blip longer than the old budget does not fail the epic (FR-009).
+
+    The old shared `_RETRIES` allows only three attempts; a transient outage that
+    needs more than that is survived only once issuance gets its own policy. The
+    node completes because the failures are retryable, and the final key is
+    torn down like any other attempt.
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        key_fail_first_n=4,
+    )
+
+    status = await run_epic(env, script)
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status)["us1"] == NodeState.MERGED
+    # Four transient failures, then one success, all for the same attempt.
+    assert [
+        r.attempt for r in script.key_requests if r.node_id == "us1"
+    ] == [1, 1, 1, 1, 1]
+    assert script.teardown_for("us1", 1).termination == Termination.COMPLETED
 
 
 # --- US1-S4: replay ------------------------------------------------------------
