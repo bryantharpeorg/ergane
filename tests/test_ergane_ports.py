@@ -230,7 +230,9 @@ def _script_conforming_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
             "type": "merge_queue",
             "parameters": {
                 "required_status_checks": [
+                    {"context": "lint"},
                     {"context": "test"},
+                    {"context": "typecheck"},
                 ],
             },
         }],
