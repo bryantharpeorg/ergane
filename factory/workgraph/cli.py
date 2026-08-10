@@ -239,8 +239,15 @@ def landed_command(args: argparse.Namespace) -> int:
             f"cannot read landed facts for {epic_id}: {error}"
         ) from error
 
-    for story_key, fact in sorted(facts.items()):
-        print(f"{story_key} landed at {fact.commit[:12]} ({fact.kind.value})")
+    if getattr(args, "as_json", False):
+        document: dict[str, Any] = {"default_branch": default_branch, "facts": {}}
+        for story_key, fact in sorted(facts.items()):
+            document["facts"][story_key] = asdict(fact)
+        print(json.dumps(document, indent=2))
+    else:
+        print(f"default branch: {default_branch}")
+        for story_key, fact in sorted(facts.items()):
+            print(f"{story_key} landed at {fact.commit[:12]} ({fact.kind.value})")
     return EXIT_OK
 
 
@@ -333,7 +340,15 @@ def derive_command(args: argparse.Namespace) -> int:
     except OSError as error:
         raise _OperatorError(f"cannot write {destination}: {error}") from error
 
-    print(destination)
+    if getattr(args, "as_json", False):
+        document: dict[str, Any] = {"artifact": str(destination), "graph": asdict(graph)}
+        if args.delta and "result" in locals():
+            document["provenance"] = result.provenance
+        print(json.dumps(document, indent=2))
+    else:
+        if args.delta and "result" in locals():
+            _print_provenance(result)
+        print(destination)
     return EXIT_OK
 
 
@@ -887,6 +902,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             "fingerprint changed since their landing commit"
         ),
     )
+    derive.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print the compiled graph as JSON instead of the artifact path",
+    )
     derive.set_defaults(run=derive_command)
 
     landed = commands.add_parser(
@@ -898,6 +919,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--default-branch",
         default=None,
         help="default branch to scan for landing attributions (default: read from manifest, else main)",
+    )
+    landed.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print the landed facts as JSON instead of the human view",
     )
     landed.set_defaults(run=landed_command)
 

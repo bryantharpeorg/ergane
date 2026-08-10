@@ -26,7 +26,9 @@ corpus see the same lines.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from dataclasses import asdict
 from typing import Sequence
 
 from factory.roadmap.models import (
@@ -98,7 +100,10 @@ def render_command(args: argparse.Namespace) -> int:
         roadmap,
         drifted_for=_cli_drift_resolver(args.specs_root),
     )
-    print(_render_roadmap(roadmap, readiness))
+    if getattr(args, "as_json", False):
+        print(json.dumps({"roadmap": asdict(roadmap), "readiness": asdict(readiness)}, indent=2))
+    else:
+        print(_render_roadmap(roadmap, readiness))
     return EXIT_OK
 
 
@@ -189,6 +194,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         nargs="?",
         default=DEFAULT_SPECS_ROOT,
         help=f"the specs root to scan (default: {DEFAULT_SPECS_ROOT})",
+    )
+    render.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print the roadmap and readiness documents instead of the table",
     )
     render.set_defaults(run=render_command)
 
