@@ -232,7 +232,7 @@ _Avoid_: style guide, docs
   **Binding rule** constrains implementers and is versioned; a **Lesson** informs the
   operator agent and is not.
 - **"spec" vs "epic"** — conflated wherever an id is passed around, because they share
-  one. The evidence is a shipped command: `factory-epic derive` compiles a **Spec** and
+  one. The evidence is a shipped command: `ergane spec derive` compiles a **Spec** and
   never touches an **Epic**. Resolved above; the operator CLI splits them into separate
   nouns for exactly this reason.
 - **"worktree"** — a per-node build sandbox, created for one node's attempts and swept

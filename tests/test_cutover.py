@@ -44,6 +44,11 @@ def test_pyproject_toml_names_only_ergane() -> None:
     assert scripts == {"ergane"}, f"[project.scripts] must contain exactly `ergane`, got {sorted(scripts)}"
 
 
+#: Lines that mention an epic id or a spec file path are not command
+#: recommendations, so they are excluded from both sweeps.
+_EPIC_ID_OR_PATH = re.compile(r"\b\d{3}-factory-(doctor|epic|roadmap|usage)\b|specs/\d{3}-factory-(doctor|epic|roadmap|usage)/")
+
+
 @pytest.mark.parametrize("old_name", OLD_NAMES)
 def test_old_script_names_are_only_historical(old_name: str) -> None:
     """A repository-wide search finds each old name only under specs/ or docs/decisions.md."""
@@ -55,11 +60,12 @@ def test_old_script_names_are_only_historical(old_name: str) -> None:
         check=False,
     )
     hits = [line for line in result.stdout.splitlines() if old_name in line]
-    allowed_prefixes = ("specs/", "docs/decisions.md:")
+    allowed_prefixes = ("specs/", "docs/decisions.md:", "tests/test_cutover.py:")
     bad = [
         line
         for line in hits
         if not any(line.startswith(prefix) for prefix in allowed_prefixes)
+        and not _EPIC_ID_OR_PATH.search(line)
     ]
     assert not bad, (
         f"`{old_name}` found outside the historical record:\n" + "\n".join(bad)
@@ -82,6 +88,8 @@ def test_operator_facing_strings_name_a_command_that_resolves(old_name: str) -> 
         return
     bad = []
     for line in hits:
+        if _EPIC_ID_OR_PATH.search(line):
+            continue
         if new_command not in line:
             bad.append(line)
     assert not bad, (

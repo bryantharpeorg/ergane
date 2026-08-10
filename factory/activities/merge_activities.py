@@ -450,7 +450,7 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
     blocks dispatch before any key is issued or worktree created (SC-005).
 
     `client` is injected so both the activity (via the `_client_factory` seam)
-    and the offline CLI (`factory-epic onboard`) can drive the same logic against
+    and the offline CLI (`ergane repo onboard`) can drive the same logic against
     whichever `GhClient` their caller wired.
     """
     manifest = Path(target_repo) / "factory.yaml"

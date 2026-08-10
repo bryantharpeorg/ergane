@@ -120,16 +120,17 @@ Layout, all under the single `factory` package (D-004):
 | `factory/workgraph/worktree.py` | one worktree per node: ensure / salvage / remove / diff |
 | `factory/workgraph/adapter.py` | the D-018 seam — `AgentAdapter` + `ClaudeCodeAdapter` (§8) |
 | `factory/workgraph/workflow.py` | `EpicWorkflow`: the interpreter itself, pure decisions only |
-| `factory/workgraph/cli.py` | `factory-epic derive \| start \| status` (§3.2) |
+| `factory/workgraph/cli.py` | handlers for `ergane spec derive` and `ergane build start/status` (§3.2) |
 | `factory/roadmap/models.py` | `SpecState` / `LandedKind` / `LandedStatus` / `SpecReadiness`, pure frontmatter reader (`read_roadmap`) and readiness (`compute_readiness`) with the attested/observed seam (FR-003) and US4's read-only `amended` drift signal |
 | `factory/roadmap/workflow.py` | `RoadmapWorkflow`: the scheduler, one level above the interpreter — dispatches dispatchable specs as child `EpicWorkflow` runs, continue-as-new at quiescence (FR-007), `pause`/`resume`/`promote` signals + `roadmap_status` query (FR-008); US4 routes drift through an injected resolver backed by the `drift_for_spec` activity and derives every dispatch through `derive_delta`, and wraps the run boundary to record failures durably and page the operator once per throttle window (FR-009/010) |
 | `factory/activities/roadmap_activities.py` | `clone_target` / `derive_spec` / `drift_for_spec` / `preflight_spec` / `onboard_target` / `count_open_epics` — the roadmap's pre-dispatch surface; `derive_spec` reads landed facts and pinned fingerprints inside the activity so workflow code never shells git |
 | `factory/activities/notify_activities.py` | `send_escalation` / `expire_escalation` / `send_question` / `find_ferried_question` plus US4's `record_roadmap_failure` and `reset_roadmap_failures`: the evidence-first notification surface; roadmap failures are recorded before delivery is attempted so a down notifier loses only the message (FR-010) |
-| `factory/roadmap/cli.py` | `factory-roadmap render` — the offline roadmap render (US1); US4 shows `amended` for drifted landed specs while remaining offline-safe (no git reads) |
+| `factory/roadmap/cli.py` | handler for `ergane spec list` — the offline roadmap render (US1); US4 shows `amended` for drifted landed specs while remaining offline-safe (no git reads) |
 | `factory/workgraph/landed.py` | Reader side of the landing attribution contract: `landed_facts` scans default-branch history once for both the queue grammar (`_LANDING_RE`) and the historical pre-queue merge grammar (`_HISTORICAL_LANDING_RE`); `fingerprint` pins a story's judgeable content at a revision. `LandedKind` has three provenances: `OBSERVED` from the queue grammar, `ATTESTED` from `state: landed` frontmatter, and `HISTORICAL` from git's own merge subject. The regex in `_LANDING_RE` is the parse end of the contract whose render end is `factory.mergequeue.messages.pr_title`; `_HISTORICAL_LANDING_RE` is read-only history — the factory adds no writer |
 | `factory/workgraph/delta.py` | Pure delta derivation: `derive_delta` subtracts unchanged landed stories, reopens amended ones with provenance, guards identity, and emits a `WorkGraph` the existing interpreter runs unchanged |
 | `factory/activities/agent_activities.py` | `resolve_graph` / `resolve_persona` / `prepare_worktree` / `run_agent_attempt` / `read_worktree_diff` / `salvage_worktree` / `remove_worktree` |
 | `factory/worker.py` | runnable `python -m factory.worker` — registers `EpicWorkflow` + `RoadmapWorkflow` (D-031) plus every component's activities |
+| `factory/cli/` | `ergane` root parser, noun discovery, shared exit-code contract, and noun handlers (US5) |
 
 A node carries: `id`, `persona`, `spec_ref` (feature + requirement keys — also
 the work-attribution key for usage tracking), `requirement_keys` (the acceptance
@@ -144,7 +145,7 @@ computes the whole ready set — nodes whose every dependency has reported `PASS
 to the cap, in declaration order as the tiebreak. The cap defaults to `1`, so an
 epic that does not ask for fan-out runs exactly as the sequential loop did: one
 node at a time, the first ready one in declaration order, re-evaluated after each
-terminal state. The cap is supplied per epic at `factory-epic start` (an
+terminal state. The cap is supplied per epic at `ergane build start` (an
 `EpicInput` field, not a `factory.yaml` key) because how many agents a host can
 carry is a fact about the host, not about the target repo. Parallel multi-epic
 scheduling remains out of scope; the one-epic-at-a-time `.factory/` SQLite
@@ -210,15 +211,16 @@ cycle, or a malformed block each fail by name and emit nothing. The Spec Kit
 templates under `.specify/templates/` are **not** forked — the convention is
 enforced by validation, which keeps the operator on the upstream upgrade path.
 
-### 3.2 Operator surface: `factory-epic`
+### 3.2 Operator surface: `ergane spec` and `ergane build`
 
-- `derive <spec-dir>` — compile the spec's `## Work Graph` into `workgraph.json`
-  next to the spec (or `-o`); on failure print every collected error and write
-  nothing.
-- `start <workgraph.json>` — start the epic as workflow id `epic-<epic_id>`, which
-  is what makes a run findable without anyone writing down a run id; Temporal's id
-  uniqueness *is* the one-epic-at-a-time rule.
-- `status <epic-id>` — the `epic_status` query plus the execution's Temporal
+- `ergane spec derive <spec-dir>` — compile the spec's `## Work Graph` into
+  `workgraph.json` next to the spec (or `-o`); on failure print every collected
+  error and write nothing.
+- `ergane build start <workgraph.json>` — start the epic as workflow id
+  `epic-<epic_id>`, which is what makes a run findable without anyone writing
+  down a run id; Temporal's id uniqueness *is* the one-epic-at-a-time rule.
+- `ergane build status <epic-id>` — the `epic_status` query plus the execution's
+  Temporal status, human-readable or `--json`. Because a query against a *closed*
   status, human-readable or `--json`. Because a query against a *closed* workflow
   still succeeds and returns its final internal state, the internal `epic_state`
   alone could read `RUNNING` for an execution Temporal has already `FAILED` — so
@@ -278,7 +280,7 @@ factory/
 │   ├── litellm_client.py        # async admin client: /key/generate|info|delete, spend logs
 │   ├── aggregate.py             # pure: spend-log rows -> AggregatedUsage (cache handling)
 │   ├── ledger.py                # SQLite ledger: schema bootstrap, upsert, rollup queries
-│   └── cli.py                   # read-only `factory-usage` CLI (argparse, --json)
+│   └── cli.py                   # read-only `ergane usage` handler (argparse, --json)
 └── activities/
     └── usage_activities.py      # issue_attempt_key / poll_usage / teardown_attempt
 ```
@@ -326,8 +328,8 @@ metrics stay NULL). Token detail is aggregated from the proxy's per-request spen
 for the key, not agent self-reporting. Teardown upserts on `key_alias`, so re-running it
 never duplicates a row.
 
-Rollups (`factory.usage.ledger.rollup`, surfaced by the read-only `factory-usage` CLI
-with `--by`, `--epic`, `--since`, `--json`): by **persona**, **epic**, **spec-ref**
+Rollups (`factory.usage.ledger.rollup`, surfaced by the read-only `ergane usage`
+CLI with `--by`, `--epic`, `--since`, `--json`): by **persona**, **epic**, **spec-ref**
 across epics, **attempt** ordinal (attempt ≥ 2 is retry cost), and **node** (attempts
 aggregated) — each with grand totals and an `unconfirmed_rows` count. The DDL is
 documented in `specs/001-usage-tracking/contracts/ledger-schema.sql`; direct SQL against
@@ -450,7 +452,7 @@ factory/
     └── doctor_activities.py  # (reserved) future scheduled-sweep surface; currently empty — all doctor logic is in CLI and store
 ```
 
-### Component 4 — factory doctor (`specs/015-factory-doctor/`)
+### Component 4 — doctor (`specs/015-factory-doctor/`) — `ergane doctor` / `ergane findings`
 
 Read-only diagnostic ledger plus a mechanical bridge from accepted findings to the
 intent layer. Layout:
@@ -460,7 +462,7 @@ factory/
 ├── doctor/
 │   ├── store.py           # SQLite ledger: finding identity, recurrence, promotion, resolution
 │   ├── scaffold.py        # pure: findings + roadmap grammar → draft spec directory
-│   └── cli.py             # `factory-doctor report | list | resolve | check | promote`
+│   └── cli.py             # handlers for `ergane doctor` and `ergane findings report|list|resolve|promote`
 ```
 
 The doctor never mutates the factory or target system. Probes detect and report;
@@ -573,7 +575,7 @@ protection when the rule returns no required checks, and the clone's committed
 `factory.yaml` via the 002 loader — and feeds them to the pure `evaluate_repo`
 (`factory/mergequeue/onboard.py`), which renders a `TargetRepoProfile` of named findings.
 A finding fails the epic with a `GRAPH_INVALID` non-retryable error carrying the findings,
-so an operator preflight (`factory-epic onboard <clone>`) and the workflow itself agree on
+so an operator preflight (`ergane repo onboard <clone>`) and the workflow itself agree on
 what is wrong and what to change: a private repo, a missing merge queue, a declared gate
 with no matching required check, or a required check no gate declares. Deterministic only —
 an LLM judge never enters CI (FR-003).
@@ -599,7 +601,7 @@ sufficient:
 4. **The merge queue for the unpredictable ones.** `.github/workflows/test.yml`
    triggers on `merge_group:` as well as `pull_request:`, so GitHub builds the
    speculative merge of the queued PRs onto the branch tip and runs the suite
-   against that combined tree; the `factory-queue` ruleset groups `ALLGREEN` and
+   against that combined tree; the `ergane-queue` ruleset groups `ALLGREEN` and
    builds up to five entries. Two stories that touch different files and each pass
    alone but break together are therefore caught **before either merges**, and the
    offender is ejected rather than landed. The trunk cannot go red from concurrent
@@ -636,7 +638,7 @@ two-hour stall guess into an immediate, correctly-classified outcome — the sam
 shape of fix as 701a7f5, which removed a wrong inference rather than adding a
 timeout. Until then, an operator running concurrent nodes unattended can watch
 that query from outside the factory; there is no operator path to shorten
-`stall_after_s`, since `EpicInput.landing_config` is never set by `factory-epic
+`stall_after_s`, since `EpicInput.landing_config` is never set by `ergane build
 start` and the 7200 default is asserted by `tests/test_mergequeue_models.py`.
 
 ## 8. Agents: the adapter seam

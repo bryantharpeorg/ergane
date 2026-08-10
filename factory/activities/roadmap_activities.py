@@ -342,7 +342,7 @@ async def preflight_spec(request: PreflightInput) -> list[PreflightFinding]:
     """Run the shared preflight against a live proxy before dispatch (FR-006).
 
     The pure checks live in `factory/workgraph/preflight.py` and are shared
-    with the CLI's `factory-epic start`, so the two surfaces cannot drift. The
+    with the CLI's `ergane build start`, so the two surfaces cannot drift. The
     activity owns the client (master key from the environment) and the
     registry (the worker host's `personas.yaml`); the preflight module owns
     the alias math and the wording. Returns `[]` when every check passes.

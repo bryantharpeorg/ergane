@@ -431,7 +431,7 @@ def test_the_cycle_rejection_names_only_the_cycle() -> None:
 def test_every_rejection_is_collected_not_just_the_first() -> None:
     """Two broken stories produce two rejections (contracts/cli.md).
 
-    `factory-epic derive` prints every collected error and writes nothing; an
+    `ergane spec derive` prints every collected error and writes nothing; an
     author fixing one typo per run — with the next one revealed only after the
     fix — is the failure mode collection exists to avoid.
     """
@@ -611,7 +611,7 @@ CROSSOVER = "003-merge-queue"
 
 
 def crossover_graph() -> WorkGraph:
-    """003's spec, compiled as `factory-epic derive` will compile it.
+    """003's spec, compiled as `ergane spec derive` will compile it.
 
     Read from disk on purpose: this is the one case in the suite whose input is
     not a fixture the test controls, which is exactly what makes it worth having.

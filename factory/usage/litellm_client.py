@@ -332,7 +332,7 @@ class LiteLLMClient:
     async def list_model_ids(self) -> set[str]:
         """Every alias the proxy advertises it can route, whole (`/v1/models`).
 
-        US2 FR-004: `factory-epic start` refuses before dispatching when a
+        US2 FR-004: `ergane build start` refuses before dispatching when a
         registry alias is not served. The answer is the whole `data` array —
         a caller that stopped at the first page would let an unserved alias
         through, and an epic that starts burns an attempt discovering it.

@@ -233,7 +233,7 @@ def test_the_interpreter_workflow_is_registered() -> None:
     workflows = list(worker_module.WORKFLOWS)
     assert EpicWorkflow in workflows, (
         f"factory.worker registers {workflows}, which does not include "
-        "EpicWorkflow — nothing would poll for the epic `factory-epic start` "
+        "EpicWorkflow — nothing would poll for the epic `ergane build start` "
         "creates"
     )
     names = {workflow_api._Definition.must_from_class(cls).name for cls in workflows}
@@ -243,7 +243,7 @@ def test_the_interpreter_workflow_is_registered() -> None:
 def test_the_worker_polls_the_queue_the_cli_starts_on() -> None:
     """One queue constant, stated once (contracts/cli.md).
 
-    `factory-epic start` names `TASK_QUEUE` when it creates the workflow; a
+    `ergane build start` names `TASK_QUEUE` when it creates the workflow; a
     worker polling anything else produces an epic that is started, visible in the
     Web UI, and never picked up — the failure mode that looks most like a bug in
     the interpreter and is least like one.

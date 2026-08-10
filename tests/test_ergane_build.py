@@ -81,7 +81,6 @@ from factory.verify.models import (
     Requirement,
     RequirementKind,
 )
-from factory.workgraph.cli import main as legacy_epic_main
 from factory.workgraph.derive import derive_workgraph
 from factory.verify.store import (
     EXPIRED,

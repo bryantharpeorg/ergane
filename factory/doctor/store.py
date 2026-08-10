@@ -27,7 +27,7 @@ BUSY_TIMEOUT_MS = 5000
 _SCHEMA_DDL = """
 -- The doctor's findings ledger: .factory/doctor.db
 --
--- Read by `factory-doctor list` and any operator with sqlite3; written only by
+-- Read by `ergane findings list` and any operator with sqlite3; written only by
 -- factory/doctor/store.py, whose _SCHEMA_DDL is a verbatim copy of this file —
 -- the same contract-copy discipline as contracts/verification-store.sql, held
 -- by a structure-for-structure test.

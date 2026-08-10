@@ -1,7 +1,7 @@
 """The WorkGraph's shape, and the validation that runs before anything dispatches.
 
 `workgraph.json` is a compiled artifact, but it is also a *file on disk between
-two commands* — `factory-epic derive` writes it and `factory-epic start` reads it,
+two commands* — `ergane spec derive` writes it and `ergane build start` reads it,
 with an operator's text editor available in between. That is why FR-002 puts
 validation at epic start rather than trusting derive-time checks: the graph the
 workflow runs is re-validated against the registry it will actually resolve

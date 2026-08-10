@@ -5,7 +5,7 @@ whose service is unreachable is reported and forces exit 3; a probe that raises
 any other exception is reported as one line naming `--debug` and continues so the
 rest of the examination still runs.
 
-`findings` exposes the other four legacy `factory-doctor` verbs (report, list,
+`findings` exposes the other four legacy doctor verbs (report, list,
 resolve, promote) with the unified prefix and exit-code contract.
 """
 

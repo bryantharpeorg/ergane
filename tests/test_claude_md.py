@@ -9,7 +9,7 @@ burned attempt.
 
 So the three claims the file makes about the world are checked against the world:
 
-- **Every command it names still exists.** Each backticked `factory-*` invocation
+- **Every command it names still exists.** Each backticked `ergane` invocation
   is run for real, with `--help`, through the installed console script — the exact
   thing it tells a reader to type. Rename a verb and the page that recommended it
   fails on the same commit.
@@ -125,8 +125,8 @@ def test_every_command_the_file_names_resolves(argv: tuple[str, ...]) -> None:
     assert result.returncode == 0, f"{argv[0]} --help does not parse:\n{result.stderr.strip()}"
 
     # Descend the real parser one verb at a time. Falling back to a shorter
-    # prefix would be the wrong kindness: `factory-doctor lyst` would then be
-    # checked as `factory-doctor`, and pass.
+    # prefix would be the wrong kindness: `ergane doctor lyst` would then be
+    # checked as `ergane doctor`, and pass.
     for word in positionals:
         verbs = _verbs_of(result.stdout)
         if not verbs:
@@ -221,7 +221,7 @@ def test_the_path_sweep_actually_read_the_file() -> None:
 _SPEC_ID = re.compile(r"\b\d{3}-[a-z][a-z0-9-]*|\b0\d\d\b")
 
 #: Words that assert where a spec has got to. Every one of them has a live
-#: source — `ergane roadmap render` for the first four, `ergane build landed`
+#: source — `ergane spec list` for the first four, `ergane build landed`
 #: and `ergane build status` for the rest — so every one of them is a copy.
 _STATUS_WORD = re.compile(
     r"\b(draft|ready|deferred|landed|shipped|blocked|in[- ]flight|dispatched"

@@ -89,7 +89,7 @@ ATTRIBUTION_INCOMPLETE = "ATTRIBUTION_INCOMPLETE"
 _ATTRIBUTION_FIELDS = ("epic_id", "node_id", "persona", "spec_ref")
 
 #: Where the ledger lives when the worker does not say otherwise; the CLI
-#: resolves the same default, or an operator's `factory-usage` reads an empty
+#: resolves the same default, or an operator's `ergane usage` reads an empty
 #: database (contracts/cli.md).
 DEFAULT_LEDGER_PATH = ".factory/ledger.db"
 

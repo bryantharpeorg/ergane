@@ -9,7 +9,7 @@ issued keys and a burned node.
 
 This is the pure core shared by the two callers that run a preflight:
 
-- `factory-epic start` runs it in-process (CLI) before starting the workflow,
+- `ergane build start` runs it in-process (CLI) before starting the workflow,
   so a misconfigured epic never becomes a workflow that has to be killed.
 - the roadmap workflow (US2) runs it as an activity before starting each
   dispatchable spec's child epic, so a misconfigured spec *parks* with the
