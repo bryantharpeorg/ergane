@@ -110,6 +110,43 @@ def test_completion_emits_a_script_for_supported_shells(
     assert "complete" in result.stdout or "compdef" in result.stdout
 
 
+def test_completion_bash_includes_nouns_and_verbs(invoke: Callable[..., Run]) -> None:
+    result = invoke("completion", "bash")
+    assert result.code == 0
+    for noun in ("doctor", "findings", "usage", "repo", "roadmap", "env", "completion"):
+        assert noun in result.stdout
+    for verb in ("start", "pause", "resume", "promote", "status"):
+        assert verb in result.stdout
+    for verb in ("list", "report", "resolve", "promote"):
+        assert verb in result.stdout
+    assert "onboard" in result.stdout
+    assert "bash" in result.stdout
+    assert "zsh" in result.stdout
+
+
+def test_completion_bash_completes_verbs_when_sourced(invoke: Callable[..., Run]) -> None:
+    import subprocess
+
+    result = invoke("completion", "bash")
+    assert result.code == 0
+    script = result.stdout
+    driver = """
+_init_completion() {
+    cur="start"
+    prev="roadmap"
+    words=(ergane roadmap start)
+    cword=2
+    return 0
+}
+""" + script + """
+_ergane_completion
+printf '%s\n' "${COMPREPLY[@]}"
+"""
+    proc = subprocess.run(["bash", "-c", driver], capture_output=True, text=True)
+    assert proc.returncode == 0
+    assert "start" in proc.stdout.splitlines()
+
+
 def test_completion_unsupported_shell_exits_two_naming_supported(
     invoke: Callable[..., Run],
 ) -> None:
