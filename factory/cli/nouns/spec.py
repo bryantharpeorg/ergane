@@ -27,6 +27,7 @@ from factory.roadmap.cli import (
 )
 from factory.roadmap.models import RoadmapError, SpecState, compute_readiness, read_roadmap
 from factory.verify.criteria import parse_spec
+from factory.verify.models import RequirementKind
 from factory.workgraph.cli import (
     DEFAULT_SPECS_ROOT,
     SPEC_NAME,
@@ -37,7 +38,7 @@ from factory.workgraph.cli import (
     workflow_id,
 )
 from factory.workgraph.derive import DerivationError, derive_workgraph
-from factory.workgraph.models import WorkGraph, WorkGraphError, validate_workgraph
+from factory.workgraph.models import WorkGraph, WorkGraphError, WorkNode, validate_workgraph
 from factory.workgraph.worktree import landing_branch
 
 #: The id grammar the criteria parser mints for acceptance scenarios.
@@ -249,6 +250,11 @@ def _validate_command(args: argparse.Namespace) -> int:
     if graph is not None:
         _check_workgraph(graph, findings)
         _check_personas(graph, findings)
+    else:
+        # Derivation failed, but the spec still declares stories and the
+        # registry check is meaningful: a missing persona is a dispatch-time
+        # failure no matter why the graph did not compile (FR-007).
+        _check_personas(_candidate_graph(spec_text, epic_id), findings)
 
     # 4. Scenario coverage across spec.md and tasks.md.
     _check_scenario_coverage(spec_dir, spec_text, findings)
@@ -318,6 +324,55 @@ def _check_personas(graph: WorkGraph, findings: list[_ValidateFinding]) -> None:
                     f"persona registry (known: {known})",
                 )
             )
+
+
+def _candidate_graph(spec_text: str, epic_id: str) -> WorkGraph:
+    """A minimal graph from parsed stories so persona checks survive derivation failures.
+
+    Every derived node uses the minimal interpreter's persona (the deriver never
+    reads personas), so when the real graph is unavailable we build the same
+    shape from the story keys the criteria parser found. A parse failure yields
+    an empty graph, which simply means no persona finding is possible this layer.
+    """
+    try:
+        requirements = parse_spec(spec_text)
+    except Exception:
+        return WorkGraph(
+            epic_id=epic_id,
+            feature=epic_id,
+            specs_root="",
+            target_repo="",
+            nodes=[],
+        )
+
+    nodes: list[WorkNode] = []
+    seen: set[str] = set()
+    for requirement in requirements:
+        if requirement.kind is not RequirementKind.STORY:
+            continue
+        node_id = requirement.key.lower()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        nodes.append(
+            WorkNode(
+                id=node_id,
+                story_key=requirement.key,
+                persona="implementer",
+                spec_ref=f"{epic_id}:{requirement.key}",
+                requirement_keys=[requirement.key],
+                depends_on=[],
+                depends_on_merged=[],
+                timeout_override_s=None,
+            )
+        )
+    return WorkGraph(
+        epic_id=epic_id,
+        feature=epic_id,
+        specs_root="",
+        target_repo="",
+        nodes=nodes,
+    )
 
 
 def _check_scenario_coverage(

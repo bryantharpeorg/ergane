@@ -367,18 +367,13 @@ def test_validate_reports_frontmatter_derivation_and_persona_errors(
     _git(repo, "init", "-b", "main", "--quiet", env=env)
     specs_dir = repo / "specs" / "bad-spec"
     specs_dir.mkdir(parents=True)
-    # Frontmatter error (unknown key), derive succeeds but work-graph structural
-    # duplicate node id is impossible because derive lowercases unique story keys.
-    # Instead we make derive fail (unknown dep) and rely on the persona registry
-    # check being reachable by ensuring the implementer persona is unserved.
-    # But derive failure prevents graph validation.  So we use a frontmatter error
-    # and a persona-only workgraph error: derive succeeds and validate_workgraph
-    # fails because the registry has no implementer.  The three categories are
-    # frontmatter, work-graph validation, and persona registry.
+    # Frontmatter error (unknown key) + derivation error (unknown dependency)
+    # + unserved implementer persona in the registry. All three must be named
+    # in the same run, demonstrating that validate does not short-circuit.
     spec = _spec(
         state="ready",
         stories=["US1"],
-        work_graph="US1:\n  depends_on: []\n  implements: [FR-001]\n",
+        work_graph="US1:\n  depends_on: [US9]\n  implements: [FR-001]\n",
     )
     # Add an unknown frontmatter key.
     spec = spec.replace("state: ready", "state: ready\nunknown_key: x")
@@ -398,11 +393,16 @@ def test_validate_reports_frontmatter_derivation_and_persona_errors(
     result = run("spec", "validate", str(specs_dir))
 
     assert result.code == 1
+    output = result.stdout + result.stderr
     # Frontmatter error named.
-    assert "unknown_key" in result.stderr or "unknown_key" in result.stdout
-    assert "bad-spec" in result.stderr or "bad-spec" in result.stdout
-    # Work-graph / persona error named.
-    assert "implementer" in result.stderr or "implementer" in result.stdout
+    assert "unknown_key" in output
+    assert "bad-spec" in output
+    # Work-graph derivation error named.
+    assert "US9" in output
+    # Persona-registry error named.
+    assert "implementer" in output
+    # Count: exactly the three expected findings (scenario coverage is satisfied).
+    assert output.count("ergane spec validate:") == 3
 
 
 def test_validate_exits_zero_and_names_checks_on_sound_spec(
