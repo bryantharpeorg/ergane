@@ -1,0 +1,28 @@
+{
+  "epic_id": "022-validate-calibration",
+  "feature": "022-validate-calibration",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane-019-target",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "022-validate-calibration:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}
