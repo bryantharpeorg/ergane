@@ -50,7 +50,7 @@ verified at drafting time.
   that block is where the new helper belongs, with the same signature shape and
   the same docstring discipline (say what the key is and why). The third of the
   family, `worktree_path(factory_root, epic_id, node_id)`, lives **not** in the
-  adapter but at `factory/workgraph/worktree.py:134`; it is the keying precedent
+  adapter but at `factory/workgraph/worktree.py:136`; it is the keying precedent
   to copy, not a neighbour to sit beside.
 - **`AttemptContext`** (`factory/workgraph/models.py:285`) already carries
   `worktree_path`, `session_id`, `proxy_url`, `virtual_key`, `model_alias`,
@@ -70,11 +70,11 @@ verified at drafting time.
   the CLI's own `/home/a/b` → `-home-a-b` rule so the factory can find the file
   it archives. Unchanged by this spec: the rule is applied under a new root, not
   altered.
-- **Salvage identity**: `_SALVAGE_IDENTITY` (`factory/workgraph/worktree.py:537`)
+- **Salvage identity**: `_SALVAGE_IDENTITY` (`factory/workgraph/worktree.py:558`)
   sets `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
   `GIT_COMMITTER_EMAIL` from `SALVAGE_AUTHOR_NAME = "Ergane Factory"` and
-  `SALVAGE_AUTHOR_EMAIL = "factory@ergane.invalid"` (`:76-77`), passed as
-  `env_extra` at `:271` and `:384`. The module docstring (`:46-51`) explains the
+  `SALVAGE_AUTHOR_EMAIL = "factory@ergane.invalid"` (`:77-78`), passed as
+  `env_extra` at `:273` and `:386`. The module docstring (`:46-51`) explains the
   reasoning — reading `user.name` from the host would attribute automated
   commits to a person who did not make them. Reuse these constants; do not
   invent a second identity.
@@ -247,6 +247,20 @@ path. FR-004 exists to forbid it, and US3's sweep is where it gets caught.
 If the CLI genuinely cannot start without something the factory should not
 fabricate, that is a blocking question for the operator (008's channel), not a
 judgement call to make inside the attempt.
+
+Trap: **every success criterion in this spec reads a file or a dict, and the
+defect was found in a process table.** SC-002 asserts on the built environment,
+SC-003 on the seeded home's contents — both are statements about what the
+factory *writes*. What was actually observed at 2:05 AM was the agent's pid with
+sibling processes, one of them an MCP server. Those are not the same claim, and
+only the second is the defect: `HOME` is one of several ways the CLI can be
+pointed at a configuration, so an implementation can satisfy SC-002 and SC-003
+in full while the child still resolves the operator's config by another route
+and spawns the same servers. Do not treat the file assertions as proof. The
+acceptance evidence for FR-001 is a real attempt whose agent pid has no MCP
+server among its children — captured the way the finding was, from the process
+table while the attempt is live — and if that evidence cannot be produced, the
+story is not done however green the suite is.
 
 The archive composes — observed, not reasoned. T001's re-probe wrote
 `<home>/.claude/projects/-tmp-…-worktree/<session-id>.jsonl` from a
