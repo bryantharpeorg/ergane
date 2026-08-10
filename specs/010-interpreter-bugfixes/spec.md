@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-010-target
 ---
