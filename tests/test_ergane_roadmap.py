@@ -179,8 +179,6 @@ async def test_start_prints_the_roadmap_workflow_id(
         result = await _run_in_thread(
             invoke, "roadmap", "start", str(specs_root), "--target-repo", TARGET_REPO
         )
-        env.client.get_workflow_handle(f"epic-001-ready").signal("release")
-
     assert result.code == 0
     assert result.stdout.strip() == roadmap_workflow_id(str(specs_root))
 
@@ -200,7 +198,6 @@ async def test_start_starts_on_the_workgraph_task_queue(
             invoke, "roadmap", "start", str(specs_root), "--target-repo", TARGET_REPO
         )
         described = await env.client.get_workflow_handle(workflow_id).describe()
-        env.client.get_workflow_handle("epic-001-ready").signal("release")
 
     assert described.workflow_type == "RoadmapWorkflow"
     assert described.task_queue == TASK_QUEUE
@@ -222,7 +219,6 @@ async def test_starting_a_running_roadmap_twice_is_refused_by_name(
         second = await _run_in_thread(
             invoke, "roadmap", "start", str(specs_root), "--target-repo", TARGET_REPO
         )
-        env.client.get_workflow_handle("epic-001-ready").signal("release")
 
     assert first.code == 0
     assert second.code == 1
@@ -266,7 +262,6 @@ async def test_status_prints_the_roadmap_status_document(
         result = await _run_in_thread(
             invoke, "roadmap", "status", str(specs_root), "--json"
         )
-        env.client.get_workflow_handle("epic-001-ready").signal("release")
 
     assert result.code == 0
     document = result.json
@@ -294,7 +289,7 @@ async def test_pause_parks_dispatch_and_resume_releases_it(
         assert pause.code == 0
 
         # Release the child and wait until the roadmap reports paused and empty.
-        env.client.get_workflow_handle("epic-001-ready").signal("release")
+        await env.client.get_workflow_handle("epic-001-ready").signal("release")
         workflow_id = roadmap_workflow_id(str(specs_root))
         for _ in range(300):
             status = await env.client.get_workflow_handle(workflow_id).query(
@@ -354,7 +349,7 @@ async def test_promote_makes_a_draft_dispatchable(
         draft = next(s for s in after.json["specs"] if s["spec_dir"] == "002-draft")
         assert draft["promoted"] is True
 
-        env.client.get_workflow_handle("epic-001-ready").signal("release")
+        await env.client.get_workflow_handle("epic-001-ready").signal("release")
 
 
 # Import at module bottom to avoid circular imports with fixtures.
