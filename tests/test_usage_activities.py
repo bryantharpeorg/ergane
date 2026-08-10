@@ -773,7 +773,7 @@ async def test_the_ledger_path_defaults_to_the_documented_location(
     await tear_down(env, lease)
 
     # The writer and the CLI must agree on where the ledger is, or an operator's
-    # `factory-usage` reads an empty database (contracts/cli.md).
+    # `ergane usage` reads an empty database (contracts/cli.md).
     assert DEFAULT_LEDGER_PATH == ".factory/ledger.db"
     assert only_row(tmp_path / DEFAULT_LEDGER_PATH)["key_alias"] == ALIAS
 

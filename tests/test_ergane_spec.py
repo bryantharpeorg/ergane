@@ -1,7 +1,7 @@
 """US2: the `ergane spec` noun — list, validate, derive, landed, all with --json.
 
-Every assertion mirrors the behaviour the old `factory-roadmap` and
-`factory-epic` CLIs established (SC-003): same expected output, new entry
+Every assertion mirrors the behaviour the old roadmap and epic
+CLIs established (SC-003): same expected output, new entry
 point.  This is a new file so US2, US3 and US4 can fan out without editing the
 old suites, which stay pointed at the old scripts until US5.
 """
@@ -213,7 +213,7 @@ def test_list_needs_no_service(run: Callable[..., Run], monkeypatch: pytest.Monk
     assert run("spec", "list", specs_root("valid")).code == 0
 
 
-# --- T010: derive mirrors factory-epic derive --------------------------------
+# --- T010: derive mirrors the old epic derive command ------------------------
 
 
 def test_derive_writes_compiled_artifact(run: Callable[..., Run], tmp_path: Path) -> None:

@@ -37,19 +37,19 @@ between the day it was written and the day you read it.
 
 | Question | Ask |
 | --- | --- |
-| Every spec's state, and what blocks each one | `factory-roadmap render specs` |
-| Which of a spec's stories are landed in git, story by story | `factory-epic landed <spec-dir>` |
-| What one epic is doing right now | `factory-epic status <epic-id>` |
-| What defects are open, and how often each has recurred | `factory-doctor list` |
-| What an epic cost | `factory-usage --by epic` |
+| Every spec's state, and what blocks each one | `ergane spec list specs` |
+| Which of a spec's stories are landed in git, story by story | `ergane build landed <spec-dir>` |
+| What one epic is doing right now | `ergane build status <epic-id>` |
+| What defects are open, and how often each has recurred | `ergane findings list` |
+| What an epic cost | `ergane usage` with `--by epic` |
 | What a running workflow is actually doing | Temporal's Web UI on `:8233` |
 
 `scripts/ergane-env.sh` puts the environment those commands need into your shell.
 
-One trap in that table: `factory-epic landed` scans `main` unless told otherwise, and the
+One trap in that table: `ergane build landed` scans `main` unless told otherwise, and the
 factory does not land on `main` — it lands on the buildout branch, and `main` moves only
-when an operator promotes. Between promotions the default under-reports. Say
-`factory-epic landed <spec-dir> --default-branch <branch>` whenever the answer matters.
+when an operator promotes. Between promotions the default under-reports. Pass
+`--default-branch <branch>` whenever the answer matters.
 
 ## How to work here
 
@@ -93,7 +93,7 @@ gets rediscovered by an agent, at full price.
 | A constraint that must change how future code is written, and has now bitten twice | `.specify/memory/constitution.md`, with a new `docs/decisions.md` entry |
 | Something learned that helps you reason but binds no implementer | cross-session memory |
 | Ongoing project state, goals or constraints not derivable from the tree | project memory |
-| An open defect or risk, with its mechanism and its evidence | `factory-doctor report` |
+| An open defect or risk, with its mechanism and its evidence | `ergane findings report` |
 
 `CONTEXT.md` defines the terms that table turns on — **binding rule**, **lesson**,
 **finding**, **trap** — if the line between them is ever unclear.

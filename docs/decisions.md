@@ -5,6 +5,34 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-037 · The `ergane` CLI supersedes the four legacy console scripts and their divergent exit-code tables (decided)
+
+Decided 2026-08-10, recorded at landing of spec `019-operator-cli` US5. The four
+legacy console scripts — `factory-epic`, `factory-roadmap`, `factory-doctor`,
+`factory-usage` — were replaced by the single `ergane` front door. Two landed
+contracts disagreed on exit codes: `specs/001-usage-tracking/contracts/cli.md`
+said usage errors are `2` and a missing ledger is `3`, while
+`specs/005-workgraph-interpreter/contracts/cli.md` said user errors are `1` and
+transport is `2`. 005's scheme was only reachable by overriding argparse in every
+CLI; 001's scheme is what argparse does by default, and it leaves `3` free for
+transport. The unified contract is therefore:
+
+- `0` — success, including empty-but-valid answers.
+- `1` — operator-fixable error (bad spec, unknown epic, declined prompt).
+- `2` — usage error, argparse's own unmodified code.
+- `3` — a service the factory talks to did not answer (Temporal, proxy, ledger).
+- `130` — `Ctrl-C`.
+
+005's scoping clause that told operators to reach for the `temporal` binary for
+signals is also superseded: `ergane build` and `ergane roadmap` carry typed
+versions of `pause_epic`, `resume_epic`, `kill_epic`, `question_answered`,
+`escalation_resolved`, `pause_roadmap`, `resume_roadmap` and `promote_spec`.
+The landed contract files (`specs/001-usage-tracking/contracts/cli.md` and
+`specs/005-workgraph-interpreter/contracts/cli.md`) keep their original text;
+this entry records the supersession.
+
+---
+
 ## D-036 · Landing attribution: declare the branch and read history honestly (decided)
 
 Decided 2026-08-09, claimed at landing of spec `020-landing-attribution`. Two independent

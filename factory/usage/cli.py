@@ -1,30 +1,10 @@
-"""The read side of the ledger — an answer an operator can trust, and cannot bend.
+"""Read-only usage rollup helpers.
 
-`factory-usage` is the one command this component ships (FR-012, US2). It exists
-to answer "what did this persona / epic / requirement / retry cost?", and its
-design is dominated by the two ways that answer could go wrong.
-
-**It must not be able to change the answer.** The ledger is opened through a
-`file:...?mode=ro` URI, so "no CLI invocation ever writes to the ledger" is
-SQLite refusing the statement rather than this module happening never to issue
-one (US2 scenario 4). The same choice buys a second guarantee for free: a
-read-only open never creates a file, so pointing `--db` at a typo is an error
-(exit 3) instead of a brand-new empty ledger reporting zero spend — which
-`factory.usage.ledger.connect`, the writer's door, would cheerfully produce.
-
-**It must not invent numbers.** `rollup` already returns exactly the document
-`contracts/cli.md` publishes, so `--json` is a dump and the table is a
-formatting pass over the same dict. Nothing here re-aggregates, which keeps
-FR-004/FR-005's never-fabricate-a-zero rule in the one place that implements it
-(the SQL's bare `SUM`, NULL over all-NULL input). The table renders that NULL as
-a placeholder that is deliberately not a numeral: a printed `0` would read as
-"this attempt used nothing" when the truth is "nobody measured it".
-
-Exit codes are the scripting contract: 0 for any answer including an empty one,
-2 for arguments the CLI cannot honour, 3 for a ledger it cannot read. Nothing
-but the requested output ever reaches stdout, so a `--json` consumer parses
-stdout whole or gets nothing to parse.
+The command surface now lives in `factory.cli.usage`; this module keeps the
+pure helpers (`open_readonly`, `render_table`, `UNMEASURED`) and the
+argument-to-document contract that the new noun reuses unchanged.
 """
+
 
 from __future__ import annotations
 
@@ -81,7 +61,11 @@ _KEY_HEADINGS = {"node": "EPIC:NODE"}
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Render one rollup. Returns the process exit status; never raises on a
-    ledger it cannot read."""
+    ledger it cannot read.
+
+    Kept as a convenience entry point for tests and direct module use; the
+    installed console script dispatches through `factory.cli.usage`.
+    """
     args = _parse_args(argv)
 
     try:
@@ -94,7 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A missing file, a directory, or something that is not a database at
         # all: all the same to a reader, and none of them a reason to print a
         # half-answer on stdout.
-        print(f"factory-usage: cannot read ledger {args.db}: {error}", file=sys.stderr)
+        print(f"ergane usage: cannot read ledger {args.db}: {error}", file=sys.stderr)
         return EXIT_NO_LEDGER
 
     print(json.dumps(document, indent=2) if args.as_json else render_table(document))
@@ -114,7 +98,7 @@ def open_readonly(path: str | Path) -> sqlite3.Connection:
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     """Parse `contracts/cli.md`'s invocation; exits 2 on anything it does not name."""
     parser = argparse.ArgumentParser(
-        prog="factory-usage",
+        prog="ergane usage",
         description="Read-only usage rollups over the factory ledger.",
     )
     parser.add_argument(
@@ -150,9 +134,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+
 def _default_ledger_path() -> Path:
     """Resolved per invocation, so the environment is read when the CLI runs."""
     return Path(os.environ.get(LEDGER_PATH_ENV) or DEFAULT_LEDGER_PATH)
+
 
 
 def _iso_day(value: str) -> str:
@@ -163,6 +149,7 @@ def _iso_day(value: str) -> str:
     except ValueError as error:
         raise argparse.ArgumentTypeError(f"{value!r} is not a real date: {error}") from error
     return value
+
 
 
 def render_table(document: dict[str, Any]) -> str:
@@ -189,6 +176,7 @@ def render_table(document: dict[str, Any]) -> str:
     )
 
 
+
 def _caption(document: dict[str, Any]) -> list[str]:
     """One line of context above the table: what was asked, and of which rows."""
     filters = document["filters"]
@@ -201,8 +189,10 @@ def _caption(document: dict[str, Any]) -> list[str]:
     ]
 
 
+
 def _row(key: str, metrics: dict[str, Any]) -> list[str]:
     return [key] + [_cell(field, metrics[field]) for field, _ in _COLUMNS]
+
 
 
 def _cell(field: str, value: Any) -> str:
@@ -215,12 +205,10 @@ def _cell(field: str, value: Any) -> str:
     return f"{value:,}"
 
 
+
 def _line(cells: Sequence[str], widths: Sequence[int]) -> str:
     """Key column left, numbers right, trailing padding trimmed."""
     padded = [cells[0].ljust(widths[0])] if cells else []
     padded += [cell.rjust(width) for cell, width in zip(cells[1:], widths[1:])]
     return "  ".join(padded).rstrip()
 
-
-if __name__ == "__main__":  # pragma: no cover - console script uses `main`
-    sys.exit(main())

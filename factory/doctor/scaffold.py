@@ -87,13 +87,13 @@ def _build_spec_md(
     lines.append("state: draft")
     lines.append(f"# specs_root: {specs_root}")
     lines.append(f"# target_repo: {target_repo}")
-    lines.append("# Auto-scaffolded by factory-doctor promote; review before flipping to ready.")
+    lines.append("# Auto-scaffolded by ergane findings promote; review before flipping to ready.")
     lines.append("---")
     lines.append("")
     lines.append(f"# Feature Specification: {slug}")
     lines.append("")
     lines.append(
-        "This spec was scaffolded from accepted findings in the factory-doctor ledger. "
+        "This spec was scaffolded from accepted findings in the ergane findings ledger. "
         "Each user story below carries the original finding's evidence verbatim; "
         "the operator or an architect session refines the prose before flipping "
         "`state` to `ready`."

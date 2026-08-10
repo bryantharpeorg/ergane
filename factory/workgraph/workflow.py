@@ -411,7 +411,7 @@ class EpicInput:
     landing_config: LandingConfig = LandingConfig()
     #: How many ready nodes the scheduler may have in flight at once (US1,
     #: FR-001/002). A property of the epic's dispatch — the machine's capacity,
-    #: not the repo's — supplied at `factory-epic start`. Defaulting to 1 is what
+    #: not the repo's — supplied at `ergane build start`. Defaulting to 1 is what
     #: makes SC-002 true by construction: an epic that does not ask for fan-out
     #: gets today's sequential behaviour exactly. Validated here as well as in
     #: the CLI, because `EpicInput` can be constructed without the CLI.
@@ -1513,7 +1513,7 @@ class EpicWorkflow:
         agent = workflow.start_activity(
             run_agent_attempt,
             context,
-            # The activity's id *is* the node id (US5): `factory-epic status`
+            # The activity's id *is* the node id (US5): `ergane build status`
             # reads each pending `run_agent_attempt`'s heartbeat off `describe()`
             # and attributes the spend to the node named by `activity_id`, so a
             # wide epic with several attempts in flight charges each node alone

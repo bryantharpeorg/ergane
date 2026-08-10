@@ -12,10 +12,6 @@ dependencies = [
 
 [project.scripts]
 ergane = "factory.cli.main:main"
-factory-usage = "factory.usage.cli:main"
-factory-epic = "factory.workgraph.cli:main"
-factory-roadmap = "factory.roadmap.cli:main"
-factory-doctor = "factory.doctor.cli:main"
 
 [dependency-groups]
 dev = [

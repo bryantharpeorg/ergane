@@ -127,6 +127,7 @@ from factory.notify.service import (
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 from factory.usage.models import Termination
 from factory.verify.models import VerificationConfig
+from factory.cli.main import main as ergane_main
 from factory.workgraph import cli
 from factory.workgraph.adapter import (
     DEFAULT_EXECUTABLE,
@@ -418,7 +419,7 @@ def live_epic(
         # The worker runs on its own loop in its own thread and STAYS UP while
         # the tests below read the epic's leavings, because that is the shape
         # of production: an operator's `python -m factory.worker` outlives any
-        # one epic, and `factory-epic status` serves its query through a live
+        # one epic, and `ergane build status` serves its query through a live
         # poller — a worker torn down with the workflow would make the status
         # test fail with "no poller seen", found live 2026-08-05.
         loop = asyncio.new_event_loop()
@@ -481,8 +482,9 @@ def build_workspace(root: Path, config: LiveConfig) -> Workspace:
 
     # The operator's own command (contracts/cli.md), not a call into the deriver:
     # `derive` is half of what quickstart §4 exercises, and it needs no server.
-    status = cli.main(
+    status = ergane_main(
         [
+            "spec",
             "derive",
             str(spec_dir),
             "--target-repo",
@@ -491,7 +493,7 @@ def build_workspace(root: Path, config: LiveConfig) -> Workspace:
             str(specs_root),
         ]
     )
-    assert status == cli.EXIT_OK, "factory-epic derive refused the smoke's own spec"
+    assert status == 0, "ergane spec derive refused the smoke's own spec"
     return workspace
 
 
@@ -537,7 +539,7 @@ async def serve_epic(
     rather than restated: a live run that registered its own convenient subset
     would prove nothing about the process an operator actually starts. The
     worker outlives the workflow — until `stop` — so the queries the tests
-    make (`factory-epic status` above all) have the live poller they would
+    make (`ergane build status` above all) have the live poller they would
     have in production.
     """
     try:
@@ -591,7 +593,7 @@ async def connect(config: LiveConfig) -> Client:
 async def start(
     client: Client, config: LiveConfig, workspace: Workspace, graph: Any
 ) -> Any:
-    """Dispatch the compiled graph under the id `factory-epic status` reads."""
+    """Dispatch the compiled graph under the id `ergane build status` reads."""
     try:
         return await client.start_workflow(
             EpicWorkflow.run,
@@ -891,10 +893,10 @@ def test_factory_epic_status_reports_what_the_workflow_reported(
     test knows, which is the property that makes `status` trustworthy while an
     epic is still running.
     """
-    status = cli.main(["status", live_epic.workspace.epic_id])
+    status = ergane_main(["build", "status", live_epic.workspace.epic_id])
     printed = capsys.readouterr().out
 
-    assert status == cli.EXIT_OK
+    assert status == 0
     assert f"epic {live_epic.workspace.epic_id}  {EpicState.COMPLETED}" in printed
     assert NODE_ID in printed
     assert str(NodeState.PASSED) in printed

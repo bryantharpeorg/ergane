@@ -1,56 +1,11 @@
-"""The operator's steering wheel: compile a spec, start an epic, read its state.
+"""Handlers for the `ergane build` and `ergane repo` nouns.
 
-`factory-epic` is the entire human surface of the interpreter (FR-009, R12).
-Three verbs, deliberately — Temporal's Web UI already shows history, per-activity
-timing and stack traces far better than a terminal could, so everything richer
-than "compile it / run it / what is it doing" is out of scope by contract
-(contracts/cli.md), and the signals an operator sends are sendable with
-`temporal workflow signal` and from the escalation buttons.
-
-The three verbs split cleanly in two, and the split is the design:
-
-- **`derive` is offline and total.** It reads one spec, compiles it, and writes
-  `workgraph.json` next to it — no client, no server, no environment. An author
-  can compile a spec on a laptop with no factory anywhere near it. Its whole
-  discipline is that a spec which does not compile writes *nothing* and prints
-  *every* rejection: an artifact half-built from a broken spec is an epic that
-  starts, dispatches the stories that parsed, and silently never builds the one
-  that did not, and an author who is handed one error per invocation fixes typos
-  one round trip at a time.
-
-- **`start` and `status` talk to Temporal**, through the notify bridge's exact
-  environment contract (`TEMPORAL_ADDRESS`/`TEMPORAL_NAMESPACE`) so the factory
-  has one deployment story rather than one per process. The workflow id is
-  `epic-<epic_id>`, which is what makes an epic findable without anyone writing
-  down a run id — by `status`, by the escalation bridge's `workflow_id` round
-  trip, by an operator searching the Web UI — and what makes a double start
-  collide by construction instead of running two epics over one `.factory/`.
-
-Two boundaries are worth stating out loud, because both are places this module
-could plausibly have done more and deliberately does not:
-
-**`start` re-validates structurally, and resolves no personas.** `workgraph.json`
-is a compiled artifact, but between `derive` writing it and `start` reading it
-there is a text editor, so the structural rules run again here and a graph that
-fails them never becomes a workflow that has to be killed. What does *not* run
-here is persona and timeout resolution: `personas.yaml` belongs to the worker,
-whose `resolve_graph` reads it once per epic and validates against that snapshot
-(R8). A CLI that resolved personas from its own working directory could accept a
-graph the worker then rejects, or reject one the worker would have run — so it
-supplies a registry that answers for every persona the graph names, leaving the
-registry rules vacuous and every structural rule in force.
-
-**`--json` is a dump, never a re-assembly.** The query's payload is decoded
-untyped and printed as it arrived, so `EpicStatus` is stated in exactly one place
-(the workflow) and a consumer of `--json` cannot be broken by this renderer. The
-human view is the only thing here that formats, and it formats nothing it did not
-read from that same document.
-
-Exit codes are the scripting contract: `0` success, `1` a spec or a graph or an
-epic id the operator has to fix, `2` a Temporal that is not answering — a
-distinction worth having, because the first means edit something and the second
-means go look at the server, whose address the message names.
+The command surface now lives in `factory.cli.build` and `factory.cli.repo`;
+this module keeps the reusable handlers (`derive_command`, `landed_command`,
+`start_command`, `status_command`, `onboard_command`) and the id conventions
+that both nouns share.
 """
+
 
 from __future__ import annotations
 
@@ -186,23 +141,6 @@ async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:
     if any(finding.transport for finding in findings):
         return EXIT_TRANSPORT
     return EXIT_USER
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run one invocation. Returns the process status; prints errors to stderr.
-
-    Nothing but the requested output ever reaches stdout, so a caller that pipes
-    the printed artifact path or the `--json` document into another command gets
-    an empty string on failure rather than a sentence to parse around.
-    """
-    args = _parse_args(argv)
-    try:
-        return int(args.run(args))
-    except _OperatorError as error:
-        print(f"factory-epic: {error}", file=sys.stderr)
-        return error.code
-    except KeyboardInterrupt:
-        return EXIT_USER
 
 
 def workflow_id(epic_id: str) -> str:
@@ -393,7 +331,7 @@ def _target_repo_for_spec(spec_dir: Path) -> Path:
 
     The spec lives at `<repo>/specs/<epic>/spec.md`; delta derivation reads the
     landing history from the same repo. The target clone used at dispatch may be
-    elsewhere, but for a human running `factory-epic derive --delta` from a working
+    elsewhere, but for a human running `ergane spec derive --delta` from a working
     copy this is the repo they are standing in.
     """
     # Walk up until we find a .git directory, or fall back to the spec's parent.
@@ -429,7 +367,7 @@ def _print_provenance(result: DeltaResult) -> None:
 def onboard_command(args: argparse.Namespace) -> int:
     """Validate a target repo against the factory's assumptions (FR-010, SC-005).
 
-    The operator's preflight surface for US3: `factory-epic onboard
+    The operator's preflight surface for US3: `ergane repo onboard
     <target-clone-path>` reads the repo's facts (visibility, merge-queue rule,
     required checks) and its committed `factory.yaml`, and prints every finding —
     pass and fail — so an operator can see the repo was checked, not just whether
@@ -510,7 +448,7 @@ def start_command(args: argparse.Namespace) -> int:
     if not graph.nodes:
         raise _OperatorError(
             f"workgraph '{graph.epic_id}' has zero nodes — nothing to build; "
-            "use `factory-epic derive` to compile a non-empty graph"
+            "use `ergane spec derive` to compile a non-empty graph"
         )
 
     try:
@@ -548,7 +486,7 @@ async def _start_epic(
     if findings:
         # Everything the operator must act on, at once, and nothing started.
         for finding in findings:
-            print(f"factory-epic: preflight [{finding.check}]: {finding.detail}", file=sys.stderr)
+            print(f"ergane build: preflight [{finding.check}]: {finding.detail}", file=sys.stderr)
         return exit_code
 
     epic_workflow_id = workflow_id(graph.epic_id)
@@ -595,7 +533,7 @@ def load_workgraph(path: str | Path) -> WorkGraph:
     if not isinstance(document, dict) or not isinstance(document.get("nodes"), list):
         raise WorkGraphError(
             f"{location} is not a compiled workgraph: expected an object with a "
-            "'nodes' list (write one with `factory-epic derive`)"
+            "'nodes' list (write one with `ergane spec derive`)"
         )
 
     try:
@@ -851,124 +789,3 @@ async def _connect() -> Client:
         ) from error
 
 
-# --- arguments ----------------------------------------------------------------
-
-
-class _Parser(argparse.ArgumentParser):
-    """An `ArgumentParser` that exits 1, because a bad invocation is a user error.
-
-    argparse's own status for that is 2, which this CLI's contract reserves for
-    a Temporal that is not answering — a distinction a script would otherwise
-    lose the moment someone mistyped a flag.
-    """
-
-    def error(self, message: str) -> Any:  # pragma: no cover - argparse's path
-        self.print_usage(sys.stderr)
-        self.exit(EXIT_USER, f"{self.prog}: error: {message}\n")
-
-
-def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = _Parser(
-        prog="factory-epic",
-        description="Compile, start and watch one epic (contracts/cli.md).",
-    )
-    commands = parser.add_subparsers(dest="command", required=True)
-
-    derive = commands.add_parser(
-        "derive", help=f"compile <spec-dir>/{SPEC_NAME} into {ARTIFACT_NAME}"
-    )
-    derive.add_argument("spec_dir", help="the feature directory holding spec.md")
-    derive.add_argument(
-        "--target-repo",
-        required=True,
-        help="worker-host path to the repository the epic builds in",
-    )
-    derive.add_argument(
-        "--specs-root",
-        default=DEFAULT_SPECS_ROOT,
-        help=f"where the worker finds feature specs (default: {DEFAULT_SPECS_ROOT})",
-    )
-    derive.add_argument(
-        "-o",
-        "--output",
-        default=None,
-        help=f"write the artifact here instead of <spec-dir>/{ARTIFACT_NAME}",
-    )
-    derive.add_argument(
-        "--delta",
-        action="store_true",
-        help=(
-            "derive only the work that remains: unlanded stories and stories whose "
-            "fingerprint changed since their landing commit"
-        ),
-    )
-    derive.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print the compiled graph as JSON instead of the artifact path",
-    )
-    derive.set_defaults(run=derive_command)
-
-    landed = commands.add_parser(
-        "landed",
-        help=f"report landed facts for <spec-dir>/{SPEC_NAME}",
-    )
-    landed.add_argument("spec_dir", help="the feature directory holding spec.md")
-    landed.add_argument(
-        "--default-branch",
-        default=None,
-        help="default branch to scan for landing attributions (default: read from manifest, else main)",
-    )
-    landed.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print the landed facts as JSON instead of the human view",
-    )
-    landed.set_defaults(run=landed_command)
-
-    onboard = commands.add_parser(
-        "onboard",
-        help="validate a target repo for dispatch (merge queue + required checks, US3)",
-    )
-    onboard.add_argument(
-        "target_repo",
-        help="worker-host path to the target repo clone to validate",
-    )
-    onboard.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print the TargetRepoProfile verbatim instead of the human view",
-    )
-    onboard.set_defaults(run=onboard_command)
-
-    start = commands.add_parser("start", help="start the epic a compiled graph declares")
-    start.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
-    start.add_argument(
-        "--max-concurrent-nodes",
-        type=_positive_int,
-        default=1,
-        help=(
-            "how many ready nodes the scheduler may have in flight at once "
-            "(default: 1 — today's sequential dispatch)"
-        ),
-    )
-    start.set_defaults(run=start_command)
-
-    status = commands.add_parser("status", help="what one epic is doing right now")
-    status.add_argument("epic_id", help="the epic id (the spec directory's name)")
-    status.add_argument(
-        "--json",
-        dest="as_json",
-        action="store_true",
-        help="print the query result verbatim instead of the human view",
-    )
-    status.set_defaults(run=status_command)
-
-    return parser.parse_args(argv)
-
-
-if __name__ == "__main__":  # pragma: no cover - console script uses `main`
-    sys.exit(main())

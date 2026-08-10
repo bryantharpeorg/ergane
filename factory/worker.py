@@ -3,7 +3,7 @@
 Everything else in this repository is a library. This is the deployment: the
 long-lived process an operator runs on the worker host, which polls the
 `workgraph` task queue and is the only reason a started epic makes progress.
-`factory-epic start` creates a workflow; nothing happens until this is running.
+`ergane build start` creates a workflow; nothing happens until this is running.
 
 It is deliberately almost nothing but a list, because that is where the whole
 risk lives. Temporal dispatches by *name* over a queue, so an activity the

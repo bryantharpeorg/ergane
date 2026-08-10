@@ -9,7 +9,7 @@ burned attempt.
 
 So the three claims the file makes about the world are checked against the world:
 
-- **Every command it names still exists.** Each backticked `factory-*` invocation
+- **Every command it names still exists.** Each backticked `ergane` invocation
   is run for real, with `--help`, through the installed console script — the exact
   thing it tells a reader to type. Rename a verb and the page that recommended it
   fails on the same commit.
@@ -50,7 +50,7 @@ CODE_SPANS = re.findall(r"`([^`\n]+)`", TEXT)
 
 
 def _commands() -> list[tuple[str, ...]]:
-    """Each distinct `factory-*` invocation the file recommends, as argv.
+    """Each distinct `ergane` invocation the file recommends, as argv.
 
     Flags are kept — a renamed `--by` is as broken a recommendation as a renamed
     verb — but placeholders are not, because `<spec-dir>` is the reader's to
@@ -59,7 +59,7 @@ def _commands() -> list[tuple[str, ...]]:
     found: list[tuple[str, ...]] = []
     for span in CODE_SPANS:
         words = span.split()
-        if not words or not words[0].startswith("factory-"):
+        if not words or words[0] != "ergane":
             continue
         argv = tuple(w for w in words if not w.startswith("<") and not w.endswith(">"))
         if argv not in found:
@@ -125,8 +125,8 @@ def test_every_command_the_file_names_resolves(argv: tuple[str, ...]) -> None:
     assert result.returncode == 0, f"{argv[0]} --help does not parse:\n{result.stderr.strip()}"
 
     # Descend the real parser one verb at a time. Falling back to a shorter
-    # prefix would be the wrong kindness: `factory-doctor lyst` would then be
-    # checked as `factory-doctor`, and pass.
+    # prefix would be the wrong kindness: `ergane doctor lyst` would then be
+    # checked as `ergane doctor`, and pass.
     for word in positionals:
         verbs = _verbs_of(result.stdout)
         if not verbs:
@@ -161,9 +161,9 @@ def test_the_command_sweep_actually_read_the_file() -> None:
     # A parametrized sweep over an empty list passes without asserting anything,
     # which is how this file would go quiet if the backtick convention changed.
     named = {argv[0] for argv in COMMANDS}
-    assert named == {"factory-roadmap", "factory-epic", "factory-doctor", "factory-usage"}, (
-        f"the sweep found {sorted(named)} — CLAUDE.md is meant to point at all four "
-        "operator entry points, and the sweep is meant to find all four"
+    assert named == {"ergane"}, (
+        f"the sweep found {sorted(named)} — CLAUDE.md is meant to point at the single "
+        "operator entry point, and the sweep is meant to find it"
     )
 
 
@@ -221,8 +221,8 @@ def test_the_path_sweep_actually_read_the_file() -> None:
 _SPEC_ID = re.compile(r"\b\d{3}-[a-z][a-z0-9-]*|\b0\d\d\b")
 
 #: Words that assert where a spec has got to. Every one of them has a live
-#: source — `factory-roadmap render` for the first four, `factory-epic landed`
-#: and `factory-epic status` for the rest — so every one of them is a copy.
+#: source — `ergane spec list` for the first four, `ergane build landed`
+#: and `ergane build status` for the rest — so every one of them is a copy.
 _STATUS_WORD = re.compile(
     r"\b(draft|ready|deferred|landed|shipped|blocked|in[- ]flight|dispatched"
     r"|running|done|complete|completed|passing|failing|merged)\b",
@@ -253,7 +253,7 @@ def test_the_file_names_no_spec_status() -> None:
         + "\n".join(
             f"  line {number}: {spec!r} beside {status!r}" for number, spec, status in claims
         )
-        + "\n\nAsk `factory-roadmap render specs` or `factory-epic landed <spec-dir>` "
+        + "\n\nAsk `ergane roadmap render specs` or `ergane build landed <spec-dir>` "
         "instead of recording the answer here."
     )
 

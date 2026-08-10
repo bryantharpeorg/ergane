@@ -1,34 +1,20 @@
-"""The factory-doctor command surface.
+"""Handlers for the doctor and findings nouns.
 
-`factory-doctor report|list|resolve|check|promote` is the operator CLI over the
-findings ledger and the probe registry. It mirrors the other factory CLIs'
-exit-code contract:
-
-- 0 success
-- 1 operator-fixable refusal (bad grammar, unknown key, missing flags) or a
-  newly filed `critical` finding from a probe
-- 2 service not answering or a probe that was skipped because a service it needs
-  did not answer
-
-When a run both files a new critical finding and skips a probe, the exit is 2:
-an incomplete examination outranks a bad one, because the operator's next action
-is to re-run with the service up, not to read the finding (FR-007).
-
-The store path resolves from the working directory the same way the ledger and
-verification stores do.
+The command surface now lives in `factory.cli.doctor` and `factory.cli.findings`;
+this module keeps the reusable handlers (`_check_command`, `_report_command`,
+`_list_command`, `_resolve_command`, `_promote_command`) and the credential
+sanitization helpers that both nouns share.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
 
 import yaml
 
@@ -66,85 +52,12 @@ def _store_path(args: argparse.Namespace) -> Path:
     return Path(args.db)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse_args(argv)
-    path = _store_path(args)
-    conn = connect(path)
-    try:
-        _resolve_promoted_findings(conn)
-        return int(args.run(args, conn))
-    except _UserError as error:
-        print(f"factory-doctor: {error}", file=sys.stderr)
-        return error.code
-    finally:
-        conn.close()
-
-
 class _UserError(Exception):
     """Something an operator can act on."""
 
     def __init__(self, message: str, code: int = EXIT_USER) -> None:
         super().__init__(message)
         self.code = code
-
-
-def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="factory-doctor")
-    parser.add_argument(
-        "--db",
-        default=str(DEFAULT_DB_PATH),
-        help=f"path to the findings store (default: {DEFAULT_DB_PATH})",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    report_parser = subparsers.add_parser("report", help="record a finding")
-    report_parser.add_argument("--key", help="category/slug identity")
-    report_parser.add_argument("--category", help="finding category")
-    report_parser.add_argument(
-        "--severity", help="critical|warning|info"
-    )
-    report_parser.add_argument("--summary", help="short description")
-    report_parser.add_argument(
-        "--refs", nargs="+", default=[], help="file:line reference strings"
-    )
-    report_parser.add_argument("--notes", default=None, help="extra evidence")
-    report_parser.add_argument("--source", default="operator", help="reporter source")
-    report_parser.add_argument(
-        "--batch",
-        metavar="FILE",
-        help="ingest findings from a JSON batch file (all-or-nothing)",
-    )
-    report_parser.set_defaults(run=_report_command)
-
-    list_parser = subparsers.add_parser("list", help="list findings")
-    list_parser.set_defaults(run=_list_command)
-
-    resolve_parser = subparsers.add_parser("resolve", help="resolve a finding")
-    resolve_parser.add_argument("--key", required=True, help="finding to resolve")
-    resolve_parser.add_argument("--reason", required=True, help="why it is resolved")
-    resolve_parser.set_defaults(run=_resolve_command)
-
-    check_parser = subparsers.add_parser("check", help="run all registered probes")
-    check_parser.set_defaults(run=_check_command)
-
-    promote_parser = subparsers.add_parser("promote", help="scaffold a spec from findings")
-    promote_parser.add_argument("--slug", required=True, help="target spec directory name")
-    promote_parser.add_argument(
-        "--keys", nargs="+", default=[], help="finding keys to promote"
-    )
-    promote_parser.add_argument(
-        "--specs-root",
-        required=True,
-        help="parent directory where the spec directory will be created",
-    )
-    promote_parser.add_argument(
-        "--target-repo",
-        required=True,
-        help="target repo path recorded in the compiled workgraph",
-    )
-    promote_parser.set_defaults(run=_promote_command)
-
-    return parser.parse_args(argv)
 
 
 def _contains_secret(value: str | None) -> bool:

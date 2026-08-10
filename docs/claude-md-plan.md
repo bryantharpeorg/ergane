@@ -35,8 +35,8 @@ also stops agents having the ledger, the verification store, and other epics' wo
 an ancestor path.
 
 **3. Content: a map and an interrogation guide, not a snapshot.** As of 2026-08-08 the
-system can answer questions about itself — `factory-roadmap render` for spec states,
-`factory-epic landed` for per-story truth from git, `factory-doctor list` for open
+system can answer questions about itself — `ergane spec list` for spec states,
+`ergane build landed` for per-story truth from git, `ergane findings list` for open
 findings. Anything with a live source is therefore forbidden in this file. The repo has
 been bitten twice in a week by duplicated truth: a hardcoded model-alias list left the
 trunk red for six hours after a persona swap, and derived `workgraph.json` artifacts are
@@ -46,8 +46,8 @@ tracked for three specs and untracked for three others.
 nearly free. The measured leverage is elsewhere: 015 landed three stories first-attempt at
 $11.48 each after a pre-dispatch refinement pass fixed five defects, while 016's us4 — a
 story flagged as oversized and split, but not enough — burned $78.73 on a single attempt.
-And verification has a ceiling: 1,784 green tests plus three PASS verdicts shipped a
-`factory-doctor check` that cannot start.
+And verification has a ceiling: 1,784 green tests plus three PASS verdicts shipped an
+`ergane doctor` probe that could not start.
 
 **5. Lessons default to memory; the constitution is promoted into.** Operator's call,
 against the recommendation on this page's author. A lesson goes to cross-session memory
@@ -86,8 +86,8 @@ reference `scripts/ergane-env.sh` rather than anything it decrypts.
    and is what implementer agents are told to obey. `docs/architecture.md` describes.
    `docs/decisions.md` is immutable — supersede, never edit. `CONTEXT.md` is the
    vocabulary.
-4. **Ask the system, don't trust this file.** `factory-roadmap render specs`,
-   `factory-doctor list`, `factory-epic status <epic>`, `factory-epic landed <spec>`, the
+4. **Ask the system, don't trust this file.** `ergane spec list specs`,
+   `ergane findings list`, `ergane build status <epic>`, `ergane build landed <spec>`, the
    Temporal UI on `:8233`. Stated explicitly: this file names no spec statuses, no story
    counts, no spend figures, because all three have live sources.
 5. **How to work here** — the operator contract:
@@ -109,7 +109,7 @@ reference `scripts/ergane-env.sh` rather than anything it decrypts.
 
 ### Anti-rot test — `tests/test_claude_md.py`
 
-- Every backticked `factory-*` verb the file names resolves (`--help` parses).
+- Every backticked `ergane` invocation the file names resolves (`--help` parses).
 - Every repo path it cites exists.
 - It contains no spec-status word adjacent to a spec id, so section 4's no-state rule is
   enforced rather than aspirational.
@@ -119,8 +119,9 @@ being discovered six hours later by a burned attempt.
 
 ## Open items this plan depends on
 
-- `factory-doctor check` is broken (`doctor/check-crashes-on-nested-asyncio-run`), so
-  section 4 should cite `list` as the working entry point and not promise `check`.
+- `ergane doctor` is a probe runner whose check path once crashed on nested asyncio
+  (`doctor/check-crashes-on-nested-asyncio-run`); section 4 cites `findings list` as the
+  working entry point.
 - The HOME-inheritance defect (`hardening/agents-inherit-operator-home`) is what makes the
   token cost of an inherited CLAUDE.md relatively small. If it is fixed first, revisit
   whether the scope fence is still the right trade against moving the worktree root.

@@ -1,7 +1,7 @@
 """US4 port tests: `ergane doctor`, `usage`, and `repo onboard`.
 
-These tests mirror the assertions of the legacy `factory-doctor`, `factory-usage`,
-and `factory-epic onboard` suites, but drive them through the unified `ergane`
+These tests mirror the assertions of the legacy doctor, usage and repo-onboard
+suites, but drive them through the unified `ergane`
 dispatcher. Two cases the old suites could not have are included:
 
 - a probe that raises a non-service exception is reported as one line naming

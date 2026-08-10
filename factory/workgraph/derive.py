@@ -16,7 +16,7 @@ author's explicit override and resolution happens at dispatch.
 has to go edit one line of one spec, so every rejection carries the offending
 story and the rule slug from contracts/workgraph-schema.md § Shape rules — not
 prose a caller has to grep. Rejections are *collected* rather than raised at the
-first, because `factory-epic derive` prints them all at once and an author
+first, because `ergane spec derive` prints them all at once and an author
 fixing one typo per run, with the next revealed only after the fix, is the
 failure mode collection exists to avoid.
 

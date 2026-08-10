@@ -13,8 +13,8 @@ member names because that is what an operator reads in the CLI and in Temporal's
 Web UI.
 
 `validate_workgraph` is the FR-002 gate. `workgraph.json` is a compiled artifact,
-but it is also *a file on disk between two commands* — `factory-epic derive`
-writes it, `factory-epic start` reads it, and an operator's text editor is
+but it is also *a file on disk between two commands* — `ergane spec derive`
+writes it, `ergane build start` reads it, and an operator's text editor is
 available in between — so the graph is re-validated against the registry it will
 actually resolve personas from, and a graph that fails is rejected before a
 single key is issued or worktree created.
