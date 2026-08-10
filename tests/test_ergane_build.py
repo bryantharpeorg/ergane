@@ -853,15 +853,205 @@ def test_kill_without_yes_refuses_and_sends_nothing(
     assert result.stdout == ""
 
 
-def test_kill_with_yes_sends_kill_signal(
+# --- T018/T019: answer / resolve ---------------------------------------------
+
+
+@pytest.fixture
+def verification_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fresh verification store at a temporary path, wired into the CLI env."""
+    path = tmp_path / "verification.db"
+    monkeypatch.setenv("FACTORY_VERIFICATION_DB_PATH", str(path))
+    return path
+
+
+def make_question(
+    epic_id: str,
+    node_id: str,
+    question_id: str,
+    question_text: str,
+    *,
+    resolution: str | None = None,
+    answer_text: str | None = None,
+) -> QuestionRecord:
+    resolved_at = "2026-08-05T09:31:00Z" if resolution is not None else None
+    return QuestionRecord(
+        question_id=question_id,
+        workflow_id=f"epic-{epic_id}",
+        epic_id=epic_id,
+        node_id=node_id,
+        attempt=1,
+        question_text=question_text,
+        sent_at="2026-08-05T09:30:00Z",
+        expires_at="2026-08-05T17:30:00Z",
+        resolution=resolution,
+        answer_text=answer_text,
+        resolved_at=resolved_at,
+    )
+
+
+def make_escalation(
+    epic_id: str,
+    node_id: str,
+    escalation_id: str,
+    *,
+    resolution: EscalationChoice | str | None = None,
+) -> EscalationRecord:
+    resolved_at = "2026-08-05T09:31:00Z" if resolution is not None else None
+    return EscalationRecord(
+        escalation_id=escalation_id,
+        workflow_id=f"epic-{epic_id}",
+        epic_id=epic_id,
+        node_id=node_id,
+        choices=[EscalationChoice.RETRY, EscalationChoice.KILL],
+        history_summary="gate failure",
+        sent_at="2026-08-05T09:30:00Z",
+        expires_at="2026-08-05T10:30:00Z",
+        resolution=resolution,
+        resolved_at=resolved_at,
+    )
+
+
+def test_answer_lists_pending_questions_for_the_epic(
     run: Callable[..., Run],
-    monkeypatch: pytest.MonkeyPatch,
+    verification_db: Path,
 ) -> None:
-    """FR-012: --yes skips the prompt and sends kill_epic."""
-    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, "127.0.0.1:1")
-    monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+    """FR-013: answer with no id lists pending questions, sends nothing."""
+    conn = verify_connect(verification_db)
+    insert_question(conn, make_question(EPIC_ID, "us2", "q001", "How deep?"))
+    insert_question(conn, make_question("other", "us1", "q002", "Other?"))
+    insert_question(
+        conn,
+        make_question(
+            EPIC_ID,
+            "us1",
+            "q003",
+            "Answered already?",
+            resolution="ANSWERED",
+            answer_text="yes",
+        ),
+    )
+    conn.close()
 
-    result = run("build", "kill", EPIC_ID, "--yes")
+    result = run("build", "answer", EPIC_ID)
 
-    assert result.code == 3
-    assert "127.0.0.1:1" in result.stderr
+    assert result.code == 0
+    assert "q001" in result.stdout
+    assert "us2" in result.stdout
+    assert "How deep?" in result.stdout
+    assert "q002" not in result.stdout
+    assert "q003" not in result.stdout
+
+
+def test_answer_refuses_an_answered_question(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """FR-013: an already-answered question exits 1 and is not signalled."""
+    conn = verify_connect(verification_db)
+    insert_question(
+        conn,
+        make_question(
+            EPIC_ID,
+            "us1",
+            "q004",
+            "Old?",
+            resolution="ANSWERED",
+            answer_text="done",
+        ),
+    )
+    conn.close()
+
+    result = run("build", "answer", EPIC_ID, "q004", "new")
+
+    assert result.code == 1
+    assert "already answered" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+def test_answer_refuses_an_expired_question(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """FR-013: an expired question exits 1 and is not signalled."""
+    conn = verify_connect(verification_db)
+    insert_question(
+        conn,
+        make_question(EPIC_ID, "us1", "q005", "Late?", resolution=EXPIRED),
+    )
+    conn.close()
+
+    result = run("build", "answer", EPIC_ID, "q005", "now")
+
+    assert result.code == 1
+    assert "expired" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+def test_answer_refuses_a_missing_question(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """FR-013: an unknown question id is an operator error."""
+    result = run("build", "answer", EPIC_ID, "q999", "text")
+
+    assert result.code == 1
+    assert "not on record" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+def test_resolve_lists_pending_escalations_for_the_epic(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """FR-014: resolve with no id lists pending escalations, sends nothing."""
+    conn = verify_connect(verification_db)
+    insert_escalation(conn, make_escalation(EPIC_ID, "us2", "e001"))
+    insert_escalation(conn, make_escalation("other", "us1", "e002"))
+    insert_escalation(
+        conn,
+        make_escalation(EPIC_ID, "us1", "e003", resolution=EscalationChoice.KILL),
+    )
+    conn.close()
+
+    result = run("build", "resolve", EPIC_ID)
+
+    assert result.code == 0
+    assert "e001" in result.stdout
+    assert "us2" in result.stdout
+    assert "RETRY" in result.stdout
+    assert "KILL" in result.stdout
+    assert "e002" not in result.stdout
+    assert "e003" not in result.stdout
+
+
+def test_resolve_refuses_a_bad_choice(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """FR-014: a choice outside the record's set is refused."""
+    conn = verify_connect(verification_db)
+    insert_escalation(conn, make_escalation(EPIC_ID, "us2", "e004"))
+    conn.close()
+
+    result = run("build", "resolve", EPIC_ID, "e004", "PAUSE_EPIC")
+
+    assert result.code == 1
+    assert "not one of" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+def test_resolve_lists_choices_when_none_given(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """FR-014: resolve with an id but no choice lists choices and exits 1."""
+    conn = verify_connect(verification_db)
+    insert_escalation(conn, make_escalation(EPIC_ID, "us2", "e005"))
+    conn.close()
+
+    result = run("build", "resolve", EPIC_ID, "e005")
+
+    assert result.code == 1
+    assert "RETRY" in result.stdout
+    assert "KILL" in result.stdout
+    assert "no choice given" in result.stdout.lower()

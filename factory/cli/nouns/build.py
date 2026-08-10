@@ -501,7 +501,10 @@ async def _answer(epic_id: str, question_id: str | None, text: str | None) -> in
             raise OperatorError(
                 f"cannot signal epic '{epic_id}': {error}", EXIT_TRANSPORT
             ) from error
-        print(f"sent answer to {workflow_id(epic_id)} for question {question_id}")
+        print(
+            f"sent question_answered to {workflow_id(epic_id)} "
+            f"for question {question_id}"
+        )
         return EXIT_OK
     finally:
         conn.close()
@@ -586,7 +589,7 @@ async def _resolve(
                 f"cannot signal epic '{epic_id}': {error}", EXIT_TRANSPORT
             ) from error
         print(
-            f"sent resolution to {workflow_id(epic_id)} "
+            f"sent escalation_resolved to {workflow_id(epic_id)} "
             f"for escalation {escalation_id}: {choice}"
         )
         return EXIT_OK
