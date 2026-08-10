@@ -118,6 +118,16 @@ class StoreIntegritySnapshot:
 #: whose first colon-separated segment names a closed epic.
 _ALIAS_EPIC_RE = re.compile(r"^([^:]+):")
 
+#: A worker is the module invocation, whatever the interpreter is called: it runs
+#: as `.venv/bin/python3 -m factory.worker`, which a pattern hardcoding `python`
+#: never matched, so the stale-worker finding could not fire. Anchored at the
+#: start of the command line on purpose — the shell that *launched* the worker
+#: still carries the whole invocation in its own `-c` argument, and an unanchored
+#: match happily returns that wrapper's pid instead of the worker's.
+_WORKER_CMDLINE_RE = re.compile(
+    r"^(?:\S*/)?python[0-9.]*(?:\s+\S+)*?\s+-m\s+factory\.worker(?:\s|$)"
+)
+
 #: Evidence stores the factory depends on.
 _EVIDENCE_STORES = (
     Path(".factory") / "doctor.db",
@@ -129,61 +139,6 @@ _EVIDENCE_STORES = (
 def _alias_epic_id(alias: str) -> str | None:
     match = _ALIAS_EPIC_RE.match(alias)
     return match.group(1) if match else None
-
-
-def _closed_epic_ids() -> set[str]:
-    """Read closed-ness from Temporal via the same describe path `status` uses.
-
-    The workflow id convention is `epic-<epic_id>`. We enumerate candidate epic
-    ids from the live aliases and worktree directories, then ask Temporal whether
-    each workflow is closed. Any failure to talk to Temporal is a skip, not a
-    finding or silence.
-    """
-    from temporalio.client import Client
-    from temporalio.service import RPCError, RPCStatusCode
-
-    address = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
-    namespace = os.environ.get("TEMPORAL_NAMESPACE", "factory")
-
-    candidate_epics: set[str] = set()
-    # Seed with everything that looks like an epic id from live key aliases.
-    # The actual gather will supply aliases; this helper is reusable for both.
-    # We also scan worktree directories below.
-    factory_root = Path(".factory")
-    worktrees_root = factory_root / "worktrees"
-    if worktrees_root.exists():
-        candidate_epics.update(
-            p.name for p in worktrees_root.iterdir() if p.is_dir()
-        )
-
-    async def _describe() -> set[str]:
-        try:
-            client = await Client.connect(address, namespace=namespace)
-        except (RPCError, RuntimeError, OSError) as exc:
-            raise ServiceNotAnswering(
-                "temporal", reason=f"cannot connect to {address}: {exc}"
-            ) from exc
-
-        closed: set[str] = set()
-        for epic_id in sorted(candidate_epics):
-            handle = client.get_workflow_handle(workflow_id(epic_id))
-            try:
-                described = await handle.describe()
-            except RPCError as exc:
-                if exc.status is RPCStatusCode.NOT_FOUND:
-                    # No workflow at all means the epic never started; its key is
-                    # still orphaned if it exists.
-                    closed.add(epic_id)
-                    continue
-                raise ServiceNotAnswering(
-                    "temporal", reason=f"describe failed for {epic_id}: {exc}"
-                ) from exc
-            # A closed workflow has a terminal execution status.
-            if described.status is not None and described.status.is_completed:
-                closed.add(epic_id)
-        return closed
-
-    return asyncio.run(_describe())
 
 
 def _newest_factory_commit() -> tuple[int, str]:
@@ -236,21 +191,32 @@ def _worker_start_time(pid: int) -> int:
 
 
 def _discover_worker_pid() -> int | None:
-    """Find a `factory.worker` process. Returns None if none is running."""
+    """Find a `factory.worker` process. Returns None if none is running.
+
+    Reads full command lines and matches argv[0], rather than `pgrep`-ing for a
+    substring: `pgrep -f` is satisfied by any process whose command line merely
+    contains the pattern, and the shell that launched the worker carries the
+    whole invocation inside its own `-c` argument, so a substring match returns
+    the launcher's pid and the probe then times a process that is not the worker.
+    `-ww` because a truncated command line is a missed match.
+    """
     try:
         result = subprocess.run(
-            ["pgrep", "-f", "python -m factory.worker"],
+            ["ps", "-ww", "-eo", "pid=,args="],
             capture_output=True,
             text=True,
             check=False,
         )
     except FileNotFoundError:
         return None
-    for line in result.stdout.strip().splitlines():
+    for line in result.stdout.splitlines():
+        pid_text, _, args = line.strip().partition(" ")
         try:
-            return int(line.strip())
+            pid = int(pid_text)
         except ValueError:
             continue
+        if _WORKER_CMDLINE_RE.match(args.strip()):
+            return pid
     return None
 
 
@@ -305,7 +271,7 @@ class OrphanedKeyProbe:
                 p.name for p in worktrees_root.iterdir() if p.is_dir()
             )
 
-        closed = _closed_epics_from_temporal(candidate_epics)
+        closed = await _closed_epics_from_temporal(candidate_epics)
         return KeyListSnapshot(aliases=aliases, closed_epic_ids=closed)
 
     def gather(self) -> KeyListSnapshot:
@@ -405,7 +371,7 @@ class StaleWorktreeProbe:
 
     name = "stale-worktree"
 
-    def gather(self) -> WorktreeSnapshot:
+    async def _gather_async(self) -> WorktreeSnapshot:
         worktrees_root = Path(".factory") / "worktrees"
         worktrees: list[Path] = []
         if worktrees_root.exists():
@@ -421,8 +387,11 @@ class StaleWorktreeProbe:
             candidate_epics.update(
                 p.name for p in worktrees_root.iterdir() if p.is_dir()
             )
-        closed = _closed_epics_from_temporal(candidate_epics)
+        closed = await _closed_epics_from_temporal(candidate_epics)
         return WorktreeSnapshot(worktrees=worktrees, closed_epic_ids=closed)
+
+    def gather(self) -> WorktreeSnapshot:
+        return asyncio.run(self._gather_async())
 
     def evaluate(self, snapshot: WorktreeSnapshot) -> list[FindingReport]:
         stale = sorted(
@@ -486,39 +455,53 @@ class StoreIntegrityProbe:
 # --- registry -----------------------------------------------------------------
 
 
-def _closed_epics_from_temporal(candidate_epics: set[str]) -> set[str]:
-    """Closure reused by probes that need closed-ness; skips become probe skips."""
-    from temporalio.client import Client
+async def _closed_epics_from_temporal(candidate_epics: set[str]) -> set[str]:
+    """Closed-ness for the probes that need it; skips become probe skips.
+
+    Coroutine, deliberately: every caller already runs inside a loop that its own
+    `gather()` owns, so opening a second one here raised RuntimeError and killed
+    the run before any probe could report. The loop belongs to `gather()`; this
+    function only awaits.
+    """
+    from temporalio.client import Client, WorkflowExecutionStatus
     from temporalio.service import RPCError, RPCStatusCode
+
+    # "Closed" is "not open", not "completed": `WorkflowExecutionStatus` is an
+    # IntEnum and has no `is_completed`, and enumerating the five terminal states
+    # positively would silently call any future state closed. A run that has
+    # continued as new is still the same logical epic, so it is open too.
+    open_statuses = {
+        WorkflowExecutionStatus.RUNNING,
+        WorkflowExecutionStatus.CONTINUED_AS_NEW,
+    }
 
     address = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
     namespace = os.environ.get("TEMPORAL_NAMESPACE", "factory")
 
-    async def _describe() -> set[str]:
+    try:
+        client = await Client.connect(address, namespace=namespace)
+    except (RPCError, RuntimeError, OSError) as exc:
+        raise ServiceNotAnswering(
+            "temporal", reason=f"cannot connect to {address}: {exc}"
+        ) from exc
+
+    closed: set[str] = set()
+    for epic_id in sorted(candidate_epics):
+        handle = client.get_workflow_handle(workflow_id(epic_id))
         try:
-            client = await Client.connect(address, namespace=namespace)
-        except (RPCError, RuntimeError, OSError) as exc:
-            raise ServiceNotAnswering(
-                "temporal", reason=f"cannot connect to {address}: {exc}"
-            ) from exc
-
-        closed: set[str] = set()
-        for epic_id in sorted(candidate_epics):
-            handle = client.get_workflow_handle(workflow_id(epic_id))
-            try:
-                described = await handle.describe()
-            except RPCError as exc:
-                if exc.status is RPCStatusCode.NOT_FOUND:
-                    closed.add(epic_id)
-                    continue
-                raise ServiceNotAnswering(
-                    "temporal", reason=f"describe failed for {epic_id}: {exc}"
-                ) from exc
-            if described.status is not None and described.status.is_completed:
+            described = await handle.describe()
+        except RPCError as exc:
+            if exc.status is RPCStatusCode.NOT_FOUND:
+                # No workflow at all means the epic never started; its key is
+                # still orphaned if it exists.
                 closed.add(epic_id)
-        return closed
-
-    return asyncio.run(_describe())
+                continue
+            raise ServiceNotAnswering(
+                "temporal", reason=f"describe failed for {epic_id}: {exc}"
+            ) from exc
+        if described.status is not None and described.status not in open_statuses:
+            closed.add(epic_id)
+    return closed
 
 
 REGISTRY: list[Probe] = [
