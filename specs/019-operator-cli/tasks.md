@@ -64,6 +64,46 @@ in any order. Tasks without it are sequential because they share a file.
       lines this plan cites. FR-009 and trap 2 assume 020's fix is already in the
       tree — confirm it is before deriving.
 
+      **Debt paid 2026-08-09 7:30 PM CT, after 020 AND 021 both landed.** The
+      four structural claims above still hold: (a) 0 shell-outs, (b) `ergane`
+      still free on PATH, (c) all nine signal/query names unchanged, (d) both
+      store readers still exported at the same lines.
+
+      The line anchors did **not** hold, and plan.md has been corrected in place
+      rather than left for a node to discover:
+      - `factory/workgraph/cli.py` grew 943 → **947** (020's us1, `438cfd0`).
+        Everything from `_run_preflight` down shifted +1 to +4. **All 17
+        citations rewritten.**
+      - `factory/workgraph/workflow.py`'s signal block moved 497–554 → **522–568**.
+      - `factory/roadmap/workflow.py`'s signal block moved 424–455 → **496–537**
+        (021's us4 added 155 lines to that file).
+      - `factory/verify/models.py` records +1; `factory/worker.py:90` → **91**;
+        `tests/test_final_sweep.py:459` → **468**; `pyproject.toml:13-17` → **14–17**.
+      - Exact and unmoved: all of `roadmap/cli.py`, `doctor/cli.py`,
+        `usage/cli.py`, `roadmap/models.py`, `derive.py`, `verify/store.py`,
+        `tests/test_claude_md.py:164`.
+
+      Three corrections beyond line numbers, each now written into plan.md:
+      - **Trap 7 undercounted.** `is_completed` is called at `probes.py:182`
+        **and** `:517`, and `hasattr(WorkflowExecutionStatus.RUNNING,
+        "is_completed")` is `False` — measured, not inferred.
+      - **`RoadmapInput` grew.** 021 added `max_concurrent_nodes` and an
+        idle-rescan configuration that makes the workflow wait instead of exit.
+        US4's `roadmap start` must carry both, or it silently reverts behaviour
+        a landed epic just bought. Read the dataclass; do not trust this plan's
+        original description of it.
+      - **020's fix is in the tree and the manifest declares it.** `landed`'s
+        flag default is `None`, resolution is flag → `factory.yaml`'s
+        `landing_branch` → `"main"`, and this repo declares `ergane-buildout`
+        (`a1163ff`), so `factory-epic landed <spec-dir>` answers correctly with
+        no flag. Trap 2 is rewritten around keeping that, not building it.
+
+      Three traps added from failures that happened while 020 and 021 ran —
+      trap 10 (a green gate is not a green CI, and one flake spends your only
+      recovery cycle), trap 11 (an acceptance scenario with no task is still
+      yours to build), trap 12 (commit your own work or salvage becomes the
+      merge subject and the landing goes invisible).
+
 ---
 
 ## Phase 2: User Story 1 — One front door, one contract (Priority: P1) 🎯 MVP
@@ -170,6 +210,15 @@ today's output; `validate` reports all three layers' refusals in one run;
       passes; a sound spec exits 0 and names what it checked; the command opens
       no socket (assert with the client constructor patched to raise) — must
       fail.
+- [ ] T011a [P] [US2] Write the **scenario-coverage** cases FIRST (FR-023): a
+      spec declaring acceptance scenarios `US1-S1` and `US1-S2` whose `tasks.md`
+      references only `US1-S1` reports `US1-S2` as uncovered, by id, and exits 1
+      in the **same run** as T011's three refusals — a separate pass that exits
+      before the others would break FR-007's report-everything rule; a spec whose
+      tasks reference every declared id exits 0; a spec with no `tasks.md` at all
+      reports that rather than raising. Structural only: a scenario named by any
+      task counts as covered, and the command makes no claim about whether the
+      task is adequate — must fail.
 - [ ] T012 [P] [US2] Write the branch-resolution **regression** case FIRST
       (trap 2): against a target declaring `landing_branch` in `factory.yaml`,
       `ergane spec landed <spec-dir>` with no branch argument reports against
@@ -193,8 +242,17 @@ today's output; `validate` reports all three layers' refusals in one run;
       re-derive it, and do not reintroduce `default="main"`.
 - [ ] T015 [US2] Implement `validate` as a sequencer over `read_roadmap`,
       `derive_workgraph` and `validate_workgraph`, collecting every refusal
-      before exiting, until T011 passes. No new checking logic — all three
-      already refuse with named findings; this composes them.
+      before exiting, until T011 passes. No new checking logic for those three —
+      all already refuse with named findings; this composes them.
+- [ ] T015a [US2] Implement the scenario-coverage check as a fourth collector in
+      the same run, until T011a passes. This one **is** new logic, and it is
+      small: parse the acceptance-scenario ids `spec.md` declares, parse the ids
+      `tasks.md` mentions, report the difference. Reuse the id grammar the
+      deriver already relies on rather than inventing a second one — the spec
+      parser at `factory/workgraph/derive.py` is where story and scenario ids are
+      already understood, and a second regex here is a second thing to keep
+      honest. It joins the other three refusals in one report; it does not
+      short-circuit them.
 
 ---
 

@@ -32,35 +32,49 @@ would fail `test_the_component_imports_only_the_approved_roster` on the first
 import, and the whole point of the contract chosen here is that it needs no
 framework to hold.
 
-**Verified reuse inventory** (`file:line` as of 2026-08-08; T001 re-checks):
+**Verified reuse inventory** — every line below **re-verified 2026-08-09** after
+020 and 021 landed, and the numbers moved. If a citation still disagrees with
+your worktree, **the code wins**: grep the construct, use what you find, and say
+so in your commit message. T001 re-checks regardless.
+
+> What moved, and why, so you can predict the rest: 020's us1 (`438cfd0`) grew
+> `factory/workgraph/cli.py` from 943 to 947 lines, shifting everything below
+> `landed_command` by +1 to +4. 021's us4 (`e4e90c3`) added 155 lines to
+> `factory/roadmap/workflow.py` and 3 to `factory/worker.py`. Every other file in
+> this inventory is untouched and its numbers are exact.
 
 *The four entry points being replaced*
 
-- `factory/workgraph/cli.py` (943 lines) — `derive|landed|onboard|start|status`.
-  `EXIT_OK/EXIT_USER/EXIT_TRANSPORT = 0/1/2` at lines 102–104; `_OperatorError`
-  at 117 carries its own exit code; `_Parser(argparse.ArgumentParser)` at 838
-  overrides `error()` to exit 1; `main()` at 190 catches `_OperatorError` and
-  `KeyboardInterrupt`.
-- `factory/roadmap/cli.py` (198 lines) — `render` only. Same three constants
+- `factory/workgraph/cli.py` (**947** lines) — `derive|landed|onboard|start|status`.
+  `EXIT_OK/EXIT_USER/EXIT_TRANSPORT = 0/1/2` at **103–105**; `_OperatorError`
+  at **118** carries its own exit code; `_Parser(argparse.ArgumentParser)` at
+  **842** overrides `error()` to exit 1; `main()` at **191** catches
+  `_OperatorError` and `KeyboardInterrupt`.
+- `factory/roadmap/cli.py` (199 lines) — `render` only. Same three constants
   (39–41), its own `_OperatorError` (48), its own `_Parser` (162). `main()` at
-  62 catches `_OperatorError` but **not** `KeyboardInterrupt`.
+  62 catches `_OperatorError` but **not** `KeyboardInterrupt`. **Exact.**
 - `factory/doctor/cli.py` (453 lines) — `report|list|resolve|check|promote`.
   Same three constants (50–52) but a distinct `_UserError` (83), and
   `_parse_args` at 91 builds a **plain** `argparse.ArgumentParser`. This is U2's
   mechanism: no subclass, so a typo takes argparse's native 2, which this
-  module's own docstring reserves for a service not answering.
+  module's own docstring reserves for a service not answering. **Exact.**
 - `factory/usage/cli.py` (226 lines) — `EXIT_OK/EXIT_USAGE/EXIT_NO_LEDGER =
   0/2/3` (51–53), which is 001's contract and the one this spec adopts.
   `render_table` (168) and the `UNMEASURED = "-"` convention are behaviour to
-  preserve byte-for-byte, not to reinterpret.
+  preserve byte-for-byte, not to reinterpret. **Exact.**
 
-*Handlers that move as they are*
+*Handlers that move as they are* — all in `factory/workgraph/cli.py`, all shifted
+by 020's us1
 
-- `derive_command` (270), `landed_command` (215), `onboard_command` (410),
-  `start_command` (469), `status_command` (629), `render_status` (771),
-  `load_workgraph` (559), `_persona_registry` (596), `_live_spend` (700-ish),
-  `_print_provenance` (389), `_build_baseline` (336) — all in
-  `factory/workgraph/cli.py`.
+- `landed_command` (**216**), `workflow_id` (**208**), `_run_preflight` (**161**)
+  — the three that moved by +1.
+- `derive_command` (**274**), `_build_baseline` (**340**), `_print_provenance`
+  (**393**), `onboard_command` (**414**), `start_command` (**473**),
+  `load_workgraph` (**563**), `_persona_registry` (**600**), `status_command`
+  (**633**), `_live_spend` (**701**), `render_status` (**775**), `_connect`
+  (**823**) — the ones that moved by +4.
+- The zero-node refusal whose advice string names an old command is at **497**
+  (the surrounding docstring at 481); `validate_workgraph` is imported at **89**.
 - `render_command` (80) and `_render_roadmap` (123) in `factory/roadmap/cli.py`.
 - `_report_command` (182), `_list_command` (239), `_resolve_command` (268),
   `_check_command` (275), `_promote_command` (327), `_run_probe` (303),
@@ -76,57 +90,70 @@ framework to hold.
 - `factory.workgraph.derive.derive_workgraph` (139) raises `DerivationError`
   carrying **every** rejection, not the first — the discipline `validate` is
   meant to extend across all three layers.
-- `factory.workgraph.models.validate_workgraph`, called at
-  `factory/workgraph/cli.py:498` with `_persona_registry(graph)`.
+- `factory.workgraph.models.validate_workgraph`, imported at
+  `factory/workgraph/cli.py:89` and called with `_persona_registry(graph)`.
 - `factory.workgraph.preflight.check_aliases`, reached through `_run_preflight`
-  (`factory/workgraph/cli.py:160`) — **network**, so it belongs to `build
+  (`factory/workgraph/cli.py:161`) — **network**, so it belongs to `build
   start`, not to `validate`. FR-007 says `validate` connects to nothing.
 
 *The signals `build` wires — all five already exist*
 
-- `factory/workgraph/workflow.py:497-554`: `pause_epic`, `resume_epic`,
-  `kill_epic`, `escalation_resolved(escalation_id, choice)` (530, name from
+- `factory/workgraph/workflow.py` **522–568** (this plan said 497–554; the block
+  moved ~26 lines): `pause_epic` (**523**), `resume_epic` (**536**), `kill_epic`
+  (**541**), `escalation_resolved(escalation_id, choice)` (**556**, name from
   `factory.notify.service.SIGNAL_NAME`), `question_answered(question_id,
-  answer_text)` (541, `QUESTION_SIGNAL_NAME`).
-- The call shape is already in the tree twice: `factory/notify/service.py:284`
+  answer_text)` (**567**, `QUESTION_SIGNAL_NAME`).
+- The call shape is already in the tree twice: `factory/notify/service.py:283`
   and `:321` do `await handle.signal(NAME, args=[id, value])`. The CLI makes the
   identical call. Import the two name constants; do not retype the strings.
-- `_connect()` (`factory/workgraph/cli.py:819`) and `workflow_id(epic_id) ->
-  f"epic-{epic_id}"` (207) are how a handle is obtained.
+- `_connect()` (`factory/workgraph/cli.py:823`) and `workflow_id(epic_id) ->
+  f"epic-{epic_id}"` (**208**) are how a handle is obtained.
 
 *Where `answer` and `resolve` get their ids — the store already has them*
 
 - `factory/verify/store.py`: `connect` (167), `pending_questions` (742),
   `pending_escalations` (503), `get_question` (709), `get_escalation` (488).
-- `QuestionRecord` (`factory/verify/models.py:499`) carries `question_id`,
+- `QuestionRecord` (`factory/verify/models.py:**500**`) carries `question_id`,
   `epic_id`, `node_id`, `attempt`, `question_text`, `expires_at`, `resolution`.
-  `EscalationRecord` (472) carries `escalation_id`, `epic_id`, `node_id`,
-  `choices: list[EscalationChoice]`, `expires_at`, `resolution`.
+  `EscalationRecord` (**473**) carries `escalation_id`, `epic_id`, `node_id`,
+  `choices: list[EscalationChoice]`, `expires_at`, `resolution`. (Both +1.)
 - This is why FR-013/FR-014 add no record and no table: filtering
   `pending_questions(conn)` by `epic_id` is the whole listing feature, and
   `record.choices` is the closed set FR-014 validates against.
 
 *The roadmap's surface — signals exist, CLI does not*
 
-- `factory/roadmap/workflow.py:424-455`: `pause_roadmap`, `resume_roadmap`,
-  `promote_spec(spec_dir)`, query `roadmap_status`.
-- `factory/worker.py:90`: `WORKFLOWS = [EpicWorkflow, RoadmapWorkflow]` — it is
-  registered and dispatchable.
+- `factory/roadmap/workflow.py` **496–537** (this plan said 424–455; **021's us4
+  added 155 lines to this file**, so the block moved ~72): `pause_roadmap`
+  (**496**), `resume_roadmap` (**509**), `promote_spec(spec_dir)` (**524**),
+  query `roadmap_status` (**537**).
+- **021 changed this workflow's shape, and `roadmap start` must account for it.**
+  `RoadmapInput` now carries `max_concurrent_nodes` (us2) and an idle-rescan
+  configuration (us3) that makes the workflow wait rather than exit, with
+  continue-as-new at quiescence; us4 added failure notification. Read
+  `RoadmapInput` before building the `start` verb — the fields this plan was
+  written against are no longer all of them, and a `start` that omits the new
+  ones silently reverts behaviour a landed epic just bought.
+- `factory/worker.py:**91**`: `WORKFLOWS = [EpicWorkflow, RoadmapWorkflow]` — it
+  is registered and dispatchable.
 - Nothing starts it. A repository-wide search for `RoadmapWorkflow` finds the
-  worker, the docs, and specs; no CLI, no script. Confirmed 2026-08-08.
+  worker, the docs, and specs; no CLI, no script. Still true 2026-08-09 — the
+  only thing that has ever started it is a Temporal cron schedule an operator
+  created by hand, which us3's idle-wait is intended to retire.
 - Take the sibling id convention `roadmap-<specs-root-name>`, the shape 009's
   plan named, so ids cannot collide with `epic-*`.
 
 *The cutover's blast radius, measured*
 
-- `pyproject.toml:13-17` registers the four scripts. `version = "0.1.0"` at
-  line 3 is what `--version` reports.
+- `pyproject.toml` registers the four scripts at **14–17**; `version = "0.1.0"`
+  at line 3 is what `--version` reports.
 - Outside `specs/` and `docs/decisions.md`, the four names appear in: 12 modules
   under `factory/` (~28 hits, all operator-facing strings — probe remediations,
   scaffolded findings, the zero-node graph's advice at
-  `factory/workgraph/cli.py:494`), 13 files under `tests/` (~40 hits),
+  `factory/workgraph/cli.py:**497**`), 13 files under `tests/` (~40 hits),
   `docs/architecture.md` (10), `CLAUDE.md` (8), `docs/claude-md-plan.md` (6),
-  `scripts/ergane-env.sh`.
+  `scripts/ergane-env.sh`. Re-count at T001 rather than trusting these totals:
+  three specs have landed since they were taken.
 - `tests/test_claude_md.py:164` asserts the named command set is exactly
   `{"factory-roadmap", "factory-epic", "factory-doctor", "factory-usage"}`. It
   goes red the moment CLAUDE.md says `ergane`, so it moves in the same change.
@@ -335,18 +362,27 @@ failure.
    say so; the honest answer is to collapse the fan-out, not to edit it and hope
    the merge queue sorts it out.
 
-2. **The branch default is 020's fix — do not re-solve it, and do not lose it.**
-   The factory lands on `ergane-buildout`; `main` moves only when an operator
-   promotes, so a `main` default silently under-reports which stories are landed
-   (filed twice as `cli/landed-defaults-to-the-wrong-branch`). **That is spec
-   020's requirement, and this spec's frontmatter waits on it.** By the time this
-   epic dispatches, `factory-epic landed`'s flag default and `_build_baseline`
-   both read `landing_branch` from `factory.yaml`. The hazard here is the
-   opposite of the original one: a port that rewrites the parser and
-   reintroduces `default="main"`, quietly undoing a landed fix. Carry the
-   resolution across untouched, and print the branch the answer was computed
-   against — a correct answer whose basis is invisible is one promotion away
-   from being a wrong answer nobody notices.
+2. **The branch default is 020's fix — it has landed, and porting it wrong
+   silently undoes it.** This trap was written while 020 was pending; it is now
+   history you can read. 020's us1 (`438cfd0`) made the CLI's `--default-branch`
+   default `None` and taught `landed_command` and `_build_baseline` to resolve
+   flag → `factory.yaml`'s `landing_branch` → `"main"`. The operator then
+   declared `landing_branch: ergane-buildout` in this repo's manifest
+   (`a1163ff`), which is why `factory-epic landed <spec-dir>` now answers
+   correctly with **no flag at all**.
+
+   The hazard is the exact inverse of the original: a port that rewrites the
+   parser and restores `default="main"`, or that drops the manifest lookup while
+   keeping the flag. Both leave a green suite and a reader that under-reports
+   which stories are landed — the defect filed twice as
+   `cli/landed-defaults-to-the-wrong-branch`. Carry the three-step resolution
+   across untouched, and print the branch the answer was computed against: a
+   correct answer whose basis is invisible is one promotion away from being a
+   wrong answer nobody notices.
+
+   **A test to keep, not to write from scratch:** 020's us1 landed CLI cases
+   pinning exactly this. Move them with the handler. If your port makes them
+   pass trivially, you have ported the flag and not the resolution.
 
 3. **`_preflight_exit_code` returns the old constants.** It maps preflight
    findings to `EXIT_TRANSPORT`, which is `2` today and `3` under the new
@@ -356,7 +392,8 @@ failure.
    in one commit, with the test that pins the pairing.
 
 4. **The enforcement-word sweep reads help strings.**
-   `tests/test_final_sweep.py:459` bans `budget`, `cap`, `caps`, `capped`,
+   `tests/test_final_sweep.py:**468**` (this plan said 459) bans `budget`,
+   `cap`, `caps`, `capped`,
    `quota`, `throttle`, `breach`, `enforce`, `exceed`, `overspend` and their
    inflections in identifiers **and non-docstring string constants**, across
    all of `factory/`. Argparse help text is a string constant. A `--help` line
@@ -377,15 +414,20 @@ failure.
    on a bare invocation (it was requested) and to stderr on a usage error (it
    was not).
 
-7. **One probe is already broken, and it is not this epic's to fix.**
-   `factory/doctor/probes.py:517` calls `described.status.is_completed`, an
-   attribute `WorkflowExecutionStatus` does not have, so `StaleWorktreeProbe`
-   raises `AttributeError` whenever Temporal is reachable and candidate epics
-   exist — reproduced 2026-08-08 against a scratch database. `ergane doctor`
-   must render it as one line naming `--debug` (FR-004), which is the CLI's
-   whole responsibility here. Do **not** fix the probe inside this epic: it is
-   filed separately, and a node that wanders into `probes.py` is a node whose
-   diff the judge will score against the wrong scenarios.
+7. **A probe is already broken at *two* sites, and it is not this epic's to fix.**
+   This plan originally named one. Re-checked 2026-08-09: `is_completed` is
+   called at `factory/doctor/probes.py:**182**` **and** `:**517**`, and
+   `hasattr(WorkflowExecutionStatus.RUNNING, "is_completed")` is `False` — the
+   enum has `RUNNING`, `COMPLETED`, `FAILED`, `CANCELED` and no such property.
+   So the probe raises `AttributeError` whenever Temporal is reachable and
+   candidate epics exist.
+
+   `ergane doctor` must render that as one line naming `--debug` (FR-004), which
+   is the CLI's whole responsibility here. Do **not** fix the probe inside this
+   epic: it is filed as `doctor/check-crashes-on-nested-asyncio-run` and its
+   siblings, and a node that wanders into `probes.py` is a node whose diff the
+   judge will score against the wrong scenarios. If you find a third call site,
+   report it and keep walking.
 
 8. **Two CLIs, two `_OperatorError` classes, one behaviour.** They are not
    identical — `workgraph`'s carries a per-raise exit code, `roadmap`'s does
@@ -393,6 +435,52 @@ failure.
    keep the per-raise code, because `status_command` uses it to report a
    transport failure as transport. Collapsing them to a code-less exception
    would silently demote every transport error to 1.
+
+10. **A green gate is not a green CI, and you get exactly one recovery cycle.**
+    Added 2026-08-09, the day this cost four stories. The `test` gate runs in
+    your worktree on the worker host; the required check runs the identical
+    `uv run pytest -q` on a GitHub runner. The only variable is the machine, and
+    it differs — no Temporal, different timing, different CPU count. A diff that
+    is green locally and red there is rejected as `CHECKS_FAILED`, which the
+    interpreter treats as a stale base: it syncs your branch and re-dispatches
+    **without routing the CI log to anybody**, so the recovery attempt is working
+    blind. `max_recovery_cycles` is 1. Two reds and the node dies with every
+    dependent.
+
+    Two consequences for your work. First, anything that touches the clock, the
+    event loop, process count or a network service must not assert a *timing
+    coincidence* — `tests/test_interpreter.py:4822` does exactly that and flaked
+    a landing today (`ci/flaky-concurrency-test-is-a-random-epic-killer`). Assert
+    the durable fact instead. Second, if you write a test that needs a service,
+    guard it on what the client actually raises: the temporalio SDK raises
+    `RuntimeError` against a dead port, not `OSError`/`RPCError`, and a guard
+    that catches the wrong type is a guard that only looks like one. Prove it:
+    `TEMPORAL_ADDRESS=127.0.0.1:1 uv run pytest -q <your test>` must report
+    **skipped**, not error.
+
+11. **If a declared acceptance scenario has no task, say so — do not silently
+    skip it and do not silently invent one.** Added 2026-08-09. A spec's US2
+    landed on the debugger rung after two attempts because its tasks file never
+    asked for a test that one of its own acceptance scenarios required. Gates
+    were green all three times; the judge was right to refuse. The judge scores
+    the **spec's scenarios**, not your task list, and the two are not
+    automatically the same set.
+
+    So: read this spec's Acceptance Scenarios once, against your story's tasks,
+    before you write code. Anything declared and unasked-for is yours to build,
+    and worth one line in the commit message saying you noticed. Filed as
+    `cli/no-check-that-every-scenario-has-a-task`; the structural fix belongs to
+    `ergane spec validate` in this very epic, which is why FR-023 now names it.
+
+12. **Commit your own work; do not let salvage be the only commit.** Added
+    2026-08-09. Salvage commits whatever an attempt left, `--allow-empty`, so a
+    node that never commits still lands *something*. But a PR whose only commit
+    is the salvage commit takes that commit's message as its squash-merge
+    subject, and `salvage(...)` is a subject the landing reader is required to
+    refuse. The story lands, the tree is correct, and `factory-epic landed`
+    cannot see it — so a later delta re-dispatches work that is already in.
+    Happened today (`targets/salvage-only-pr-lands-invisible`). Commit per task,
+    as constitution II already asks; this is the cost of not doing it.
 
 ## Complexity Tracking
 

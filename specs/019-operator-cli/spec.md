@@ -483,6 +483,17 @@ command set moved; the full suite is green.
   spec and report **every** refusal in a single run, exiting 1 if any refused
   and 0 with a statement of what was checked if none did. It MUST NOT connect
   to any service.
+- **FR-023**: `ergane spec validate` MUST additionally report every **acceptance
+  scenario id declared in `spec.md` that no task in `tasks.md` references**, as
+  part of the same single run and under the same exit-1 rule. Added 2026-08-09
+  from a measured cost: a spec whose US2 declared a scenario its tasks file never
+  asked for sent that story to the debugger rung after two attempts, with the
+  `test` gate green at exit 0 every time — the judge scores the spec's scenarios,
+  and nothing had ever checked that the task list covered them
+  (`cli/no-check-that-every-scenario-has-a-task`). This is a **structural** check
+  over two documents, not a judgement about whether a task is adequate; a
+  scenario referenced by any task is covered, and the command says which ids are
+  not.
 - **FR-008**: `ergane spec derive <spec-dir> [--delta]` MUST compile the spec's
   graph, preserving today's derivation and delta provenance output, with
   `--json`.
@@ -637,7 +648,7 @@ US1:
 US2:
   depends_on: []
   depends_on_merged: [US1]
-  implements: [FR-006, FR-007, FR-008, FR-009]
+  implements: [FR-006, FR-007, FR-008, FR-009, FR-023]
 US3:
   depends_on: []
   depends_on_merged: [US1]
