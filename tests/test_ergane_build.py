@@ -791,3 +791,77 @@ async def test_status_reads_live_spend_off_the_running_attempt(
         "captured_at": "2026-08-05T09:31:00Z",
     }
     assert "6.25" in mid_human.stdout
+
+
+# --- T017: pause / resume / kill ---------------------------------------------
+
+
+def test_pause_refuses_to_signal_an_epic_that_is_not_running(
+    run: Callable[..., Run], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreachable server is a transport failure for a signal verb."""
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+    monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+
+    result = run("build", "pause", "missing-epic")
+
+    assert result.code == 3
+    assert DEAD_ADDRESS in result.stderr
+
+
+async def test_pause_and_resume_send_their_signals(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    epic_dir: Path,
+    workgraph_json: Path,
+) -> None:
+    """FR-012: pause and resume each send exactly their named signal."""
+    script = ScriptedEpic(
+        spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
+        pause_at="us2",
+    )
+
+    async with worker_for(temporal_env, script):
+        start = await run_async("build", "start", str(workgraph_json))
+        await script.wait_for_pause()
+
+        pause = await run_async("build", "pause", EPIC_ID)
+        resume = await run_async("build", "resume", EPIC_ID)
+        script.release()
+        await settle_epic(temporal_env)
+
+    assert start.code == 0
+    assert pause.code == 0
+    assert pause.stdout.strip() == f"sent pause_epic to {WORKFLOW_ID}"
+    assert resume.code == 0
+    assert resume.stdout.strip() == f"sent resume_epic to {WORKFLOW_ID}"
+
+
+def test_kill_without_yes_refuses_and_sends_nothing(
+    run: Callable[..., Run],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-012: a declined confirmation exits 1 and issues no signal."""
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, "127.0.0.1:1")
+    monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    result = run("build", "kill", EPIC_ID)
+
+    assert result.code == 1
+    assert "cancelled" in result.stderr.lower()
+    assert result.stdout == ""
+
+
+def test_kill_with_yes_sends_kill_signal(
+    run: Callable[..., Run],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-012: --yes skips the prompt and sends kill_epic."""
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, "127.0.0.1:1")
+    monkeypatch.setenv(PROXY_URL_ENV, PROXY_URL)
+
+    result = run("build", "kill", EPIC_ID, "--yes")
+
+    assert result.code == 3
+    assert "127.0.0.1:1" in result.stderr
