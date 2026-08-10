@@ -1,5 +1,58 @@
 ---
-state: ready
+state: landed
+# Landed 2026-08-09 10:33 PM CT. Five stories, PRs #30-#34, 2h50m end to end.
+# us1, us3 and us5 first attempt; us2 and us4 attempt 2. Both second attempts
+# were judge RETRYs on real defects, not flakes and not CI — the `test` gate
+# passed with exit 0 on every one of the seven attempts (340.7s and 351.0s on
+# the two that were refused). No queue ejection, no escalation, no question.
+#
+# us2-S2: the judge found a structural gap the tests agreed with. A
+# `DerivationError` sets `graph = None`, and the `if graph is not None:` guard
+# then skips BOTH the work-graph and persona checks — so a spec carrying all
+# three refusals could never report all three in one run, which is exactly what
+# the scenario demands. The accompanying test used a vacuous registry, so it
+# never demonstrated three findings and never contradicted the code.
+#
+# us4-S7: `completion bash` and `completion zsh` completed top-level nouns only.
+# `cword -eq 1` and the zsh `_describe` both cover just the first positional; the
+# scenario says "nouns and verbs".
+#
+# Both are the failure shape that cost 020's us2 the entire ladder nine hours
+# earlier — a declared acceptance scenario asserting more than the tasks file
+# asked for. The difference here is that recovery caught it on the first retry.
+# FR-023, added to this spec at 7:30 PM the same evening, is what makes that gap
+# a `spec validate` finding instead of a discovery made at judge time.
+#
+# FIRST CONCURRENT EPIC. Dispatched at `--max-concurrent-nodes 3`. us2, us3 and
+# us4 built simultaneously in three worktrees from 8:30 to 9:41 PM — 71 minutes
+# for three stories against roughly 135 sequential. The saving is agent time
+# only: the merge queue took them one at a time at 9:05, 9:32 and 9:41, ~12
+# minutes each, which is the number to plan around rather than the fan-out width.
+#
+# NO ATTESTATION CAVEAT. `ergane spec landed specs/019-operator-cli` reports all
+# five stories with no `--default-branch` flag. That is two fixes meeting: 020's
+# T012 declared `landing_branch` in factory.yaml, and the squash-title setting
+# was changed from COMMIT_OR_PR_TITLE to PR_TITLE at 8:05 PM, twenty-three
+# minutes before us1 merged. Contrast 021, whose us4 is permanently unreadable.
+#
+# OPERATOR ACTION REQUIRED AFTER MERGE, and it is not optional. us5 is a hard
+# cutover: it deletes the four `factory-*` console scripts and registers one
+# `ergane`. Console scripts are generated at INSTALL time, so the editable
+# install's .pth does not create it — between the merge and `uv sync` there was
+# no working CLI at all, the four stale shims exiting 1 with their `main`
+# functions deleted and `ergane` not yet on PATH. Sequence: `uv sync`, then
+# restart the worker (done 10:50 PM), then verify by hand. A green suite and five
+# PASS verdicts say nothing about this, because none of them runs an installed
+# console script.
+#
+# Verified by hand against the landed tree, not inferred from the suite:
+#   ergane --help                     -> 0, nine nouns
+#   ergane --version                  -> 0, "ergane 0.1.0 (a10ab55)"
+#   ergane bogus                      -> 2  (argparse's own; no subclass anywhere)
+#   ergane spec validate nope         -> 1
+#   TEMPORAL_ADDRESS=127.0.0.1:1 …    -> 3, message naming the address dialled
+#   ergane spec landed <this spec>    -> all five stories, no flag
+#
 # Readied 2026-08-09 3:20 PM CT (Bryan). The 020 edge cleared the same afternoon
 # — 020 landed at 2:45 PM, so all four `depends_on_landed` entries are landed and
 # the sequencing reason below has been served rather than waived. The reuse
