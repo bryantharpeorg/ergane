@@ -59,7 +59,13 @@ from factory.activities.verify_activities import (
     DEFAULT_VERIFICATION_DB_PATH,
     VERIFICATION_DB_PATH_ENV,
 )
-from factory.notify.messages import escalation_keyboard, escalation_message, question_message
+from factory.notify.messages import (
+    escalation_keyboard,
+    escalation_message,
+    question_message,
+    roadmap_failure_notice,
+    roadmap_recovery_notice,
+)
 from factory.verify import store
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 
@@ -488,29 +494,53 @@ class ResetRoadmapFailuresInput:
 
 @dataclass(frozen=True)
 class RecordRoadmapFailureResult:
-    """Result of recording a roadmap failure: the new consecutive count and the
-    escalation id that was written before any send attempt (FR-010)."""
+    """Result of recording a roadmap failure: the new consecutive count (FR-010).
+
+    No escalation id is returned: roadmap failure reports are notices, not
+    escalations, so there is no pending row to reuse.
+    """
 
     count: int
-    escalation_id: str
+
+
+@dataclass(frozen=True)
+class SendRoadmapNoticeInput:
+    """One roadmap notice, in the terms the operator will read it in (US2).
+
+    There is deliberately no field for a token or a chat id: a credential in an
+    activity input is a credential in the workflow's history forever (FR-009).
+    The message is the rendered notice text; the durable fact lives in the
+    `roadmap_failures` record written before this send is attempted.
+    """
+
+    roadmap_id: str
+    message: str
+
+
+@dataclass(frozen=True)
+class SentRoadmapNotice:
+    """What the workflow needs to know about the notice delivery (US2).
+
+    `delivered=False` means nobody was paged, and the caller continues: a notice
+    offers no choice, so there is no fail-safe default to apply.
+    """
+
+    delivered: bool
 
 
 @activity.defn
 async def record_roadmap_failure(request: RecordRoadmapFailureInput) -> RecordRoadmapFailureResult:
-    """Record a roadmap failure and return its count + escalation id (FR-010).
+    """Record a roadmap failure and return its count (FR-010).
 
     The count is stored in the evidence store, not in workflow state, so it
     survives workflow restarts and continue-as-new. Repeated identical failures
     increase the count; a different failure resets it to 1.
 
-    The escalation row is also written here, before any send is attempted, so
-    a notifier that is down loses the message but not the fact. The same id is
-    handed back for the caller to pass to `send_escalation`.
+    No escalation row is written here: roadmap failures are reported as notices,
+    not choices, so there is nothing pending for a button press or expiry sweep
+    to act on (US2).
     """
-    from factory.verify.models import EscalationRecord as _EscalationRecord
-
     sent = datetime.now(timezone.utc)
-    escalation_id = secrets.token_hex(6)
     with closing(store.connect(request.db_path)) as conn:
         conn.executescript(_ROADMAP_FAILURES_DDL)
         row = conn.execute(
@@ -538,20 +568,44 @@ async def record_roadmap_failure(request: RecordRoadmapFailureInput) -> RecordRo
                 "WHERE roadmap_id = ?",
                 (count, request.failure_text, _iso(sent), request.roadmap_id),
             )
-        record = _EscalationRecord(
-            escalation_id=escalation_id,
-            workflow_id=request.roadmap_id,
-            epic_id=request.roadmap_id,
-            node_id="roadmap",
-            choices=[EscalationChoice.RETRY, EscalationChoice.KILL],
-            history_summary=request.failure_text,
-            sent_at=_iso(sent),
-            expires_at=_iso(sent + timedelta(seconds=ESCALATION_TIMEOUT_S)),
-            delivered=False,
-        )
-        store.insert_escalation(conn, record)
         conn.commit()
-    return RecordRoadmapFailureResult(count=count, escalation_id=escalation_id)
+    return RecordRoadmapFailureResult(count=count)
+
+
+@activity.defn
+async def send_roadmap_notice(request: SendRoadmapNoticeInput) -> SentRoadmapNotice:
+    """Page the operator with a roadmap notice (US2).
+
+    A notice is a fact, not a choice: the message sends with no `reply_markup`,
+    and a failed delivery is data (`delivered=False`) rather than a raise. The
+    durable fact lives in `roadmap_failures`, written before this activity is
+    invoked.
+    """
+    token = os.environ.get(TELEGRAM_BOT_TOKEN_ENV)
+    chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV)
+    if not token or not chat_id:
+        logger.warning(
+            "roadmap notice for %s: not sent — %s is not set on this worker",
+            request.roadmap_id,
+            TELEGRAM_BOT_TOKEN_ENV if not token else TELEGRAM_CHAT_ID_ENV,
+        )
+        return SentRoadmapNotice(delivered=False)
+
+    try:
+        async with open_bot(token) as bot:
+            await bot.send_message(chat_id=chat_id, text=request.message)
+    except Exception as exc:
+        # Broad on purpose, and the message is not logged: an unauthorized Bot
+        # API error quotes the token back at us (it is in the URL it failed on),
+        # and nothing the factory keeps may repeat it (FR-007).
+        logger.warning(
+            "roadmap notice for %s: not delivered (%s)",
+            request.roadmap_id,
+            type(exc).__name__,
+        )
+        return SentRoadmapNotice(delivered=False)
+
+    return SentRoadmapNotice(delivered=True)
 
 
 @activity.defn
