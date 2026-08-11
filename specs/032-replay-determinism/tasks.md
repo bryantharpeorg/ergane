@@ -32,6 +32,17 @@ in any order.
       (`workflow.py:829` at c6ad7d6), node `create_task` sites (`:754`,
       `:758`), and the replay test at `tests/test_interpreter.py:2685`.
 
+      **Verified 2026-08-11 ~5:55 PM CT (operator preflight, pre-dispatch):**
+      all three hold. (1) Floor quiet: 018 paused with every node terminal,
+      031 COMPLETED (us1 MERGED; us2 KILLED by operator choice at the flake
+      escalation, remainder queued behind this spec) — this epic is the only
+      one dispatching. (2) The latest red run (031/us2's landing, 22:43Z)
+      carries the incident's exact signature: `validate_target_repo` vs
+      `teardown_attempt`. Tally at dispatch: 5 red / 3 green on GitHub
+      runners, 9/9 green locally. (3) Anchors resolve at the dispatch commit:
+      `validate_target_repo` scheduled at `workflow.py:829`, `create_task` at
+      `:754`, the replay test at `tests/test_interpreter.py:2685`.
+
 ---
 
 ## Phase 2: User Story 1 — Find the racy construct and make the command order a pure function (Priority: P1) 🎯 MVP
