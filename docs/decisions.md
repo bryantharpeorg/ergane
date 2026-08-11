@@ -5,6 +5,27 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-038 · Attempt keys are bracketed per iteration, including across a parked question (decided)
+
+Decided 2026-08-11, recorded at landing of spec `010-interpreter-bugfixes` US2. The
+interpreter had three sites that minted a virtual attempt key; only the judge's
+site in `_score_diff` used `try/finally`. The agent-key and recovery-key sites
+called `_teardown` once per hand-enumerated exit path, so any raise on a path the
+author missed leaked a 24-hour key and dropped the ledger row.
+
+- The bracket is per-iteration of the `while True:` ladder, not around the loop:
+  one mint, one teardown, one attempt. The three explicit teardowns in the agent
+  path and the two in the recovery path were removed; the judge's existing
+  bracket was left untouched.
+- A parked question is non-terminal: the node stays `WAITING_OPERATOR` and the
+  epic pauses, but the attempt that asked the question is finished. Its key is
+  torn down before entering the long `wait_condition`, and the next attempt after
+  an answer or expiry mints a fresh key. This keeps the ledger honest while leaving
+  the worktree in place for the resumption.
+- A bracketed teardown still lets the original exception propagate: the reaper
+  records it as `KILLED`/`terminal_reason`, and cancellation remains distinct from
+  failure (`except Exception`, not `BaseException`).
+
 ## D-037 · The `ergane` CLI supersedes the four legacy console scripts and their divergent exit-code tables (decided)
 
 Decided 2026-08-10, recorded at landing of spec `019-operator-cli` US5. The four

@@ -120,7 +120,7 @@ from temporalio import activity
 from temporalio.client import WorkflowFailureError
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
-from temporalio.worker import Replayer, Worker
+from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
 from factory.activities.agent_activities import (
     GRAPH_INVALID,
@@ -1695,6 +1695,7 @@ async def start_epic(
         task_queue=TASK_QUEUE,
         workflows=[EpicWorkflow],
         activities=script.activities(),
+        workflow_runner=UnsandboxedWorkflowRunner(),
         # 006-US4: mirror the production heartbeat-throttle cap so tests that
         # exercise heartbeat timeouts finish in seconds rather than minutes.
         max_heartbeat_throttle_interval=timedelta(seconds=5),
@@ -2346,19 +2347,33 @@ async def test_a_verify_raise_in_recovery_still_teardowns_and_propagates(
 
     original_verify = workflow_module.EpicWorkflow._verify
 
-    async def raising_verify(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("forced recovery verify raise")
+    async def raising_verify(
+        self: Any,
+        request: Any,
+        resolved: Any,
+        criteria: Any,
+        prepared: Any,
+        attempt: int,
+        judge: Any,
+        prior_feedback: Any,
+    ) -> Any:
+        if attempt == 2:
+            raise RuntimeError("forced recovery verify raise")
+        return await original_verify(
+            self, request, resolved, criteria, prepared, attempt, judge, prior_feedback
+        )
 
     workflow_module.EpicWorkflow._verify = raising_verify
     try:
-        with pytest.raises(WorkflowFailureError) as failure:
-            await run_epic(env, script, graph=one_node())
+        status = await run_epic(env, script, graph=one_node())
     finally:
         workflow_module.EpicWorkflow._verify = original_verify
 
-    cause = failure.value.__cause__
-    assert isinstance(cause, RuntimeError)
-    assert str(cause) == "forced recovery verify raise"
+    # The exception is caught by the reaper (FR-005), not swallowed by the
+    # bracket: the node ends KILLED carrying the exception text.
+    assert status.epic_state == EpicState.COMPLETED
+    assert status.nodes["us1"].state == NodeState.KILLED
+    assert status.nodes["us1"].terminal_reason == "forced recovery verify raise"
 
     # The recovery key was torn down exactly once.
     recovery_teardowns = [
@@ -2390,14 +2405,15 @@ async def test_an_attempt_raise_still_teardowns_and_propagates(
 
     workflow_module.EpicWorkflow._attempt = raising_attempt
     try:
-        with pytest.raises(WorkflowFailureError) as failure:
-            await run_epic(env, script, graph=one_node())
+        status = await run_epic(env, script, graph=one_node())
     finally:
         workflow_module.EpicWorkflow._attempt = original_attempt
 
-    cause = failure.value.__cause__
-    assert isinstance(cause, RuntimeError)
-    assert str(cause) == "forced agent attempt raise"
+    # The exception is caught by the reaper (FR-005), not swallowed by the
+    # bracket: the node ends KILLED carrying the exception text.
+    assert status.epic_state == EpicState.COMPLETED
+    assert status.nodes["us1"].state == NodeState.KILLED
+    assert status.nodes["us1"].terminal_reason == "forced agent attempt raise"
 
     # The attempt's key was torn down exactly once.
     teardowns = [t for t in script.teardowns if t.lease.node_id == "us1"]
