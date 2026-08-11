@@ -1,5 +1,8 @@
 ---
-state: draft
+state: ready
+# Flipped ready by the operator 2026-08-11 ~2:15 PM CT ("flip 32 to ready").
+# Dispatch condition per T001: the floor must be otherwise quiet — 031 (in
+# flight at the flip) concludes first.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Scaffolded by `ergane findings promote` from
