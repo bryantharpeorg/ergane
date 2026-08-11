@@ -1230,258 +1230,285 @@ class EpicWorkflow:
             # A snapshot of some earlier attempt's key is not this attempt's
             # fallback figure: teardown would attribute another attempt's spend.
             record.last_snapshot = None
-
-            adapter_result = await self._attempt(
-                record,
-                lease,
-                AttemptContext(
-                    epic_id=graph.epic_id,
-                    node_id=node.id,
-                    attempt=record.attempt,
-                    prompt=prompt,
-                    worktree_path=prepared.path,
-                    proxy_url=request.proxy_url,
-                    virtual_key=lease.key,
-                    model_alias=resolved.model_alias,
-                    session_id=str(workflow.uuid4()),
-                    timeout_s=resolved.timeout_s,
-                ),
-            )
-            # `None` is the attempt the kill cancelled: the adapter re-raises on
-            # its KILLED path rather than reporting a termination the workflow
-            # could mistake for an ending (R2), so the classification is the
-            # workflow's own — it is the one that asked.
-            if adapter_result is not None:
-                termination = adapter_result.termination
-
-            if self._kill_requested:
-                # The bracket still closes — FR-004 is about every attempt that
-                # was *opened* — but nothing is verified: a two-hour gate suite
-                # against a worktree nobody will read is the opposite of
-                # stopping, and the node ends KILLED whatever the gates say.
-                await self._teardown(lease, termination, record.last_snapshot)
-                action = NextAction.KILLED
-                break
-
-            # 008-US1: the narrowest hole in D-018/FR-012. The marker is the one
-            # agent-authored signal that reaches node state, and its only effect
-            # is to park — never to grade. Detection is a read-only scan over the
-            # archived stdout.log the adapter streams on every termination path
-            # (the transcript_path the adapter just returned), so it runs before
-            # the gates and the judge are consulted: a QUESTION attempt has
-            # nothing to grade, and consulting them would let the marker
-            # influence the verdict path (FR-010).
-            if adapter_result is not None:
-                marker = await workflow.execute_activity(
-                    detect_operator_question_activity,
-                    DetectQuestionInput(
-                        transcript_path=adapter_result.transcript_path
+            teardown_done = False
+            try:
+                adapter_result = await self._attempt(
+                    record,
+                    lease,
+                    AttemptContext(
+                        epic_id=graph.epic_id,
+                        node_id=node.id,
+                        attempt=record.attempt,
+                        prompt=prompt,
+                        worktree_path=prepared.path,
+                        proxy_url=request.proxy_url,
+                        virtual_key=lease.key,
+                        model_alias=resolved.model_alias,
+                        session_id=str(workflow.uuid4()),
+                        timeout_s=resolved.timeout_s,
                     ),
-                    **_FAST,
                 )
-                if marker.is_question:
-                    termination = Termination.QUESTION
-                    # Salvage and teardown run on every terminal path
-                    # (constitution VI, FR-005/006) — a question attempt is a
-                    # terminal like any other, so the committed work survives on
-                    # the branch and the ledger row carries the real usage.
-                    await self._teardown(lease, termination, record.last_snapshot)
-                    await self._close_out(
-                        graph, node, record, termination, state=NodeState.WAITING_OPERATOR
-                    )
-                    # The question ships once, attributed to its epic/node/attempt
-                    # (FR-002). The send happens after salvage, so the branch the
-                    # operator might be asked about is the one the question names.
-                    #
-                    # 008-US3: when the in-attempt ferry already shipped this
-                    # question mid-flight (and the agent then degraded to the
-                    # marker path before an answer arrived), the row and the page
-                    # are already done — a ferried question for this attempt is in
-                    # the store. Reuse it instead of re-sending, so the operator
-                    # is paged once about one question, not twice. The ferry's row
-                    # carries the same text (the agent wrote it to the `question`
-                    # file before it wrote the marker), so the question the
-                    # operator sees is the question they would have. The store is
-                    # the source of truth for "did the ferry already ask," not the
-                    # adapter result — D-018's hole stays at one signal (the
-                    # marker), and the ferry's question id is evidence in the
-                    # store, not a second field on the result.
-                    ferried = await workflow.execute_activity(
-                        find_ferried_question,
-                        FindFerriedQuestionInput(
-                            epic_id=graph.epic_id,
-                            node_id=node.id,
-                            attempt=record.attempt,
+                # `None` is the attempt the kill cancelled: the adapter re-raises on
+                # its KILLED path rather than reporting a termination the workflow
+                # could mistake for an ending (R2), so the classification is the
+                # workflow's own — it is the one that asked.
+                if adapter_result is not None:
+                    termination = adapter_result.termination
+
+                if self._kill_requested:
+                    # The bracket still closes — FR-004 is about every attempt that
+                    # was *opened* — but nothing is verified: a two-hour gate suite
+                    # against a worktree nobody will read is the opposite of
+                    # stopping, and the node ends KILLED whatever the gates say.
+                    action = NextAction.KILLED
+                    break
+
+                # 008-US1: the narrowest hole in D-018/FR-012. The marker is the one
+                # agent-authored signal that reaches node state, and its only effect
+                # is to park — never to grade. Detection is a read-only scan over the
+                # archived stdout.log the adapter streams on every termination path
+                # (the transcript_path the adapter just returned), so it runs before
+                # the gates and the judge are consulted: a QUESTION attempt has
+                # nothing to grade, and consulting them would let the marker
+                # influence the verdict path (FR-010).
+                if adapter_result is not None:
+                    marker = await workflow.execute_activity(
+                        detect_operator_question_activity,
+                        DetectQuestionInput(
+                            transcript_path=adapter_result.transcript_path
                         ),
                         **_FAST,
                     )
-                    if ferried.question_id is not None:
-                        sent = SentQuestion(
-                            question_id=ferried.question_id,
-                            message_id=None,
-                            sent_at="",
-                            expires_at="",
+                    if marker.is_question:
+                        termination = Termination.QUESTION
+                        # Salvage runs under _close_out on every terminal path
+                        # (constitution VI, FR-005/006) — a question attempt is a
+                        # terminal like any other, so the committed work survives on
+                        # the branch and the ledger row carries the real usage.
+                        # The attempt key is torn down before the park, not left
+                        # open across a wait that may last hours or never resume: a
+                        # parked question closes the bracket for this attempt; the
+                        # next attempt after an answer or expiry mints a fresh key
+                        # (FR-007/FR-008, 008-US2). Salvage runs here so committed
+                        # work survives, but the worktree must *not* be removed yet
+                        # — a parked question is non-terminal, and `_drain_in_flight`
+                        # leaves it in-flight across the pause so an answer can
+                        # resume on the same tree.
+                        await workflow.execute_activity(
+                            salvage_worktree,
+                            SalvageWorktreeInput(
+                                epic_id=graph.epic_id,
+                                node_id=node.id,
+                                termination=termination,
+                                attempt=record.attempt,
+                            ),
+                            **_GIT,
                         )
-                    else:
-                        sent = await workflow.execute_activity(
-                            send_question,
-                            SendQuestionInput(
-                                workflow_id=workflow.info().workflow_id,
+                        # The question ships once, attributed to its epic/node/attempt
+                        # (FR-002). The send happens after salvage, so the branch the
+                        # operator might be asked about is the one the question names.
+                        #
+                        # 008-US3: when the in-attempt ferry already shipped this
+                        # question mid-flight (and the agent then degraded to the
+                        # marker path before an answer arrived), the row and the page
+                        # are already done — a ferried question for this attempt is in
+                        # the store. Reuse it instead of re-sending, so the operator
+                        # is paged once about one question, not twice. The ferry's row
+                        # carries the same text (the agent wrote it to the `question`
+                        # file before it wrote the marker), so the question the
+                        # operator sees is the question they would have. The store is
+                        # the source of truth for "did the ferry already ask," not the
+                        # adapter result — D-018's hole stays at one signal (the
+                        # marker), and the ferry's question id is evidence in the
+                        # store, not a second field on the result.
+                        ferried = await workflow.execute_activity(
+                            find_ferried_question,
+                            FindFerriedQuestionInput(
                                 epic_id=graph.epic_id,
                                 node_id=node.id,
                                 attempt=record.attempt,
-                                question_text=marker.text,
                             ),
                             **_FAST,
                         )
-                    # Park the node and pause the epic — the operator's answer
-                    # (US2) is what un-parks it. WAITING_OPERATOR is non-terminal
-                    # and not a dead edge, so dependents stay PENDING; the pause
-                    # stops the scheduler from dispatching anything else while it
-                    # waits, the way a PAUSE_EPIC press does. Unlike PAUSE_EPIC,
-                    # the node's `_run_node` task stays alive — parked in the
-                    # `wait_condition` below for the answer or the question's own
-                    # 8h window — so `_drain_in_flight` leaves it in-flight across
-                    # the pause (a parked question is not a bracket to close), and
-                    # the scheduler's `wait_condition(not self._paused)` is what
-                    # idles while it waits. The node clears the pause itself on
-                    # un-park, the way it set it on park.
-                    record.state = NodeState.WAITING_OPERATOR
-                    record.pending_question_id = sent.question_id
-                    self._questions[sent.question_id] = marker.text
-                    self._paused = True
-                    # 008-US2: wait for the operator's reply, or for the question's
-                    # own window to elapse — whichever comes first. The window is
-                    # the question's 8h (`QUESTION_TIMEOUT_S`), not the escalation
-                    # hour: questions are routinely asked into an operator's sleep,
-                    # and an epic parked till morning is cheaper than a good
-                    # question burned at 3 AM (FR-004). The wait mirrors the
-                    # escalation's `wait_condition` + idempotent-store-transition
-                    # pattern rather than duplicating it: the bridge's reply path
-                    # signals `question_answered`, the signal buffers into
-                    # `_answers`, and this predicate flips the moment it lands. A
-                    # kill is also watched — 8h is too long to leave an operator's
-                    # stop unheard.
-                    try:
-                        await workflow.wait_condition(
-                            lambda: sent.question_id in self._answers
-                            or self._kill_requested,
-                            timeout=timedelta(seconds=QUESTION_TIMEOUT_S),
-                        )
-                    except asyncio.TimeoutError:
-                        # The operator never engaged. Expire the row (idempotent:
-                        # a reply that won the race by a millisecond keeps its
-                        # ANSWERED resolution and is handed back instead), then
-                        # re-enter the ladder as a FAIL — the one case where a
-                        # question burns a slot (FR-001/FR-004), because the node
-                        # cannot park forever and the attempt that asked consumed
-                        # a key. The FAIL `AttemptRecord` is what `_attempts_spent`
-                        # counts, so appending it here is what consumes the slot.
-                        await workflow.execute_activity(
-                            expire_question,
-                            ExpireQuestionInput(question_id=sent.question_id),
-                            **_FAST,
-                        )
-                        record.history.append(
-                            AttemptRecord(
-                                attempt=record.attempt,
-                                persona=persona,
-                                verdict=OverallVerdict.FAIL,
+                        if ferried.question_id is not None:
+                            sent = SentQuestion(
+                                question_id=ferried.question_id,
+                                message_id=None,
+                                sent_at="",
+                                expires_at="",
                             )
-                        )
-                    else:
-                        if self._kill_requested:
-                            # A kill landed while parked. Leave the node parked —
-                            # the post-loop's WAITING_OPERATOR branch handles it
-                            # (the state is the truth, as on US1). Do not expire or
-                            # answer: the operator stopped the epic, which is not a
-                            # reply and not a burn.
-                            self._questions.pop(sent.question_id, None)
-                            action = NextAction.KILLED
-                            break
-                        # The operator answered. Carry the exchange verbatim into
-                        # the next attempt's prompt under a dedicated section
-                        # (FR-003) — the question the agent asked and the answer the
-                        # operator gave, read as the operator's decision. No
-                        # `AttemptRecord` is appended: the QUESTION attempt broke
-                        # the loop before the history append, so `_attempts_spent`
-                        # excludes it by construction and the answer costs no slot
-                        # (FR-001). The retry re-enters the ladder with the same
-                        # budget it had before the question.
-                        record.operator_answer = OperatorAnswer(
-                            question_text=marker.text,
-                            answer_text=self._answers[sent.question_id],
-                        )
-                    # An answer or an expiry un-parks the node: an answer
-                    # re-dispatches with the exchange in the prompt, an expiry
-                    # re-enters the ladder as a FAIL. Clear the pause the park set
-                    # (the scheduler is parked on `not self._paused`) and `continue`
-                    # the `while True` loop, which increments `record.attempt` and
-                    # builds a fresh prompt — so the answer attempt gets the next
-                    # number naturally and the expiry's FAIL is already in history
-                    # for the ladder to count. (The kill path above `break`s, leaving
-                    # the pause set so the scheduler stays parked too.)
-                    self._questions.pop(sent.question_id, None)
-                    record.pending_question_id = None
-                    self._paused = False
-                    continue
+                        else:
+                            sent = await workflow.execute_activity(
+                                send_question,
+                                SendQuestionInput(
+                                    workflow_id=workflow.info().workflow_id,
+                                    epic_id=graph.epic_id,
+                                    node_id=node.id,
+                                    attempt=record.attempt,
+                                    question_text=marker.text,
+                                ),
+                                **_FAST,
+                            )
+                        # Park the node and pause the epic — the operator's answer
+                        # (US2) is what un-parks it. WAITING_OPERATOR is non-terminal
+                        # and not a dead edge, so dependents stay PENDING; the pause
+                        # stops the scheduler from dispatching anything else while it
+                        # waits, the way a PAUSE_EPIC press does. Unlike PAUSE_EPIC,
+                        # the node's `_run_node` task stays alive — parked in the
+                        # `wait_condition` below for the answer or the question's own
+                        # 8h window — so `_drain_in_flight` leaves it in-flight across
+                        # the pause (a parked question is not a bracket to close), and
+                        # the scheduler's `wait_condition(not self._paused)` is what
+                        # idles while it waits. The node clears the pause itself on
+                        # un-park, the way it set it on park.
+                        record.state = NodeState.WAITING_OPERATOR
+                        record.pending_question_id = sent.question_id
+                        self._questions[sent.question_id] = marker.text
+                        self._paused = True
+                        # Close the attempt key before the long wait: the park is
+                        # non-terminal and may outlive this workflow activation, so
+                        # teardown must run while the event loop is still present.
+                        # The next attempt mints a fresh key on answer or expiry.
+                        await self._teardown(lease, termination, record.last_snapshot)
+                        teardown_done = True
+                        # 008-US2: wait for the operator's reply, or for the question's
+                        # own window to elapse — whichever comes first. The window is
+                        # the question's 8h (`QUESTION_TIMEOUT_S`), not the escalation
+                        # hour: questions are routinely asked into an operator's sleep,
+                        # and an epic parked till morning is cheaper than a good
+                        # question burned at 3 AM (FR-004). The wait mirrors the
+                        # escalation's `wait_condition` + idempotent-store-transition
+                        # pattern rather than duplicating it: the bridge's reply path
+                        # signals `question_answered`, the signal buffers into
+                        # `_answers`, and this predicate flips the moment it lands. A
+                        # kill is also watched — 8h is too long to leave an operator's
+                        # stop unheard.
+                        try:
+                            await workflow.wait_condition(
+                                lambda: sent.question_id in self._answers
+                                or self._kill_requested,
+                                timeout=timedelta(seconds=QUESTION_TIMEOUT_S),
+                            )
+                        except asyncio.TimeoutError:
+                            # The operator never engaged. Expire the row (idempotent:
+                            # a reply that won the race by a millisecond keeps its
+                            # ANSWERED resolution and is handed back instead), then
+                            # re-enter the ladder as a FAIL — the one case where a
+                            # question burns a slot (FR-001/FR-004), because the node
+                            # cannot park forever and the attempt that asked consumed
+                            # a key. The FAIL `AttemptRecord` is what `_attempts_spent`
+                            # counts, so appending it here is what consumes the slot.
+                            await workflow.execute_activity(
+                                expire_question,
+                                ExpireQuestionInput(question_id=sent.question_id),
+                                **_FAST,
+                            )
+                            record.history.append(
+                                AttemptRecord(
+                                    attempt=record.attempt,
+                                    persona=persona,
+                                    verdict=OverallVerdict.FAIL,
+                                )
+                            )
+                        else:
+                            if self._kill_requested:
+                                # A kill landed while parked. Leave the node parked —
+                                # the post-loop's WAITING_OPERATOR branch handles it
+                                # (the state is the truth, as on US1). Do not expire or
+                                # answer: the operator stopped the epic, which is not a
+                                # reply and not a burn.
+                                self._questions.pop(sent.question_id, None)
+                                action = NextAction.KILLED
+                                break
+                            # The operator answered. Carry the exchange verbatim into
+                            # the next attempt's prompt under a dedicated section
+                            # (FR-003) — the question the agent asked and the answer the
+                            # operator gave, read as the operator's decision. No
+                            # `AttemptRecord` is appended: the QUESTION attempt broke
+                            # the loop before the history append, so `_attempts_spent`
+                            # excludes it by construction and the answer costs no slot
+                            # (FR-001). The retry re-enters the ladder with the same
+                            # budget it had before the question.
+                            record.operator_answer = OperatorAnswer(
+                                question_text=marker.text,
+                                answer_text=self._answers[sent.question_id],
+                            )
+                        # An answer or an expiry un-parks the node: an answer
+                        # re-dispatches with the exchange in the prompt, an expiry
+                        # re-enters the ladder as a FAIL. Clear the pause the park set
+                        # (the scheduler is parked on `not self._paused`) and `continue`
+                        # the `while True` loop, which increments `record.attempt` and
+                        # builds a fresh prompt — so the answer attempt gets the next
+                        # number naturally and the expiry's FAIL is already in history
+                        # for the ladder to count. (The kill path above `break`s, leaving
+                        # the pause set so the scheduler stays parked too.)
+                        self._questions.pop(sent.question_id, None)
+                        record.pending_question_id = None
+                        self._paused = False
+                        continue
 
-            record.state = NodeState.VERIFYING
-            result, verdict = await self._verify(
-                request,
-                resolved,
-                criteria,
-                prepared,
-                record.attempt,
-                judge,
-                prior_feedback,
-            )
-            if verdict is not None and verdict.feedback:
-                prior_feedback = verdict.feedback
-            results.append(result)
-            evidence.append(
-                AttemptEvidence(termination=termination, result=result)
-            )
-            record.history.append(
-                AttemptRecord(
-                    attempt=record.attempt,
-                    persona=persona,
-                    verdict=result.verdict,
-                    judge_outcome=None if result.judge is None else result.judge.outcome,
+                    record.state = NodeState.VERIFYING
+                result, verdict = await self._verify(
+                    request,
+                    resolved,
+                    criteria,
+                    prepared,
+                    record.attempt,
+                    judge,
+                    prior_feedback,
                 )
-            )
+                if verdict is not None and verdict.feedback:
+                    prior_feedback = verdict.feedback
+                results.append(result)
+                evidence.append(
+                    AttemptEvidence(termination=termination, result=result)
+                )
+                record.history.append(
+                    AttemptRecord(
+                        attempt=record.attempt,
+                        persona=persona,
+                        verdict=result.verdict,
+                        judge_outcome=None if result.judge is None else result.judge.outcome,
+                    )
+                )
 
-            await self._teardown(lease, termination, record.last_snapshot)
-
-            action = next_action(
-                record.history, request.config, escalations=record.escalations
-            )
-            if action == NextAction.ESCALATE:
-                escalation = await self._escalate(graph, node, results, request.config)
-                record.escalations.append(escalation.resolution)
-                if escalation.resolution == EscalationChoice.PAUSE_EPIC:
-                    # The press the ladder can only half answer: it ends the
-                    # node (as every non-grant does), and the epic-level half —
-                    # park rather than abandon, and stop dispatching — is this
-                    # component's to supply (contracts/workflow.md).
-                    parked = True
-                    self._paused = True
                 action = next_action(
                     record.history, request.config, escalations=record.escalations
                 )
                 if action == NextAction.ESCALATE:
-                    # The grant bought an attempt the caps cannot spend — the
-                    # debugger has had its turn and the budget is gone. Paging
-                    # again would ask the same question forever, so the node ends
-                    # where the operator was already told it might.
-                    action = NextAction.KILLED
+                    escalation = await self._escalate(graph, node, results, request.config)
+                    record.escalations.append(escalation.resolution)
+                    if escalation.resolution == EscalationChoice.PAUSE_EPIC:
+                        # The press the ladder can only half answer: it ends the
+                        # node (as every non-grant does), and the epic-level half —
+                        # park rather than abandon, and stop dispatching — is this
+                        # component's to supply (contracts/workflow.md).
+                        parked = True
+                        self._paused = True
+                    action = next_action(
+                        record.history, request.config, escalations=record.escalations
+                    )
+                    if action == NextAction.ESCALATE:
+                        # The grant bought an attempt the caps cannot spend — the
+                        # debugger has had its turn and the budget is gone. Paging
+                        # again would ask the same question forever, so the node ends
+                        # where the operator was already told it might.
+                        action = NextAction.KILLED
 
-            if action in _TERMINAL_ACTIONS:
-                break
+                if action in _TERMINAL_ACTIONS:
+                    break
 
-            persona = (
-                DEBUGGER_PERSONA if action == NextAction.DEBUGGER else node.persona
-            )
+                persona = (
+                    DEBUGGER_PERSONA if action == NextAction.DEBUGGER else node.persona
+                )
+            finally:
+                # Every key that is opened for an attempt is closed on every exit
+                # (FR-007), including raises and the kills/questions that break the
+                # loop. The bracket is per-iteration: one mint, one teardown. A
+                # parked question closes its key before entering the long wait so
+                # the workflow can be cancelled while parked without leaking it.
+                if not teardown_done:
+                    await self._teardown(lease, termination, record.last_snapshot)
 
         if action == NextAction.PASSED:
             # Verified — the fact FR-009's `depends_on` edges wait on, and the
@@ -2303,45 +2330,48 @@ class EpicWorkflow:
         )
         record.last_snapshot = None
 
-        adapter_result = await self._attempt(
-            record,
-            lease,
-            AttemptContext(
-                epic_id=graph.epic_id,
-                node_id=node.id,
-                attempt=record.attempt,
-                prompt=prompt,
-                worktree_path=prepared.path,
-                proxy_url=request.proxy_url,
-                virtual_key=lease.key,
-                model_alias=resolved.model_alias,
-                session_id=str(workflow.uuid4()),
-                timeout_s=resolved.timeout_s,
-            ),
-        )
-        if adapter_result is None or self._kill_requested:
-            termination = (
-                adapter_result.termination
-                if adapter_result is not None
-                else Termination.KILLED
+        try:
+            adapter_result = await self._attempt(
+                record,
+                lease,
+                AttemptContext(
+                    epic_id=graph.epic_id,
+                    node_id=node.id,
+                    attempt=record.attempt,
+                    prompt=prompt,
+                    worktree_path=prepared.path,
+                    proxy_url=request.proxy_url,
+                    virtual_key=lease.key,
+                    model_alias=resolved.model_alias,
+                    session_id=str(workflow.uuid4()),
+                    timeout_s=resolved.timeout_s,
+                ),
             )
-            await self._teardown(lease, termination, record.last_snapshot)
-            return None
+            if adapter_result is None or self._kill_requested:
+                termination = (
+                    adapter_result.termination
+                    if adapter_result is not None
+                    else Termination.KILLED
+                )
+                return None
 
-        termination = adapter_result.termination
-        result, _verdict = await self._verify(
-            request, resolved, record.criteria, prepared, record.attempt, judge, None
-        )
-        await self._teardown(lease, termination, record.last_snapshot)
-        record.history.append(
-            AttemptRecord(
-                attempt=record.attempt,
-                persona=persona,
-                verdict=result.verdict,
-                judge_outcome=None if result.judge is None else result.judge.outcome,
+            termination = adapter_result.termination
+            result, _verdict = await self._verify(
+                request, resolved, record.criteria, prepared, record.attempt, judge, None
             )
-        )
-        return result if result.verdict == OverallVerdict.PASS else None
+            record.history.append(
+                AttemptRecord(
+                    attempt=record.attempt,
+                    persona=persona,
+                    verdict=result.verdict,
+                    judge_outcome=None if result.judge is None else result.judge.outcome,
+                )
+            )
+            return result if result.verdict == OverallVerdict.PASS else None
+        finally:
+            # The recovery key is closed on every exit, raise included, exactly
+            # once per lease (FR-007/FR-008).
+            await self._teardown(lease, termination, record.last_snapshot)
 
     async def _reenqueue(
         self,

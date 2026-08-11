@@ -152,12 +152,16 @@ scheduling remains out of scope; the one-epic-at-a-time `.factory/` SQLite
 constraint still holds.
 
 Per node: `PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED | FAILED`, with
-`KILLED` reachable from any non-terminal state. Every attempt is bracketed by
-component 1's key lifecycle (§5.1) and routed by component 2's ladder (§6) — retry,
-debugger, escalate — with the agent's own self-report never touching node state
-(the adapter yields process outcome and termination class only). When the gates and
-the output check are green and the node's criteria carry acceptance scenarios, the
-judge is consulted inside a key lifecycle of its own, minted for the `judge` persona
+`WAITING_OPERATOR` and `KILLED` reachable from any non-terminal state. Every attempt
+is bracketed by component 1's key lifecycle (§5.1) and routed by component 2's
+ladder (§6) — retry, debugger, escalate — with the agent's own self-report never
+touching node state (the adapter yields process outcome and termination class only).
+The bracket is per-iteration of the attempt ladder: one mint, one teardown, even
+when the code between them raises. A question that parks the node is non-terminal,
+but the attempt that asked it is terminal: teardown runs before the long wait, and
+the next attempt after an answer or expiry mints a fresh key. When the gates and the
+output check are green and the node's criteria carry acceptance scenarios, the judge
+is consulted inside a key lifecycle of its own, minted for the `judge` persona
 (resolved once at epic start, since no node names it) and constrained to that
 persona's aliases — so scoring is spend attributed to the scorer. Worktree salvage
 runs on every termination path before cleanup (principle VI). Epic states are
