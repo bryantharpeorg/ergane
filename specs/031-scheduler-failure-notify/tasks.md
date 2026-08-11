@@ -30,6 +30,20 @@ any order.
       (`factory/notify/messages.py:216`) still renders no keyboard, because it
       is the shape US2 copies.
 
+      **Verified 2026-08-11 at 9594787+ (operator preflight, pre-dispatch):**
+      all five hold. (1) Both reporters key by `workflow.info().workflow_id` —
+      confirmed at `workflow.py:893` and `:934`. (2) `_should_notify_failure`
+      is `count == 1 or count % 3 == 0` (linear multiples of three) at
+      `:142-150`. (3) `record_roadmap_failure` still builds an
+      `_EscalationRecord` with `choices=[RETRY, KILL]` — the deletion target
+      is live. (4) The schedule's id churn is proven against production
+      history: `temporal workflow list` shows the 2026-08-09 incident's
+      executions as `roadmap-specs-2026-08-09T12:00:00Z`,
+      `…T11:45:00Z`, `…T11:30:00Z` — one suffixed id per scheduled action,
+      all Failed. (5) `manual_intervention_notice` renders no keyboard; its
+      docstring states "FR-007's escalation stays the only message shape with
+      a keyboard".
+
 ---
 
 ## Phase 2: User Story 1 — The failure count survives the schedule's identity churn (Priority: P1) 🎯 MVP

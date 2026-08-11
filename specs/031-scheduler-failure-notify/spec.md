@@ -1,5 +1,9 @@
 ---
-state: draft
+state: ready
+# Flipped ready and hand-started 2026-08-11 on Bryan's instruction ("start 31
+# now"), T001 preflight verified same day — all five inventory checks hold,
+# including the schedule's suffixed-id churn proven against the 2026-08-09
+# incident's own executions in Temporal.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Scaffolded by `ergane findings promote` from
