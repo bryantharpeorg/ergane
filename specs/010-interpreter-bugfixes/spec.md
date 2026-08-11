@@ -1,5 +1,55 @@
 ---
-state: ready
+state: landed
+# Landed 2026-08-10 10:33 PM CT. Two stories, PRs #35 and #36, 4h46m end to end.
+# Neither story passed on its first attempt and both passed on their second, so
+# the honest headline is 0-for-2 — the worst first-attempt rate of any epic so
+# far. Both first attempts died at the `test` gate before reaching the judge;
+# both second attempts were judged PASS on the judge's first try, all nine
+# scenarios. No escalation, no question, no queue ejection.
+#
+# The verified fixes: `_reap_finished` retrieves `task.result()` at both reap
+# sites, so a node coroutine that raises ends KILLED with its exception in
+# `terminal_reason` instead of vanishing while the epic reads it as owing
+# nothing. Both key mints — the agent ladder and `_recovery_attempt` — are
+# bracketed `try/finally`.
+#
+# us2's implementer beat the plan on trap 4. The plan asked it to remove the
+# five hand-written teardowns so a `finally` could not double-fire; it removed
+# them AND added a `teardown_done` flag, so the bracket is idempotent even if a
+# future edit reintroduces one. That is the stronger answer and it should be the
+# precedent.
+#
+# THE FINDING THIS EPIC EXISTS TO RECORD, and it is not in the diff: us2's first
+# attempt edited the operator's checkout instead of its own worktree. Census
+# from its transcript — 58 Read and 4 Edit against /home/admin/code/ergane, 2
+# Read against .factory/worktrees/010-interpreter-bugfixes/us2, 0 Edit there. It
+# left `factory/workgraph/workflow.py` and `tests/test_interpreter.py` modified
+# in the operator's tree. That is the sufficient explanation for the attempt's
+# failure: the implementation landed in the wrong repository, so the worktree
+# the gate ran against held the tests and none of the code, and it failed on its
+# own two fail-first tests. The adapter sets cwd correctly; nothing makes an
+# agent stay there. Filed as
+# hardening/agent-edits-the-operator-checkout-not-its-worktree (critical). 018
+# would not have prevented a single one of those writes — this is agent-sandbox.
+#
+# A 166k auto-compact also fired inside that attempt, against the 200k window
+# Claude Code assumes because it does not recognise `ollama-cloud/kimi-k2.7-code`.
+# Real, and evidence for 018/US4, but not the cause of the failure. Recorded
+# because the first diagnosis blamed it and was wrong.
+#
+# us1's first attempt spent its budget on a genuinely hard harness — making
+# `EpicWorkflow._run_node` raise inside Temporal's sandbox — and left 41 scratch
+# files it later cleaned up. It also introduced a contract break, passing
+# `drainable` where `_drain_in_flight` needed `in_flight` deleted, which no test
+# covered and the judge never saw. Its second attempt found and fixed that
+# unprompted.
+#
+# Cost: $111.82 across four attempts (us1 $43.03 + $8.63, us2 $21.31 + $38.85).
+# No token counts are quoted and none can be: every ledger row for this epic
+# carries `prompt_tokens = 0` and `request_count = 0` beside real spend, which
+# is `interpreter/ledger-records-dollars-without-tokens`, now promoted to spec
+# 024. The dollars are also the wrong signal — the models run on a flat-rate
+# subscription — so this epic's effort is, for now, unmeasured.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-010-target
 ---
