@@ -1,5 +1,8 @@
 ---
-state: draft
+state: ready
+# Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
+# paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
+# once unpaused.
 # Synthesis 2026-08-11: file-collision serialization, not content — this spec
 # is the corpus's widest toucher and goes last. It shares
 # tests/test_interpreter.py's ScriptedWorld.run_agent_attempt with 027

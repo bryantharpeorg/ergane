@@ -1,5 +1,8 @@
 ---
-state: draft
+state: ready
+# Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
+# paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
+# once unpaused.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Scaffolded by `ergane findings promote` from
