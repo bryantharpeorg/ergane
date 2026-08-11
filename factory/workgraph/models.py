@@ -303,6 +303,7 @@ class AttemptContext:
     attempt: int
     prompt: str
     worktree_path: str
+    home_path: str
     proxy_url: str
     virtual_key: str
     model_alias: str

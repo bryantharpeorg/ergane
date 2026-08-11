@@ -104,7 +104,7 @@ from factory.activities.agent_activities import (
 )
 from factory.config import load_personas
 from factory.usage.models import Termination
-from factory.workgraph.adapter import STDOUT_LOG_NAME, pid_file, transcript_dir
+from factory.workgraph.adapter import STDOUT_LOG_NAME, home_path, pid_file, transcript_dir
 from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
@@ -118,7 +118,7 @@ from factory.workgraph.worktree import (
     PreparedWorktree,
     branch_name,
 )
-from tests.stub_agent import TRANSCRIPT_START, install_as, last_invocation, write_control
+from tests.stub_agent import TRANSCRIPT_START, install_as, last_invocation, session_transcript_path, write_control
 from tests.target_repo import git, git_env
 
 EPIC = "003-merge-queue"
@@ -206,11 +206,11 @@ def worker_host(
     """A worker host: a scratch factory root, a fake home, and credentials.
 
     Autouse, because each half protects something a per-test fixture would leave
-    exposed. The fake `HOME` is where the stub reads its control file and writes
-    its session transcript, and it is also the only identity git could otherwise
-    fall back on — salvage carries its own (`tests/test_worktree.py`), and an
-    empty home is what proves it. The credentials are planted everywhere so no
-    launch in this file can quietly carry them.
+    exposed. The fake `HOME` is the *worker's* home — a recognizable operator
+    path the child must not receive. The stub's control file and session
+    transcript are written under the *factory's* per-node home (the attempt
+    context's `home_path`). The credentials are planted everywhere so no launch
+    in this file can quietly carry them.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -267,7 +267,7 @@ def worktree(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def context(worktree: Path) -> Callable[..., AttemptContext]:
+def context(worktree: Path, factory_root: Path) -> Callable[..., AttemptContext]:
     """Build the attempt's context; `context(attempt=3)` overrides one field."""
 
     def build(**overrides: Any) -> AttemptContext:
@@ -277,6 +277,7 @@ def context(worktree: Path) -> Callable[..., AttemptContext]:
             "attempt": ATTEMPT,
             "prompt": PROMPT,
             "worktree_path": str(worktree),
+            "home_path": str(home_path(factory_root, EPIC, NODE)),
             "proxy_url": PROXY_URL,
             "virtual_key": VIRTUAL_KEY,
             "model_alias": MODEL_ALIAS,
@@ -717,7 +718,7 @@ async def test_run_agent_attempt_returns_the_termination_and_the_archive(
     archive is keyed by the same `(epic, node, attempt)` identity as the virtual
     key and the ledger row, so an attempt is attributable without a lookup.
     """
-    write_control(worker_host, stdout="I have completed the task.")
+    write_control(home_path(factory_root, EPIC, NODE), stdout="I have completed the task.")
 
     result = await env.run(run_agent_attempt, context())
 
@@ -749,7 +750,7 @@ async def test_no_worker_credential_reaches_the_agent_the_activity_launched(
     directory, never the worktree, and it is built — not passed through — so it
     carries no worker path the agent did not earn.
     """
-    write_control(worker_host)
+    write_control(home_path(factory_root, EPIC, NODE))
 
     await env.run(run_agent_attempt, context())
 
@@ -773,6 +774,7 @@ async def test_run_agent_attempt_beats_while_the_agent_works(
     env: ActivityEnvironment,
     context: Callable[..., AttemptContext],
     worker_host: Path,
+    factory_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An attempt may run for hours (FR-010), so the activity has to say it is
@@ -783,7 +785,7 @@ async def test_run_agent_attempt_beats_while_the_agent_works(
     beats: list[tuple[Any, ...]] = []
     env.on_heartbeat = lambda *args: beats.append(args)
     monkeypatch.setattr(agent_activities, "HEARTBEAT_INTERVAL_S", 0.05)
-    write_control(worker_host, sleep_s=1.0)
+    write_control(home_path(factory_root, EPIC, NODE), sleep_s=1.0)
 
     result = await env.run(run_agent_attempt, context())
 
@@ -810,7 +812,7 @@ async def test_a_cancelled_attempt_dies_keeps_its_evidence_and_reports_killed(
     adapter observed rather than inferring it — while Temporal still sees a
     cancelled activity, which is what makes the kill visible in the history.
     """
-    write_control(worker_host, sleep_s=300.0, stdout="working on it")
+    write_control(home_path(factory_root, EPIC, NODE), sleep_s=300.0, stdout="working on it")
 
     running = asyncio.create_task(env.run(run_agent_attempt, context()))
     await wait_until(lambda: stub_is_up(worktree), what="the agent to launch")
@@ -839,6 +841,7 @@ async def test_the_factory_root_defaults_to_the_documented_location(
     env: ActivityEnvironment,
     context: Callable[..., AttemptContext],
     worker_host: Path,
+    factory_root: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -847,7 +850,7 @@ async def test_the_factory_root_defaults_to_the_documented_location(
     default is the documented one and the env var is the only override."""
     monkeypatch.delenv(FACTORY_ROOT_ENV)
     monkeypatch.chdir(tmp_path)
-    write_control(worker_host)
+    write_control(home_path(factory_root, EPIC, NODE))
 
     result = await env.run(run_agent_attempt, context())
 

@@ -68,11 +68,12 @@ STDOUT_LOG_NAME = "stdout.log"
 
 #: Environment variable names the agent inherits from the worker, on top of the
 #: two the attempt itself supplies. `PATH` is what finds the agent binary and the
-#: tools it shells out to; `HOME` is where it keeps its own session state;
-#: `LANG`/`TERM` keep its output decodable and unadorned. A name absent from the
-#: worker's environment stays absent from the child's — passthrough is
-#: passthrough, not invention.
-PASSTHROUGH_ENV: tuple[str, ...] = ("PATH", "HOME", "LANG", "TERM")
+#: tools it shells out to; `LANG`/`TERM` keep its output decodable and unadorned.
+#: `HOME` is intentionally absent: it is the factory's per-node home, written from
+#: `AttemptContext` rather than inherited (US1). A name absent from the worker's
+#: environment stays absent from the child's — passthrough is passthrough, not
+#: invention.
+PASSTHROUGH_ENV: tuple[str, ...] = ("PATH", "LANG", "TERM")
 
 #: The agent CLI, resolved from the child's `PATH` (R6). Not configurable: which
 #: binary a persona runs is the registry's `agent` field, which selects a class.
@@ -289,6 +290,17 @@ def pid_file(factory_root: Path | str, epic_id: str, node_id: str) -> Path:
     return Path(factory_root) / "run" / epic_id / f"{node_id}.pid"
 
 
+def home_path(factory_root: Path | str, epic_id: str, node_id: str) -> Path:
+    """`.factory/homes/<epic>/<node>` — this node's own `HOME`.
+
+    Keyed by `(factory_root, epic_id, node_id)`, the same identity as the
+    worktree and the pid file, so a node's retries share one home the same way
+    they share one worktree (FR-003). Per-node, not per-attempt: two concurrent
+    nodes of one epic must not write one configuration file.
+    """
+    return Path(factory_root) / "homes" / epic_id / node_id
+
+
 def project_dir_name(cwd: Path | str) -> str:
     """Claude Code's per-cwd transcript directory: `/home/a/b` → `-home-a-b`.
 
@@ -313,12 +325,19 @@ def attempt_env(
     variable the worker happens to carry, credential or not. `ANTHROPIC_AUTH_TOKEN`
     rather than `ANTHROPIC_API_KEY`: it is the bearer-token path the LiteLLM proxy
     expects (R6).
+
+    `HOME` is a constructed value, not a passthrough: it is the factory's
+    per-node home under `factory_root` (US1), and the child receives it even when
+    the worker environment carries no `HOME` at all (FR-002).
     """
     source = os.environ if environ is None else environ
-    return {
+    env = {
         "ANTHROPIC_BASE_URL": context.proxy_url,
         "ANTHROPIC_AUTH_TOKEN": context.virtual_key,
-    } | {name: source[name] for name in PASSTHROUGH_ENV if source.get(name)}
+        "HOME": str(context.home_path),
+    }
+    env.update({name: source[name] for name in PASSTHROUGH_ENV if source.get(name)})
+    return env
 
 
 # The first adapter (R6) ------------------------------------------------------
@@ -387,6 +406,14 @@ class ClaudeCodeAdapter:
         )
         archive.mkdir(parents=True, exist_ok=True)
         pids = pid_file(factory_root, context.epic_id, context.node_id)
+        home = Path(context.home_path)
+        try:
+            home.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise AdapterError(
+                f"could not create per-node home for {context.epic_id}/"
+                f"{context.node_id}: {home}"
+            ) from error
         await self._reap(pids)
 
         worktree = Path(context.worktree_path).resolve()

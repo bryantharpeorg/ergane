@@ -216,6 +216,7 @@ with workflow.unsafe.imports_passed_through():
         compose_result,
         judge_required,
     )
+    from factory.workgraph.adapter import home_path
     from factory.workgraph.models import (
         AdapterResult,
         AttemptContext,
@@ -233,7 +234,7 @@ with workflow.unsafe.imports_passed_through():
         OperatorAnswer,
         build_attempt_prompt,
     )
-    from factory.workgraph.worktree import PreparedWorktree, branch_name
+    from factory.workgraph.worktree import DEFAULT_FACTORY_ROOT, PreparedWorktree, branch_name
 
 #: The one task queue every epic and every activity of this component runs on
 #: (D-002). Named here rather than in the worker so the worker, the CLI and the
@@ -1241,6 +1242,7 @@ class EpicWorkflow:
                         attempt=record.attempt,
                         prompt=prompt,
                         worktree_path=prepared.path,
+                        home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
                         proxy_url=request.proxy_url,
                         virtual_key=lease.key,
                         model_alias=resolved.model_alias,
@@ -2340,6 +2342,7 @@ class EpicWorkflow:
                     attempt=record.attempt,
                     prompt=prompt,
                     worktree_path=prepared.path,
+                    home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
                     proxy_url=request.proxy_url,
                     virtual_key=lease.key,
                     model_alias=resolved.model_alias,
