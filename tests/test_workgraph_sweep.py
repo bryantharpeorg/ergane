@@ -91,6 +91,7 @@ from factory.workgraph.adapter import (
     ClaudeCodeAdapter,
     adapter_for,
     attempt_env,
+    home_path,
     pid_file,
     transcript_dir,
 )
@@ -334,16 +335,18 @@ def agent_worktree(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def context(agent_worktree: Path) -> Callable[..., AttemptContext]:
-    """Build the attempt's context; `context(attempt=3)` overrides one field."""
+def context(factory_root: Path) -> Callable[..., AttemptContext]:
+    """Build the attempt's context; `context(worktree_path=..., attempt=3)` overrides fields."""
 
     def build(**overrides: Any) -> AttemptContext:
+        worktree = Path(overrides.get("worktree_path", factory_root / "worktrees" / EPIC / NODE))
         fields: dict[str, Any] = {
             "epic_id": EPIC,
             "node_id": NODE,
             "attempt": ATTEMPT,
             "prompt": PROMPT,
-            "worktree_path": str(agent_worktree),
+            "worktree_path": str(worktree),
+            "home_path": str(home_path(factory_root, EPIC, NODE)),
             "proxy_url": PROXY_URL,
             "virtual_key": VIRTUAL_KEY,
             "model_alias": MODEL_ALIAS,
@@ -413,9 +416,9 @@ async def test_no_byte_a_real_attempt_persists_carries_either_credential(
     agent itself into a file inside the node's worktree, which the next salvage
     commits to the node's branch.
     """
-    write_control(worker_host, stdout="agent: wrote src/loans.py and ran the gates")
+    write_control(home_path(factory_root, EPIC, NODE), stdout="agent: wrote src/loans.py and ran the gates")
 
-    result = await env.run(run_agent_attempt, context())
+    result = await env.run(run_agent_attempt, context(worktree_path=str(agent_worktree)))
     assert result.termination is Termination.COMPLETED
 
     archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
@@ -978,6 +981,7 @@ def test_the_virtual_key_is_read_into_exactly_one_environment_variable() -> None
             attempt=ATTEMPT,
             prompt=PROMPT,
             worktree_path="/tmp/worktree",
+            home_path="/tmp/home",
             proxy_url=PROXY_URL,
             virtual_key=VIRTUAL_KEY,
             model_alias=MODEL_ALIAS,
@@ -996,7 +1000,7 @@ def test_the_virtual_key_is_read_into_exactly_one_environment_variable() -> None
         "ANTHROPIC_BASE_URL": PROXY_URL,
         "ANTHROPIC_AUTH_TOKEN": VIRTUAL_KEY,
         "PATH": "/usr/bin",
-        "HOME": "/home/factory",
+        "HOME": "/tmp/home",
     }
 
 
@@ -1610,7 +1614,7 @@ async def test_a_real_attempt_archives_outside_every_checkout_and_salvage_keeps_
     tree = Path(prepared.path)
     assert tree == worktree_path(factory_root, EPIC, NODE)
 
-    write_control(worker_host, stdout="agent: implemented US1")
+    write_control(home_path(factory_root, EPIC, NODE), stdout="agent: implemented US1")
     adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH))
     result = await adapter.run_attempt(
         context(worktree_path=str(tree)), factory_root=factory_root
@@ -1681,7 +1685,7 @@ async def test_a_killed_attempt_archives_outside_the_worktree_too(
     prepared = worktrees.ensure(repo, EPIC, NODE, factory_root=factory_root)
     tree = Path(prepared.path)
 
-    write_control(worker_host, sleep_s=30.0)
+    write_control(home_path(factory_root, EPIC, NODE), sleep_s=30.0)
     adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH), grace_s=0.4)
     attempt = asyncio.ensure_future(
         adapter.run_attempt(context(worktree_path=str(tree)), factory_root=factory_root)

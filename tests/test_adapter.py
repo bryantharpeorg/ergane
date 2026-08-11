@@ -74,6 +74,7 @@ from factory.workgraph.adapter import (
     ClaudeCodeAdapter,
     adapter_for,
     attempt_env,
+    home_path,
     pid_file,
     transcript_dir,
 )
@@ -139,13 +140,14 @@ PATIENCE_S = 20.0
 
 @pytest.fixture(autouse=True)
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """`HOME` for both sides: the stub reads its control file here, and writes
-    its session transcript under `.claude/projects/` here, which is where the
-    adapter has to look for it (R6).
+    """`HOME` for the *worker* side of the test: a recognizable operator path.
 
     Autouse because a test that forgot it would read the operator's real home —
     scripting the stub through whatever `~/stub-agent-control.json` happened to
-    be lying around, and archiving from a real Claude Code history.
+    be lying around, and archiving from a real Claude Code history. The stub's
+    control file is written into the *factory's* per-node home (the attempt
+    context's `home_path`) so the child reads it from the home it is launched
+    with, not from the worker's home.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -187,7 +189,13 @@ def factory_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def attempt(worktree: Path) -> Callable[..., AttemptContext]:
+def stub_home_dir(factory_root: Path) -> Path:
+    """The factory's per-node home: where the stub reads its control file."""
+    return home_path(factory_root, EPIC, NODE)
+
+
+@pytest.fixture
+def attempt(worktree: Path, stub_home_dir: Path) -> Callable[..., AttemptContext]:
     """Build the attempt's context; `attempt(timeout_s=1)` overrides one field."""
 
     def build(**overrides: Any) -> AttemptContext:
@@ -197,6 +205,7 @@ def attempt(worktree: Path) -> Callable[..., AttemptContext]:
             "attempt": ATTEMPT,
             "prompt": PROMPT,
             "worktree_path": str(worktree),
+            "home_path": str(stub_home_dir),
             "proxy_url": PROXY_URL,
             "virtual_key": VIRTUAL_KEY,
             "model_alias": MODEL_ALIAS,
@@ -209,9 +218,15 @@ def attempt(worktree: Path) -> Callable[..., AttemptContext]:
 
 
 @pytest.fixture
-def adapter() -> ClaudeCodeAdapter:
-    """The real adapter, pointed at the stub instead of `claude`."""
-    return ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH), grace_s=TEST_GRACE_S)
+def adapter(stub_home_dir: Path) -> ClaudeCodeAdapter:
+    """The real adapter, pointed at the stub instead of `claude`.
+
+    The stub's control file is written into the factory's per-node home so the
+    child reads it from the `HOME` the adapter constructs.
+    """
+    adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH), grace_s=TEST_GRACE_S)
+    adapter._node_home_for_control = stub_home_dir  # type: ignore[attr-defined]
+    return adapter
 
 
 @pytest.fixture
@@ -308,6 +323,31 @@ def archived_transcript_events(factory_root: Path, attempt_number: int = ATTEMPT
     return [json.loads(line)["event"] for line in lines if line.strip()]
 
 
+# --- home path helper (US1) ----------------------------------------------------
+
+
+def test_home_path_is_keyed_per_node_under_factory_root() -> None:
+    """The home is a factory-owned directory, keyed like the worktree and pid file.
+
+    Per-node, not per-attempt: retries share the tree they are retrying in and
+    share the state beside it (FR-003).
+    """
+    root = Path("/tmp/factory-root")
+    assert home_path(root, EPIC, NODE) == root / "homes" / EPIC / NODE
+
+
+def test_home_paths_for_two_nodes_differ() -> None:
+    """Two concurrently dispatched nodes must never write one configuration file."""
+    root = Path("/tmp/factory-root")
+    assert home_path(root, EPIC, "us1") != home_path(root, EPIC, "us2")
+
+
+def test_home_path_is_the_same_across_attempts_of_one_node() -> None:
+    """A node's retries reuse its one home the same way they reuse its worktree."""
+    root = Path("/tmp/factory-root")
+    assert home_path(root, EPIC, NODE) == home_path(root, EPIC, NODE)
+
+
 # --- the seam (D-018) ---------------------------------------------------------
 
 
@@ -336,15 +376,19 @@ async def test_the_child_environment_is_exactly_the_allowlist(
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """Seven variables, no more: the table in contracts/adapter.md § Environment.
 
-    The six the worker supplies (the two attempt credentials plus the four
-    passthroughs) plus `ATTEMPT_ARCHIVE` — the attempt's archive directory,
-    which the adapter constructs rather than passthroughs, the way it
-    constructs the two attempt credentials (008-US3).
+    The six the worker supplies (the two attempt credentials plus the three
+    remaining passthroughs and the constructed `HOME`) plus `ATTEMPT_ARCHIVE` —
+    the attempt's archive directory, which the adapter constructs rather than
+    passthroughs, the way it constructs the two attempt credentials (008-US3).
+    US1 makes `HOME` a constructed value too: it names the factory's per-node
+    home, not the worker's.
     """
-    write_control(fake_home)
+    expected_home = _expected_node_home(factory_root)
+    write_control(stub_home_dir)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -361,7 +405,7 @@ async def test_the_child_environment_is_exactly_the_allowlist(
     assert env["ANTHROPIC_BASE_URL"] == PROXY_URL
     assert env["ANTHROPIC_AUTH_TOKEN"] == VIRTUAL_KEY
     assert env["PATH"] == os.environ["PATH"]
-    assert env["HOME"] == str(fake_home)
+    assert env["HOME"] == str(expected_home)
     assert env["LANG"] == "en_US.UTF-8"
     assert env["TERM"] == "dumb"
     # 008-US3: the archive directory the agent writes its ferry question to.
@@ -374,6 +418,7 @@ async def test_no_worker_credential_reaches_the_agent(
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """US2-S1: never the master key or the bot token — by omission, not redaction.
 
@@ -381,7 +426,7 @@ async def test_no_worker_credential_reaches_the_agent(
     smuggled the master key through under `ANTHROPIC_AUTH_TOKEN` would satisfy a
     name-only assertion and hand an agent the keys to the proxy.
     """
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -396,11 +441,14 @@ async def test_no_worker_credential_reaches_the_agent(
 
 def test_attempt_env_omits_a_passthrough_the_worker_does_not_set(
     attempt: Callable[..., AttemptContext],
+    factory_root: Path,
 ) -> None:
     """The pure builder: passthrough is passthrough, not invention.
 
     A worker without `LANG` gives a child without `LANG` — an empty string here
-    would be the factory asserting a locale nobody configured.
+    would be the factory asserting a locale nobody configured. `HOME` is a
+    constructed value from the context, so the worker's `HOME` does not reach
+    the child even when set.
     """
     env = attempt_env(
         attempt(),
@@ -411,7 +459,7 @@ def test_attempt_env_omits_a_passthrough_the_worker_does_not_set(
         "ANTHROPIC_BASE_URL": PROXY_URL,
         "ANTHROPIC_AUTH_TOKEN": VIRTUAL_KEY,
         "PATH": "/usr/bin:/bin",
-        "HOME": "/home/worker",
+        "HOME": str(_expected_node_home(factory_root)),
     }
 
 
@@ -424,6 +472,7 @@ async def test_the_prompt_arrives_on_stdin_verbatim(
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """stdin, not argv: assembled prompts run to hundreds of KB (ARG_MAX, R6).
 
@@ -431,11 +480,122 @@ async def test_the_prompt_arrives_on_stdin_verbatim(
     the prompt without closing the pipe would leave it blocked in `read()` until
     the deadline.
     """
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
 
     assert last_invocation(worktree).stdin == PROMPT
+
+
+def _expected_node_home(factory_root: Path, epic: str = EPIC, node: str = NODE) -> Path:
+    return home_path(factory_root, epic, node)
+
+
+def test_attempt_env_replaces_home_with_the_factory_per_node_path(
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+) -> None:
+    """US1: the child's `HOME` is built, not passed through (FR-001, FR-002).
+
+    The worker's `HOME` is a recognizable operator path and also carries
+    credentials; the built environment must contain none of that surface and must
+    still include `HOME` so `_archive_session` can resolve the transcript.
+    """
+    operator_home = "/home/operator"
+    env = attempt_env(
+        attempt(),
+        {
+            "PATH": "/usr/bin",
+            "HOME": operator_home,
+            "LANG": "en_US.UTF-8",
+            "TERM": "dumb",
+            "LITELLM_MASTER_KEY": MASTER_KEY,
+            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+            "SOME_FUTURE_CREDENTIAL": "sk-not-invented-yet",
+        },
+    )
+    assert env == {
+        "ANTHROPIC_BASE_URL": PROXY_URL,
+        "ANTHROPIC_AUTH_TOKEN": VIRTUAL_KEY,
+        "PATH": "/usr/bin",
+        "HOME": str(_expected_node_home(factory_root)),
+        "LANG": "en_US.UTF-8",
+        "TERM": "dumb",
+    }
+    assert not any(value.startswith(operator_home) for value in env.values())
+
+
+def test_attempt_env_keeps_home_present_even_without_worker_home(
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+) -> None:
+    """FR-002: omitting the name would silently disable transcript archiving.
+
+    `_archive_session` returns early on a missing `HOME`, so the builder must
+    write it from the context even when the worker environment carries none.
+    """
+    env = attempt_env(
+        attempt(),
+        {"PATH": "/usr/bin"},
+    )
+    assert "HOME" in env
+    assert env["HOME"] == str(_expected_node_home(factory_root))
+
+
+async def test_the_factory_home_is_created_before_the_agent_launches(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """FR-003: the directory must exist before the child starts.
+
+    The stub records the home it saw; the assertion is on the filesystem so a
+    race where creation happens *after* spawn fails the test.
+    """
+    expected = _expected_node_home(factory_root)
+    assert not expected.exists(), "the test precondition is a not-yet-created home"
+    write_control(stub_home_dir)
+
+    await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert expected.is_dir()
+    assert last_invocation(worktree).env["HOME"] == str(expected)
+
+
+async def test_a_home_that_cannot_be_created_raises_adapter_error(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """FR-003: an infrastructure failure, never a fallback to the worker's home.
+
+    Making the parent a file removes the ability to create the home directory,
+    which must raise `AdapterError` naming the path.
+    """
+    # Make the parent path a file, so `mkdir(parents=True)` cannot succeed.
+    factory_root.mkdir(parents=True, exist_ok=True)
+    block = factory_root / "homes"
+    block.write_text("not a directory", encoding="utf-8")
+
+    # `write_control` wants to create stub_home_dir, which is now blocked by the
+    # file we just wrote. Write the control file one level above (where creation
+    # still works) so the failure under test is the *adapter's* home creation,
+    # not the test setup's.
+    control_home = factory_root / "control-home"
+    control_home.mkdir(parents=True, exist_ok=True)
+    write_control(control_home)
+
+    with pytest.raises(AdapterError) as raised:
+        await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert str(_expected_node_home(factory_root)) in str(raised.value)
+    assert not any(value == str(fake_home) for value in raised.value.__dict__.values())
 
 
 async def test_the_agent_runs_in_the_nodes_worktree(
@@ -444,9 +604,10 @@ async def test_the_agent_runs_in_the_nodes_worktree(
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """FR-013's isolation is a cwd: the agent sees its node's tree and nothing else."""
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -459,6 +620,7 @@ async def test_argv_carries_the_model_alias_and_the_generated_session_id(
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """`claude -p --dangerously-skip-permissions --model <alias> --session-id <uuid>`.
 
@@ -466,7 +628,7 @@ async def test_argv_carries_the_model_alias_and_the_generated_session_id(
     no model (constitution VII) — and the session id is what makes the transcript
     discoverable afterwards (R6).
     """
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -482,6 +644,7 @@ async def test_the_default_executable_is_claude_found_on_the_childs_path(
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -490,7 +653,7 @@ async def test_the_default_executable_is_claude_found_on_the_childs_path(
     bin_dir = tmp_path / "bin"
     install_as(bin_dir, "claude")
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     result = await ClaudeCodeAdapter(grace_s=TEST_GRACE_S).run_attempt(
         attempt(), factory_root=factory_root
@@ -508,10 +671,11 @@ async def test_a_clean_exit_is_completed(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """Exit 0 is the whole of the signal — COMPLETED is a process fact, not a
     claim of success (FR-012). The verdict comes from 002, later."""
-    write_control(fake_home, exit_code=0, stdout="I have completed the task.")
+    write_control(stub_home_dir, exit_code=0, stdout="I have completed the task.")
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -524,9 +688,10 @@ async def test_a_non_zero_exit_is_an_agent_error(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """Any non-zero code, unexamined: the exit status is not a diagnosis."""
-    write_control(fake_home, exit_code=3, stderr="context window exceeded")
+    write_control(stub_home_dir, exit_code=3, stderr="context window exceeded")
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -538,11 +703,12 @@ async def test_agent_output_never_reaches_the_result(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """FR-012: an agent that declares failure while exiting 0 still terminates
     COMPLETED, and the log holds the words the result does not."""
     write_control(
-        fake_home, exit_code=0, stdout="FAILED: I could not do it", stderr="ERROR ERROR"
+        stub_home_dir, exit_code=0, stdout="FAILED: I could not do it", stderr="ERROR ERROR"
     )
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -563,6 +729,7 @@ async def test_a_run_that_outlives_its_deadline_is_terminated_and_classified_tim
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """TERM to the group, grace, then KILL — enforced in-activity, not by Temporal.
 
@@ -572,7 +739,7 @@ async def test_a_run_that_outlives_its_deadline_is_terminated_and_classified_tim
     ignored TERM and still ended can only have ended on KILL.
     """
     write_control(
-        fake_home, sleep_s=300.0, ignore_sigterm=True, spawn_child=True, child_sleep_s=300.0
+        stub_home_dir, sleep_s=300.0, ignore_sigterm=True, spawn_child=True, child_sleep_s=300.0
     )
     started = time.monotonic()
 
@@ -599,6 +766,7 @@ async def test_a_deadline_leaves_the_evidence_the_run_produced(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """FR-007 on the killed path: a partial transcript is the only account there is.
 
@@ -606,7 +774,7 @@ async def test_a_deadline_leaves_the_evidence_the_run_produced(
     so an archive holding `start` alone is proof that what existed at the moment
     of death was kept — not that a tidy run was copied afterwards.
     """
-    write_control(fake_home, sleep_s=300.0, stdout="working on it")
+    write_control(stub_home_dir, sleep_s=300.0, stdout="working on it")
 
     result = await adapter.run_attempt(
         attempt(timeout_s=DEADLINE_S), factory_root=factory_root
@@ -626,10 +794,11 @@ async def test_the_attempt_directory_holds_the_log_and_the_session_transcript(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
     worktree: Path,
 ) -> None:
     """`.factory/transcripts/<epic>/<node>/attempt-<n>/`, keyed by attribution."""
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -641,7 +810,7 @@ async def test_the_attempt_directory_holds_the_log_and_the_session_transcript(
 
     # A copy, not a move: the session file the agent wrote is still where it was,
     # and the archived bytes are the same bytes.
-    source = session_transcript_path(fake_home, worktree, SESSION_ID)
+    source = session_transcript_path(stub_home_dir, worktree, SESSION_ID)
     assert source.is_file()
     assert (expected / f"{SESSION_ID}.jsonl").read_bytes() == source.read_bytes()
     assert archived_transcript_events(factory_root) == [TRANSCRIPT_START, TRANSCRIPT_END]
@@ -652,10 +821,11 @@ async def test_an_agent_that_wrote_no_transcript_still_archives_its_output(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """A missing session file is not a missing archive: the log is still evidence,
     and a crash on the archive step would cost the attempt its whole record."""
-    write_control(fake_home, write_transcript=False, exit_code=1)
+    write_control(stub_home_dir, write_transcript=False, exit_code=1)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -670,13 +840,14 @@ async def test_each_attempt_archives_under_its_own_number(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """Retries share the worktree (FR-013) and must not share the record: the
     prior attempt's evidence is what a retry prompt quotes (FR-006)."""
-    write_control(fake_home, stdout="first")
+    write_control(stub_home_dir, stdout="first")
     first = await adapter.run_attempt(attempt(attempt=1), factory_root=factory_root)
 
-    write_control(fake_home, stdout="second")
+    write_control(stub_home_dir, stdout="second")
     second = await adapter.run_attempt(attempt(attempt=2), factory_root=factory_root)
 
     assert first.transcript_path != second.transcript_path
@@ -690,12 +861,13 @@ async def test_transcripts_never_land_inside_the_worktree(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
     worktree: Path,
 ) -> None:
     """FR-007: they stay on the worker host. Inside the tree, salvage would commit
     the agent's own transcript to the node branch and the diff check would read it
     as work."""
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -714,6 +886,7 @@ async def test_a_live_process_group_from_a_previous_run_is_reaped_before_relaunc
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
     spawn_orphan: Callable[[], subprocess.Popen[bytes]],
 ) -> None:
     """The worker died mid-attempt; Temporal retried; the old agent is still there.
@@ -724,7 +897,7 @@ async def test_a_live_process_group_from_a_previous_run_is_reaped_before_relaunc
     """
     orphan = spawn_orphan()
     plant_pid_file(factory_root, f"{orphan.pid}\n")
-    write_control(fake_home, sleep_s=2.0)
+    write_control(stub_home_dir, sleep_s=2.0)
 
     run = asyncio.create_task(adapter.run_attempt(attempt(), factory_root=factory_root))
     try:
@@ -743,11 +916,12 @@ async def test_the_pid_file_names_this_attempts_group_and_is_removed_on_exit(
     worktree: Path,
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """The file is the next run's only handle on this one (R4), so it names the
     process *group* — the agent's children are what have to die with it — and it
     goes away on a clean exit, because a stale pid is a reap of somebody else."""
-    write_control(fake_home, sleep_s=2.0)
+    write_control(stub_home_dir, sleep_s=2.0)
     path = pid_file(factory_root, EPIC, NODE)
 
     run = asyncio.create_task(adapter.run_attempt(attempt(), factory_root=factory_root))
@@ -776,12 +950,13 @@ async def test_an_unusable_pid_file_is_not_an_error(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
     planted: str,
 ) -> None:
     """Reaping is a precaution, not a gate: garbage from a crashed worker must not
     cost the node its attempt."""
     plant_pid_file(factory_root, planted)
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -793,6 +968,7 @@ async def test_a_pid_file_naming_a_dead_process_is_not_an_error(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
     spawn_orphan: Callable[[], subprocess.Popen[bytes]],
 ) -> None:
     """The ordinary case: the previous attempt exited but never got to tidy up."""
@@ -800,7 +976,7 @@ async def test_a_pid_file_naming_a_dead_process_is_not_an_error(
     departed.kill()
     departed.wait(timeout=PATIENCE_S)
     plant_pid_file(factory_root, f"{departed.pid}\n")
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -815,12 +991,13 @@ async def test_the_adapter_beats_while_it_waits(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """The heartbeat is a callback, not an import of Temporal: the activity passes
     `activity.heartbeat`, which is what makes an hours-long attempt cancellable
     and a dead worker detectable in minutes rather than at the deadline (R2)."""
     beats: list[int] = []
-    write_control(fake_home, sleep_s=1.0)
+    write_control(stub_home_dir, sleep_s=1.0)
 
     result = await adapter.run_attempt(
         attempt(),
@@ -852,6 +1029,7 @@ async def test_the_heartbeat_carries_none_then_a_snapshot(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """Before the first successful read the beat carries `None`; after it, the
     snapshot — so teardown's fallback can tell "never measured" from "measured".
@@ -860,7 +1038,7 @@ async def test_the_heartbeat_carries_none_then_a_snapshot(
     (`poll_interval_s`) has completed, so it is necessarily `None`; every later
     beat carries the reading once one exists.
     """
-    write_control(fake_home, sleep_s=0.4)
+    write_control(stub_home_dir, sleep_s=0.4)
     seen: list[UsageSnapshot | None] = []
 
     async def read_usage() -> UsageSnapshot:
@@ -887,6 +1065,7 @@ async def test_a_failing_usage_read_leaves_the_previous_snapshot_and_still_beats
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """A spend read that raises keeps the previous snapshot in place and never
     kills the beat: liveness and spend share one channel, and spend must not be
@@ -896,7 +1075,7 @@ async def test_a_failing_usage_read_leaves_the_previous_snapshot_and_still_beats
     failed read must still fire and must still carry the first snapshot — the
     number that was true a beat ago, not `None` (constitution V).
     """
-    write_control(fake_home, sleep_s=0.4)
+    write_control(stub_home_dir, sleep_s=0.4)
     seen: list[UsageSnapshot | None] = []
     calls = {"n": 0}
 
@@ -928,6 +1107,7 @@ async def test_the_proxy_is_read_at_most_once_per_poll_interval(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """The proxy is read once per `poll_interval_s`, whatever the beat interval.
 
@@ -936,7 +1116,7 @@ async def test_the_proxy_is_read_at_most_once_per_poll_interval(
     slower cadence (plan US1). A beat that outnumbers reads proves the read is
     bounded independently of the beat.
     """
-    write_control(fake_home, sleep_s=0.4)
+    write_control(stub_home_dir, sleep_s=0.4)
     beats: list[UsageSnapshot | None] = []
     calls = {"n": 0}
 
@@ -1045,6 +1225,7 @@ async def test_the_attempt_archive_path_is_handed_to_the_agent(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
     worktree: Path,
 ) -> None:
     """The agent learns its archive directory from the environment the adapter
@@ -1054,7 +1235,7 @@ async def test_the_attempt_archive_path_is_handed_to_the_agent(
     salvage will never commit — it lives under `.factory/`, never in the
     worktree, the same discipline `stdout.log` already lives by (FR-007).
     """
-    write_control(fake_home)
+    write_control(stub_home_dir)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -1070,6 +1251,7 @@ async def test_a_ferry_question_ships_upward_once(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """The monitor loop reads the question file and ships it up exactly once.
 
@@ -1079,7 +1261,7 @@ async def test_a_ferry_question_ships_upward_once(
     already ferried, the way a heartbeat does not re-fire a beat it already
     fired.
     """
-    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=3.0)
+    write_control(stub_home_dir, ferry_question=FERRY_QUESTION, ferry_window_s=3.0)
     shipped: list[str] = []
 
     async def send_ferry_question(text: str) -> str:
@@ -1110,6 +1292,7 @@ async def test_an_answer_is_delivered_to_the_polling_agent(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """The monitor loop ferries the answer down: it writes the answer file the
     polling agent reads, and the same process resumes and proceeds.
@@ -1119,7 +1302,7 @@ async def test_an_answer_is_delivered_to_the_polling_agent(
     `answer` file, and the in-flight agent reads it and commits work — no
     second dispatch, no cold re-read of the worktree (US3's whole point).
     """
-    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=5.0)
+    write_control(stub_home_dir, ferry_question=FERRY_QUESTION, ferry_window_s=5.0)
 
     async def send_ferry_question(text: str) -> str:
         return "q-ferried"
@@ -1158,6 +1341,7 @@ async def test_an_unanswered_ferry_degrades_to_the_us1_marker_path(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """FR-009: an in-attempt ferry with no answer in the window degrades to the
     US1 final-message path — marker + QUESTION termination — never a hang or a
@@ -1169,7 +1353,7 @@ async def test_an_unanswered_ferry_degrades_to_the_us1_marker_path(
     US1's detector would pick up — the ferry improved nothing and broke
     nothing, which is the whole guarantee.
     """
-    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=0.3)
+    write_control(stub_home_dir, ferry_question=FERRY_QUESTION, ferry_window_s=0.3)
 
     async def send_ferry_question(text: str) -> str:
         return "q-ferried"
@@ -1206,6 +1390,7 @@ async def test_the_ferry_read_never_blocks_or_kills_the_liveness_beat(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """The ferry read is isolated the way the usage read is (006-US1): a
     `send_ferry_question` or `read_ferry_answer` that raises leaves the previous
@@ -1217,7 +1402,7 @@ async def test_the_ferry_read_never_blocks_or_kills_the_liveness_beat(
     could kill the beat would convert a question into a hang, which is exactly
     what the rule forbids.
     """
-    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=0.4)
+    write_control(stub_home_dir, ferry_question=FERRY_QUESTION, ferry_window_s=0.4)
     beats: list[UsageSnapshot | None] = []
 
     async def send_ferry_question(text: str) -> str:
@@ -1251,13 +1436,14 @@ async def test_the_ferry_window_does_not_extend_the_attempts_deadline(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
     fake_home: Path,
+    stub_home_dir: Path,
 ) -> None:
     """Acceptance scenario 1: the same process resumes and the attempt's timeout
     clock is unaffected. The ferry polls on its own cadence inside the
     attempt's existing runtime — the deadline is the one the context declared,
     and a question in flight does not pause it.
     """
-    write_control(fake_home, ferry_question=FERRY_QUESTION, ferry_window_s=2.0)
+    write_control(stub_home_dir, ferry_question=FERRY_QUESTION, ferry_window_s=2.0)
 
     async def send_ferry_question(text: str) -> str:
         return "q-ferried"
