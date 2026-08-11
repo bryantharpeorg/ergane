@@ -139,8 +139,10 @@ stated.
    and a bounded tail of the failing log, verbatim — never a paraphrase.
 2. **Given** that same rejection, **When** the outcome is recorded and the
    landing later escalates, **Then** the landing's queue history carries the
-   failing check names and the rendered escalation history shows them to the
-   operator.
+   failing check names, and the escalation page the operator receives shows
+   the check name(s), the failing run's URL, and the failing test line(s)
+   parsed from the fetched tail when present — the operator decides
+   RETRY-or-KILL from the page alone, without asking anyone what happened.
 3. **Given** an evidence fetch that fails (gh error or outage), **When** the
    recovery cycle runs, **Then** the recovery attempt still dispatches with the
    check names and queue history in its prompt, the prompt states that the log
@@ -222,8 +224,14 @@ exactly as today.
 - **FR-007**: A failed evidence fetch MUST degrade, not abort: the recovery
   attempt still dispatches with the check names and queue history, and the
   prompt states that the log was unavailable.
-- **FR-008**: The rendered escalation history for a landing MUST name the
-  failing checks recorded in its queue history.
+- **FR-008**: The operator-facing escalation page for a landing — the Telegram
+  message itself, not merely the rendered history behind it — MUST answer
+  "what actually happened" without a follow-up query: the failing check's
+  name(s), the failing run's URL, and, when a fetched log tail names them, the
+  failing test identifier(s). An outcome word and an epic name are not an
+  escalation message. (Operator feedback, verbatim, 2026-08-11, while pressing
+  this exact button on a live `CHECKS_FAILED` escalation: "the message it gave
+  me was not useful at all. i shouldnt have to ask what happened.")
 - **FR-009**: The interpreter MUST record the commit it enqueued for each
   landing, so a later rejection can be compared against exactly what the queue
   tested.

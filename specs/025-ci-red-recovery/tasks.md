@@ -120,11 +120,16 @@ dispatches the attempt with the absence stated.
       US2-S3); a `LandingEvidence` built with only the old fields renders
       exactly as today, which is what keeps CONFLICT and recorded histories
       untouched (plan.md trap 5) — must fail.
-- [ ] T011 [P] [US2] Write the history cases FIRST in
+- [ ] T011 [P] [US2] Write the history and escalation-page cases FIRST in
       `tests/test_mergequeue_models.py` and `tests/test_messages.py`:
       `ObservedOutcome.failing_checks` defaults to `()` so pre-spec histories
-      deserialize (plan.md trap 5), and `render_landing_history` names the
-      failing checks on a `CHECKS_FAILED` line (spec US2-S2) — must fail.
+      deserialize (plan.md trap 5); `render_landing_history` names the
+      failing checks on a `CHECKS_FAILED` line; and the escalation message
+      built for a landing escalation carries the failing check name, the
+      failing run's URL, and the failing test line when the fetched tail
+      holds one — assert the page text itself, because the requirement is
+      that the operator never has to ask a second question (spec US2-S2,
+      FR-008) — must fail.
 - [ ] T012 [US2] Write the interpreter case FIRST in
       `tests/test_interpreter.py`, alongside the existing recovery tests at
       `:4046`: a `CHECKS_FAILED` rejection whose snapshot names a failing check
