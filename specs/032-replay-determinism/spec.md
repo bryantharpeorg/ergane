@@ -1,5 +1,7 @@
 ---
 state: ready
+# Dispatched 2026-08-11 ~5:55 PM CT under the standing order ("carry on to 32")
+# the moment 031 concluded; T001 preflight recorded in tasks.md.
 # Flipped ready by the operator 2026-08-11 ~2:15 PM CT ("flip 32 to ready").
 # Dispatch condition per T001: the floor must be otherwise quiet — 031 (in
 # flight at the flip) concludes first.
