@@ -2277,6 +2277,168 @@ async def test_a_passing_onboarding_profile_proceeds_to_normal_dispatch(
     assert status.epic_state == EpicState.COMPLETED
 
 
+# --- US2: every key that is minted is torn down on every path -------------------
+
+
+async def test_a_happy_path_executes_teardown_exactly_once_per_lease(
+    env: WorkflowEnvironment,
+) -> None:
+    """Double-teardown guard (T010): a bracket added on top of surviving
+    explicit calls would run teardown twice per lease and write two ledger rows
+    for one attempt.
+
+    This test is written first, before the leak cases, because the over-reach
+    costs money: a second teardown is a second attribution row for the same
+    attempt (trap 4). It passes today and must fail only if the implementation
+    leaves an explicit `_teardown` call inside a `finally` that also calls it.
+    """
+    # One ordinary passing attempt plus one recovery cycle that also passes.
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()]},
+        client=env.client,
+    )
+    pr_number = script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert status.nodes["us1"].landing_state == LandingState.MERGED
+    assert status.nodes["us1"].pr_number == pr_number
+
+    # Exactly two implementer keys were issued (first attempt + recovery), and
+    # each was torn down exactly once. The judge is not consulted in this case
+    # (unscored criteria), so no judge key is involved.
+    implementer_keys = [k for k in script.key_requests if k.persona == "implementer"]
+    implementer_teardowns = [
+        t for t in script.teardowns if t.lease.persona == "implementer"
+    ]
+    assert len(implementer_keys) == 2
+    assert len(implementer_teardowns) == 2
+
+    for key in implementer_keys:
+        matching = [
+            t
+            for t in implementer_teardowns
+            if t.lease.node_id == key.node_id
+            and t.lease.attempt == key.attempt
+            and t.lease.key == f"sk-{key.node_id}-{key.attempt}-{key.persona}"
+        ]
+        assert len(matching) == 1, (
+            f"expected exactly one teardown for {key.node_id} attempt "
+            f"{key.attempt}, found {len(matching)}"
+        )
+
+
+async def test_a_verify_raise_in_recovery_still_teardowns_and_propagates(
+    env: WorkflowEnvironment,
+) -> None:
+    """Recovery leak case (T011): `_recovery_attempt` issues a key, calls
+    `_verify`, and on a raise in `_verify` the key must still be torn down once
+    and the exception must propagate unchanged (FR-007/FR-009).
+    """
+    script = ScriptedWorld(
+        {"us1": [passing()]},
+        client=env.client,
+    )
+    script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    original_verify = workflow_module.EpicWorkflow._verify
+
+    async def raising_verify(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("forced recovery verify raise")
+
+    workflow_module.EpicWorkflow._verify = raising_verify
+    try:
+        with pytest.raises(WorkflowFailureError) as failure:
+            await run_epic(env, script, graph=one_node())
+    finally:
+        workflow_module.EpicWorkflow._verify = original_verify
+
+    cause = failure.value.__cause__
+    assert isinstance(cause, RuntimeError)
+    assert str(cause) == "forced recovery verify raise"
+
+    # The recovery key was torn down exactly once.
+    recovery_teardowns = [
+        t
+        for t in script.teardowns
+        if t.lease.node_id == "us1" and t.lease.attempt == 2
+    ]
+    assert len(recovery_teardowns) == 1, (
+        f"expected exactly one recovery teardown, found {len(recovery_teardowns)}"
+    )
+
+
+async def test_an_attempt_raise_still_teardowns_and_propagates(
+    env: WorkflowEnvironment,
+) -> None:
+    """Agent-key leak case (T012): `_run_node` issues a key, calls `_attempt`,
+    and on a raise in `_attempt` the key must still be torn down once and the
+    exception must propagate unchanged (FR-007/FR-009).
+    """
+    script = ScriptedWorld(
+        {"us1": [passing()]},
+        client=env.client,
+    )
+
+    original_attempt = workflow_module.EpicWorkflow._attempt
+
+    async def raising_attempt(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("forced agent attempt raise")
+
+    workflow_module.EpicWorkflow._attempt = raising_attempt
+    try:
+        with pytest.raises(WorkflowFailureError) as failure:
+            await run_epic(env, script, graph=one_node())
+    finally:
+        workflow_module.EpicWorkflow._attempt = original_attempt
+
+    cause = failure.value.__cause__
+    assert isinstance(cause, RuntimeError)
+    assert str(cause) == "forced agent attempt raise"
+
+    # The attempt's key was torn down exactly once.
+    teardowns = [t for t in script.teardowns if t.lease.node_id == "us1"]
+    assert len(teardowns) == 1, (
+        f"expected exactly one agent teardown, found {len(teardowns)}"
+    )
+
+
+async def test_the_judge_bracket_is_unchanged_by_us2(
+    env: WorkflowEnvironment,
+) -> None:
+    """Judge-unchanged case (T013): US2's boundary is that it does not refactor
+    the already-correct `_score_diff` bracket into a shared helper or alter its
+    control flow (acceptance scenario 4).
+
+    The judge still mints and tears down exactly once per scoring job. This test
+    must fail only if the implementation over-reaches into `_score_diff`.
+    """
+    script = scored_world(scored(judge_pass()), client=env.client)
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert status.epic_state == EpicState.COMPLETED
+    assert states(status) == {"us1": NodeState.MERGED}
+
+    [judge_key_request] = judge_keys(script)
+    judge_teardowns = [
+        t for t in script.teardowns if t.lease.persona == JUDGE_PERSONA
+    ]
+    assert len(judge_teardowns) == 1, (
+        f"expected exactly one judge teardown, found {len(judge_teardowns)}"
+    )
+    expected_alias = key_alias_for(
+        judge_key_request.epic_id,
+        judge_key_request.node_id,
+        judge_key_request.attempt,
+        judge_key_request.persona,
+    )
+    assert judge_teardowns[0].lease.key_alias == expected_alias
+
+
 # --- FR-004 / SC-003: the bracket, and recording before acting ----------------
 
 
