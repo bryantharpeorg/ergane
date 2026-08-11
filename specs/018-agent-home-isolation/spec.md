@@ -1,5 +1,8 @@
 ---
-state: draft
+state: ready
+# Flipped ready and dispatched 2026-08-11 on Bryan's instruction ("optionally
+# dispatch 018 first"), with a git-status tripwire armed on the operator
+# checkout per the 010/us2 containment breach.
 # Drafted 2026-08-08 from `hardening/agents-inherit-operator-home` (critical,
 # open, ledger source `operator-2026-08-08`), which was proved by process
 # inspection during 016's us4 at 2:05 AM CT: the agent's pid had sibling
