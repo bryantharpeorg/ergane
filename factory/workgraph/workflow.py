@@ -440,6 +440,9 @@ class NodeStatus:
     verified: bool = False
     landing_state: LandingState | None = None
     pr_number: int | None = None
+    #: US1: the reason a node ended KILLED when the ladder did not produce it.
+    #: Set only when a node coroutine crashed; otherwise None.
+    terminal_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -607,6 +610,7 @@ class EpicWorkflow:
                     pr_number=record.landing.pr_number
                     if record.landing is not None
                     else None,
+                    terminal_reason=record.terminal_reason,
                 )
                 for node_id, record in self._nodes.items()
             },
@@ -788,9 +792,7 @@ class EpicWorkflow:
             for node_id, task in list(in_flight.items()):
                 if not task.done():
                     continue
-                del in_flight[node_id]
-                if self._nodes[node_id].state != NodeState.PASSED:
-                    self._lock_out_dependents(resolved)
+                await self._reap_finished(node_id, task, in_flight, resolved)
 
         if self._kill_requested:
             # Kill outranks the ladder: every in-flight node closes its own
@@ -1033,10 +1035,37 @@ class EpicWorkflow:
             for node_id, task in list(drainable.items()):
                 if not task.done():
                     continue
+                await self._reap_finished(node_id, task, in_flight, resolved)
                 del drainable[node_id]
-                del in_flight[node_id]
-                if self._nodes[node_id].state != NodeState.PASSED:
-                    self._lock_out_dependents(resolved)
+
+    async def _reap_finished(
+        self,
+        node_id: str,
+        task: "asyncio.Task[None]",
+        in_flight: dict[str, "asyncio.Task[None]"],
+        resolved: Sequence[ResolvedNode],
+    ) -> None:
+        """Release a finished node's slot and apply its lock-out.
+
+        The task's outcome is retrieved rather than discarded: a node coroutine that
+        raises ends here. `except Exception` is deliberate — `asyncio.CancelledError`
+        derives from `BaseException`, so a bare `Exception` handler lets cancellation
+        through (FR-006). The kill path deliberately never cancels node tasks so each
+        closes its own bracket; treating cancellation as a recorded crash would defeat
+        that design.
+        """
+        del in_flight[node_id]
+        try:
+            task.result()
+        except Exception as exc:
+            record = self._nodes[node_id]
+            record.state = NodeState.KILLED
+            record.terminal_reason = str(exc)
+            workflow.logger.exception(
+                "node %s coroutine raised; ended KILLED", node_id
+            )
+        if self._nodes[node_id].state != NodeState.PASSED:
+            self._lock_out_dependents(resolved)
 
     async def _kill_landings(self, target_repo: str) -> None:
         """Take every open landing out of the queue and stop polling it (US1).
