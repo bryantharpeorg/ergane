@@ -60,6 +60,7 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from factory.usage.models import Termination, UsageSnapshot
 from factory.workgraph.models import AdapterResult, AttemptContext
+from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 
 #: The agent's combined stdout and stderr, streamed live into the attempt's
 #: archive directory. Interleaved as the agent wrote it: two files would put the
@@ -121,6 +122,12 @@ DEFAULT_FERRY_INTERVAL_S = 5.0
 #: the adapter builds, not from a worker path in the prompt (the prompt carries
 #: no worker path).
 ATTEMPT_ARCHIVE_ENV = "ATTEMPT_ARCHIVE"
+
+
+#: The name and email the factory attributes to agent commits and salvage (FR-005,
+#: constitution VI). Imported from `worktree.py` so the two surfaces never drift.
+_SALVAGE_AUTHOR_NAME = SALVAGE_AUTHOR_NAME
+_SALVAGE_AUTHOR_EMAIL = SALVAGE_AUTHOR_EMAIL
 
 #: The ferry file names — the contract the adapter's monitor loop and the agent
 #: share, lived in `$ATTEMPT_ARCHIVE`. The agent writes `question`, polls for
@@ -301,6 +308,27 @@ def home_path(factory_root: Path | str, epic_id: str, node_id: str) -> Path:
     return Path(factory_root) / "homes" / epic_id / node_id
 
 
+def _seed_node_home(home: Path) -> None:
+    """Write the minimum the CLI needs to start non-interactively on this home.
+
+    T001 found the answer is almost nothing: the CLI writes its own
+    `.claude.json`, `plugins/`, `projects/`, `sessions/` and `backups/` from
+    fresh defaults when given a bare writable home. The factory therefore
+    writes only git identity, and it writes it from constants already owned by
+    the factory's salvage path (FR-005).
+
+    The function takes no path into the operator's home and no argument that
+    could carry one: every value it writes is imported from this module or
+    `factory.workgraph.worktree`.
+    """
+    config = (
+        "[user]\n"
+        f"\tname = {_SALVAGE_AUTHOR_NAME}\n"
+        f"\temail = {_SALVAGE_AUTHOR_EMAIL}\n"
+    )
+    (home / ".gitconfig").write_text(config, encoding="utf-8")
+
+
 def project_dir_name(cwd: Path | str) -> str:
     """Claude Code's per-cwd transcript directory: `/home/a/b` → `-home-a-b`.
 
@@ -414,6 +442,7 @@ class ClaudeCodeAdapter:
                 f"could not create per-node home for {context.epic_id}/"
                 f"{context.node_id}: {home}"
             ) from error
+        _seed_node_home(home)
         await self._reap(pids)
 
         worktree = Path(context.worktree_path).resolve()
