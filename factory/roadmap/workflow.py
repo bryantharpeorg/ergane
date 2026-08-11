@@ -140,14 +140,20 @@ def _verification_db_path() -> str:
 
 
 def _should_notify_failure(count: int) -> bool:
-    """Throttle repeated identical failures (FR-009, acceptance 2).
+    """Throttle repeated identical failures geometrically (FR-003).
 
     The first failure is always reported; subsequent identical failures report
-    only when the count is a multiple of three, so 1, 3, 6, 9, ... produce
-    notifications while 2, 4, 5, 7, ... do not. This caps the message rate while
-    still ensuring the count is carried in the next notification.
+    only when the count is a power of three (1, 3, 9, 27, ...). This caps the
+    message rate logarithmically: N consecutive failures produce at most
+    ~log_3(N) pages.
     """
-    return count == 1 or count % 3 == 0
+    if count <= 0:
+        return False
+    # A positive integer is a power of three iff repeatedly dividing by 3
+    # reaches 1 with no remainder.
+    while count % 3 == 0:
+        count //= 3
+    return count == 1
 
 
 #: The id convention the roadmap takes: `roadmap-<specs-root-name>`, the sibling
@@ -890,7 +896,7 @@ class RoadmapWorkflow:
         the fact. Repetition is throttled so one message carries the count
         instead of one message per failure (FR-009, acceptance 2).
         """
-        roadmap_id = workflow.info().workflow_id
+        roadmap_id = roadmap_workflow_id(request.specs_root)
         failure_text = self._roadmap_failure_message(exc)
 
         result: RecordRoadmapFailureResult = await workflow.execute_activity(
@@ -931,7 +937,7 @@ class RoadmapWorkflow:
         acceptance 3). If the store shows prior failures, a recovery message is
         sent so the operator knows the scheduler is healthy again.
         """
-        roadmap_id = workflow.info().workflow_id
+        roadmap_id = roadmap_workflow_id(request.specs_root)
         prior_count = await workflow.execute_activity(
             reset_roadmap_failures,
             ResetRoadmapFailuresInput(

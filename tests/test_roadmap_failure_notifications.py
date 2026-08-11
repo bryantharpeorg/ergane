@@ -138,6 +138,40 @@ async def env(tmp_path: Path) -> AsyncIterator[WorkflowEnvironment]:
         _SCRIPT.hold = set()
 
 
+def _stable_roadmap_id(specs_root: str) -> str:
+    """The stable identity a schedule's churning ids are derived from."""
+    return roadmap_workflow_id(specs_root)
+
+
+def _build_named_corpus(root: Path, name: str, specs: dict[str, Any]) -> Path:
+    """Build a specs corpus whose root directory is named after the corpus.
+
+    `build_corpus` always creates a ``specs/`` subdirectory, so two corpora in
+    different parent directories would still share the basename ``specs`` and
+    therefore the same stable roadmap id.  This helper renames that directory
+    to ``{name}-specs`` so each corpus has a distinct stable identity.
+    """
+    built = build_corpus(root / name, specs)
+    renamed = built.parent / f"{name}-specs"
+    built.rename(renamed)
+    return renamed
+
+
+def _failure_count_from(summary: str) -> int | None:
+    """Parse the consecutive-failure count out of a failure summary."""
+    prefix = "failed ("
+    start = summary.find(prefix)
+    if start == -1:
+        return None
+    end = summary.find(" consecutive run", start + len(prefix))
+    if end == -1:
+        return None
+    try:
+        return int(summary[start + len(prefix) : end])
+    except ValueError:
+        return None
+
+
 @asynccontextmanager
 async def run_roadmap_with_notifications(
     env: WorkflowEnvironment,
@@ -149,8 +183,14 @@ async def run_roadmap_with_notifications(
     max_concurrent_epics: int = 1,
     max_concurrent_nodes: int | None = None,
     idle_rescan_s: int | None = None,
+    workflow_id: str | None = None,
 ) -> AsyncIterator[Any]:
-    """Start the roadmap with a scripted failure and a recording notifier."""
+    """Start the roadmap with a scripted failure and a recording notifier.
+
+    `workflow_id` overrides the workflow id the run starts under.  The default
+    is the stable roadmap id; tests that simulate a schedule pass churning ids
+    by giving distinct schedule-shaped values here.
+    """
     _SCRIPT.statuses = dict(statuses or {})
     world.apply()
 
@@ -211,7 +251,7 @@ async def run_roadmap_with_notifications(
             handle = await env.client.start_workflow(
                 RoadmapWorkflow.run,
                 RoadmapInput(**input_kwargs),
-                id=roadmap_workflow_id(specs_root),
+                id=workflow_id or roadmap_workflow_id(specs_root),
                 task_queue="workgraph",
             )
             yield handle
@@ -372,3 +412,195 @@ async def test_failure_is_recorded_when_notifier_is_down(
         assert row[0] >= 1, "no escalation row recorded for the failed roadmap"
     finally:
         conn.close()
+
+
+# ============================================================================
+# US1 — the failure count survives the schedule's identity churn
+# ============================================================================
+
+
+async def test_schedule_churned_ids_accumulate_one_count_and_page_geometrically(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S1 / FR-001/FR-003: three consecutive failing executions under distinct
+    schedule-shaped workflow ids over one specs root accumulate a single count,
+    and pages only go out at counts 1 and 3.
+    """
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    recorder = NotificationRecorder()
+    stable_id = _stable_roadmap_id(str(specs_root))
+
+    for i in range(3):
+        workflow_id = f"{stable_id}-20260811-{i}"
+        async with run_roadmap_with_notifications(
+            env,
+            FailingCorpusWorld(),
+            str(specs_root),
+            recorder,
+            workflow_id=workflow_id,
+        ) as handle:
+            with pytest.raises(Exception):
+                await handle.result()
+
+    assert len(recorder.calls) == 2, recorder.calls
+    counts = [_failure_count_from(call.history_summary) for call in recorder.calls]
+    assert counts == [1, 3], recorder.calls
+    for call in recorder.calls:
+        assert call.workflow_id == stable_id, call
+        assert FAILURE_MESSAGE in call.history_summary, call
+
+
+async def test_recovery_under_a_fresh_id_pages_once_and_resets_count(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S2 / FR-002/FR-004: after failures under churned ids, a green run under
+    yet another fresh id sends one recovery page naming the prior count and the
+    count resets.
+    """
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    recorder = NotificationRecorder()
+    stable_id = _stable_roadmap_id(str(specs_root))
+
+    for i in range(2):
+        workflow_id = f"{stable_id}-20260811-fail-{i}"
+        async with run_roadmap_with_notifications(
+            env,
+            FailingCorpusWorld(),
+            str(specs_root),
+            recorder,
+            workflow_id=workflow_id,
+        ) as handle:
+            with pytest.raises(Exception):
+                await handle.result()
+
+    async with run_roadmap_with_notifications(
+        env,
+        RoadmapWorld(),
+        str(specs_root),
+        recorder,
+        workflow_id=f"{stable_id}-20260811-recovery",
+    ) as handle:
+        await handle.result()
+
+    recovery_calls = [
+        call for call in recorder.calls if "recover" in call.history_summary.lower()
+    ]
+    assert len(recovery_calls) == 1, recorder.calls
+    recovery = recovery_calls[0]
+    assert recovery.workflow_id == stable_id, recovery
+    assert "2" in recovery.history_summary, recovery
+
+    # A second green run must not page again: the count was reset.
+    async with run_roadmap_with_notifications(
+        env,
+        RoadmapWorld(),
+        str(specs_root),
+        recorder,
+        workflow_id=f"{stable_id}-20260811-green-again",
+    ) as handle:
+        await handle.result()
+
+    assert len(recovery_calls) == 1, recorder.calls
+
+
+async def test_nine_failures_pages_only_at_powers_of_three(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S3 / FR-003: nine consecutive identical failures produce pages only at
+    counts 1, 3 and 9 — three pages, not nine.
+    """
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    recorder = NotificationRecorder()
+    stable_id = _stable_roadmap_id(str(specs_root))
+
+    for i in range(9):
+        workflow_id = f"{stable_id}-20260811-{i}"
+        async with run_roadmap_with_notifications(
+            env,
+            FailingCorpusWorld(),
+            str(specs_root),
+            recorder,
+            workflow_id=workflow_id,
+        ) as handle:
+            with pytest.raises(Exception):
+                await handle.result()
+
+    assert len(recorder.calls) == 3, recorder.calls
+    counts = [_failure_count_from(call.history_summary) for call in recorder.calls]
+    assert counts == [1, 3, 9], recorder.calls
+    for call in recorder.calls:
+        assert call.workflow_id == stable_id, call
+
+
+async def test_two_corpora_keep_independent_counts_under_churned_ids(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S4 / FR-001: two corpora under different specs roots, with churning
+    workflow ids, keep independent counts and page independently.
+
+    Four interleaved failures per corpus hit the geometric thresholds 1 and 3
+    for each corpus independently; a later green run for each resets its own
+    count and pages once.
+    """
+    alpha_root = _build_named_corpus(tmp_path, "alpha", {"001-alpha": dict(state=SpecState.READY)})
+    beta_root = _build_named_corpus(tmp_path, "beta", {"001-beta": dict(state=SpecState.READY)})
+    recorder = NotificationRecorder()
+    alpha_id = _stable_roadmap_id(str(alpha_root))
+    beta_id = _stable_roadmap_id(str(beta_root))
+
+    # Interleave four failures for alpha with four failures for beta.
+    for i in range(4):
+        async with run_roadmap_with_notifications(
+            env,
+            FailingCorpusWorld(),
+            str(alpha_root),
+            recorder,
+            workflow_id=f"{alpha_id}-20260811-{i}",
+        ) as handle:
+            with pytest.raises(Exception):
+                await handle.result()
+        async with run_roadmap_with_notifications(
+            env,
+            FailingCorpusWorld(),
+            str(beta_root),
+            recorder,
+            workflow_id=f"{beta_id}-20260811-{i}",
+        ) as handle:
+            with pytest.raises(Exception):
+                await handle.result()
+
+    alpha_calls = [call for call in recorder.calls if call.workflow_id == alpha_id]
+    beta_calls = [call for call in recorder.calls if call.workflow_id == beta_id]
+    assert len(alpha_calls) == 2, recorder.calls
+    assert len(beta_calls) == 2, recorder.calls
+    assert [_failure_count_from(call.history_summary) for call in alpha_calls] == [1, 3]
+    assert [_failure_count_from(call.history_summary) for call in beta_calls] == [1, 3]
+
+    # Each corpus recovers independently under a fresh id.
+    async with run_roadmap_with_notifications(
+        env,
+        RoadmapWorld(),
+        str(alpha_root),
+        recorder,
+        workflow_id=f"{alpha_id}-20260811-recovery",
+    ) as handle:
+        await handle.result()
+    async with run_roadmap_with_notifications(
+        env,
+        RoadmapWorld(),
+        str(beta_root),
+        recorder,
+        workflow_id=f"{beta_id}-20260811-recovery",
+    ) as handle:
+        await handle.result()
+
+    alpha_recovery = [
+        call for call in recorder.calls if call.workflow_id == alpha_id and "recover" in call.history_summary.lower()
+    ]
+    beta_recovery = [
+        call for call in recorder.calls if call.workflow_id == beta_id and "recover" in call.history_summary.lower()
+    ]
+    assert len(alpha_recovery) == 1, recorder.calls
+    assert len(beta_recovery) == 1, recorder.calls
+    assert "4" in alpha_recovery[0].history_summary, alpha_recovery[0]
+    assert "4" in beta_recovery[0].history_summary, beta_recovery[0]
