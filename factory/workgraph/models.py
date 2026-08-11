@@ -276,6 +276,10 @@ class NodeRecord:
     #: the expiry) back to *this* node on un-park. `None` unless the node is
     #: parked, and cleared on re-dispatch.
     pending_question_id: str | None = None
+    #: Set only when a node ended for a reason the ladder did not produce (US1):
+    #: today that means one thing, a crashed node coroutine. The text is surfaced
+    #: in `ergane build status` for the KILLED node.
+    terminal_reason: str | None = None
 
 
 # The adapter seam's payloads (FR-005) ----------------------------------------
