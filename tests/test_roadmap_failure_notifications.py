@@ -143,6 +143,20 @@ def _stable_roadmap_id(specs_root: str) -> str:
     return roadmap_workflow_id(specs_root)
 
 
+def _build_named_corpus(root: Path, name: str, specs: dict[str, Any]) -> Path:
+    """Build a specs corpus whose root directory is named after the corpus.
+
+    `build_corpus` always creates a ``specs/`` subdirectory, so two corpora in
+    different parent directories would still share the basename ``specs`` and
+    therefore the same stable roadmap id.  This helper renames that directory
+    to ``{name}-specs`` so each corpus has a distinct stable identity.
+    """
+    built = build_corpus(root / name, specs)
+    renamed = built.parent / f"{name}-specs"
+    built.rename(renamed)
+    return renamed
+
+
 def _failure_count_from(summary: str) -> int | None:
     """Parse the consecutive-failure count out of a failure summary."""
     prefix = "failed ("
@@ -528,8 +542,8 @@ async def test_two_corpora_keep_independent_counts_under_churned_ids(
     for each corpus independently; a later green run for each resets its own
     count and pages once.
     """
-    alpha_root = build_corpus(tmp_path / "alpha", {"001-alpha": dict(state=SpecState.READY)})
-    beta_root = build_corpus(tmp_path / "beta", {"001-beta": dict(state=SpecState.READY)})
+    alpha_root = _build_named_corpus(tmp_path, "alpha", {"001-alpha": dict(state=SpecState.READY)})
+    beta_root = _build_named_corpus(tmp_path, "beta", {"001-beta": dict(state=SpecState.READY)})
     recorder = NotificationRecorder()
     alpha_id = _stable_roadmap_id(str(alpha_root))
     beta_id = _stable_roadmap_id(str(beta_root))
