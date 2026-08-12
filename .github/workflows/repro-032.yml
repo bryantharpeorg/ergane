@@ -1,0 +1,36 @@
+# 032 repro capture — scratch branch only, never merged.
+#
+# The replay-nondeterminism incident (test_replay_dispatches_nothing_twice,
+# [TMPRL1100] validate_target_repo vs teardown_attempt) fires only on GitHub
+# runners under full-suite load. This job runs the suite the same way the
+# gate does, with the incident test instrumented to dump its recorded history
+# on replay failure. The uploaded artifact turns the flake into a
+# deterministic fixture: Replayer(history) fails anywhere, forever.
+name: repro-032
+
+on:
+  push:
+    branches: ['repro/**']
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked
+      - run: uv run pytest -q
+        continue-on-error: true
+      - name: report capture
+        run: ls -la repro-history/ 2>/dev/null || echo "no divergence this run"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-history-${{ matrix.sample }}
+          path: repro-history/
+          if-no-files-found: ignore

@@ -2702,7 +2702,19 @@ async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None
     before = list(script.calls)
     keys_before = [(r.node_id, r.attempt) for r in script.key_requests]
 
-    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+    try:
+        await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+    except BaseException:
+        # 032 repro capture (scratch branch only): a diverging history is the
+        # evidence T004 needs — persist it so the flake becomes an artifact.
+        import pathlib
+        import time
+
+        out = pathlib.Path("repro-history")
+        out.mkdir(exist_ok=True)
+        stamp = time.time_ns()
+        (out / f"replay-failure-{stamp}.json").write_text(history.to_json())
+        raise
 
     assert script.calls == before
     assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
