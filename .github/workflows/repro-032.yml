@@ -11,6 +11,8 @@ name: repro-032
 on:
   push:
     branches: ['repro/**']
+  pull_request:
+    branches: [ergane-buildout]
 
 jobs:
   capture:
