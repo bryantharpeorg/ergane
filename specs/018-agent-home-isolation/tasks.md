@@ -46,7 +46,7 @@ most of them here, since all four stories converge on
       names, that `_archive_session` still resolves from the child's `HOME`, and
       that `tests/test_workgraph_sweep.py`'s env assertion still pins the exact
       dict.
-- [ ] T001a Operator, gating **US4 only**: probe `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+- [x] T001a Operator, gating **US4 only**: probe `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
       before that story dispatches. Run the adapter's own argv shape against a
       declared window that is unmistakably not the default — the same one-command
       bet T001 made, which paid for itself by shrinking US2. Record three things
@@ -57,6 +57,50 @@ most of them here, since all four stories converge on
       mechanism is wrong and the story must not dispatch** — say so here and stop,
       rather than letting an agent discover it at attempt price. This gates US4
       alone; US1–US3 do not wait on it.
+
+      **GATE RESULT 2026-08-11, operator: PASS — US4 may dispatch.** Probed with
+      the adapter's exact argv (`claude -p --dangerously-skip-permissions --model
+      ollama-cloud/kimi-k2.7-code --session-id <uuid>`) against the live proxy,
+      four runs, clean `HOME`:
+
+      | run | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | result |
+      | --- | --- | --- |
+      | A | unset | unrecognized-model warning present, "auto-compact will keep this session within 200k tokens"; call succeeds |
+      | B | `262144` | **warning gone entirely**; call succeeds |
+      | C | `1000` | **`Prompt is too long`** — a two-word prompt refused |
+      | D | `notanumber` | warning returns, 200k assumed; call succeeds |
+
+      Answering the three questions in order. (1) The warning **disappears** when
+      a window is declared. (2) The number is genuinely *read and enforced*, not
+      merely detected — run C is the proof, and it is the run that matters: had
+      the CLI only checked the variable's presence, a 1000-token window would
+      have behaved like B. (3) Unset (A) is exactly today's production
+      behaviour, so an undeclared persona changes nothing — which is precisely
+      what FR-010/SC-006 require.
+
+      Bonus, unasked but load-bearing for T013's validator: a **non-numeric**
+      value (D) degrades to the default with the warning rather than crashing.
+      So the CLI will not defend us against a bad value — a persona declaring
+      `context_window: notanumber` would silently get 200k. That makes T013's
+      refusal of non-integers the only real guard, and it should be treated as
+      required rather than defensive.
+
+      **The real window is 256K = `262144`** (ollama.com/library/kimi-k2.7-code,
+      confirmed by the operator 2026-08-11 — the model card's Context field).
+      That is the number a persona should declare once US4 lands; US4 itself
+      still ships with every persona unset, per plan.md § US4, so the mechanism
+      lands inert and the operator flips it after.
+
+      Operational note, independent of US4: **every attempt today runs under run
+      A**, capped at an assumed 200k against a real 262144 — so 62,144 tokens,
+      **23.7% of the model's context, are unreachable on every attempt**. This is
+      not theoretical: measured over 032/us1's first 238 calls (Langfuse
+      `observations`), the median request is 129,480 tokens and the largest is
+      166,534 — already 83% of the assumed ceiling, so auto-compaction is firing
+      routinely. Under the true window those same requests sit at 49% and 64%.
+      The agent is discarding context it has room to keep, then re-reading what
+      it discarded: 26.8M input tokens bought 53.9k of output. US4 is the fix;
+      until it lands the loss is real, silent, and paid on every attempt.
 
 ---
 

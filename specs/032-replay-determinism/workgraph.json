@@ -14,8 +14,7 @@
         "FR-001",
         "FR-002",
         "FR-003",
-        "FR-004",
-        "FR-007"
+        "FR-004"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -28,6 +27,22 @@
       "spec_ref": "032-replay-determinism:US2",
       "requirement_keys": [
         "US2",
+        "FR-007",
+        "FR-008"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "032-replay-determinism:US3",
+      "requirement_keys": [
+        "US3",
         "FR-005",
         "FR-006"
       ],

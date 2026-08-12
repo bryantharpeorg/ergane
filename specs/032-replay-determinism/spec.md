@@ -1,5 +1,12 @@
 ---
 state: ready
+# Re-split into three stories 2026-08-12 after the epic was killed at attempt 4
+# (see the note above US1 — the old story was unsatisfiable, not merely hard).
+# spec.md, plan.md and tasks.md were all brought forward together and agree;
+# workgraph.json re-derived to three nodes (us1, plus us2/us3 both on a
+# merge-edge to us1). Flipped ready by the operator 2026-08-12 ~6:30 AM CT.
+# Dispatch condition unchanged: the floor must be otherwise quiet — us1 edits
+# the workflow module every other epic runs on (plan.md trap 6).
 # Dispatched 2026-08-11 ~5:55 PM CT under the standing order ("carry on to 32")
 # the moment 031 concluded; T001 preflight recorded in tasks.md.
 # Flipped ready by the operator 2026-08-11 ~2:15 PM CT ("flip 32 to ready").
@@ -59,52 +66,141 @@ wedged epic waiting for the wrong restart. CI is the canary, not the patient.
 
 A PR's required check runs the PR's own tree. This spec's branch carries the
 fix, so its check exercises the fixed code — green by construction *if the fix
-is right*, which US1's fail-first harness proves locally before the landing is
-ever attempted. Nothing else in the corpus can land first: every other branch
-re-rolls the 3-in-4 red.
+is right*, which US2's 15-cycle run against US1's harness proves locally before
+the landing is ever attempted. Nothing else in the corpus can land first: every
+other branch re-rolls the 3-in-4 red.
+
+This is why US1 carries the fix and cannot be split away from it: **US1's PR is
+the one that turns the check green**, and every other PR in the corpus — this
+spec's US2 and US3 included — waits behind it. A story of this spec that does
+not contain the fix cannot merge, because its own required check is the very
+check the fix repairs.
 
 ## User Scenarios & Testing
 
-### User Story 1 - Find the racy construct and make the command order a pure function (Priority: P1)
+> **SPLIT 2026-08-12 after four failed attempts. Read this before implementing.**
+>
+> The original US1 asked one story to reproduce the defect *fail-first* and to
+> fix it, in one diff. That is not buildable under this factory's own
+> verification model, and no agent could have satisfied it:
+>
+> - The deterministic gate runs `pytest` over the story's diff. A test that
+>   genuinely reproduces the nondeterminism must **fail** — which turns the
+>   gate red and fails the attempt.
+> - The judge reads the same diff and asks for the fail-first reproduction the
+>   story demands.
+>
+> The only diff satisfying both would have to show the harness failing *before*
+> a fix and passing *after* — two tree states, one snapshot. It cannot exist.
+>
+> Four attempts (three implementer, one debugger, ~9h, 128M input tokens)
+> resolved the bind the only way that keeps the gate green: a harness asserting
+> success. The judge then correctly rejected it as "not a fail-first
+> reproduction" — the same objection all four times. **Neither the agent nor
+> the judge was wrong; the story was.**
+>
+> **Two constraints shape the rewrite, and the second kills the obvious fix.**
+>
+> 1. The reproduction must be an **artifact**, not a live failing test — a
+>    committed account of the pre-fix run, so "demonstrated, not asserted" is
+>    satisfied by evidence rather than by a red suite.
+> 2. **The first story to land MUST contain the fix.** The required check is
+>    the full suite, and it is red until the defect is fixed, so *no* PR from
+>    this spec can merge before the fix does. A split that puts the harness in
+>    a story of its own deadlocks: that story cannot merge, and the fix story
+>    waits on it. (This was the first draft of this split, on 2026-08-12; it
+>    was wrong and is recorded here so it is not re-proposed.)
+>
+> So US1 keeps harness **and** fix together — that pairing is irreducible — and
+> sheds everything that does not have to land with it. The heavy standing-proof
+> burden moves to US2, which lands afterwards through a green check.
+
+### User Story 1 - Make the command order a pure function, diagnosis evidenced (Priority: P1)
 
 Locate the construct in `factory/workgraph/workflow.py` whose activity-command
-order can vary with scheduling pressure — the mismatch pair brackets the
-neighborhood: the onboarding step that schedules `validate_target_repo` and
-the node/task machinery that schedules `teardown_attempt` — and change it so
-the command sequence is identical under any event-loop interleaving. The
-diagnosis must be demonstrated, not asserted: a harness that forces adverse
-interleavings must reproduce the CI failure on the worker host **before** the
-fix and fail to reproduce it **after**, under the same forcing.
+order varies with scheduling pressure — the mismatch pair brackets the
+neighborhood: the onboarding step that schedules `validate_target_repo` and the
+node/task machinery that schedules `teardown_attempt` — and change it so the
+command sequence is identical under any event-loop interleaving.
+
+**This story MUST change production code.** A diff touching only `tests/` is a
+failed attempt by definition: that is exactly how the unsplit story failed four
+times running, and it is the single most important thing to get right here.
+
+The diagnosis must be **demonstrated, not asserted** — but the demonstration is
+a *committed artifact*, not a failing test. Build the seeded
+adversarial-interleaving harness, run it against the tree **before** applying
+the fix, and commit the captured output of that reproducing run as evidence
+under `specs/032-replay-determinism/evidence/`. Then apply the fix and show the
+same harness, at the same seed, going green. The before/after proof is the
+evidence file plus the passing harness — never a red suite.
 
 **Goal**: the sequence of activity commands an `EpicWorkflow` issues is a pure
 function of its inputs and its history — never of host speed, load, or task
-wakeup order.
+wakeup order. This is the story whose PR turns the required check green, and
+nothing else in the corpus can land before it.
 
-**Independent Test**: under the adversarial-interleaving harness (US1 builds
-it as its fail-first instrument), the recorded epic's replay fails against the
-pre-fix tree and passes 15 consecutive runs against the fixed tree; an
-unmodified `test_replay_dispatches_nothing_twice` stays green throughout.
+**Independent Test**: the full suite is green including
+`test_replay_dispatches_nothing_twice`; the harness passes 3 consecutive
+record-replay cycles at a fixed seed; and the committed evidence file shows the
+same harness reproducing the signature before the fix.
 
 **Acceptance Scenarios**:
 
-1. **Given** the pre-fix tree and a harness that injects scheduling adversity
-   into the recording (delays or reordered wakeups at the epic/node coroutine
-   boundary), **When** the recorded history is replayed, **Then** the replay
-   fails with the incident's nondeterminism signature — the defect is
-   reproduced on the worker host, fail-first, before any fix is written.
-2. **Given** the fixed tree under the same adversarial harness, **When** the
-   record-and-replay cycle runs 15 consecutive times, **Then** every replay
+1. **Given** this story's diff, **When** it is inspected, **Then** it contains a
+   substantive change under `factory/` — `factory/workgraph/workflow.py` at the
+   named construct. A tests-only diff fails this scenario outright.
+2. **Given** the harness at a fixed seed on the fixed tree, **When** the
+   record-and-replay cycle runs 3 consecutive times, **Then** every replay
    succeeds and the commands match history exactly.
-3. **Given** the fixed tree, **When** the full unmodified suite runs in a
-   clean environment, **Then** it is green — the fix changes command
-   *ordering determinism*, never which activities run, their inputs, or any
-   node outcome, gate result, judge verdict, or queue interaction.
-4. **Given** the diff of this story, **When** it is inspected, **Then**
+3. **Given** the committed evidence file, **When** it is read, **Then** it shows
+   the harness reproducing the incident's signature against the pre-fix tree —
+   the diagnosis demonstrated, without requiring a failing test to survive in
+   the diff.
+4. **Given** the harness, **When** it is inspected, **Then** its forcing is
+   deterministic and seeded — the same seed reproduces the same interleaving —
+   and production code neither imports it nor special-cases it.
+5. **Given** the fixed tree, **When** the full unmodified suite runs in a clean
+   environment, **Then** it is green — the fix changes command *ordering
+   determinism*, never which activities run, their inputs, or any node outcome,
+   gate result, judge verdict, or queue interaction.
+6. **Given** the diff of this story, **When** it is inspected, **Then**
    `test_replay_dispatches_nothing_twice` is not weakened, not deleted, not
    retried, and not marked — the test that caught the defect survives intact,
    and the fix is in the workflow code the test judges.
 
-### User Story 2 - A worker restart cannot wedge the epics that recorded under the old order (Priority: P1)
+### User Story 2 - The harness becomes a standing regression (Priority: P2)
+
+US1 proves the fix once, at one seed, over 3 cycles — enough to land, and
+deliberately no more, because everything US1 carries has to clear a red check
+on the way in. This story turns that one-off proof into a permanent guard:
+the adversarial harness runs **15 consecutive record-replay cycles** in the
+suite, and a committed pre-fix fixture history rides alongside it so any future
+change to command ordering fails loudly at the gate.
+
+By the time this story dispatches the required check is green (US1 landed), so
+it can carry the heavier, slower proof without gambling the unblock on it.
+
+**Goal**: the determinism US1 established cannot silently regress — the next
+ordering change fails at the gate, not at 3 a.m. in a live epic.
+
+**Independent Test**: the suite carries a 15-cycle record-replay run at a fixed
+seed and a committed fixture history, and is green in a clean environment.
+
+**Acceptance Scenarios**:
+
+1. **Given** US1's harness in the base, **When** the suite runs, **Then** it
+   executes 15 consecutive record-replay cycles at a fixed seed and every one
+   succeeds.
+2. **Given** a history recorded by the pre-fix code and committed as a fixture,
+   **When** the suite replays it through the fixed workflow, **Then** it is
+   green — and this test stands permanently as the regression guard.
+3. **Given** this story's diff, **When** the store-isolation rule is applied,
+   **Then** every new test builds its stores under `tmp_path` (FR-007) and the
+   15-cycle run does not extend suite wall-clock beyond the gate's budget —
+   if it would, the cycle count is the thing that gives, not the isolation.
+
+### User Story 3 - A worker restart cannot wedge the epics that recorded under the old order (Priority: P1)
 
 The fix changes what commands the workflow issues, and Temporal replays live
 epics through the *current* code at every worker restart. An epic whose
@@ -112,6 +208,11 @@ history was recorded under the old interleaving must still replay after the
 fix deploys — otherwise the cure wedges the patients: any epic paused or
 running across the deploy (018 is parked-open at drafting time) hits the same
 nondeterminism error from the other side at its next worker restart.
+
+This story is unchanged by the 2026-08-12 split except for its number and its
+edge: it waits on **US1**, the story that carries the fix, not on US2. It has no
+dependency on US2's standing-regression work, so the two can proceed in either
+order once US1 lands.
 
 **Goal**: histories recorded by the pre-fix code replay cleanly through the
 fixed code, proven with a captured pre-fix history, so deploying this spec
@@ -142,9 +243,23 @@ workflow; the suite carries that fixture as a standing regression.
 - **FR-001**: The activity-command sequence `EpicWorkflow` issues MUST be
   invariant under event-loop scheduling order: same inputs, same history,
   same commands, on any host at any load.
-- **FR-002**: The defect MUST be reproduced fail-first on the worker host via
-  an adversarial-interleaving harness before the fix lands, and the same
-  harness MUST pass 15 consecutive record-replay cycles after it.
+- **FR-002**: The defect MUST be reproduced on the worker host via a
+  deterministic, seeded adversarial-interleaving harness, and that reproduction
+  MUST be committed as a **captured account of the pre-fix run** under
+  `specs/032-replay-determinism/evidence/` — evidence, not a failing test. The
+  suite that ships with the fix is green; the demonstration lives in the
+  artifact. After the fix the same harness MUST pass **3** consecutive
+  record-replay cycles at the same seed. (Split from the original FR-002 on
+  2026-08-12: requiring one diff to be both fail-first and fixed is
+  unsatisfiable under a gate that runs the suite over that same diff, and the
+  four attempts that failed were failing an impossible requirement. See the
+  note above US1.)
+- **FR-008**: Once the check is green, the harness MUST become a standing
+  regression: **15** consecutive record-replay cycles at a fixed seed in the
+  suite, plus a committed pre-fix fixture history replayed as a permanent
+  guard. This is deliberately *not* required of the story that carries the fix —
+  it is proof that can afford to wait, and loading it onto the unblock is what
+  made the original story unbuildable.
 - **FR-003**: The fix MUST NOT change which activities are executed, their
   inputs, their retry policies, or any observable epic outcome — ordering
   becomes deterministic; behavior does not otherwise change.
@@ -228,13 +343,29 @@ workflow; the suite carries that fixture as a standing regression.
 ```yaml
 US1:
   depends_on: []
-  implements: [FR-001, FR-002, FR-003, FR-004, FR-007]
+  implements: [FR-001, FR-002, FR-003, FR-004]
 US2:
+  depends_on: []
+  depends_on_merged: [US1]
+  implements: [FR-007, FR-008]
+US3:
   depends_on: []
   depends_on_merged: [US1]
   implements: [FR-005, FR-006]
 ```
 
-US2 takes a merge-edge: its fixture is captured during US1's fail-first phase
-and its replay-compatibility test runs against US1's fixed code, so its base
-must contain US1's work.
+US1 is the unblock and takes no edge: it carries the fix, and its PR is the one
+that turns the required check green. US2 and US3 both take **merge**-edges on
+US1 rather than on each other — neither needs the other's work, so once US1
+lands they are independent and may run in either order or concurrently.
+
+The 2026-08-12 split deliberately keeps harness and fix together in US1 and
+moves only the *heavy standing proof* (15 cycles, committed fixture regression)
+to US2. Everything US1 carries must clear a red check on the way in, so US1
+holds the minimum that proves the fix — 3 cycles and an evidence file — and not
+one requirement more.
+
+Story numbers were reassigned rather than appended: nothing from 032 has ever
+landed — all four attempts were killed and only an unmerged salvage branch
+exists — so no landed number is being reused, and the immutability rule is not
+engaged.
