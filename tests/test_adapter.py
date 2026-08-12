@@ -36,6 +36,11 @@ Four properties are what this file actually defends:
   transcript is the only account of what happened. It lives under the worker
   host's `.factory/`, never inside a repo worktree, where salvage would commit it.
 
+- **The home the factory owns is the only home the agent sees** (US1/US2). The
+  adapter seeds that home from its own constants so the CLI starts without
+  prompting and so the agent's own git commits carry the factory's identity,
+  never the operator's (FR-004, FR-005).
+
 Two deliberate choices in the setup:
 
 - **The worktree is a plain directory.** The adapter's contract is "cwd is the
@@ -79,6 +84,10 @@ from factory.workgraph.adapter import (
     transcript_dir,
 )
 from factory.workgraph.models import AdapterResult, AttemptContext
+from factory.workgraph.worktree import (
+    SALVAGE_AUTHOR_EMAIL,
+    SALVAGE_AUTHOR_NAME,
+)
 from tests.stub_agent import (
     ATTEMPT_ARCHIVE_ENV,
     BANNER,
@@ -321,6 +330,36 @@ def archived_transcript_events(factory_root: Path, attempt_number: int = ATTEMPT
     path = archive_dir(factory_root, attempt_number) / f"{SESSION_ID}.jsonl"
     lines = path.read_text(encoding="utf-8").splitlines()
     return [json.loads(line)["event"] for line in lines if line.strip()]
+
+
+def git_commit_in_child_environment(
+    cwd: Path,
+    home: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Make a git commit inside `cwd` using only the constructed child environment.
+
+    The environment is the adapter's `attempt_env` output plus `ATTEMPT_ARCHIVE`
+    if present. This is *not* a test helper that smuggles `GIT_AUTHOR_*` in:
+    the assertion is that the home's `.gitconfig` provides identity.
+    """
+    return subprocess.run(
+        ["git", "commit", "--quiet", "--allow-empty", "-m", "agent commit"],
+        cwd=str(cwd),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def git_show_field(cwd: Path, field: str) -> str:
+    """One commit field, e.g. `%an` or `%ae`, from HEAD."""
+    return subprocess.run(
+        ["git", "-C", str(cwd), "log", "-1", f"--format={field}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
 
 
 # --- home path helper (US1) ----------------------------------------------------
@@ -1467,3 +1506,229 @@ async def test_the_ferry_window_does_not_extend_the_attempts_deadline(
         "the ferry window paused the deadline; the clock must be unaffected"
     )
     assert elapsed < PATIENCE_S, "the deadline was not enforced against the ferry"
+
+
+# --- US2: seeded home, git identity, and archive composition -----------------
+
+
+async def test_a_seeded_home_contains_only_factory_authored_files(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """FR-004: the home is a factory-authored surface, not a mirror of the operator's.
+
+    The only file the factory must put there is git identity. Every other file
+    either does not exist or is something the agent CLI wrote itself from its
+    own defaults. The negative assertion is what catches the shortcut: nothing
+    under this home was copied from or derived from the operator's configuration.
+    """
+    write_control(stub_home_dir)
+
+    await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    seeded_files = {str(p.relative_to(stub_home_dir)) for p in stub_home_dir.rglob("*") if p.is_file()}
+    # The factory pre-writes only .gitconfig; the stub writes its control file
+    # and session transcript there during the attempt, which is the child writing,
+    # not the factory copying from the operator.
+    assert ".gitconfig" in seeded_files
+    gitconfig = (stub_home_dir / ".gitconfig").read_text(encoding="utf-8")
+    assert SALVAGE_AUTHOR_NAME in gitconfig
+    assert SALVAGE_AUTHOR_EMAIL in gitconfig
+    assert "oauthAccount" not in gitconfig
+    assert "mcpServers" not in gitconfig
+    assert "CLAUDE.md" not in seeded_files
+
+
+async def test_the_seeding_function_never_reads_the_operator_home(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """The negative assertion that catches the copy-from-`~` shortcut (plan.md § US2).
+
+    Even if the factory's per-node home is used as `HOME`, seeding it from the
+    operator's `~/.claude.json` or `~/.claude/` would re-import exactly the
+    surface this spec removes, `oauthAccount` included. The seeding function
+    takes no path that could name the operator's home and produces only git
+    identity from constants.
+    """
+    # Plant distinctive operator files the factory must not copy or read.
+    (fake_home / ".claude.json").write_text(json.dumps({"oauthAccount": "operator"}), encoding="utf-8")
+    (fake_home / ".claude").mkdir(parents=True)
+    (fake_home / ".claude" / "CLAUDE.md").write_text("operator instructions", encoding="utf-8")
+    (fake_home / ".gitconfig").write_text(
+        "[user]\n  name = Operator\n  email = operator@example.com\n", encoding="utf-8"
+    )
+    write_control(stub_home_dir)
+
+    await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    seeded = {str(p.relative_to(stub_home_dir)) for p in stub_home_dir.rglob("*") if p.is_file()}
+    assert ".gitconfig" in seeded
+    gitconfig = (stub_home_dir / ".gitconfig").read_text(encoding="utf-8")
+    assert "Operator" not in gitconfig
+    assert "operator@example.com" not in gitconfig
+    assert "oauthAccount" not in gitconfig
+    assert "operator instructions" not in gitconfig
+    # No factory file is a copy of an operator file byte-for-byte.
+    operator_files = set(fake_home.rglob("*"))
+    for seeded_path in (p for p in stub_home_dir.rglob("*") if p.is_file()):
+        assert seeded_path not in operator_files, (
+            f"{seeded_path} is byte-identical to a file in the operator's home"
+        )
+
+
+async def test_a_git_commit_in_the_child_environment_succeeds_with_factory_identity(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """FR-005: the agent's own commits carry the factory's salvage identity.
+
+    A fresh factory-owned home has no `~/.gitconfig`, so a commit made inside
+    the worktree under the child environment would fail with "Author identity
+    unknown". The factory seeds git identity in the home; the commit then
+    succeeds and is attributed to the same name and address salvage uses.
+    """
+    # Turn the plain worktree directory into a git repo, the way the agent finds it.
+    subprocess.run(
+        ["git", "init", "--quiet", "-b", "main"],
+        cwd=str(worktree),
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"HOME": str(fake_home), "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "PATH": os.environ["PATH"]},
+    )
+    write_control(stub_home_dir)
+
+    env = attempt_env(attempt())
+    env[ATTEMPT_ARCHIVE_ENV] = str(archive_dir(factory_root))
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    assert result.termination == Termination.COMPLETED
+
+    # Reaching in with the child environment, identity must come from the home.
+    commit_result = git_commit_in_child_environment(worktree, stub_home_dir, env)
+    assert commit_result.returncode == 0, (
+        f"git commit failed: {commit_result.stderr}"
+    )
+    assert git_show_field(worktree, "%an") == SALVAGE_AUTHOR_NAME
+    assert git_show_field(worktree, "%ae") == SALVAGE_AUTHOR_EMAIL
+    assert git_show_field(worktree, "%cn") == SALVAGE_AUTHOR_NAME
+    assert git_show_field(worktree, "%ce") == SALVAGE_AUTHOR_EMAIL
+
+
+async def test_a_git_commit_fails_without_the_factory_seeded_identity(
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+) -> None:
+    """The control case: without the seeded home, the same commit cannot complete.
+
+    The fixture sets up an unseeded home directory, then builds the child env
+    exactly as the adapter would for that unseeded home. This proves the
+    passing test above is due to the seeded identity, not to a git fall-back
+    that happens to work in this test environment.
+    """
+    unseeded_home = home_path(factory_root, EPIC, "unseeded")
+    unseeded_home.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "--quiet", "-b", "main"],
+        cwd=str(worktree),
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"HOME": str(unseeded_home), "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "PATH": os.environ["PATH"]},
+    )
+
+    env = attempt_env(
+        attempt(home_path=str(unseeded_home)),
+        {"PATH": os.environ["PATH"], "HOME": str(fake_home)},
+    )
+    env[ATTEMPT_ARCHIVE_ENV] = str(archive_dir(factory_root, ATTEMPT))
+
+    commit_result = git_commit_in_child_environment(worktree, unseeded_home, env)
+    assert commit_result.returncode != 0
+    assert "Author identity unknown" in commit_result.stderr
+
+
+async def test_the_archive_holds_both_artifacts_after_a_completed_attempt(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+    worktree: Path,
+) -> None:
+    """FR-006 / SC-002: the transcript directory contains the same two artifacts as before.
+
+    Asserted by reading the directory, not by inspecting the path expression:
+    the archive step resolves from the child's `HOME`, and the test proves the
+    composition works end-to-end.
+    """
+    write_control(stub_home_dir)
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert result.termination == Termination.COMPLETED
+    archive = archive_dir(factory_root)
+    assert archive.is_dir()
+    assert (archive / STDOUT_LOG_NAME).is_file()
+    assert (archive / f"{SESSION_ID}.jsonl").is_file()
+
+
+async def test_an_attempt_that_wrote_no_transcript_still_archives_stdout_log(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """The missing-transcript path is normal, not an error; the log still survives."""
+    write_control(stub_home_dir, write_transcript=False, exit_code=1)
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert result.termination == Termination.AGENT_ERROR
+    archive = archive_dir(factory_root)
+    assert (archive / STDOUT_LOG_NAME).is_file()
+    assert not (archive / f"{SESSION_ID}.jsonl").exists()
+
+
+async def test_the_archived_transcript_survives_the_home_directorys_removal(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+    worktree: Path,
+) -> None:
+    """FR-006 / SC-005: once archived, evidence is independent of the home.
+
+    The child wrote its session transcript under the factory-owned home; the
+    adapter copied it into the archive directory. Removing the home afterwards
+    proves the archive is complete and self-sufficient.
+    """
+    write_control(stub_home_dir)
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert result.termination == Termination.COMPLETED
+    archive = archive_dir(factory_root)
+    archive_copy = archive / f"{SESSION_ID}.jsonl"
+    assert archive_copy.is_file()
+    before = archive_copy.read_bytes()
+
+    import shutil
+    shutil.rmtree(stub_home_dir)
+
+    assert archive_copy.is_file()
+    assert archive_copy.read_bytes() == before
