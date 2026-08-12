@@ -110,6 +110,7 @@ def _worker(env: WorkflowEnvironment, world: RoadmapWorld) -> Worker:
         record_roadmap_failure,
         reset_roadmap_failures,
         send_escalation,
+        send_roadmap_notice,
     )
     from factory.activities.roadmap_activities import (
         clone_target,
@@ -136,6 +137,7 @@ def _worker(env: WorkflowEnvironment, world: RoadmapWorld) -> Worker:
             read_spec_text_activity,
             record_roadmap_failure,
             reset_roadmap_failures,
+            send_roadmap_notice,
             send_escalation,
         ],
         workflow_runner=UnsandboxedWorkflowRunner(),

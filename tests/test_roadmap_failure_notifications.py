@@ -34,6 +34,7 @@ from typing import Any, AsyncIterator, Callable
 
 import pytest
 from temporalio import activity, workflow
+from temporalio.client._exceptions import WorkflowFailureError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -44,7 +45,9 @@ import factory.roadmap.workflow as factory_roadmap_workflow
 from factory.activities.roadmap_activities import CountOpenInput, CountOpenResult
 from factory.activities.notify_activities import (
     SendEscalationInput,
+    SendRoadmapNoticeInput,
     SentEscalation,
+    SentRoadmapNotice,
 )
 from factory.roadmap.models import Roadmap, SpecState
 from factory.roadmap.workflow import (
@@ -83,30 +86,31 @@ class RecordedNotification:
     history_summary: str
 
 
+@dataclass(frozen=True)
+class RecordedNotice:
+    """One call our recording send-roadmap-notice seam saw."""
+
+    roadmap_id: str
+    message: str
+
+
 class NotificationRecorder:
-    """Replaces `send_escalation` so tests can assert on what was sent."""
+    """Replaces `send_roadmap_notice` so tests can assert on what was sent."""
 
     def __init__(self) -> None:
-        self.calls: list[RecordedNotification] = []
+        self.calls: list[RecordedNotice] = []
         self.raise_on_send: bool = False
-        self.fail_record_before_send: list[str] = []
 
-    def record(self, request: SendEscalationInput) -> SentEscalation:
+    def record(self, request: SendRoadmapNoticeInput) -> SentRoadmapNotice:
         self.calls.append(
-            RecordedNotification(
-                workflow_id=request.workflow_id,
-                epic_id=request.epic_id,
-                node_id=request.node_id,
-                history_summary=request.history_summary,
+            RecordedNotice(
+                roadmap_id=request.roadmap_id,
+                message=request.message,
             )
         )
         if self.raise_on_send:
             raise RuntimeError("notifier is down")
-        return SentEscalation(
-            escalation_id="deadbeefcafe",
-            delivered=True,
-            expires_at="2099-01-01T00:00:00Z",
-        )
+        return SentRoadmapNotice(delivered=True)
 
 
 @pytest.fixture
@@ -224,11 +228,11 @@ async def run_roadmap_with_notifications(
         reset_roadmap_failures,
     ]
 
-    @activity.defn(name="send_escalation")
-    async def recording_send_escalation(request: SendEscalationInput) -> SentEscalation:
+    @activity.defn(name="send_roadmap_notice")
+    async def recording_send_roadmap_notice(request: SendRoadmapNoticeInput) -> SentRoadmapNotice:
         return recorder.record(request)
 
-    activities.append(recording_send_escalation)
+    activities.append(recording_send_roadmap_notice)
 
     try:
         async with Worker(
@@ -302,7 +306,7 @@ async def test_a_failed_run_notifies_once_with_the_failure_verbatim(
             await handle.result()
 
     assert len(recorder.calls) == 1, recorder.calls
-    assert FAILURE_MESSAGE in recorder.calls[0].history_summary, recorder.calls[0]
+    assert FAILURE_MESSAGE in recorder.calls[0].message, recorder.calls[0]
 
 
 async def test_repeated_identical_failures_do_not_spam_and_carry_count(
@@ -332,7 +336,7 @@ async def test_repeated_identical_failures_do_not_spam_and_carry_count(
     # fewer than three messages and the most recent message names the count.
     assert len(recorder.calls) < 3, recorder.calls
     assert any(
-        "3" in call.history_summary or "three" in call.history_summary.lower()
+        "3" in call.message or "three" in call.message.lower()
         for call in recorder.calls
     ), recorder.calls
 
@@ -364,8 +368,8 @@ async def test_success_after_failures_resets_count_and_reports_recovery(
 
     recovery_calls = [
         call for call in recorder.calls
-        if "recover" in call.history_summary.lower()
-        or "passed" in call.history_summary.lower()
+        if "recover" in call.message.lower()
+        or "passed" in call.message.lower()
     ]
     assert len(recovery_calls) == 1, recorder.calls
 
@@ -383,7 +387,7 @@ async def test_failure_is_recorded_when_notifier_is_down(
 
     The recording seam is told to raise on send.  The durable record is checked by
     querying the verification store for a roadmap-failure row.  Until the code
-    writes such a row before calling `send_escalation`, this test fails.
+    writes such a row before calling `send_roadmap_notice`, this test fails.
     """
     specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
     recorder = NotificationRecorder()
@@ -397,6 +401,7 @@ async def test_failure_is_recorded_when_notifier_is_down(
 
     # No Telegram message was delivered.
     assert len(recorder.calls) == 1
+    roadmap_id = roadmap_workflow_id(str(specs_root))
     # But the fact was recorded in the verification store.  The row must exist
     # before the send was attempted.
     from factory.verify.store import connect
@@ -406,10 +411,17 @@ async def test_failure_is_recorded_when_notifier_is_down(
     conn = connect(db_path)
     try:
         row = conn.execute(
-            "SELECT COUNT(*) FROM escalations WHERE epic_id = ?",
-            (roadmap_workflow_id(str(specs_root)),),
+            "SELECT consecutive_count, last_failure_text FROM roadmap_failures WHERE roadmap_id = ?",
+            (roadmap_id,),
         ).fetchone()
-        assert row[0] >= 1, "no escalation row recorded for the failed roadmap"
+        assert row is not None, "no roadmap-failure row recorded for the failed roadmap"
+        assert row[0] == 1, row
+        assert row[1] == FAILURE_MESSAGE, row
+        esc_count = conn.execute(
+            "SELECT COUNT(*) FROM escalations WHERE epic_id = ?",
+            (roadmap_id,),
+        ).fetchone()[0]
+        assert esc_count == 0, f"expected zero escalation rows for {roadmap_id}, got {esc_count}"
     finally:
         conn.close()
 
@@ -443,11 +455,11 @@ async def test_schedule_churned_ids_accumulate_one_count_and_page_geometrically(
                 await handle.result()
 
     assert len(recorder.calls) == 2, recorder.calls
-    counts = [_failure_count_from(call.history_summary) for call in recorder.calls]
+    counts = [_failure_count_from(call.message) for call in recorder.calls]
     assert counts == [1, 3], recorder.calls
     for call in recorder.calls:
-        assert call.workflow_id == stable_id, call
-        assert FAILURE_MESSAGE in call.history_summary, call
+        assert call.roadmap_id == stable_id, call
+        assert FAILURE_MESSAGE in call.message, call
 
 
 async def test_recovery_under_a_fresh_id_pages_once_and_resets_count(
@@ -483,12 +495,12 @@ async def test_recovery_under_a_fresh_id_pages_once_and_resets_count(
         await handle.result()
 
     recovery_calls = [
-        call for call in recorder.calls if "recover" in call.history_summary.lower()
+        call for call in recorder.calls if "recover" in call.message.lower()
     ]
     assert len(recovery_calls) == 1, recorder.calls
     recovery = recovery_calls[0]
-    assert recovery.workflow_id == stable_id, recovery
-    assert "2" in recovery.history_summary, recovery
+    assert recovery.roadmap_id == stable_id, recovery
+    assert "2" in recovery.message, recovery
 
     # A second green run must not page again: the count was reset.
     async with run_roadmap_with_notifications(
@@ -526,10 +538,10 @@ async def test_nine_failures_pages_only_at_powers_of_three(
                 await handle.result()
 
     assert len(recorder.calls) == 3, recorder.calls
-    counts = [_failure_count_from(call.history_summary) for call in recorder.calls]
+    counts = [_failure_count_from(call.message) for call in recorder.calls]
     assert counts == [1, 3, 9], recorder.calls
     for call in recorder.calls:
-        assert call.workflow_id == stable_id, call
+        assert call.roadmap_id == stable_id, call
 
 
 async def test_two_corpora_keep_independent_counts_under_churned_ids(
@@ -569,12 +581,12 @@ async def test_two_corpora_keep_independent_counts_under_churned_ids(
             with pytest.raises(Exception):
                 await handle.result()
 
-    alpha_calls = [call for call in recorder.calls if call.workflow_id == alpha_id]
-    beta_calls = [call for call in recorder.calls if call.workflow_id == beta_id]
+    alpha_calls = [call for call in recorder.calls if call.roadmap_id == alpha_id]
+    beta_calls = [call for call in recorder.calls if call.roadmap_id == beta_id]
     assert len(alpha_calls) == 2, recorder.calls
     assert len(beta_calls) == 2, recorder.calls
-    assert [_failure_count_from(call.history_summary) for call in alpha_calls] == [1, 3]
-    assert [_failure_count_from(call.history_summary) for call in beta_calls] == [1, 3]
+    assert [_failure_count_from(call.message) for call in alpha_calls] == [1, 3]
+    assert [_failure_count_from(call.message) for call in beta_calls] == [1, 3]
 
     # Each corpus recovers independently under a fresh id.
     async with run_roadmap_with_notifications(
@@ -595,12 +607,128 @@ async def test_two_corpora_keep_independent_counts_under_churned_ids(
         await handle.result()
 
     alpha_recovery = [
-        call for call in recorder.calls if call.workflow_id == alpha_id and "recover" in call.history_summary.lower()
+        call for call in recorder.calls if call.roadmap_id == alpha_id and "recover" in call.message.lower()
     ]
     beta_recovery = [
-        call for call in recorder.calls if call.workflow_id == beta_id and "recover" in call.history_summary.lower()
+        call for call in recorder.calls if call.roadmap_id == beta_id and "recover" in call.message.lower()
     ]
     assert len(alpha_recovery) == 1, recorder.calls
     assert len(beta_recovery) == 1, recorder.calls
-    assert "4" in alpha_recovery[0].history_summary, alpha_recovery[0]
-    assert "4" in beta_recovery[0].history_summary, beta_recovery[0]
+    assert "4" in alpha_recovery[0].message, alpha_recovery[0]
+    assert "4" in beta_recovery[0].message, beta_recovery[0]
+
+
+def _assert_original_failure_in_chain(
+    exc: WorkflowFailureError, expected_type: str, expected_message: str
+) -> None:
+    """Walk the wrapped failure chain to find the original pass exception."""
+    current: BaseException | None = exc.cause
+    while current is not None:
+        text = str(current)
+        if expected_type in text and expected_message in text:
+            return
+        current = getattr(current, "cause", None)
+    raise AssertionError(
+        f"expected {expected_type}: {expected_message!r} in failure chain, got {exc!r}"
+    )
+
+
+# ============================================================================
+# US2 — notice grammar and exception preservation
+# ============================================================================
+
+
+async def test_failed_run_sends_notice_and_workflow_fails_with_original_exception(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US2-S1/S2 / FR-005/FR-007: a failed pass sends a notice and the workflow
+    execution still ends FAILED carrying the pass's own exception.
+    """
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    recorder = NotificationRecorder()
+
+    async with run_roadmap_with_notifications(
+        env, FailingCorpusWorld(), str(specs_root), recorder
+    ) as handle:
+        with pytest.raises(WorkflowFailureError) as exc_info:
+            await handle.result()
+
+    _assert_original_failure_in_chain(exc_info.value, "RuntimeError", FAILURE_MESSAGE)
+
+    assert len(recorder.calls) == 1, recorder.calls
+    notice = recorder.calls[0]
+    roadmap_id = roadmap_workflow_id(str(specs_root))
+    assert notice.roadmap_id == roadmap_id
+    assert FAILURE_MESSAGE in notice.message
+    assert "No answer by" not in notice.message
+
+
+async def test_recovery_leaves_zero_escalation_rows(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US2-S5 / FR-006: the recovery notice path writes no pending escalation row."""
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    recorder = NotificationRecorder()
+
+    async with run_roadmap_with_notifications(
+        env, FailingCorpusWorld(), str(specs_root), recorder
+    ) as handle:
+        with pytest.raises(Exception):
+            await handle.result()
+
+    async with run_roadmap_with_notifications(
+        env, RoadmapWorld(), str(specs_root), recorder
+    ) as handle:
+        await handle.result()
+
+    recovery_calls = [
+        call for call in recorder.calls if "recover" in call.message.lower()
+    ]
+    assert len(recovery_calls) == 1, recorder.calls
+
+    from factory.verify.store import connect
+
+    db_path = os.environ.get(VERIFICATION_DB_PATH_ENV)
+    assert db_path is not None
+    conn = connect(db_path)
+    try:
+        esc_count = conn.execute(
+            "SELECT COUNT(*) FROM escalations WHERE epic_id = ?",
+            (roadmap_workflow_id(str(specs_root)),),
+        ).fetchone()[0]
+        assert esc_count == 0, f"expected zero escalation rows, got {esc_count}"
+    finally:
+        conn.close()
+
+
+async def test_record_roadmap_failure_raise_preserves_original_exception(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US2-S4 / FR-008: a failure inside the reporting path does not replace the
+    pass's own failure: the workflow's recorded failure is still the original.
+    """
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    recorder = NotificationRecorder()
+
+    import factory.activities.notify_activities as notify_module
+
+    real_record_roadmap_failure = notify_module.record_roadmap_failure
+
+    @activity.defn(name="record_roadmap_failure")
+    async def raising_record_roadmap_failure(request: Any) -> Any:
+        raise RuntimeError("recording activity is broken")
+
+    notify_module.record_roadmap_failure = raising_record_roadmap_failure
+    try:
+        async with run_roadmap_with_notifications(
+            env, FailingCorpusWorld(), str(specs_root), recorder
+        ) as handle:
+            with pytest.raises(WorkflowFailureError) as exc_info:
+                await handle.result()
+    finally:
+        notify_module.record_roadmap_failure = real_record_roadmap_failure
+
+    assert len(recorder.calls) == 0, recorder.calls
+    _assert_original_failure_in_chain(
+        exc_info.value, "RuntimeError", FAILURE_MESSAGE
+    )

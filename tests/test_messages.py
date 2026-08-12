@@ -38,6 +38,8 @@ from factory.notify.messages import (
     escalation_keyboard,
     manual_intervention_notice,
     render_landing_history,
+    roadmap_failure_notice,
+    roadmap_recovery_notice,
 )
 from factory.verify.models import EscalationChoice, EscalationRecord
 
@@ -180,3 +182,55 @@ def test_no_credential_or_path_leaks_into_the_message() -> None:
     combined = summary + notice
     for secret in ("sk-", "LITELLM_MASTER_KEY", "TELEGRAM_BOT_TOKEN", ".factory/transcripts"):
         assert secret not in combined
+
+
+# --- roadmap failure/recovery notices (no buttons, no deadline) ---------------
+
+
+ROADMAP_ID = "roadmap-specs"
+FAILURE_TEXT = "the corpus reader is broken"
+
+
+def test_roadmap_failure_notice_carries_failure_text_and_count() -> None:
+    notice = roadmap_failure_notice(roadmap_id=ROADMAP_ID, failure_text=FAILURE_TEXT, count=3)
+
+    assert ROADMAP_ID in notice
+    assert FAILURE_TEXT in notice
+    assert "3 consecutive" in notice
+
+
+def test_roadmap_failure_notice_offers_nothing_and_names_no_deadline() -> None:
+    notice = roadmap_failure_notice(roadmap_id=ROADMAP_ID, failure_text=FAILURE_TEXT, count=1)
+
+    assert "No answer by" not in notice
+    assert "expires" not in notice.lower()
+    assert "Retry" not in notice
+    assert "Kill" not in notice
+    assert "button" not in notice.lower()
+
+
+def test_roadmap_recovery_notice_names_prior_count() -> None:
+    notice = roadmap_recovery_notice(roadmap_id=ROADMAP_ID, prior_count=4)
+
+    assert ROADMAP_ID in notice
+    assert "recovered" in notice.lower()
+    assert "4 consecutive" in notice
+
+
+def test_roadmap_recovery_notice_offers_nothing_and_names_no_deadline() -> None:
+    notice = roadmap_recovery_notice(roadmap_id=ROADMAP_ID, prior_count=2)
+
+    assert "No answer by" not in notice
+    assert "expires" not in notice.lower()
+    assert "Retry" not in notice
+    assert "Kill" not in notice
+    assert "button" not in notice.lower()
+
+
+def test_roadmap_failure_notice_is_not_a_keyboard_message() -> None:
+    # The renderer returns text only; there is no keyboard function for notices.
+    assert not hasattr(roadmap_failure_notice, "inline_keyboard")
+
+
+def test_roadmap_recovery_notice_is_not_a_keyboard_message() -> None:
+    assert not hasattr(roadmap_recovery_notice, "inline_keyboard")

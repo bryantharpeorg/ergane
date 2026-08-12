@@ -229,6 +229,35 @@ def manual_intervention_notice(record: EscalationRecord) -> str:
     )
 
 
+def roadmap_failure_notice(roadmap_id: str, failure_text: str, count: int) -> str:
+    """The notify-only message when a roadmap pass fails.
+
+    A scheduler pass failure is a fact to be told, not a decision to be asked:
+    there is no inline keyboard, no offered choice, no response deadline, and
+    no pending escalation row. The message carries the failure text verbatim
+    and the consecutive count; the durable fact lives in the `roadmap_failures`
+    record written before any send.
+    """
+    header = f"⚠️ Roadmap failure\nroadmap: {roadmap_id}\n\n"
+    count_word = "run" if count == 1 else "runs"
+    body = f"Roadmap {roadmap_id} failed ({count} consecutive {count_word}): {failure_text}"
+    return _compose(header, body, "")
+
+
+def roadmap_recovery_notice(roadmap_id: str, prior_count: int) -> str:
+    """The notify-only message when a roadmap pass succeeds after prior failures.
+
+    Recovery is a fact to be told, not a decision to be asked: there is no
+    inline keyboard, no offered choice, and no response deadline. The message
+    names the prior consecutive-failure count so the operator knows the
+    scheduler is healthy again.
+    """
+    header = f"✅ Roadmap recovery\nroadmap: {roadmap_id}\n\n"
+    count_word = "failure" if prior_count == 1 else "failures"
+    body = f"Roadmap {roadmap_id} recovered after {prior_count} consecutive {count_word}."
+    return _compose(header, body, "")
+
+
 def escalation_message(record: EscalationRecord) -> str:
     """The message an operator is paged with: what failed, and what silence does."""
     return _compose(

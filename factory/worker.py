@@ -124,6 +124,8 @@ ACTIVITIES = [
     # 009 — US4 roadmap failure reporting: count, throttle, and recover.
     notify_activities.record_roadmap_failure,
     notify_activities.reset_roadmap_failures,
+    # 031 — US2 roadmap failure/recovery notice: a fact, not a choice.
+    notify_activities.send_roadmap_notice,
     # 008 — the question send and its expiry: the escalation mirror with no
     # keyboard, whose Telegram message id is captured for reply routing (US2).
     # `expire_question` is the sibling of `expire_escalation`; the workflow does

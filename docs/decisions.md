@@ -5,6 +5,24 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-039 · A scheduler pass failure is a notice, not an escalation (decided)
+
+Decided 2026-08-11, recorded at landing of spec `031-scheduler-failure-notify` US2.
+The 009/004 operator-channel precedent is that a fact to be told (manual
+intervention, a question) uses a notice without buttons or deadline, while a
+decision to be asked uses an escalation. A roadmap pass failure is the former:
+the operator cannot retry or kill the scheduler from a Telegram button without
+walking into Temporal, and no expiry sweep could choose a safe default. The
+notice therefore carries the failure text verbatim and the consecutive count,
+with no inline keyboard, no offered choice, and no response deadline. The durable
+fact lives in the `roadmap_failures` record, written before any send is
+attempted, so a down notifier loses only the message. The workflow execution
+still ends FAILED in Temporal: the notice is best-effort, and a failure inside
+the reporting path is logged and discarded so the pass's own exception remains
+the recorded cause.
+
+---
+
 ## D-038 · Attempt keys are bracketed per iteration, including across a parked question (decided)
 
 Decided 2026-08-11, recorded at landing of spec `010-interpreter-bugfixes` US2. The

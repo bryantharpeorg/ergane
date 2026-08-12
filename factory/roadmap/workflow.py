@@ -81,11 +81,12 @@ with workflow.unsafe.imports_passed_through():
         RecordRoadmapFailureInput,
         RecordRoadmapFailureResult,
         ResetRoadmapFailuresInput,
-        SendEscalationInput,
+        SendRoadmapNoticeInput,
         record_roadmap_failure,
         reset_roadmap_failures,
-        send_escalation,
+        send_roadmap_notice,
     )
+    from factory.notify.messages import roadmap_failure_notice, roadmap_recovery_notice
     from factory.activities.roadmap_activities import (
         CloneInput,
         CountOpenInput,
@@ -115,7 +116,7 @@ with workflow.unsafe.imports_passed_through():
         compute_readiness,
         read_roadmap,
     )
-    from factory.verify.models import EscalationChoice, VerificationConfig
+    from factory.verify.models import VerificationConfig
     from factory.workgraph.models import EpicState
     from factory.workgraph.preflight import PreflightFinding
     from factory.workgraph.workflow import (
@@ -665,8 +666,15 @@ class RoadmapWorkflow:
             return await self._run_inner(request)
         except Exception as exc:
             # The loop body failed. Record and report before re-raising so the
-            # operator knows the scheduler is stuck (FR-009/010).
-            await self._report_run_failure(request, exc)
+            # operator knows the scheduler is stuck (FR-009/010/012). Reporting
+            # itself is best-effort: a failure in the reporter must not replace
+            # the pass's own exception (FR-008).
+            try:
+                await self._report_run_failure(request, exc)
+            except Exception as report_exc:
+                workflow.logger.exception(
+                    "roadmap failure reporting raised: %s", report_exc
+                )
             raise
 
     async def _run_inner(self, request: RoadmapInput) -> RoadmapStatus:
@@ -877,24 +885,32 @@ class RoadmapWorkflow:
     # --- US4 failure reporting (FR-009/010) -----------------------------------
 
     def _roadmap_failure_message(self, exc: Exception) -> str:
-        """The failure message, verbatim from the exception (FR-009).
+        """The failure message, verbatim from the exception (FR-009/012).
 
         A `FailureError` from an activity carries the useful detail on its
         cause; otherwise the exception's own string is used. No credential may
         be added here: the summary must contain only the failure's own text.
         """
         if isinstance(exc, FailureError) and exc.cause is not None:
-            return str(exc.cause)
+            # FailureError.__str__ prefixes the cause with its type; the `.message`
+            # attribute is the original text (US2-S1: carry the failure text verbatim).
+            cause = exc.cause
+            if isinstance(cause, FailureError):
+                return cause.message
+            return str(cause)
         return str(exc)
 
     async def _report_run_failure(self, request: RoadmapInput, exc: Exception) -> None:
         """Record the failure durably and page the operator before re-raising.
 
         The count of consecutive failures is kept in the verification store so
-        it survives workflow restarts. The escalation row is written before the
-        send is attempted (FR-010): a notifier that is down loses the message, not
-        the fact. Repetition is throttled so one message carries the count
-        instead of one message per failure (FR-009, acceptance 2).
+        it survives workflow restarts. The roadmap-failure record is written
+        before the send is attempted (FR-010): a notifier that is down loses the
+        message, not the fact. Repetition is throttled so one message carries the
+        count instead of one message per failure (FR-009, acceptance 2).
+
+        The page is a notice, not an escalation: no inline keyboard, no offered
+        choice, no response deadline, and no pending escalation row (US2).
         """
         roadmap_id = roadmap_workflow_id(request.specs_root)
         failure_text = self._roadmap_failure_message(exc)
@@ -912,21 +928,10 @@ class RoadmapWorkflow:
         if not _should_notify_failure(result.count):
             return
 
-        summary = (
-            f"Roadmap {roadmap_id} failed ({result.count} consecutive run"
-            + ("s" if result.count != 1 else "")
-            + f"): {failure_text}"
-        )
+        message = roadmap_failure_notice(roadmap_id, failure_text, result.count)
         await workflow.execute_activity(
-            send_escalation,
-            SendEscalationInput(
-                workflow_id=roadmap_id,
-                epic_id=roadmap_id,
-                node_id=_ROADMAP_NODE_ID,
-                history_summary=summary,
-                choices=[EscalationChoice.RETRY, EscalationChoice.KILL],
-                escalation_id=result.escalation_id,
-            ),
+            send_roadmap_notice,
+            SendRoadmapNoticeInput(roadmap_id=roadmap_id, message=message),
             **_NOTIFY,
         )
 
@@ -947,18 +952,10 @@ class RoadmapWorkflow:
             **_FAST,
         )
         if prior_count:
-            summary = f"Roadmap {roadmap_id} recovered after {prior_count} consecutive failure" + (
-                "s" if prior_count != 1 else ""
-            )
+            message = roadmap_recovery_notice(roadmap_id, prior_count)
             await workflow.execute_activity(
-                send_escalation,
-                SendEscalationInput(
-                    workflow_id=roadmap_id,
-                    epic_id=roadmap_id,
-                    node_id=_ROADMAP_NODE_ID,
-                    history_summary=summary,
-                    choices=[EscalationChoice.RETRY, EscalationChoice.KILL],
-                ),
+                send_roadmap_notice,
+                SendRoadmapNoticeInput(roadmap_id=roadmap_id, message=message),
                 **_NOTIFY,
             )
 
