@@ -12,7 +12,7 @@ state: draft
 #
 # Numbered 034: 032 is replay-determinism (48aa133, a concurrent session's),
 # 033 is ergane-install, 011–014 stay reserved for audit-triage epics.
-depends_on_landed: [003-merge-queue, 019-operator-cli]
+depends_on_landed: [003-merge-queue, 019-operator-cli, 040-manifest-rename]
 ---
 
 # Feature Specification: Ergane Init
@@ -118,8 +118,8 @@ never inside any repo. The slug is declared at init (defaulting to the
 directory name), must be unique across the registry, and is the token woven
 into workflow IDs, ledger rows, findings, and the per-repo memory-bank scope
 (recorded here when the control plane declares a memory backend). `ergane
-repos list` renders the registry with each entry's manifest status; `ergane
-repos rebuild` re-verifies every entry against its committed manifest and
+repo list` renders the registry with each entry's manifest status; `ergane
+repo rebuild` re-verifies every entry against its committed manifest and
 prunes entries whose repos are gone — the registry is a cache and must
 always be treatable as one.
 
@@ -127,9 +127,9 @@ always be treatable as one.
 enumerate managed repos; the committed manifest alone cannot be enumerated
 without an index of where repos live.
 
-**Independent Test**: after init in two test repos, `ergane repos list`
+**Independent Test**: after init in two test repos, `ergane repo list`
 shows both slugs with valid-manifest status; deleting one repo's directory
-and running `ergane repos rebuild` prunes exactly that entry; a third init
+and running `ergane repo rebuild` prunes exactly that entry; a third init
 declaring an already-taken slug is refused naming the holder.
 
 **Acceptance Scenarios**:
@@ -142,14 +142,14 @@ declaring an already-taken slug is refused naming the holder.
    slugs are the namespace token (one Temporal namespace, repo-scoped IDs)
    and collision would alias two repos' workflows.
 3. **Given** a registry entry whose repo has been moved or deleted,
-   **When** `ergane repos rebuild` runs, **Then** the dead entry is pruned
+   **When** `ergane repo rebuild` runs, **Then** the dead entry is pruned
    and reported, and live entries are untouched — rebuilding is always
    safe.
 4. **Given** the control plane declares a memory backend, **When** init
    completes, **Then** the repo's memory scope (its bank identity) is
    recorded on the registry entry, derived from the slug.
 5. **Given** a repo whose manifest was deleted from the tree after
-   registration, **When** `ergane repos list` runs, **Then** the entry
+   registration, **When** `ergane repo list` runs, **Then** the entry
    renders with its manifest-missing status rather than disappearing —
    the cache reports drift from the authority; it never hides it.
 
@@ -235,7 +235,7 @@ exactly that finding to fail with a detail naming the fix.
 
 ### User Story 5 - A repo can leave (Priority: P3)
 
-As an operator, `ergane repos forget <slug>` removes the registry entry
+As an operator, `ergane repo forget <slug>` removes the registry entry
 and nothing else. The manifest, the gitignore line, and `.ergane/` belong
 to the repo; removing them is the operator's own git work if they want it.
 An optional `--clean-runtime` additionally deletes the repo's `.ergane/`
@@ -257,7 +257,7 @@ always the repo's; `--export` makes the engine-side history theirs too. It
 is deliberately low priority — valuable at some point, blocking nothing
 now, and nothing else in this spec depends on it.
 
-**Independent Test**: after forget, `ergane repos list` no longer shows the
+**Independent Test**: after forget, `ergane repo list` no longer shows the
 slug, the repo's tree is byte-identical, and a fresh `ergane init .` can
 re-register it under the same slug. With `--export`, the directory contains
 the repo's findings, usage, and escalation records in the documented
@@ -330,7 +330,7 @@ formats, and two exports against an untouched engine are byte-identical.
   never inside any repo; each entry carries slug, absolute repo path, and
   derived scopes (memory bank identity when the control plane declares a
   backend). The committed manifest is the sole authority on membership; the
-  registry is a derived cache, and `ergane repos rebuild` MUST make
+  registry is a derived cache, and `ergane repo rebuild` MUST make
   re-deriving it safe at any time: verify every entry, prune dead ones,
   never touch live ones.
 - **FR-007**: Slugs MUST be unique across the registry; a collision is
@@ -353,9 +353,9 @@ formats, and two exports against an untouched engine are byte-identical.
   reachability (delegated to 033's probes as one summary finding). One
   finding per check, no masking, actionable detail, non-zero exit on any
   failure. A full `ergane init` run MUST end by executing this check.
-- **FR-011**: `ergane repos list` MUST render every entry with its
+- **FR-011**: `ergane repo list` MUST render every entry with its
   manifest status (valid, invalid, missing) rather than hiding drift;
-  `ergane repos forget <slug>` MUST remove only the registry entry, with
+  `ergane repo forget <slug>` MUST remove only the registry entry, with
   `--clean-runtime` additionally emptying `.ergane/` only after confirming
   no epic is running against the repo.
 - **FR-012**: Per-repo runtime state (worktrees, verification evidence,
@@ -363,7 +363,7 @@ formats, and two exports against an untouched engine are byte-identical.
   stores MUST NOT (033 FR-001's complement). Init MUST create that root and
   MUST NOT relocate existing data — migration of the current `.factory/`
   contents is the rename spec's scope.
-- **FR-013**: `ergane repos forget --export <dir>` MUST write the engine's
+- **FR-013**: `ergane repo forget --export <dir>` MUST write the engine's
   repo-scoped records — findings, usage, escalation history — to the named
   directory as one JSONL file per store plus a markdown digest, selected by
   the repo's slug, written outside `.ergane/`, containing no secret values,
@@ -396,8 +396,8 @@ formats, and two exports against an untouched engine are byte-identical.
   are produced by the same judgment the 003 dispatch path uses, verified by
   exercising both callers against one fixture set.
 - **SC-005**: The registry survives its own destruction: delete it, run
-  `ergane repos rebuild` seeded from the known repo paths (or re-init), and
-  `ergane repos list` converges to the same entries — demonstrating the
+  `ergane repo rebuild` seeded from the known repo paths (or re-init), and
+  `ergane repo list` converges to the same entries — demonstrating the
   cache is derived, not authoritative.
 - **SC-006**: A repo registered, forgotten, and re-registered under the
   same slug ends byte-identical in-tree across the cycle.
@@ -425,3 +425,27 @@ formats, and two exports against an untouched engine are byte-identical.
   rename spec).
 - Dispatch, scheduling, and everything after readiness — init ends at
   proven membership.
+
+## Work Graph
+
+```yaml
+US1:
+  depends_on: []
+  implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-012]
+US2:
+  depends_on: []
+  depends_on_merged: [US1]
+  implements: [FR-006, FR-007, FR-008, FR-011]
+US3:
+  depends_on: []
+  depends_on_merged: [US2]
+  implements: [FR-009]
+US4:
+  depends_on: []
+  depends_on_merged: [US2]
+  implements: [FR-010]
+US5:
+  depends_on: []
+  depends_on_merged: [US4]
+  implements: [FR-013]
+```
