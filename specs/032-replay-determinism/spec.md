@@ -1,5 +1,16 @@
 ---
-state: ready
+state: draft
+# PARKED pending re-scope 2026-08-12 ~7:52 PM CT (operator, on Bryan's word):
+# the operator diagnosis (finding interpreter/replay-test-nondeterminism-
+# under-load, recurrence 5, evidence chain in its notes) shows the incident's
+# error can only arise from a CORRUPTED recorded history — a phantom second
+# validate_target_repo schedule — with the Java time-skipping test server
+# under load as prime suspect. EpicWorkflow audited clean on every
+# nondeterminism axis. US1 as written mandates a production fix in
+# factory/workgraph/workflow.py (T006/T007), which the evidence says does not
+# exist there; US2/US3 chain on it. DO NOT flip ready without re-scoping —
+# see RESCOPE-2026-08-12.md in this directory for the replacement story shape
+# and the confirmation still pending (one discriminator-armed CI capture).
 # Re-split into three stories 2026-08-12 after the epic was killed at attempt 4
 # (see the note above US1 — the old story was unsatisfiable, not merely hard).
 # spec.md, plan.md and tasks.md were all brought forward together and agree;
