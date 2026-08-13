@@ -2703,6 +2703,24 @@ async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None
     keys_before = [(r.node_id, r.attempt) for r in script.key_requests]
 
     try:
+        # 032 diagnosis discriminator: the audit showed the incident's error
+        # string can only arise from a history that carries a SECOND
+        # validate_target_repo schedule at a teardown position (the workflow
+        # emits it exactly once, before any node dispatches). Assert on the
+        # recorded history first — if this fires, the corruption is a phantom
+        # re-execution the test server accepted; if the Replayer fails while
+        # this passes, the corruption is a splice. Either way the dump below
+        # captures the history.
+        from temporalio.api.enums.v1 import EventType
+
+        scheduled = [
+            e.activity_task_scheduled_event_attributes.activity_type.name
+            for e in history.events
+            if e.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+        ]
+        assert scheduled.count("validate_target_repo") == 1, (
+            f"phantom validate_target_repo in recorded history: {scheduled}"
+        )
         await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
     except BaseException:
         # 032 repro capture (scratch branch only): a diverging history is the
