@@ -585,6 +585,7 @@ def test_the_attempt_context_carries_exactly_the_adapters_inputs() -> None:
         "model_alias",
         "session_id",
         "timeout_s",
+        "context_window",
     }
 
 

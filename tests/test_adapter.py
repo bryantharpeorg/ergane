@@ -96,6 +96,7 @@ from tests.stub_agent import (
     STUB_AGENT_PATH,
     TRANSCRIPT_END,
     TRANSCRIPT_START,
+    UNRECOGNIZED_MODEL_WARNING,
     install_as,
     last_invocation,
     session_transcript_path,
@@ -476,6 +477,33 @@ async def test_no_worker_credential_reaches_the_agent(
     assert "EDITOR" not in env
     assert MASTER_KEY not in env.values()
     assert BOT_TOKEN not in env.values()
+
+
+async def test_a_declared_context_window_suppresses_the_unrecognized_model_warning(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """US4-S5: when the persona declares a window, the CLI stops assuming 200,000.
+
+    The factory cannot discover the real window (the proxy reports null for every
+    custom alias), so the declaration is the only signal the CLI receives. The
+    stub stands in for the CLI: it emits the warning when no window is declared
+    and omits it when one is, so the archived stdout proves the env var did its
+    job.
+    """
+    write_control(stub_home_dir)
+
+    await adapter.run_attempt(attempt(context_window=128000), factory_root=factory_root)
+
+    log = stdout_log(factory_root)
+    assert BANNER in log
+    assert "200,000" not in log
+    assert UNRECOGNIZED_MODEL_WARNING not in log
+    assert last_invocation(worktree).env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "128000"
 
 
 def test_attempt_env_omits_a_passthrough_the_worker_does_not_set(

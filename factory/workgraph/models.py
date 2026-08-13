@@ -207,6 +207,9 @@ class ResolvedNode:
     models: list[str]
     write_scope: str
     timeout_s: int
+    #: Optional context-window tokens the persona declares for its model.
+    #: None means undeclared; the adapter then emits nothing (FR-010).
+    context_window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -309,6 +312,9 @@ class AttemptContext:
     model_alias: str
     session_id: str
     timeout_s: int
+    #: Optional context-window tokens the persona declares for its model.
+    #: None means the adapter emits no context-window variable (FR-010).
+    context_window: int | None = None
 
 
 @dataclass(frozen=True)

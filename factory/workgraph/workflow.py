@@ -1248,6 +1248,7 @@ class EpicWorkflow:
                         model_alias=resolved.model_alias,
                         session_id=str(workflow.uuid4()),
                         timeout_s=resolved.timeout_s,
+                        context_window=resolved.context_window,
                     ),
                 )
                 # `None` is the attempt the kill cancelled: the adapter re-raises on
@@ -2348,6 +2349,7 @@ class EpicWorkflow:
                     model_alias=resolved.model_alias,
                     session_id=str(workflow.uuid4()),
                     timeout_s=resolved.timeout_s,
+                    context_window=resolved.context_window,
                 ),
             )
             if adapter_result is None or self._kill_requested:
