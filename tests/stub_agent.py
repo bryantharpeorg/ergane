@@ -97,6 +97,13 @@ ATTEMPT_ARCHIVE_ENV = "ATTEMPT_ARCHIVE"
 #: scripts no output of its own.
 BANNER = "stub-agent: launched"
 
+#: Emitted when the adapter has not declared a context window, standing in for
+#: the agent CLI's own unrecognized-model warning (US4-S5). Distinctive text
+#: so the absence assertion is unambiguous.
+UNRECOGNIZED_MODEL_WARNING = (
+    "Warning: model not recognized, assuming 200,000-token context window"
+)
+
 #: Appended after a clean run, so a transcript archived from a killed attempt is
 #: distinguishable from a completed one by line count alone.
 TRANSCRIPT_START = "start"
@@ -401,6 +408,10 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, on_term)
 
     print(BANNER, flush=True)
+    if "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in os.environ:
+        # US4-S5: the CLI warns when it must assume a window; the factory
+        # suppresses this by declaring one per persona.
+        print(UNRECOGNIZED_MODEL_WARNING, flush=True)
     if control.stdout:
         print(control.stdout, flush=True)
     if control.stderr:
