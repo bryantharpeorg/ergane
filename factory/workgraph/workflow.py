@@ -103,6 +103,7 @@ it (SC-001), and what makes `pause` durable without a line of persistence code
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Sequence
@@ -1504,14 +1505,35 @@ class EpicWorkflow:
                 persona = (
                     DEBUGGER_PERSONA if action == NextAction.DEBUGGER else node.persona
                 )
+            except asyncio.CancelledError:
+                # SDK eviction/cancellation: the worker is reclaiming this workflow
+                # coroutine. Do not emit any further commands — `teardown_attempt`
+                # must not run because the eviction path is not a normal node
+                # ending and the SDK will not record new history anyway
+                # (FR-002). Re-raise immediately so Python does not report a
+                # swallowed cancellation that later awaits in `finally`.
+                raise
             finally:
                 # Every key that is opened for an attempt is closed on every exit
                 # (FR-007), including raises and the kills/questions that break the
                 # loop. The bracket is per-iteration: one mint, one teardown. A
                 # parked question closes its key before entering the long wait so
                 # the workflow can be cancelled while parked without leaking it.
+                #
+                # The exception-interpreter excludes `asyncio.CancelledError` and
+                # `GeneratorExit` from this finally: when the SDK evicts the workflow
+                # coroutine, or when a suspended coroutine is garbage-collected, the
+                # finally block still executes during finalization, and any `await`
+                # here (including `workflow.execute_activity`) can produce an unraisable
+                # `GeneratorExit` warning and emit commands the eviction path must not
+                # emit (FR-002).
                 if not teardown_done:
-                    await self._teardown(lease, termination, record.last_snapshot)
+                    if sys.exc_info()[1] is not None and isinstance(
+                        sys.exc_info()[1], (asyncio.CancelledError, GeneratorExit)
+                    ):
+                        teardown_done = True
+                    else:
+                        await self._teardown(lease, termination, record.last_snapshot)
 
         if action == NextAction.PASSED:
             # Verified — the fact FR-009's `depends_on` edges wait on, and the
@@ -1652,12 +1674,22 @@ class EpicWorkflow:
         attempt ended once it was told to stop is not a fact the epic turns on,
         so every ending is swallowed here and the node is closed out on the
         operator's decision instead.
+
+        If the SDK itself is evicting this workflow, the cancellation propagates
+        as `asyncio.CancelledError`. Swallowing it would leave a coroutine alive
+        long enough to `await` in a `finally` block, which Python reports as an
+        unraisable `GeneratorExit` and which can emit a teardown command after the
+        SDK has already reclaimed the worker slot. Re-raising lets the SDK close
+        the workflow coroutine cleanly without reaching any further awaits
+        (FR-001).
         """
         agent.cancel()
         try:
             await agent
-        except (ActivityError, asyncio.CancelledError):
+        except ActivityError:
             pass
+        except asyncio.CancelledError:
+            raise
 
     async def _teardown(
         self,
