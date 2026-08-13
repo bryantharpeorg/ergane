@@ -5,6 +5,35 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-040 · The agent's `HOME` is the factory's per-node home, not the operator's (decided)
+
+Decided 2026-08-12, recorded at landing of spec `018-agent-home-isolation` US3.
+The adapter stopped inheriting the worker's `HOME` because that surface carried the
+operator's Claude Code session state (`~/.claude.json`, projects, plugins) into every
+agent child. The fix is not to deny the child a home, but to give it one the factory
+owns.
+
+1. **Per-node home under `FACTORY_ROOT`.** `factory.workgraph.adapter.home_path`
+   returns `.factory/homes/<epic>/<node>`, keyed like the worktree and the pid file.
+   The directory is created at attempt start; retries share one home, and concurrent
+   nodes of one epic never share one. The home is passed to the child as `HOME`
+   through `attempt_env`, built from `AttemptContext.home_path`; `HOME` is removed
+   from `PASSTHROUGH_ENV`, so it is a constructed value, not an inherited one.
+
+2. **Seeded from factory constants only.** The only value the factory writes into
+   the home is git identity (`user.name`/`user.email` from the existing salvage
+   constants). The CLI writes its own `.claude.json`, plugins, projects, sessions
+   and backups from fresh defaults on a bare writable home, so the factory does not
+   copy anything out of the operator's home.
+
+3. **Boundary: this isolates what an agent loads, not what it can reach.** There is
+   no filesystem sandbox; `--dangerously-skip-permissions` is unchanged; and an agent
+   that goes looking can still read anything the worker user can read, including files
+   outside its home. Filesystem confinement remains the open scope of
+   `hardening/agent-sandbox`.
+
+---
+
 ## D-039 · A scheduler pass failure is a notice, not an escalation (decided)
 
 Decided 2026-08-11, recorded at landing of spec `031-scheduler-failure-notify` US2.
