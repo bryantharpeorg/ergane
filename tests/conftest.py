@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +39,13 @@ from typing import Any, Callable, Iterator
 import httpx
 import pytest
 
+from factory.activities.agent_activities import FACTORY_ROOT_ENV
+from factory.activities.notify_activities import (
+    TELEGRAM_BOT_TOKEN_ENV,
+    TELEGRAM_CHAT_ID_ENV,
+)
+from factory.activities.usage_activities import LEDGER_PATH_ENV
+from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
 from tests.target_repo import add_worktree, build_target_repo
 
 FAKE_PROXY_URL = "http://litellm.test"
@@ -473,6 +481,67 @@ class FakeLiteLLM:
             status,
             json={"error": {"message": message, "code": str(status)}},
         )
+
+
+# --- suite-wide store isolation ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class TelegramCredentials:
+    """Values the session fixture captured from the shell before deleting them.
+
+    Tests that need real credentials must request this fixture explicitly.
+    """
+
+    token: str | None
+    chat_id: str | None
+
+
+# Module-level stash populated by `_isolated_test_store` before it deletes the
+# env vars.  It is the only place the original values survive.
+_telegram_credential_stash: dict[str, str | None] = {"token": None, "chat_id": None}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_test_store(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """Redirect all state-locating env variables into pytest's tmp base.
+
+    Runs before any test body so the operator's exports cannot reach a test.
+    Overwrites, never ``setdefault`` — the shell must lose.
+    """
+    # Capture first, delete second: the live smoke reads the stash to opt in.
+    _telegram_credential_stash["token"] = os.environ.get(TELEGRAM_BOT_TOKEN_ENV)
+    _telegram_credential_stash["chat_id"] = os.environ.get(TELEGRAM_CHAT_ID_ENV)
+
+    base = tmp_path_factory.getbasetemp()
+    patch = pytest.MonkeyPatch()
+
+    # Absolute by construction; worktree.py hands this to `git -C ... worktree add`.
+    patch.setenv(FACTORY_ROOT_ENV, str(base / "session-factory-root"))
+    patch.setenv(VERIFICATION_DB_PATH_ENV, str(base / "session-verification.db"))
+    patch.setenv(LEDGER_PATH_ENV, str(base / "session-ledger.db"))
+    patch.delenv(TELEGRAM_BOT_TOKEN_ENV, raising=False)
+    patch.delenv(TELEGRAM_CHAT_ID_ENV, raising=False)
+
+    try:
+        yield
+    finally:
+        patch.undo()
+
+
+@pytest.fixture(scope="session")
+def telegram_credentials() -> TelegramCredentials:
+    """The Telegram credentials the session fixture removed from env.
+
+    Request this explicitly to consume real credentials deliberately; tests that
+    do not request it see an env with no Telegram credentials.
+    """
+    return TelegramCredentials(
+        token=_telegram_credential_stash.get("token"),
+        chat_id=_telegram_credential_stash.get("chat_id"),
+    )
 
 
 # --- fixtures --------------------------------------------------------------
