@@ -25,12 +25,12 @@ Supersedes 032's US1. Evidence chain:
    discriminator assertion and dump-on-failure block that are already on
    the capture branches (cherry-pick from `repro/032-history-capture-pr45`,
    commits e9af024/ec2ab64) (FR-004).
-4. `tests/fixtures/replay-032/` — the ten dumped histories. They are staged
-   at `specs/038-replay-eviction-leak/fixtures/` (operator downloaded them
-   from run 31667012586's artifacts); copy them into
-   `tests/fixtures/replay-032/` as part of this story's diff so the suite
-   owns them. If the staged copies are missing, ask via the operator
-   channel rather than skipping FR-003.
+4. `tests/fixtures/replay-032/` — the ten dumped histories, ALREADY LANDED
+   on the base branch as operator data (a10bea8). Your diff adds only the
+   parametrised test that reads them. Do not copy or re-commit the JSON
+   files: a 2.3MB diff overflows the judge's window and truncation reads as
+   missing work — the first run of this story produced correct code and
+   died on exactly that (finding: verify/judge-cannot-see-a-large-diff).
 
 ## Traps
 

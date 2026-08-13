@@ -14,12 +14,15 @@ docstring states why, so the judge reads intent, not a fail-first violation).
 
 - [ ] T001 [US1] Read `_cancel()` (workflow.py ~1655), `_run_node`'s unwind
       path (~1236/1514), `_teardown` (~1676), and the current
-      `test_replay_dispatches_nothing_twice`. Confirm the ten fixtures are
-      present at `specs/038-replay-eviction-leak/fixtures/` (ask via the
-      operator channel if absent — do not skip US1-S1). No code yet; the
-      commit is allowed to be empty.
-- [ ] T002 [US1] US1-S1: fixture-replay test copying the ten histories into
-      `tests/fixtures/replay-032/` and replaying each against `EpicWorkflow`.
+      `test_replay_dispatches_nothing_twice`. Confirm the ten fixture files
+      are ALREADY ON YOUR BASE at `tests/fixtures/replay-032/` (landed
+      operator-side at a10bea8; ask via the operator channel if absent —
+      do not skip US1-S1). No code yet; the commit is allowed to be empty.
+- [ ] T002 [US1] US1-S1: a parametrised test replaying each history in
+      `tests/fixtures/replay-032/` against `EpicWorkflow`. Do NOT copy,
+      move, or re-commit the fixture files themselves — they are already in
+      the tree, and a diff that carries them again is unreviewable (2.3MB
+      blinds the judge; a previous run of this story died exactly there).
       These replay green with today's code — the test is a standing guard
       whose docstring says so; it fails only if a future change breaks
       replay compatibility.
