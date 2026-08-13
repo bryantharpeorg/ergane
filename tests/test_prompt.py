@@ -718,3 +718,29 @@ def test_landing_evidence_with_old_fields_only_renders_unchanged() -> None:
     assert "CHECKS_FAILED" in section
     assert "Failing check" not in section
     assert "log unavailable" not in section.lower()
+
+
+def test_base_unmoved_fact_is_rendered_when_present() -> None:
+    """US3-S6: a sync that merged in nothing refutes the stale-base hypothesis."""
+    evidence = LandingEvidence(
+        outcome=QueueOutcome.CHECKS_FAILED,
+        queue_history=(
+            ObservedOutcome(at="2026-08-06T10:10:00Z", outcome=QueueOutcome.CHECKS_FAILED),
+        ),
+        conflicted_files=(),
+        base_unmoved=True,
+    )
+    prompt = build(landing_evidence=evidence)
+
+    section = section_of(prompt, LANDING_SECTION)
+    assert "base was not stale" in section.lower()
+    assert "stale" in section.lower()
+
+
+def test_base_unmoved_fact_is_absent_when_false() -> None:
+    """US3-S6: without the flag, the prompt does not invent the sentence."""
+    evidence = checks_failed_evidence()
+    prompt = build(landing_evidence=evidence)
+
+    section = section_of(prompt, LANDING_SECTION)
+    assert "base was not stale" not in section.lower()

@@ -129,6 +129,9 @@ class Landing:
     recovery_cycles: int = 0
     state: LandingState = LandingState.PR_OPEN
     check_evidence: tuple[CheckFailure, ...] = ()
+    #: US3: the commit the branch was pushed with when it was last enqueued.
+    #: Default `None` keeps pre-spec histories replayable (FR-009).
+    enqueued_tip: str | None = None
 
 
 @dataclass(frozen=True)
