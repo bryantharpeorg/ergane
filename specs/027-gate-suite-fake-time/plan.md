@@ -134,6 +134,35 @@ Grep for the construct, never the number: `heartbeat_then_block`,
 `last_heartbeat_details`, `_edges_satisfied`,
 `def test_no_epic_ever_dispatches`, `max_heartbeat_throttle_interval`.
 
+### Trap 9 — US2 already died four times here: the judge sees the diff and nothing else
+
+This story was dispatched once before (2026-08-13) and its node was killed after
+**four attempts, gates green every time** (191–192s, exit 0). Every attempt
+failed the same four judge findings, and every finding said a variant of "this
+evidence is not in the diff." The judge is handed the diff and the criteria
+snapshot — not the base tree, not your commit message, not your terminal
+(Constitution VIII / D-037).
+
+What that means for you, concretely:
+
+- **Paste, never describe.** "Measured 12.1s in a clean env" is a claim the
+  judge must take on faith and will not. The pasted `--durations` line, with
+  the command that produced it, is evidence.
+- **One home for all of it.** FR-004 confines this story to `tests/`, so the
+  evidence cannot go in a `MEASUREMENTS.md` under `specs/` — that would be
+  out of scope. Put every measurement in **one comment block directly above
+  the sweep test** in `tests/test_workgraph_sweep.py`. Three previous attempts
+  failed to find this path; it is now stated rather than left to inference.
+- **The mutation transcript is the deliverable, not the mutation.** Scenario 3
+  wants `_edges_satisfied` broken, the test observed red, then reverted. The
+  revert erases the proof, so the *pasted red output* (assertion text and test
+  id) followed by the *pasted green line* after revert is what the diff must
+  carry.
+- **Four things must appear in that block**: the per-epic attribution table,
+  this test's before/after `--durations` lines, the mutation's red-then-green
+  transcript, and the full-suite before/after totals with the
+  `--durations=30` head.
+
 ## Approach
 
 ### US1 — advance the clock the activity is holding, or shrink around the floor

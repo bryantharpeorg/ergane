@@ -1,5 +1,15 @@
 ---
 state: ready
+# US1 LANDED 2026-08-13 at a564b8c (PR #51, first attempt) — measured by the
+# operator: the two heartbeat tests went 60.26s/60.18s -> 12.14s/12.09s.
+# US2 was KILLED the same day after FOUR attempts, gates green every time
+# (191-192s, exit 0), on criteria no diff could satisfy: S1 named the commit
+# message, S3 required a mutation that must be reverted before commit. Bryan
+# authorized handling the escalation; resolved KILL 14:57Z. US2's scenarios,
+# FR-005, FR-008, SC-001 and SC-003 were rewritten to Constitution VIII
+# (D-037) — evidence pasted into one comment block above the test, the only
+# home FR-004's tests-only scope allows — and plan.md trap 9 now states that
+# path outright. Relaunched the same morning; US1 is landed and derives out.
 # Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
 # paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
 # once unpaused.
@@ -129,31 +139,38 @@ below the 60.81s baseline.
 
 **Acceptance Scenarios**:
 
+Every scenario below is decided from the diff alone (Constitution VIII). The
+evidence lives in **one comment block directly above the sweep test** in
+`tests/test_workgraph_sweep.py` — FR-004 keeps this story inside `tests/`, so
+that block is the only legal home for it. Paste tool output verbatim, command
+line included; a described measurement is not a recorded one.
+
 1. **Given** the un-restructured sweep test instrumented with per-epic
-   wall-clock timing, **When** it runs once in a clean env, **Then** the
-   measured attribution accounts for at least 90% of the test's wall clock,
-   names which of the five epics pay real time and through which mechanism,
-   and is recorded in the story's commit message and in a comment above the
-   test — and where the measurement contradicts plan.md's leads, the recorded
-   attribution says so: the tree wins.
-2. **Given** the restructured sweep test in a clean env, **When** it runs,
-   **Then** all five epic shapes still run; each epic still ends in its
-   expected per-node state map; `script.observed` is non-empty for every
-   epic; the mid-flight loop still asserts every dispatched node's
-   dependencies were `verified` at dispatch and the converse final loop still
-   runs; `"overrun"` and `"unscripted"` still never appear — and
-   `--durations` reports the test at 15s or less (target ≤5s), down from a
-   recorded 60.81s baseline.
+   wall-clock timing, **When** it runs once in a clean env, **Then** the diff's
+   comment block carries a per-epic attribution table accounting for at least
+   90% of the test's wall clock, naming which of the five epics pay real time
+   and through which mechanism — and where the measurement contradicts
+   plan.md's leads, the block says so: the tree wins.
+2. **Given** the restructured sweep test, **When** the diff is read, **Then**
+   all five epic shapes still run; each epic still ends in its expected
+   per-node state map; `script.observed` is non-empty for every epic; the
+   mid-flight loop still asserts every dispatched node's dependencies were
+   `verified` at dispatch and the converse final loop still runs; `"overrun"`
+   and `"unscripted"` still never appear — and the comment block carries the
+   **pasted `--durations` line** for this test showing 15s or less (target
+   ≤5s) beside its recorded 60.81s baseline.
 3. **Given** `_edges_satisfied` temporarily mutated in the worktree so the
    pass-edge conjunct treats an unverified dependency as satisfied (mutation
-   never committed), **When** the restructured sweep test runs, **Then** it
-   FAILS — the sweep still bites on the exact defect class it exists to catch
-   — and passes again once the mutation is reverted.
-4. **Given** US1 and US2 both merged, **When** the full suite runs in a clean
-   env as `uv run pytest -q --durations=30`, **Then** none of the three tests
-   this spec names appears at 15s or more, no test in the suite reports 15s
-   or more, and the before/after wall-clock totals are recorded — from the
-   ~5m45s baseline toward the ~2m40s target.
+   never committed), **When** the restructured sweep test runs, **Then** the
+   comment block carries the **pasted failure output** of that run — assertion
+   text and test id — followed by the **pasted passing line** after revert.
+   The mutation stays uncommitted; its transcript is the artifact, and the
+   transcript is what this scenario is decided on.
+4. **Given** US1 landed and US2 applied, **When** the full suite runs in a
+   clean env as `uv run pytest -q --durations=30`, **Then** the comment block
+   carries the **pasted summary line** (total wall clock) before and after,
+   plus the pasted `--durations=30` head showing no test at 15s or more —
+   from the ~5m45s baseline toward the ~2m40s target.
 
 ## Functional Requirements
 
@@ -176,9 +193,10 @@ below the 60.81s baseline.
   under `factory/` changes, `factory.yaml` does not change, and no dependency
   is added.
 - **FR-005**: The sweep story MUST produce a measured per-epic attribution of
-  the test's real time before restructuring it, and MUST record that
-  attribution where an operator can find it (commit message and a comment
-  above the test).
+  the test's real time before restructuring it, and MUST record it in the
+  comment block above the test. No requirement of this spec may name the
+  commit message: the judge is given the diff and never reads one
+  (Constitution VIII / D-037).
 - **FR-006**: The restructured sweep test MUST keep all five epic shapes, the
   per-epic expected end-state assertions, the non-vacuity assertion on
   `script.observed`, and both dependency-assertion loops.
@@ -194,19 +212,22 @@ below the 60.81s baseline.
   suite run with the operator env exported writes rows into the live evidence
   store and pages the operator
   (`hardening/test-suite-writes-to-the-live-evidence-store`). Before/after
-  numbers MUST be recorded, not just claimed.
+  numbers MUST appear in the comment block as **pasted tool output including
+  the command line** — a prose claim is not a record, and the pasted command
+  line is what evidences the clean env.
 
 ## Success Criteria
 
 - **SC-001**: Full-suite wall clock in a clean env drops from the recorded
   ~5m45s baseline toward ~2m40s, with the actual before and after figures
-  recorded in the landing stories' commit messages.
+  pasted into the comment block above the sweep test.
 - **SC-002**: `uv run pytest -q --durations=30` in a clean env reports no test
   at 15s or more; the three tests this spec names each run at 15s or less
   (targets: ≤3s, ≤3s, ≤5s).
 - **SC-003**: Each of the three tests demonstrably still bites: every mutation
   scenario (US1 scenarios 3-4, US2 scenario 3) was observed red and then
-  reverted, with the red runs recorded in commit messages.
+  reverted, with the red runs pasted into the comment block above the test
+  they exercise.
 - **SC-004**: The combined diff of both stories touches only files under
   `tests/`.
 
