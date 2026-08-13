@@ -32,10 +32,12 @@ from typing import Any
 
 from telegram import InlineKeyboardMarkup
 
+from factory.mergequeue.gh import CheckFailure
 from factory.mergequeue.models import Landing, LandingState, ObservedOutcome, QueueOutcome
 from factory.notify.messages import (
     callback_data,
     escalation_keyboard,
+    escalation_message,
     manual_intervention_notice,
     render_landing_history,
     roadmap_failure_notice,
@@ -122,6 +124,24 @@ def test_history_with_no_outcomes_still_says_something() -> None:
     assert summary.strip() != ""
 
 
+def test_history_names_the_failing_checks_on_a_checks_failed_line() -> None:
+    """US2-S2: the queue history tells the operator which required check failed."""
+    landing = make_landing(
+        outcomes=(
+            ObservedOutcome(
+                at="2026-08-06T10:10:00Z",
+                outcome=QueueOutcome.CHECKS_FAILED,
+                failing_checks=("lint", "typecheck"),
+            ),
+        ),
+    )
+
+    summary = render_landing_history(landing)
+
+    assert "lint" in summary
+    assert "typecheck" in summary
+
+
 # --- the landing escalation's buttons (FR-007) -------------------------------
 
 
@@ -149,6 +169,70 @@ def test_landing_escalation_buttons_use_the_existing_callback_grammar() -> None:
         assert data.startswith("esc:")
         assert ESCALATION_ID in data
         assert len(data.encode("utf-8")) <= 64  # R11's hard ceiling
+
+
+# --- the landing escalation message itself (US2-S2, FR-008) -----------------
+
+
+def test_escalation_message_carries_check_name_url_and_failing_test_line() -> None:
+    """FR-008: the Telegram message itself answers 'what actually happened'."""
+    landing = make_landing(
+        outcomes=(
+            ObservedOutcome(
+                at="2026-08-06T10:10:00Z",
+                outcome=QueueOutcome.CHECKS_FAILED,
+                failing_checks=("test",),
+            ),
+        ),
+    )
+    record = make_record(
+        history_summary=render_landing_history(landing),
+        check_evidence=(
+            CheckFailure(
+                name="test",
+                url="https://github.com/acme/target/actions/runs/101/job/202",
+                log_tail="FAILED tests/test_calc.py::test_add\nassert 1 == 2\n",
+                note="",
+            ),
+        ),
+    )
+
+    message = escalation_message(record)
+
+    assert "test" in message
+    assert "https://github.com/acme/target/actions/runs/101/job/202" in message
+    assert "FAILED tests/test_calc.py::test_add" in message
+    assert "No answer by" in message
+
+
+def test_escalation_message_states_absence_when_log_is_unavailable() -> None:
+    """US2-S3: a failed fetch still names the check and URL in the page."""
+    landing = make_landing(
+        outcomes=(
+            ObservedOutcome(
+                at="2026-08-06T10:10:00Z",
+                outcome=QueueOutcome.CHECKS_FAILED,
+                failing_checks=("test",),
+            ),
+        ),
+    )
+    record = make_record(
+        history_summary=render_landing_history(landing),
+        check_evidence=(
+            CheckFailure(
+                name="test",
+                url="https://github.com/acme/target/actions/runs/101/job/202",
+                log_tail="",
+                note="log unavailable: gh refused the fetch",
+            ),
+        ),
+    )
+
+    message = escalation_message(record)
+
+    assert "test" in message
+    assert "https://github.com/acme/target/actions/runs/101/job/202" in message
+    assert "log unavailable" in message.lower() or "could not fetch" in message.lower()
 
 
 # --- the manual-intervention notice (no buttons) -----------------------------

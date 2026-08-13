@@ -189,7 +189,7 @@ def test_a_landing_round_trips_as_json() -> None:
         pr_url="https://github.com/example/target/pull/42",
         enqueued_at="2026-08-06T10:00:00Z",
         outcomes=(
-            ObservedOutcome(at="2026-08-06T10:01:00Z", outcome=QueueOutcome.CHECKS_FAILED),
+            ObservedOutcome(at="2026-08-06T10:01:00Z", outcome=QueueOutcome.CHECKS_FAILED, failing_checks=("lint",)),
             ObservedOutcome(at="2026-08-06T10:05:00Z", outcome=QueueOutcome.CONFLICT),
         ),
         recovery_cycles=1,
@@ -204,6 +204,27 @@ def test_a_landing_round_trips_as_json() -> None:
     assert isinstance(rebuilt.state, LandingState)
     assert isinstance(rebuilt.outcomes, tuple)
     assert all(isinstance(o.outcome, QueueOutcome) for o in rebuilt.outcomes)
+
+
+def test_observed_outcome_failing_checks_defaults_to_empty_tuple() -> None:
+    """Pre-spec histories deserialize without a failing_checks field (trap 5)."""
+    outcome = ObservedOutcome(at="2026-08-06T10:01:00Z", outcome=QueueOutcome.CHECKS_FAILED)
+
+    assert outcome.failing_checks == ()
+
+
+def test_observed_outcome_with_failing_checks_round_trips() -> None:
+    """The new field survives the Temporal converter."""
+    outcome = ObservedOutcome(
+        at="2026-08-06T10:01:00Z",
+        outcome=QueueOutcome.CHECKS_FAILED,
+        failing_checks=("lint", "typecheck"),
+    )
+
+    rebuilt = _reconstruct(ObservedOutcome, outcome)
+
+    assert rebuilt == outcome
+    assert isinstance(rebuilt.failing_checks, tuple)
 
 
 def test_a_landing_with_no_pr_yet_round_trips() -> None:
