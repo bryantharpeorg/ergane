@@ -1,5 +1,26 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 19:45Z by the operator. US1 78fd9ac243a4 (PR #58),
+# US2 59842ebd785c (PR #59), US3 82fa5dd2e2cc (PR #60) — all three observed on
+# ergane-buildout, and all three passed gate and judge on ATTEMPT 1. Dispatched
+# by hand with `ergane build start`, because the roadmap is wedged
+# (roadmap/success-path-reads-environ-inside-the-workflow).
+# The pre-dispatch refinement (ae1d795) is why: it re-verified every anchor,
+# corrected trap 3 (whose instruction had gone WRONG, not merely stale — the
+# live-guard template is now a socket probe, not an exception list), added
+# trap 10 (paste the proof), and rewrote US1's criteria so a timing claim is
+# decided by a committed artifact rather than a test run the judge cannot see.
+# Operator verified each story independently rather than trusting the gate:
+#   US1 — re-ran the four converted tests 10x, 10/10, timings matching the
+#         pasted tallies to a tenth of a second.
+#   US3 — MUTATION TEST of the highest-risk trap: swapped the `^{tree}`
+#         comparison for a sha comparison (the wrong fix trap 6 predicted,
+#         which would ship dead) and confirmed
+#         test_trees_identical_true_when_commits_differ_but_tree_matches fails.
+#         The guard bites.
+# Two follow-up findings filed against US2's diff, both narrow:
+# verify/escalation-record-annotation-cannot-resolve and
+# verify/escalation-check-evidence-is-dropped-on-store-read.
 # Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
 # paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
 # once unpaused.
