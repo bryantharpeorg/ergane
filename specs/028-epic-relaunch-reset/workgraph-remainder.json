@@ -1,0 +1,24 @@
+{
+  "epic_id": "028-epic-relaunch-reset",
+  "feature": "028-epic-relaunch-reset",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "028-epic-relaunch-reset:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-008",
+        "FR-009",
+        "FR-010",
+        "FR-011"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}

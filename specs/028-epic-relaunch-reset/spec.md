@@ -1,6 +1,12 @@
 ---
 state: ready
 # US1 landed at PR #52 and US2 at PR #53, both first attempt, 2026-08-13.
+# US3 KILLED TWICE the same day, three CI failures total, always the same two
+# tests and always invisible to the agent. Second kill 17:18Z: the relaunch
+# followed trap 9 and stubbed `_connect`, and the real client dialled
+# localhost:7233 anyway. Trap 10 now requires proving it offline
+# (TEMPORAL_ADDRESS=127.0.0.1:1) before landing, because being told the
+# mechanism did not help — watching the fix fail is what would have.
 # US3 was KILLED the same day: gate green and judge PASS six-for-six on both
 # attempts, but CI failed twice on its own two tests (assert 3 == 0) because
 # `_reset_epic` connects to Temporal for its RUNNING guard — live in the
