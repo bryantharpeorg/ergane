@@ -1309,8 +1309,10 @@ class ScriptedWorld:
                 # The worker-death shape (US1 delivery 2): the adapter beats its
                 # newest snapshot once and then stops — nothing beats again, so
                 # Temporal fires a heartbeat timeout whose `last_heartbeat_details`
-                # the workflow reads. The block is real, so the test pays one
-                # heartbeat timeout (5s) and no more.
+                # the workflow reads. The bound is derived (not a fixed 5s), and
+                # the attempt is retried once (maximum_attempts=2), so the real
+                # wait is two heartbeat timeouts per node when the test clock is
+                # not advanced.
                 activity.heartbeat(script.adapter_snapshot)
                 await asyncio.Event().wait()
 
@@ -2637,17 +2639,17 @@ async def test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout(
     TIMEOUT and verified so its work is not silently lost.
     """
     script = ScriptedWorld(
-        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
+        {"us1": [passing()]},
         client=env.client,
         adapter_snapshot=SNAPSHOT,
         heartbeat_then_block=True,
     )
+    # Single-node graph with timeout_override_s=12: the heartbeat bound is 6s,
+    # strictly above the 5s floor, so the history assertion still distinguishes a
+    # derived bound from the old fixed 5s constant. Two attempts (one retry)
+    # cost ~12s real time — well inside the 15s acceptance bound.
     graph = make_graph(
-        nodes=[
-            make_node("us1", "US1", timeout_override_s=20),
-            make_node("us2", "US2", timeout_override_s=20),
-            make_node("us3", "US3", timeout_override_s=20),
-        ]
+        nodes=[make_node("us1", "US1", timeout_override_s=12)]
     )
 
     status = await run_epic(env, script, graph=graph)
@@ -2666,7 +2668,7 @@ async def test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout(
         and event.activity_task_scheduled_event_attributes.activity_type.name
         == "run_agent_attempt"
     )
-    assert heartbeat_timeout == timedelta(seconds=20 // 2)
+    assert heartbeat_timeout == timedelta(seconds=12 // 2)
 
 
 async def test_issuance_retries_through_a_transient_outage(
@@ -3627,21 +3629,17 @@ async def test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown(
     """
     # Keep the heartbeat timeout short so the test exercises the timeout path
     # quickly; US4's derivation test checks the long-timeout shape separately.
+    # A single-node graph with timeout_override_s=12 keeps the heartbeat bound at
+    # 6s, strictly above the 5s floor, so the timeout still proves the derived
+    # bound rather than the old fixed constant.
     script = ScriptedWorld(
-        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
+        {"us1": [passing()]},
         client=env.client,
         adapter_snapshot=SNAPSHOT,
         heartbeat_then_block=True,
     )
-    # All nodes that use heartbeat_then_block need a short timeout; the default
-    # persona timeout now yields a 45-minute heartbeat bound, and the test is
-    # about the delivery path, not the wait.
     graph = make_graph(
-        nodes=[
-            make_node("us1", "US1", timeout_override_s=20),
-            make_node("us2", "US2", timeout_override_s=20),
-            make_node("us3", "US3", timeout_override_s=20),
-        ]
+        nodes=[make_node("us1", "US1", timeout_override_s=12)]
     )
 
     status = await run_epic(env, script, graph=graph)
