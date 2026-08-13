@@ -20,7 +20,7 @@ named beside each anchor. See trap 5.
 | The workflow decorator, and the run entry | `workflow.py:443` (`@workflow.defn`), `:644` (`@workflow.run`) | US2 — what the guard scans for |
 | The clean sibling | `factory/workgraph/workflow.py` — no `environ`/`getenv` anywhere | US2 — the guard must pass on it today |
 | The activities that already receive `db_path` | `record_roadmap_failure` and `reset_roadmap_failures` in `factory/activities/notify_activities.py:536` — grep `RecordRoadmapFailureInput` | US1 — FR-002's second route |
-| The store path resolver the activities use | `notify_activities.py:643` — grep `def _store_path` | US1 — the correct, in-activity precedent |
+| The store path resolver the activities use | `notify_activities.py:643-651`, the read itself at `:649` — grep `def _store_path` | US1 — the correct, in-activity precedent: the *same* `os.environ.get(VERIFICATION_DB_PATH_ENV) or DEFAULT_VERIFICATION_DB_PATH`, legitimate because it runs in an activity. US2's guard must not flag it. |
 | Roadmap test harnesses | `tests/test_roadmap_scheduler.py` (`run_roadmap`), `tests/test_ergane_roadmap.py` (`_worker`), `tests/test_roadmap_failure_notifications.py` | US1 — where the regression test belongs |
 | The session store-isolation fixture 030 just landed | `tests/conftest.py` — grep `_isolated_test_store` | US1 — your test inherits it; do not redirect the store yourself |
 | The store guard 030 just landed | `factory/verify/store.py` — grep `EVIDENCE_STORE_ALLOW_REAL_ENV` | context — a test that opens a real store path now raises |
@@ -84,6 +84,14 @@ decorator, then analyse each one. Prefer reading the module source with `ast`
 over importing it — an import executes module-level code and couples the guard
 to import side effects, and `ast` gives you the function name FR-007 wants you
 to report for free.
+
+**A grep-based guard fails on the current tree, and here is the exhibit.**
+`grep -n 'environ\|getenv' factory/workgraph/workflow.py` returns two hits
+today (`:731`, `:734`) and that module is clean — both are prose comments
+containing the word *environment*, about the Temporal test environment
+advancing its clock. A text-matching guard reports two false positives on the
+one module that is already correct, which is how a guard gets deleted in its
+first week. `ast` sees an `Attribute` node or it sees nothing.
 
 ### Trap 7 — the guard must not be right for the wrong reason
 
