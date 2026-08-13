@@ -67,12 +67,14 @@ def test_a_fully_conforming_repo_passes_with_one_finding_per_check() -> None:
         queue_enabled=True,
         required_checks=("test", "lint", "typecheck"),
         declared_gates=("test", "lint", "typecheck"),
+        squash_merge_commit_title="PR_TITLE",
     )
     assert profile.passed is True
     checks = [f.check for f in profile.findings]
     assert "visibility" in checks
     assert "merge_queue" in checks
     assert "factory_yaml" in checks
+    assert "squash_title" in checks
     assert "gate_check:test" in checks
     assert "gate_check:lint" in checks
     assert "gate_check:typecheck" in checks
@@ -88,6 +90,7 @@ def test_required_checks_and_declared_gates_need_not_be_ordered_the_same() -> No
         queue_enabled=True,
         required_checks=("typecheck", "test", "lint"),
         declared_gates=("test", "lint", "typecheck"),
+        squash_merge_commit_title="PR_TITLE",
     )
     assert profile.passed is True
 
@@ -211,6 +214,60 @@ def test_a_fully_conforming_repo_with_no_gate_checks_extra_is_still_passed() -> 
         queue_enabled=True,
         required_checks=("test",),
         declared_gates=("test",),
+        squash_merge_commit_title="PR_TITLE",
     )
     assert profile.passed is True
     assert _finding_by_check(profile.findings, "gate_check:test").passed is True
+
+
+# --- US1: squash-merge title must come from the PR title ----------------------
+
+
+def test_squash_title_pr_title_passes() -> None:
+    """A repo whose squash merges carry the PR title passes the squash_title check."""
+    profile = evaluate_repo(
+        repo=REPO,
+        default_branch=DEFAULT_BRANCH,
+        visibility="public",
+        queue_enabled=True,
+        required_checks=("test",),
+        declared_gates=("test",),
+        squash_merge_commit_title="PR_TITLE",
+    )
+    finding = _finding_by_check(profile.findings, "squash_title")
+    assert finding.passed is True
+    assert profile.passed is True
+
+
+def test_squash_title_commit_or_pr_title_fails_with_remedy() -> None:
+    """A repo titling squash merges from commits fails with the exact PATCH call."""
+    profile = evaluate_repo(
+        repo=REPO,
+        default_branch=DEFAULT_BRANCH,
+        visibility="public",
+        queue_enabled=True,
+        required_checks=("test",),
+        declared_gates=("test",),
+        squash_merge_commit_title="COMMIT_OR_PR_TITLE",
+    )
+    assert profile.passed is False
+    finding = _finding_by_check(profile.findings, "squash_title")
+    assert finding.passed is False
+    assert "COMMIT_OR_PR_TITLE" in finding.detail
+    assert "gh api -X PATCH repos/acme/widgets -f squash_merge_commit_title=PR_TITLE" in finding.detail
+
+
+def test_squash_title_unreadable_fails_closed() -> None:
+    """An absent/unreadable squash title setting is never a pass (FR-003)."""
+    profile = evaluate_repo(
+        repo=REPO,
+        default_branch=DEFAULT_BRANCH,
+        visibility="public",
+        queue_enabled=True,
+        required_checks=("test",),
+        declared_gates=("test",),
+    )
+    assert profile.passed is False
+    finding = _finding_by_check(profile.findings, "squash_title")
+    assert finding.passed is False
+    assert "unreadable" in finding.detail.lower() or "push permission" in finding.detail.lower()

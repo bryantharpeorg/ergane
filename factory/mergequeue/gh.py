@@ -237,6 +237,20 @@ class GhClient:
             )
         return payload
 
+    def merge_settings(self, owner_repo: str) -> dict[str, Any]:
+        """The repo-level merge settings payload (`gh api repos/{owner_repo}`).
+
+        `gh repo view --json` cannot express `squash_merge_commit_title` (its
+        field set has `squashMergeAllowed` but no title source), so this reads the
+        REST repo endpoint directly. The setting is repo-scoped, not branch-scoped.
+        """
+        payload = self._run_json("api", f"repos/{owner_repo}")
+        if not isinstance(payload, dict):
+            raise GhError(
+                GH_REFUSED, "gh api repos returned an unexpected JSON shape"
+            )
+        return payload
+
     # --- plumbing ------------------------------------------------------------
 
     def _run_json(self, *args: str) -> dict[str, Any] | list[Any]:
