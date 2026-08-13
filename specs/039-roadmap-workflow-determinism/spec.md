@@ -1,5 +1,15 @@
 ---
-state: draft
+state: ready
+# Flipped ready 2026-08-13 22:52Z on the operator's word ("I want to fix the
+# roadmap workflow so work loads automatically"). Dispatched by hand the same
+# minute — the roadmap cannot dispatch it, since the roadmap is what it fixes.
+# Pre-dispatch verification done at 023d42b before the flip: `ergane spec
+# validate` clean, graph derives to us1 -> us2 on a merge edge, preflight
+# reports no findings, and all twelve of plan.md's line anchors were checked
+# against the tree by hand. Two claims were chased: workgraph/workflow.py's two
+# `environ` grep hits are prose comments (the module is clean, and this became
+# trap 6's exhibit for requiring `ast` over grep), and notify_activities'
+# legitimate activity-context read sits at :649.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Scaffolded by `ergane findings promote` from
