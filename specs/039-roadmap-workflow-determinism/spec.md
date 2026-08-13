@@ -1,5 +1,22 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 23:33Z. US1 46f7e8ba89a6 (PR #63), US2
+# 35d7c66c09fb (PR #64) — both observed on ergane-buildout, both attempt 1,
+# both with their red-then-green transcripts committed without being chased.
+# US1 took FR-002's route 2 (resolve inside the activity) and said why in its
+# commit, as the plan asked.
+# Operator verification, independent of the gate:
+#   US1 — the new sandbox test passes on the fixed tree. (An operator mutation
+#         attempt was malformed and broke collection; it proved nothing and is
+#         recorded here rather than dressed up. The agent's own committed
+#         transcript does show the RestrictedWorkflowAccessError on reverted
+#         code, and that evidence stands.)
+#   US2 — MUTATION CONFIRMED: injecting `os.environ.get("SNEAKY")` as the first
+#         statement of the workflow's run() made the guard fail with
+#         "factory/roadmap/workflow.py:640: run() reads process environment:
+#         os.environ" — module and function named, per FR-007. The guard also
+#         passes on the real tree, so it correctly ignores the two prose
+#         comments in workgraph/workflow.py that a grep guard would flag.
 # Flipped ready 2026-08-13 22:52Z on the operator's word ("I want to fix the
 # roadmap workflow so work loads automatically"). Dispatched by hand the same
 # minute — the roadmap cannot dispatch it, since the roadmap is what it fixes.
