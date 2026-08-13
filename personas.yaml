@@ -83,6 +83,57 @@ judge:
   needs_worktree: false
   timeout: 3600
 
+closer:
+  agent: claude-code
+  # Added 2026-08-13 (Bryan): the rung for a story that has already proved
+  # stubborn. Deliberately NOT the debugger — a debugger diagnoses, a closer
+  # finishes, so this carries the implementer's skills and write scope, not
+  # `diagnosing-bugs`.
+  #
+  # This is the only persona routed to a metered provider. Everything else on
+  # this floor rides the flat-rate Ollama subscription; `anthropic/claude-opus-5`
+  # bills per token. That is the whole reason the persona is opt-in: it must
+  # cost a decision, not a default.
+  #
+  # HOW TO USE IT — there is no automatic promotion today, by design and by
+  # mechanism. `derive.py` hardcodes `persona=IMPLEMENTER` and *refuses* a
+  # `persona:` key in a spec's `## Work Graph`, and `ladder.next_action` knows
+  # only `DEBUGGER_PERSONA` by name. So a closer is dispatched by hand:
+  #
+  #   ergane spec derive <spec-dir> --target-repo <repo> --delta -o graph.json
+  #   # edit graph.json: the stubborn node's "persona" -> "closer"
+  #   ergane build start graph.json
+  #
+  # A typo fails closed, but later than you would like: the CLI does NOT catch
+  # it (`_persona_registry` in `factory/cli/nouns/build.py` builds the registry
+  # out of the graph's own persona names, so `validate_workgraph` can never
+  # reject one, and preflight ignores unknown personas too). It is caught by
+  # `resolve_graph` at epic start with `GRAPH_INVALID`, before any key is issued
+  # or worktree created — cheap, but it costs a workflow rather than a command.
+  # Filed as `interpreter/cli-cannot-reject-an-unknown-persona`. Verified live
+  # 2026-08-13: a `closer` node resolves to `anthropic/claude-opus-5`, and
+  # `clsoer` raises GRAPH_INVALID naming the registry.
+  #
+  # Promoting automatically on the third attempt is a separate change: it needs
+  # `VerificationConfig.max_attempts` and a ladder rung, both factory code, and
+  # therefore a spec. Do not hardcode a model name in code to get there —
+  # constitution VII routes by persona, and this file is the only place a model
+  # alias may appear.
+  model: anthropic/claude-opus-5
+  # Not the house `local/qwen3.6-27b`: this rung exists because the story is
+  # hard, and a 27b local model is not a plausible closer. Falls back to the
+  # implementer's own model so an Anthropic outage degrades to today's builder
+  # rather than to something weaker than the attempts that already failed.
+  fallback: ollama-cloud/kimi-k2.7-code
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400
+  # Opus 5's published window is 1M. Unset, the CLI assumes 200k for an alias it
+  # does not recognise — the same 037 defect that cost kimi 23.7% of its window.
+  # Revert to unset if a routed attempt ever reports a smaller ceiling.
+  context_window: 1000000
+
 debugger:
   agent: claude-code
   model: ollama-cloud/deepseek-v4-flash

@@ -33,6 +33,13 @@ EXPECTED_PERSONAS = {
     "judge",
     "debugger",
     "researcher",
+    # Added 2026-08-13 (operator): the opt-in Opus rung for a story that has
+    # already proved stubborn. This set is a membership assertion, not a dial —
+    # the shipped registry is the operator's to extend, and pinning its *size*
+    # is what `ci/test-suite-pins-the-operator-dial` is about (037 hit the same
+    # class on `implementer.context_window`). Adding a persona should be a
+    # one-line edit here, never a red trunk.
+    "closer",
 }
 
 # Fields removed by D-021; budget enforcement returns with spec 004.
@@ -62,7 +69,7 @@ def _write_registry(tmp_path: Path, personas: dict[str, object]) -> Path:
 # --- shipped registry ------------------------------------------------------
 
 
-def test_shipped_registry_has_six_personas() -> None:
+def test_shipped_registry_ships_every_expected_persona() -> None:
     registry = load_personas(SHIPPED_REGISTRY)
 
     assert set(registry) == EXPECTED_PERSONAS
