@@ -133,13 +133,6 @@ with workflow.unsafe.imports_passed_through():
 _ROADMAP_NODE_ID = "roadmap"
 
 
-def _verification_db_path() -> str:
-    """The store path the worker environment names, defaulting to the standard one."""
-    from os import environ
-
-    return environ.get(VERIFICATION_DB_PATH_ENV) or DEFAULT_VERIFICATION_DB_PATH
-
-
 def _should_notify_failure(count: int) -> bool:
     """Throttle repeated identical failures geometrically (FR-003).
 
@@ -919,7 +912,7 @@ class RoadmapWorkflow:
         result: RecordRoadmapFailureResult = await workflow.execute_activity(
             record_roadmap_failure,
             RecordRoadmapFailureInput(
-                db_path=_verification_db_path(),
+                db_path=None,
                 roadmap_id=roadmap_id,
                 failure_text=failure_text,
             ),
@@ -953,7 +946,7 @@ class RoadmapWorkflow:
         prior_count = await workflow.execute_activity(
             reset_roadmap_failures,
             ResetRoadmapFailuresInput(
-                db_path=_verification_db_path(),
+                db_path=None,
                 roadmap_id=roadmap_id,
             ),
             **_FAST,

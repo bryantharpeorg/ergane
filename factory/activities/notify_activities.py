@@ -478,21 +478,26 @@ CREATE TABLE IF NOT EXISTS roadmap_failures (
 class RecordRoadmapFailureInput:
     """The facts needed to record one roadmap run failure.
 
-    `db_path` is worker-local configuration; the activity opens the store at that
-    path (the same pattern `verify_activities` uses for the verification db).
-    No credential is in any field.
+    `db_path` is worker-local configuration; when omitted, the activity resolves it
+    from the worker environment in activity context (FR-002).  The same pattern
+    `verify_activities` uses for the verification db.  No credential is in any
+    field.
     """
 
-    db_path: str
+    db_path: str | None
     roadmap_id: str
     failure_text: str
 
 
 @dataclass(frozen=True)
 class ResetRoadmapFailuresInput:
-    """Reset the consecutive-failure count for one roadmap; returns the prior count."""
+    """Reset the consecutive-failure count for one roadmap; returns the prior count.
 
-    db_path: str
+    `db_path` is worker-local configuration; when omitted, the activity resolves
+    it from the worker environment in activity context (FR-002).
+    """
+
+    db_path: str | None
     roadmap_id: str
 
 
@@ -544,8 +549,9 @@ async def record_roadmap_failure(request: RecordRoadmapFailureInput) -> RecordRo
     not choices, so there is nothing pending for a button press or expiry sweep
     to act on (US2).
     """
+    db_path = request.db_path or str(_store_path())
     sent = datetime.now(timezone.utc)
-    with closing(store.connect(request.db_path)) as conn:
+    with closing(store.connect(db_path)) as conn:
         conn.executescript(_ROADMAP_FAILURES_DDL)
         row = conn.execute(
             "SELECT consecutive_count, last_failure_text FROM roadmap_failures WHERE roadmap_id = ?",
@@ -619,9 +625,10 @@ async def reset_roadmap_failures(request: ResetRoadmapFailuresInput) -> int:
     Returns 0 when there was no record or no prior failures, so the caller can
     decide whether a recovery message is warranted.
     """
+    db_path = request.db_path or str(_store_path())
     sent = datetime.now(timezone.utc)
     prior = 0
-    with closing(store.connect(request.db_path)) as conn:
+    with closing(store.connect(db_path)) as conn:
         conn.executescript(_ROADMAP_FAILURES_DDL)
         row = conn.execute(
             "SELECT consecutive_count FROM roadmap_failures WHERE roadmap_id = ?",
