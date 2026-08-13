@@ -1,5 +1,18 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 18:00Z by the operator. US1 bc1344157056 (PR #52),
+# US2 a3882c5869fb (PR #53), US3 f711f8e52b95 (PR #57) — all three observed on
+# ergane-buildout by `ergane spec landed`.
+# US3 took four dispatches and two kills. What finally worked was trap 10: not
+# naming the mechanism (trap 9 already did that, and the next attempt stubbed
+# `_connect` and dialled localhost:7233 anyway) but handing the agent the
+# command that reproduces CI offline. The landed fix moves `_open_client` into
+# `factory/cli/nouns/__init__.py` and reaches it through a function-local
+# import, so a monkeypatch survives the module reload that was defeating the
+# old seam. Operator re-ran the reproduction independently before attesting:
+# `TEMPORAL_ADDRESS=127.0.0.1:1 pytest tests/test_ergane_build.py -k reset -q`
+# → 3 passed. The agent did not paste that proof into its diff; trap 10 has
+# been carried into 025's plan with this as the exhibit.
 # US1 landed at PR #52 and US2 at PR #53, both first attempt, 2026-08-13.
 # US3 KILLED TWICE the same day, three CI failures total, always the same two
 # tests and always invisible to the agent. Second kill 17:18Z: the relaunch

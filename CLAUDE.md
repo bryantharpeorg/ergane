@@ -38,7 +38,7 @@ between the day it was written and the day you read it.
 | Question | Ask |
 | --- | --- |
 | Every spec's state, and what blocks each one | `ergane spec list specs` |
-| Which of a spec's stories are landed in git, story by story | `ergane build landed <spec-dir>` |
+| Which of a spec's stories are landed in git, story by story | `ergane spec landed <spec-dir>` |
 | What one epic is doing right now | `ergane build status <epic-id>` |
 | What defects are open, and how often each has recurred | `ergane findings list` |
 | What an epic cost | `ergane usage` with `--by epic` |
@@ -46,7 +46,7 @@ between the day it was written and the day you read it.
 
 `scripts/ergane-env.sh` puts the environment those commands need into your shell.
 
-One trap in that table: `ergane build landed` scans `main` unless told otherwise, and the
+One trap in that table: `ergane spec landed` scans `main` unless told otherwise, and the
 factory does not land on `main` — it lands on the buildout branch, and `main` moves only
 when an operator promotes. Between promotions the default under-reports. Pass
 `--default-branch <branch>` whenever the answer matters.
