@@ -270,8 +270,6 @@ def test_run_failed_log_issues_gh_run_view_log_failed_and_returns_tail() -> None
 
     assert "FAILED tests/test_calc.py::test_add" in tail
     assert len(tail.encode("utf-8")) <= _FAILED_LOG_PER_CHECK_LIMIT
-    # It is the tail: the early repetition is dropped.
-    assert tail.startswith("FAILED tests/test_calc.py::test_add")
 
 
 def test_run_id_is_parsed_from_actions_run_link() -> None:

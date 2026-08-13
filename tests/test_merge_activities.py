@@ -1016,4 +1016,7 @@ async def test_fetch_check_failure_uses_asyncio_to_thread(
         ),
     )
 
-    assert result == ()
+    # A missing check degrades rather than aborting, proving the thread ran.
+    assert len(result) == 1
+    assert result[0].name == "test"
+    assert "unavailable" in result[0].note.lower()
