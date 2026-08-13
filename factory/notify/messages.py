@@ -42,7 +42,7 @@ from typing import Any, Sequence
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from factory.mergequeue.models import Landing, ObservedOutcome, QueueOutcome
+from factory.mergequeue.models import CheckFailure, Landing, ObservedOutcome, QueueOutcome
 from factory.verify.models import (
     EscalationChoice,
     EscalationRecord,
@@ -207,7 +207,13 @@ def render_landing_history(landing: Landing) -> str:
     if not landing.outcomes:
         return _NO_LANDING_HISTORY
 
-    lines = [f"{_value(o.outcome)} at {o.at}" for o in landing.outcomes]
+    lines: list[str] = []
+    for outcome in landing.outcomes:
+        line = f"{_value(outcome.outcome)} at {outcome.at}"
+        if outcome.failing_checks:
+            names = ", ".join(outcome.failing_checks)
+            line += f" (failing checks: {names})"
+        lines.append(line)
     if landing.recovery_cycles:
         lines.append(f"Recovery cycles: {landing.recovery_cycles}")
     return "\n".join(lines)
@@ -260,11 +266,37 @@ def roadmap_recovery_notice(roadmap_id: str, prior_count: int) -> str:
 
 def escalation_message(record: EscalationRecord) -> str:
     """The message an operator is paged with: what failed, and what silence does."""
+    body = record.history_summary
+    if record.check_evidence:
+        body += "\n\n" + _render_check_evidence(record.check_evidence)
     return _compose(
         _header("⚠️ Verification escalation", record),
-        record.history_summary,
+        body,
         f"\n\nNo answer by {record.expires_at} applies the default: KILL the node.",
     )
+
+
+def _render_check_evidence(evidence: tuple[CheckFailure, ...]) -> str:
+    """US2: one line per failing check, with URL and failing test line when known."""
+    lines: list[str] = []
+    for check in evidence:
+        lines.append(f"- {check.name}: {check.url}")
+        if check.log_tail:
+            # Quote the last line that names a failing test identifier, when present;
+            # otherwise quote the last non-empty line of the tail.
+            failing_line = _last_failing_test_line(check.log_tail)
+            lines.append(f"  failing line: {failing_line}")
+        if check.note:
+            lines.append(f"  {check.note}")
+    return "Failing check evidence:\n" + "\n".join(lines)
+
+
+def _last_failing_test_line(tail: str) -> str:
+    """The last line of `tail` that names a failing test, or the last line."""
+    for line in reversed(tail.splitlines()):
+        if "FAILED" in line or "failed" in line.lower():
+            return line
+    return tail.splitlines()[-1] if tail else ""
 
 
 def question_message(record: QuestionRecord) -> str:
