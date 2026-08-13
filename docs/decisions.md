@@ -815,3 +815,39 @@ recorded durably regardless of whether the notification was delivered (FR-010).
 
 6. **No credential reaches the failure surface.** The failure text is derived
    only from the exception; the escalation carries no token, chat id, or key.
+
+## D-037 · The judge sees the diff and nothing else: acceptance criteria must be provable from it (decided)
+
+Decided 2026-08-13 (Bryan), recorded after 027-gate-suite-fake-time US2 failed two
+attempts on criteria no diff can satisfy. Promoted to Principle VIII; the ledger key
+is `verify/criteria-that-reach-outside-the-diff-are-unjudgeable`.
+
+The judge receives the story's diff and the criteria snapshot. It does not receive the
+base tree, the commit message, the implementer's terminal, or the running system. A
+criterion that asks about anything else is unprovable by construction, and the failure
+mode is the expensive one: correct, complete work is rejected, and every retry is spent
+re-proving something that cannot be proven.
+
+1. **Four exhibits, three of them costly.** 038's US1 was rewritten mid-epic after the
+   judge demanded fixture files that had deliberately been landed to the base branch
+   (they could not appear in the diff), then failed a criterion phrased about
+   pre-existing base state. 027/US2 then failed twice: S1 required the attribution to
+   appear "in the commit message"; S3 required a mutation to be made, observed red, and
+   **reverted** — the revert erases the only evidence it happened. Gates passed both
+   times. The judge was right each time; the specs were wrong.
+
+2. **The obligation sits with the spec author, not the agent.** An implementer handed an
+   unsatisfiable criterion cannot recover, and the retry ladder converts that into three
+   attempts and an escalation. Refinement is where this is caught, which is why the rule
+   is normative rather than advisory.
+
+3. **Runtime evidence becomes a committed artifact.** Where a story genuinely needs a
+   measured duration, a red-then-green mutation transcript, or a suite total, the story
+   commits that evidence as text the diff carries, with tool output pasted rather than
+   described. This keeps the operator's ability to demand real measurement without
+   asking the judge to see a terminal.
+
+4. **Criteria snapshot once per epic (D-033's neighbour).** A spec edit cannot rescue a
+   running epic — the criteria were snapshotted at dispatch. An unsatisfiable criterion
+   discovered mid-flight therefore costs a kill and a relaunch, not an edit, which is
+   the second reason the check belongs at refinement time.

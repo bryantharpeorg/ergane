@@ -4,7 +4,7 @@ Ergane is an agentic software factory: it turns Spec Kit feature specs into merg
 verified code by dispatching headless coding agents through an orchestrated DAG, with
 attributed per-node spend, mechanical acceptance-criteria verification, and
 merge-queue discipline. The full decision log lives in `docs/decisions.md`
-(D-001…D-024); this constitution distills the non-negotiables that every spec, plan,
+(D-001…D-037); this constitution distills the non-negotiables that every spec, plan,
 and implementation must honor.
 
 ## Core Principles
@@ -60,6 +60,21 @@ researcher). A persona resolves to agent, model + fallback, skills, write scope,
 default, and breach policy via an operator-editable registry. Code never hardcodes a
 model name.
 
+### VIII. Acceptance Criteria Are Provable From the Diff (NON-NEGOTIABLE)
+
+The judge is given the story's diff and the criteria snapshot — never the base tree, the
+commit message, a terminal, or the running system. Every acceptance criterion must
+therefore be decidable from the diff alone. A criterion that names a commit message, a
+mutation that is reverted before commit, a `--durations` reading, a CI observation, or
+the state of code the diff does not touch is unprovable by construction: correct,
+complete work will fail it, and no number of attempts can change that.
+
+Where a story genuinely needs runtime evidence — a measured duration, a mutation
+observed red, a suite total — that evidence is committed as an artifact the diff
+contains, with tool output pasted rather than described. The obligation sits with the
+spec author: a criterion that cannot be met is a defect in the spec, not in the agent
+that failed it.
+
 ## Environment Constraints
 
 - **Intent layer**: Spec Kit feature specs (`specs/<feature>/spec.md`) are the system
@@ -100,7 +115,9 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.2.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-04 (2.2.0 —
+**Version**: 2.3.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-13 (2.3.0 —
+D-037: Principle VIII added; acceptance criteria must be provable from the diff alone,
+because the judge sees nothing else. 2.2.0 —
 D-023/D-024: intent layer is Spec Kit feature specs; build order gains minimal 005
 before 003; 003 is built by the factory against this repository, superseding the
 never-self-target constraint; preamble updated to spend attribution. 2.1.0:
