@@ -44,6 +44,9 @@ naive `== 1` version check would accept `version: true`.
 
 from __future__ import annotations
 
+import dataclasses
+import json
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -53,6 +56,17 @@ from factory.verify.models import FactoryConfig, GateResult, GateStatus
 
 #: The manifest's committed filename; callers compose `<worktree>/factory.yaml`.
 MANIFEST_NAME = "factory.yaml"
+
+#: Exit code when the CLI accepts a manifest and emits the parsed config as JSON.
+PARSE_CLI_OK = 0
+
+#: Exit code when the CLI rejects a manifest.
+#
+# This is sysexits `EX_DATAERR` (65).  It must not be 1 or 2: `uv run` and
+# `python -m` use those for launcher problems (broken `pyproject.toml`, missing
+# module, argparse usage errors), so a rejection code of 1 or 2 would make the
+# caller misread "the parser never started" as "the parser refused the manifest".
+PARSE_CLI_REJECTED = 65
 
 #: Schema v1 fixes the gate names so component 3 can map merge-queue required
 #: checks to gates 1:1. Arbitrary names are a `version: 2` conversation.
@@ -381,3 +395,37 @@ def _kind(value: Any) -> str:
 
 def _one_line(error: Exception) -> str:
     return " ".join(str(error).split())
+
+
+# CLI -------------------------------------------------------------------------
+
+
+def _main(argv: list[str]) -> int:
+    """Subprocess entry point: parse one manifest and report machine-readably.
+
+    Acceptance means the parsed config is printed as one JSON document on stdout
+    and the process exits `PARSE_CLI_OK`.  Rejection — including an unreadable or
+    absent path — means the `FactoryConfigError` message is printed on stderr and
+    the process exits `PARSE_CLI_REJECTED`.  Nothing else is ever printed to
+    stdout, and a traceback never escapes, because the caller cannot distinguish a
+    traceback from a crashed parser.
+    """
+    if len(argv) != 1:
+        print(
+            f"usage: {sys.executable} -m factory.verify.factory_yaml <manifest-path>",
+            file=sys.stderr,
+        )
+        return PARSE_CLI_REJECTED
+
+    try:
+        config = load_factory_config(argv[0])
+    except FactoryConfigError as error:
+        print(str(error), file=sys.stderr)
+        return PARSE_CLI_REJECTED
+
+    print(json.dumps(dataclasses.asdict(config)))
+    return PARSE_CLI_OK
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv[1:]))
