@@ -51,6 +51,10 @@ from factory.verify.store import (
     pending_escalations,
     pending_questions,
 )
+from factory.activities.agent_activities import (
+    DEFAULT_FACTORY_ROOT as DEFAULT_FACTORY_ROOT_PATH,
+    FACTORY_ROOT_ENV,
+)
 from factory.workgraph.models import (
     WorkGraph,
     WorkGraphError,
@@ -59,6 +63,7 @@ from factory.workgraph.models import (
 )
 from factory.workgraph.preflight import PreflightFinding, check_aliases
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
+from factory.workgraph.worktree import reset as reset_worktree
 
 #: Compiled artifact naming convention, shared with `spec derive`.
 ARTIFACT_NAME = "workgraph.json"
@@ -168,18 +173,17 @@ async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:
 
 
 async def _connect() -> Client:
-    """One client, from the notify bridge's exact environment contract."""
-    address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
-    try:
-        return await Client.connect(address, namespace=namespace)
-    except (RPCError, RuntimeError, OSError) as error:
-        from factory.cli.errors import EXIT_TRANSPORT
+    """One client, from the notify bridge's exact environment contract.
 
-        raise OperatorError(
-            f"cannot reach Temporal at {address} (namespace '{namespace}'): {error}",
-            EXIT_TRANSPORT,
-        ) from error
+    Implemented as a wrapper around the package-level seam so tests can
+    substitute a fake client: `factory.cli.main` reloads this file on every
+    invocation, so a patch on the imported `build` module is lost, but the
+    package object is stable and a patch on `factory.cli.nouns._open_client`
+    survives.
+    """
+    from factory.cli.nouns import _open_client
+
+    return await _open_client()
 
 
 async def _live_spend(
@@ -515,6 +519,55 @@ def resolve_command(args: argparse.Namespace) -> int:
     return asyncio.run(_resolve(args.epic_id, args.escalation_id, args.choice))
 
 
+def reset_command(args: argparse.Namespace) -> int:
+    """Archive the survivors of a terminated epic so it can be relaunched safely."""
+    try:
+        graph = load_workgraph(args.graph)
+    except WorkGraphError as error:
+        raise OperatorError(str(error)) from error
+
+    return asyncio.run(_reset_epic(graph))
+
+
+async def _reset_epic(graph: WorkGraph) -> int:
+    """Reset every node the graph names, after one Temporal read proves it is safe."""
+    client = await _connect()
+    handle = client.get_workflow_handle(workflow_id(graph.epic_id))
+    try:
+        described = await handle.describe()
+    except RPCError as error:
+        if error.status is RPCStatusCode.NOT_FOUND:
+            # Absence of workflow history is not an error for a cleanup verb.
+            described = None
+        else:
+            raise OperatorError(
+                f"cannot verify epic '{graph.epic_id}': {error}", EXIT_TRANSPORT
+            ) from error
+
+    if described is not None and described.status is not None:
+        if described.status.name == "RUNNING":
+            raise OperatorError(
+                f"epic '{graph.epic_id}' is running "
+                f"(workflow id {workflow_id(graph.epic_id)}); "
+                "refusing to reset while the workflow is active"
+            )
+
+    factory_root = Path(
+        os.environ.get(FACTORY_ROOT_ENV) or DEFAULT_FACTORY_ROOT_PATH
+    )
+
+    for node in graph.nodes:
+        actions = reset_worktree(
+            graph.target_repo,
+            graph.epic_id,
+            node.id,
+            factory_root=factory_root,
+        )
+        print(f"{node.id}: {', '.join(actions)}")
+
+    return EXIT_OK
+
+
 async def _resolve(
     epic_id: str, escalation_id: str | None, choice: str | None
 ) -> int:
@@ -686,6 +739,13 @@ def add_parser(subparsers: Any) -> None:
         help="the choice to record; required when escalation_id is given",
     )
     resolve.set_defaults(run=resolve_command)
+
+    reset = commands.add_parser(
+        "reset",
+        help="archive a terminated epic's survivors so it can be relaunched",
+    )
+    reset.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
+    reset.set_defaults(run=reset_command)
 
 
 NOUN = Noun(

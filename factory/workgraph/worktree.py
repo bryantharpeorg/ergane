@@ -536,6 +536,50 @@ def _clip(patch: str, limit: int) -> str:
     return encoded[:limit].decode("utf-8", errors="ignore") + DIFF_CLIP_NOTICE
 
 
+def reset(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+) -> list[str]:
+    """Archive a terminated node's survivors and return a human action report.
+
+    The supported path after `temporal workflow terminate` (which bypasses the
+    workflow's kill sequence — see `interpreter/cancel-bypasses-kill-sequence`,
+    deliberately not fixed here).  Commits any dirty worktree state, removes the
+    directory, archives the node branch, and deletes the sidecar.  Idempotent:
+    a second call finds nothing to do and returns `["nothing to do"]`.
+
+    The branch is renamed, never deleted; every commit reachable from the old
+    node branch remains reachable from an archive ref.
+    """
+    repo = Path(target_repo)
+    path = worktree_path(factory_root, epic_id, node_id)
+    branch = branch_name(epic_id, node_id)
+
+    actions: list[str] = []
+    had_directory = path.is_dir()
+    had_branch = _branch_exists(repo, branch)
+
+    if had_directory or had_branch:
+        _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+
+    if had_directory:
+        actions.append("committed dirty state")
+        actions.append("removed worktree")
+    if had_branch:
+        actions.append("archived branch")
+    sidecar = _record_file(factory_root, epic_id, node_id)
+    if sidecar.exists():
+        sidecar.unlink()
+        actions.append("deleted sidecar")
+
+    if not actions:
+        return ["nothing to do"]
+    return actions
+
+
 def remove(
     target_repo: Path | str,
     epic_id: str,
