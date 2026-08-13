@@ -59,6 +59,7 @@ import json
 import logging
 import os
 import re
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterator
@@ -83,6 +84,7 @@ from factory.activities.agent_activities import (
     salvage_worktree,
 )
 from factory.config import load_personas
+from factory.mergequeue.models import LandingConfig
 from factory.usage.models import Termination
 from factory.verify.models import OverallVerdict
 from factory.workgraph import cli, derive, worktree as worktrees
@@ -1584,6 +1586,67 @@ def _epics(client: Any) -> list[_Epic]:
     ]
 
 
+#: US2 measured attribution for the dependency sweep. Before restructuring, the
+#: single slow epic was "an escalation grants one more attempt, which passes";
+#: its 60.22 s wait is a `LandingConfig.poll_interval_s=60` beat in the
+#: `_poll_landing` loop before the first scripted `poll_landing` returns MERGED.
+#: Plan.md trap 4's leads (kill-epic cancellation delivery, worker shutdown,
+#: server-side retry backoff) do not explain the minute: the kill epic paid 0.06 s.
+#:
+#: Measurement (clean env, T008 baseline):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
+#:   -> 60.79s call tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:
+#: Per-epic wall-clock attribution from the instrumented run:
+#:   'every node passes': 0.23s
+#:   'the first node of a diamond fails to exhaustion': 0.14s
+#:   'the middle node of a diamond fails to exhaustion': 0.17s
+#:   'an operator kills the epic mid-attempt': 0.07s
+#:   'an escalation grants one more attempt, which passes': 60.22s  (99% of 60.82s)
+#:
+#: Mechanism: the fifth epic enqueues a landing at ~0.67 s; the first poll fires
+#: at ~60.67 s, paying the full 60-second default poll interval. The fix keeps all
+#: five epic shapes and assertions and overrides only the landing poll interval
+#: via `EpicInput.landing_config` — a test-side config, never the workflow code.
+#:
+#: After restructure (clean env, T010):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
+#:   -> 1.78s call tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:
+#: Full suite (clean env, T012):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest -q --durations=30
+#:   Before (pre-US1, 193b7ad): 2202 passed, 44 skipped in 342.71s (0:05:42)
+#:   After  (US1+US2+live_capacity poll, current worktree): 2202 passed, 44 skipped in 172.82s (0:02:52)
+#:
+#:   Slowest 5 after:
+#:     12.09s call tests/test_interpreter.py::test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown
+#:     12.08s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
+#:     10.52s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
+#:      5.97s call tests/test_gates.py::test_a_gate_passes_alone_and_passes_contended
+#:      5.40s call tests/test_interpreter.py::test_an_attempts_history_cost_does_not_grow_with_its_duration
+#:   No test at 15s or more; the sweep test is no longer in the slowest 30. The two
+#:   live_capacity tests stay under 15s by polling visibility until it converges
+#:   rather than paying a fixed 5-second sleep twice.
+#:
+#: T011 mutation bite-check (US2-S3) — `_edges_satisfied` pass-edge conjunct weakened
+#: to `.verified or not .verified`, with `max_concurrent_nodes=2` applied to the first
+#: diamond epic only for the mutation run. At cap=1 the sweep stays green under every
+#: weakening: the scheduler's single slot means a dependency is PASSED-and-verified (or
+#: killed-with-dependents-locked-out) before any slot frees, so a dependent is never
+#: considered for dispatch while its dependency is still unverified. The cap=2
+#: override makes the defect observable. The override is part of the mutation
+#: procedure only; the committed test keeps `max_concurrent_nodes=1` for every epic.
+#:
+#: Mutation run (red):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
+#:   FAILED tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:   AssertionError: the first node of a diamond fails to exhaustion: ended {'us1': <NodeState.KILLED: 'KILLED'>, 'us2': <NodeState.MERGED: 'MERGED'>, 'us3': <NodeState.MERGED: 'MERGED'>}
+#:   assert {'us1': <NodeState.KILLED: 'KILLED'>, 'us2': <NodeState.MERGED: 'MERGED'>, 'us3': <NodeState.MERGED: 'MERGED'>} == {'us1': <NodeState.KILLED: 'KILLED'>, 'us2': <NodeState.KILLED: 'KILLED'>, 'us3': <NodeState.KILLED: 'KILLED'>}
+#:
+#: Revert run (green):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
+#:   1.77s call     tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:   1 passed, 89 deselected in 2.44s
 async def test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency(
     temporal: Any,
 ) -> None:
@@ -1598,11 +1661,18 @@ async def test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency(
     depth, one an operator kills mid-attempt, and one where a human grants an
     attempt that then succeeds. Between them every way a node stops being
     dispatchable is exercised, and no run may dispatch anything on a locked edge.
+
+    The fifth epic ends with a landing phase; without a poll interval override the
+    test pays the 60-second `LandingConfig` default for the first poll. That wait
+    is not what this test is proving, so the landing config is overridden here
+    (test-side) without changing the gate command or the workflow default.
     """
+    fast_landing = LandingConfig(poll_interval_s=1)
     for label, script, overrides, expected in _epics(temporal.client):
         graph = overrides.get("graph") or make_graph()
         depends_on = {node.id: node.depends_on for node in graph.nodes}
 
+        overrides = dict(overrides, landing_config=fast_landing)
         status = await run_epic(temporal, script, **overrides)
 
         # The epic went where its script sends it: an epic that ended somewhere
