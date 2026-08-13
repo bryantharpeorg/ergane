@@ -66,6 +66,7 @@ from factory.workgraph.worktree import (
     PreparedWorktree,
     SyncResult,
     WorktreeError,
+    _read_record,
     capture_base_ref,
     diff,
     ensure,
@@ -978,3 +979,284 @@ def test_sync_with_target_raises_when_the_worktree_is_gone(
         sync_with_target(repo, EPIC, NODE, factory_root=factory_root)
 
     assert str(factory_root / "worktrees" / EPIC / NODE) in str(raised.value)
+
+
+# --- ensure reuse verification (US1, 028-epic-relaunch-reset) ----------------
+
+
+def archive_ref(epic_id: str, node_id: str, tip: str) -> str:
+    """Archive ref name with per-tip suffix (trap 5)."""
+    return f"archive/factory/{epic_id}/{node_id}/{tip[:12]}"
+
+
+def archive_refs(repo: Path, epic_id: str, node_id: str) -> list[str]:
+    """Every archive ref for this node, fully qualified."""
+    prefix = f"refs/heads/archive/factory/{epic_id}/{node_id}/"
+    out = git(repo, "for-each-ref", f"{prefix}*", "--format=%(refname)")
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def all_local_refs(repo: Path) -> set[str]:
+    """Every ref git knows about, for "no ref was deleted" assertions."""
+    out = git(repo, "for-each-ref", "--format=%(refname)")
+    return set(line.strip() for line in out.splitlines() if line.strip())
+
+
+def reset_origin_to_orphan(
+    repo: Path, bare: Path, tmp_path: Path, content: str = "fresh start\n"
+) -> None:
+    """Force origin/main to a brand-new root that does not descend from current main.
+
+    The recorded pin from the first prepare() is an ancestor of the original
+    origin/main. A fast-forward advance would keep it an ancestor, so tests that
+    need a divergent reset need an orphan root pushed over origin/main.
+    """
+    scratch_worktree = tmp_path / "scratch"
+    git(repo, "worktree", "add", "--quiet", "--detach", str(scratch_worktree))
+    git(scratch_worktree, "checkout", "--quiet", "--orphan", "scratch-reset")
+    (scratch_worktree / "README.md").write_text(content, encoding="utf-8")
+    git(scratch_worktree, "add", "README.md")
+    git(scratch_worktree, "commit", "--quiet", "-m", "origin reset to orphan")
+    git(repo, "push", "--quiet", "--force", "origin", "scratch-reset:main")
+
+
+def test_ensure_rebuilds_when_recorded_pin_is_not_an_ancestor_of_origin_head(
+    origin_repo: tuple[Path, Path], factory_root: Path, tmp_path: Path
+) -> None:
+    """US1-S1: stale pin after a reset origin means a fresh worktree + fresh pin.
+
+    Scenario: the node was prepared, the epic was terminated (so directory,
+    sidecar and branch all survive), then the origin's landing branch was reset
+    to a commit that does not descend from the recorded base_ref. ensure() must
+    archive the old branch, capture a fresh pin from origin, create a fresh
+    worktree and write a fresh sidecar.
+    """
+    repo, bare = origin_repo
+    first = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    first_worktree = Path(first.path)
+
+    # Leave terminate-shaped survivors on disk.
+    old_branch_tip = head(repo, BRANCH)
+    old_refs = all_local_refs(repo)
+
+    # Reset origin's main to an orphan root that does not descend from the pin.
+    reset_origin_to_orphan(repo, bare, tmp_path)
+
+    second = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    second_worktree = Path(second.path)
+
+    # Path and branch name are unchanged; the pin is fresh.
+    assert Path(second.path) == Path(first.path)
+    assert second.branch == first.branch
+    assert second.base_ref != first.base_ref
+    assert second.base_ref == head(bare, "refs/heads/main")
+    # The worktree contents reflect the reset origin.
+    assert (second_worktree / "README.md").read_text(encoding="utf-8") == "fresh start\n"
+    # Old branch is archived, not deleted; the branch name is reused for the fresh
+    # branch at the new pin.
+    archive = archive_refs(repo, EPIC, NODE)
+    assert len(archive) == 1
+    assert head(repo, archive[0]) != head(repo, BRANCH)
+    assert head(repo, BRANCH) == second.base_ref
+    assert all_local_refs(repo).issuperset(old_refs)
+    # Sidecar records the new pin.
+    sidecar = factory_root / "worktrees" / EPIC / f"{NODE}.json"
+    assert second.base_ref in sidecar.read_text(encoding="utf-8")
+    assert first.base_ref not in sidecar.read_text(encoding="utf-8")
+
+
+def test_ensure_keeps_reused_tree_completely_unchanged_when_pin_is_ancestor(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US1-S2: a merely-advanced target reuses the exact recorded tree.
+
+    Regression guard for trap 2: if the implementation recaptures the head or
+    rebuilds what it should keep, this goes red. FR-002 promises byte-for-byte
+    preservation, so we assert on file contents, not just the returned dataclass.
+    """
+    repo, bare = origin_repo
+    first = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(first.path)
+
+    dirty(worktree)
+    before_prepared = _read_record(factory_root / "worktrees" / EPIC / f"{NODE}.json")
+    before_status = status(worktree)
+    before_branch_tip = head(repo, BRANCH)
+    before_files = {
+        TRACKED_FILE: (worktree / TRACKED_FILE).read_text(encoding="utf-8"),
+        NEW_FILE: (worktree / NEW_FILE).read_text(encoding="utf-8"),
+    }
+
+    # Origin merely advances (fast-forward). The recorded pin is still an ancestor.
+    advance_default_branch(repo)
+    git(repo, "push", "--quiet", "origin", "main")
+
+    second = ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+    assert second == first
+    assert second.base_ref == first.base_ref
+    assert status(worktree) == before_status
+    assert head(repo, BRANCH) == before_branch_tip
+    assert (worktree / TRACKED_FILE).read_text(encoding="utf-8") == before_files[TRACKED_FILE]
+    assert (worktree / NEW_FILE).read_text(encoding="utf-8") == before_files[NEW_FILE]
+    # Sidecar untouched.
+    after_prepared = _read_record(factory_root / "worktrees" / EPIC / f"{NODE}.json")
+    assert after_prepared == before_prepared
+
+
+def test_ensure_archives_every_commit_reachable_from_old_branch_plus_dirty_work(
+    origin_repo: tuple[Path, Path], factory_root: Path, tmp_path: Path
+) -> None:
+    """US1-S3: rebuild archives all old history and any uncommitted state.
+
+    The abandoned tree has uncommitted edits. After ensure() rebuilds, every
+    commit that was reachable from the old branch tip must be reachable from an
+    archive ref, the archive name must embed the old tip, and no ref may have
+    been deleted. The uncommitted work itself must appear as an extra commit on
+    the archive branch.
+    """
+    repo, bare = origin_repo
+    first = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(first.path)
+    # Give the branch a commit so "reachable from old tip" is non-trivial.
+    (worktree / "node.txt").write_text("a\n", encoding="utf-8")
+    git(worktree, "add", "node.txt")
+    git(worktree, "commit", "--quiet", "-m", "node commit before reset")
+    # And leave dirty work uncommitted.
+    dirty(worktree)
+
+    old_branch_tip = head(repo, BRANCH)
+    old_refs = all_local_refs(repo)
+    old_reachable = set(
+        git(repo, "rev-list", old_branch_tip).split()
+    )
+
+    # Reset origin to an orphan root that does not descend from the recorded pin.
+    reset_origin_to_orphan(repo, bare, tmp_path)
+
+    ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+    archive = archive_refs(repo, EPIC, NODE)
+    assert len(archive) == 1
+    archived = archive[0]
+    # The archive name embeds the archived tip.
+    assert archived.endswith(head(repo, archived)[:12])
+    assert head(repo, archived) != old_branch_tip  # dirty state was committed on top
+    # Every old reachable commit is still reachable from the archive ref.
+    archived_reachable = set(git(repo, "rev-list", archived).split())
+    assert old_reachable.issubset(archived_reachable)
+    # The uncommitted files appear in some commit reachable from the archive.
+    archived_files: set[str] = set()
+    for commit in archived_reachable:
+        archived_files.update(changed_files(repo, commit))
+    assert NEW_FILE in archived_files
+    assert TRACKED_FILE in archived_files
+    # No ref was deleted.
+    assert all_local_refs(repo).issuperset(old_refs)
+
+
+def test_ensure_archives_divergent_surviving_branch_without_sidecar(
+    origin_repo: tuple[Path, Path], factory_root: Path, tmp_path: Path
+) -> None:
+    """US1-S4: no directory, no sidecar, but a dead branch; ensure archives it.
+
+    The branch tip does not descend from the freshly-captured pin, so the branch
+    must be renamed into the archive namespace and a fresh branch + worktree
+    created at the new pin. This is FR-005: the dead branch is not checked back out.
+    """
+    repo, bare = origin_repo
+    first = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    first_worktree = Path(first.path)
+
+    # Commit some node work, then remove only the directory and sidecar.
+    (first_worktree / "node.txt").write_text("dead run\n", encoding="utf-8")
+    git(first_worktree, "add", "node.txt")
+    git(first_worktree, "commit", "--quiet", "-m", "dead run commit")
+    old_branch_tip = head(repo, BRANCH)
+
+    # Nuke directory and sidecar, but leave branch in the clone.
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "remove", "--force", str(first_worktree)],
+        capture_output=True,
+        text=True,
+        env=git_env(),
+        check=True,
+    )
+    sidecar = factory_root / "worktrees" / EPIC / f"{NODE}.json"
+    sidecar.unlink()
+
+    old_refs = all_local_refs(repo)
+
+    # Reset origin so the freshly captured pin will not descend from the branch.
+    reset_origin_to_orphan(repo, bare, tmp_path)
+
+    second = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    second_worktree = Path(second.path)
+
+    assert second.base_ref == head(bare, "refs/heads/main")
+    assert (second_worktree / "README.md").read_text(encoding="utf-8") == "fresh start\n"
+    # The branch name is reused for the fresh branch; the old tip lives in archive.
+    archive = archive_refs(repo, EPIC, NODE)
+    assert len(archive) == 1
+    assert head(repo, BRANCH) == second.base_ref
+    assert head(repo, archive[0]) == old_branch_tip
+    assert all_local_refs(repo).issuperset(old_refs)
+
+
+def test_ensure_checks_out_descending_surviving_branch_without_sidecar(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US1-S5: no directory, no sidecar, branch still on current pin — check it out.
+
+    Regression guard: this must keep today's continuity behaviour. If the
+    implementation over-archives a still-descending branch, this goes red.
+    """
+    repo, bare = origin_repo
+    first = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    first_worktree = Path(first.path)
+
+    (first_worktree / "node.txt").write_text("continued\n", encoding="utf-8")
+    git(first_worktree, "add", "node.txt")
+    git(first_worktree, "commit", "--quiet", "-m", "continued work")
+    old_branch_tip = head(repo, BRANCH)
+
+    # Remove directory and sidecar; origin has not moved since preparation.
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "remove", "--force", str(first_worktree)],
+        capture_output=True,
+        text=True,
+        env=git_env(),
+        check=True,
+    )
+    sidecar = factory_root / "worktrees" / EPIC / f"{NODE}.json"
+    sidecar.unlink()
+
+    old_refs = all_local_refs(repo)
+
+    second = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    second_worktree = Path(second.path)
+
+    assert second == first
+    assert head(second_worktree, "HEAD") == old_branch_tip
+    assert (second_worktree / "node.txt").read_text(encoding="utf-8") == "continued\n"
+    assert ref_exists(repo, f"refs/heads/{BRANCH}")
+    assert all_local_refs(repo) == old_refs  # no archive created, no ref touched
+
+
+def test_ensure_raises_when_origin_is_unreachable_during_pin_verification(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """FR-001: a fetch failure during verification is raised, not passed over.
+
+    Mirrors test_capture_base_ref_raises_when_origin_is_unreachable: the
+    verification must read the current landing-branch head the same way
+    capture_base_ref does, and a failed fetch must raise WorktreeError.
+    """
+    repo, bare = origin_repo
+    first = ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+    # Break origin.
+    git(repo, "remote", "set-url", "origin", "/nonexistent/gone.git")
+
+    with pytest.raises(WorktreeError):
+        ensure(repo, EPIC, NODE, factory_root=factory_root)
