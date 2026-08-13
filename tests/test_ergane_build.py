@@ -31,7 +31,7 @@ import pytest
 from temporalio import activity
 from temporalio.client import WorkflowFailureError
 from temporalio.exceptions import ApplicationError
-from temporalio.service import RPCError
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -67,6 +67,7 @@ from factory.activities.verify_activities import (
 )
 from factory.cli.main import main as ergane_main
 from factory.cli.nouns import build as build_module
+import factory.cli.nouns as nouns
 from factory.config import Persona, WriteScope
 from factory.mergequeue.models import Finding, PrSnapshot, TargetRepoProfile
 from factory.notify.service import (
@@ -1141,11 +1142,15 @@ def test_reset_commits_archives_removes_and_reports_per_node(
                     raise RPCError(
                         message=f"workflow {workflow_id} not found",
                         status=RPCStatusCode.NOT_FOUND,
+                        raw_grpc_status=b"",
                     )
 
             return Handle()
 
-    monkeypatch.setattr(build_module, "_connect", lambda: FakeNotFoundClient())
+    async def fake_not_found_client():
+        return FakeNotFoundClient()
+
+    monkeypatch.setattr(nouns, "_open_client", fake_not_found_client)
 
     result = run("build", "reset", str(graph_path))
 
@@ -1221,10 +1226,10 @@ async def test_reset_guard_cases(
     await temporal_env.sleep(timedelta(seconds=1))
 
     # S4: with the same environment up but no workflow, reset proceeds.
-    async def not_found_connect():
+    async def real_client():
         return temporal_env.client
 
-    monkeypatch.setattr(build_module, "_connect", not_found_connect)
+    monkeypatch.setattr(nouns, "_open_client", real_client)
     not_found = await run_async("build", "reset", str(graph_path))
     assert not_found.code == 0, not_found.stderr
     for node_id in NODE_IDS:
@@ -1236,6 +1241,8 @@ async def test_reset_guard_cases(
         lambda variant="passing", name="dead-address-repo": target_repo(variant, name=name),
         tmp_path,
     )
+    # Remove the S4 seam patch so the real _open_client dials the dead address.
+    monkeypatch.undo()
     monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
     monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, DEFAULT_TEMPORAL_NAMESPACE)
     dead = await run_async("build", "reset", str(graph_path2))
@@ -1271,11 +1278,15 @@ def test_reset_preserves_all_history_and_ensure_rebuilds_fresh(
                     raise RPCError(
                         message=f"workflow {workflow_id} not found",
                         status=RPCStatusCode.NOT_FOUND,
+                        raw_grpc_status=b"",
                     )
 
             return Handle()
 
-    monkeypatch.setattr(build_module, "_connect", lambda: FakeNotFoundClient())
+    async def fake_not_found_client():
+        return FakeNotFoundClient()
+
+    monkeypatch.setattr(nouns, "_open_client", fake_not_found_client)
 
     result = run("build", "reset", str(graph_path))
     assert result.code == 0, result.stderr

@@ -173,18 +173,17 @@ async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:
 
 
 async def _connect() -> Client:
-    """One client, from the notify bridge's exact environment contract."""
-    address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
-    try:
-        return await Client.connect(address, namespace=namespace)
-    except (RPCError, RuntimeError, OSError) as error:
-        from factory.cli.errors import EXIT_TRANSPORT
+    """One client, from the notify bridge's exact environment contract.
 
-        raise OperatorError(
-            f"cannot reach Temporal at {address} (namespace '{namespace}'): {error}",
-            EXIT_TRANSPORT,
-        ) from error
+    Implemented as a wrapper around the package-level seam so tests can
+    substitute a fake client: `factory.cli.main` reloads this file on every
+    invocation, so a patch on the imported `build` module is lost, but the
+    package object is stable and a patch on `factory.cli.nouns._open_client`
+    survives.
+    """
+    from factory.cli.nouns import _open_client
+
+    return await _open_client()
 
 
 async def _live_spend(
