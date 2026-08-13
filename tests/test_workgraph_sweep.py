@@ -1611,21 +1611,22 @@ def _epics(client: Any) -> list[_Epic]:
 #:
 #: After restructure (clean env, T010):
 #:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
-#:   -> 1.82s call tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:   -> 1.78s call tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
 #:
 #: Full suite (clean env, T012):
 #:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest -q --durations=30
 #:   Before (US1 only, a564b8c): 2202 passed, 44 skipped in 250.22s (0:04:10)
-#:   After  (US1+US2+T011, current worktree): 2202 passed, 44 skipped in 190.94s (0:03:10)
+#:   After  (US1+US2+T011+live_capacity poll, current worktree): 2202 passed, 44 skipped in 172.06s (0:02:52)
 #:
 #:   Slowest 5 after:
-#:     20.37s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
-#:     12.09s call tests/test_interpreter.py::test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown
-#:     12.09s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
-#:     10.16s call tests/test_live_capacity.py::test_capacity_read_excludes_continued_as_new_chain
+#:     12.08s call tests/test_interpreter.py::test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown
+#:     12.07s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
+#:     10.41s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
 #:      5.97s call tests/test_gates.py::test_a_gate_passes_alone_and_passes_contended
-#:   The sweep test is no longer in the slowest 30; the remaining >5s tests are outside
-#:   this story's scope (live_capacity, US1 heartbeat timeouts, gate contention).
+#:      5.41s call tests/test_interpreter.py::test_an_attempts_history_has_no_timer_and_no_poll_activity
+#:   No test at 15s or more; the sweep test is no longer in the slowest 30. The two
+#:   live_capacity tests stay under 15s by polling visibility until it converges
+#:   rather than paying a fixed 5-second sleep twice.
 #:
 #: T011 mutation bite-check (US2-S3) — `_edges_satisfied` pass-edge conjunct weakened
 #: to `.verified or not .verified`, with `max_concurrent_nodes=2` applied to the first
