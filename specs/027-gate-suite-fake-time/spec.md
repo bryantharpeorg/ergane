@@ -1,5 +1,20 @@
 ---
-state: ready
+state: landed
+# US2 COMPLETED BY THE OPERATOR 2026-08-13, on Bryan's explicit instruction
+# ("correct the spec to reflect reality, then complete it yourself"). This is
+# the fail-out path, used deliberately and counted — not a precedent to reach
+# for. What happened: the relaunched node produced correct, complete work and
+# was rejected five times by the judge on S4 alone, because the scenario
+# carried "~2m40s" as if it were a threshold when the spec's own wording said
+# "toward" (verify/approximate-targets-are-read-as-hard-thresholds). The
+# refiner's defect, not the agent's. S4 and SC-001/SC-002 now state the two
+# real thresholds — no test at 15s or more, and at least 40% off the before
+# total — and say plainly that no other figure decides anything.
+# The landed diff IS the agent's work, captured from its worktree before
+# teardown (six commits, 46db521 back to 74c5519) and re-verified by the
+# operator rather than trusted: sweep test 60.79s -> 1.81s, full clean-env
+# suite green. It still faced the gates and the merge queue like any other
+# landing. Measured result: suite 342.71s -> 172.82s (-50%), no test >= 15s.
 # US1 LANDED 2026-08-13 at a564b8c (PR #51, first attempt) — measured by the
 # operator: the two heartbeat tests went 60.26s/60.18s -> 12.14s/12.09s.
 # US2 was KILLED the same day after FOUR attempts, gates green every time
@@ -169,8 +184,10 @@ verbatim, command line included; a described measurement is not a recorded one.
 4. **Given** US1 landed and US2 applied, **When** the full suite runs in a
    clean env as `uv run pytest -q --durations=30`, **Then** the comment block
    carries the **pasted summary line** (total wall clock) before and after,
-   plus the pasted `--durations=30` head showing no test at 15s or more —
-   from the ~5m45s baseline toward the ~2m40s target.
+   plus the pasted `--durations=30` head, and both thresholds hold: **no test
+   at 15s or more**, and the after total is **at least 40% below the pasted
+   before total**. Those two numbers decide this scenario; no other figure in
+   this spec is a threshold.
 
 ## Functional Requirements
 
@@ -218,12 +235,16 @@ verbatim, command line included; a described measurement is not a recorded one.
 
 ## Success Criteria
 
-- **SC-001**: Full-suite wall clock in a clean env drops from the recorded
-  ~5m45s baseline toward ~2m40s, with the actual before and after figures
-  pasted into the comment block above the sweep test.
+- **SC-001**: Full-suite wall clock in a clean env drops at least 40% below the
+  recorded baseline, with the actual before and after figures pasted into the
+  comment block above the sweep test. (The ~2m40s figure this spec carried
+  before 2026-08-13 was an estimate made before the minute's composition was
+  measured; it was never a threshold, and stating it as one cost five attempts
+  on work that had already cut the suite in half. See
+  `verify/approximate-targets-are-read-as-hard-thresholds`.)
 - **SC-002**: `uv run pytest -q --durations=30` in a clean env reports no test
   at 15s or more; the three tests this spec names each run at 15s or less
-  (targets: ≤3s, ≤3s, ≤5s).
+  (targets: ≤3s, ≤3s, ≤5s — targets, not thresholds; the 15s bar decides).
 - **SC-003**: Each of the three tests demonstrably still bites: every mutation
   scenario (US1 scenarios 3-4, US2 scenario 3) was observed red and then
   reverted, with the red runs pasted into the comment block above the test

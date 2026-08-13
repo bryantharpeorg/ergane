@@ -110,6 +110,7 @@ import asyncio
 import hashlib
 import json
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -916,9 +917,12 @@ class ScriptedWorld:
 
         #: Activity names in call order, and the same log with the node each call
         #: belonged to — "what happened to us1" is a list rather than an offset
-        #: someone has to count out by hand.
+        #: someone has to count out by hand. Timestamps are monotonic wall-clock
+        #: seconds since the world's construction; US2 uses them to attribute the
+        #: dependency sweep's wait per activity without restructuring it first.
         self.calls: list[str] = []
         self.node_calls: list[tuple[str, str]] = []
+        self.call_times: list[float] = []
 
         self.graphs: list[WorkGraph] = []
         self.persona_requests: list[ResolvePersonaInput] = []
@@ -1040,6 +1044,7 @@ class ScriptedWorld:
         self._node = ""
         self._attempt = 0
         self._spend = 0.0
+        self._start_time = time.monotonic()
 
         #: Aliases with a live key behind them, issue-to-teardown. The fake
         #: enforces what the real proxy enforces — a duplicate alias will not
@@ -1056,6 +1061,7 @@ class ScriptedWorld:
             self._node = node_id
         self.calls.append(name)
         self.node_calls.append((self._node, name))
+        self.call_times.append(time.monotonic() - self._start_time)
 
     @property
     def _current(self) -> Attempt:

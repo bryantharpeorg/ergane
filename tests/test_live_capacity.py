@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
@@ -38,10 +40,13 @@ from factory.notify.service import (
 )
 from factory.workgraph.workflow import TASK_QUEUE
 
-#: Seconds to wait for visibility to converge after a workflow starts. Temporal
-#: advanced visibility indexing is near-real-time locally; a short wait is
-#: enough to make the test deterministic without masking the defect.
-_VISIBILITY_SETTLE_SECONDS = 5.0
+#: Maximum time to spend polling visibility until the expected condition holds.
+#: Kept short because the local dev-server index is near-real-time; the old fixed
+#: 5-second sleep paid the full budget every call and pushed this live test over
+#: 15 seconds. Polling moves the common case to milliseconds while keeping a
+#: bounded timeout.
+_VISIBILITY_POLL_TIMEOUT_SECONDS = 3.0
+_VISIBILITY_POLL_INTERVAL_SECONDS = 0.2
 
 #: A trivial workflow we can start under controlled ids to observe the capacity
 #: read. It must run long enough to be listed as RUNNING, then complete on cue.
@@ -175,6 +180,32 @@ async def _running_ids(client: Client) -> set[str]:
     return await env.run(roadmap_activities._list_open_epics)
 
 
+async def _running_ids_when(
+    client: Client,
+    predicate: Callable[[set[str]], bool],
+    timeout: float = _VISIBILITY_POLL_TIMEOUT_SECONDS,
+) -> set[str]:
+    """Poll the production capacity read until ``predicate`` is satisfied.
+
+    The local Temporal dev server's advanced-visibility index updates in tens
+    to hundreds of milliseconds; a fixed sleep of several seconds is wasteful
+    and pushed this live test over the suite's 15-second budget. This helper
+    keeps the test deterministic with a bounded timeout while letting the
+    common case complete as soon as visibility converges.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        found = await _running_ids(client)
+        if predicate(found):
+            return found
+        if time.monotonic() >= deadline:
+            assert False, (
+                f"visibility predicate not satisfied within {timeout}s; "
+                f"found {sorted(found)}"
+            )
+        await asyncio.sleep(_VISIBILITY_POLL_INTERVAL_SECONDS)
+
+
 async def test_capacity_seam_is_scriptable() -> None:
     """FR-003 / acceptance 4: the capacity read stays behind a scripted seam.
 
@@ -221,10 +252,13 @@ async def test_capacity_read_finds_open_epic_workflows_and_excludes_others() -> 
         closed_handle = await _start_probe(client, epic_closed_id)
 
         try:
-            # Give visibility a moment to index all three RUNNING executions.
-            await asyncio.sleep(_VISIBILITY_SETTLE_SECONDS)
-
-            found = await _running_ids(client)
+            # Wait until visibility indexes all three RUNNING executions.
+            found = await _running_ids_when(
+                client,
+                lambda f: epic_open_id in f
+                and non_epic_id not in f
+                and epic_closed_id in f,
+            )
             assert epic_open_id in found, (
                 f"capacity read did not find the open epic workflow {epic_open_id!r}; "
                 f"found {sorted(found)}"
@@ -242,8 +276,12 @@ async def test_capacity_read_finds_open_epic_workflows_and_excludes_others() -> 
             await closed_handle.signal(_CapacityProbeWorkflow.release)
             await closed_handle.result()
 
-            await asyncio.sleep(_VISIBILITY_SETTLE_SECONDS)
-            found_after_close = await _running_ids(client)
+            found_after_close = await _running_ids_when(
+                client,
+                lambda f: epic_open_id in f
+                and epic_closed_id not in f
+                and non_epic_id not in f,
+            )
             assert epic_open_id in found_after_close, (
                 f"capacity read lost the still-open epic workflow {epic_open_id!r} "
                 f"after closing another; found {sorted(found_after_close)}"
@@ -281,10 +319,10 @@ async def test_capacity_read_excludes_continued_as_new_chain() -> None:
 
         try:
             # The first run continues as new; the second run is RUNNING and
-            # waiting on the release signal.
-            await asyncio.sleep(_VISIBILITY_SETTLE_SECONDS)
-
-            found_while_running = await _running_ids(client)
+            # waiting on the release signal. Poll until visibility converges.
+            found_while_running = await _running_ids_when(
+                client, lambda f: can_id in f
+            )
             assert can_id in found_while_running, (
                 f"capacity read did not find the continued-as-new chain's active "
                 f"run {can_id!r}; found {sorted(found_while_running)}"
@@ -294,8 +332,9 @@ async def test_capacity_read_excludes_continued_as_new_chain() -> None:
             await can_handle.signal(_ContinueAsNewProbeWorkflow.release)
             await can_handle.result()
 
-            await asyncio.sleep(_VISIBILITY_SETTLE_SECONDS)
-            found_after_chain = await _running_ids(client)
+            found_after_chain = await _running_ids_when(
+                client, lambda f: can_id not in f
+            )
             assert can_id not in found_after_chain, (
                 f"continued-as-new workflow {can_id!r} still counted as open after "
                 f"the chain completed; found {sorted(found_after_chain)}"
