@@ -908,3 +908,40 @@ re-proving something that cannot be proven.
    running epic — the criteria were snapshotted at dispatch. An unsatisfiable criterion
    discovered mid-flight therefore costs a kill and a relaunch, not an edit, which is
    the second reason the check belongs at refinement time.
+
+---
+
+## D-045 · Test-time isolation from the live evidence store is enforced, not conventional (decided)
+
+Decided 2026-08-13, claimed at landing of spec `030-test-suite-store-isolation` US2.
+The suite previously relied on per-file fixtures to keep test writes out of the live
+`.factory/verification.db`. That convention decayed three times, and the measurement
+was fresh `roadmap_failures` rows in the live store from a run whose operator believed it
+was isolated. The boundary now lives in two places: a session-scoped autouse fixture in
+`tests/conftest.py` that redirects `FACTORY_ROOT`, `FACTORY_VERIFICATION_DB_PATH`, and
+`FACTORY_LEDGER_PATH` into pytest's tmp base before any test body runs, and a guard in
+`factory/verify/store.py::connect()` that refuses to construct a store outside the tmp
+tree while `PYTEST_CURRENT_TEST` is present.
+
+1. **The fixture is the convention; the guard is the enforcement.** The fixture can be
+   weakened by a future edit and bypassed with `delenv`. The guard cannot, because it
+   sits at the single choke point every evidence-store writer already routes through.
+
+2. **The guard fires before any filesystem side effect.** `connect()` previously called
+   `mkdir(parents=True)` before `sqlite3.connect`; the refusal now happens before both.
+   A refused call leaves no directory and no database file.
+
+3. **One explicit operator-set door stays open.** `FACTORY_EVIDENCE_STORE_ALLOW_REAL` is
+   the only way a test process may open a real shared store. `tests/test_live_notify.py`
+   sets it when the operator supplies `LIVE_NOTIFY_DB_PATH`, so the sanctioned live
+   smoke against a shared bridge store keeps working by deliberate action, never by
+   accident.
+
+4. **Production is byte-identical to the pre-guard behavior.** The sentinel
+   `PYTEST_CURRENT_TEST` is never set in production (the worker, the notify service, the
+   CLI), so those paths never meet the guard, see no new error message, and perform no
+   new I/O.
+
+5. **No new dependency, activity, or schema change.** The guard uses `tempfile`, `os`,
+   and the existing `PYTEST_CURRENT_TEST` sentinel; the store's contract and callers are
+   unchanged. The finding key is `hardening/test-suite-writes-to-the-live-evidence-store`.
