@@ -65,6 +65,10 @@ from factory.verify.factory_yaml import (
     load_factory_config,
     parse_factory_config,
 )
+import json
+import subprocess
+import sys
+
 from factory.verify.models import FactoryConfig, GateResult, GateStatus
 
 
@@ -426,6 +430,22 @@ def test_landing_branch_survives_a_round_trip_from_disk(tmp_path: Path) -> None:
 
 #: The repository root: `tests/` sits directly beneath it.
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The module path used by the CLI: `sys.executable -m factory.verify.factory_yaml`.
+CLI_MODULE = "factory.verify.factory_yaml"
+
+#: The rejection exit code US1 exposes as `PARSE_CLI_REJECTED`.
+CLI_REJECTED = 65
+
+
+def _run_cli(*args: str, cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess[str]:
+    """Run the parser CLI as a real subprocess and return its completed process."""
+    return subprocess.run(
+        [sys.executable, "-m", CLI_MODULE, *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_erganes_own_manifest_loads() -> None:
@@ -1068,3 +1088,91 @@ def test_load_errors_name_the_file_they_came_from(tmp_path: Path) -> None:
 
     assert excinfo.value.rule == "version"
     assert str(path) in str(excinfo.value)
+
+
+# CLI (026 US1) ---------------------------------------------------------------
+
+
+def test_cli_accepts_a_valid_manifest_and_emits_config_json(tmp_path: Path) -> None:
+    """The parser can be asked from a subprocess: accepted means exit 0 + JSON.
+
+    Spec US1-S1.  Must fail until `factory.verify.factory_yaml` gains a `__main__`
+    block; today the module runs, prints nothing, and exits 0.
+    """
+    path = tmp_path / MANIFEST_NAME
+    path.write_text(CONTRACT_EXAMPLE, encoding="utf-8")
+
+    expected = parse_factory_config(CONTRACT_EXAMPLE)
+
+    result = _run_cli(str(path))
+
+    assert result.returncode == 0, f"unexpected failure: {result.stderr}"
+    parsed = json.loads(result.stdout)
+    assert parsed["gates"] == expected.gates
+    assert parsed["timeouts"] == expected.timeouts
+
+
+def test_cli_rejects_unknown_top_level_key_with_distinguished_code(tmp_path: Path) -> None:
+    """Rejection uses the documented exit code and carries the error on stderr.
+
+    Spec US1-S2.  The message must name the rule (`unknown_key`) and the source
+    file, and stdout must carry no JSON.
+    """
+    path = tmp_path / MANIFEST_NAME
+    path.write_text(
+        _yaml(
+            """
+            version: 1
+            runtime: python:3.11-bookworm
+            image: python:3.11-bookworm
+            gates:
+              test: "uv run pytest -q"
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(str(path))
+
+    assert result.returncode == CLI_REJECTED
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
+    assert "unknown_key" in result.stderr
+    assert str(path) in result.stderr
+
+
+def test_cli_rejects_missing_manifest_path_with_no_traceback(tmp_path: Path) -> None:
+    """A missing path is an ordinary rejection: no traceback, no JSON on stdout.
+
+    Spec US1-S3.  The `load_factory_config` wrapper already turns an absent
+    file into a `FactoryConfigError(rule="missing_manifest")`, so the CLI gets
+    the right shape for free.
+    """
+    missing = tmp_path / MANIFEST_NAME
+
+    result = _run_cli(str(missing))
+
+    assert result.returncode == CLI_REJECTED
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.stdout)
+    assert "missing_manifest" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_additivity_and_constants_preserve_library_behavior() -> None:
+    """The CLI entry point adds behaviour; it does not change the library API.
+
+    Regression guard for spec US1-S4.  Fails only if the implementation over-
+    reaches into `parse_factory_config`, `load_factory_config`, or the module's
+    public constants.
+    """
+    import factory.verify.factory_yaml as factory_yaml
+
+    assert factory_yaml.PARSE_CLI_OK == 0
+    assert factory_yaml.PARSE_CLI_REJECTED == CLI_REJECTED
+
+    # Existing library entry points keep their signatures.
+    import inspect
+
+    assert "source" in inspect.signature(parse_factory_config).parameters
+    assert "source" in inspect.signature(load_factory_config).parameters
