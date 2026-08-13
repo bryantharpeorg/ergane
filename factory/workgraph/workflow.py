@@ -442,6 +442,9 @@ class NodeStatus:
     verified: bool = False
     landing_state: LandingState | None = None
     pr_number: int | None = None
+    #: US2: the queue history an operator reads when a landing is rejected, in
+    #: order. Empty until the node has a landing with recorded outcomes.
+    landing_history: tuple[ObservedOutcome, ...] = ()
     #: US1: the reason a node ended KILLED when the ladder did not produce it.
     #: Set only when a node coroutine crashed; otherwise None.
     terminal_reason: str | None = None
@@ -612,6 +615,9 @@ class EpicWorkflow:
                     pr_number=record.landing.pr_number
                     if record.landing is not None
                     else None,
+                    landing_history=record.landing.outcomes
+                    if record.landing is not None
+                    else (),
                     terminal_reason=record.terminal_reason,
                 )
                 for node_id, record in self._nodes.items()
