@@ -56,10 +56,14 @@ divergences.
 
 **Acceptance Scenarios**:
 
-1. **Given** the ten captured history fixtures (committed under
-   `tests/fixtures/replay-032/`), **When** each is replayed against
-   `EpicWorkflow`, **Then** every replay completes without
-   `NondeterminismError`.
+1. **Given** the ten captured history fixtures that are ALREADY ON THE BASE
+   BRANCH at `tests/fixtures/replay-032/` (operator data, landed a10bea8 —
+   they must NOT appear in this story's diff), **When** the new parametrised
+   replay test runs, **Then** it asserts exactly ten fixture files are
+   present — a missing or short directory fails the test, no existence
+   fallback — and replays each against `EpicWorkflow` without
+   `NondeterminismError`. The test's hard count is the diff-visible proof
+   that the fixtures exist.
 2. **Given** a node coroutine cancelled mid-attempt (the SDK eviction path,
    simulated by cancelling the task while an activity is outstanding),
    **When** the coroutine unwinds, **Then** the cancellation propagates —
@@ -81,8 +85,12 @@ divergences.
   bookkeeping; no coroutine in the workflow may swallow `GeneratorExit`.
 - **FR-002**: Teardown command emission MUST NOT execute on the
   SDK-eviction/cancellation path; a workflow being evicted emits no commands.
-- **FR-003**: The ten captured histories MUST be committed as fixtures and
-  replayed green in the suite.
+- **FR-003**: The suite MUST prove the ten captured histories replay green:
+  a parametrised test asserts exactly ten fixture files exist at
+  `tests/fixtures/replay-032/` and replays each. The fixture files are base
+  data already landed at a10bea8 — a diff that adds, moves, or re-commits
+  them is over-scope, and a fixture-count fallback that lets zero files pass
+  vacuously is a failure of this requirement.
 - **FR-004**: `test_replay_dispatches_nothing_twice` MUST fetch the history
   of the exact run it started (`result_run_id`) and replay under the same
   workflow-runner class used to record, and MUST keep the standing
