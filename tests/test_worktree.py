@@ -989,10 +989,35 @@ def archive_ref(epic_id: str, node_id: str, tip: str) -> str:
     return f"archive/factory/{epic_id}/{node_id}/{tip[:12]}"
 
 
+def archive_refs(repo: Path, epic_id: str, node_id: str) -> list[str]:
+    """Every archive ref for this node, fully qualified."""
+    prefix = f"refs/heads/archive/factory/{epic_id}/{node_id}/"
+    out = git(repo, "for-each-ref", f"{prefix}*", "--format=%(refname)")
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def all_local_refs(repo: Path) -> set[str]:
     """Every ref git knows about, for "no ref was deleted" assertions."""
     out = git(repo, "for-each-ref", "--format=%(refname)")
     return set(line.strip() for line in out.splitlines() if line.strip())
+
+
+def reset_origin_to_orphan(
+    repo: Path, bare: Path, tmp_path: Path, content: str = "fresh start\n"
+) -> None:
+    """Force origin/main to a brand-new root that does not descend from current main.
+
+    The recorded pin from the first prepare() is an ancestor of the original
+    origin/main. A fast-forward advance would keep it an ancestor, so tests that
+    need a divergent reset need an orphan root pushed over origin/main.
+    """
+    scratch_worktree = tmp_path / "scratch"
+    git(repo, "worktree", "add", "--quiet", "--detach", str(scratch_worktree))
+    git(scratch_worktree, "checkout", "--quiet", "--orphan", "scratch-reset")
+    (scratch_worktree / "README.md").write_text(content, encoding="utf-8")
+    git(scratch_worktree, "add", "README.md")
+    git(scratch_worktree, "commit", "--quiet", "-m", "origin reset to orphan")
+    git(repo, "push", "--quiet", "--force", "origin", "scratch-reset:main")
 
 
 def test_ensure_rebuilds_when_recorded_pin_is_not_an_ancestor_of_origin_head(
@@ -1014,33 +1039,25 @@ def test_ensure_rebuilds_when_recorded_pin_is_not_an_ancestor_of_origin_head(
     old_branch_tip = head(repo, BRANCH)
     old_refs = all_local_refs(repo)
 
-    # Reset origin's main to a brand-new commit that does not descend from the pin.
-    (bare / "README.md").write_text("fresh start\n", encoding="utf-8")
-    git(repo, "fetch", "--quiet", "origin")
-    # Use a worktree on a temp branch in the clone so we can build the new commit
-    # and push it to origin/main without touching the clone's own checkout.
-    scratch_worktree = tmp_path / "scratch"
-    git(repo, "worktree", "add", "--quiet", "-b", "scratch-reset", str(scratch_worktree))
-    (scratch_worktree / "README.md").write_text("fresh start\n", encoding="utf-8")
-    git(scratch_worktree, "add", "README.md")
-    git(scratch_worktree, "commit", "--quiet", "-m", "origin reset")
-    git(repo, "push", "--quiet", "--force-with-lease", "origin", "scratch-reset:main")
+    # Reset origin's main to an orphan root that does not descend from the pin.
+    reset_origin_to_orphan(repo, bare, tmp_path)
 
     second = ensure(repo, EPIC, NODE, factory_root=factory_root)
     second_worktree = Path(second.path)
 
-    # Fresh worktree path is the same directory, but the branch and pin are new.
-    assert second == first  # path and branch name are unchanged
-    # Pin updated to origin's new head.
+    # Path and branch name are unchanged; the pin is fresh.
+    assert Path(second.path) == Path(first.path)
+    assert second.branch == first.branch
     assert second.base_ref != first.base_ref
     assert second.base_ref == head(bare, "refs/heads/main")
     # The worktree contents reflect the reset origin.
     assert (second_worktree / "README.md").read_text(encoding="utf-8") == "fresh start\n"
-    # Old branch archived, not deleted.
-    assert not ref_exists(repo, f"refs/heads/{BRANCH}")
-    archived = archive_ref(EPIC, NODE, old_branch_tip)
-    assert ref_exists(repo, f"refs/heads/{archived}")
-    assert head(repo, archived) == old_branch_tip
+    # Old branch is archived, not deleted; the branch name is reused for the fresh
+    # branch at the new pin.
+    archive = archive_refs(repo, EPIC, NODE)
+    assert len(archive) == 1
+    assert head(repo, archive[0]) != head(repo, BRANCH)
+    assert head(repo, BRANCH) == second.base_ref
     assert all_local_refs(repo).issuperset(old_refs)
     # Sidecar records the new pin.
     sidecar = factory_root / "worktrees" / EPIC / f"{NODE}.json"
@@ -1114,18 +1131,16 @@ def test_ensure_archives_every_commit_reachable_from_old_branch_plus_dirty_work(
         git(repo, "rev-list", old_branch_tip).split()
     )
 
-    # Reset origin to a commit that does not descend from the recorded pin.
-    scratch_worktree = tmp_path / "scratch"
-    git(repo, "worktree", "add", "--quiet", "-b", "scratch-reset", str(scratch_worktree))
-    (scratch_worktree / "README.md").write_text("fresh start\n", encoding="utf-8")
-    git(scratch_worktree, "add", "README.md")
-    git(scratch_worktree, "commit", "--quiet", "-m", "origin reset")
-    git(repo, "push", "--quiet", "--force-with-lease", "origin", "scratch-reset:main")
+    # Reset origin to an orphan root that does not descend from the recorded pin.
+    reset_origin_to_orphan(repo, bare, tmp_path)
 
     ensure(repo, EPIC, NODE, factory_root=factory_root)
 
-    archived = archive_ref(EPIC, NODE, old_branch_tip)
-    assert ref_exists(repo, f"refs/heads/{archived}")
+    archive = archive_refs(repo, EPIC, NODE)
+    assert len(archive) == 1
+    archived = archive[0]
+    # The archive name embeds the archived tip.
+    assert archived.endswith(head(repo, archived)[:12])
     assert head(repo, archived) != old_branch_tip  # dirty state was committed on top
     # Every old reachable commit is still reachable from the archive ref.
     archived_reachable = set(git(repo, "rev-list", archived).split())
@@ -1173,22 +1188,18 @@ def test_ensure_archives_divergent_surviving_branch_without_sidecar(
     old_refs = all_local_refs(repo)
 
     # Reset origin so the freshly captured pin will not descend from the branch.
-    scratch_worktree = tmp_path / "scratch"
-    git(repo, "worktree", "add", "--quiet", "-b", "scratch-reset", str(scratch_worktree))
-    (scratch_worktree / "README.md").write_text("fresh start\n", encoding="utf-8")
-    git(scratch_worktree, "add", "README.md")
-    git(scratch_worktree, "commit", "--quiet", "-m", "origin reset")
-    git(repo, "push", "--quiet", "--force-with-lease", "origin", "scratch-reset:main")
+    reset_origin_to_orphan(repo, bare, tmp_path)
 
     second = ensure(repo, EPIC, NODE, factory_root=factory_root)
     second_worktree = Path(second.path)
 
     assert second.base_ref == head(bare, "refs/heads/main")
     assert (second_worktree / "README.md").read_text(encoding="utf-8") == "fresh start\n"
-    assert not ref_exists(repo, f"refs/heads/{BRANCH}")
-    archived = archive_ref(EPIC, NODE, old_branch_tip)
-    assert ref_exists(repo, f"refs/heads/{archived}")
-    assert head(repo, archived) == old_branch_tip
+    # The branch name is reused for the fresh branch; the old tip lives in archive.
+    archive = archive_refs(repo, EPIC, NODE)
+    assert len(archive) == 1
+    assert head(repo, BRANCH) == second.base_ref
+    assert head(repo, archive[0]) == old_branch_tip
     assert all_local_refs(repo).issuperset(old_refs)
 
 

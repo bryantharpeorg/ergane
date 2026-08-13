@@ -151,6 +151,11 @@ def salvage_message(
     )
 
 
+def archive_message(epic_id: str, node_id: str, old_tip: str) -> str:
+    """Marker for a commit that captures uncommitted state before archiving a branch."""
+    return f"archive({epic_id}/{node_id}): superseded at {old_tip[:12]}"
+
+
 # The four operations ---------------------------------------------------------
 
 
@@ -171,6 +176,15 @@ def capture_base_ref(target_repo: Path | str) -> str:
     this exists to prevent.
     """
     repo = Path(target_repo)
+    return _remote_head(repo)
+
+
+def _remote_head(repo: Path) -> str:
+    """The landing branch's current head, fetched from origin if one exists.
+
+    Shared by `capture_base_ref` and the ancestry check: they must read the same
+    head, with the same no-origin fallback and the same raise-on-fetch-failure.
+    """
     branch = landing_branch(repo)
     if not _has_remote(repo, "origin"):
         return _git(repo, "rev-parse", "HEAD").strip()
@@ -194,6 +208,9 @@ def ensure(
 
     `base_ref` pins the branch point when given; otherwise the recorded pin is
     reused, and only a node that has never been prepared captures a fresh one.
+    A recorded pin is reused only when it is still an ancestor of the target's
+    current landing-branch head (US1 FR-001); otherwise the worktree is rebuilt
+    and the old branch is archived, never deleted (FR-004).
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
@@ -203,28 +220,50 @@ def ensure(
 
     if path.is_dir():
         if recorded is not None:
-            return recorded
-        # A worktree from an older run whose record was swept: adopt it rather
-        # than rebuild it, pinning to where it stands. Wrong is impossible here —
-        # the tree is the node's real state either way — and rebuilding would
-        # discard exactly the in-progress work the reuse rule protects.
-        return _record(
-            record_file,
-            PreparedWorktree(
-                str(path), branch, _head(path), _default_branch(repo)
-            ),
-        )
+            # FR-002: the directory, branch, pin and sidecar are untouched if
+            # the recorded base_ref still belongs to the target's history.
+            if _is_ancestor(repo, recorded.base_ref):
+                return recorded
+            # FR-003: the pin has diverged; archive and rebuild everything.
+            _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+            recorded = None
+        else:
+            # A worktree from an older run whose record was swept: adopt it rather
+            # than rebuild it, pinning to where it stands. Wrong is impossible here —
+            # the tree is the node's real state either way — and rebuilding would
+            # discard exactly the in-progress work the reuse rule protects.
+            return _record(
+                record_file,
+                PreparedWorktree(
+                    str(path), branch, _head(path), _default_branch(repo)
+                ),
+            )
 
-    pinned = base_ref or (recorded.base_ref if recorded else capture_base_ref(repo))
+    pinned = base_ref or (recorded.base_ref if recorded else None)
+    if pinned is None:
+        pinned = _remote_head(repo)
+    elif base_ref is None:
+        # Only recorded pins are ancestry-checked; an explicit caller instruction
+        # remains the caller's authority. (spec Edge Cases)
+        if not _is_ancestor(repo, pinned):
+            _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+            pinned = _remote_head(repo)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     if _branch_exists(repo, branch):
-        # The branch outlives its worktree (see `remove`), so a node prepared
-        # again after cleanup checks the branch out instead of re-creating it —
-        # its salvaged history is the node's record and must stay reachable.
-        _git(repo, "worktree", "add", "--quiet", str(path), branch)
-    else:
-        _git(repo, "worktree", "add", "--quiet", "-b", branch, str(path), pinned)
+        # FR-005: a surviving branch with no recorded pin is checked out only
+        # when it still descends from the freshly captured pin.
+        branch_tip = _rev_parse(repo, f"refs/heads/{branch}")
+        if not _is_ancestor(repo, pinned, branch_tip):
+            _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+        else:
+            _git(repo, "worktree", "add", "--quiet", str(path), branch)
+            return _record(
+                record_file,
+                PreparedWorktree(str(path), branch, pinned, _default_branch(repo)),
+            )
 
+    _git(repo, "worktree", "add", "--quiet", "-b", branch, str(path), pinned)
     return _record(
         record_file,
         PreparedWorktree(str(path), branch, pinned, _default_branch(repo)),
@@ -563,6 +602,63 @@ _SALVAGE_IDENTITY = {
 }
 
 
+def _rev_parse(repo: Path, ref: str) -> str:
+    """Resolve `ref` to a full sha; raise on failure."""
+    return _git(repo, "rev-parse", ref).strip()
+
+
+def _archive_node(
+    repo: Path,
+    factory_root: Path | str,
+    epic_id: str,
+    node_id: str,
+    branch: str,
+    path: Path,
+) -> None:
+    """Archive a node branch, removing any worktree first and deleting the sidecar.
+
+    Constitution VI: any uncommitted state in an abandoned tree is committed to
+    its branch before the branch is renamed. The branch is moved into the archive
+    namespace with a per-tip suffix so the name is unique and idempotent on retry
+    (trap 5). No existing ref is ever overwritten or deleted.
+    """
+    record_file = _record_file(factory_root, epic_id, node_id)
+    if path.is_dir():
+        if _is_dirty(path):
+            _git(path, "add", "-A")
+            _git(
+                path,
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                archive_message(epic_id, node_id, _head(path)),
+                env_extra=_SALVAGE_IDENTITY,
+            )
+        _git(repo, "worktree", "remove", "--force", str(path))
+    _git(repo, "worktree", "prune")
+
+    if _branch_exists(repo, branch):
+        # Resolve the tip after any dirty-state commit so the archive name embeds
+        # the actual archived tip (trap 5).
+        branch_tip = _rev_parse(repo, f"refs/heads/{branch}")
+        archive = f"archive/factory/{epic_id}/{node_id}/{branch_tip[:12]}"
+        if _branch_exists(repo, archive):
+            existing = _rev_parse(repo, f"refs/heads/{archive}")
+            if existing != branch_tip:
+                raise WorktreeError(
+                    f"archive ref {archive} exists at a different commit "
+                    f"({existing[:12]}); refusing to overwrite (FR-004)"
+                )
+            # Same tip already archived: nothing to do for this ref.
+        else:
+            _git(repo, "branch", "-m", branch, archive)
+
+    record_file.unlink(missing_ok=True)
+
+
 def _git(cwd: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:
     """Run one git command in `cwd`, returning stdout; raise `WorktreeError` on failure.
 
@@ -603,6 +699,32 @@ def _head_subject(path: Path) -> str | None:
 def _is_dirty(path: Path) -> bool:
     """Whether the tree holds anything to commit, untracked files included."""
     return bool(_git(path, "status", "--porcelain", "--untracked-files=all").strip())
+
+
+def _is_ancestor(repo: Path, ancestor: str, descendant: str | None = None) -> bool:
+    """True if `ancestor` is an ancestor of `descendant` (or of the current landing head).
+
+    Modelled on `_branch_exists` (trap 3): `merge-base --is-ancestor` answers "no"
+    with exit status 1, which `_git` would treat as a failure. A real git failure
+    (exit > 1, timeout, missing repo) is raised as `WorktreeError`.
+    """
+    if descendant is None:
+        descendant = _remote_head(repo)
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True,
+        text=True,
+        env=scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"},
+        timeout=GIT_TIMEOUT_S,
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    detail = (completed.stderr or completed.stdout).strip()
+    raise WorktreeError(
+        f"git merge-base --is-ancestor {ancestor} {descendant} failed in {repo}: {detail}"
+    )
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
