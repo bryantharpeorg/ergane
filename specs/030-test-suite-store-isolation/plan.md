@@ -1,31 +1,37 @@
 # Plan: The test suite owns its stores
 
-All line references below were read against the tree at commit `9594787` on
-2026-08-11. They are cited so you can find the code, not so you can trust the
-numbers — beside each anchor is the construct to grep for, because numbers rot
-before dispatch (see trap 6).
+All line references below were **re-verified against the tree at commit
+`3dbec67` on 2026-08-13**, replacing the 2026-08-11 `9594787` numbers this plan
+originally carried. They are cited so you can find the code, not so you can
+trust the numbers — beside each anchor is the construct to grep for, because
+numbers rot before dispatch (see trap 6, and note it has now been proved twice).
+
+**Read trap 2a before anything else.** The defect's *shape* changed after this
+plan was written: 031 landed and closed the escalation-row half of the leak,
+so what still fires today is a different write on the same broken boundary.
+A plan that sends you hunting the wrong row wastes the attempt.
 
 ## Reuse inventory
 
 | What | Where | Used by |
 | --- | --- | --- |
-| The evidence store's env-or-relative-default resolution | `factory/activities/verify_activities.py:121-123` (`DEFAULT_VERIFICATION_DB_PATH`, `VERIFICATION_DB_PATH_ENV`), `_store_path` at `:540-543` | US1 proof asserts on it; US2 context |
-| Its twin in the notify activities | `factory/activities/notify_activities.py:585-592` — grep `def _store_path` | US1 proof |
-| The direct Telegram send from env | `factory/activities/notify_activities.py:410-449` (`_send`; env names at `:71`/`:76` — grep `TELEGRAM_BOT_TOKEN_ENV =`) | US1 — why the creds must leave the env |
-| Factory-root resolution | `factory/activities/agent_activities.py:136,:163` and `factory/activities/merge_activities.py:74,:265` — grep `FACTORY_ROOT_ENV` | US1 proof |
-| Ledger-path resolution | `factory/activities/usage_activities.py:94-96,:521` — grep `LEDGER_PATH_ENV` | US1 proof |
+| The evidence store's env-or-relative-default resolution | `factory/activities/verify_activities.py:121`/`:123` (`DEFAULT_VERIFICATION_DB_PATH`, `VERIFICATION_DB_PATH_ENV`), `_store_path` at `:540-543` | US1 proof asserts on it; US2 context |
+| Its twin in the notify activities | `factory/activities/notify_activities.py:643-650` — grep `def _store_path` | US1 proof |
+| The direct Telegram send from env | `factory/activities/notify_activities.py:420` (`_send`; env names at `:78`/`:83` — grep `TELEGRAM_BOT_TOKEN_ENV =`) | US1 — why the creds must leave the env |
+| Factory-root resolution | `factory/activities/agent_activities.py:136`/`:163` and `factory/activities/merge_activities.py:77`/`:310`/`:374`/`:485` — grep `FACTORY_ROOT_ENV` | US1 proof |
+| Ledger-path resolution | `factory/activities/usage_activities.py:96`/`:521` — grep `LEDGER_PATH_ENV` | US1 proof |
 | Why `FACTORY_ROOT` must be absolute | `scripts/ergane-env.sh:80-84` (comment) and `factory/workgraph/worktree.py:73` | US1 — FR-002 |
-| The leaking harness | `tests/test_roadmap_scheduler.py:399-500` (`run_roadmap`; real `send_escalation` imported at `:430`, registered at `:456`) and its `env` fixture at `:376` which redirects **nothing** | US1-S3; do not "fix" it per-file — trap 1 |
+| The leaking harness | `tests/test_roadmap_scheduler.py:411` (`run_roadmap`; real `send_escalation` imported at `:442`, registered at `:470`) and its `env` fixture at `:389` which redirects **nothing** | US1-S3; do not "fix" it per-file — trap 1 |
 | The second leaking harness | `tests/test_ergane_roadmap.py:107-141` (`_worker` — grep `send_escalation`) | US1-S3 context |
-| The correct per-file pattern (now superseded, not removed) | `tests/test_roadmap_failure_notifications.py:112-138` (`env` fixture setting `VERIFICATION_DB_PATH_ENV` to tmp) | US1 — the precedent the session fixture generalizes |
-| The house pattern for patching the state-path trio | `tests/test_live_epic.py:405-417` — grep `MonkeyPatch.context` | US1 — same three variables, session-wide |
-| Per-file autouse env fixtures that stay | `tests/test_agent_activities.py:202-236` and `tests/test_workgraph_sweep.py:289-313` (`worker_host`) | US1 — FR-004; they override per test |
-| The default-root test that deletes the var | `tests/test_agent_activities.py:840-858` — grep `delenv(FACTORY_ROOT_ENV)` | US1 edge case — must keep passing |
-| The live smoke's opt-in guard | `tests/test_live_notify.py:181-187` (`live_config` — grep `pytest.skip`) and its store redirect at `:212` | US1 — FR-005 consumer of the stash |
+| The correct per-file pattern (now superseded, not removed) | `tests/test_roadmap_failure_notifications.py:117-136` (`env` fixture setting `VERIFICATION_DB_PATH_ENV` to tmp) | US1 — the precedent the session fixture generalizes |
+| The house pattern for patching the state-path trio | `tests/test_live_epic.py:414` — grep `MonkeyPatch.context` | US1 — same three variables, session-wide |
+| Per-file autouse env fixtures that stay | `tests/test_agent_activities.py:206` and `tests/test_workgraph_sweep.py:294` (`worker_host`) | US1 — FR-004; they override per test |
+| The default-root test that deletes the var | `tests/test_agent_activities.py:1006` — grep `delenv(FACTORY_ROOT_ENV)` | US1 edge case — must keep passing |
+| The live smoke's opt-in guard | `tests/test_live_notify.py:180-187` (`live_config` — grep `pytest.skip`) and its store redirect at `:212` | US1 — FR-005 consumer of the stash |
 | Existing conftest fixtures (append, don't reshape) | `tests/conftest.py:481-527` | US1 |
-| The choke point | `factory/verify/store.py:167-180` (`connect`; the `mkdir` at `:174` is what FR-009 is about) | US2 |
-| Why gate runs are already safe | `factory/verify/gates.py:82-94` (`SCRUBBED_ENV_ALLOWLIST`), `scrubbed_env` at `:216-228` | context — nobody should "harden" gates here |
-| The live rows to clean | `.factory/verification.db`: 9 `escalations` rows and 1 `roadmap_failures` row, all `roadmap-specs` | Phase 1 (operator) |
+| The choke point | `factory/verify/store.py:167-180` (`connect`; the `mkdir` inside it is what FR-009 is about) | US2 |
+| Why gate runs are already safe | `factory/verify/gates.py:85` (`SCRUBBED_ENV_ALLOWLIST`), `scrubbed_env` at `:271-281` | context — nobody should "harden" gates here |
+| The live rows to clean | `.factory/verification.db`: 9 `escalations` rows (frozen since 2026-08-11, pre-031) and 1 `roadmap_failures` row (**rewritten as recently as 2026-08-13 19:42:59Z** — see trap 2a), all `roadmap-specs` | Phase 1 (operator) |
 
 ## Traps
 
@@ -53,6 +59,40 @@ transcripts while every escalation still lands in the live store — the six
 through with no env exported at all. Own all three: `FACTORY_ROOT`,
 `FACTORY_VERIFICATION_DB_PATH`, `FACTORY_LEDGER_PATH`. Overwrite, never
 `setdefault`.
+
+### Trap 2a — the leaking row is `roadmap_failures` now, not `escalations`
+
+This spec was written on 2026-08-11 describing escalation rows as the ongoing
+leak. **031 landed after that and changed which row leaks.**
+`record_roadmap_failure` (`notify_activities.py:536`) now says so in its own
+docstring: *"No escalation row is written here: roadmap failures are reported as
+notices, not choices."* The store confirms it — the nine `roadmap-specs`
+escalation rows are frozen at 2026-08-11T02:43:35Z and have not grown since.
+
+What still fires is the `roadmap_failures` write, and because it is an upsert
+keyed by `roadmap_id` it leaves **one row that is silently rewritten** rather
+than a growing pile. Counting rows therefore under-reports the leak to zero.
+Check `updated_at`, not `count(*)`.
+
+**Live exhibit, generated by the operator on 2026-08-13 at 19:42:59Z**, during a
+full-suite run that had `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` unset and
+`FACTORY_ROOT` pointed at a fresh `mktemp -d`:
+
+```
+roadmap_failures: ('roadmap-specs', 0,
+  'max_concurrent_nodes must be a positive integer, got -1',
+  '2026-08-13T19:42:59Z')
+```
+
+That is fixture text from `tests/test_roadmap_scheduler.py`, in the live store,
+written by a run the operator believed was isolated. It is trap 2 proved
+empirically: **redirecting `FACTORY_ROOT` does not redirect the store.** The
+only env var that would have stopped it is `FACTORY_VERIFICATION_DB_PATH`, and
+no operator recipe in this repository sets it — which is exactly why the
+boundary has to belong to `tests/conftest.py` and not to whoever remembers.
+
+Your US1 proof should assert against this shape: a test that redirects only
+`FACTORY_ROOT` must still be caught.
 
 ### Trap 3 — stubbing the sender is not the boundary; neither is unplugging the service
 
@@ -98,10 +138,15 @@ the rule.
 
 ### Trap 6 — these line numbers rot, and this file's have a shorter half-life than most
 
-Roughly ten specs are in flight around the same tree, and one of them — 027 —
-edits shared test infrastructure (`tests/test_interpreter.py`,
-`tests/test_workgraph_sweep.py`; as of `9594787` no other in-flight spec names
-`tests/conftest.py`, but that can change before dispatch). Grep for
+Proved twice now. The 2026-08-11 numbers in the first draft of this plan were
+all wrong by 2026-08-13: `notify_activities._store_path` had moved ~58 lines,
+`gates.scrubbed_env` ~55, and `test_agent_activities`'s delenv case ~150, as
+025, 026, 027, 028, 029, 031, 036, 037 and 038 all landed in between. The
+inventory above was rewritten at `3dbec67`; assume it has started rotting again.
+
+Note also that 027 and 025 have now *landed* their edits to shared test
+infrastructure (`tests/test_interpreter.py`, `tests/test_workgraph_sweep.py`),
+so that particular collision is behind you rather than ahead. Grep for
 the construct named beside each anchor — `def _store_path`, `FACTORY_ROOT_ENV`,
 `SCRUBBED_ENV_ALLOWLIST`, `def connect`, `def run_roadmap` — and if what you
 find disagrees with a citation here, the code wins and you say so in your

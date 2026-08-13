@@ -8,6 +8,16 @@ state: ready
 # Scaffolded by `ergane findings promote` from
 # `hardening/test-suite-writes-to-the-live-evidence-store` (critical), then
 # refined against the tree at 9594787 on 2026-08-11.
+# Pre-dispatch refinement pass 2026-08-13 at 3dbec67 (after 025-029, 031,
+# 036-038 landed): every anchor in the plan re-verified, and trap 2a added
+# because the defect CHANGED SHAPE. 031 stopped writing an escalation row for a
+# roadmap failure, so the nine escalation rows are frozen at 2026-08-11 and the
+# live leak is now the `roadmap_failures` upsert — one row, silently rewritten,
+# which `count(*)` reports as no growth at all. Fresh exhibit: the operator's
+# own full-suite run at 2026-08-13T19:42:59Z wrote fixture text into the live
+# store while TELEGRAM_* were unset and FACTORY_ROOT pointed at a mktemp dir.
+# That is trap 2 proved live: FACTORY_ROOT is not the store's address, and no
+# operator recipe in this repo sets FACTORY_VERIFICATION_DB_PATH.
 # Recurrence verified live during refinement: the finding counted three fixture
 # rows on 2026-08-09; a read-only query on 2026-08-11 found NINE — the leak has
 # fired twice more since it was filed, without the Telegram credentials even
