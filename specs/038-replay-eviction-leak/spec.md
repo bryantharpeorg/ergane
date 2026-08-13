@@ -1,11 +1,13 @@
 ---
-state: draft
+state: ready
+# Flipped ready 2026-08-13 04:47Z on Bryan's word ("flip 38 and get it moving
+# now so I can check on it in the morning") and dispatched immediately.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-roadmap-target
 # Drafted 2026-08-13 ~04:50Z by the operator session that captured the
 # reproducer, supersedes 032-replay-determinism's US1 (parked at draft; see
 # specs/032-replay-determinism/RESCOPE-2026-08-12.md, "capture night"
-# addendum, for the full evidence chain). Bryan reviews and flips ready.
+# addendum, for the full evidence chain).
 # Evidence in hand: ten dumped histories (artifacts repro-history-1..10 of
 # run 31667012586), all clean recordings that replay green locally and
 # diverged on loaded CI runners; draft PR #46 is a standing regression bench
