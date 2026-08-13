@@ -536,6 +536,23 @@ def _clip(patch: str, limit: int) -> str:
     return encoded[:limit].decode("utf-8", errors="ignore") + DIFF_CLIP_NOTICE
 
 
+def trees_identical(repo: Path | str, ref_a: str, ref_b: str) -> bool:
+    """Compare two refs by their tree ids, never by commit sha (US3-S5).
+
+    A recovery may add salvage or merge commits on top of the rejected tip while
+    leaving every byte of content unchanged. A commit-sha comparison would miss
+    the futility and silently spend a second CI run; this compares
+    `git rev-parse <ref>^{tree}` for both refs.
+
+    Raises `WorktreeError` when a ref cannot be resolved or git refuses it — an
+    unknown ref is infrastructure, never a quiet mismatch.
+    """
+    repo = Path(repo)
+    tree_a = _git(repo, "rev-parse", f"{ref_a}^{{tree}}").strip()
+    tree_b = _git(repo, "rev-parse", f"{ref_b}^{{tree}}").strip()
+    return tree_a == tree_b
+
+
 def reset(
     target_repo: Path | str,
     epic_id: str,

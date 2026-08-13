@@ -137,6 +137,7 @@ with workflow.unsafe.imports_passed_through():
         salvage_worktree,
     )
     from factory.activities.merge_activities import (
+        CompareTreesInput,
         DisableAutoMergeInput,
         EnqueueLandingInput,
         FetchCheckFailureInput,
@@ -145,6 +146,7 @@ with workflow.unsafe.imports_passed_through():
         PrepareLandingPrInput,
         SyncLandingBranchInput,
         ValidateTargetRepoInput,
+        compare_trees,
         disable_auto_merge,
         enqueue_landing,
         fetch_check_failure,
@@ -448,6 +450,8 @@ class NodeStatus:
     #: US2: the queue history an operator reads when a landing is rejected, in
     #: order. Empty until the node has a landing with recorded outcomes.
     landing_history: tuple[ObservedOutcome, ...] = ()
+    #: US2: how many recovery cycles have been spent on this landing.
+    recovery_cycles: int = 0
     #: US1: the reason a node ended KILLED when the ladder did not produce it.
     #: Set only when a node coroutine crashed; otherwise None.
     terminal_reason: str | None = None
@@ -621,6 +625,9 @@ class EpicWorkflow:
                     landing_history=record.landing.outcomes
                     if record.landing is not None
                     else (),
+                    recovery_cycles=record.landing.recovery_cycles
+                    if record.landing is not None
+                    else 0,
                     terminal_reason=record.terminal_reason,
                 )
                 for node_id, record in self._nodes.items()
@@ -2116,7 +2123,12 @@ class EpicWorkflow:
             record.state = NodeState.KILLED
             return
 
-        record.landing = replace(landing, enqueued_at=_now(), state=LandingState.ENQUEUED)
+        record.landing = replace(
+            landing,
+            enqueued_at=_now(),
+            enqueued_tip=opened.pushed_sha,
+            state=LandingState.ENQUEUED,
+        )
         record.state = NodeState.ENQUEUED
         self._landing_tasks[node.id] = asyncio.ensure_future(
             self._poll_landing(graph, record, config)
@@ -2290,6 +2302,10 @@ class EpicWorkflow:
         record.base_ref = sync.base_ref
         record.prepared = prepared
 
+        # US3: remember whether the sync merged in nothing. This refutes the
+        # stale-base hypothesis for the recovery attempt's prompt (FR-013).
+        base_unmoved = record.base_ref is not None and record.base_ref == sync.base_ref
+
         failing_checks: tuple[CheckFailure, ...] = ()
         if sync.clean and last == QueueOutcome.CHECKS_FAILED:
             failing_checks = await workflow.execute_activity(
@@ -2321,6 +2337,7 @@ class EpicWorkflow:
             persona,
             conflicted_files,
             failing_checks,
+            base_unmoved=base_unmoved,
         )
         if result is not None:
             await self._reenqueue(
@@ -2352,6 +2369,7 @@ class EpicWorkflow:
         persona: str,
         conflicted_files: tuple[str, ...],
         failing_checks: tuple[CheckFailure, ...] = (),
+        base_unmoved: bool = False,
     ) -> VerificationResult | None:
         """One bounded recovery attempt: fresh key, landing evidence, then verify.
 
@@ -2379,6 +2397,7 @@ class EpicWorkflow:
                 queue_history=landing.outcomes,
                 conflicted_files=conflicted_files,
                 failing_checks=failing_checks,
+                base_unmoved=base_unmoved,
             ),
         )
 
@@ -2463,6 +2482,52 @@ class EpicWorkflow:
         """
         config = request.landing_config
         node = resolved.node
+        landing = record.landing
+        # US3: before preparing the PR, decide whether re-enqueueing would be
+        # futile: the tree the queue already rejected vs. the tree we are about
+        # to push. Identical trees require a human's flake judgment.
+        if landing is not None and landing.enqueued_tip is not None:
+            identical = await workflow.execute_activity(
+                compare_trees,
+                CompareTreesInput(
+                    epic_id=graph.epic_id,
+                    node_id=record.node_id,
+                    target_repo=graph.target_repo,
+                    rejected_tip=landing.enqueued_tip,
+                    current_head=prepared.base_ref,
+                ),
+                **_GIT,
+            )
+            if identical:
+                record.landing = replace(
+                    landing,
+                    check_evidence=(),
+                    state=LandingState.REJECTED,
+                )
+                resolution = await self._escalate_landing(
+                    graph,
+                    request,
+                    record,
+                    note=(
+                        "Re-enqueueing would be futile: the recovery's tree is "
+                        "identical to the tree the queue already rejected. "
+                        "RETRY means 'I judge the red a flake' and will enqueue "
+                        "the identical tree."
+                    ),
+                )
+                if resolution == EscalationChoice.RETRY.value:
+                    # The operator judged it a flake; complete the interrupted
+                    # enqueue of the same recovery cycle.
+                    record.landing = replace(
+                        record.landing,
+                        state=LandingState.REJECTED,
+                    )
+                else:
+                    await self._apply_landing_resolution(
+                        graph, request, resolved, resolution, sources, judge
+                    )
+                    return
+
         await workflow.execute_activity(
             salvage_worktree,
             SalvageWorktreeInput(
@@ -2520,6 +2585,7 @@ class EpicWorkflow:
         record.landing = replace(
             record.landing,
             enqueued_at=_now(),
+            enqueued_tip=opened.pushed_sha,
             state=LandingState.ENQUEUED,
         )
         record.state = NodeState.ENQUEUED
@@ -2528,7 +2594,12 @@ class EpicWorkflow:
         )
 
     async def _escalate_landing(
-        self, graph: WorkGraph, request: EpicInput, record: NodeRecord
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        record: NodeRecord,
+        *,
+        note: str | None = None,
     ) -> str:
         """Page a human with the rendered queue history and wait out the hour.
 
@@ -2539,14 +2610,21 @@ class EpicWorkflow:
         undelivered message applies the fail-safe KILL at once; an hour of
         silence expires to KILL; the store's word on a press that beat the timer
         by a millisecond still decides (002 R12).
+
+        US3: an optional `note` explains why this escalation fired when it is not
+        the ordinary exhaustion case — e.g. a futile re-enqueue. The note is
+        appended to the rendered history summary so the operator sees the reason.
         """
+        history_summary = render_landing_history(record.landing)
+        if note:
+            history_summary = f"{history_summary}\n\n{note}"
         sent = await workflow.execute_activity(
             send_escalation,
             SendEscalationInput(
                 workflow_id=workflow.info().workflow_id,
                 epic_id=graph.epic_id,
                 node_id=record.node_id,
-                history_summary=render_landing_history(record.landing),
+                history_summary=history_summary,
                 choices=list(DEFAULT_CHOICES),
                 timeout_s=request.config.escalation_timeout_s,
                 check_evidence=record.landing.check_evidence,

@@ -90,12 +90,18 @@ class LandingEvidence:
     US2: `failing_checks` carries the per-check evidence (name, run URL, log
     tail, note) for a `CHECKS_FAILED` recovery. Default `()` keeps CONFLICT and
     pre-spec histories untouched.
+
+    US3: `base_unmoved` is True when the recovery sync merged in nothing (the
+    target head had not moved). The recovery prompt then states that the base
+    was not stale, refuting the stale-base hypothesis (FR-013). Default
+    `False` keeps pre-spec and moved-base histories unchanged.
     """
 
     outcome: QueueOutcome
     queue_history: tuple[ObservedOutcome, ...]
     conflicted_files: tuple[str, ...] = ()
     failing_checks: tuple[CheckFailure, ...] = ()
+    base_unmoved: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,6 +228,13 @@ _LANDING_PREAMBLE = (
     "Your branch was rejected by the merge queue after its last verification. "
     "This is why the queue refused it, reproduced verbatim from the queue "
     "history — read it as what actually happened, not as a summary of it:"
+)
+
+#: US3: appended when the sync merged in nothing — the stale-base hypothesis is
+#: refuted, so the agent should read the failure as its own content.
+_BASE_UNMOVED_NOTICE = (
+    "The sync merged in nothing: the target head had not moved, so the base "
+    "was not stale. The failure lives in this branch's own content."
 )
 
 #: 008-US2: the operator's answer to the question your previous attempt asked,
@@ -503,6 +516,8 @@ def _landing_section(evidence: LandingEvidence) -> str:
         blocks.append(
             f"Conflicted files (resolve these conflict markers):\n{files}"
         )
+    if evidence.base_unmoved:
+        blocks.append(_BASE_UNMOVED_NOTICE)
     return "\n\n".join(blocks)
 
 

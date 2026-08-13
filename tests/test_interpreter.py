@@ -137,6 +137,7 @@ from factory.activities.agent_activities import (
     SalvageWorktreeInput,
 )
 from factory.activities.merge_activities import (
+    CompareTreesInput,
     DisableAutoMergeInput,
     EnqueueLandingInput,
     FetchCheckFailureInput,
@@ -696,10 +697,11 @@ class OpenLandingPrBody:
 
 @dataclass(frozen=True)
 class OpenLandingPr:
-    """What `open_landing_pr` hands back — the PR's identity."""
+    """What `open_landing_pr` hands back — the PR's identity and pushed sha."""
 
     number: int
     url: str
+    pushed_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -886,6 +888,7 @@ class ScriptedWorld:
         heartbeat_then_block: bool = False,
         agent_sleep_s: float = 0.0,
         key_fail_first_n: int = 0,
+        record_pushed_sha: bool = True,
     ) -> None:
         self._script = script
         self._client = client
@@ -977,6 +980,10 @@ class ScriptedWorld:
         self.detect_requests: list[DetectQuestionInput] = []
         self.question_requests: list[SendQuestionInput] = []
         self.question_message_ids: list[int] = []
+        #: US3: whether the fake `open_landing_pr` records a pushed_sha. False
+        #: simulates a landing enqueued before FR-009 started recording the tip.
+        self._record_pushed_sha = record_pushed_sha
+
         #: US2's return path. The answer the fake `send_question` delivers as a
         #: `question_answered(question_id, answer_text)` signal while the send is
         #: in flight — the bridge's timing, modeled the same way `send_escalation`
@@ -1012,6 +1019,10 @@ class ScriptedWorld:
         #: US2 recovery: per-node scripted `fetch_check_failure` answers.
         self.check_failure_results: dict[str, tuple[CheckFailure, ...]] = {}
         self.check_failure_requests: list[FetchCheckFailureInput] = []
+
+        #: US3 recovery: per-node scripted `compare_trees` answers.
+        self.tree_comparisons: dict[str, bool] = {}
+        self.compare_trees_requests: list[CompareTreesInput] = []
 
         #: US3 onboarding: the profile the scripted `validate_target_repo` returns,
         #: and the calls logged. Defaults to a fully conforming repo so the rest of
@@ -1189,6 +1200,14 @@ class ScriptedWorld:
     ) -> None:
         """Script one node's `fetch_check_failure` answer (US2, FR-005)."""
         self.check_failure_results[node_id] = evidence
+
+    def script_tree_comparison(
+        self,
+        node_id: str,
+        identical: bool,
+    ) -> None:
+        """Script one node's `compare_trees` answer (US3)."""
+        self.tree_comparisons[node_id] = identical
 
     # --- the fakes ----------------------------------------------------------
 
@@ -1522,7 +1541,13 @@ class ScriptedWorld:
             script.landing_requests.append(request)
             pr_number = script._pr_number_for(request.node_id)
             script._pr_numbers[request.node_id] = pr_number
-            return OpenLandingPr(number=pr_number, url=f"https://x/pull/{pr_number}")
+            # US3: the fake records a deterministic pushed_sha so the futility
+            # comparison can be scripted by the rejected_tip / current_head refs.
+            return OpenLandingPr(
+                number=pr_number,
+                url=f"https://x/pull/{pr_number}",
+                pushed_sha=request.node_id if self._record_pushed_sha else None,
+            )
 
         @activity.defn(name="enqueue_landing")
         async def enqueue_landing(request: EnqueueLandingInput) -> Any:
@@ -1571,6 +1596,12 @@ class ScriptedWorld:
             script._log("fetch_check_failure", request.node_id)
             script.check_failure_requests.append(request)
             return script.check_failure_results.get(request.node_id, ())
+
+        @activity.defn(name="compare_trees")
+        async def compare_trees(request: CompareTreesInput) -> bool:
+            script._log("compare_trees", request.node_id)
+            script.compare_trees_requests.append(request)
+            return script.tree_comparisons.get(request.node_id, False)
 
         @activity.defn(name="validate_target_repo")
         async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
@@ -1715,6 +1746,7 @@ class ScriptedWorld:
             disable_auto_merge,
             sync_landing_branch,
             fetch_check_failure,
+            compare_trees,
             validate_target_repo,
             send_escalation,
             expire_escalation,
@@ -4306,6 +4338,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "check_output",
         "record_verification",
         "teardown_attempt:implementer",
+        "compare_trees",
         "salvage_worktree",
         "prepare_landing_pr",
         "open_landing_pr",
@@ -5498,4 +5531,185 @@ async def test_signal_gate_fails_loudly_when_declared_set_is_never_reached(
         f"gate timed out without recording its marker; calls={script.calls}"
     )
     assert status.epic_state == EpicState.PAUSED
+
+
+# --- US3: futile recovery escalates before re-enqueueing (FR-009/010/011) -----
+
+
+async def test_checks_failed_futile_recovery_escalates_before_second_enqueue(
+    env: WorkflowEnvironment,
+) -> None:
+    """US3-S1: a recovery that changes nothing escalates before any second enqueue.
+
+    The sync merges in nothing (base_ref does not move) and the recovery attempt's
+    tree is identical to the rejected tip. The interpreter must compare the trees,
+    see they are the same, and escalate with the usual choices rather than silently
+    spending another CI run. The escalation's history_summary names the futility —
+    the identical-tree fact — not merely the queue history.
+    """
+    script = ScriptedWorld({"us1": [passing(), passing()]}, client=env.client)
+    pr_number = script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    # Sync merges in nothing: the target head is unchanged.
+    script.script_sync("us1", clean=True, base_ref="9" * 40)
+    # The recovery attempt's tree equals the rejected tip.
+    script.script_tree_comparison("us1", identical=True)
+
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        landing_config=LandingConfig(max_recovery_cycles=1),
+    )
+
+    assert states(status) == {"us1": NodeState.KILLED}
+    # Exactly one enqueue happened — the first landing. No second enqueue.
+    assert [r.pr_number for r in script.enqueue_requests] == [pr_number]
+    # The futility gate ran a tree comparison before it would have re-enqueued.
+    assert len(script.compare_trees_requests) == 1
+    assert script.compare_trees_requests[0].node_id == "us1"
+    # A landing escalation fired, with the standard choices.
+    assert len(script.escalation_requests) == 1
+    escalation = script.escalation_requests[0]
+    assert escalation.choices == [
+        EscalationChoice.RETRY,
+        EscalationChoice.KILL,
+        EscalationChoice.PAUSE_EPIC,
+    ]
+    # The history summary names the futility — identical tree, not just queue history.
+    assert "identical" in escalation.history_summary.lower()
+    assert "tree" in escalation.history_summary.lower()
+    assert "CHECKS_FAILED" in escalation.history_summary
+
+
+async def test_checks_failed_futile_recovery_retry_proceeds_to_enqueue(
+    env: WorkflowEnvironment,
+) -> None:
+    """US3-S2: RETRY on a futility escalation enqueues the identical tree anyway.
+
+    The operator's flake judgment is what overrides the futility gate. The
+    identical tree is pushed and enqueued, the landing returns to polling, and
+    `recovery_cycles` is incremented exactly once for the whole cycle — the RETRY
+    does not count as a second recovery cycle.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()]},
+        client=env.client,
+        press=EscalationChoice.RETRY.value,
+    )
+    pr_number = script.script_landing(
+        "us1", checks_failed_snapshot(), merged_snapshot()
+    )
+    script.script_sync("us1", clean=True, base_ref="9" * 40)
+    script.script_tree_comparison("us1", identical=True)
+
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        landing_config=LandingConfig(max_recovery_cycles=1),
+    )
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    assert status.nodes["us1"].pr_number == pr_number
+    assert status.nodes["us1"].recovery_cycles == 1
+    # Two enqueues total: first landing + the RETRY'd re-enqueue.
+    assert [r.pr_number for r in script.enqueue_requests] == [pr_number, pr_number]
+    assert len(script.escalation_requests) == 1
+    # The landing returned to polling after the RETRY re-enqueue.
+    assert len(script.poll_requests) >= 2
+
+
+async def test_checks_failed_futile_recovery_kill_ends_killed_with_branch(
+    env: WorkflowEnvironment,
+) -> None:
+    """US3-S3: KILL (and expiry) on a futility escalation ends KILLED, branch preserved."""
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()]},
+        client=env.client,
+        press=EscalationChoice.KILL.value,
+    )
+    pr_number = script.script_landing(
+        "us1", checks_failed_snapshot(), checks_failed_snapshot()
+    )
+    script.script_sync("us1", clean=True, base_ref="9" * 40)
+    script.script_tree_comparison("us1", identical=True)
+
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        landing_config=LandingConfig(max_recovery_cycles=1),
+    )
+
+    assert states(status) == {"us1": NodeState.KILLED}
+    assert status.nodes["us1"].landing_state == LandingState.KILLED
+    assert status.nodes["us1"].branch == branch_name(EPIC_ID, "us1")
+    assert status.nodes["us1"].recovery_cycles == 1
+    # Only the first landing's enqueue; the escalation killed before a second.
+    assert [r.pr_number for r in script.enqueue_requests] == [pr_number]
+
+
+async def test_checks_failed_recovery_with_changed_tree_reenqueues_normally(
+    env: WorkflowEnvironment,
+) -> None:
+    """US3-S4: a recovery that changes the tree proceeds exactly as today.
+
+    The sync may have merged in a moved target head, or the attempt may have
+    edited something — either way the tree differs, so no futility escalation
+    fires. The existing recovery path runs unchanged.
+    """
+    script = ScriptedWorld({"us1": [passing(), passing()]}, client=env.client)
+    pr_number = script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+    script.script_tree_comparison("us1", identical=False)
+
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        landing_config=LandingConfig(max_recovery_cycles=1),
+    )
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    assert status.nodes["us1"].pr_number == pr_number
+    assert status.nodes["us1"].recovery_cycles == 1
+    # No futility escalation.
+    assert len(script.escalation_requests) == 0
+    # Two enqueues, no compare_trees gate (or if recorded, it returned False).
+    assert [r.pr_number for r in script.enqueue_requests] == [pr_number, pr_number]
+
+
+async def test_checks_failed_recovery_without_enqueued_tip_reenqueues_normally(
+    env: WorkflowEnvironment,
+) -> None:
+    """US3-S4 edge: a landing with no recorded `enqueued_tip` never reads as futile.
+
+    Pre-spec histories do not carry the tip the queue tested. Absence is not
+    identity: the recovery re-enqueues exactly as today, with no escalation and no
+    compare_trees call. This test fails only if the implementation over-reaches.
+    """
+    # Simulate a pre-spec-history landing by suppressing the pushed_sha the fake
+    # open_landing_pr normally records. The first landing's enqueue happens without
+    # an `enqueued_tip`, so the recovery re-enqueues as today.
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()]},
+        client=env.client,
+        record_pushed_sha=False,
+    )
+    pr_number = script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        landing_config=LandingConfig(max_recovery_cycles=1),
+    )
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    assert status.nodes["us1"].pr_number == pr_number
+    # No futility gate was invoked because there was no recorded tip to compare.
+    assert script.compare_trees_requests == []
+    assert len(script.escalation_requests) == 0
+    assert [r.pr_number for r in script.enqueue_requests] == [pr_number, pr_number]
 

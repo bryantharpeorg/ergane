@@ -150,6 +150,8 @@ ACTIVITIES = [
     merge_activities.sync_landing_branch,
     # 003 — US2 recovery: fetch the failing check's log for the recovery prompt.
     merge_activities.fetch_check_failure,
+    # 003 — US3 recovery: compare the rejected tip's tree with the current head.
+    merge_activities.compare_trees,
     # 003 — US3 onboarding: the target repo is validated before any dispatch.
     merge_activities.validate_target_repo,
     # 009 — the roadmap's pre-dispatch surface: clone, derive, preflight,

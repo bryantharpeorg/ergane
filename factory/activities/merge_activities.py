@@ -143,10 +143,34 @@ class OpenLandingPrInput:
 
 @dataclass(frozen=True)
 class OpenLandingPrResult:
-    """The PR the landing will ride: number and URL, for the record and the body."""
+    """The PR the landing will ride: number, URL, and pushed sha.
+
+    US3: `pushed_sha` records the commit the branch was pushed to origin with,
+    so a later recovery can compare the tree the queue rejected against the tree
+    it is about to re-enqueue (FR-009). Default `None` keeps pre-spec histories
+    replayable.
+    """
 
     number: int
     url: str
+    pushed_sha: str | None = None
+
+
+@dataclass(frozen=True)
+class CompareTreesInput:
+    """US3: which two refs to compare for tree identity in a node's worktree.
+
+    `rejected_tip` is the recorded `enqueued_tip` — what the queue tested.
+    `current_head` is the worktree HEAD after the recovery sync and attempt.
+    The activity runs `git rev-parse <ref>^{tree}` for both and reports whether
+    the tree ids match.
+    """
+
+    epic_id: str
+    node_id: str
+    target_repo: str
+    rejected_tip: str
+    current_head: str
 
 
 @dataclass(frozen=True)
@@ -342,7 +366,7 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
     as its own kind when `gh` refused the create.
     """
     try:
-        await asyncio.to_thread(
+        pushed_sha = await asyncio.to_thread(
             worktrees.push_branch,
             request.target_repo,
             request.epic_id,
@@ -356,7 +380,9 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
 
     existing = client.find_existing_pr(request.branch)
     if existing is not None:
-        return OpenLandingPrResult(number=existing.number, url=existing.url)
+        return OpenLandingPrResult(
+            number=existing.number, url=existing.url, pushed_sha=pushed_sha
+        )
 
     created = client.create_pr(
         base=request.base,
@@ -364,7 +390,9 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
         title=request.title,
         body_file=request.body_file,
     )
-    return OpenLandingPrResult(number=created.number, url=created.url)
+    return OpenLandingPrResult(
+        number=created.number, url=created.url, pushed_sha=pushed_sha
+    )
 
 
 @activity.defn
@@ -406,6 +434,28 @@ async def disable_auto_merge(request: DisableAutoMergeInput) -> DisableResult:
     except GhError as exc:
         return DisableResult(failed=True, reason=exc.stderr_tail or str(exc))
     return DisableResult(failed=False, reason="")
+
+
+@activity.defn
+async def compare_trees(request: CompareTreesInput) -> bool:
+    """Compare the rejected tip's tree with the current worktree HEAD (US3).
+
+    Runs on a thread via `asyncio.to_thread` so the git subprocess never blocks the
+    worker's event loop (trap 4). Returns True when the two refs resolve to the
+    same tree id, False otherwise. A missing worktree or an unresolvable ref is
+    a `WorktreeError` surfaced as `ApplicationError(type=PUSH_FAILED)` so the
+    workflow escalates rather than guessing.
+    """
+
+    def _compare() -> bool:
+        return worktrees.trees_identical(
+            request.target_repo, request.rejected_tip, request.current_head
+        )
+
+    try:
+        return await asyncio.to_thread(_compare)
+    except worktrees.WorktreeError as exc:
+        raise ApplicationError(str(exc), type=PUSH_FAILED) from exc
 
 
 @activity.defn

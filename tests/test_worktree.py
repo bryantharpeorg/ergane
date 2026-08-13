@@ -75,6 +75,7 @@ from factory.workgraph.worktree import (
     remove,
     salvage,
     sync_with_target,
+    trees_identical,
 )
 from tests.target_repo import git, git_env
 
@@ -1313,3 +1314,67 @@ def test_ensure_captures_fresh_pin_after_remove_advances_origin(
     assert len(archive) == 1
     assert head(repo, archive[0]) == old_branch_tip
     assert all_local_refs(repo).issuperset(old_refs)  # no ref deleted
+
+
+# --- tree identity (US3) ------------------------------------------------------
+
+
+def _make_tmp_repo(tmp_path: Path, name: str) -> Path:
+    """A fresh git repo with one commit, using the same environment as the fixture."""
+    repo = tmp_path / name
+    repo.mkdir()
+    git(repo, "init", "--quiet", "-b", "main")
+    (repo / "file.txt").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "--quiet", "-m", "base")
+    return repo
+
+
+def test_trees_identical_true_when_commits_differ_but_tree_matches(
+    tmp_path: Path,
+) -> None:
+    """US3-S5: commit identity is not tree identity — salvage must not fool the gate.
+
+    A recovery re-enqueues the branch after salvage commits. Two salvage commits
+    on top of the rejected tip produce a different commit sha but the same bytes
+    in the tree. The futility gate must compare `<sha>^{tree}`, not the sha itself,
+    or the fix ships dead: identical bytes would pass through silently and burn a
+    second CI run.
+    """
+    repo = _make_tmp_repo(tmp_path, "same-tree")
+    base = head(repo)
+    # First commit: no content change.
+    git(repo, "commit", "--quiet", "--allow-empty", "-m", "empty marker one")
+    first = head(repo)
+    git(repo, "reset", "--quiet", "--hard", base)
+    # Second commit: also no content change, different subject → different sha.
+    git(repo, "commit", "--quiet", "--allow-empty", "-m", "empty marker two")
+    second = head(repo)
+
+    assert first != second, "the two commits must have different shas for the test"
+    assert trees_identical(repo, first, second) is True
+
+
+def test_trees_identical_false_when_content_differs_by_one_byte(
+    tmp_path: Path,
+) -> None:
+    """US3-S5: a real one-byte change changes the tree and must re-enqueue normally."""
+    repo = _make_tmp_repo(tmp_path, "different-tree")
+    (repo / "file.txt").write_text("base!\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "--quiet", "-m", "one byte change")
+    changed = head(repo)
+    git(repo, "reset", "--quiet", "--hard", "HEAD~1")
+    original = head(repo)
+
+    assert trees_identical(repo, original, changed) is False
+
+
+def test_trees_identical_false_when_refs_are_unknown(
+    tmp_path: Path,
+) -> None:
+    """An unknown ref is a worktree error, never a silent mismatch."""
+    repo = _make_tmp_repo(tmp_path, "unknown-ref")
+
+    with pytest.raises(WorktreeError):
+        trees_identical(repo, head(repo), "not-a-ref")

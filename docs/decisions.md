@@ -5,6 +5,34 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-044 · A `CHECKS_FAILED` recovery is a retry with evidence; re-enqueueing an identical tree requires an operator (decided)
+
+Decided 2026-08-13, claimed at landing of spec `025-ci-red-recovery` US3.
+The factory previously held that a `CHECKS_FAILED` rejection should silently
+sync-and-re-enqueue: a recovery attempt that produced no tree change, or a sync
+that merged in nothing, would pass through and burn a second CI run on bytes the
+queue had already rejected. The new rule is that the enqueued commit is recorded
+(`Landing.enqueued_tip`), and before any re-enqueue the rejected tip's tree is
+compared with the tree about to be pushed. Identical trees escalate with choices
+`[RETRY | KILL | PAUSE_EPIC]`; only an operator's `RETRY` judgment ("the red
+was a flake") proceeds. A sync that merged in nothing is reported in the recovery
+prompt so the agent reads the failure as its own content rather than as a stale
+base.
+
+1. **Tree identity, not commit identity.** The incident signature is two salvage
+   or merge commits on top of a rejected tip while the tree stays byte-identical.
+   A commit-sha comparison would silently pass the identical tree; the comparison
+   is `git rev-parse <ref>^{tree}`.
+2. **No new `QueueOutcome` or `LandingState` member.** Futility is routed through
+   the existing landing escalation machinery, with `RETRY` given caller-side
+   meaning: it completes the interrupted enqueue of the same recovery cycle rather
+   than granting an additional cycle.
+3. **No automatic retry of a required check.** The escalation exists precisely so
+   a human makes the flake call; any retry loop near the queue's gate is
+   forbidden by constitution II and this decision.
+
+---
+
 ## D-043 · `ergane build reset` is the supported path after a terminated epic; archive, never delete (decided)
 
 Decided 2026-08-13, claimed at landing of spec `028-epic-relaunch-reset` US3.
