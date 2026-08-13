@@ -1616,21 +1616,36 @@ def _epics(client: Any) -> list[_Epic]:
 #: Full suite (clean env, T012):
 #:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest -q --durations=30
 #:   Before (US1 only, a564b8c): 2202 passed, 44 skipped in 250.22s (0:04:10)
-#:   After  (US1+US2, 74c5519): 2202 passed, 44 skipped in 183.70s (0:03:03)
+#:   After  (US1+US2+T011, current worktree): 2202 passed, 44 skipped in 190.94s (0:03:10)
 #:
 #:   Slowest 5 after:
-#:     20.32s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
+#:     20.37s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
 #:     12.09s call tests/test_interpreter.py::test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown
-#:     12.08s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
-#:     10.12s call tests/test_live_capacity.py::test_capacity_read_excludes_continued_as_new_chain
+#:     12.09s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
+#:     10.16s call tests/test_live_capacity.py::test_capacity_read_excludes_continued_as_new_chain
 #:      5.97s call tests/test_gates.py::test_a_gate_passes_alone_and_passes_contended
-#:   The sweep test is no longer in the slowest 5; the remaining >5s tests are outside
+#:   The sweep test is no longer in the slowest 30; the remaining >5s tests are outside
 #:   this story's scope (live_capacity, US1 heartbeat timeouts, gate contention).
 #:
-#: T011 mutation bite-check: see OPERATOR QUESTION in this attempt transcript — the
-#: restructured sweep itself stays green under every `_edges_satisfied` weakening I
-#: tried, because `max_concurrent_nodes=1` never lets a dependent dispatch while its
-#: dependency is unverified. The structural test `test_readiness_is_every_dependency_in_the_passed_state` does catch the mutation.
+#: T011 mutation bite-check (US2-S3) — `_edges_satisfied` pass-edge conjunct weakened
+#: to `.verified or not .verified`, with `max_concurrent_nodes=2` applied to the first
+#: diamond epic only for the mutation run. At cap=1 the sweep stays green under every
+#: weakening: the scheduler's single slot means a dependency is PASSED-and-verified (or
+#: killed-with-dependents-locked-out) before any slot frees, so a dependent is never
+#: considered for dispatch while its dependency is still unverified. The cap=2
+#: override makes the defect observable. The override is part of the mutation
+#: procedure only; the committed test keeps `max_concurrent_nodes=1` for every epic.
+#:
+#: Mutation run (red):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
+#:   FAILED tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:   AssertionError: the first node of a diamond fails to exhaustion: ended {'us1': <NodeState.KILLED: 'KILLED'>, 'us2': <NodeState.MERGED: 'MERGED'>, 'us3': <NodeState.MERGED: 'MERGED'>}
+#:   assert {'us1': <NodeState.KILLED: 'KILLED'>, 'us2': <NodeState.MERGED: 'MERGED'>, 'us3': <NodeState.MERGED: 'MERGED'>} == {'us1': <NodeState.KILLED: 'KILLED'>, 'us2': <NodeState.KILLED: 'KILLED'>, 'us3': <NodeState.KILLED: 'KILLED'>}
+#:
+#: Revert run (green):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
+#:   1.77s call     tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:   1 passed, 89 deselected in 2.44s
 async def test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency(
     temporal: Any,
 ) -> None:
