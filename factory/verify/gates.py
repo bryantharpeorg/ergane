@@ -35,6 +35,7 @@ ten-minute default to prove it is ten minutes.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -46,6 +47,8 @@ from typing import IO, Mapping, Protocol
 
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
+    PARSE_CLI_OK,
+    PARSE_CLI_REJECTED,
     FactoryConfigError,
     config_error_result,
     load_factory_config,
@@ -112,6 +115,58 @@ _TRIM_FACTOR = 4
 #: at EOF, which the SIGKILL guarantees; the bound is only so a process that
 #: escaped its group cannot hang the verification.
 _DRAIN_JOIN_S = 5.0
+
+
+# Candidate parser protocol --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CandidateOutcome:
+    """Raw result from a candidate parser subprocess."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+@dataclass(frozen=True)
+class _AcceptedConfig:
+    """A candidate acceptance: the subset of the protocol the runner consumes."""
+
+    kind: str = "accepted"
+    gates: dict[str, str] | None = None
+    timeouts: dict[str, int] | None = None
+
+
+@dataclass(frozen=True)
+class _RejectedConfig:
+    """A candidate rejection: the worker uses this message as the CONFIG_ERROR."""
+
+    kind: str = "rejected"
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class _CannotRun:
+    """A candidate that could not run: reason is appended to fallback tail."""
+
+    kind: str = "cannot-run"
+    reason: str = ""
+
+
+class CandidateRunner(Protocol):
+    """A callable seam for candidate parser subprocesses.
+
+    Tests pass a plain callable `(worktree, manifest) -> CandidateOutcome`;
+    the real implementation is an object with a `run` method. Both shapes
+    are accepted so the public API matches the existing `executor` keyword.
+    """
+
+    def __call__(self, worktree: Path, manifest: Path) -> CandidateOutcome: ...
+
+
+_CandidateResult = _AcceptedConfig | _RejectedConfig | _CannotRun
 
 
 # Invocation seam ------------------------------------------------------------
@@ -382,6 +437,175 @@ def _drain(stream: IO[bytes] | None, buffer: _TailBuffer) -> None:
         stream.close()
 
 
+# Candidate parser implementation --------------------------------------------
+
+
+def _interpret_candidate(
+    exit_code: int, stdout: str, stderr: str, timed_out: bool
+) -> _CandidateResult:
+    """Map a candidate parser subprocess result to accepted/rejected/cannot-run.
+
+    Exit 0 alone is not acceptance (spec US2-S5, plan trap 2): a pre-CLI
+    worktree's `factory.verify.factory_yaml` runs its module body, prints
+    nothing, and exits 0. Only exit 0 **and** stdout that parses as a valid
+    protocol JSON document means accepted. Any other exit code that is not the
+    documented rejection code is cannot-run, including exit 2 from `uv run`
+    over a worktree whose `pyproject.toml` an agent broke (plan trap 9).
+    """
+    if timed_out:
+        return _CannotRun(reason="candidate parse timed out")
+
+    if exit_code == PARSE_CLI_REJECTED:
+        return _RejectedConfig(message=stderr.rstrip())
+
+    if exit_code != PARSE_CLI_OK:
+        return _CannotRun(reason=f"non-rejection exit code {exit_code}")
+
+    try:
+        document = json.loads(stdout)
+    except json.JSONDecodeError:
+        return _CannotRun(
+            reason="exit 0 but stdout did not parse as protocol JSON"
+        )
+
+    if not isinstance(document, dict):
+        return _CannotRun(reason="exit 0 but stdout did not parse as protocol JSON")
+
+    gates_view = document.get("gates")
+    timeouts_view = document.get("timeouts", {})
+
+    if not isinstance(gates_view, dict) or not gates_view:
+        return _CannotRun(reason="protocol gates mapping is empty")
+    if not all(isinstance(name, str) and isinstance(cmd, str) and cmd.strip()
+               for name, cmd in gates_view.items()):
+        return _CannotRun(
+            reason="protocol gates mapping is not a non-empty str-to-str mapping"
+        )
+
+    if not isinstance(timeouts_view, dict) or not all(
+        isinstance(name, str) and isinstance(seconds, int) and seconds > 0
+        for name, seconds in timeouts_view.items()
+    ):
+        return _CannotRun(
+            reason="protocol timeouts are not str-to-positive-int"
+        )
+
+    return _AcceptedConfig(
+        gates=dict(gates_view),
+        timeouts=dict(timeouts_view),
+    )
+
+
+class SubprocessCandidateRunner:
+    """Runs the worktree's candidate parser as `uv run -q python -m ...`.
+
+    The protocol needs **separated** stdout/stderr streams, so this runner has
+    its own small subprocess plumbing rather than reusing `SubprocessGateExecutor`,
+    which merges stderr into stdout. stdout is parsed as protocol JSON; stderr is
+    kept for rejection and cannot-run messages.
+
+    The same environment discipline and group-kill timeout discipline as gate
+    commands apply here (FR-007): the subprocess gets `scrubbed_env()`, its own
+    session, a TERM-then-KILL reclaim on timeout, and the same default deadline.
+    The concurrency limiter is acquired around the whole run because a cold
+    `uv run` may build a venv (plan trap 5).
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_s: int = DEFAULT_GATE_TIMEOUT_S,
+        grace_s: float = DEFAULT_KILL_GRACE_S,
+        limiter: GateConcurrencyLimiter | None = None,
+    ) -> None:
+        self.timeout_s = timeout_s
+        self.grace_s = grace_s
+        self.limiter = limiter if limiter is not None else _default_limiter
+
+    def run(self, worktree: Path, manifest: Path) -> CandidateOutcome:
+        peers = self.limiter.acquire()
+        try:
+            return self._run_in_slot(worktree, manifest)
+        finally:
+            self.limiter.release()
+
+    def _run_in_slot(self, worktree: Path, manifest: Path) -> CandidateOutcome:
+        candidate_path = worktree / "factory" / "verify" / "factory_yaml.py"
+        if not candidate_path.exists():
+            return CandidateOutcome(
+                exit_code=-1,
+                stdout="",
+                stderr="",
+                timed_out=False,
+            )
+
+        started = time.monotonic()
+        process = subprocess.Popen(
+            [
+                "uv",
+                "run",
+                "-q",
+                "python",
+                "-m",
+                "factory.verify.factory_yaml",
+                str(manifest),
+            ],
+            cwd=str(worktree),
+            env=scrubbed_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+        stdout_buffer = _TailBuffer()
+        stderr_buffer = _TailBuffer()
+        stdout_drain = threading.Thread(
+            target=_drain,
+            args=(process.stdout, stdout_buffer),
+            name="candidate-parser-stdout",
+            daemon=True,
+        )
+        stderr_drain = threading.Thread(
+            target=_drain,
+            args=(process.stderr, stderr_buffer),
+            name="candidate-parser-stderr",
+            daemon=True,
+        )
+        stdout_drain.start()
+        stderr_drain.start()
+
+        timed_out = False
+        try:
+            process.wait(timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            self._reclaim(process)
+
+        stdout_drain.join(timeout=_DRAIN_JOIN_S)
+        stderr_drain.join(timeout=_DRAIN_JOIN_S)
+
+        return CandidateOutcome(
+            exit_code=None if timed_out else process.returncode,
+            stdout=stdout_buffer.text(),
+            stderr=stderr_buffer.text(),
+            timed_out=timed_out,
+        )
+
+    def _reclaim(self, process: subprocess.Popen[bytes]) -> None:
+        """SIGTERM the candidate's process group, then SIGKILL what survives."""
+        _signal_group(process, signal.SIGTERM)
+        try:
+            process.wait(timeout=self.grace_s)
+        except subprocess.TimeoutExpired:
+            pass
+        _signal_group(process, signal.SIGKILL)
+        process.wait()
+
+
+_default_candidate_runner = SubprocessCandidateRunner()
+
+
 # The runner -----------------------------------------------------------------
 
 
@@ -392,6 +616,7 @@ def run_gates(
     executor: GateExecutor | None = None,
     timeout_overrides: Mapping[str, int] | None = None,
     concurrency_limiter: GateConcurrencyLimiter | None = None,
+    candidate_runner: CandidateRunner | None = None,
 ) -> list[GateResult]:
     """Run every gate the manifest declares, in declaration order, and report each.
 
@@ -411,21 +636,141 @@ def run_gates(
     in — which is what keeps a neighbour's load from moving this node's verdict.
     Defaults to the process-level limiter, so two `run_gates` calls in two
     worker threads (the shape fan-out produces) share one bound.
+
+    `candidate_runner` resolves the manifest: when the worktree carries a
+    candidate parser it is consulted first, via a subprocess inside the
+    worktree, with the worker's imported parser as fallback. A candidate
+    rejection is one `CONFIG_ERROR` carrying the candidate's message; a
+    candidate that cannot run falls back to today's in-process behaviour.
     """
     worktree = Path(worktree)
     manifest = (
         worktree / MANIFEST_NAME if manifest_path is None else Path(manifest_path)
     )
 
+    candidate_path = worktree / "factory" / "verify" / "factory_yaml.py"
+    if candidate_runner is None:
+        run_candidate = _default_candidate_runner.run
+    else:
+        run_candidate = candidate_runner
+    if candidate_path.exists():
+        candidate = run_candidate(worktree, manifest)
+        interpreted = _interpret_candidate(
+            candidate.exit_code, candidate.stdout, candidate.stderr, candidate.timed_out
+        )
+    else:
+        interpreted = _CannotRun(reason="no candidate parser in worktree")
+
+    if isinstance(interpreted, _AcceptedConfig):
+        gates_view = interpreted.gates or {}
+        timeouts_view = interpreted.timeouts or {}
+        return _run_gate_list(
+            worktree,
+            manifest,
+            gates_view,
+            timeouts_view,
+            executor=executor,
+            timeout_overrides=timeout_overrides,
+            concurrency_limiter=concurrency_limiter,
+        )
+
+    if isinstance(interpreted, _RejectedConfig):
+        return [
+            GateResult(
+                name="config",
+                command="",
+                status=GateStatus.CONFIG_ERROR,
+                exit_code=None,
+                duration_s=0.0,
+                output_tail=interpreted.message,
+            )
+        ]
+
+    # cannot-run -> fallback to the worker's imported parser, byte-for-byte
+    # today's behaviour, but record the candidate's failure if the worker also
+    # refuses.
     try:
         config = load_factory_config(manifest)
     except FactoryConfigError as error:
-        return [config_error_result(error)]
+        fallback = config_error_result(error)
+        reason = getattr(interpreted, "reason", "")
+        if reason:
+            return [
+                GateResult(
+                    name=fallback.name,
+                    command=fallback.command,
+                    status=fallback.status,
+                    exit_code=fallback.exit_code,
+                    duration_s=fallback.duration_s,
+                    output_tail=f"{fallback.output_tail}\n[candidate parser could not run: {reason}]",
+                )
+            ]
+        return [fallback]
 
+    return _run_gate_list_from_config(
+        worktree,
+        config,
+        executor=executor,
+        timeout_overrides=timeout_overrides,
+        concurrency_limiter=concurrency_limiter,
+    )
+
+
+def _run_gate_list(
+    worktree: Path,
+    manifest: Path,
+    gates_view: Mapping[str, str],
+    timeouts_view: Mapping[str, int],
+    *,
+    executor: GateExecutor | None,
+    timeout_overrides: Mapping[str, int] | None,
+    concurrency_limiter: GateConcurrencyLimiter | None,
+) -> list[GateResult]:
+    """Run gates from a JSON view (candidate acceptance or fallback)."""
     backend = executor if executor is not None else SubprocessGateExecutor()
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
-    limiter = concurrency_limiter if concurrency_limiter is not None else _default_limiter
+    limiter = (
+        concurrency_limiter
+        if concurrency_limiter is not None
+        else _default_limiter
+    )
+
+    results: list[GateResult] = []
+    for name, command in gates_view.items():
+        invocation = GateInvocation(
+            name=name,
+            command=command,
+            cwd=worktree,
+            timeout_s=_resolve_timeout(name, timeouts_view, overrides),
+            env=env,
+        )
+        peers = limiter.acquire()
+        try:
+            outcome = backend.run(invocation)
+        finally:
+            limiter.release()
+        results.append(_to_result(invocation, outcome, peers))
+    return results
+
+
+def _run_gate_list_from_config(
+    worktree: Path,
+    config,
+    *,
+    executor: GateExecutor | None,
+    timeout_overrides: Mapping[str, int] | None,
+    concurrency_limiter: GateConcurrencyLimiter | None,
+) -> list[GateResult]:
+    """Run gates from an in-process FactoryConfig (today's fallback path)."""
+    backend = executor if executor is not None else SubprocessGateExecutor()
+    overrides = dict(timeout_overrides or {})
+    env = scrubbed_env()
+    limiter = (
+        concurrency_limiter
+        if concurrency_limiter is not None
+        else _default_limiter
+    )
 
     results: list[GateResult] = []
     for name, command in config.gates.items():

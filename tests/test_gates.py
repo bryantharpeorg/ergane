@@ -800,3 +800,347 @@ def test_a_contended_gate_records_its_contention(
     # The contended gate saw exactly one peer in flight alongside it.
     for result in contended:
         assert result.concurrent_gates == 1
+
+
+# --- US2: candidate parser in the gate runner --------------------------------
+
+
+#: The exit code US1's CLI uses to say "I refuse this manifest".
+PARSE_CLI_REJECTED = 65
+
+
+@dataclass(frozen=True)
+class FakeCandidateOutcome:
+    """Raw subprocess result the candidate parser might report."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+class FakeCandidateRunner:
+    """A stand-in for the real candidate parser subprocess.
+
+    Records whether it was invoked and returns the programmed outcome. Tests
+    drive the interpretation table and the deadlock case through this seam
+    without starting processes.
+    """
+
+    def __init__(self, outcome: FakeCandidateOutcome) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[Path, Path]] = []
+
+    def run(self, worktree: Path, manifest: Path) -> FakeCandidateOutcome:
+        self.calls.append((worktree, manifest))
+        return self.outcome
+
+
+def _candidate_gates_json(
+    gates: dict[str, str], timeouts: dict[str, int] | None = None
+) -> str:
+    """A minimal valid protocol JSON document carrying only gates/timeouts."""
+    import json
+
+    doc = {"gates": gates}
+    if timeouts is not None:
+        doc["timeouts"] = timeouts
+    else:
+        doc["timeouts"] = {}
+    return json.dumps(doc)
+
+
+class CandidateInterpretationCase:
+    """One raw subprocess shape and the three-way outcome it must map to."""
+
+    def __init__(
+        self,
+        id: str,
+        outcome: FakeCandidateOutcome,
+        expected: str,
+        *,
+        accepted_gates: dict[str, str] | None = None,
+        accepted_timeouts: dict[str, int] | None = None,
+        rejected_message: str | None = None,
+        cannot_run_reason: str | None = None,
+    ) -> None:
+        self.id = id
+        self.outcome = outcome
+        self.expected = expected
+        self.accepted_gates = accepted_gates
+        self.accepted_timeouts = accepted_timeouts
+        self.rejected_message = rejected_message
+        self.cannot_run_reason = cannot_run_reason
+
+
+INTERPRETATION_CASES = [
+    CandidateInterpretationCase(
+        "exit-0-json-accepted",
+        FakeCandidateOutcome(
+            0, _candidate_gates_json({"test": "bash gates/test.sh"}), ""
+        ),
+        "accepted",
+        accepted_gates={"test": "bash gates/test.sh"},
+        accepted_timeouts={},
+    ),
+    CandidateInterpretationCase(
+        "rejected-code-with-message",
+        FakeCandidateOutcome(
+            PARSE_CLI_REJECTED, "", "factory.yaml: [unknown_key] bad"
+        ),
+        "rejected",
+        rejected_message="factory.yaml: [unknown_key] bad",
+    ),
+    CandidateInterpretationCase(
+        "exit-0-empty-stdout-is-not-acceptance",
+        FakeCandidateOutcome(0, "", ""),
+        "cannot-run",
+        cannot_run_reason=("exit 0 but stdout did not parse as protocol JSON"),
+    ),
+    CandidateInterpretationCase(
+        "exit-2-toml-error-is-cannot-run",
+        FakeCandidateOutcome(
+            2, "", "error: failed to parse pyproject.toml"
+        ),
+        "cannot-run",
+        cannot_run_reason=("non-rejection exit code 2"),
+    ),
+    CandidateInterpretationCase(
+        "nonzero-crash-is-cannot-run",
+        FakeCandidateOutcome(1, "", "Traceback (most recent call last):"),
+        "cannot-run",
+        cannot_run_reason=("non-rejection exit code 1"),
+    ),
+    CandidateInterpretationCase(
+        "timed-out-is-cannot-run",
+        FakeCandidateOutcome(0, "", "", timed_out=True),
+        "cannot-run",
+        cannot_run_reason=("candidate parse timed out"),
+    ),
+    CandidateInterpretationCase(
+        "exit-0-garbage-json-is-cannot-run",
+        FakeCandidateOutcome(0, "not json", ""),
+        "cannot-run",
+        cannot_run_reason=("exit 0 but stdout did not parse as protocol JSON"),
+    ),
+    CandidateInterpretationCase(
+        "exit-0-empty-gates-is-cannot-run",
+        FakeCandidateOutcome(0, _candidate_gates_json({}), ""),
+        "cannot-run",
+        cannot_run_reason=("protocol gates mapping is empty"),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case", INTERPRETATION_CASES, ids=[case.id for case in INTERPRETATION_CASES]
+)
+def test_candidate_parse_interpretation_table(case: CandidateInterpretationCase) -> None:
+    """Pure interpreter: the raw exit/streams/time-out shape maps to accepted,
+    rejected, or cannot-run exactly per the protocol table."""
+    from factory.verify.gates import _interpret_candidate
+
+    result = _interpret_candidate(
+        case.outcome.exit_code,
+        case.outcome.stdout,
+        case.outcome.stderr,
+        case.outcome.timed_out,
+    )
+
+    assert result.kind == case.expected
+    if case.expected == "accepted":
+        assert result.gates == case.accepted_gates
+        assert result.timeouts == case.accepted_timeouts
+    if case.expected == "rejected":
+        assert result.message == case.rejected_message
+    if case.expected == "cannot-run":
+        assert result.reason == case.cannot_run_reason
+
+
+def test_candidate_acceptance_runs_declared_gates_despite_worker_refusing(
+    tmp_path: Path,
+) -> None:
+    """US2-S1: the deadlock killed. A worktree that teaches the parser a new
+    top-level key and declares that key reaches its gate commands.
+
+    The manifest here includes `future_key`, which the worker's imported parser
+    still refuses (`unknown_key`). The candidate seam is faked to accept it
+    with a valid gates view, so the gates run and no CONFIG_ERROR appears."""
+    import json
+
+    worktree = tmp_path / "deadlock-worktree"
+    worktree.mkdir()
+    (worktree / "factory" / "verify").mkdir(parents=True)
+    (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
+    manifest = worktree / MANIFEST_NAME
+    manifest.write_text(
+        "version: 1\nruntime: python:3.11-bookworm\n"
+        "gates:\n  test: bash gates/test.sh\nfuture_key: not-yet-known\n",
+        encoding="utf-8",
+    )
+
+    candidate = FakeCandidateRunner(
+        FakeCandidateOutcome(
+            0,
+            json.dumps({"gates": {"test": "bash gates/test.sh"}, "timeouts": {}}),
+            "",
+        )
+    )
+    executor = RecordingExecutor()
+
+    results = run_gates(worktree, executor=executor, candidate_runner=candidate.run)
+
+    assert len(results) == 1
+    assert results[0].name == "test"
+    assert results[0].status is GateStatus.PASS
+    assert executor.names == ["test"]
+    assert candidate.calls == [(worktree, manifest)]
+
+
+def test_candidate_rejection_is_one_config_error_and_runs_nothing(
+    tmp_path: Path,
+) -> None:
+    """US2-S2: a candidate parser that rejects the manifest surfaces as the
+    existing single CONFIG_ERROR result carrying the candidate's own message,
+    preserving the one-result contract."""
+    worktree = tmp_path / "reject-worktree"
+    worktree.mkdir()
+    (worktree / "factory" / "verify").mkdir(parents=True)
+    (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
+    manifest = worktree / MANIFEST_NAME
+    manifest.write_text(
+        "version: 1\nruntime: python:3.11-bookworm\n"
+        "gates:\n  test: bash gates/test.sh\nfuture_key: not-yet-known\n",
+        encoding="utf-8",
+    )
+
+    message = "candidate parser: [unknown_key] future_key is not allowed"
+    candidate = FakeCandidateRunner(
+        FakeCandidateOutcome(PARSE_CLI_REJECTED, "", message)
+    )
+    executor = RecordingExecutor()
+
+    results = run_gates(worktree, executor=executor, candidate_runner=candidate.run)
+
+    assert len(results) == 1
+    assert results[0].name == "config"
+    assert results[0].status is GateStatus.CONFIG_ERROR
+    assert results[0].output_tail == message
+    assert results[0].exit_code is None
+    assert results[0].duration_s == 0.0
+    assert executor.invocations == []
+
+
+def test_no_candidate_parser_falls_back_without_invoking_seam(
+    node_worktree: Callable[..., Path],
+) -> None:
+    """US2-S3 regression guard: a worktree with no candidate parser takes
+    today's in-process path and never calls the candidate seam.
+
+    This fails only if the probe or fallback over-reaches: the fixture repo has
+    no `factory/` directory, so there is no candidate to invoke."""
+    worktree = node_worktree("passing")
+    executor = RecordingExecutor()
+    calls: list[tuple[Path, Path]] = []
+
+    def spy_runner(w: Path, m: Path) -> FakeCandidateOutcome:
+        calls.append((w, m))
+        raise AssertionError("seam should not be invoked when no candidate parser exists")
+
+    results = run_gates(worktree, executor=executor, candidate_runner=spy_runner)
+
+    assert [result.name for result in results] == FIXTURE_GATE_ORDER
+    assert executor.names == FIXTURE_GATE_ORDER
+    assert calls == []
+
+    # Refused manifest path too: today's single CONFIG_ERROR, no seam call.
+    refused_worktree = node_worktree("unknown-gate")
+    refused_results = run_gates(
+        refused_worktree, executor=RecordingExecutor(), candidate_runner=spy_runner
+    )
+    assert len(refused_results) == 1
+    assert refused_results[0].status is GateStatus.CONFIG_ERROR
+    assert refused_results[0].name == "config"
+    assert "build" in refused_results[0].output_tail
+    assert calls == []
+
+
+def test_candidate_cannot_run_falls_back_with_worker_and_reason_in_tail(
+    tmp_path: Path,
+) -> None:
+    """US2-S4/FR-006: a candidate that cannot run falls back to the worker's
+    imported parser. If the worker parser also refuses, the CONFIG_ERROR tail
+    carries both the worker message and the cannot-run reason."""
+    worktree = tmp_path / "fallback-worktree"
+    worktree.mkdir()
+    (worktree / "factory" / "verify").mkdir(parents=True)
+    (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
+    manifest = worktree / MANIFEST_NAME
+    manifest.write_text(
+        "version: 1\nruntime: python:3.11-bookworm\n"
+        "gates:\n  test: bash gates/test.sh\nfuture_key: not-yet-known\n",
+        encoding="utf-8",
+    )
+
+    reason = "candidate parse timed out"
+    candidate = FakeCandidateRunner(FakeCandidateOutcome(0, "", "", timed_out=True))
+    executor = RecordingExecutor()
+
+    results = run_gates(worktree, executor=executor, candidate_runner=candidate.run)
+
+    # Worker refuses future_key.
+    assert len(results) == 1
+    assert results[0].name == "config"
+    assert results[0].status is GateStatus.CONFIG_ERROR
+    assert "[unknown_key]" in results[0].output_tail
+    assert reason in results[0].output_tail
+    assert executor.invocations == []
+
+
+def test_candidate_cannot_run_with_good_manifest_runs_todays_gates(
+    tmp_path: Path,
+) -> None:
+    """US2-S4: when the candidate cannot run but the worker parser accepts the
+    manifest, the declared gates still run exactly as today."""
+    worktree = tmp_path / "good-manifest"
+    worktree.mkdir()
+    (worktree / "factory" / "verify").mkdir(parents=True)
+    (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
+    manifest = worktree / MANIFEST_NAME
+    manifest.write_text(
+        "version: 1\nruntime: python:3.11-bookworm\n"
+        "gates:\n  test: bash gates/test.sh\n  lint: bash gates/lint.sh\n",
+        encoding="utf-8",
+    )
+
+    candidate = FakeCandidateRunner(FakeCandidateOutcome(0, "", "", timed_out=True))
+    executor = RecordingExecutor()
+
+    results = run_gates(worktree, executor=executor, candidate_runner=candidate.run)
+
+    assert [result.name for result in results] == ["test", "lint"]
+    assert [result.status for result in results] == [GateStatus.PASS, GateStatus.PASS]
+    assert executor.names == ["test", "lint"]
+
+
+def test_real_candidate_parser_resolves_same_gates_as_worker(
+    tmp_path: Path,
+) -> None:
+    """US2-S6: an unfaked end-to-end run using this repository's own tree as the
+    worktree proves the real protocol. The candidate resolves the same gates the
+    in-process parser does."""
+    from factory.verify.factory_yaml import load_factory_config
+    from factory.verify.gates import _default_candidate_runner
+
+    repo_root = Path(__file__).resolve().parent.parent
+    executor = RecordingExecutor()
+
+    results = run_gates(
+        repo_root,
+        executor=executor,
+        candidate_runner=_default_candidate_runner.run,
+    )
+
+    in_process = load_factory_config(repo_root / MANIFEST_NAME)
+    assert [result.name for result in results] == list(in_process.gates.keys())
+    assert executor.names == list(in_process.gates.keys())

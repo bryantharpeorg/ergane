@@ -5,6 +5,37 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-042 · The config gate judges a node's manifest by the worktree's candidate parser (decided)
+
+Decided 2026-08-13, claimed at landing of spec `026-manifest-self-extension` US2.
+`run_gates` resolves the node's `factory.yaml` through the worktree's own
+`factory.verify.factory_yaml` CLI, run as a subprocess inside the worktree,
+never by importing worktree code into the worker. A candidate acceptance yields
+the gates to run; a candidate rejection yields the existing single
+`CONFIG_ERROR` result carrying the candidate's message; a candidate that cannot
+run falls back to the worker's imported parser, with both the worker message and
+the cannot-run reason in the tail when the worker also refuses. This supersedes
+the earlier "manifest judged by last-landed code" behaviour that caused the
+020/us1 bootstrap deadlock.
+
+1. **Subprocess, never import.** The worker must survive a broken candidate
+   parser — syntax errors, crashes, hangs, and garbage output are ordinary failed
+   attempts, not worker crashes. Reusing the `GateExecutor` seam was rejected
+   because it merges stderr into stdout, and the protocol needs clean JSON on
+   stdout with diagnostics on stderr.
+2. **File-existence probe before any subprocess.** A worktree carries a
+   candidate parser exactly when `factory/verify/factory_yaml.py` exists under it.
+   Foreign repos and pre-CLI worktrees therefore pay no speculative `uv run` cost.
+3. **Residual operational sequencing rule, not a constitutional rule.** The
+   repository's own `factory.yaml` may gain a new top-level key only after the
+   parser that accepts it has landed and the worker has been restarted on it.
+   This is the same sequencing rule that got `landing_branch` into the live
+   manifest (438cfd0) and is already documented at `factory.yaml:37-43`; it is
+   deliberately not promoted into the constitution because the defect class has
+   one occurrence and the code fix removes the deadlock.
+
+---
+
 ## D-041 · Squash-merge titles must come from the PR title (decided)
 
 Decided 2026-08-13, recorded at landing of spec `029-salvage-landing-grammar` US1.
