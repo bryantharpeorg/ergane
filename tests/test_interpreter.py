@@ -108,6 +108,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
+import json
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -117,7 +119,7 @@ from typing import Any, AsyncIterator, Callable, Sequence
 
 import pytest
 from temporalio import activity
-from temporalio.client import WorkflowFailureError
+from temporalio.client import WorkflowFailureError, WorkflowHistory
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
@@ -290,6 +292,21 @@ GATE_TAIL = {
     4: "E   AssertionError: attempt-four debugger left the ledger unwritten",
     5: "E   AssertionError: attempt-five debugger still left the ledger unwritten",
 }
+
+#: Global capture for `GeneratorExit` warnings produced during workflow
+#: eviction/cancellation. Installed at import time so the eviction test can
+#: assert their absence directly, without relying on `-W error`, which would
+#: affect unrelated warnings across the suite.
+_captured_unraisable: list[Any] = []
+_original_unraisablehook = sys.unraisablehook
+
+
+def _unraisable_hook(args: Any) -> None:
+    _captured_unraisable.append(args)
+    _original_unraisablehook(args)
+
+
+sys.unraisablehook = _unraisable_hook
 
 
 # --- the epic's authored text (what `load_prompt_sources` reads) --------------
@@ -2679,7 +2696,32 @@ async def test_issuance_retries_through_a_transient_outage(
     assert script.teardown_for("us1", 1).termination == Termination.COMPLETED
 
 
-# --- US1-S4: replay ------------------------------------------------------------
+# --- US1-S1: the ten captured histories from 032 replay green ------------------
+
+
+# Fixture directory populated operator-side with ten captured histories from
+# 032's nondeterminism run (a10bea8). The test is a standing guard: it fails
+# only if a future change breaks replay compatibility for these histories.
+REPLAY_032_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay-032"
+
+
+@pytest.mark.parametrize(
+    "fixture_path",
+    sorted(REPLAY_032_FIXTURE_DIR.glob("replay-failure-*.json")),
+    ids=lambda p: p.name,
+)
+async def test_replay_032_fixtures_replay_green(fixture_path: Path) -> None:
+    """US1-S1: the ten captured histories replay against EpicWorkflow.
+
+    The fixture files themselves are base-branch data (landed at a10bea8) and
+    must not appear in this story's diff. This test asserts exactly ten files are
+    present — no existence fallback that would let zero fixtures pass.
+    """
+    assert (
+        len(list(REPLAY_032_FIXTURE_DIR.glob("replay-failure-*.json"))) == 10
+    ), "expected ten replay-032 fixture histories on the base branch"
+    history = WorkflowHistory.from_json("replay-032-fixture", fixture_path.read_text())
+    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
 
 
 async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None:
@@ -2690,45 +2732,52 @@ async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None
     iteration order, or `uuid4()` outside `workflow.uuid4()` fails here, and the
     scripted world proves no activity ran a second time — no node re-dispatched,
     no key re-issued.
+
+    The history is fetched from the exact run that recorded it and replayed
+    under the same runner class the worker used, so any environmental
+    divergence names itself instead of masquerading as workflow nondeterminism
+    (FR-004).
     """
     script = ScriptedWorld(
         {"us1": [failing(1), passing()], "us2": [passing()], "us3": [passing()]},
         client=env.client,
     )
 
-    await run_epic(env, script)
-    history = await script.handle.fetch_history()
+    result = await run_epic(env, script)
+    result_run_id = script.handle.result_run_id
+    history = await env.client.get_workflow_handle(
+        script.handle.id, run_id=result_run_id
+    ).fetch_history()
 
     before = list(script.calls)
     keys_before = [(r.node_id, r.attempt) for r in script.key_requests]
 
+    # 032 diagnosis discriminator: the incident's error string can only arise
+    # from a history that carries a SECOND validate_target_repo schedule at a
+    # teardown position (the workflow emits it exactly once, before any node
+    # dispatches). Assert on the recorded history first — if this fires, the
+    # corruption is a phantom re-execution the test server accepted; if the
+    # Replayer fails while this passes, the corruption is a splice. Either way
+    # the dump below captures the history.
+    from temporalio.api.enums.v1 import EventType
+
+    scheduled = [
+        e.activity_task_scheduled_event_attributes.activity_type.name
+        for e in history.events
+        if e.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+    ]
+    assert scheduled.count("validate_target_repo") == 1, (
+        f"phantom validate_target_repo in recorded history: {scheduled}"
+    )
+
     try:
-        # 032 diagnosis discriminator: the audit showed the incident's error
-        # string can only arise from a history that carries a SECOND
-        # validate_target_repo schedule at a teardown position (the workflow
-        # emits it exactly once, before any node dispatches). Assert on the
-        # recorded history first — if this fires, the corruption is a phantom
-        # re-execution the test server accepted; if the Replayer fails while
-        # this passes, the corruption is a splice. Either way the dump below
-        # captures the history.
-        from temporalio.api.enums.v1 import EventType
-
-        scheduled = [
-            e.activity_task_scheduled_event_attributes.activity_type.name
-            for e in history.events
-            if e.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
-        ]
-        assert scheduled.count("validate_target_repo") == 1, (
-            f"phantom validate_target_repo in recorded history: {scheduled}"
-        )
-        await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+        await Replayer(
+            workflows=[EpicWorkflow], workflow_runner=UnsandboxedWorkflowRunner()
+        ).replay_workflow(history)
     except BaseException:
-        # 032 repro capture (scratch branch only): a diverging history is the
-        # evidence T004 needs — persist it so the flake becomes an artifact.
-        import pathlib
-        import time
-
-        out = pathlib.Path("repro-history")
+        # 032 repro capture: a diverging history is the evidence the factory
+        # needs — persist it so a flake becomes an inspectable artifact.
+        out = Path("repro-history")
         out.mkdir(exist_ok=True)
         stamp = time.time_ns()
         (out / f"replay-failure-{stamp}.json").write_text(history.to_json())
@@ -2737,6 +2786,77 @@ async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None
     assert script.calls == before
     assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
     assert len(script.attempts) == 4
+    assert result.epic_state == EpicState.COMPLETED
+
+
+async def test_sdk_eviction_during_attempt_emits_no_teardown_or_unraisable(
+    env: WorkflowEnvironment,
+) -> None:
+    """US1-S2: SDK eviction while an attempt is in flight emits no teardown command
+    and leaves no unraisable `GeneratorExit` (FR-001, FR-002).
+
+    The eviction path is exercised by cancelling the workflow handle from the test
+    while the fake adapter sleeps: this is the real SDK cancellation path, not a
+    simulated `asyncio.CancelledError` that the runtime would convert.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing()]},
+        client=env.client,
+        await_cancel=True,
+        agent_sleep_s=0.5,
+    )
+    async with Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[EpicWorkflow],
+        activities=script.activities(),
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ):
+        handle = await env.client.start_workflow(
+            EpicWorkflow.run,
+            EpicInput(graph=one_node(), proxy_url=PROXY_URL),
+            id=WORKFLOW_ID,
+            task_queue=TASK_QUEUE,
+        )
+        await wait_for(
+            lambda: "run_agent_attempt" in script.calls,
+            what="the agent attempt to start",
+        )
+        await handle.cancel()
+        await asyncio.sleep(1.0)
+        history = await handle.fetch_history()
+
+    await Replayer(
+        workflows=[EpicWorkflow], workflow_runner=UnsandboxedWorkflowRunner()
+    ).replay_workflow(history)
+
+    scheduled = _scheduled_activity_names(history)
+    assert "teardown_attempt" not in scheduled, (
+        f"eviction path scheduled teardown_attempt: {scheduled}"
+    )
+    assert not script.teardowns, f"eviction path emitted teardowns: {script.teardowns}"
+
+    generator_exits = [
+        a
+        for a in _captured_unraisable
+        if a.exc_type is GeneratorExit
+        or (a.exc_value is not None and isinstance(a.exc_value, GeneratorExit))
+    ]
+    assert not generator_exits, (
+        f"GeneratorExit became unraisable during eviction: {generator_exits}"
+    )
+    _captured_unraisable.clear()
+
+
+def _scheduled_activity_names(history: WorkflowHistory) -> list[str]:
+    """The activity types scheduled across the run, in order."""
+    names: list[str] = []
+    for event in history.events:
+        if event.event_type == 10:  # ACTIVITY_TASK_SCHEDULED
+            names.append(
+                event.activity_task_scheduled_event_attributes.activity_type.name
+            )
+    return names
 
 
 # --- US3-S2: pause stops the scheduler, not the attempt (FR-008) --------------

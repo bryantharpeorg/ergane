@@ -1,5 +1,8 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 03:35Z by the operator: US1 (the only story)
+# observed at aba64284c00f (PR #44, first attempt, ~38 min dispatch to merged).
+# First epic of the factory's first two-wide concurrent run (alongside 026).
 # Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
 # paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
 # once unpaused.
