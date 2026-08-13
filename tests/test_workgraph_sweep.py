@@ -1612,6 +1612,25 @@ def _epics(client: Any) -> list[_Epic]:
 #: After restructure (clean env, T010):
 #:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest tests/test_workgraph_sweep.py -k "no_epic_ever_dispatches" -q --durations=5
 #:   -> 1.82s call tests/test_workgraph_sweep.py::test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency
+#:
+#: Full suite (clean env, T012):
+#:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest -q --durations=30
+#:   Before (US1 only, a564b8c): 2202 passed, 44 skipped in 250.22s (0:04:10)
+#:   After  (US1+US2, 74c5519): 2202 passed, 44 skipped in 183.70s (0:03:03)
+#:
+#:   Slowest 5 after:
+#:     20.32s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
+#:     12.09s call tests/test_interpreter.py::test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown
+#:     12.08s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
+#:     10.12s call tests/test_live_capacity.py::test_capacity_read_excludes_continued_as_new_chain
+#:      5.97s call tests/test_gates.py::test_a_gate_passes_alone_and_passes_contended
+#:   The sweep test is no longer in the slowest 5; the remaining >5s tests are outside
+#:   this story's scope (live_capacity, US1 heartbeat timeouts, gate contention).
+#:
+#: T011 mutation bite-check: see OPERATOR QUESTION in this attempt transcript — the
+#: restructured sweep itself stays green under every `_edges_satisfied` weakening I
+#: tried, because `max_concurrent_nodes=1` never lets a dependent dispatch while its
+#: dependency is unverified. The structural test `test_readiness_is_every_dependency_in_the_passed_state` does catch the mutation.
 async def test_no_epic_ever_dispatches_a_node_with_an_unmet_dependency(
     temporal: Any,
 ) -> None:
