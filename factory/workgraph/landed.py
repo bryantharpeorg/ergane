@@ -78,11 +78,15 @@ class Fingerprint:
     story's scenarios, the FR bodies it implements, and its work-graph
     declaration. A reflowed paragraph changes nothing; a changed criterion,
     FR body, or declaration changes it.
+
+    `digest` is ``None`` when the spec file did not exist at the pinned
+    revision.  Callers treat that as "no baseline for this fact" rather than
+    an error (US1 FR-001).
     """
 
     story_key: str
     revision: str
-    digest: str
+    digest: str | None
 
 
 # --- landed facts ------------------------------------------------------------
@@ -281,16 +285,15 @@ def fingerprint(
     """Structural fingerprint of one story at an exact revision.
 
     Reads `git show <rev>:specs/<dir>/spec.md`. The result is pure against that
-    revision's content; any working-tree edit is invisible. Raises
-    `WorktreeError` with a named finding if the spec file is absent at the
-    revision.
+    revision's content; any working-tree edit is invisible. When the spec file
+    is absent at the revision, returns a sentinel ``Fingerprint`` whose
+    ``digest`` is ``None`` so the caller can treat the fact as having no
+    baseline (US1 FR-001).  Other git failures still raise `WorktreeError`.
     """
     repo_path = Path(repo)
-    text = _spec_text_at(repo_path, rev, spec_dir, missing_ok=False)
+    text = _spec_text_at(repo_path, rev, spec_dir, missing_ok=True)
     if text is None:
-        raise WorktreeError(
-            f"fingerprint refused: specs/{spec_dir}/spec.md does not exist at {rev}"
-        )
+        return Fingerprint(story_key=story_key, revision=rev, digest=None)
 
     scenarios, fr_bodies, declaration = _story_parts(text, story_key)
     digest = _structural_digest(
@@ -440,7 +443,14 @@ def _spec_text_at(repo: Path, rev: str, spec_dir: str, *, missing_ok: bool) -> s
     try:
         return _git(repo, "show", f"{rev}:{path}")
     except WorktreeError as exc:
-        if missing_ok and "does not exist" in str(exc):
+        text = str(exc)
+        # Git phrases a missing path at a valid revision two ways:
+        #   - "does not exist in '<rev>'"
+        #   - "exists on disk, but not in '<rev>'"
+        # Both mean "the file is absent at this revision" (US1 FR-001).
+        if missing_ok and (
+            "does not exist" in text or "exists on disk, but not in" in text
+        ):
             return None
         # If the commit itself is unreachable, re-raise with the original detail.
         raise
