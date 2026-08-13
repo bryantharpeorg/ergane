@@ -1,5 +1,11 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 12:21Z by the operator: US1 (the only story)
+# observed at 6a899cf (PR #50, first attempt, ~40 min dispatch to merged).
+# Post-landing steps executed: worker restarted, roadmap schedule unpaused —
+# this spec is what the pause note named. One breach on the ledger: the
+# agent's two source-file edits also appeared byte-identical in the operator
+# checkout (containment recurrence 5), discarded after landing verified.
 # Flipped ready 2026-08-13 11:41Z on Bryan's word ("flip them") and
 # dispatched immediately, two-wide with 037 (disjoint scopes: roadmap code
 # vs one test module).

@@ -1,5 +1,12 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 12:16Z by the operator: US1 at ceeb2dc (PR #45,
+# the wounded story — two judge PASSes ejected by the replay flake, then the
+# node killed by the escalation-RETRY defect; Bryan judged the diff safe and
+# it merged as operator-armed auto-merge, externally concluded). US2 at
+# PR #49 (merged 12:13Z, first attempt, clean run post-038). Epic execution
+# COMPLETED 12:16Z. run_gates now stages the candidate parser — worker
+# restart required before the next gate run picks it up.
 # Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
 # paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
 # once unpaused.

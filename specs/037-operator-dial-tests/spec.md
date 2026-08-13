@@ -1,5 +1,9 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 12:15Z by the operator: US1 (the only story)
+# observed at 60a6b22 (PR #48, first attempt, ~28 min dispatch to merged).
+# The dial is SET: implementer.context_window: 262144 went into
+# personas.yaml the moment this landed, full suite green with it.
 # Flipped ready 2026-08-13 11:41Z on Bryan's word ("flip them") and
 # dispatched immediately, two-wide with 036 (disjoint scopes: one test
 # module vs roadmap code).

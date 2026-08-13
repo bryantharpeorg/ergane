@@ -57,14 +57,13 @@ implementer:
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
-  # context_window DIAL PARKED 2026-08-13 03:00Z: setting 262144 here broke
-  # tests/test_agent_activities.py::test_context_window_is_resolved_onto_the_node_
-  # and_none_when_omitted, which asserts the SHIPPED registry declares no window
-  # (`assert item.context_window is None` against the live file) — a test that
-  # pins the operator's dial. Finding: ci/test-suite-pins-the-operator-dial.
-  # Re-set 262144 (kimi's card window, operator-confirmed 2026-08-11) the moment
-  # a story fixes that assertion; until then the CLI assumes 200k and 62,144
-  # tokens of every attempt stay unreachable.
+  # 256K per the ollama.com model card, operator-confirmed 2026-08-11. Without
+  # this the CLI assumes 200k for the unrecognized alias and 62,144 tokens
+  # (23.7%) of every attempt's window are unreachable — measured on 032/us1 via
+  # Langfuse. Set 2026-08-13 the moment 037 landed (60a6b22) — the first
+  # attempt at setting it (2026-08-13 03:00Z) reddened trunk because a test
+  # pinned this dial to None; 037 un-pinned it (ci/test-suite-pins-the-operator-dial).
+  context_window: 262144
 
 verifier:
   agent: none
