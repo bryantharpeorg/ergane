@@ -32,8 +32,14 @@ from factory.activities.verify_activities import (
     VERIFICATION_DB_PATH_ENV,
     _store_path as verify_store_path,
 )
+from factory.verify import store
 from factory.verify.models import EscalationChoice
 
+
+#: Acknowledgment variable that deliberately opens the real-store door for the
+#: live smoke.  Named in `factory/verify/store.py` and mirrored here so tests
+#: that need to set it do not hardcode a string.
+EVIDENCE_STORE_ALLOW_REAL_ENV = "FACTORY_EVIDENCE_STORE_ALLOW_REAL"
 
 #: Match the shape `test_roadmap_failure_notifications.py` uses for a roadmap id.
 ROADMAP_ID = "roadmap-specs"
@@ -195,3 +201,95 @@ async def test_leaking_writers_are_contained(
     assert not default_db.exists(), (
         f"cwd-relative default store {default_db} was created"
     )
+
+
+# US2: the store refuses to be constructed outside tmp during a test, unless the
+# operator has explicitly acknowledged the risk.
+
+
+#: The finding key the guard names in its error message.
+ISOLATION_FINDING_KEY = "hardening/test-suite-writes-to-the-live-evidence-store"
+
+
+def test_us2_refuses_fabricated_non_tmp_path():
+    """Guard refuses a fabricated absolute path outside tmp; no disk trace left.
+
+    The path is under a nonexistent root so that even a red run (guard not yet
+    written) fails with an ordinary OSError rather than creating a real store.
+    """
+    poison = Path("/nonexistent-030-proof-us2/live-evidence.db")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        store.connect(poison)
+
+    message = str(exc_info.value)
+    assert ISOLATION_FINDING_KEY in message, message
+    assert str(poison) in message, message
+
+    assert not poison.exists(), "refused path was created"
+    assert not poison.parent.exists(), "refused path's parent was created"
+
+
+def test_us2_acknowledgment_allows_real_store(tmp_path: Path, monkeypatch):
+    """Guard against over-reach: explicit acknowledgment keeps the smoke door open.
+
+    A writable path outside the tmp tree but inside this checkout's repo root is
+    used, and removed in a finally block, so a red run never leaves a real store
+    behind.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    scratch = repo_root / ".scratch-us2-ack"
+    scratch.mkdir(parents=True, exist_ok=True)
+    path = scratch / "ack.db"
+
+    monkeypatch.setenv(EVIDENCE_STORE_ALLOW_REAL_ENV, "1")
+
+    try:
+        conn = store.connect(path)
+        try:
+            # The store opened; schema bootstrap ran.
+            version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            assert version == store.SCHEMA_VERSION
+        finally:
+            conn.close()
+
+        assert path.exists(), "acknowledged store was not created"
+    finally:
+        # No real store may outlive this test.
+        if path.exists():
+            path.unlink()
+        if scratch.exists():
+            scratch.rmdir()
+
+
+def test_us2_tmp_path_connects_normally(tmp_path: Path):
+    """Guard against over-reach: paths under tmp connect exactly as today."""
+    path = tmp_path / "isolated.db"
+
+    conn = store.connect(path)
+    try:
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert version == store.SCHEMA_VERSION
+    finally:
+        conn.close()
+
+    assert path.exists(), "tmp store was not created"
+
+
+def test_us2_sentinel_absent_is_byte_identical(tmp_path: Path, monkeypatch):
+    """Guard against over-reach: with PYTEST_CURRENT_TEST absent behavior is unchanged.
+
+    This is the production proof FR-010 demands: the worker, the notify service
+    and the CLI never meet the guard.
+    """
+    path = tmp_path / "production-shape.db"
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    conn = store.connect(path)
+    try:
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert version == store.SCHEMA_VERSION
+    finally:
+        conn.close()
+
+    assert path.exists(), "production-shape store was not created"

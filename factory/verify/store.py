@@ -48,7 +48,9 @@ returned FAIL.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +82,18 @@ BUSY_TIMEOUT_MS = 5000
 #: workflow's timeout path, which is why `EscalationRecord.resolution` is typed
 #: `EscalationChoice | str | None` rather than just the enum.
 EXPIRED = "EXPIRED"
+
+#: Operator acknowledgment variable. When set, the store guard in `connect()`
+#: permits opening a real evidence-store path while a test is running. This is
+#: the one deliberate door the live smoke uses; it is never set in production.
+EVIDENCE_STORE_ALLOW_REAL_ENV = "FACTORY_EVIDENCE_STORE_ALLOW_REAL"
+
+#: Finding key the guard names when it refuses an out-of-tmp store during a test.
+#: Matches the finding the spec records.
+TEST_SUITE_STORE_ISOLATION_FINDING = (
+    "hardening/test-suite-writes-to-the-live-evidence-store"
+)
+
 
 #: Verbatim from `contracts/verification-store.sql`. Every statement is
 #: `IF NOT EXISTS`, so bootstrap is safe to run on every connect.
@@ -171,6 +185,27 @@ def connect(path: str | Path) -> sqlite3.Connection:
     invocation (R10) and are responsible for closing.
     """
     location = Path(path)
+
+    # Defense in depth: while a pytest sentinel is present, refuse to construct
+    # the store outside the process's tmp tree unless the operator has explicitly
+    # acknowledged the risk. This is the enforcement behind the session fixture's
+    # convention (US1), and it fires before any filesystem side effect.
+    #
+    # Production paths (worker, notify service, CLI) do not set PYTEST_CURRENT_TEST,
+    # so they are byte-identical to the pre-guard behavior.
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get(
+        EVIDENCE_STORE_ALLOW_REAL_ENV
+    ):
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        try:
+            Path(location).resolve().relative_to(tmp_root)
+        except ValueError:
+            raise RuntimeError(
+                f"refusing to open evidence store at {location}: "
+                f"test-time writes must stay under the tmp tree "
+                f"({TEST_SUITE_STORE_ISOLATION_FINDING})"
+            ) from None
+
     location.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(location)
