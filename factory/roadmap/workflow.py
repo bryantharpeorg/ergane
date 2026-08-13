@@ -900,8 +900,10 @@ class RoadmapWorkflow:
             return str(cause)
         return str(exc)
 
-    async def _report_run_failure(self, request: RoadmapInput, exc: Exception) -> None:
-        """Record the failure durably and page the operator before re-raising.
+    async def _report_roadmap_failure(
+        self, request: RoadmapInput, failure_text: str
+    ) -> None:
+        """Record one failure text and page the operator if the count warrants it.
 
         The count of consecutive failures is kept in the verification store so
         it survives workflow restarts. The roadmap-failure record is written
@@ -913,7 +915,6 @@ class RoadmapWorkflow:
         choice, no response deadline, and no pending escalation row (US2).
         """
         roadmap_id = roadmap_workflow_id(request.specs_root)
-        failure_text = self._roadmap_failure_message(exc)
 
         result: RecordRoadmapFailureResult = await workflow.execute_activity(
             record_roadmap_failure,
@@ -933,6 +934,12 @@ class RoadmapWorkflow:
             send_roadmap_notice,
             SendRoadmapNoticeInput(roadmap_id=roadmap_id, message=message),
             **_NOTIFY,
+        )
+
+    async def _report_run_failure(self, request: RoadmapInput, exc: Exception) -> None:
+        """Record and page for a run-level failure before the caller re-raises."""
+        await self._report_roadmap_failure(
+            request, self._roadmap_failure_message(exc)
         )
 
     async def _report_run_success(self, request: RoadmapInput) -> None:
@@ -1157,6 +1164,12 @@ class RoadmapWorkflow:
         `drift_for_spec` reads the refreshed target repo and returns whether the
         spec's fingerprints differ from its landing baseline. The result is cached
         for the pass so the render query and dispatch loop see the same value.
+
+        US1: a drift-activity failure degrades rather than killing the run. The
+        spec is reported as not drifted for this pass, the dispatch loop proceeds,
+        and the failure is reported once through the roadmap's existing failure-
+        notice path (trap 2). The catch is `FailureError`, the base class that
+        carries activity failures, mirroring the dispatch stages (trap 1).
         """
         cached: dict[str, bool] = {}
 
@@ -1172,15 +1185,26 @@ class RoadmapWorkflow:
                 cached[spec_dir] = False
                 return False
             spec_text = await self._spec_text(request.specs_root, spec_dir)
-            drifted = await workflow.execute_activity(
-                drift_for_spec,
-                DriftInput(
-                    target_repo=request.target_repo,
-                    spec_dir=spec_dir,
-                    spec_text=spec_text,
-                ),
-                **_FAST,
-            )
+            try:
+                drifted = await workflow.execute_activity(
+                    drift_for_spec,
+                    DriftInput(
+                        target_repo=request.target_repo,
+                        spec_dir=spec_dir,
+                        spec_text=spec_text,
+                    ),
+                    **_FAST,
+                )
+            except FailureError as exc:
+                # Degrade: treat the spec as not drifted for this pass and report
+                # the failure once through the roadmap's failure-notice channel.
+                failure_text = self._roadmap_failure_message(exc)
+                await self._report_roadmap_failure(
+                    request,
+                    f"drift_for_spec({spec_dir}) failed: {failure_text}",
+                )
+                cached[spec_dir] = False
+                return False
             cached[spec_dir] = drifted
             return drifted
 

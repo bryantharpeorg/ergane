@@ -279,6 +279,9 @@ async def drift_for_spec(request: DriftInput) -> bool:
         pinned = _fingerprint_for_spec(
             request.target_repo, request.spec_dir, fact.commit, story_key
         )
+        # Missing baselines are skipped, not errors (US1 FR-001/FR-002).
+        if pinned.digest is None:
+            continue
         current = current_by_key.get(story_key)
         if current is None or pinned.digest != current.digest:
             return True

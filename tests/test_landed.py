@@ -567,15 +567,19 @@ def test_fingerprint_unchanged_by_whitespace_reflow(repo_builder: Callable[..., 
     assert fp1.digest == fp2.digest
 
 
-def test_fingerprint_missing_file_refuses_with_named_finding(repo_builder: Callable[..., Path]) -> None:
+def test_fingerprint_missing_file_returns_no_baseline_sentinel(
+    repo_builder: Callable[..., Path],
+) -> None:
+    """US1-S1 / FR-001: a spec file removed after landing yields a no-baseline
+    sentinel, not a raised error."""
     repo = repo_builder({"spec.md": _spec(stories=["US1"])})
     env = _git_env(Path(os.environ.get("HOME", "/tmp")))
     sha = _commit(repo, "016-delta-derivation/us1: US1 (#1)", env=env, allow_empty=True)
-    # The directory exists but spec.md did not at this revision? It did — so
-    # remove the whole spec directory in a new commit to create a missing path.
+    # Remove the whole spec directory in a new commit to create a missing path.
     shutil.rmtree(repo / "specs" / "016-delta-derivation")
     _git(repo, "add", "-A", env=env)
     missing = _commit(repo, "remove spec dir", env=env)
-    with pytest.raises(WorktreeError) as caught:
-        fingerprint(repo, missing, "016-delta-derivation", "US1")
-    assert "016-delta-derivation/spec.md" in str(caught.value)
+    fp = fingerprint(repo, missing, "016-delta-derivation", "US1")
+    assert isinstance(fp, Fingerprint)
+    assert fp.revision == missing
+    assert fp.digest is None
