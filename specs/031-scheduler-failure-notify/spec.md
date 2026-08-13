@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-12 by the operator: both stories observed on
+# ergane-buildout — US1 at 867d337fe11a, US2 at 9e25d0ea6b47 (PR #40, merged
+# 2026-08-12 20:34Z once the replay flake cleared). Verified with
+# `ergane spec landed specs/031-scheduler-failure-notify --default-branch
+# ergane-buildout` before this flip.
 # Flipped ready and hand-started 2026-08-11 on Bryan's instruction ("start 31
 # now"), T001 preflight verified same day — all five inventory checks hold,
 # including the schedule's suffixed-id churn proven against the 2026-08-09
