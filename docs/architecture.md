@@ -592,8 +592,11 @@ sufficient:
 
 1. **Filesystem isolation.** One real git worktree per node at
    `.factory/worktrees/<epic>/<node>` on branch `factory/<epic>/<node>`, each with
-   its own `HOME`, virtual key, and gate run. Concurrent agents never share a
-   directory, so none can observe another's half-written file.
+   its own `HOME`, virtual key, and gate run. The per-node `HOME` lives under
+   `.factory/homes/<epic>/<node>` and is written by the adapter from factory
+   constants; it is not the operator's `HOME` inherited from the worker.
+   Concurrent agents never share a directory, so none can observe another's
+   half-written file.
 2. **Base pinning.** Each node pins the **fetched** head of `origin/<default>` at
    first dispatch, records it in `<node>.json` beside the worktree, and reuses it
    across attempts (FR-013). `capture_base_ref` fetches before reading precisely
@@ -652,6 +655,20 @@ terminate, classify termination**. Inputs: prompt, worktree path, env (proxy URL
 key + model), session id. Output: exit classification + log path. Everything semantic is
 read elsewhere — the **diff from the worktree**, **usage from the ledger**. That keeps
 Claude Code swappable for pi.dev/OpenCode by writing a new adapter, nothing else.
+
+The child environment is constructed, not filtered (US3 / D-040): `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, the factory-owned per-node `HOME`, and a small passthrough of
+non-credential names (`PATH`, `LANG`, `TERM`). `HOME` is intentionally absent from the
+passthrough tuple: it is built from `AttemptContext.home_path` pointing at
+`.factory/homes/<epic>/<node>`, so the agent loads its session state from a directory the
+factory owns rather than from the operator's home. The home is seeded only with git
+identity from the factory's salvage constants; the CLI writes its own `.claude.json`,
+`plugins/`, `projects/`, `sessions/` and `backups/` from fresh defaults.
+
+This boundary isolates what an agent *loads*, not what it *can reach*: there is no
+filesystem sandbox, `--dangerously-skip-permissions` is unchanged, and an agent that
+goes looking can still read anything the worker user can. Filesystem confinement remains
+the open scope of `hardening/agent-sandbox`.
 
 ## 9. Escalation: Telegram notifier
 
