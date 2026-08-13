@@ -55,9 +55,12 @@ from factory.mergequeue.gh import (
     GH_UNAVAILABLE,
     GhClient,
     GhError,
+    _FAILED_LOG_TOTAL_LIMIT,
+    _parse_run_id,
+    _tail,
 )
 from factory.mergequeue.messages import pr_title, render_pr_body
-from factory.mergequeue.models import PrSnapshot, TargetRepoProfile
+from factory.mergequeue.models import CheckFailure, PrSnapshot, TargetRepoProfile
 from factory.mergequeue.onboard import evaluate_repo
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 from factory.verify.factory_yaml import FactoryConfigError, load_factory_config
@@ -195,6 +198,24 @@ class DisableResult:
 
     failed: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class FetchCheckFailureInput:
+    """US2: which PR's failing checks to fetch evidence for (FR-005/006/007).
+
+    `check_names` is the set of required checks the classifier named as failing;
+    the activity resolves their run links, fetches the per-run failing-step log,
+    and returns a frozen record per check. A `gh` failure anywhere in the chain
+    returns degraded evidence with the absence stated, never a raise — the cycle
+    must not be lost to its own evidence-gathering.
+    """
+
+    epic_id: str
+    node_id: str
+    pr_number: int
+    check_names: tuple[str, ...]
+    target_repo: str
 
 
 @dataclass(frozen=True)
@@ -429,6 +450,91 @@ async def sync_landing_branch(request: SyncLandingBranchInput) -> SyncLandingBra
         refused=False,
         reason="",
     )
+
+
+@activity.defn
+async def fetch_check_failure(request: FetchCheckFailureInput) -> tuple[CheckFailure, ...]:
+    """Fetch the failing-step log for each named failing check (US2, FR-005/006/007).
+
+    Runs on a thread via `asyncio.to_thread` so the subprocess never blocks the
+    worker's event loop (trap 4). Every `gh` failure — auth, outage, refused,
+    expired log, malformed link — returns degraded evidence naming the check and
+    stating the absence, never a raise. A link that does not contain an actions
+    run id degrades to name + URL with a note saying so.
+    """
+
+    def _fetch() -> tuple[CheckFailure, ...]:
+        client = _client(repo_path=request.target_repo)
+        try:
+            entries = client.pr_checks(request.pr_number)
+        except GhError as exc:
+            return tuple(
+                CheckFailure(
+                    name=name,
+                    url="",
+                    log_tail="",
+                    note=f"log unavailable: could not list checks ({exc.kind})",
+                )
+                for name in request.check_names
+            )
+
+        by_name = {entry.name: entry for entry in entries}
+        results: list[CheckFailure] = []
+        total_bytes = 0
+        for name in request.check_names:
+            entry = by_name.get(name)
+            if entry is None:
+                results.append(
+                    CheckFailure(
+                        name=name,
+                        url="",
+                        log_tail="",
+                        note="log unavailable: check not present in gh pr checks",
+                    )
+                )
+                continue
+
+            run_id = _parse_run_id(entry.link)
+            if run_id is None:
+                results.append(
+                    CheckFailure(
+                        name=name,
+                        url=entry.link,
+                        log_tail="",
+                        note="log unavailable: could not resolve run id from check link",
+                    )
+                )
+                continue
+
+            try:
+                log = client.run_failed_log(run_id)
+            except GhError as exc:
+                results.append(
+                    CheckFailure(
+                        name=name,
+                        url=entry.link,
+                        log_tail="",
+                        note=f"log unavailable: could not fetch run log ({exc.kind})",
+                    )
+                )
+                continue
+
+            encoded = log.encode("utf-8")
+            if total_bytes + len(encoded) > _FAILED_LOG_TOTAL_LIMIT:
+                allowed = max(_FAILED_LOG_TOTAL_LIMIT - total_bytes, 0)
+                log = _tail(log, allowed)
+            total_bytes += len(log.encode("utf-8"))
+            results.append(
+                CheckFailure(
+                    name=name,
+                    url=entry.link,
+                    log_tail=log,
+                    note="",
+                )
+            )
+        return tuple(results)
+
+    return await asyncio.to_thread(_fetch)
 
 
 def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile:

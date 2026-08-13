@@ -44,7 +44,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from factory.mergequeue.models import ObservedOutcome, QueueOutcome
+from factory.mergequeue.models import CheckFailure, ObservedOutcome, QueueOutcome
 from factory.usage.models import Termination
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
 from factory.verify.models import GateStatus, VerificationResult
@@ -86,11 +86,16 @@ class LandingEvidence:
     must resolve (FR-006). The history is reproduced verbatim, the same discipline
     002's prior-attempt evidence already applies: an agent re-driven on a summary
     of what the queue rejected would debug the summary, not the rejection.
+
+    US2: `failing_checks` carries the per-check evidence (name, run URL, log
+    tail, note) for a `CHECKS_FAILED` recovery. Default `()` keeps CONFLICT and
+    pre-spec histories untouched.
     """
 
     outcome: QueueOutcome
     queue_history: tuple[ObservedOutcome, ...]
     conflicted_files: tuple[str, ...] = ()
+    failing_checks: tuple[CheckFailure, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -470,12 +475,29 @@ def _landing_section(evidence: LandingEvidence) -> str:
     for a conflict — the conflicted file list the debugger persona must resolve
     (FR-006). History entries are rendered one per line; nothing is summarized or
     paraphrased (002's verbatim discipline, applied to the queue's word).
+
+    US2: for `CHECKS_FAILED`, each failing check is quoted with its run URL and
+    the verbatim fetched tail, or with the note that the log was unavailable.
     """
     blocks: list[str] = [_LANDING_HEADING, _LANDING_PREAMBLE]
     history = "\n".join(
         f"- {entry.at} {entry.outcome.value}" for entry in evidence.queue_history
     )
     blocks.append(f"Outcome: `{evidence.outcome.value}`\n\nQueue history:\n{history}")
+    if evidence.failing_checks:
+        check_blocks: list[str] = []
+        for check in evidence.failing_checks:
+            lines = [f"- **{check.name}**: {check.url}"]
+            if check.log_tail:
+                lines.append("  Failing log tail:")
+                lines.extend(f"    {line}" for line in check.log_tail.splitlines())
+            if check.note:
+                lines.append(f"  {check.note}")
+            check_blocks.append("\n".join(lines))
+        blocks.append(
+            "Failing required checks (name, run URL, and verbatim log tail):\n"
+            + "\n".join(check_blocks)
+        )
     if evidence.conflicted_files:
         files = "\n".join(f"- {name}" for name in evidence.conflicted_files)
         blocks.append(

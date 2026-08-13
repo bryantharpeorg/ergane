@@ -35,6 +35,25 @@ from enum import StrEnum
 from typing import Any, Mapping
 
 
+# US2: one failing check's evidence as the recovery prompt and escalation page
+# receive it. Lives here rather than in gh.py so the model's own dataclasses can
+# annotate tuples of it without creating a circular import (gh.py already imports
+# PrSnapshot from this module).
+@dataclass(frozen=True)
+class CheckFailure:
+    """US2: one failing check's evidence.
+
+    `log_tail` is the last of `gh run view --log-failed` for the run id parsed
+    from `url`; `note` is empty when the tail was fetched, and states why it was
+    not fetched when `log_tail` is empty.
+    """
+
+    name: str
+    url: str
+    log_tail: str
+    note: str
+
+
 # FR-004's closed vocabulary ---------------------------------------------------
 
 
@@ -74,10 +93,16 @@ class LandingState(StrEnum):
 
 @dataclass(frozen=True)
 class ObservedOutcome:
-    """One entry in a landing's queue history — what the escalation quotes."""
+    """One entry in a landing's queue history — what the escalation quotes.
+
+    US2: `failing_checks` carries the names of the required checks the
+    classifier saw failing when the outcome is `CHECKS_FAILED`. It defaults to
+    `()` so pre-spec histories deserialize and replay without change.
+    """
 
     at: str
     outcome: QueueOutcome
+    failing_checks: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -89,6 +114,10 @@ class Landing:
     that led here. `enqueued_at` and the PR identity are set by the landing
     phase; `recovery_cycles` counts how many times `REJECTED` has gone back to
     `ENQUEUED` (bounded by `LandingConfig.max_recovery_cycles`, FR-006).
+
+    US2: `check_evidence` is the fetched (name, URL, log tail, note) record for
+    the latest `CHECKS_FAILED` outcome, used by the recovery prompt and the
+    escalation page. Default `()` keeps CONFLICT and pre-spec histories intact.
     """
 
     node_id: str
@@ -99,6 +128,7 @@ class Landing:
     outcomes: tuple[ObservedOutcome, ...] = ()
     recovery_cycles: int = 0
     state: LandingState = LandingState.PR_OPEN
+    check_evidence: tuple[CheckFailure, ...] = ()
 
 
 @dataclass(frozen=True)

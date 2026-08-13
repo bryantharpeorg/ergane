@@ -494,6 +494,8 @@ class EscalationRecord:
     delivered: bool = False
     resolution: EscalationChoice | str | None = None
     resolved_at: str | None = None
+    #: US2: the failing check evidence rendered into the escalation message.
+    check_evidence: tuple["factory.mergequeue.models.CheckFailure", ...] = ()
 
 
 @dataclass(frozen=True)

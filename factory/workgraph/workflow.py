@@ -139,6 +139,7 @@ with workflow.unsafe.imports_passed_through():
     from factory.activities.merge_activities import (
         DisableAutoMergeInput,
         EnqueueLandingInput,
+        FetchCheckFailureInput,
         OpenLandingPrInput,
         PollLandingInput,
         PrepareLandingPrInput,
@@ -146,6 +147,7 @@ with workflow.unsafe.imports_passed_through():
         ValidateTargetRepoInput,
         disable_auto_merge,
         enqueue_landing,
+        fetch_check_failure,
         open_landing_pr,
         poll_landing,
         prepare_landing_pr,
@@ -192,6 +194,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from factory.mergequeue.classify import classify
     from factory.mergequeue.models import (
+        CheckFailure,
         Landing,
         LandingConfig,
         LandingState,
@@ -442,6 +445,9 @@ class NodeStatus:
     verified: bool = False
     landing_state: LandingState | None = None
     pr_number: int | None = None
+    #: US2: the queue history an operator reads when a landing is rejected, in
+    #: order. Empty until the node has a landing with recorded outcomes.
+    landing_history: tuple[ObservedOutcome, ...] = ()
     #: US1: the reason a node ended KILLED when the ladder did not produce it.
     #: Set only when a node coroutine crashed; otherwise None.
     terminal_reason: str | None = None
@@ -612,6 +618,9 @@ class EpicWorkflow:
                     pr_number=record.landing.pr_number
                     if record.landing is not None
                     else None,
+                    landing_history=record.landing.outcomes
+                    if record.landing is not None
+                    else (),
                     terminal_reason=record.terminal_reason,
                 )
                 for node_id, record in self._nodes.items()
@@ -2158,10 +2167,15 @@ class EpicWorkflow:
                 # Keep polling: the queue is still on it.
                 continue
 
+            failing_checks = (
+                snapshot.failing_required_checks
+                if outcome == QueueOutcome.CHECKS_FAILED
+                else ()
+            )
             record.landing = replace(
                 record.landing,
                 outcomes=record.landing.outcomes
-                + (ObservedOutcome(at=_now(), outcome=outcome),),
+                + (ObservedOutcome(at=_now(), outcome=outcome, failing_checks=failing_checks),),
             )
             if outcome == QueueOutcome.MERGED:
                 # Removal precedes the terminal state, so the main loop — which
@@ -2276,6 +2290,20 @@ class EpicWorkflow:
         record.base_ref = sync.base_ref
         record.prepared = prepared
 
+        failing_checks: tuple[CheckFailure, ...] = ()
+        if sync.clean and last == QueueOutcome.CHECKS_FAILED:
+            failing_checks = await workflow.execute_activity(
+                fetch_check_failure,
+                FetchCheckFailureInput(
+                    epic_id=graph.epic_id,
+                    node_id=record.node_id,
+                    pr_number=landing.pr_number,
+                    check_names=record.landing.outcomes[-1].failing_checks,
+                    target_repo=graph.target_repo,
+                ),
+                **_FAST,
+            )
+
         if sync.clean:
             persona = resolved.node.persona
             conflicted_files = ()
@@ -2292,6 +2320,7 @@ class EpicWorkflow:
             prepared,
             persona,
             conflicted_files,
+            failing_checks,
         )
         if result is not None:
             await self._reenqueue(
@@ -2300,6 +2329,7 @@ class EpicWorkflow:
             return
 
         # The recovery cycle failed again — exhaustion.
+        record.landing = replace(record.landing, check_evidence=failing_checks)
         resolution = await self._escalate_landing(graph, request, record)
         if resolution == EscalationChoice.RETRY.value:
             # Exactly one more cycle, granted by the operator.
@@ -2321,6 +2351,7 @@ class EpicWorkflow:
         prepared: PreparedWorktree,
         persona: str,
         conflicted_files: tuple[str, ...],
+        failing_checks: tuple[CheckFailure, ...] = (),
     ) -> VerificationResult | None:
         """One bounded recovery attempt: fresh key, landing evidence, then verify.
 
@@ -2347,6 +2378,7 @@ class EpicWorkflow:
                 outcome=landing.outcomes[-1].outcome,
                 queue_history=landing.outcomes,
                 conflicted_files=conflicted_files,
+                failing_checks=failing_checks,
             ),
         )
 
@@ -2517,6 +2549,7 @@ class EpicWorkflow:
                 history_summary=render_landing_history(record.landing),
                 choices=list(DEFAULT_CHOICES),
                 timeout_s=request.config.escalation_timeout_s,
+                check_evidence=record.landing.check_evidence,
             ),
             **_FAST,
         )

@@ -139,12 +139,24 @@ from factory.activities.agent_activities import (
 from factory.activities.merge_activities import (
     DisableAutoMergeInput,
     EnqueueLandingInput,
+    FetchCheckFailureInput,
     OpenLandingPrInput,
     PollLandingInput,
     PrepareLandingPrInput,
     SyncLandingBranchInput,
     SyncLandingBranchResult,
     ValidateTargetRepoInput,
+)
+from factory.mergequeue.models import (
+    CheckFailure,
+    Finding,
+    Landing,
+    LandingConfig,
+    LandingState,
+    ObservedOutcome,
+    PrSnapshot,
+    QueueOutcome,
+    TargetRepoProfile,
 )
 from factory.activities.notify_activities import (
     ExpiredEscalation,
@@ -175,16 +187,6 @@ from factory.activities.verify_activities import (
     SnapshotCriteriaInput,
 )
 from factory.config import Persona, WriteScope
-from factory.mergequeue.models import (
-    Finding,
-    Landing,
-    LandingConfig,
-    LandingState,
-    ObservedOutcome,
-    PrSnapshot,
-    QueueOutcome,
-    TargetRepoProfile,
-)
 from factory.notify.service import QUESTION_SIGNAL_NAME, SIGNAL_NAME
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
 from factory.verify.ladder import DEBUGGER_PERSONA
@@ -1007,6 +1009,10 @@ class ScriptedWorld:
         self.landing_syncs: dict[str, SyncLandingBranchResult] = {}
         self.sync_requests: list[SyncLandingBranchInput] = []
 
+        #: US2 recovery: per-node scripted `fetch_check_failure` answers.
+        self.check_failure_results: dict[str, tuple[CheckFailure, ...]] = {}
+        self.check_failure_requests: list[FetchCheckFailureInput] = []
+
         #: US3 onboarding: the profile the scripted `validate_target_repo` returns,
         #: and the calls logged. Defaults to a fully conforming repo so the rest of
         #: the suite runs unchanged; onboarding tests override it with a failing
@@ -1175,6 +1181,14 @@ class ScriptedWorld:
             refused=refused,
             reason=reason,
         )
+
+    def script_check_failure(
+        self,
+        node_id: str,
+        *evidence: CheckFailure,
+    ) -> None:
+        """Script one node's `fetch_check_failure` answer (US2, FR-005)."""
+        self.check_failure_results[node_id] = evidence
 
     # --- the fakes ----------------------------------------------------------
 
@@ -1550,6 +1564,14 @@ class ScriptedWorld:
                 ),
             )
 
+        @activity.defn(name="fetch_check_failure")
+        async def fetch_check_failure(
+            request: FetchCheckFailureInput,
+        ) -> tuple[CheckFailure, ...]:
+            script._log("fetch_check_failure", request.node_id)
+            script.check_failure_requests.append(request)
+            return script.check_failure_results.get(request.node_id, ())
+
         @activity.defn(name="validate_target_repo")
         async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
             script._log("validate_target_repo")
@@ -1692,6 +1714,7 @@ class ScriptedWorld:
             poll_landing,
             disable_auto_merge,
             sync_landing_branch,
+            fetch_check_failure,
             validate_target_repo,
             send_escalation,
             expire_escalation,
@@ -4258,7 +4281,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
     assert status.nodes["us1"].landing_state == LandingState.MERGED
     assert status.nodes["us1"].pr_number == pr_number
 
-    # The recovery cycle ran a sync, then a fresh bracketed attempt.
+    # The recovery cycle ran a sync, fetched check evidence, then a fresh attempt.
     assert [s.node_id for s in script.sync_requests] == ["us1"]
     assert script.sequence("us1") == [
         "snapshot_criteria",
@@ -4276,6 +4299,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "enqueue_landing",
         "poll_landing",
         "sync_landing_branch",
+        "fetch_check_failure",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
         "run_gates",
@@ -4396,6 +4420,83 @@ async def test_recovery_escalation_kill_preserves_the_branch(
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
     ]
+
+
+async def test_checks_failed_recovery_prompt_carries_failing_check_evidence(
+    env: WorkflowEnvironment,
+) -> None:
+    """US2-S1/S2: the recovery attempt sees name, URL and log tail; history records the name.
+
+    A CHECKS_FAILED rejection whose snapshot names the failing check and whose
+    scripted evidence fetch returns a log tail produces a recovery prompt that
+    quotes the check name, the failing run URL, and the tail verbatim. The
+    recorded queue history also names the failing checks.
+    """
+    script = ScriptedWorld({"us1": [passing(), passing()]}, client=env.client)
+    pr_number = script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+    script.script_check_failure(
+        "us1",
+        CheckFailure(
+            name="lint",
+            url="https://github.com/acme/target/actions/runs/101/job/202",
+            log_tail="FAILED tests/test_calc.py::test_add\nassert 1 == 2\n",
+            note="",
+        ),
+    )
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    assert status.nodes["us1"].pr_number == pr_number
+
+    # The recovery cycle fetched the check evidence before the attempt.
+    assert [s.node_id for s in script.sync_requests] == ["us1"]
+    assert [r.node_id for r in script.check_failure_requests] == ["us1"]
+    assert script.check_failure_requests[0].pr_number == pr_number
+    assert script.check_failure_requests[0].check_names == ("lint",)
+
+    # The recovery prompt quotes the evidence verbatim.
+    recovery_prompt = script.prompts_for("us1")[1]
+    assert "## Landing rejection" in recovery_prompt
+    assert "lint" in recovery_prompt
+    assert "https://github.com/acme/target/actions/runs/101/job/202" in recovery_prompt
+    assert "FAILED tests/test_calc.py::test_add" in recovery_prompt
+    assert "assert 1 == 2" in recovery_prompt
+
+    # The recorded queue history carries the failing check names.
+    checks_failed_outcome = next(
+        o for o in status.nodes["us1"].landing_history
+        if o.outcome == QueueOutcome.CHECKS_FAILED
+    )
+    assert checks_failed_outcome.failing_checks == ("lint",)
+
+
+async def test_conflict_recovery_runs_no_evidence_fetch_and_prompt_is_unchanged(
+    env: WorkflowEnvironment,
+) -> None:
+    """US2-S5: CONFLICT recovery is unchanged — debugger persona, no fetch."""
+    script = ScriptedWorld({"us1": [passing(), passing()]}, client=env.client)
+    pr_number = script.script_landing("us1", conflict_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=False, base_ref="c0ffee",
+                       conflicted_files=("src/calc.py",))
+    # No check-failure script: a CONFLICT recovery must not fetch.
+
+    status = await run_epic(env, script, graph=one_node())
+
+    assert states(status) == {"us1": NodeState.MERGED}
+    assert status.nodes["us1"].pr_number == pr_number
+
+    # No fetch_check_failure activity was invoked.
+    assert script.check_failure_requests == []
+
+    recovery_prompt = script.prompts_for("us1")[1]
+    assert "## Landing rejection" in recovery_prompt
+    assert "CONFLICT" in recovery_prompt
+    assert "src/calc.py" in recovery_prompt
+    # No check-evidence section appears.
+    assert "https://github.com/acme/target/actions/runs" not in recovery_prompt
+    assert "FAILED tests/test_calc.py::test_add" not in recovery_prompt
 
 
 async def test_recovery_outranks_a_pending_fresh_node_in_the_scheduler(

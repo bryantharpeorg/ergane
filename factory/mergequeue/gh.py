@@ -38,7 +38,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, Sequence
 
-from factory.mergequeue.models import PrSnapshot
+from factory.mergequeue.models import CheckFailure, PrSnapshot
 from factory.verify.gates import scrubbed_env
 
 #: Failure taxonomy (plan.md § US1). A `GhError` carries one of these as `kind`.
@@ -53,6 +53,14 @@ _VIEW_FIELDS = "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeReques
 
 #: How much of a refused command's stderr is kept for the escalation to quote.
 _STDERR_TAIL_LIMIT = 2048
+
+#: US2: how much of one failing check's log tail is quoted in the recovery prompt.
+#: pytest and most CI tools print the failure summary last, so the tail is the
+#: useful part; this bound keeps one oversized check from blowing the context.
+_FAILED_LOG_PER_CHECK_LIMIT = 4096
+
+#: US2: how much log tail is quoted across all failing checks combined.
+_FAILED_LOG_TOTAL_LIMIT = 8192
 
 
 class GhError(RuntimeError):
@@ -82,6 +90,15 @@ class CreatedPr:
 
     number: int
     url: str
+
+
+@dataclass(frozen=True)
+class PrCheckEntry:
+    """US2: one row from `gh pr checks --json name,state,link`."""
+
+    name: str
+    state: str
+    link: str
 
 
 #: The runner seam: a callable `(argv: list[str], cwd: str) -> GhRunResult`.
@@ -182,6 +199,34 @@ class GhClient:
     def disable_auto_merge(self, pr_number: int) -> None:
         """Take the PR out of the queue — best-effort kill cleanup (FR-008)."""
         self._run("pr", "merge", str(pr_number), "--disable-auto")
+
+    # --- US2 check-failure evidence (FR-005/006/007) -------------------------
+
+    def pr_checks(self, pr_number: int) -> tuple[PrCheckEntry, ...]:
+        """The checks table for a PR: name, state, and run link."""
+        payload = self._run_json(
+            "pr", "checks", str(pr_number), "--json", "name,state,link"
+        )
+        entries: list[PrCheckEntry] = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            state = entry.get("state")
+            link = entry.get("link")
+            if name is None or state is None or link is None:
+                continue
+            entries.append(
+                PrCheckEntry(
+                    name=str(name), state=str(state), link=str(link)
+                )
+            )
+        return tuple(entries)
+
+    def run_failed_log(self, run_id: str) -> str:
+        """The failing-step log for one run, bounded to the per-check limit."""
+        result = self._run("run", "view", str(run_id), "--log-failed")
+        return _tail(result.stdout, _FAILED_LOG_PER_CHECK_LIMIT)
 
     # --- US3 onboarding (FR-010) ---------------------------------------------
 
@@ -331,6 +376,17 @@ def _tail(text: str, limit: int = _STDERR_TAIL_LIMIT) -> str:
         return text
     window = encoded[-limit:]
     return window.decode("utf-8", errors="ignore")
+
+
+_RUN_ID_RE = __import__("re").compile(r"/actions/runs/(\d+)")
+
+
+def _parse_run_id(link: str) -> str | None:
+    """US2: extract the run id from a GitHub Actions run link, if present."""
+    match = _RUN_ID_RE.search(link)
+    if match is None:
+        return None
+    return match.group(1)
 
 
 def _now_utc() -> str:

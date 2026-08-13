@@ -35,7 +35,8 @@ import pytest
 from temporalio.testing import ActivityEnvironment
 
 from factory.activities import merge_activities
-from factory.mergequeue.models import PrSnapshot
+from factory.mergequeue.gh import GhError, GH_UNAVAILABLE
+from factory.mergequeue.models import CheckFailure, PrSnapshot
 from factory.workgraph import worktree as worktrees
 from tests.fake_gh import FakeGh
 from tests.target_repo import build_target_repo, git, git_env
@@ -861,3 +862,169 @@ async def test_validate_target_repo_squash_title_gh_failure_is_failed_validation
 
     assert profile.passed is False
     assert any(not f.passed for f in profile.findings)
+
+
+# --- fetch_check_failure (US2 recovery, plan.md § US2) ------------------------
+
+
+async def test_fetch_check_failure_returns_per_check_evidence(
+    env: ActivityEnvironment, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The activity turns `gh pr checks` + `gh run view` into (name, url, tail, note)."""
+    fake = FakeGh()
+    fake.expect_json(
+        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
+        payload=[
+            {
+                "name": "test",
+                "state": "FAIL",
+                "link": "https://github.com/acme/target/actions/runs/101/job/202",
+            },
+        ],
+    )
+    fake.expect(
+        "run", "view", "101", "--log-failed",
+        stdout="FAILED tests/test_calc.py::test_add\nmore\n",
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+
+    from factory.activities.merge_activities import (
+        FetchCheckFailureInput,
+        fetch_check_failure,
+    )
+
+    result = await env.run(
+        fetch_check_failure,
+        FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            pr_number=PR_NUMBER,
+            check_names=("test",),
+            target_repo=TARGET,
+        ),
+    )
+
+    assert len(result) == 1
+    assert result[0] == CheckFailure(
+        name="test",
+        url="https://github.com/acme/target/actions/runs/101/job/202",
+        log_tail="FAILED tests/test_calc.py::test_add\nmore\n",
+        note="",
+    )
+
+
+async def test_fetch_check_failure_degrades_on_gh_error(
+    env: ActivityEnvironment, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `gh` outage or refusal returns degraded evidence, never a raise (US2-S3)."""
+    fake = FakeGh()
+    fake.expect_json(
+        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
+        payload=[
+            {
+                "name": "test",
+                "state": "FAIL",
+                "link": "https://github.com/acme/target/actions/runs/101/job/202",
+            },
+        ],
+    )
+    fake.expect(
+        "run", "view", "101", "--log-failed",
+        stderr="gh: HTTP 503", returncode=1,
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+
+    from factory.activities.merge_activities import (
+        FetchCheckFailureInput,
+        fetch_check_failure,
+    )
+
+    result = await env.run(
+        fetch_check_failure,
+        FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            pr_number=PR_NUMBER,
+            check_names=("test",),
+            target_repo=TARGET,
+        ),
+    )
+
+    assert len(result) == 1
+    assert result[0].name == "test"
+    assert result[0].log_tail == ""
+    assert "unavailable" in result[0].note.lower() or "could not fetch" in result[0].note.lower()
+
+
+async def test_fetch_check_failure_degrades_when_link_has_no_run_id(
+    env: ActivityEnvironment, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A check link that does not parse to a run id degrades to name + link only."""
+    fake = FakeGh()
+    fake.expect_json(
+        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
+        payload=[
+            {
+                "name": "lint",
+                "state": "FAIL",
+                "link": "https://github.com/acme/target/checks",
+            },
+        ],
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+
+    from factory.activities.merge_activities import (
+        FetchCheckFailureInput,
+        fetch_check_failure,
+    )
+
+    result = await env.run(
+        fetch_check_failure,
+        FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            pr_number=PR_NUMBER,
+            check_names=("lint",),
+            target_repo=TARGET,
+        ),
+    )
+
+    assert len(result) == 1
+    assert result[0].name == "lint"
+    assert result[0].url == "https://github.com/acme/target/checks"
+    assert result[0].log_tail == ""
+    assert "run id" in result[0].note.lower() or "could not resolve" in result[0].note.lower()
+
+
+async def test_fetch_check_failure_uses_asyncio_to_thread(
+    env: ActivityEnvironment, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The activity never blocks the event loop: it mirrors sync_landing_branch (US2-S4)."""
+    fake = FakeGh()
+    fake.expect_json(
+        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
+        payload=[],
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+
+    from factory.activities.merge_activities import (
+        FetchCheckFailureInput,
+        fetch_check_failure,
+    )
+
+    # The activity must run to completion even though the client is synchronous.
+    result = await env.run(
+        fetch_check_failure,
+        FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            pr_number=PR_NUMBER,
+            check_names=("test",),
+            target_repo=TARGET,
+        ),
+    )
+
+    # A missing check degrades rather than aborting, proving the thread ran.
+    assert len(result) == 1
+    assert result[0].name == "test"
+    assert "unavailable" in result[0].note.lower()

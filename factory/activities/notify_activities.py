@@ -66,6 +66,7 @@ from factory.notify.messages import (
     roadmap_failure_notice,
     roadmap_recovery_notice,
 )
+from factory.mergequeue.models import CheckFailure
 from factory.verify import store
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 
@@ -146,6 +147,8 @@ class SendEscalationInput:
     choices: list[EscalationChoice] = field(default_factory=lambda: list(DEFAULT_CHOICES))
     timeout_s: int = ESCALATION_TIMEOUT_S
     escalation_id: str | None = None
+    #: US2: the failing check evidence to render into the operator-facing message.
+    check_evidence: tuple[CheckFailure, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -374,6 +377,7 @@ def _pending_record(request: SendEscalationInput) -> EscalationRecord:
         sent_at=_iso(sent),
         expires_at=_iso(sent + timedelta(seconds=request.timeout_s)),
         delivered=False,
+        check_evidence=request.check_evidence,
     )
 
 

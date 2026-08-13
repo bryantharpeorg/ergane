@@ -759,6 +759,13 @@ async def test_status_json_is_the_query_result_verbatim(
                 "state": "MERGED",
                 "verified": True,
                 "landing_state": "MERGED",
+                "landing_history": [
+                    {
+                        "at": result.json["nodes"][node_id]["landing_history"][0]["at"],
+                        "outcome": "MERGED",
+                        "failing_checks": [],
+                    }
+                ],
                 "pr_number": int(
                     hashlib.sha1(branch_name(EPIC_ID, node_id).encode()).hexdigest()[:8], 16
                 )
