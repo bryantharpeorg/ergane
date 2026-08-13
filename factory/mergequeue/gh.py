@@ -38,7 +38,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, Sequence
 
-from factory.mergequeue.models import PrSnapshot
+from factory.mergequeue.models import CheckFailure, PrSnapshot
 from factory.verify.gates import scrubbed_env
 
 #: Failure taxonomy (plan.md § US1). A `GhError` carries one of these as `kind`.
@@ -99,21 +99,6 @@ class PrCheckEntry:
     name: str
     state: str
     link: str
-
-
-@dataclass(frozen=True)
-class CheckFailure:
-    """US2: one failing check's evidence as the recovery prompt receives it.
-
-    `log_tail` is the last of `gh run view --log-failed` for the run id parsed
-    from `url`; `note` is empty when the tail was fetched, and states why it was
-    not fetched when `log_tail` is empty.
-    """
-
-    name: str
-    url: str
-    log_tail: str
-    note: str
 
 
 #: The runner seam: a callable `(argv: list[str], cwd: str) -> GhRunResult`.

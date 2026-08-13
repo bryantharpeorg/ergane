@@ -32,8 +32,7 @@ from typing import Any
 
 from telegram import InlineKeyboardMarkup
 
-from factory.mergequeue.gh import CheckFailure
-from factory.mergequeue.models import Landing, LandingState, ObservedOutcome, QueueOutcome
+from factory.mergequeue.models import CheckFailure, Landing, LandingState, ObservedOutcome, QueueOutcome
 from factory.notify.messages import (
     callback_data,
     escalation_keyboard,

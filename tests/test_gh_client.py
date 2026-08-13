@@ -35,7 +35,6 @@ from __future__ import annotations
 import pytest
 
 from factory.mergequeue.gh import (
-    CheckFailure,
     GhClient,
     GhError,
     GH_AUTH,
@@ -46,6 +45,7 @@ from factory.mergequeue.gh import (
     _FAILED_LOG_PER_CHECK_LIMIT,
     _parse_run_id,
 )
+from factory.mergequeue.models import CheckFailure
 from tests.fake_gh import FakeGh, FakeGhResult
 
 TARGET_CLONE = "/srv/target"

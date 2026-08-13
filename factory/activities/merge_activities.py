@@ -53,7 +53,6 @@ from factory.mergequeue.gh import (
     GH_NOT_FOUND,
     GH_REFUSED,
     GH_UNAVAILABLE,
-    CheckFailure,
     GhClient,
     GhError,
     _FAILED_LOG_TOTAL_LIMIT,
@@ -61,7 +60,7 @@ from factory.mergequeue.gh import (
     _tail,
 )
 from factory.mergequeue.messages import pr_title, render_pr_body
-from factory.mergequeue.models import PrSnapshot, TargetRepoProfile
+from factory.mergequeue.models import CheckFailure, PrSnapshot, TargetRepoProfile
 from factory.mergequeue.onboard import evaluate_repo
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 from factory.verify.factory_yaml import FactoryConfigError, load_factory_config
@@ -212,6 +211,8 @@ class FetchCheckFailureInput:
     must not be lost to its own evidence-gathering.
     """
 
+    epic_id: str
+    node_id: str
     pr_number: int
     check_names: tuple[str, ...]
     target_repo: str

@@ -70,8 +70,7 @@ from factory.verify.models import (
     VerificationForm,
     VerificationResult,
 )
-from factory.mergequeue.gh import CheckFailure
-from factory.mergequeue.models import ObservedOutcome, QueueOutcome
+from factory.mergequeue.models import CheckFailure, ObservedOutcome, QueueOutcome
 from factory.workgraph.models import WorkNode
 from factory.workgraph.prompt import (
     AttemptEvidence,

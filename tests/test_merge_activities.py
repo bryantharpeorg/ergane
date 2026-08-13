@@ -35,8 +35,8 @@ import pytest
 from temporalio.testing import ActivityEnvironment
 
 from factory.activities import merge_activities
-from factory.mergequeue.gh import CheckFailure, GhError, GH_UNAVAILABLE
-from factory.mergequeue.models import PrSnapshot
+from factory.mergequeue.gh import GhError, GH_UNAVAILABLE
+from factory.mergequeue.models import CheckFailure, PrSnapshot
 from factory.workgraph import worktree as worktrees
 from tests.fake_gh import FakeGh
 from tests.target_repo import build_target_repo, git, git_env
@@ -896,6 +896,8 @@ async def test_fetch_check_failure_returns_per_check_evidence(
     result = await env.run(
         fetch_check_failure,
         FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
             pr_number=PR_NUMBER,
             check_names=("test",),
             target_repo=TARGET,
@@ -940,6 +942,8 @@ async def test_fetch_check_failure_degrades_on_gh_error(
     result = await env.run(
         fetch_check_failure,
         FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
             pr_number=PR_NUMBER,
             check_names=("test",),
             target_repo=TARGET,
@@ -977,6 +981,8 @@ async def test_fetch_check_failure_degrades_when_link_has_no_run_id(
     result = await env.run(
         fetch_check_failure,
         FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
             pr_number=PR_NUMBER,
             check_names=("lint",),
             target_repo=TARGET,
@@ -1010,6 +1016,8 @@ async def test_fetch_check_failure_uses_asyncio_to_thread(
     result = await env.run(
         fetch_check_failure,
         FetchCheckFailureInput(
+            epic_id=EPIC,
+            node_id=NODE,
             pr_number=PR_NUMBER,
             check_names=("test",),
             target_repo=TARGET,

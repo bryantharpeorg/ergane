@@ -147,7 +147,17 @@ from factory.activities.merge_activities import (
     SyncLandingBranchResult,
     ValidateTargetRepoInput,
 )
-from factory.mergequeue.gh import CheckFailure
+from factory.mergequeue.models import (
+    CheckFailure,
+    Finding,
+    Landing,
+    LandingConfig,
+    LandingState,
+    ObservedOutcome,
+    PrSnapshot,
+    QueueOutcome,
+    TargetRepoProfile,
+)
 from factory.activities.notify_activities import (
     ExpiredEscalation,
     ExpiredQuestion,
@@ -177,16 +187,6 @@ from factory.activities.verify_activities import (
     SnapshotCriteriaInput,
 )
 from factory.config import Persona, WriteScope
-from factory.mergequeue.models import (
-    Finding,
-    Landing,
-    LandingConfig,
-    LandingState,
-    ObservedOutcome,
-    PrSnapshot,
-    QueueOutcome,
-    TargetRepoProfile,
-)
 from factory.notify.service import QUESTION_SIGNAL_NAME, SIGNAL_NAME
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
 from factory.verify.ladder import DEBUGGER_PERSONA
@@ -4281,7 +4281,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
     assert status.nodes["us1"].landing_state == LandingState.MERGED
     assert status.nodes["us1"].pr_number == pr_number
 
-    # The recovery cycle ran a sync, then a fresh bracketed attempt.
+    # The recovery cycle ran a sync, fetched check evidence, then a fresh attempt.
     assert [s.node_id for s in script.sync_requests] == ["us1"]
     assert script.sequence("us1") == [
         "snapshot_criteria",
@@ -4299,6 +4299,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "enqueue_landing",
         "poll_landing",
         "sync_landing_branch",
+        "fetch_check_failure",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
         "run_gates",
@@ -4464,9 +4465,11 @@ async def test_checks_failed_recovery_prompt_carries_failing_check_evidence(
     assert "assert 1 == 2" in recovery_prompt
 
     # The recorded queue history carries the failing check names.
-    [outcome] = status.nodes["us1"].landing_history
-    assert outcome.outcome == QueueOutcome.CHECKS_FAILED
-    assert outcome.failing_checks == ("lint",)
+    checks_failed_outcome = next(
+        o for o in status.nodes["us1"].landing_history
+        if o.outcome == QueueOutcome.CHECKS_FAILED
+    )
+    assert checks_failed_outcome.failing_checks == ("lint",)
 
 
 async def test_conflict_recovery_runs_no_evidence_fetch_and_prompt_is_unchanged(
