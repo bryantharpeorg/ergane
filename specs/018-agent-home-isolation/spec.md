@@ -1,5 +1,11 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 02:45Z by the operator: all four stories observed
+# on ergane-buildout — US1 8a6167e, US2 d53fb5e (PR #38), US3 b189880 (PR #42,
+# first attempt), US4 ca97f7b (PR #43, second attempt; judge failed attempt 1
+# on US4-S5 and the feedback loop fixed it). us3/us4 were the remainder
+# re-dispatched 2026-08-13 after the 08-11 pause killed them; delta derivation
+# subtracted the landed pair cleanly.
 # Flipped ready and dispatched 2026-08-11 on Bryan's instruction ("optionally
 # dispatch 018 first"), with a git-status tripwire armed on the operator
 # checkout per the 010/us2 containment breach.
