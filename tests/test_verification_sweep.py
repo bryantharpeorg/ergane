@@ -978,6 +978,10 @@ def test_the_component_exposes_no_entry_point_that_reaches_the_judge() -> None:
     importing anything: the console scripts the package installs, and the modules
     that do something when executed with `python -m`. This component adds exactly
     one runnable module — the escalation bridge — and it verifies nothing.
+
+    The deterministic manifest parser (`factory.verify.factory_yaml`) is also
+    runnable as a subprocess entry point (026 US1), but it exits before it reaches
+    any LLM surface and imports no judge code, so it is judge-safe.
     """
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     scripts: dict[str, str] = manifest.get("project", {}).get("scripts", {})
@@ -998,9 +1002,32 @@ def test_the_component_exposes_no_entry_point_that_reaches_the_judge() -> None:
             for node in parse(path).body
         )
     }
-    assert runnable == {"factory/notify/service.py"}, (
-        f"unexpected runnable modules in this component: {sorted(runnable)}"
-    )
+    assert runnable == {
+        "factory/notify/service.py",
+        "factory/verify/factory_yaml.py",
+    }, f"unexpected runnable modules in this component: {sorted(runnable)}"
+
+    # 026 US1: the parser CLI is allowed only because it is inert — it imports
+    # nothing that reaches the judge or the ladder (the verdict composition
+    # surface that feeds back into the judge).
+    factory_yaml_path = COMPONENT_ROOT / "verify" / "factory_yaml.py"
+    factory_yaml_tree = parse(factory_yaml_path)
+    for node in ast.walk(factory_yaml_tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert "judge" not in alias.name, (
+                    f"factory_yaml imports {alias.name!r}; parser CLI must stay judge-free"
+                )
+                assert "ladder" not in alias.name, (
+                    f"factory_yaml imports {alias.name!r}; parser CLI must stay ladder-free"
+                )
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert "judge" not in node.module, (
+                f"factory_yaml imports from {node.module!r}; parser CLI must stay judge-free"
+            )
+            assert "ladder" not in node.module, (
+                f"factory_yaml imports from {node.module!r}; parser CLI must stay ladder-free"
+            )
 
 
 def test_the_reference_flow_is_not_production_code() -> None:
