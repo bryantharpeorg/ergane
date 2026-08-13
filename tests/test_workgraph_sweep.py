@@ -87,6 +87,7 @@ from factory.usage.models import Termination
 from factory.verify.models import OverallVerdict
 from factory.workgraph import cli, derive, worktree as worktrees
 from factory.workgraph.adapter import (
+    PASSTHROUGH_ENV,
     STDOUT_LOG_NAME,
     ClaudeCodeAdapter,
     adapter_for,
@@ -962,8 +963,15 @@ def test_the_virtual_key_is_read_into_exactly_one_environment_variable() -> None
 
     The allowlist is a construction rather than a filter (US2-S1), so what the
     child receives is exactly what this function writes: the proxy URL, the
-    attempt's key as `ANTHROPIC_AUTH_TOKEN`, and a passthrough of four names that
+    attempt's key as `ANTHROPIC_AUTH_TOKEN`, and a passthrough of names that
     are not credentials.
+
+    US3 adds the home rule: `HOME` is not inherited from the worker; it is the
+    factory's per-node home built from `AttemptContext.home_path`. Keeping it
+    out of `PASSTHROUGH_ENV` is what makes the child's load surface a
+    construction rather than a filter, and restoring it would let the
+    operator's `~/.claude.json` and session state reach the agent again
+    (FR-007).
     """
     tree = parse(ADAPTER_MODULE)
     owner = enclosing_functions(tree)
@@ -974,20 +982,28 @@ def test_the_virtual_key_is_read_into_exactly_one_environment_variable() -> None
     }
     assert readers == {"attempt_env"}, f"the virtual key is read in {sorted(readers)}"
 
+    assert "HOME" not in PASSTHROUGH_ENV, (
+        "HOME must not be inherited from the worker environment; it is the "
+        "factory's per-node home, built from AttemptContext.home_path (FR-007). "
+        "If you are adding it back to PASSTHROUGH_ENV, read US3 first: the agent "
+        "must load from a factory-owned home, not the operator's."
+    )
+
+    ctx = AttemptContext(
+        epic_id=EPIC,
+        node_id=NODE,
+        attempt=ATTEMPT,
+        prompt=PROMPT,
+        worktree_path="/tmp/worktree",
+        home_path="/tmp/home",
+        proxy_url=PROXY_URL,
+        virtual_key=VIRTUAL_KEY,
+        model_alias=MODEL_ALIAS,
+        session_id=SESSION_ID,
+        timeout_s=TIMEOUT_S,
+    )
     built = attempt_env(
-        AttemptContext(
-            epic_id=EPIC,
-            node_id=NODE,
-            attempt=ATTEMPT,
-            prompt=PROMPT,
-            worktree_path="/tmp/worktree",
-            home_path="/tmp/home",
-            proxy_url=PROXY_URL,
-            virtual_key=VIRTUAL_KEY,
-            model_alias=MODEL_ALIAS,
-            session_id=SESSION_ID,
-            timeout_s=TIMEOUT_S,
-        ),
+        ctx,
         {
             "PATH": "/usr/bin",
             "HOME": "/home/factory",
@@ -1002,6 +1018,30 @@ def test_the_virtual_key_is_read_into_exactly_one_environment_variable() -> None
         "PATH": "/usr/bin",
         "HOME": "/tmp/home",
     }
+
+    # Negative case: even if the worker's HOME is a recognizable operator path,
+    # the child receives the factory's home and no value under the operator's
+    # home leaks through.
+    operator_home = "/home/operator"
+    built_from_operator = attempt_env(
+        ctx,
+        {
+            "PATH": "/usr/bin",
+            "HOME": operator_home,
+            "LANG": "en_US.UTF-8",
+            "TERM": "dumb",
+            "LITELLM_MASTER_KEY": MASTER_KEY,
+            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+        },
+    )
+    assert built_from_operator["HOME"] == "/tmp/home", (
+        "the child's HOME must be the factory's per-node home, not the worker's"
+    )
+    for name, value in built_from_operator.items():
+        assert not value.startswith(operator_home), (
+            f"{name}={value!r} is under the operator's HOME {operator_home!r}; "
+            "the worker's home must not reach the child (FR-007)"
+        )
 
 
 def test_the_credential_sweep_actually_read_the_component() -> None:
