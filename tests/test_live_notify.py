@@ -74,6 +74,8 @@ import pytest
 from temporalio.testing import ActivityEnvironment
 
 from factory.activities import notify_activities
+from tests.conftest import TelegramCredentials
+
 from factory.activities.notify_activities import (
     ESCALATION_TIMEOUT_S,
     TELEGRAM_BOT_TOKEN_ENV,
@@ -177,10 +179,18 @@ class LiveEscalation:
 
 
 @pytest.fixture(scope="module")
-def live_config(tmp_path_factory: pytest.TempPathFactory) -> LiveConfig:
-    """A bot token and a chat to send to, or a skip."""
-    token = os.environ.get(TELEGRAM_BOT_TOKEN_ENV)
-    chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV)
+def live_config(
+    tmp_path_factory: pytest.TempPathFactory,
+    telegram_credentials: TelegramCredentials,
+) -> LiveConfig:
+    """A bot token and a chat to send to, or a skip.
+
+    The session fixture removed the credentials from ``os.environ`` so no test
+    accidentally reads them.  This fixture consumes the stash; with no values,
+    the live smoke skips exactly as it did before.
+    """
+    token = telegram_credentials.token
+    chat_id = telegram_credentials.chat_id
     if not token or not chat_id:
         pytest.skip(
             f"live-notify smoke needs {TELEGRAM_BOT_TOKEN_ENV} and "
@@ -204,11 +214,13 @@ def escalation(live_config: LiveConfig) -> LiveEscalation:
     """Send exactly one real escalation, exactly as a stuck node would.
 
     Only the store path is patched, and only for the duration of the send. The
-    bot token and chat id stay as the operator exported them, because reading
-    them out of the process environment inside the activity is the behaviour
-    under test (FR-009, contracts/activities.md).
+    bot token and chat id are re-planted into env for this module scope so the
+    activity under test still reads them out of ``os.environ`` (FR-009,
+    contracts/activities.md).
     """
     with pytest.MonkeyPatch.context() as patch:
+        patch.setenv(TELEGRAM_BOT_TOKEN_ENV, live_config.token)
+        patch.setenv(TELEGRAM_CHAT_ID_ENV, live_config.chat_id)
         patch.setenv(VERIFICATION_DB_PATH_ENV, str(live_config.db_path))
         recorder = _install_recording_bot(patch)
         result = asyncio.run(_send(live_config))
