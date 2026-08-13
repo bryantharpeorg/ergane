@@ -1615,15 +1615,15 @@ def _epics(client: Any) -> list[_Epic]:
 #:
 #: Full suite (clean env, T012):
 #:   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" uv run pytest -q --durations=30
-#:   Before (US1 only, a564b8c): 2202 passed, 44 skipped in 250.22s (0:04:10)
-#:   After  (US1+US2+T011+live_capacity poll, current worktree): 2202 passed, 44 skipped in 172.06s (0:02:52)
+#:   Before (pre-US1, 193b7ad): 2202 passed, 44 skipped in 342.71s (0:05:42)
+#:   After  (US1+US2+live_capacity poll, current worktree): 2202 passed, 44 skipped in 172.82s (0:02:52)
 #:
 #:   Slowest 5 after:
-#:     12.08s call tests/test_interpreter.py::test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown
-#:     12.07s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
-#:     10.41s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
+#:     12.09s call tests/test_interpreter.py::test_a_heartbeat_timeout_delivers_its_snapshot_to_teardown
+#:     12.08s call tests/test_interpreter.py::test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout
+#:     10.52s call tests/test_live_capacity.py::test_capacity_read_finds_open_epic_workflows_and_excludes_others
 #:      5.97s call tests/test_gates.py::test_a_gate_passes_alone_and_passes_contended
-#:      5.41s call tests/test_interpreter.py::test_an_attempts_history_has_no_timer_and_no_poll_activity
+#:      5.40s call tests/test_interpreter.py::test_an_attempts_history_cost_does_not_grow_with_its_duration
 #:   No test at 15s or more; the sweep test is no longer in the slowest 30. The two
 #:   live_capacity tests stay under 15s by polling visibility until it converges
 #:   rather than paying a fixed 5-second sleep twice.
