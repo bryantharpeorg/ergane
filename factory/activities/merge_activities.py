@@ -484,6 +484,11 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
         )
 
     try:
+        merge_settings = client.merge_settings(owner_repo)
+        squash_merge_commit_title = merge_settings.get("squash_merge_commit_title")
+        if squash_merge_commit_title is not None:
+            squash_merge_commit_title = str(squash_merge_commit_title)
+
         rules = client.rules_for_branch(owner_repo, default_branch)
         queue_enabled, required_checks = _queue_from_rules(rules)
         if required_checks is None:
@@ -501,7 +506,7 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
                 # live 2026-08-07): the repo simply configures no checks there.
                 required_checks = []
     except GhError as error:
-        # The rules call failed — a repo the factory cannot read is not dispatchable.
+        # A repo the factory cannot read is not dispatchable.
         return _profile_from_gh_failure(
             target_repo, visibility=visibility, default_branch=default_branch,
             owner_repo=owner_repo, manifest_error=manifest_error,
@@ -516,6 +521,7 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
         required_checks=required_checks or (),
         declared_gates=declared_gates,
         factory_yaml_error=manifest_error,
+        squash_merge_commit_title=squash_merge_commit_title,
     )
 
 

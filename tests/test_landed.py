@@ -225,6 +225,37 @@ def test_salvage_subject_is_not_a_landing(repo_builder: Callable[..., Path]) -> 
     assert facts == {}
 
 
+def test_salvage_subject_with_pr_suffix_is_not_a_landing(repo_builder: Callable[..., Path]) -> None:
+    """The real PR #28 salvage subject, suffix and all, must not read as a landing.
+
+    The merge commit GitHub wrote for PR #28 carried the exact subject
+    `salvage(021-roadmap-operability/us4): completed attempt 1 (#28)`. That 021
+    subject is refused by the epic-anchor mismatch alone, so the load-bearing
+    guard is the same suffixed shape anchored to the scanned epic:
+    `salvage(016-delta-derivation/us1): completed attempt 1 (#28)`. Only a grammar
+    refusal keeps that second subject out; if the reader ever learns to recognize
+    salvage subjects, this test goes red. This is the standing guard in 010 T007's
+    tradition: it passes immediately against the current reader and exists to catch
+    the forbidden inverse fix.
+    """
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    _commit(
+        repo,
+        "salvage(021-roadmap-operability/us4): completed attempt 1 (#28)",
+        env=env,
+        allow_empty=True,
+    )
+    _commit(
+        repo,
+        "salvage(016-delta-derivation/us1): completed attempt 1 (#28)",
+        env=env,
+        allow_empty=True,
+    )
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {}
+
+
 def test_other_salvage_and_operator_subjects_are_not_landings(repo_builder: Callable[..., Path]) -> None:
     """Other subjects that name an epic and story without a landing must not match."""
     repo = repo_builder({"spec.md": _spec(stories=["US1", "US4"])})

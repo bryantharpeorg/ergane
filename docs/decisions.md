@@ -5,6 +5,34 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-041 · Squash-merge titles must come from the PR title (decided)
+
+Decided 2026-08-13, recorded at landing of spec `029-salvage-landing-grammar` US1.
+A one-commit squash merge whose subject carries the PR title is the landing grammar's
+assumption (D-034). GitHub's default `squash_merge_commit_title` is
+`COMMIT_OR_PR_TITLE`, which titles the merge from the first commit and breaks that
+assumption. Onboarding now gathers the repo's `squash_merge_commit_title` through the
+REST repo endpoint (because `gh repo view --json` has no field for it) and fails the
+`squash_title` finding unless the value is exactly `PR_TITLE`. An unreadable/absent
+setting fails closed, matching the `factory_yaml` finding's precedent. The remedy is a
+single call: `gh api -X PATCH repos/<owner_repo> -f squash_merge_commit_title=PR_TITLE`.
+The landing reader's parse end (`_LANDING_RE`, `_HISTORICAL_LANDING_RE`) is unchanged;
+salvage subjects remain refused, now proved against the verbatim PR #28 subject and its
+epic-anchored twin.
+
+1. **Repo-scoped setting, repo-scoped read.** `squash_merge_commit_title` lives on the
+   repo object, not on branch rules. The new `GhClient.merge_settings(owner_repo)`
+   reads `gh api repos/<owner_repo>`; `onboard_target_repo` extracts the value and
+   passes it to `evaluate_repo`.
+2. **No new model field.** `TargetRepoProfile.passed` is already the conjunction of its
+   `findings`; the `squash_title` finding's detail carries the observed value and remedy,
+   so the epic-start onboarding gate inherits the check with no new wiring.
+3. **No new dependency, activity, or store.** The change reuses the existing `GhClient`
+   boundary, the existing `_profile_from_gh_failure` path, and the existing `Finding`
+   model.
+
+---
+
 ## D-040 · The agent's `HOME` is the factory's per-node home, not the operator's (decided)
 
 Decided 2026-08-12, recorded at landing of spec `018-agent-home-isolation` US3.

@@ -225,6 +225,10 @@ def _script_conforming_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
         },
     )
     fake.expect_json(
+        "api", f"repos/{owner_repo}",
+        payload={"squash_merge_commit_title": "PR_TITLE"},
+    )
+    fake.expect_json(
         "api", f"repos/{owner_repo}/rules/branches/main",
         payload=[{
             "type": "merge_queue",
@@ -247,6 +251,10 @@ def _script_queue_less_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
             "visibility": "PUBLIC",
             "defaultBranchRef": "main",
         },
+    )
+    fake.expect_json(
+        "api", f"repos/{owner_repo}",
+        payload={"squash_merge_commit_title": "PR_TITLE"},
     )
     fake.expect_json(
         "api", f"repos/{owner_repo}/rules/branches/main",

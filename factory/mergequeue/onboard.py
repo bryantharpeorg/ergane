@@ -19,6 +19,10 @@ The checks, each one a `Finding` (check slug, passed, actionable detail):
   `factory.yaml`. A missing or malformed manifest is a failing finding carrying
   the 002 loader's error, never a pass by default: a verifier that shrugged at
   a broken manifest would find no gates, therefore see nothing fail.
+- **`squash_title`** — the repo must title squash merges from the PR title
+  (`squash_merge_commit_title` is `PR_TITLE`). Any other value, or an unreadable
+  value, fails with the one-call remedy (`gh api -X PATCH repos/<owner_repo> -f
+  squash_merge_commit_title=PR_TITLE`).
 - **`gate_check:<gate>`** — every declared gate must have a required check
   named *exactly* after it. The naming convention is the contract between
   `factory.yaml` and the repo's CI; a declared gate with no matching check
@@ -51,6 +55,7 @@ def evaluate_repo(
     required_checks: Sequence[str],
     declared_gates: Sequence[str],
     factory_yaml_error: str | None = None,
+    squash_merge_commit_title: str | None = None,
 ) -> TargetRepoProfile:
     """Judge a target repo's facts against the factory's assumptions.
 
@@ -60,11 +65,14 @@ def evaluate_repo(
     fallback), and `declared_gates` is what the repo's own `factory.yaml` names
     (`FactoryConfig.gates` keys). `factory_yaml_error`, when set, is the 002
     loader's `FactoryConfigError` message — a broken manifest is a failing
-    finding, never a pass by default.
+    finding, never a pass by default. `squash_merge_commit_title` is the repo's
+    merge setting read via the REST repo endpoint; `None` means the setting was
+    absent or unreadable, which also fails closed.
 
     The profile's `findings` are ordered so the operator preflight reads the
-    repo's own health first (visibility, queue, manifest), then the gate↔check
-    mapping, which is where a deterministic-CI repo most often diverges.
+    repo's own health first (visibility, queue, manifest, squash title), then
+    the gate↔check mapping, which is where a deterministic-CI repo most often
+    diverges.
     """
 
     findings: list[Finding] = []
@@ -82,6 +90,11 @@ def evaluate_repo(
     # is a failing finding carrying the loader's error — never a shrug that
     # would read as "no gates, so nothing to fail".
     _manifest_finding(findings, factory_yaml_error)
+
+    # Squash-merge titles must come from the PR title so the landing grammar
+    # survives the merge. An unreadable setting (absent in the REST payload) is
+    # treated as a failure, matching the factory_yaml precedent.
+    _squash_title_finding(findings, repo, squash_merge_commit_title)
 
     # The gate ↔ check mapping, by name (position is irrelevant).
     declared = set(declared_gates)
@@ -155,6 +168,36 @@ def _manifest_finding(
                 "manifest so the repo declares its gates",
             )
         )
+
+
+def _squash_title_finding(
+    findings: list[Finding], repo: str, squash_merge_commit_title: str | None
+) -> None:
+    if squash_merge_commit_title == "PR_TITLE":
+        findings.append(
+            Finding("squash_title", True, "squash merges are titled from the PR title")
+        )
+        return
+
+    if squash_merge_commit_title is None:
+        observed = "unreadable"
+        cause = (
+            "the setting was not returned by the repo endpoint — this usually means "
+            "the token lacks push permission on the repo, which is what hides GitHub's "
+            "merge-settings fields"
+        )
+    else:
+        observed = repr(squash_merge_commit_title)
+        cause = f"observed value was {observed}"
+
+    findings.append(
+        Finding(
+            "squash_title",
+            False,
+            f"squash_merge_commit_title is {observed}; {cause} — run "
+            f"`gh api -X PATCH repos/{repo} -f squash_merge_commit_title=PR_TITLE`",
+        )
+    )
 
 
 def _gate_check_finding(findings: list[Finding], gate: str, matched: bool) -> None:
