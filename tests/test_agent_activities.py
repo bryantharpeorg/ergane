@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+import yaml
 from temporalio import activity
 from temporalio.exceptions import ApplicationError, CancelledError
 from temporalio.testing import ActivityEnvironment
@@ -93,6 +94,7 @@ from factory.activities.agent_activities import (
     RemoveWorktreeInput,
     ResolvePersonaInput,
     SalvageWorktreeInput,
+    _resolve_node,
     load_prompt_sources,
     prepare_worktree,
     read_worktree_diff,
@@ -102,7 +104,7 @@ from factory.activities.agent_activities import (
     run_agent_attempt,
     salvage_worktree,
 )
-from factory.config import load_personas
+from factory.config import Persona, WriteScope, load_personas
 from factory.usage.models import Termination
 from factory.workgraph.adapter import STDOUT_LOG_NAME, home_path, pid_file, transcript_dir
 from factory.workgraph.models import (
@@ -289,6 +291,12 @@ def context(worktree: Path, factory_root: Path) -> Callable[..., AttemptContext]
     return build
 
 
+def _write_registry(tmp_path: Path, personas: dict[str, object]) -> Path:
+    path = tmp_path / "personas.yaml"
+    path.write_text(yaml.safe_dump(personas), encoding="utf-8")
+    return path
+
+
 # --- helpers -----------------------------------------------------------------
 
 
@@ -465,6 +473,7 @@ async def test_resolve_graph_snapshots_the_registry_onto_every_node(
         ]
         assert item.write_scope == persona.write_scope.value
         assert item.timeout_s == persona.timeout_s
+        assert item.context_window == persona.context_window
 
 
 async def test_a_per_story_timeout_override_wins_over_the_registry(
@@ -480,6 +489,48 @@ async def test_a_per_story_timeout_override_wins_over_the_registry(
     )
 
     assert resolved[0].timeout_s == OVERRIDE_TIMEOUT_S
+
+
+async def test_context_window_is_resolved_onto_the_node_and_none_when_omitted(
+    env: ActivityEnvironment,
+    tmp_path: Path,
+) -> None:
+    """FR-009/FR-010: an optional per-persona window rides onto ResolvedNode,
+    and an omitted declaration stays None. There is no node-level override and
+    no fallback value.
+    """
+    registry = load_personas()
+
+    # Shipped personas declare no window today, so every resolved node carries
+    # None. Use two personas to show it is per-persona, not a global default.
+    nodes = (
+        work_node(id="us1", persona="implementer"),
+        work_node(id="us2", persona="architect"),
+    )
+
+    resolved = await env.run(resolve_graph, work_graph(*nodes))
+
+    for item, node in zip(resolved, nodes):
+        assert item.context_window == registry[node.persona].context_window
+        assert item.context_window is None
+
+    # A declared window is carried verbatim through the resolver. `resolve_graph`
+    # reads the shipped registry, so exercise `_resolve_node` directly with a
+    # Persona whose window is set — the resolution is persona-first with no node
+    # override, and no alias-to-window table is involved.
+    declared_persona = Persona(
+        name="implementer",
+        agent="claude-code",
+        model="anthropic/CHANGEME",
+        fallback=None,
+        skills=(),
+        write_scope=WriteScope.WORKTREE,
+        needs_worktree=True,
+        timeout_s=14400,
+        context_window=128000,
+    )
+    resolved_declared = _resolve_node(work_node(id="us1", persona="implementer"), declared_persona)
+    assert resolved_declared.context_window == 128000
 
 
 async def test_resolve_graph_reads_the_registry_and_nothing_else(

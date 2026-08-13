@@ -26,6 +26,10 @@
 #                  operator's dial, and no timeout is hardcoded anywhere in the
 #                  code (FR-010). A node's `## Work Graph` override wins over
 #                  the value here when one is declared.
+#   context_window model context-window tokens, optional. Declare only what the
+#                  operator knows; the adapter emits `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+#                  only when this is set, and an unset declaration keeps today's
+#                  behavior (FR-010). Forbidden on `agent: none`.
 #
 # `budget_usd` and `breach_policy` are intentionally absent — budget enforcement
 # is deferred to spec 004 and those fields return with it.

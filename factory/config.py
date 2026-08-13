@@ -44,7 +44,7 @@ DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parents[1] / "personas.yaml"
 DETERMINISTIC_AGENT = "none"
 
 _REQUIRED_FIELDS = ("agent", "model", "write_scope", "needs_worktree")
-_OPTIONAL_FIELDS = ("fallback", "skills", "timeout")
+_OPTIONAL_FIELDS = ("fallback", "skills", "timeout", "context_window")
 
 
 class ConfigError(Exception):
@@ -75,6 +75,9 @@ class Persona:
     #: Attempt wall-clock bound in seconds; None means the registry resolves
     #: none for this persona (YAML key: `timeout`).
     timeout_s: int | None = None
+    #: Model context-window tokens, declared by the operator per persona. None
+    #: means undeclared; the adapter emits no variable (FR-010).
+    context_window: int | None = None
 
     @property
     def is_llm(self) -> bool:
@@ -132,6 +135,7 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
     model = _optional_alias(entry["model"], "model", fail)
     fallback = _optional_alias(entry.get("fallback"), "fallback", fail)
     timeout_s = _optional_timeout(entry.get("timeout"), fail)
+    context_window = _optional_context_window(entry.get("context_window"), fail)
 
     # data-model.md § Persona: model required iff agent != "none".
     if agent == DETERMINISTIC_AGENT:
@@ -150,6 +154,12 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
             raise fail(
                 f"field 'timeout' must be null when agent is "
                 f"'{DETERMINISTIC_AGENT}', got {timeout_s!r}"
+            )
+        # US4: no agent runs, so there is no environment to put the window in.
+        if context_window is not None:
+            raise fail(
+                f"field 'context_window' must be null when agent is "
+                f"'{DETERMINISTIC_AGENT}', got {context_window!r}"
             )
     elif model is None:
         raise fail(f"field 'model' is required when agent is '{agent}'")
@@ -174,6 +184,7 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
         write_scope=write_scope,
         needs_worktree=needs_worktree,
         timeout_s=timeout_s,
+        context_window=context_window,
     )
 
 
@@ -194,6 +205,19 @@ def _optional_timeout(value: object, fail) -> int | None:
         return None
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise fail(f"field 'timeout' must be a positive integer of seconds or null, got {value!r}")
+    return value
+
+
+def _optional_context_window(value: object, fail) -> int | None:
+    """Tokens, and a real count of them: same validation shape as timeout.
+
+    A declared window is optional and per-persona; None means the adapter emits
+    no `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and the factory keeps today's behavior.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise fail(f"field 'context_window' must be a positive integer or null, got {value!r}")
     return value
 
 

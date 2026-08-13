@@ -281,6 +281,7 @@ def _resolve_node(node: WorkNode, persona: Persona) -> ResolvedNode:
         models=[alias for alias in (persona.model, persona.fallback) if alias],
         write_scope=persona.write_scope.value,
         timeout_s=timeout_s,
+        context_window=persona.context_window,
     )
 
 

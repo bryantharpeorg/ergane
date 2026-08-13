@@ -1019,6 +1019,73 @@ def test_the_virtual_key_is_read_into_exactly_one_environment_variable() -> None
         "HOME": "/tmp/home",
     }
 
+    # US4: a declared context window reaches the child as the CLI's variable,
+    # and only when it is declared. The value is a string, because environment
+    # variables are strings.
+    ctx_with_window = AttemptContext(
+        epic_id=EPIC,
+        node_id=NODE,
+        attempt=ATTEMPT,
+        prompt=PROMPT,
+        worktree_path="/tmp/worktree",
+        home_path="/tmp/home",
+        proxy_url=PROXY_URL,
+        virtual_key=VIRTUAL_KEY,
+        model_alias=MODEL_ALIAS,
+        session_id=SESSION_ID,
+        timeout_s=TIMEOUT_S,
+        context_window=128000,
+    )
+    built_with_window = attempt_env(
+        ctx_with_window,
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/home/factory",
+            "LITELLM_MASTER_KEY": MASTER_KEY,
+            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+        },
+    )
+    assert built_with_window == {
+        "ANTHROPIC_BASE_URL": PROXY_URL,
+        "ANTHROPIC_AUTH_TOKEN": VIRTUAL_KEY,
+        "PATH": "/usr/bin",
+        "HOME": "/tmp/home",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "128000",
+    }
+
+    # An unset declaration is not a zero, an empty string, or a default: the
+    # key set is exactly the pre-US4 set.
+    ctx_without_window = AttemptContext(
+        epic_id=EPIC,
+        node_id=NODE,
+        attempt=ATTEMPT,
+        prompt=PROMPT,
+        worktree_path="/tmp/worktree",
+        home_path="/tmp/home",
+        proxy_url=PROXY_URL,
+        virtual_key=VIRTUAL_KEY,
+        model_alias=MODEL_ALIAS,
+        session_id=SESSION_ID,
+        timeout_s=TIMEOUT_S,
+        context_window=None,
+    )
+    built_without_window = attempt_env(
+        ctx_without_window,
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/home/factory",
+            "LITELLM_MASTER_KEY": MASTER_KEY,
+            "TELEGRAM_BOT_TOKEN": BOT_TOKEN,
+        },
+    )
+    assert built_without_window == {
+        "ANTHROPIC_BASE_URL": PROXY_URL,
+        "ANTHROPIC_AUTH_TOKEN": VIRTUAL_KEY,
+        "PATH": "/usr/bin",
+        "HOME": "/tmp/home",
+    }
+    assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in built_without_window
+
     # Negative case: even if the worker's HOME is a recognizable operator path,
     # the child receives the factory's home and no value under the operator's
     # home leaks through.

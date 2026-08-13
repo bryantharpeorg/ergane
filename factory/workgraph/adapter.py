@@ -364,6 +364,8 @@ def attempt_env(
         "ANTHROPIC_AUTH_TOKEN": context.virtual_key,
         "HOME": str(context.home_path),
     }
+    if context.context_window is not None:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context.context_window)
     env.update({name: source[name] for name in PASSTHROUGH_ENV if source.get(name)})
     return env
 

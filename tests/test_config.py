@@ -290,6 +290,80 @@ def test_deterministic_persona_with_a_timeout_is_rejected(tmp_path: Path) -> Non
     assert "verifier" in str(excinfo.value)
 
 
+# --- context window (US4, FR-009..011) ----------------------------------------
+
+
+def test_context_window_loads_as_positive_integer(tmp_path: Path) -> None:
+    persona = load_personas(_write_registry(tmp_path, {"implementer": _entry(context_window=128000)}))[
+        "implementer"
+    ]
+
+    assert persona.context_window == 128000
+
+
+def test_context_window_may_be_omitted(tmp_path: Path) -> None:
+    persona = load_personas(_write_registry(tmp_path, {"implementer": _entry()}))["implementer"]
+
+    assert persona.context_window is None
+
+
+def test_explicit_null_context_window_reads_as_absent(tmp_path: Path) -> None:
+    """`context_window: null` spells "not applicable", exactly as
+    `fallback: null` already does.
+    """
+    registry = {"implementer": _entry(context_window=None)}
+
+    persona = load_personas(_write_registry(tmp_path, registry))["implementer"]
+
+    assert persona.context_window is None
+
+
+@pytest.mark.parametrize("bad", [0, -1, -128000, 1.5, "128000", True, [128000], {}])
+def test_non_positive_integer_context_window_is_rejected(tmp_path: Path, bad: object) -> None:
+    registry = {"implementer": _entry(context_window=bad)}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_personas(_write_registry(tmp_path, registry))
+
+    assert "context_window" in str(excinfo.value)
+    assert "implementer" in str(excinfo.value)
+
+
+def test_deterministic_persona_with_a_context_window_is_rejected(tmp_path: Path) -> None:
+    """Mirrors the timeout rule: a persona that runs no agent has no
+    environment to put the variable in.
+    """
+    registry = {
+        "verifier": _entry(
+            agent="none",
+            model=None,
+            context_window=128000,
+            write_scope="read",
+        )
+    }
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_personas(_write_registry(tmp_path, registry))
+
+    assert "context_window" in str(excinfo.value)
+    assert "verifier" in str(excinfo.value)
+
+
+def test_context_window_s_in_yaml_is_rejected_as_an_unknown_field(tmp_path: Path) -> None:
+    """The YAML key is `context_window`; `context_window_s` would be the
+    loaded attribute's name. Unknown-field rejection keeps the two from
+    silently diverging.
+    """
+    registry = {"implementer": _entry(context_window_s=128000)}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_personas(_write_registry(tmp_path, registry))
+
+    assert "context_window_s" in str(excinfo.value)
+    assert "unknown" in str(excinfo.value)
+    assert "implementer" in str(excinfo.value)
+
+
 def test_timeout_s_in_yaml_is_rejected_as_an_unknown_field(tmp_path: Path) -> None:
     """The YAML key is `timeout`; `timeout_s` is the loaded attribute's name.
     Unknown-field rejection is what keeps the two from silently diverging.
