@@ -18,6 +18,13 @@ depends_on_landed: [027-gate-suite-fake-time, 028-epic-relaunch-reset, 029-salva
 # `interpreter/ci-failure-never-reaches-an-agent` (critical) and
 # `ci/flaky-concurrency-test-is-a-random-epic-killer` (critical), then refined
 # against the tree at 9594787 on 2026-08-11.
+# Pre-dispatch refinement pass 2026-08-13 at f711f8e (after 026-031, 036-038
+# landed): every anchor in spec + plan re-verified against the tree, trap 3's
+# live-guard template corrected (it is now a socket probe, not an exception
+# list — the old instruction had gone wrong, not just stale), trap 10 added
+# (paste the proof; constitution VIII), and US1's scenarios rewritten so a
+# timing claim is decided by a committed artifact instead of a test run the
+# judge cannot see.
 ---
 
 # Feature Specification: A red check that reaches no one
@@ -65,16 +72,18 @@ landings must pass through.
 
 The kill test's real claims are durable — three salvage commits, three
 teardowns, three KILLED states, every branch reachable — and those assertions
-already exist (`tests/test_interpreter.py:5003-5046`). What flakes is the
-*premise*: the kill signal is sent the instant the signalled node's attempt
-starts (`run_agent_attempt`, `tests/test_interpreter.py:1284-1289`), so whether
-all three nodes were genuinely in flight when it landed is a race against the
-worker's activity pickup. Under CI load the third node loses, and both the
-sampled-coincidence assertion *and* the salvage-all-three assertion inherit the
-broken premise. The same sampled coincidence sits in the pause sibling
-(`:4935`), the cap-overlap test (`:4367`), and the landing-fanout test
+already exist (`tests/test_interpreter.py:5157-5200` at `f711f8e`). What flakes
+is the *premise*: the kill signal is sent the instant the signalled node's
+attempt starts (`run_agent_attempt`, `tests/test_interpreter.py:1286-1312`), so
+whether all three nodes were genuinely in flight when it landed is a race
+against the worker's activity pickup. Under CI load the third node loses, and
+both the sampled-coincidence assertion *and* the salvage-all-three assertion
+inherit the broken premise. The same sampled coincidence sits in the pause
+sibling (`:5089`), the cap-overlap test (`:4521`), and the landing-fanout test
 (`test_concurrent_passes_each_open_one_pr_and_enqueue_and_the_epic_waits`,
-`:4655`) — four sites, one more than the findings named.
+`:4809`) — four sites, one more than the findings named. Those line numbers
+were re-verified at `f711f8e` on 2026-08-13 and will rot again; the test names
+and `grep 'len(running) == 3'` are the durable handles.
 
 **Goal**: the scripted world withholds a steering signal until every node the
 scenario declares in flight has actually been observed dispatched, so the
@@ -89,22 +98,35 @@ runs) against a scripted world that delays the third node's attempt pickup; the
 premise holds every time, and a scenario whose declared set can never all
 dispatch fails with a named reason inside the harness's bounded wait.
 
+**Evidence rule for every scenario below**: this story's whole claim is about
+*timing*, and timing is invisible in a diff. The judge is given the diff and
+these criteria — never a terminal, never the base tree, never a test run
+(constitution VIII). So every runtime claim here is met by an artifact the diff
+contains: a comment block in `tests/test_interpreter.py` holding the **verbatim
+pasted output** of the repeat runs, not a description of them. A scenario that
+says "deterministically" is satisfied by that pasted tally and by nothing else.
+Fifteen consecutive runs of each converted test is the bar; paste the command
+and its tallies exactly as the terminal printed them.
+
 **Acceptance Scenarios**:
 
 1. **Given** the three-node kill scenario with the scripted world's dispatch
    gate declared for `{us1, us2, us3}`, **When** the third node's attempt is
-   slow to be picked up, **Then** the kill signal is delivered only after all
-   three have been observed in flight, and every durable assertion — three
-   salvages, three teardowns, three KILLED states, all branches reachable —
-   passes deterministically.
+   slow to be picked up, **Then** the diff shows the kill signal being sent only
+   after all three node ids have been observed dispatched, every durable
+   assertion — three salvages, three teardowns, three KILLED states, all
+   branches reachable — is present and unweakened, and the pasted block shows
+   15 consecutive passing runs of that test with zero failures.
 2. **Given** a scenario whose declared in-flight set can never be reached (a
    concurrency limit of 1 with a gate declared for two nodes), **When** the
    bounded wait expires, **Then** the test fails with a named reason — never a
    hang, and never a silent pass.
 3. **Given** the pause sibling, the cap-overlap test and the landing-fanout
    test, which assert the same sampled coincidence, **When** the same premise
-   discipline is applied to them, **Then** their in-flight premises are
-   deterministic too, and their existing assertions are preserved.
+   discipline is applied to them, **Then** the diff shows all three declaring
+   their in-flight set, every pre-existing assertion in them is preserved
+   byte-for-byte, and the pasted block covers these three tests as well as the
+   kill test — four tests, 15 runs each, zero failures.
 4. **Given** the landed story, **When** its diff is inspected, **Then** no
    required check is retried, no pytest marker is relied on, no test is
    deleted, and the kill test's durable assertions are intact or strengthened.
