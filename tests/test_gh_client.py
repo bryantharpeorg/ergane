@@ -35,12 +35,16 @@ from __future__ import annotations
 import pytest
 
 from factory.mergequeue.gh import (
+    CheckFailure,
     GhClient,
     GhError,
     GH_AUTH,
     GH_NOT_FOUND,
     GH_REFUSED,
     GH_UNAVAILABLE,
+    PrCheckEntry,
+    _FAILED_LOG_PER_CHECK_LIMIT,
+    _parse_run_id,
 )
 from tests.fake_gh import FakeGh, FakeGhResult
 
@@ -221,3 +225,60 @@ def test_poll_pr_uses_the_full_json_field_set() -> None:
 
     assert snapshot.state == "OPEN"
     assert snapshot.auto_merge_requested is False
+
+
+# --- US2: check-failure evidence (plan.md § US2, FR-005/006/007) --------------
+
+
+def test_pr_checks_parses_name_state_and_link() -> None:
+    """`gh pr checks` becomes a list of (name, state, link) entries."""
+    gh = FakeGh()
+    gh.expect_json(
+        "pr", "checks", "7", "--json", "name,state,link",
+        payload=[
+            {"name": "lint", "state": "FAIL", "link": "https://github.com/acme/target/actions/runs/123/job/456"},
+            {"name": "test", "state": "PASS", "link": "https://github.com/acme/target/actions/runs/124/job/457"},
+        ],
+    )
+    client = GhClient(runner=gh, repo=TARGET_CLONE)
+
+    checks = client.pr_checks(7)
+
+    assert len(checks) == 2
+    assert checks[0] == PrCheckEntry(
+        name="lint", state="FAIL", link="https://github.com/acme/target/actions/runs/123/job/456"
+    )
+    assert checks[1] == PrCheckEntry(
+        name="test", state="PASS", link="https://github.com/acme/target/actions/runs/124/job/457"
+    )
+    assert [(c.args, c.cwd) for c in gh.calls] == [
+        (("pr", "checks", "7", "--json", "name,state,link"), TARGET_CLONE),
+    ]
+
+
+def test_run_failed_log_issues_gh_run_view_log_failed_and_returns_tail() -> None:
+    """`gh run view <id> --log-failed` returns the failing step log, bounded."""
+    gh = FakeGh()
+    big_log = "line\n" * 2000 + "FAILED tests/test_calc.py::test_add\n"
+    gh.expect(
+        "run", "view", "123", "--log-failed",
+        stdout=big_log,
+    )
+    client = GhClient(runner=gh, repo=TARGET_CLONE)
+
+    tail = client.run_failed_log("123")
+
+    assert "FAILED tests/test_calc.py::test_add" in tail
+    assert len(tail.encode("utf-8")) <= _FAILED_LOG_PER_CHECK_LIMIT
+    # It is the tail: the early repetition is dropped.
+    assert tail.startswith("FAILED tests/test_calc.py::test_add")
+
+
+def test_run_id_is_parsed_from_actions_run_link() -> None:
+    assert _parse_run_id("https://github.com/acme/target/actions/runs/123/job/456") == "123"
+    assert _parse_run_id("https://github.com/acme/target/actions/runs/123") == "123"
+
+
+def test_run_id_parse_fails_for_non_run_links() -> None:
+    assert _parse_run_id("https://github.com/acme/target/checks") is None
+    assert _parse_run_id("") is None
