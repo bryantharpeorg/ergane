@@ -5,6 +5,39 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-043 · `ensure()` verifies the base-ref pin before reuse, and `ergane build reset` is the supported relaunch path (decided)
+
+Decided 2026-08-13, claimed at landing of spec `028-epic-relaunch-reset` US3.
+The factory previously reused an existing worktree unconditionally, leaving its
+leavings for the operator to hand-clean. `ensure()` now checks that a recorded
+pin is still an ancestor of the target's current landing-branch head before
+trusting it, and rebuilds everything fresh when the pin has diverged. A rebuilt
+node archives its branch (rename, never delete) and commits any uncommitted
+state first, preserving all history per constitution VI extended across the
+relaunch boundary. `ergane build reset` replaces the undocumented hand steps
+after a `temporal workflow terminate`: it commits dirty worktree state, archives
+each node branch, removes each worktree directory, deletes each base-ref
+sidecar, and reports per-node what it did. It refuses to run while the epic's
+workflow reports RUNNING on Temporal; a NOT_FOUND workflow proceeds; an
+unreachable server is a transport error (exit 3). The related open finding
+`interpreter/cancel-bypasses-kill-sequence` is deliberately not fixed by this
+change — terminate bypasses the workflow's kill sequence, which is why the
+survivors exist, and reset does not attempt to drive the workflow.
+
+1. **Archive is rename, never deletion.** Every path that supersedes a node
+   branch moves it to `archive/factory/<epic>/<node>/<tip12>`, suffixing the
+   archived tip so the name is unique and idempotent on retry. No existing ref
+   is overwritten or deleted.
+2. **Reset is one Temporal read and no more.** The RUNNING guard uses a single
+   `describe()`; reset does not signal, cancel, terminate, or otherwise drive the
+   workflow. This keeps the cleanup verb from corrupting a live run while
+   remaining simple and wrong-shape-proof.
+3. **No new dependency, activity, or workflow edit.** The verb reuses the
+   existing `_archive_node` helper and the existing CLI wiring; the sidecar sweep
+   added by US2 is inherited unchanged.
+
+---
+
 ## D-042 · The config gate judges a node's manifest by the worktree's candidate parser (decided)
 
 Decided 2026-08-13, claimed at landing of spec `026-manifest-self-extension` US2.

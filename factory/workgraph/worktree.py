@@ -560,6 +560,47 @@ def remove(
     record_file.unlink(missing_ok=True)
 
 
+def reset_node(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+) -> list[str]:
+    """Archive one node's artifacts and return a list of the actions performed.
+
+    Idempotent: when the worktree directory, node branch and sidecar are all
+    already gone, returns ``["nothing to do"]`` and performs no git operation.
+    Otherwise it commits any dirty state, removes the directory, archives the
+    branch under FR-004's rules, and deletes the sidecar.
+    """
+    repo = Path(target_repo)
+    path = worktree_path(factory_root, epic_id, node_id)
+    branch = branch_name(epic_id, node_id)
+    record_file = _record_file(factory_root, epic_id, node_id)
+
+    directory_existed = path.is_dir()
+    branch_existed = _branch_exists(repo, branch)
+    sidecar_existed = record_file.exists()
+
+    if not directory_existed and not branch_existed and not sidecar_existed:
+        return ["nothing to do"]
+
+    actions: list[str] = []
+    if directory_existed and _is_dirty(path):
+        actions.append("committed uncommitted state")
+    if directory_existed:
+        actions.append("removed worktree")
+    if sidecar_existed:
+        actions.append("deleted sidecar")
+
+    archive = _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+    if archive is not None:
+        actions.append(f"archived {branch} to {archive}")
+
+    return actions
+
+
 # The base-ref record ---------------------------------------------------------
 
 
@@ -622,13 +663,15 @@ def _archive_node(
     node_id: str,
     branch: str,
     path: Path,
-) -> None:
+) -> str | None:
     """Archive a node branch, removing any worktree first and deleting the sidecar.
 
     Constitution VI: any uncommitted state in an abandoned tree is committed to
     its branch before the branch is renamed. The branch is moved into the archive
     namespace with a per-tip suffix so the name is unique and idempotent on retry
     (trap 5). No existing ref is ever overwritten or deleted.
+
+    Returns the archive ref name, or None if there was no branch to archive.
     """
     record_file = _record_file(factory_root, epic_id, node_id)
     if path.is_dir():
@@ -663,8 +706,11 @@ def _archive_node(
             # Same tip already archived: nothing to do for this ref.
         else:
             _git(repo, "branch", "-m", branch, archive)
+        record_file.unlink(missing_ok=True)
+        return archive
 
     record_file.unlink(missing_ok=True)
+    return None
 
 
 def _git(cwd: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:

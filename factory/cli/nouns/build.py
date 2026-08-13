@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from temporalio.client import Client
+from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
 
@@ -57,6 +57,7 @@ from factory.workgraph.models import (
     WorkNode,
     validate_workgraph,
 )
+from factory.workgraph.worktree import DEFAULT_FACTORY_ROOT, reset_node
 from factory.workgraph.preflight import PreflightFinding, check_aliases
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
 
@@ -414,6 +415,60 @@ def kill_command(args: argparse.Namespace) -> int:
     return asyncio.run(_send_signal(args.epic_id, KILL_SIGNAL))
 
 
+def reset_command(args: argparse.Namespace) -> int:
+    """Reset a terminated epic: archive branches, remove worktrees, clear sidecars."""
+    try:
+        graph = load_workgraph(args.graph)
+    except WorkGraphError as error:
+        raise OperatorError(str(error)) from error
+
+    if not graph.nodes:
+        raise OperatorError(
+            f"workgraph '{graph.epic_id}' has zero nodes — nothing to reset; "
+            "use `ergane spec derive` to compile a non-empty graph"
+        )
+
+    factory_root = Path(os.environ.get("FACTORY_ROOT") or DEFAULT_FACTORY_ROOT)
+    target_repo = Path(graph.target_repo)
+    epic_id = graph.epic_id
+
+    return asyncio.run(_reset_epic(epic_id, graph, target_repo, factory_root))
+
+
+async def _reset_epic(
+    epic_id: str, graph: WorkGraph, target_repo: Path, factory_root: Path
+) -> int:
+    """The async half of reset: one Temporal read for the RUNNING guard, then git."""
+    # FR-010: refuse to touch anything while the epic's workflow is RUNNING.
+    # `temporal workflow terminate` bypasses the workflow's kill sequence,
+    # leaving survivors behind — that is the open finding
+    # interpreter/cancel-bypasses-kill-sequence. Reset does not try to fix it;
+    # it only reads status and refuses when running.
+    client = await _connect()
+    handle = client.get_workflow_handle(workflow_id(epic_id))
+    try:
+        described = await handle.describe()
+    except RPCError as error:
+        if error.status is RPCStatusCode.NOT_FOUND:
+            described = None
+        else:
+            raise OperatorError(
+                f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
+            ) from error
+
+    if described is not None and described.status == WorkflowExecutionStatus.RUNNING:
+        raise OperatorError(
+            f"epic '{epic_id}' workflow {workflow_id(epic_id)} is still RUNNING; "
+            "refusing to reset"
+        )
+
+    for node in graph.nodes:
+        actions = reset_node(target_repo, epic_id, node.id, factory_root=factory_root)
+        print(f"{node.id}: {', '.join(actions)}")
+
+    return EXIT_OK
+
+
 async def _send_signal(epic_id: str, signal_name: str) -> int:
     client = await _connect()
     handle = client.get_workflow_handle(workflow_id(epic_id))
@@ -622,6 +677,13 @@ def add_parser(subparsers: Any) -> None:
         ),
     )
     start.set_defaults(run=start_command)
+
+    reset = commands.add_parser(
+        "reset",
+        help="archive a terminated epic's worktrees and branches after a terminate",
+    )
+    reset.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
+    reset.set_defaults(run=reset_command)
 
     status = commands.add_parser("status", help="what one epic is doing right now")
     status.add_argument("epic_id", help="the epic id (the spec directory's name)")
