@@ -108,6 +108,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
+import json
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -290,6 +292,21 @@ GATE_TAIL = {
     4: "E   AssertionError: attempt-four debugger left the ledger unwritten",
     5: "E   AssertionError: attempt-five debugger still left the ledger unwritten",
 }
+
+#: Global capture for `GeneratorExit` warnings produced during workflow
+#: eviction/cancellation. Installed at import time so the eviction test can
+#: assert their absence directly, without relying on `-W error`, which would
+#: affect unrelated warnings across the suite.
+_captured_unraisable: list[Any] = []
+_original_unraisablehook = sys.unraisablehook
+
+
+def _unraisable_hook(args: Any) -> None:
+    _captured_unraisable.append(args)
+    _original_unraisablehook(args)
+
+
+sys.unraisablehook = _unraisable_hook
 
 
 # --- the epic's authored text (what `load_prompt_sources` reads) --------------
@@ -2732,6 +2749,76 @@ async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None
     assert script.calls == before
     assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
     assert len(script.attempts) == 4
+
+
+async def test_sdk_eviction_during_attempt_emits_no_teardown_or_unraisable(
+    env: WorkflowEnvironment,
+) -> None:
+    """US1-S2: SDK eviction while an attempt is in flight emits no teardown command
+    and leaves no unraisable `GeneratorExit` (FR-001, FR-002).
+
+    The eviction path is exercised by cancelling the workflow handle from the test
+    while the fake adapter sleeps: this is the real SDK cancellation path, not a
+    simulated `asyncio.CancelledError` that the runtime would convert.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing()]},
+        client=env.client,
+        await_cancel=True,
+        agent_sleep_s=0.5,
+    )
+    async with Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[EpicWorkflow],
+        activities=script.activities(),
+        workflow_runner=UnsandboxedWorkflowRunner(),
+    ):
+        handle = await env.client.start_workflow(
+            EpicWorkflow.run,
+            EpicInput(graph=one_node(), proxy_url=PROXY_URL),
+            id=WORKFLOW_ID,
+            task_queue=TASK_QUEUE,
+        )
+        await wait_for(
+            lambda: "run_agent_attempt" in script.calls,
+            what="the agent attempt to start",
+        )
+        await handle.cancel()
+        await asyncio.sleep(1.0)
+        history = await handle.fetch_history()
+
+    await Replayer(
+        workflows=[EpicWorkflow], workflow_runner=UnsandboxedWorkflowRunner()
+    ).replay_workflow(history)
+
+    scheduled = _scheduled_activity_names(history)
+    assert "teardown_attempt" not in scheduled, (
+        f"eviction path scheduled teardown_attempt: {scheduled}"
+    )
+    assert not script.teardowns, f"eviction path emitted teardowns: {script.teardowns}"
+
+    generator_exits = [
+        a
+        for a in _captured_unraisable
+        if a.exc_type is GeneratorExit
+        or (a.exc_value is not None and isinstance(a.exc_value, GeneratorExit))
+    ]
+    assert not generator_exits, (
+        f"GeneratorExit became unraisable during eviction: {generator_exits}"
+    )
+    _captured_unraisable.clear()
+
+
+def _scheduled_activity_names(history: WorkflowHistory) -> list[str]:
+    """The activity types scheduled across the run, in order."""
+    names: list[str] = []
+    for event in history.events:
+        if event.event_type == 10:  # ACTIVITY_TASK_SCHEDULED
+            names.append(
+                event.activity_task_scheduled_event_attributes.activity_type.name
+            )
+    return names
 
 
 # --- US3-S2: pause stops the scheduler, not the attempt (FR-008) --------------
