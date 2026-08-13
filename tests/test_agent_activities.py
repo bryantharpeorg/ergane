@@ -75,6 +75,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import factory
 import pytest
 import yaml
 from temporalio import activity
@@ -297,6 +298,41 @@ def _write_registry(tmp_path: Path, personas: dict[str, object]) -> Path:
     return path
 
 
+#: The shipped registry text with the implementer ``context_window`` set to
+#: 262144 (kimi's card window). Built from the real file so scenario 2 proves
+#: the *shipped* file plus the dial stays green.
+_SHIPPED_REGISTRY_TEXT = Path("personas.yaml").read_text(encoding="utf-8")
+_WINDOW_SETTER = "context_window: 262144\n"
+
+
+def load_personas_text_with_window() -> str:
+    """Return shipped ``personas.yaml`` text plus the implementer window dial.
+
+    Inserts ``context_window: 262144`` immediately after the implementer's
+    ``timeout: 14400`` line, before the parking comment block, so YAML still
+    maps it under ``implementer``.
+    """
+    lines = _SHIPPED_REGISTRY_TEXT.splitlines(keepends=True)
+    result: list[str] = []
+    in_implementer = False
+    inserted = False
+    for line in lines:
+        if line.startswith("architect:") or line.startswith("verifier:"):
+            in_implementer = False
+        if line.startswith("implementer:"):
+            in_implementer = True
+        result.append(line)
+        if (
+            in_implementer
+            and not inserted
+            and line.strip() == "timeout: 14400"
+        ):
+            result.append("  " + _WINDOW_SETTER)
+            inserted = True
+    assert inserted, "implementer timeout line not found; registry shape changed"
+    return "".join(result)
+
+
 # --- helpers -----------------------------------------------------------------
 
 
@@ -491,18 +527,79 @@ async def test_a_per_story_timeout_override_wins_over_the_registry(
     assert resolved[0].timeout_s == OVERRIDE_TIMEOUT_S
 
 
-async def test_context_window_is_resolved_onto_the_node_and_none_when_omitted(
+async def test_context_window_is_resolved_onto_the_node_from_any_registry(
     env: ActivityEnvironment,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """FR-009/FR-010: an optional per-persona window rides onto ResolvedNode,
-    and an omitted declaration stays None. There is no node-level override and
-    no fallback value.
-    """
-    registry = load_personas()
+    """FR-009/FR-010/US1: the per-persona context window rides onto the node,
+    and a declaration is carried verbatim. The suite must stay green when the
+    operator sets the dial on any persona.
 
-    # Shipped personas declare no window today, so every resolved node carries
-    # None. Use two personas to show it is per-persona, not a global default.
+    Scenario 2: a copy of the shipped registry with the implementer window set
+    still resolves the declared value; the assertions never demand a literal in
+    the shipped file.
+    """
+    registry_path = tmp_path / "personas-with-window.yaml"
+    registry_path.write_text(load_personas_text_with_window(), encoding="utf-8")
+
+    # `resolve_graph` reads the shipped registry internally; point its loader at
+    # the fixture copy for this test only, without changing the production API.
+    monkeypatch.setattr(factory.config, "DEFAULT_REGISTRY_PATH", registry_path)
+
+    registry = load_personas()
+    nodes = (
+        work_node(id="us1", persona="implementer"),
+        work_node(id="us2", persona="architect"),
+    )
+
+    resolved = await env.run(resolve_graph, work_graph(*nodes))
+
+    for item, node in zip(resolved, nodes):
+        persona = registry[node.persona]
+        assert item.context_window == persona.context_window
+
+
+async def test_context_window_is_none_when_omitted(
+    env: ActivityEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US1-S3: a fixture registry whose personas omit ``context_window`` resolves
+    every node with ``None``. Proven without the shipped file, so setting the dial
+    there cannot break this invariant.
+
+    Two personas show the result is per-persona, not a global default.
+    """
+    registry_path = _write_registry(
+        tmp_path,
+        {
+            "implementer": {
+                "agent": "claude-code",
+                "model": "anthropic/CHANGEME",
+                "fallback": None,
+                "skills": [],
+                "write_scope": "worktree",
+                "needs_worktree": True,
+                "timeout": 14400,
+                # context_window deliberately omitted
+            },
+            "architect": {
+                "agent": "claude-code",
+                "model": "anthropic/CHANGEME",
+                "fallback": None,
+                "skills": [],
+                "write_scope": "docs",
+                "needs_worktree": True,
+                "timeout": 7200,
+                # context_window deliberately omitted
+            },
+        },
+    )
+
+    monkeypatch.setattr(factory.config, "DEFAULT_REGISTRY_PATH", registry_path)
+
+    registry = load_personas()
     nodes = (
         work_node(id="us1", persona="implementer"),
         work_node(id="us2", persona="architect"),
@@ -514,10 +611,17 @@ async def test_context_window_is_resolved_onto_the_node_and_none_when_omitted(
         assert item.context_window == registry[node.persona].context_window
         assert item.context_window is None
 
-    # A declared window is carried verbatim through the resolver. `resolve_graph`
-    # reads the shipped registry, so exercise `_resolve_node` directly with a
-    # Persona whose window is set — the resolution is persona-first with no node
-    # override, and no alias-to-window table is involved.
+
+async def test_context_window_declared_rides_verbatim_onto_the_node(
+    env: ActivityEnvironment,
+) -> None:
+    """US1-S4: a declared window is carried verbatim through the resolver.
+
+    ``resolve_graph`` reads the shipped registry internally, so exercise
+    ``_resolve_node`` directly with a Persona whose window is set — the
+    resolution is persona-first with no node override, and no alias-to-window
+    table is involved.
+    """
     declared_persona = Persona(
         name="implementer",
         agent="claude-code",
