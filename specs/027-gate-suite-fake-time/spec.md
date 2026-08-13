@@ -137,13 +137,13 @@ restructured test and confirm every per-epic expected end-state map, the
 non-empty `script.observed`, and both assertion loops still execute, far
 below the 60.81s baseline.
 
-**Acceptance Scenarios**:
+**Evidence rule for every scenario below**: each is decided from the diff alone
+(Constitution VIII). The evidence lives in **one comment block directly above
+the sweep test** in `tests/test_workgraph_sweep.py` — FR-004 keeps this story
+inside `tests/`, so that block is the only legal home for it. Paste tool output
+verbatim, command line included; a described measurement is not a recorded one.
 
-Every scenario below is decided from the diff alone (Constitution VIII). The
-evidence lives in **one comment block directly above the sweep test** in
-`tests/test_workgraph_sweep.py` — FR-004 keeps this story inside `tests/`, so
-that block is the only legal home for it. Paste tool output verbatim, command
-line included; a described measurement is not a recorded one.
+**Acceptance Scenarios**:
 
 1. **Given** the un-restructured sweep test instrumented with per-epic
    wall-clock timing, **When** it runs once in a clean env, **Then** the diff's
