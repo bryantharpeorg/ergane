@@ -1,5 +1,14 @@
 ---
 state: ready
+# US1 landed at PR #52 and US2 at PR #53, both first attempt, 2026-08-13.
+# US3 was KILLED the same day: gate green and judge PASS six-for-six on both
+# attempts, but CI failed twice on its own two tests (assert 3 == 0) because
+# `_reset_epic` connects to Temporal for its RUNNING guard — live in the
+# agent's inherited environment, absent on GitHub's runner. The recovery
+# attempt never saw the CI log (interpreter/ci-failure-never-reaches-an-agent)
+# and re-ran identical code. Operator killed it 16:21Z and wrote the
+# diagnosis into plan.md as trap 9; US3 relaunched the same hour with US1/US2
+# derived out. No spec text changed — the criteria were never the problem.
 # Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
 # paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
 # once unpaused.

@@ -131,6 +131,44 @@ silently skip an activity-level check. Same logic gives US2 its shape: sweep the
 sidecar inside `remove()` and every workflow path inherits it with zero workflow
 edits (FR-007).
 
+### Trap 9 — US3 already died here: your gate has a live Temporal, CI does not
+
+US3 was dispatched once before (2026-08-13) and its node was **killed after two
+CI failures**, having passed its gate and a six-for-six judge PASS both times.
+The two tests that failed were its own:
+
+```
+FAILED tests/test_ergane_build.py::test_reset_commits_archives_removes_and_reports_per_node - assert 3 == 0
+FAILED tests/test_ergane_build.py::test_reset_preserves_all_history_and_ensure_rebuilds_fresh - assert 3 == 0
+```
+
+Mechanism: `_reset_epic` opens `client = await _connect()` for its RUNNING
+guard before touching git. Your worktree inherits the worker's environment,
+where `TEMPORAL_ADDRESS` points at a **live server**, so the connect succeeds
+and the command exits 0. GitHub's runner has no Temporal, the connect raises,
+and the CLI exits `EXIT_TRANSPORT` (3) — so a test asserting `result.code == 0`
+passes for you and fails in CI, every time.
+
+What to do:
+
+- **Any test that expects reset to succeed must not need a real server.** Stub
+  the connect seam (`monkeypatch.setattr` on `_connect`, returning a fake client
+  whose `describe()` raises NOT_FOUND) — or otherwise make the RUNNING guard
+  satisfiable offline. The story's own dead-address test, which sets
+  `TEMPORAL_ADDRESS_ENV` to `DEAD_ADDRESS` and asserts the error surfaces, is
+  the right pattern for the *failure* case; the success cases need the stub.
+- **Do not loosen the command** so an unreachable Temporal is treated as "not
+  running." Refusing to reset when it cannot verify the workflow is stopped is
+  the safe behaviour and FR-010 wants it kept.
+- **Assume nothing about the runner.** Anything your test reaches over the
+  network — Temporal, the proxy, Telegram — is absent in CI. A green gate is not
+  evidence that CI will be green, because the two run in different worlds.
+
+The blunt reason this trap exists: when CI rejects a landing, the log does not
+reach you (`interpreter/ci-failure-never-reaches-an-agent`), so the previous
+node retried the identical code and died. You get one shot at seeing this
+before it happens, and this paragraph is it.
+
 ## Approach
 
 ### US1 — verify, then keep everything or rebuild everything
