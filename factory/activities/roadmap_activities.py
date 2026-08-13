@@ -325,7 +325,7 @@ def _preflight_client(proxy_url: str) -> LiteLLMClient:
     """
     from factory.usage.litellm_client import LiteLLMClient
 
-    return LiteLLMClient(base_url=proxy_url, api_key=_master_key_from_env())
+    return LiteLLMClient(base_url=proxy_url, master_key=_master_key_from_env())
 
 
 def _master_key_from_env() -> str:

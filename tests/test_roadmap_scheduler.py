@@ -284,9 +284,17 @@ class RoadmapWorld:
         Snapshots the original seams first so `restore` can put them back — the
         seams are module globals shared with every other test, so a leak here
         would make the preflight CLI or another roadmap run scripted by accident.
+
+        Idempotent on purpose: `run_roadmap` applies for every test, and a test
+        that also applied by hand must not have the second snapshot capture the
+        already-scripted seams as "originals" — that exact double-apply leaked
+        a scripted `_preflight_client` into every later test in the module and
+        hid the seam's real-constructor crash (2026-08-13 roadmap fire).
         """
         import factory.workgraph.preflight as preflight_mod
 
+        if getattr(self, "_saved", None):
+            return
         self._saved = (
             roadmap_activities._clone_runner,
             roadmap_activities._derive_runner,
@@ -344,6 +352,10 @@ class RoadmapWorld:
         preflight_mod.check_aliases = saved_preflight_check
         roadmap_activities._derive_runner = None
         roadmap_activities._drift_runner = None
+        # Re-arm the apply/restore pair: a cleared snapshot is what lets the
+        # idempotence guard in `apply` distinguish "fresh world" from
+        # "already applied".
+        self._saved = None
 
     def _clone(self, target_repo: str) -> CloneResult:
         self.clone_calls.append(target_repo)
@@ -1463,3 +1475,20 @@ async def test_rescan_while_paused_dispatches_nothing(
         assert _status_of(status, "001-alpha").landed is True
         assert _status_of(status, "002-bravo").landed is True
         await handle.cancel()
+
+
+async def test_preflight_client_seam_constructs_the_real_client(monkeypatch):
+    """The seam must build `LiteLLMClient` with kwargs the class accepts.
+
+    Every scheduler test replaces `_preflight_client`, so nothing here ever
+    constructed the real one — and the first live roadmap fire after 036
+    landed (2026-08-13 12:30Z) died on exactly that: the seam passed
+    `api_key=` where the constructor takes `master_key=`. This test is the
+    only place the production seam meets the production constructor.
+    """
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-test-preflight-seam")
+    client = roadmap_activities._preflight_client("http://proxy.invalid")
+    try:
+        assert client.base_url == "http://proxy.invalid"
+    finally:
+        await client.aclose()
