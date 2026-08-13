@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 import os
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
@@ -98,10 +99,11 @@ from factory.workgraph.models import (
     WorkGraph,
     validate_workgraph,
 )
-from factory.workgraph.worktree import PreparedWorktree, branch_name
+from factory.workgraph.worktree import PreparedWorktree, branch_name, ensure
 from factory.verify.question import QuestionMarker
 from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicWorkflow
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
+from tests.target_repo import build_target_repo, git, git_env
 from tests.test_interpreter import merged_snapshot
 
 CORPUS = Path(__file__).resolve().parent / "fixtures" / "workgraph"
@@ -1055,3 +1057,331 @@ def test_resolve_lists_choices_when_none_given(
     assert "RETRY" in result.stdout
     assert "KILL" in result.stdout
     assert "no choice given" in result.stdout.lower()
+
+
+# --- T015/T016/T017: reset ---------------------------------------------------
+
+_TRACKED_FILE = "src/calc.py"
+_NEW_FILE = "src/added_by_agent.py"
+
+
+def _suppress_git_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Salvage and archive commits must carry the factory identity, not the host's."""
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+    monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+    monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+
+
+def _origin_target_repo(tmp_path: Path) -> Path:
+    """A real target repo with an origin remote the reset/ensure paths can fetch."""
+    repo = build_target_repo(tmp_path / "target", variant="passing")
+    bare = tmp_path / "origin.git"
+    git(repo, "init", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    return repo
+
+
+def _make_reset_graph(tmp_path: Path, target_repo: Path, epic_id: str) -> Path:
+    """A compiled workgraph pointing at a real scratch target repo."""
+    graph_path = tmp_path / "workgraph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "epic_id": epic_id,
+                "feature": epic_id,
+                "specs_root": "specs",
+                "target_repo": str(target_repo),
+                "nodes": [
+                    {
+                        "id": "us1",
+                        "story_key": "US1",
+                        "persona": "implementer",
+                        "spec_ref": f"specs/{epic_id}/spec.md:US1",
+                        "requirement_keys": ["US1", "FR-001"],
+                        "depends_on": [],
+                        "depends_on_merged": [],
+                        "timeout_override_s": None,
+                    },
+                    {
+                        "id": "us2",
+                        "story_key": "US2",
+                        "persona": "implementer",
+                        "spec_ref": f"specs/{epic_id}/spec.md:US2",
+                        "requirement_keys": ["US2", "FR-002"],
+                        "depends_on": [],
+                        "depends_on_merged": [],
+                        "timeout_override_s": None,
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return graph_path
+
+
+def _dirty(worktree: Path) -> None:
+    """Leave the shape of an agent's unfinished work."""
+    (worktree / _TRACKED_FILE).write_text("# edited by the agent\n", encoding="utf-8")
+    (worktree / _NEW_FILE).write_text("VALUE = 1\n", encoding="utf-8")
+
+
+def _ref_exists(repo: Path, ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref],
+            capture_output=True,
+            text=True,
+            env=git_env(),
+        ).returncode
+        == 0
+    )
+
+
+def _refs_matching(repo: Path, pattern: str) -> list[str]:
+    out = subprocess.run(
+        ["git", "-C", str(repo), "for-each-ref", "--format=%(refname)", pattern],
+        capture_output=True,
+        text=True,
+        env=git_env(),
+        check=True,
+    ).stdout
+    return [line for line in out.splitlines() if line]
+
+
+def _all_refs(repo: Path) -> dict[str, str]:
+    out = subprocess.run(
+        ["git", "-C", str(repo), "for-each-ref", "--format=%(refname) %(objectname)"],
+        capture_output=True,
+        text=True,
+        env=git_env(),
+        check=True,
+    ).stdout
+    refs: dict[str, str] = {}
+    for line in out.splitlines():
+        ref, sha = line.split(" ", 1)
+        refs[ref] = sha
+    return refs
+
+
+def _no_ref_deleted_except_archived(
+    repo: Path,
+    before: dict[str, str],
+    after: dict[str, str],
+    epic_id: str,
+    node_ids: tuple[str, ...],
+) -> bool:
+    """A ref may only disappear if it was a node branch and an archive ref now reaches its tip."""
+    for ref, sha in before.items():
+        if ref in after:
+            continue
+        prefix = f"refs/heads/factory/{epic_id}/"
+        if not ref.startswith(prefix):
+            return False
+        node_id = ref[len(prefix) :]
+        if node_id not in node_ids:
+            return False
+        archive_prefix = f"refs/heads/archive/factory/{epic_id}/{node_id}/"
+        matches = [r for r in after if r.startswith(archive_prefix)]
+        if not matches:
+            return False
+        if not all(
+            subprocess.run(
+                ["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, after[r]],
+                capture_output=True,
+                text=True,
+                env=git_env(),
+            ).returncode
+            == 0
+            for r in matches
+        ):
+            return False
+    return True
+
+
+def test_reset_commits_archives_removes_and_reports_per_node(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T015 [US3-S1/S2]: reset performs and reports every action, then is idempotent."""
+    _suppress_git_identity(tmp_path, monkeypatch)
+    repo = _origin_target_repo(tmp_path)
+    factory_root = tmp_path / ".factory"
+    monkeypatch.setenv("FACTORY_ROOT", str(factory_root))
+    epic_id = "reset-epic"
+    for node_id in ("us1", "us2"):
+        ensure(repo, epic_id, node_id, factory_root=factory_root)
+        _dirty(factory_root / "worktrees" / epic_id / node_id)
+
+    graph_path = _make_reset_graph(tmp_path, repo, epic_id)
+
+    result = run("build", "reset", str(graph_path))
+
+    assert result.code == 0
+    for node_id in ("us1", "us2"):
+        assert node_id in result.stdout
+        assert "archived" in result.stdout
+        assert "removed worktree" in result.stdout
+        assert "deleted sidecar" in result.stdout
+        assert "committed" in result.stdout
+        assert not (factory_root / "worktrees" / epic_id / node_id).exists()
+        assert not (factory_root / "worktrees" / epic_id / f"{node_id}.json").exists()
+        assert not _ref_exists(repo, f"refs/heads/factory/{epic_id}/{node_id}")
+        assert len(_refs_matching(repo, f"refs/heads/archive/factory/{epic_id}/{node_id}/")) == 1
+
+    second = run("build", "reset", str(graph_path))
+    assert second.code == 0
+    assert "nothing to do" in second.stdout
+    assert "us1" in second.stdout
+    assert "us2" in second.stdout
+
+
+async def test_reset_refuses_while_workflow_is_running(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T016 [US3-S3]: reset refuses before touching anything when the epic is RUNNING."""
+    _suppress_git_identity(tmp_path, monkeypatch)
+    repo = _origin_target_repo(tmp_path)
+    factory_root = tmp_path / ".factory"
+    monkeypatch.setenv("FACTORY_ROOT", str(factory_root))
+    epic_id = "running-reset-epic"
+    for node_id in ("us1", "us2"):
+        ensure(repo, epic_id, node_id, factory_root=factory_root)
+        _dirty(factory_root / "worktrees" / epic_id / node_id)
+
+    graph_path = _make_reset_graph(tmp_path, repo, epic_id)
+    script = ScriptedEpic(spec_text=corpus_text(VALID), pause_at="us2")
+
+    async with worker_for(temporal_env, script):
+        start = await run_async("build", "start", str(graph_path))
+        await script.wait_for_pause()
+        result = await run_async("build", "reset", str(graph_path))
+        script.release()
+        await temporal_env.sleep(timedelta(seconds=LANDING_POLL_INTERVAL_S + 1))
+        await temporal_env.client.get_workflow_handle(f"epic-{epic_id}").result()
+
+    assert start.code == 0
+    assert result.code != 0
+    assert f"epic-{epic_id}" in result.stderr
+    assert "RUNNING" in result.stderr.upper()
+    for node_id in ("us1", "us2"):
+        assert (factory_root / "worktrees" / epic_id / node_id).exists()
+        assert (factory_root / "worktrees" / epic_id / f"{node_id}.json").exists()
+        assert _ref_exists(repo, f"refs/heads/factory/{epic_id}/{node_id}")
+
+
+async def test_reset_proceeds_when_workflow_is_not_found(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T016 [US3-S4]: a missing workflow is not an error for a cleanup verb."""
+    _suppress_git_identity(tmp_path, monkeypatch)
+    repo = _origin_target_repo(tmp_path)
+    graph_path = _make_reset_graph(tmp_path, repo, "missing-reset-epic")
+    result = await run_async("build", "reset", str(graph_path))
+    assert result.code == 0
+    assert "nothing to do" in result.stdout
+
+
+def test_reset_against_unreachable_server_is_exit_3_and_touches_nothing(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T016 [US3-S3/FR-010]: unreachable Temporal is exit 3; no survivors are touched."""
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+    monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, DEFAULT_TEMPORAL_NAMESPACE)
+    _suppress_git_identity(tmp_path, monkeypatch)
+    repo = _origin_target_repo(tmp_path)
+    factory_root = tmp_path / ".factory"
+    monkeypatch.setenv("FACTORY_ROOT", str(factory_root))
+    epic_id = "unreachable-reset-epic"
+    for node_id in ("us1", "us2"):
+        ensure(repo, epic_id, node_id, factory_root=factory_root)
+        _dirty(factory_root / "worktrees" / epic_id / node_id)
+
+    graph_path = _make_reset_graph(tmp_path, repo, epic_id)
+    result = run("build", "reset", str(graph_path))
+    assert result.code == 3
+    assert DEAD_ADDRESS in result.stderr
+    for node_id in ("us1", "us2"):
+        assert (factory_root / "worktrees" / epic_id / node_id).exists()
+        assert (factory_root / "worktrees" / epic_id / f"{node_id}.json").exists()
+        assert _ref_exists(repo, f"refs/heads/factory/{epic_id}/{node_id}")
+
+
+def test_reset_preserves_all_history_and_ensure_rebuilds_fresh(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T017 [US3-S5/S6]: no commit is lost, and ensure yields a fresh tree after reset."""
+    _suppress_git_identity(tmp_path, monkeypatch)
+    repo = _origin_target_repo(tmp_path)
+    factory_root = tmp_path / ".factory"
+    monkeypatch.setenv("FACTORY_ROOT", str(factory_root))
+    epic_id = "fresh-reset-epic"
+    node_ids = ("us1", "us2")
+    pre_tips: dict[str, str] = {}
+    for node_id in node_ids:
+        ensure(repo, epic_id, node_id, factory_root=factory_root)
+        worktree = factory_root / "worktrees" / epic_id / node_id
+        _dirty(worktree)
+        pre_tips[node_id] = git(
+            repo, "rev-parse", f"refs/heads/factory/{epic_id}/{node_id}"
+        ).strip()
+
+    # Move the landing branch forward on origin so a fresh ensure pins the new head.
+    (repo / "README.md").write_text("advanced\n", encoding="utf-8")
+    git(repo, "commit", "--quiet", "-a", "-m", "advance main")
+    git(repo, "push", "--quiet", "origin", "main")
+    new_head = git(repo, "rev-parse", "origin/main").strip()
+
+    before_refs = _all_refs(repo)
+    graph_path = _make_reset_graph(tmp_path, repo, epic_id)
+    result = run("build", "reset", str(graph_path))
+    assert result.code == 0
+    after_refs = _all_refs(repo)
+
+    assert _no_ref_deleted_except_archived(repo, before_refs, after_refs, epic_id, node_ids)
+
+    for node_id in node_ids:
+        archive_refs = _refs_matching(
+            repo, f"refs/heads/archive/factory/{epic_id}/{node_id}/"
+        )
+        assert len(archive_refs) == 1
+        archive_tip = git(repo, "rev-parse", archive_refs[0]).strip()
+        assert (
+            subprocess.run(
+                ["git", "-C", str(repo), "merge-base", "--is-ancestor", pre_tips[node_id], archive_tip],
+                capture_output=True,
+                text=True,
+                env=git_env(),
+            ).returncode
+            == 0
+        )
+
+    for node_id in node_ids:
+        fresh = ensure(repo, epic_id, node_id, factory_root=factory_root)
+        fresh_path = Path(fresh.path)
+        assert fresh_path.is_dir()
+        assert git(fresh_path, "rev-parse", "HEAD").strip() == new_head
+        assert not (fresh_path / _NEW_FILE).exists()
+        assert (
+            fresh_path / _TRACKED_FILE
+        ).read_text(encoding="utf-8") != "# edited by the agent\n"
+        assert (factory_root / "worktrees" / epic_id / f"{node_id}.json").exists()
