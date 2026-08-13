@@ -490,7 +490,7 @@ def _onboard_client_factory(fake: FakeGh, repo: Path):
     return factory
 
 
-def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main") -> None:
+def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main", *, squash_title: str = "PR_TITLE") -> None:
     """Script `gh` for a fully conforming repo: public, queue enabled, checks match.
 
     The fixture repo declares gates `lint`, `test`, `typecheck`; the scripted
@@ -498,7 +498,8 @@ def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main") 
     `merge_queue` rule with the required checks and no classic-protection
     fallback needed. The slug is read from the same `repo view` call (gh resolves
     the repo from the clone's cwd), so `owner/repo` for the rules API comes from
-    `nameWithOwner`.
+    `nameWithOwner`. The repo-level merge settings read carries
+    `squash_merge_commit_title`.
     """
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
@@ -510,6 +511,10 @@ def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main") 
             # after string-shaped fakes had hidden the parse bug.
             "defaultBranchRef": {"name": default_branch},
         },
+    )
+    fake.expect_json(
+        "api", f"repos/OWNER/REPO",
+        payload={"squash_merge_commit_title": squash_title},
     )
     fake.expect_json(
         "api", f"repos/OWNER/REPO/rules/branches/{default_branch}",
@@ -565,6 +570,7 @@ async def test_validate_target_repo_gathers_repo_facts_and_loads_the_manifest(
     assert "visibility" in checks
     assert "merge_queue" in checks
     assert "factory_yaml" in checks
+    assert "squash_title" in checks
     assert all(f.passed for f in profile.findings)
 
 
@@ -580,6 +586,10 @@ async def test_validate_target_repo_reports_a_queue_missing_repo_as_failing(
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
+    )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO",
+        payload={"squash_merge_commit_title": "PR_TITLE"},
     )
     fake.expect_json(
         "api", "repos/OWNER/REPO/rules/branches/main", payload=[]
@@ -616,6 +626,10 @@ async def test_validate_target_repo_falls_back_to_classic_protection_for_checks(
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
+    )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO",
+        payload={"squash_merge_commit_title": "PR_TITLE"},
     )
     # Rules list has a merge_queue rule but no required checks within it.
     fake.expect_json(
@@ -663,6 +677,10 @@ async def test_validate_target_repo_treats_unprotected_classic_as_no_checks(
     fake.expect_json(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
+    )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO",
+        payload={"squash_merge_commit_title": "PR_TITLE"},
     )
     fake.expect_json(
         "api", "repos/OWNER/REPO/rules/branches/main",
@@ -730,6 +748,10 @@ async def test_validate_target_repo_loads_the_clones_factory_yaml(
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO",
+        payload={"squash_merge_commit_title": "PR_TITLE"},
+    )
     # The fixture declares gates lint/test/typecheck; script the queue with a
     # matching rule so the only variable under test is the manifest load.
     fake.expect_json(
@@ -751,3 +773,91 @@ async def test_validate_target_repo_loads_the_clones_factory_yaml(
 
     assert profile.passed is True
     assert set(profile.declared_gates) == {"lint", "test", "typecheck"}
+
+
+async def test_validate_target_repo_non_conforming_squash_title_fails_profile(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repo whose squash merges title from commits fails on the squash_title finding."""
+    fake = FakeGh()
+    _fake_gh_conforming(fake, repo_with_origin, squash_title="COMMIT_OR_PR_TITLE")
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.passed is False
+    finding = next(f for f in profile.findings if f.check == "squash_title")
+    assert finding.passed is False
+    assert "COMMIT_OR_PR_TITLE" in finding.detail
+    assert "squash_merge_commit_title=PR_TITLE" in finding.detail
+
+
+async def test_validate_target_repo_missing_squash_title_fails_closed(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merge-settings payload that omits squash_merge_commit_title fails closed."""
+    fake = FakeGh()
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
+    )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO",
+        payload={},  # omits squash_merge_commit_title entirely
+    )
+    fake.expect_json(
+        "api", "repos/OWNER/REPO/rules/branches/main",
+        payload=[{"type": "merge_queue", "parameters": {"required_status_checks": [
+            {"context": "lint"}, {"context": "test"}, {"context": "typecheck"},
+        ]}}],
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.passed is False
+    finding = next(f for f in profile.findings if f.check == "squash_title")
+    assert finding.passed is False
+    assert "unreadable" in finding.detail.lower() or "push permission" in finding.detail.lower()
+
+
+async def test_validate_target_repo_squash_title_gh_failure_is_failed_validation(
+    env: ActivityEnvironment, repo_with_origin: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A gh failure on the merge-settings read yields a failed validation, never a pass."""
+    fake = FakeGh()
+    fake.expect_json(
+        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
+    )
+    fake.expect_error(
+        "api", "repos/OWNER/REPO",
+        stderr="gh: HTTP 403", returncode=1,
+    )
+    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+
+    from factory.activities.merge_activities import (
+        ValidateTargetRepoInput,
+        validate_target_repo,
+    )
+
+    profile = await env.run(validate_target_repo, ValidateTargetRepoInput(
+        target_repo=str(repo_with_origin)
+    ))
+
+    assert profile.passed is False
+    assert any(not f.passed for f in profile.findings)
