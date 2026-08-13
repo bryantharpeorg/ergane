@@ -1763,6 +1763,8 @@ async def test_a_real_attempt_archives_outside_every_checkout_and_salvage_keeps_
     assert not tree.exists()
     assert (archive / STDOUT_LOG_NAME).is_file()
     assert _branch_subject(repo, branch_name(EPIC, NODE)).endswith(f"attempt {ATTEMPT}")
+    # US2: the sidecar is a factory record, not evidence, and must be swept too.
+    assert not (factory_root / "worktrees" / EPIC / f"{NODE}.json").exists()
 
 
 def _committed_files(repo: Path, sha: str) -> list[str]:

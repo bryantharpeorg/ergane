@@ -31,9 +31,11 @@ Three decisions here are load-bearing:
   will not do is skip a *dirty* tree because the marker is already there — the
   cheap duplicate commit is the better error than the discarded work.
 
-- **Removal takes the directory, never the record.** `git worktree remove` is
-  cleanup; the branch and its salvage commits survive, because once `.factory/` is
-  swept they are the only thing left of the attempt.
+- **Removal takes the directory and the base-ref sidecar; the branch survives.**
+  `git worktree remove` is cleanup; the branch and its salvage commits survive,
+  because once `.factory/` is swept they are the only thing left of the attempt.
+  The `<node>.json` sidecar is swept with the directory so a later `ensure()` does
+  not trust a stale pin for a removed node.
 
 - **Reading the diff changes nothing.** `diff` is what 002's judge scores, and it
   has to include untracked files — a new module and a new test are the normal
@@ -541,28 +543,34 @@ def remove(
     *,
     factory_root: Path | str = DEFAULT_FACTORY_ROOT,
 ) -> None:
-    """Delete the node's worktree directory, leaving the branch and its history.
+    """Delete the node's worktree directory and its sidecar, leaving the branch.
 
     Idempotent: an already-removed worktree — or one that never existed, for a
     node killed before dispatch — is success, because terminal paths re-run on
-    activity retry. The prune afterwards clears any admin entry left behind by a
+    activity retry. The sidecar is removed with the directory, and missing either
+    is success. The prune afterwards clears any admin entry left behind by a
     directory that went missing some other way.
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
+    record_file = _record_file(factory_root, epic_id, node_id)
     if path.is_dir():
         _git(repo, "worktree", "remove", "--force", str(path))
     _git(repo, "worktree", "prune")
+    record_file.unlink(missing_ok=True)
 
 
 # The base-ref record ---------------------------------------------------------
 
 
 def _record_file(factory_root: Path | str, epic_id: str, node_id: str) -> Path:
-    """Where the pin lives: beside the worktree, outside every checkout.
+    """Where the base-ref pin lives: beside the worktree, outside every checkout.
 
-    Inside the worktree it would be agent work in the diff check; inside the
-    target clone's `.git` it would vanish with the worktree it outlives.
+    This sidecar is a *directory* record, not a branch record; it is created with
+    the worktree, read while the worktree is reused, and deleted by `remove()`
+    when the worktree is swept. Inside the worktree it would be agent work in the
+    diff check; inside the target clone's `.git` it would vanish with the
+    worktree it outlives.
     """
     return Path(factory_root) / "worktrees" / epic_id / f"{node_id}.json"
 

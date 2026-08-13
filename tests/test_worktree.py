@@ -607,9 +607,10 @@ def test_salvage_raises_when_the_worktree_is_gone(
 def test_remove_deletes_the_worktree_and_leaves_the_branch(
     repo: Path, factory_root: Path
 ) -> None:
-    """Cleanup takes the directory; the salvaged history is the surviving record."""
+    """Cleanup takes the directory *and* the sidecar; the branch history survives."""
     prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
     worktree = Path(prepared.path)
+    sidecar = factory_root / "worktrees" / EPIC / f"{NODE}.json"
     dirty(worktree)
     sha = salvage(
         EPIC,
@@ -622,6 +623,7 @@ def test_remove_deletes_the_worktree_and_leaves_the_branch(
     remove(repo, EPIC, NODE, factory_root=factory_root)
 
     assert not worktree.exists()
+    assert not sidecar.exists()
     assert registered_worktrees(repo) == []
     assert ref_exists(repo, f"refs/heads/{BRANCH}")
     assert head(repo, BRANCH) == sha
@@ -636,6 +638,7 @@ def test_remove_is_idempotent(repo: Path, factory_root: Path) -> None:
     remove(repo, EPIC, NODE, factory_root=factory_root)
 
     assert not (factory_root / "worktrees" / EPIC / NODE).exists()
+    assert not (factory_root / "worktrees" / EPIC / f"{NODE}.json").exists()
 
 
 def test_remove_of_a_worktree_that_never_existed_is_success(
@@ -645,6 +648,7 @@ def test_remove_of_a_worktree_that_never_existed_is_success(
     remove(repo, EPIC, NODE, factory_root=factory_root)
 
     assert not (factory_root / "worktrees" / EPIC / NODE).exists()
+    assert not (factory_root / "worktrees" / EPIC / f"{NODE}.json").exists()
 
 
 # --- diff --------------------------------------------------------------------
@@ -1260,3 +1264,52 @@ def test_ensure_raises_when_origin_is_unreachable_during_pin_verification(
 
     with pytest.raises(WorktreeError):
         ensure(repo, EPIC, NODE, factory_root=factory_root)
+
+
+def test_ensure_captures_fresh_pin_after_remove_advances_origin(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US2-S4: a clean kill removes the sidecar so the next ensure gets a fresh pin.
+
+    The branch from the first run survives. Origin's landing branch advances after
+    the remove. With no sidecar to trust, ensure() must capture the new head, not
+    reuse the old pin, and the surviving branch is handled by US1's ancestry rule.
+    """
+    repo, bare = origin_repo
+    first = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    first_worktree = Path(first.path)
+
+    # A commit on the branch proves it survives the remove.
+    (first_worktree / "node.txt").write_text("before remove\n", encoding="utf-8")
+    git(first_worktree, "add", "node.txt")
+    git(first_worktree, "commit", "--quiet", "-m", "work before clean kill")
+    old_branch_tip = head(repo, BRANCH)
+    old_refs = all_local_refs(repo)
+
+    # Clean kill: remove() sweeps directory and sidecar, leaves branch.
+    remove(repo, EPIC, NODE, factory_root=factory_root)
+    sidecar = factory_root / "worktrees" / EPIC / f"{NODE}.json"
+    assert not first_worktree.exists()
+    assert not sidecar.exists()
+    assert ref_exists(repo, f"refs/heads/{BRANCH}")
+    assert head(repo, BRANCH) == old_branch_tip
+
+    # Origin advances. Before US2 the old sidecar would still pin the old head.
+    advance_default_branch(repo)
+    git(repo, "push", "--quiet", "origin", "main")
+    new_origin_head = head(bare, "refs/heads/main")
+    assert new_origin_head != first.base_ref
+
+    # With no sidecar to trust, ensure captures the fresh pin. The surviving branch
+    # does not descend from the new pin (it diverged with node work), so US1's
+    # ancestry rule archives it and creates a fresh worktree at the new head.
+    second = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    second_worktree = Path(second.path)
+
+    assert second.base_ref == new_origin_head
+    assert head(second_worktree) == new_origin_head
+    assert not (second_worktree / "node.txt").exists()
+    archive = archive_refs(repo, EPIC, NODE)
+    assert len(archive) == 1
+    assert head(repo, archive[0]) == old_branch_tip
+    assert all_local_refs(repo).issuperset(old_refs)  # no ref deleted
