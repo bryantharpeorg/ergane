@@ -70,6 +70,7 @@ from factory.verify.models import (
     VerificationForm,
     VerificationResult,
 )
+from factory.mergequeue.gh import CheckFailure
 from factory.mergequeue.models import ObservedOutcome, QueueOutcome
 from factory.workgraph.models import WorkNode
 from factory.workgraph.prompt import (
@@ -656,3 +657,65 @@ def test_landing_evidence_assembly_is_deterministic() -> None:
     second = build(landing_evidence=evidence)
 
     assert first == second
+
+
+def test_checks_failed_evidence_quotes_name_url_and_log_tail_verbatim() -> None:
+    """US2-S1: the recovery prompt names the failing check and quotes its tail."""
+    evidence = LandingEvidence(
+        outcome=QueueOutcome.CHECKS_FAILED,
+        queue_history=(
+            ObservedOutcome(at="2026-08-06T10:10:00Z", outcome=QueueOutcome.CHECKS_FAILED),
+        ),
+        conflicted_files=(),
+        failing_checks=(
+            CheckFailure(
+                name="test",
+                url="https://github.com/acme/target/actions/runs/101/job/202",
+                log_tail="FAILED tests/test_calc.py::test_add\nassert 1 == 2\n",
+                note="",
+            ),
+        ),
+    )
+    prompt = build(landing_evidence=evidence)
+
+    section = section_of(prompt, LANDING_SECTION)
+    assert "test" in section
+    assert "https://github.com/acme/target/actions/runs/101/job/202" in section
+    assert "FAILED tests/test_calc.py::test_add" in section
+    assert "assert 1 == 2" in section
+    # Verbatim, not paraphrased.
+    assert "failing log:" in section.lower() or "log tail" in section.lower()
+
+
+def test_checks_failed_evidence_without_log_states_the_absence() -> None:
+    """US2-S3: when the log could not be fetched, the prompt says so."""
+    evidence = LandingEvidence(
+        outcome=QueueOutcome.CHECKS_FAILED,
+        queue_history=(
+            ObservedOutcome(at="2026-08-06T10:10:00Z", outcome=QueueOutcome.CHECKS_FAILED),
+        ),
+        conflicted_files=(),
+        failing_checks=(
+            CheckFailure(
+                name="test",
+                url="https://github.com/acme/target/actions/runs/101/job/202",
+                log_tail="",
+                note="log unavailable: gh refused the fetch",
+            ),
+        ),
+    )
+    prompt = build(landing_evidence=evidence)
+
+    section = section_of(prompt, LANDING_SECTION)
+    assert "log unavailable" in section.lower() or "could not fetch" in section.lower()
+
+
+def test_landing_evidence_with_old_fields_only_renders_unchanged() -> None:
+    """US2: CONFLICT and pre-spec histories render exactly as today."""
+    evidence = checks_failed_evidence()
+    prompt = build(landing_evidence=evidence)
+
+    section = section_of(prompt, LANDING_SECTION)
+    assert "CHECKS_FAILED" in section
+    assert "Failing check" not in section
+    assert "log unavailable" not in section.lower()
