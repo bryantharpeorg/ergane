@@ -117,7 +117,7 @@ from typing import Any, AsyncIterator, Callable, Sequence
 
 import pytest
 from temporalio import activity
-from temporalio.client import WorkflowFailureError
+from temporalio.client import WorkflowFailureError, WorkflowHistory
 from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
@@ -2679,7 +2679,32 @@ async def test_issuance_retries_through_a_transient_outage(
     assert script.teardown_for("us1", 1).termination == Termination.COMPLETED
 
 
-# --- US1-S4: replay ------------------------------------------------------------
+# --- US1-S1: the ten captured histories from 032 replay green ------------------
+
+
+# Fixture directory populated operator-side with ten captured histories from
+# 032's nondeterminism run (a10bea8). The test is a standing guard: it fails
+# only if a future change breaks replay compatibility for these histories.
+REPLAY_032_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay-032"
+
+
+@pytest.mark.parametrize(
+    "fixture_path",
+    sorted(REPLAY_032_FIXTURE_DIR.glob("replay-failure-*.json")),
+    ids=lambda p: p.name,
+)
+async def test_replay_032_fixtures_replay_green(fixture_path: Path) -> None:
+    """US1-S1: the ten captured histories replay against EpicWorkflow.
+
+    The fixture files themselves are base-branch data (landed at a10bea8) and
+    must not appear in this story's diff. This test asserts exactly ten files are
+    present — no existence fallback that would let zero fixtures pass.
+    """
+    assert (
+        len(list(REPLAY_032_FIXTURE_DIR.glob("replay-failure-*.json"))) == 10
+    ), "expected ten replay-032 fixture histories on the base branch"
+    history = WorkflowHistory.from_json("replay-032-fixture", fixture_path.read_text())
+    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
 
 
 async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None:
