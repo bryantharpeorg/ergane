@@ -1,5 +1,22 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 22:00Z by the operator. US1 c572fdb32fde (PR #61),
+# US2 805f0eaeafff (PR #62) — both observed on ergane-buildout, both attempt 1.
+# Dispatched by hand; the roadmap is still wedged.
+# VERIFIED BY CONTROL, not by the green suite. Same command on two trees, with
+# operator-shaped Telegram credentials exported and NO manual env redirect —
+# the exact condition that poisoned the live store at 19:42:59Z:
+#   pre-fix (f0fc00d): wrote .factory/verification.db, 81920 bytes, containing
+#     ('roadmap-specs', 0, 'max_concurrent_nodes ... got -1', '...21:27:02Z')
+#   post-fix (PR #61): no store file created at all
+# US2's guard probed separately with the fixture deliberately defeated: it
+# still raised RuntimeError naming the finding key, created neither parent
+# directory (so it fires before connect()'s mkdir), and the sanctioned door
+# FACTORY_EVIDENCE_STORE_ALLOW_REAL still opened. Credentials in every probe
+# were obvious fakes, per the plan's trap 7.
+# CONSEQUENCE FOR OPERATORS: the five-variable clean-env incantation is retired.
+# Confirmed on trunk after the merge — a plain `uv run pytest` from the
+# operator's checkout, no scrubbing, left the live store untouched.
 # Flipped ready 2026-08-11 PM CT on the operator's word ("flip all 6"); the
 # paused roadmap dispatches serially (max_concurrent_epics=1) in dir order
 # once unpaused.
