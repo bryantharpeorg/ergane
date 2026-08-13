@@ -1,5 +1,12 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-13 11:25Z by the operator: US1 (the only story)
+# observed at 867930e0d533 (PR #47, first attempt of the fourth run —
+# the three kills before it were factory defects, not the code's: phase
+# grammar, judge diff-window, judge base-blindness; each is on the ledger).
+# The eviction-leak fix is live: _cancel() re-raises, no teardown commands
+# on the eviction path, ten fixtures replay green, replay pinned to
+# result_run_id under the recording runner.
 # Flipped ready 2026-08-13 04:47Z on Bryan's word ("flip 38 and get it moving
 # now so I can check on it in the morning") and dispatched immediately.
 # specs_root: specs
