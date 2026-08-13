@@ -1,5 +1,8 @@
 ---
-state: draft
+state: ready
+# Flipped ready 2026-08-13 11:41Z on Bryan's word ("flip them") and
+# dispatched immediately, two-wide with 036 (disjoint scopes: one test
+# module vs roadmap code).
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-roadmap-target
 # Scaffolded by `ergane findings promote` from
