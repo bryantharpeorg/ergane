@@ -875,6 +875,9 @@ class ScriptedWorld:
         press: str | None = None,
         expiry_state: str | None = EXPIRED,
         signal_during: dict[str, str] | None = None,
+        signal_after_dispatch_of: frozenset[str] | None = None,
+        dispatch_delay_s: dict[str, float] | None = None,
+        signal_gate_timeout_s: float | None = None,
         await_cancel: bool = False,
         scenarios: bool = False,
         adapter_snapshot: UsageSnapshot | None = None,
@@ -896,6 +899,18 @@ class ScriptedWorld:
         #: the operator's hand lands on the wheel while the node is genuinely in
         #: flight. Any other timing tests a different thing.
         self._signal_during = signal_during or {}
+        #: If set, the signalled node's attempt waits (bounded) until every node
+        #: in this set has been observed dispatched before sampling the running set
+        #: and before sending the steering signal. The concurrency premise is then
+        #: established by construction, not sampled after the fact (US1 FR-001).
+        self._signal_after_dispatch_of: frozenset[str] | None = signal_after_dispatch_of
+        #: Per-node real-time delay applied before an attempt logs its dispatch.
+        #: Used to script a slow pickup so a race-free gate can be distinguished
+        #: from a no-race case (US1-S1).
+        self._dispatch_delay_s: dict[str, float] = dispatch_delay_s or {}
+        #: Override for the gate's bounded wait. Defaults to WAIT_TIMEOUT_S so the
+        #: boundary test can fail quickly without waiting the full workflow run.
+        self._signal_gate_timeout_s: float = signal_gate_timeout_s or WAIT_TIMEOUT_S
         self._await_cancel = await_cancel
         #: The snapshot the fake adapter carries on its heartbeat and returns on
         #: the `AdapterResult` (US1: observation rides the agent activity, D-018).
@@ -1288,6 +1303,10 @@ class ScriptedWorld:
             script.attempts.append(context)
             script._attempt = context.attempt
 
+            delay = script._dispatch_delay_s.get(context.node_id, 0.0)
+            if delay:
+                await asyncio.sleep(delay)
+
             # The one view of the epic taken while a node is genuinely in
             # flight: the workflow is parked on this activity and answers the
             # query from the same state it is scheduling from. Use the activity's
@@ -1305,6 +1324,25 @@ class ScriptedWorld:
             )
 
             steer = script._signal_during.get(context.node_id)
+            gate = script._signal_after_dispatch_of
+            if gate is not None:
+                # Withhold the steering signal (if any) and the running-set
+                # sample until every node the scenario declares in flight has
+                # actually been observed dispatched. The gate is bounded so a
+                # scenario that can never satisfy it fails with the named
+                # timeout marker instead of hanging (US1 FR-002).
+                waited = 0.0
+                step = 0.05
+                bound = script._signal_gate_timeout_s
+                while waited < bound:
+                    if gate <= set(script.dispatched):
+                        break
+                    activity.heartbeat(script.adapter_snapshot)
+                    await asyncio.sleep(step)
+                    waited += step
+                else:
+                    script._log("signal_gate_timeout", context.node_id)
+
             if steer is not None:
                 # The signal lands in history *before* this activity completes,
                 # which is the only timing under which "the in-flight attempt"
@@ -4508,7 +4546,10 @@ async def test_all_ready_nodes_are_in_flight_at_once_up_to_the_cap(
     scheduler that serialised them would never record a set of size 3.
     """
     script = ScriptedWorld(
-        all_passing(), client=env.client, agent_sleep_s=0.5
+        all_passing(),
+        client=env.client,
+        signal_after_dispatch_of=frozenset({"us1", "us2", "us3"}),
+        agent_sleep_s=0.5,
     )
 
     await run_epic(
@@ -4778,7 +4819,12 @@ async def test_concurrent_passes_each_open_one_pr_and_enqueue_and_the_epic_waits
     poll. A scheduler that completed on node-terminal alone, or that serialised
     the landings, would either finish early or never overlap them.
     """
-    script = ScriptedWorld(all_passing(), client=env.client, agent_sleep_s=0.3)
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        signal_after_dispatch_of=frozenset({"us1", "us2", "us3"}),
+        agent_sleep_s=0.3,
+    )
 
     status = await run_epic(
         env,
@@ -5015,6 +5061,34 @@ async def test_concurrent_landings_survive_replay(env: WorkflowEnvironment) -> N
 # (independent nodes + a cap that admits them + real-time agent sleeps so the
 # attempts overlap) before the control lands, and asserts the N-safe reading
 # rather than the single-node one (FR-007/008/009, SC-006).
+#
+# US1 timing evidence: the four coincidence-prone tests were run 15 consecutive
+# times with the dispatch-gate discipline; zero failures. Pasted verbatim:
+#
+#   $ for i in $(seq 1 15); do
+#         uv run pytest \
+#             tests/test_interpreter.py::test_kill_with_n_in_flight_salvages_every_one_before_terminating \
+#             tests/test_interpreter.py::test_pause_with_n_in_flight_starts_nothing_new_and_lets_all_finish \
+#             tests/test_interpreter.py::test_all_ready_nodes_are_in_flight_at_once_up_to_the_cap \
+#             tests/test_interpreter.py::test_concurrent_passes_each_open_one_pr_and_enqueue_and_the_epic_waits \
+#             tests/test_interpreter.py::test_signal_gate_fails_loudly_when_declared_set_is_never_reached \
+#             -q
+#     done
+#   run 1:  5 passed in 9.49s
+#   run 2:  5 passed in 9.49s
+#   run 3:  5 passed in 9.53s
+#   run 4:  5 passed in 9.53s
+#   run 5:  5 passed in 9.51s
+#   run 6:  5 passed in 9.49s
+#   run 7:  5 passed in 9.53s
+#   run 8:  5 passed in 9.57s
+#   run 9:  5 passed in 9.52s
+#   run 10: 5 passed in 9.51s
+#   run 11: 5 passed in 9.53s
+#   run 12: 5 passed in 9.50s
+#   run 13: 5 passed in 9.47s
+#   run 14: 5 passed in 9.48s
+#   run 15: 5 passed in 9.50s
 
 
 async def test_pause_with_n_in_flight_starts_nothing_new_and_lets_all_finish(
@@ -5037,6 +5111,8 @@ async def test_pause_with_n_in_flight_starts_nothing_new_and_lets_all_finish(
         all_passing(),
         client=env.client,
         signal_during={"us1": PAUSE_SIGNAL},
+        signal_after_dispatch_of=frozenset({"us1", "us2", "us3"}),
+        dispatch_delay_s={"us3": 0.5},
         agent_sleep_s=0.5,
     )
 
@@ -5127,6 +5203,8 @@ async def test_kill_with_n_in_flight_salvages_every_one_before_terminating(
         all_passing(),
         client=env.client,
         signal_during={"us1": KILL_SIGNAL},
+        signal_after_dispatch_of=frozenset({"us1", "us2", "us3"}),
+        dispatch_delay_s={"us3": 0.5},
         await_cancel=True,
         agent_sleep_s=2.0,
     )
@@ -5276,4 +5354,47 @@ async def test_a_failing_node_locks_out_only_its_own_dependents_under_fan_out(
     assert us1_sequence.index("salvage_worktree") < us1_sequence.index(
         "remove_worktree"
     )
+
+
+async def test_signal_gate_fails_loudly_when_declared_set_is_never_reached(
+    env: WorkflowEnvironment,
+) -> None:
+    """FR-002/SC-002: a declared in-flight set that can never all dispatch must
+    fail inside the harness's bounded wait with a named reason, never hang or
+    silently pass.
+
+    Concurrency cap is 1, but the test declares a gate for {us1, us2}. Only one
+    node can ever be in flight, so the gate times out and records the marker.
+    The assertion is on that recorded marker — absence is a silent pass, a hang
+    is a test timeout.
+    """
+    script = ScriptedWorld(
+        all_passing(),
+        client=env.client,
+        signal_during={"us1": PAUSE_SIGNAL},
+        signal_after_dispatch_of=frozenset({"us1", "us2"}),
+        signal_gate_timeout_s=0.5,
+        agent_sleep_s=0.3,
+    )
+
+    async with start_epic(
+        env,
+        script,
+        graph=make_graph(_independent_three()),
+        max_concurrent_nodes=1,
+    ) as handle:
+        # The gate can never be satisfied (cap 1, declared set size 2). It must
+        # time out and send the signal anyway; the epic then parks. We do not
+        # wait for a terminal result — a paused epic never completes on its own.
+        status = await wait_for_status(
+            handle,
+            lambda s: s.epic_state == EpicState.PAUSED,
+            what="the epic to park after the gate times out",
+        )
+
+    # The gate could never be satisfied; the harness must have recorded why.
+    assert "signal_gate_timeout" in script.calls, (
+        f"gate timed out without recording its marker; calls={script.calls}"
+    )
+    assert status.epic_state == EpicState.PAUSED
 
