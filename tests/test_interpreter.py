@@ -2732,23 +2732,61 @@ async def test_replay_dispatches_nothing_twice(env: WorkflowEnvironment) -> None
     iteration order, or `uuid4()` outside `workflow.uuid4()` fails here, and the
     scripted world proves no activity ran a second time — no node re-dispatched,
     no key re-issued.
+
+    The history is fetched from the exact run that recorded it and replayed
+    under the same runner class the worker used, so any environmental
+    divergence names itself instead of masquerading as workflow nondeterminism
+    (FR-004).
     """
     script = ScriptedWorld(
         {"us1": [failing(1), passing()], "us2": [passing()], "us3": [passing()]},
         client=env.client,
     )
 
-    await run_epic(env, script)
-    history = await script.handle.fetch_history()
+    result = await run_epic(env, script)
+    result_run_id = script.handle.result_run_id
+    history = await env.client.get_workflow_handle(
+        script.handle.id, run_id=result_run_id
+    ).fetch_history()
 
     before = list(script.calls)
     keys_before = [(r.node_id, r.attempt) for r in script.key_requests]
 
-    await Replayer(workflows=[EpicWorkflow]).replay_workflow(history)
+    # 032 diagnosis discriminator: the incident's error string can only arise
+    # from a history that carries a SECOND validate_target_repo schedule at a
+    # teardown position (the workflow emits it exactly once, before any node
+    # dispatches). Assert on the recorded history first — if this fires, the
+    # corruption is a phantom re-execution the test server accepted; if the
+    # Replayer fails while this passes, the corruption is a splice. Either way
+    # the dump below captures the history.
+    from temporalio.api.enums.v1 import EventType
+
+    scheduled = [
+        e.activity_task_scheduled_event_attributes.activity_type.name
+        for e in history.events
+        if e.event_type == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED
+    ]
+    assert scheduled.count("validate_target_repo") == 1, (
+        f"phantom validate_target_repo in recorded history: {scheduled}"
+    )
+
+    try:
+        await Replayer(
+            workflows=[EpicWorkflow], workflow_runner=UnsandboxedWorkflowRunner()
+        ).replay_workflow(history)
+    except BaseException:
+        # 032 repro capture: a diverging history is the evidence the factory
+        # needs — persist it so a flake becomes an inspectable artifact.
+        out = Path("repro-history")
+        out.mkdir(exist_ok=True)
+        stamp = time.time_ns()
+        (out / f"replay-failure-{stamp}.json").write_text(history.to_json())
+        raise
 
     assert script.calls == before
     assert [(r.node_id, r.attempt) for r in script.key_requests] == keys_before
     assert len(script.attempts) == 4
+    assert result.epic_state == EpicState.COMPLETED
 
 
 async def test_sdk_eviction_during_attempt_emits_no_teardown_or_unraisable(
