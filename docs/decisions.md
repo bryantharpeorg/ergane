@@ -5,6 +5,35 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-043 · `ergane build reset` is the supported path after a terminated epic; archive, never delete (decided)
+
+Decided 2026-08-13, claimed at landing of spec `028-epic-relaunch-reset` US3.
+The factory previously held that an existing worktree is reused unconditionally
+and its leavings are the operator's to hand-clean. The relaunch boundary now
+verifies the recorded pin before trusting it: a stale pin triggers an archive-and
+-rebuild, with the old node branch renamed to
+`archive/factory/<epic>/<node>/<tip12>` instead of ever being deleted. The new
+`ergane build reset <graph>` command is the supported path after a
+`temporal workflow terminate`, committing any dirty state, removing worktree
+directories, archiving branches, deleting sidecars, and reporting per-node
+actions. It refuses to run while the epic's workflow reports RUNNING, treats a
+NOT_FOUND workflow as "proceed", and treats an unreachable server as a transport
+error.
+
+1. **No ref is deleted.** The archive namespace uses a per-tip suffix so retry is
+   idempotent and no plain `archive/factory/<epic>/<node>` ref collides with a
+   suffixed one. This extends constitution VI across the relaunch boundary.
+2. **The `temporal workflow terminate` bypass is deliberately not fixed here.**
+   `terminate` skips the workflow's kill sequence; that is the related open
+   finding `interpreter/cancel-bypasses-kill-sequence`. Reset exists precisely
+   because that bypass leaves survivors; teaching reset to signal, cancel, or
+   drive the workflow would widen this command beyond one cleanup read.
+3. **No new dependency, activity, or workflow edit.** Reset reuses US1's
+   `_archive_node` helper, the existing `describe()` guard pattern, and the
+   `FACTORY_ROOT` env rule already used by activities.
+
+---
+
 ## D-042 · The config gate judges a node's manifest by the worktree's candidate parser (decided)
 
 Decided 2026-08-13, claimed at landing of spec `026-manifest-self-extension` US2.

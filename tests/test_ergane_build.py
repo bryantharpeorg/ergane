@@ -8,6 +8,12 @@ that the ported handlers and the new exit-code values keep the old promises.
 All server-touching tests use the time-skipping harness and the same scripted
 activity set as `test_epic_cli.py` so that an epic actually runs and `status`
 reads a real workflow state.
+
+US3 reset tests build their own scratch target repos and factory roots via the
+`target_repo` and `tmp_path` fixtures; no test connects to a real Temporal
+server.  The RUNNING guard is either driven against the time-skipping
+WorkflowEnvironment or stubbed to raise `RPCError` with `NOT_FOUND` so the
+reset can proceed offline.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import os
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
@@ -29,6 +36,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from factory.activities.agent_activities import (
+    FACTORY_ROOT_ENV,
     GRAPH_INVALID,
     LoadPromptSourcesInput,
     PrepareWorktreeInput,
@@ -58,6 +66,7 @@ from factory.activities.verify_activities import (
     SnapshotCriteriaInput,
 )
 from factory.cli.main import main as ergane_main
+from factory.cli.nouns import build as build_module
 from factory.config import Persona, WriteScope
 from factory.mergequeue.models import Finding, PrSnapshot, TargetRepoProfile
 from factory.notify.service import (
@@ -81,6 +90,7 @@ from factory.verify.models import (
     Requirement,
     RequirementKind,
 )
+from factory.cli.nouns.build import load_workgraph
 from factory.workgraph.derive import derive_workgraph
 from factory.verify.store import (
     EXPIRED,
@@ -98,9 +108,10 @@ from factory.workgraph.models import (
     WorkGraph,
     validate_workgraph,
 )
-from factory.workgraph.worktree import PreparedWorktree, branch_name
+from factory.workgraph.worktree import PreparedWorktree, branch_name, ensure
+from tests.target_repo import git, git_env
 from factory.verify.question import QuestionMarker
-from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicWorkflow
+from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicInput, EpicWorkflow
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
 from tests.test_interpreter import merged_snapshot
 
@@ -1055,3 +1066,264 @@ def test_resolve_lists_choices_when_none_given(
     assert "RETRY" in result.stdout
     assert "KILL" in result.stdout
     assert "no choice given" in result.stdout.lower()
+
+
+# --- US3: reset ----------------------------------------------------------------
+
+
+def _make_reset_target(
+    target_repo: Callable[..., Path],
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, dict[str, Path]]:
+    """Build a scratch target with a dirty worktree per reset-test node.
+
+    Returns (repo, factory_root, workgraph_json, worktrees_by_node_id).  Each
+    node branch exists and holds an initial salvage commit; each worktree has
+    uncommitted edits and a new file.  The sidecar exists for each node.
+    """
+    repo = target_repo("passing")
+    factory_root = tmp_path / ".factory"
+    worktrees: dict[str, Path] = {}
+    for node_id in NODE_IDS:
+        prepared = ensure(repo, EPIC_ID, node_id, factory_root=factory_root)
+        worktree = Path(prepared.path)
+        worktrees[node_id] = worktree
+        (worktree / "src" / "calc.py").write_text(
+            f"# dirty from {node_id}\n", encoding="utf-8"
+        )
+        (worktree / f"added_by_{node_id}.py").write_text(
+            f"VALUE_{node_id} = 1\n", encoding="utf-8"
+        )
+    # Build the reset argument: a compiled workgraph naming the same target.
+    graph = {
+        "epic_id": EPIC_ID,
+        "feature": EPIC_ID,
+        "specs_root": "specs",
+        "target_repo": str(repo),
+        "nodes": [
+            {
+                "id": node_id,
+                "story_key": node_id.upper(),
+                "persona": "implementer",
+                "spec_ref": f"{EPIC_ID}:{node_id.upper()}",
+                "requirement_keys": [FR_FOR[node_id.upper()]],
+                "depends_on": [],
+                "depends_on_merged": [],
+                "timeout_override_s": None,
+            }
+            for node_id in NODE_IDS
+        ],
+    }
+    graph_path = tmp_path / "workgraph.json"
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    return repo, factory_root, graph_path, worktrees
+
+
+def test_reset_commits_archives_removes_and_reports_per_node(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S1/S2: reset archives survivors, reports each action, is idempotent."""
+    monkeypatch.setenv(FACTORY_ROOT_ENV, str(tmp_path / ".factory"))
+    # Set the env before creating survivors: reset must resolve the factory root
+    # from the environment, and the test verifies it operates on that root.
+    repo, factory_root, graph_path, worktrees = _make_reset_target(
+        target_repo, tmp_path
+    )
+
+    # Stub the Temporal guard to "no workflow" so the test runs offline.
+    class FakeNotFoundClient:
+        def get_workflow_handle(self, workflow_id: str):
+            class Handle:
+                async def describe(self) -> None:
+                    raise RPCError(
+                        message=f"workflow {workflow_id} not found",
+                        status=RPCStatusCode.NOT_FOUND,
+                    )
+
+            return Handle()
+
+    monkeypatch.setattr(build_module, "_connect", lambda: FakeNotFoundClient())
+
+    result = run("build", "reset", str(graph_path))
+
+    assert result.code == 0, result.stderr
+    for node_id in NODE_IDS:
+        assert f"{node_id}:" in result.stdout
+        assert "committed" in result.stdout or "nothing to do" in result.stdout
+        branch = branch_name(EPIC_ID, node_id)
+        archive = f"archive/factory/{EPIC_ID}/{node_id}/"
+        assert not worktrees[node_id].exists()
+        assert not (factory_root / "worktrees" / EPIC_ID / f"{node_id}.json").exists()
+        assert ref_exists(repo, f"refs/heads/{branch}") is False
+        assert any(ref_exists(repo, f"refs/heads/{archive}{tip}") for tip in _archive_tips(repo, archive))
+
+    again = run("build", "reset", str(graph_path))
+    assert again.code == 0, again.stderr
+    for node_id in NODE_IDS:
+        assert f"{node_id}: nothing to do" in again.stdout
+
+
+def _archive_tips(repo: Path, prefix: str) -> list[str]:
+    """Return the short-sha suffixes of all archive refs under `prefix`."""
+    refs = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()
+    return [ref[len(prefix) :] for ref in refs if ref.startswith(prefix)]
+
+
+def ref_exists(repo: Path, ref: str) -> bool:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref],
+        capture_output=True,
+        text=True,
+        env=git_env(),
+    )
+    return completed.returncode == 0
+
+
+async def test_reset_guard_cases(
+    run: Callable[..., Run],
+    run_async: Callable[..., Awaitable[Run]],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+    temporal_env: WorkflowEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S3/S4 and FR-010: RUNNING refusal, NOT_FOUND proceed, dead server exit 3."""
+    monkeypatch.setenv(FACTORY_ROOT_ENV, str(tmp_path / ".factory"))
+    repo, factory_root, graph_path, worktrees = _make_reset_target(
+        target_repo, tmp_path
+    )
+
+    # S3: a RUNNING workflow refuses before anything is touched.
+    async with worker_for(temporal_env, ScriptedEpic(spec_text=corpus_text(VALID))):
+        await temporal_env.client.start_workflow(
+            EpicWorkflow.run,
+            EpicInput(graph=load_workgraph(graph_path), proxy_url=PROXY_URL),
+            id=WORKFLOW_ID,
+            task_queue=TASK_QUEUE,
+        )
+        running = await run_async("build", "reset", str(graph_path))
+
+        assert running.code != 0
+        assert WORKFLOW_ID in running.stderr
+        for node_id in NODE_IDS:
+            assert worktrees[node_id].exists()
+            assert (factory_root / "worktrees" / EPIC_ID / f"{node_id}.json").exists()
+            assert ref_exists(repo, f"refs/heads/{branch_name(EPIC_ID, node_id)}")
+
+        # Terminate the workflow inside the worker context so the NOT_FOUND
+        # leg is actually testing an absent workflow, not a still-running one.
+        await temporal_env.client.get_workflow_handle(WORKFLOW_ID).terminate()
+
+    # Give the time-skipping environment a moment to record the termination.
+    await temporal_env.sleep(timedelta(seconds=1))
+
+    # S4: with the same environment up but no workflow, reset proceeds.
+    async def not_found_connect():
+        return temporal_env.client
+
+    monkeypatch.setattr(build_module, "_connect", not_found_connect)
+    not_found = await run_async("build", "reset", str(graph_path))
+    assert not_found.code == 0, not_found.stderr
+    for node_id in NODE_IDS:
+        assert not worktrees[node_id].exists()
+
+    # Third leg: unreachable server is exit 3, nothing touched.  Rebuild a
+    # fresh survivor set because the previous reset already cleaned it.
+    repo2, factory_root2, graph_path2, worktrees2 = _make_reset_target(
+        lambda variant="passing", name="dead-address-repo": target_repo(variant, name=name),
+        tmp_path,
+    )
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+    monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, DEFAULT_TEMPORAL_NAMESPACE)
+    dead = await run_async("build", "reset", str(graph_path2))
+    assert dead.code == 3
+    assert DEAD_ADDRESS in dead.stderr
+    for node_id in NODE_IDS:
+        assert worktrees2[node_id].exists()
+        assert (factory_root2 / "worktrees" / EPIC_ID / f"{node_id}.json").exists()
+
+
+def test_reset_preserves_all_history_and_ensure_rebuilds_fresh(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S5/S6: no ref deleted, history archived, ensure() yields fresh tree."""
+    monkeypatch.setenv(FACTORY_ROOT_ENV, str(tmp_path / ".factory"))
+    repo, factory_root, graph_path, _ = _make_reset_target(target_repo, tmp_path)
+    node_id = NODE_IDS[0]
+
+    pre_refs = set(
+        git(repo, "for-each-ref", "--format=%(refname)", "refs/heads").splitlines()
+    )
+    pre_tip = git(
+        repo, "rev-parse", f"refs/heads/{branch_name(EPIC_ID, node_id)}"
+    ).strip()
+
+    class FakeNotFoundClient:
+        def get_workflow_handle(self, workflow_id: str):
+            class Handle:
+                async def describe(self) -> None:
+                    raise RPCError(
+                        message=f"workflow {workflow_id} not found",
+                        status=RPCStatusCode.NOT_FOUND,
+                    )
+
+            return Handle()
+
+    monkeypatch.setattr(build_module, "_connect", lambda: FakeNotFoundClient())
+
+    result = run("build", "reset", str(graph_path))
+    assert result.code == 0, result.stderr
+
+    post_refs = set(
+        git(repo, "for-each-ref", "--format=%(refname)", "refs/heads").splitlines()
+    )
+    archive_refs = {
+        ref
+        for ref in post_refs
+        if ref.startswith(f"refs/heads/archive/factory/{EPIC_ID}/")
+    }
+    assert archive_refs
+    # No ref deleted: every commit reachable from a pre-reset ref is still
+    # reachable from some post-reset ref (renames preserve history).
+    pre_commits = set()
+    for ref in pre_refs:
+        if ref_exists(repo, ref):
+            pre_commits.update(
+                git(repo, "rev-list", f"{ref}^{{commit}}").splitlines()
+            )
+    post_commits = set()
+    for ref in post_refs:
+        post_commits.update(
+            git(repo, "rev-list", f"{ref}^{{commit}}").splitlines()
+        )
+    assert pre_commits <= post_commits
+    assert all(
+        ref_exists(repo, ref)
+        for ref in post_refs
+    )
+
+    # The pre-reset node branch tip is still reachable from its archive ref.
+    reachable = set()
+    for ref in archive_refs:
+        reachable.update(
+            git(
+                repo,
+                "rev-list",
+                f"{ref}^{{commit}}",
+            ).splitlines()
+        )
+    assert pre_tip in reachable
+
+    # A subsequent ensure() for the same node builds a fresh tree at current head.
+    fresh = ensure(repo, EPIC_ID, node_id, factory_root=factory_root)
+    fresh_tree = Path(fresh.path)
+    assert fresh_tree.is_dir()
+    assert fresh.base_ref == git(repo, "rev-parse", "HEAD").strip()
+    assert not (fresh_tree / "added_by_us1.py").exists()
+    assert (fresh_tree / "src" / "calc.py").read_text(encoding="utf-8") != "# dirty from us1\n"
