@@ -169,6 +169,38 @@ reach you (`interpreter/ci-failure-never-reaches-an-agent`), so the previous
 node retried the identical code and died. You get one shot at seeing this
 before it happens, and this paragraph is it.
 
+### Trap 10 — reproduce CI before you land, or you are guessing
+
+Trap 9 was not enough. The next node read it, added
+`monkeypatch.setattr(build_module, "_connect", lambda: FakeNotFoundClient())`
+to both tests — the right idea — and **CI failed a third time with the real
+client still dialling `localhost:7233`**. The stub was present and did not
+intercept. Being told the mechanism did not save it, because it never got to
+watch its own fix fail.
+
+So the requirement is not "stub it" but "**prove it offline**". Before this
+story goes anywhere near a landing, run the reset tests with Temporal
+unreachable, exactly as the runner has it:
+
+```
+TEMPORAL_ADDRESS=127.0.0.1:1 uv run pytest tests/test_ergane_build.py -k reset -q
+```
+
+That is CI's world reproduced on your machine in ten seconds. Green there
+means green there; red there is the failure you would otherwise discover only
+after a rejected landing you cannot read. Run it after every change to these
+tests, and paste the passing line into your final message.
+
+If the stub still does not bite, the resolution path is the thing to inspect,
+not the stub: check which module object the reset command actually looks
+`_connect` up in at call time (a function-local `import`, a re-export, or a
+second definition elsewhere all defeat a module-attribute patch), and consider
+patching where it is *used* rather than where it is *defined* — or injecting
+the client as a parameter with a default, which cannot be missed.
+
+Do not weaken the command to make the test pass. FR-010 wants reset to refuse
+when it cannot verify the workflow is stopped.
+
 ## Approach
 
 ### US1 — verify, then keep everything or rebuild everything
