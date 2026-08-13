@@ -3,8 +3,9 @@
 The roadmap's `drift_for_spec` activity compares pinned fingerprints against the
 current spec text.  A story whose landing commit predates the spec file's first
 commit has no baseline; the activity must skip such facts rather than propagate
-the `git show` failure.  These cases build real git repositories with the
-landing commit first and the spec file committed after.
+the `git show` failure.  A drift-activity failure anywhere in the workflow must
+be caught, reported once through the roadmap's existing failure-notice path, and
+must not kill the run.
 """
 
 from __future__ import annotations
@@ -12,12 +13,22 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import pytest
+from temporalio.testing import WorkflowEnvironment
 
 from factory.activities.roadmap_activities import DriftInput, drift_for_spec
+from factory.roadmap.models import SpecState
+from factory.roadmap.workflow import RoadmapStatus
 from factory.workgraph.landed import Fingerprint, WorktreeError, fingerprint
+
+from tests.test_roadmap_failure_notifications import (
+    NotificationRecorder,
+    env,  # noqa: F401
+    run_roadmap_with_notifications,
+)
+from tests.test_roadmap_scheduler import RoadmapWorld, build_corpus, _status_of
 
 DEFAULT_BRANCH = "main"
 EPIC_ID = "010-manifest-self-extension"
@@ -200,3 +211,49 @@ async def test_fingerprint_still_refuses_unreachable_commit(
 
     with pytest.raises(WorktreeError):
         fingerprint(repo, "deadbeef" * 4, EPIC_ID, "US1")
+
+
+#: The verbatim error the scripted drift seam raises in the workflow scenario.
+SCRIPTED_DRIFT_ERROR = "scripted drift failure"
+
+
+async def test_drift_activity_failure_is_caught_and_reported_once(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S4 / FR-003: a failing `drift_for_spec` activity does not kill the
+    roadmap run. The spec is rendered not-drifted for the pass, dispatch proceeds,
+    and exactly one roadmap failure notice names the spec dir and the error
+    verbatim."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.LANDED),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+
+    def _raising_drift(request: Any) -> bool:
+        raise RuntimeError(SCRIPTED_DRIFT_ERROR)
+
+    world = RoadmapWorld(drift_runner=_raising_drift)
+    recorder = NotificationRecorder()
+
+    async with run_roadmap_with_notifications(
+        env, world, str(specs_root), recorder
+    ) as handle:
+        status = await handle.result()
+
+    # The run survived and dispatched bravo.
+    alpha = _status_of(status, "001-alpha")
+    assert alpha.drifted is False
+    bravo = _status_of(status, "002-bravo")
+    assert bravo.landed is True
+
+    # Exactly one roadmap failure notice, naming the spec and the verbatim error.
+    failure_calls = [
+        call for call in recorder.calls if "drift_for_spec" in call.message
+    ]
+    assert len(failure_calls) == 1, recorder.calls
+    notice = failure_calls[0]
+    assert "001-alpha" in notice.message
+    assert SCRIPTED_DRIFT_ERROR in notice.message
