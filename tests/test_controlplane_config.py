@@ -1,0 +1,348 @@
+"""Tests for the control-plane config parser (US1 of 033-ergane-install).
+
+The evidence rule (constitution VIII) says runtime claims must be met by tool
+output pasted verbatim into a comment block in the test file. After the first
+run the suite output will be pasted below.
+
+Suite output (to be filled after first run):
+
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from factory.controlplane.config import (
+    KNOWN_ESC_ADAPTERS,
+    KNOWN_LL_MODES,
+    KNOWN_MEMORY_BACKENDS,
+    load_controlplane_config,
+    resolve_config_path,
+)
+from factory.controlplane.config import ControlPlaneConfig as Cfg
+from factory.controlplane.config import ControlPlaneConfigError
+from factory.env import (
+    ERGANE_CONFIG_PATH_ENV,
+    FACTORY_CONFIG_PATH_ENV,
+)
+
+
+def _happy_toml() -> str:
+    """The canonical full config from US1-S1."""
+    return """
+version = 1
+
+[llm]
+mode = "direct"
+
+[[llm.persona]]
+name = "implementer"
+base_url = "http://llm.local/v1"
+model = "openai/gpt-4o"
+api_key_env = "ERGANE_LLM_IMPLEMENTER_KEY"
+
+[memory]
+backend = "hindsight"
+url = "http://hindsight.local:8888"
+api_key_env = "ERGANE_HINDSIGHT_KEY"
+
+[temporal]
+mode = "external"
+address = "temporal.local:7233"
+namespace = "ergane"
+api_key_env = "ERGANE_TEMPORAL_API_KEY"
+
+[telemetry]
+otlp_endpoint = "http://otel.local:4317"
+
+[escalation]
+adapter = "telegram"
+chat_id_env = "ERGANE_TELEGRAM_CHAT_ID"
+bot_token_env = "ERGANE_TELEGRAM_BOT_TOKEN"
+""".lstrip()
+
+
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_config_path_uses_xdg_config_home(tmp_path: Path) -> None:
+    """FR-001: the default path lives under XDG_CONFIG_HOME."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    cfg_home = fake_home / ".config"
+    cfg_home.mkdir()
+    env = dict(os.environ)
+    env["HOME"] = str(fake_home)
+    env["XDG_CONFIG_HOME"] = str(cfg_home)
+    env.pop("ERGANE_CONFIG_PATH", None)
+    env.pop("FACTORY_CONFIG_PATH", None)
+
+    import subprocess
+
+    script = """
+import os
+from factory.controlplane.config import resolve_config_path
+print(resolve_config_path())
+"""
+    result = subprocess.run(
+        ["python", "-c", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        cwd=str(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(cfg_home / "ergane" / "config.toml")
+
+
+# ---------------------------------------------------------------------------
+# T001 [US1-S1] Happy parse
+# ---------------------------------------------------------------------------
+
+
+def test_happy_parse(tmp_path: Path) -> None:
+    """US1-S1: a version 1 config with every subsystem parses to typed shape."""
+    path = tmp_path / "config.toml"
+    path.write_text(_happy_toml(), encoding="utf-8")
+
+    cfg = load_controlplane_config(path)
+
+    assert isinstance(cfg, Cfg)
+    assert cfg.version == 1
+    assert cfg.llm.mode == "direct"
+    assert cfg.llm.personas == (
+        Cfg.LLMDirectPersona(
+            name="implementer",
+            base_url="http://llm.local/v1",
+            model="openai/gpt-4o",
+            api_key_env="ERGANE_LLM_IMPLEMENTER_KEY",
+        ),
+    )
+    assert cfg.llm.gateway is None
+
+    assert cfg.memory.backend == "hindsight"
+    assert cfg.memory.url == "http://hindsight.local:8888"
+    assert cfg.memory.api_key_env == "ERGANE_HINDSIGHT_KEY"
+
+    assert cfg.temporal.mode == "external"
+    assert cfg.temporal.address == "temporal.local:7233"
+    assert cfg.temporal.namespace == "ergane"
+    assert cfg.temporal.api_key_env == "ERGANE_TEMPORAL_API_KEY"
+
+    assert cfg.telemetry.mode == "otlp"
+    assert cfg.telemetry.otlp_endpoint == "http://otel.local:4317"
+
+    assert cfg.escalation.adapter == "telegram"
+    assert cfg.escalation.chat_id_env == "ERGANE_TELEGRAM_CHAT_ID"
+    assert cfg.escalation.bot_token_env == "ERGANE_TELEGRAM_BOT_TOKEN"
+
+    # Defaults that were not declared
+    assert cfg.llm.timeout_s == 300
+    assert cfg.memory.timeout_s == 5
+    assert cfg.temporal.tls_enabled is False
+    assert cfg.temporal.timeout_s == 5
+    assert cfg.telemetry.timeout_s == 5
+    assert cfg.escalation.timeout_s == 30
+
+
+# ---------------------------------------------------------------------------
+# T002 [US1-S2 / FR-005] One namespace
+# ---------------------------------------------------------------------------
+
+
+def test_temporal_namespace_list_refused(tmp_path: Path) -> None:
+    """US1-S2: a list of namespaces is refused naming the one-namespace rule."""
+    path = tmp_path / "config.toml"
+    text = _happy_toml().replace(
+        'namespace = "ergane"',
+        "namespace = [\"ergane\", \"other\"]",
+    )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    err = exc_info.value
+    assert err.rule == "temporal_namespace_not_scalar"
+    assert "one namespace" in err.problem.lower()
+    assert "workflow id" in err.problem.lower()
+
+
+# ---------------------------------------------------------------------------
+# T003 [US1-S3 / FR-003] Secret-shape refusals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("llm.persona.api_key_env", "sk-this-is-a-key-value"),
+        ("escalation.bot_token_env", "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"),
+    ],
+)
+def test_secret_shaped_value_refused(field: str, bad_value: str, tmp_path: Path) -> None:
+    """US1-S3: any secret field carrying a credential shape is refused."""
+    path = tmp_path / "config.toml"
+    text = _happy_toml()
+    if field == "llm.persona.api_key_env":
+        text = text.replace(
+            'api_key_env = "ERGANE_LLM_IMPLEMENTER_KEY"',
+            f'api_key_env = "{bad_value}"',
+        )
+    elif field == "escalation.bot_token_env":
+        text = text.replace(
+            'bot_token_env = "ERGANE_TELEGRAM_BOT_TOKEN"',
+            f'bot_token_env = "{bad_value}"',
+        )
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    err = exc_info.value
+    assert err.rule == "secret_value_not_reference"
+    assert err.field in (field, "llm.persona[0].api_key_env")
+
+
+def test_identifier_value_accepted(tmp_path: Path) -> None:
+    """US1-S3: an identifier-shaped env-var name is accepted."""
+    path = tmp_path / "config.toml"
+    path.write_text(_happy_toml(), encoding="utf-8")
+    cfg = load_controlplane_config(path)
+    assert cfg.llm.personas[0].api_key_env == "ERGANE_LLM_IMPLEMENTER_KEY"
+    assert cfg.escalation.bot_token_env == "ERGANE_TELEGRAM_BOT_TOKEN"
+
+
+# ---------------------------------------------------------------------------
+# T004 [US1-S4] Unknown adapter
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_escalation_adapter_refused(tmp_path: Path) -> None:
+    """US1-S4: an unregistered escalation adapter is refused and known ones listed."""
+    path = tmp_path / "config.toml"
+    text = _happy_toml().replace('adapter = "telegram"', 'adapter = "signal"')
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    err = exc_info.value
+    assert err.rule == "unknown_escalation_adapter"
+    assert "signal" in err.problem
+    for adapter in KNOWN_ESC_ADAPTERS:
+        assert adapter in err.problem
+
+
+# ---------------------------------------------------------------------------
+# T005 [US1-S5 / FR-013] Fail closed with no config file
+# ---------------------------------------------------------------------------
+
+
+def test_no_config_file_fails_closed(tmp_path: Path) -> None:
+    """US1-S5: absence of the config file fails closed naming ergane install."""
+    missing = tmp_path / "config.toml"
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(missing)
+
+    err = exc_info.value
+    assert err.rule == "config_missing"
+    assert "ergane install" in err.problem.lower()
+
+
+def test_load_from_default_path_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """FR-013: commands that need the control plane fail closed when default path missing."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty-config"))
+    monkeypatch.delenv(ERGANE_CONFIG_PATH_ENV, raising=False)
+    monkeypatch.delenv(FACTORY_CONFIG_PATH_ENV, raising=False)
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config()
+
+    err = exc_info.value
+    assert err.rule == "config_missing"
+    assert "ergane install" in err.problem.lower()
+
+
+# ---------------------------------------------------------------------------
+# T006 [US1-S6 / FR-004] Managed mode refused before 042
+# ---------------------------------------------------------------------------
+
+
+def test_temporal_managed_mode_refused(tmp_path: Path) -> None:
+    """US1-S6: temporal.mode = managed is refused naming 042."""
+    path = tmp_path / "config.toml"
+    text = _happy_toml().replace('mode = "external"', 'mode = "managed"')
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    err = exc_info.value
+    assert err.rule == "temporal_managed_not_implemented"
+    assert "042" in err.problem
+
+
+# ---------------------------------------------------------------------------
+# Additional closed-set refusals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["proxy", "local"])
+def test_unknown_llm_mode_refused(mode: str, tmp_path: Path) -> None:
+    text = _happy_toml().replace('mode = "direct"', f'mode = "{mode}"')
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    assert exc_info.value.rule == "unknown_llm_mode"
+    assert mode in exc_info.value.problem
+    for known in KNOWN_LL_MODES:
+        assert known in exc_info.value.problem
+
+
+@pytest.mark.parametrize("backend", ["postgres", "redis"])
+def test_unknown_memory_backend_refused(backend: str, tmp_path: Path) -> None:
+    text = _happy_toml().replace('backend = "hindsight"', f'backend = "{backend}"')
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    assert exc_info.value.rule == "unknown_memory_backend"
+    assert backend in exc_info.value.problem
+    for known in KNOWN_MEMORY_BACKENDS:
+        assert known in exc_info.value.problem
+
+
+def test_top_level_unknown_key_refused(tmp_path: Path) -> None:
+    text = "version = 1\nfoo = true\n" + _happy_toml().split("\n", 1)[1]
+    path = tmp_path / "config.toml"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    assert exc_info.value.rule == "unknown_key"
+    assert "foo" in exc_info.value.problem
+
+
+def test_missing_version_refused(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(_happy_toml().replace("version = 1\n", ""), encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    assert exc_info.value.rule == "version"

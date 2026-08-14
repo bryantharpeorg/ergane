@@ -55,6 +55,10 @@ from factory.activities.verify_activities import (
     ERGANE_VERIFICATION_DB_PATH_ENV,
     VERIFICATION_DB_PATH_ENV,
 )
+from factory.env import (
+    ERGANE_CONFIG_PATH_ENV,
+    FACTORY_CONFIG_PATH_ENV,
+)
 from tests.target_repo import add_worktree, build_target_repo
 
 FAKE_PROXY_URL = "http://litellm.test"
@@ -540,6 +544,9 @@ def _isolated_test_store(
     ledger = str(base / "session-ledger.db")
     patch.setenv(ERGANE_LEDGER_PATH_ENV, ledger)
     patch.setenv(LEDGER_PATH_ENV, ledger)
+    config = str(base / "session-ergane-config.toml")
+    patch.setenv(ERGANE_CONFIG_PATH_ENV, config)
+    patch.setenv(FACTORY_CONFIG_PATH_ENV, config)
     patch.delenv(TELEGRAM_BOT_TOKEN_ENV, raising=False)
     patch.delenv(TELEGRAM_CHAT_ID_ENV, raising=False)
 
