@@ -107,6 +107,12 @@ answer produces a diff touching exactly that key.
    ergane-managed repo (a factory node's worktree), **When** init runs,
    **Then** it refuses, naming the primary checkout — the factory's own
    workspaces are never registered as repos.
+7. **Given** an operator standing in a repo, **When** they run bare
+   `ergane init` with no path argument, **Then** it behaves exactly as
+   `ergane init .` does — the path is optional and defaults to the working
+   directory, as `git init` and every tool of this shape does. The output
+   names the repo root it resolved, so a bare invocation is never ambiguous
+   about which repository it joined.
 
 ---
 
@@ -308,7 +314,9 @@ formats, and two exports against an untouched engine are byte-identical.
 - **FR-001**: `ergane init` MUST operate on the git repository containing
   the working directory, refuse non-repositories naming `git init` as the
   prerequisite, and refuse factory-created worktrees naming the primary
-  checkout.
+  checkout. The path argument MUST be optional, defaulting to the working
+  directory, so bare `ergane init` and `ergane init .` are the same
+  invocation; the resolved repo root MUST be named in the output either way.
 - **FR-002**: The scaffold MUST write exactly: `ergane.yaml` at the repo
   root, a `.gitignore` entry for `.ergane/`, the empty `.ergane/` runtime
   root, and (when accepted in US3) a CI workflow file. It MUST NOT commit,

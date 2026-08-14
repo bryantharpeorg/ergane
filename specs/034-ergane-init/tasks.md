@@ -22,6 +22,13 @@ claims are only met by pasted output committed in the diff.
       detect it by comparing `--git-dir` to `--git-common-dir` — **not** by the
       presence of a `.git` file, which a submodule also has (plan trap 4).
 
+- [ ] T001a [US1] Write the bare-invocation case FIRST (spec US1-S7, FR-001):
+      `ergane init` with no path argument resolves the repo containing the
+      working directory and behaves identically to `ergane init .`, naming the
+      resolved root in its output. Run it from a subdirectory too — the edge
+      case says operate on the repo root, and a bare invocation is where that
+      is most likely to surprise someone.
+
 - [ ] T002 [US1] Write the scaffold case FIRST against a scripted interview
       (plan trap 5 — a seam, not a monkeypatched `input()`): the written
       `ergane.yaml` parses under `parse_factory_config` and declares every
