@@ -103,6 +103,7 @@ from factory.activities.verify_activities import (
     CRITERIA_FILE_MISSING,
     CRITERIA_PARSE_FAILED,
     DEFAULT_VERIFICATION_DB_PATH,
+    ERGANE_VERIFICATION_DB_PATH_ENV,
     JUDGE_UNAVAILABLE,
     VERIFICATION_DB_PATH_ENV,
     WORKTREE_MISSING,
@@ -418,7 +419,8 @@ def compose(**overrides: Any) -> VerificationResult:
 def db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the recording activity at a scratch evidence store."""
     path = tmp_path / ".factory" / "verification.db"
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(path))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(path))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
     return path
 
 
@@ -1304,14 +1306,15 @@ def test_the_default_store_path_is_the_documented_one() -> None:
     # quickstart §5 tells the operator to open `.factory/verification.db`, and
     # the 001 ledger sits beside it under the same `.factory/` directory.
     assert DEFAULT_VERIFICATION_DB_PATH == ".factory/verification.db"
-    assert VERIFICATION_DB_PATH_ENV.startswith("FACTORY_")
+    assert ERGANE_VERIFICATION_DB_PATH_ENV.startswith("ERGANE_")
 
 
 async def test_the_store_path_comes_from_the_worker_environment(
     env: ActivityEnvironment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     elsewhere = tmp_path / "somewhere" / "else" / "verification.db"
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(elsewhere))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(elsewhere))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
 
     await record(env, compose())
 

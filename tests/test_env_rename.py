@@ -17,11 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from typing import Iterator
 
 from factory.activities import notify_activities
 from factory.activities.agent_activities import factory_root
 from factory.activities.usage_activities import _ledger_path
 from factory.activities.verify_activities import _store_path as verify_store_path
+from factory.env import _WARNED as _ENV_WARNED
 from factory.verify.store import EVIDENCE_STORE_ALLOW_REAL_ENV
 
 
@@ -40,6 +42,14 @@ def _repo_root() -> Path:
 
 
 REPO_ROOT = _repo_root()
+
+
+@pytest.fixture(autouse=True)
+def _reset_env_warning_state() -> Iterator[None]:
+    """Clear the per-process deprecation gate so each test sees its own warning."""
+    _ENV_WARNED.clear()
+    yield
+    _ENV_WARNED.clear()
 
 
 def test_ergane_root_honored(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -178,8 +188,8 @@ def test_env_script_exports_ergane_names() -> None:
     script = REPO_ROOT / "scripts" / "ergane-env.sh"
     assert script.exists(), "scripts/ergane-env.sh must exist"
     text = script.read_text(encoding="utf-8")
-    assert "export ERGANE_ROOT=" in text, "script must export ERGANE_ROOT"
-    assert "export FACTORY_ROOT=" not in text, "script must stop exporting FACTORY_ROOT"
+    assert "emit ERGANE_ROOT" in text, "script must export ERGANE_ROOT"
+    assert "emit FACTORY_ROOT" not in text, "script must stop exporting FACTORY_ROOT"
 
 
 def test_conftest_fixture_sets_both_old_and_new_names(
@@ -188,14 +198,14 @@ def test_conftest_fixture_sets_both_old_and_new_names(
     """US3-S4 / trap 5: the session fixture sets both ERGANE_* and FACTORY_*."""
     conftest = REPO_ROOT / "tests" / "conftest.py"
     text = conftest.read_text(encoding="utf-8")
-    for new, old in [
-        ("ERGANE_ROOT", "FACTORY_ROOT"),
-        ("ERGANE_VERIFICATION_DB_PATH", "FACTORY_VERIFICATION_DB_PATH"),
-        ("ERGANE_LEDGER_PATH", "FACTORY_LEDGER_PATH"),
+    for new_token, old_token in [
+        ("ERGANE_ROOT_ENV", "FACTORY_ROOT_ENV"),
+        ("ERGANE_VERIFICATION_DB_PATH_ENV", "VERIFICATION_DB_PATH_ENV"),
+        ("ERGANE_LEDGER_PATH_ENV", "LEDGER_PATH_ENV"),
     ]:
-        assert re.search(rf"patch\.setenv\s*\(\s*['\"]{re.escape(new)}['\"]", text), (
-            f"conftest must set {new}"
-        )
-        assert re.search(rf"patch\.setenv\s*\(\s*['\"]{re.escape(old)}['\"]", text), (
-            f"conftest must keep setting {old} for partially migrated trees"
-        )
+        assert re.search(
+            rf"patch\.setenv\s*\(\s*{re.escape(new_token)}\b", text
+        ), f"conftest must set {new_token}"
+        assert re.search(
+            rf"patch\.setenv\s*\(\s*{re.escape(old_token)}\b", text
+        ), f"conftest must keep setting {old_token} for partially migrated trees"

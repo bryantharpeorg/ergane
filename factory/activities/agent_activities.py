@@ -98,6 +98,11 @@ from factory.workgraph.models import (
     resolve_timeout_s,
     validate_workgraph,
 )
+from factory.env import (
+    ERGANE_ROOT_ENV,
+    FACTORY_ROOT_ENV,
+    resolve_env_path,
+)
 from factory.workgraph.worktree import (
     DEFAULT_FACTORY_ROOT,
     PreparedWorktree,
@@ -134,7 +139,8 @@ PROMPT_SOURCE_MISSING = "PROMPT_SOURCE_MISSING"
 
 #: Where the worker host keeps worktrees, transcripts and pid files when it does
 #: not say otherwise. One override, one default, one resolver (`factory_root`).
-FACTORY_ROOT_ENV = "FACTORY_ROOT"
+FACTORY_ROOT_ENV = FACTORY_ROOT_ENV  # re-export for existing callers
+ERGANE_ROOT_ENV = ERGANE_ROOT_ENV  # re-export for tests and callers
 
 #: How often a running attempt tells Temporal it is alive. At module scope so a
 #: test can shrink it without waiting out a production-sized interval, and read
@@ -160,7 +166,7 @@ def factory_root() -> Path:
 
     Relative by default, so it resolves against the worker's working directory
     exactly the way 001's ledger and 002's evidence store do.  Honors the legacy
-    `.factory/` name and reports it once per process.
+    `FACTORY_ROOT` env name and reports it once per process.
     """
     root, _choice = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
     return root

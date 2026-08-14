@@ -39,13 +39,22 @@ from typing import Any, Callable, Iterator
 import httpx
 import pytest
 
-from factory.activities.agent_activities import FACTORY_ROOT_ENV
+from factory.activities.agent_activities import (
+    ERGANE_ROOT_ENV,
+    FACTORY_ROOT_ENV,
+)
 from factory.activities.notify_activities import (
     TELEGRAM_BOT_TOKEN_ENV,
     TELEGRAM_CHAT_ID_ENV,
 )
-from factory.activities.usage_activities import LEDGER_PATH_ENV
-from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
+from factory.activities.usage_activities import (
+    ERGANE_LEDGER_PATH_ENV,
+    LEDGER_PATH_ENV,
+)
+from factory.activities.verify_activities import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    VERIFICATION_DB_PATH_ENV,
+)
 from tests.target_repo import add_worktree, build_target_repo
 
 FAKE_PROXY_URL = "http://litellm.test"
@@ -519,9 +528,18 @@ def _isolated_test_store(
     patch = pytest.MonkeyPatch()
 
     # Absolute by construction; worktree.py hands this to `git -C ... worktree add`.
-    patch.setenv(FACTORY_ROOT_ENV, str(base / "session-factory-root"))
-    patch.setenv(VERIFICATION_DB_PATH_ENV, str(base / "session-verification.db"))
-    patch.setenv(LEDGER_PATH_ENV, str(base / "session-ledger.db"))
+    # Both ERGANE_* and FACTORY_* names are set to the SAME path so a partially
+    # migrated tree cannot leak, and a per-test override of either name wins
+    # cleanly (US3, trap 5).
+    root = str(base / "session-factory-root")
+    patch.setenv(ERGANE_ROOT_ENV, root)
+    patch.setenv(FACTORY_ROOT_ENV, root)
+    db = str(base / "session-verification.db")
+    patch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, db)
+    patch.setenv(VERIFICATION_DB_PATH_ENV, db)
+    ledger = str(base / "session-ledger.db")
+    patch.setenv(ERGANE_LEDGER_PATH_ENV, ledger)
+    patch.setenv(LEDGER_PATH_ENV, ledger)
     patch.delenv(TELEGRAM_BOT_TOKEN_ENV, raising=False)
     patch.delenv(TELEGRAM_CHAT_ID_ENV, raising=False)
 

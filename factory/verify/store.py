@@ -54,6 +54,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from factory.env import (
+    ERGANE_EVIDENCE_STORE_ALLOW_REAL_ENV,
+    FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV,
+    resolve_env_flag,
+)
 from factory.verify.models import (
     EscalationChoice,
     EscalationRecord,
@@ -83,10 +88,12 @@ BUSY_TIMEOUT_MS = 5000
 #: `EscalationChoice | str | None` rather than just the enum.
 EXPIRED = "EXPIRED"
 
-#: Operator acknowledgment variable. When set, the store guard in `connect()`
-#: permits opening a real evidence-store path while a test is running. This is
-#: the one deliberate door the live smoke uses; it is never set in production.
-EVIDENCE_STORE_ALLOW_REAL_ENV = "FACTORY_EVIDENCE_STORE_ALLOW_REAL"
+#: Modern operator acknowledgment variable. When set, the store guard in
+#: `connect()` permits opening a real evidence-store path while a test is running.
+EVIDENCE_STORE_ALLOW_REAL_ENV = "ERGANE_EVIDENCE_STORE_ALLOW_REAL"
+
+#: Legacy name still honored during the rename.
+FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV = FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV
 
 #: Finding key the guard names when it refuses an out-of-tmp store during a test.
 #: Matches the finding the spec records.
@@ -193,8 +200,9 @@ def connect(path: str | Path) -> sqlite3.Connection:
     #
     # Production paths (worker, notify service, CLI) do not set PYTEST_CURRENT_TEST,
     # so they are byte-identical to the pre-guard behavior.
-    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get(
-        EVIDENCE_STORE_ALLOW_REAL_ENV
+    if os.environ.get("PYTEST_CURRENT_TEST") and not resolve_env_flag(
+        ERGANE_EVIDENCE_STORE_ALLOW_REAL_ENV,
+        FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV,
     ):
         tmp_root = Path(tempfile.gettempdir()).resolve()
         try:

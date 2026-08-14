@@ -36,10 +36,10 @@ from factory.verify import store
 from factory.verify.models import EscalationChoice
 
 
-#: Acknowledgment variable that deliberately opens the real-store door for the
-#: live smoke.  Named in `factory/verify/store.py` and mirrored here so tests
-#: that need to set it do not hardcode a string.
-EVIDENCE_STORE_ALLOW_REAL_ENV = "FACTORY_EVIDENCE_STORE_ALLOW_REAL"
+#: Modern acknowledgment variable that deliberately opens the real-store door for
+#: the live smoke.  Named in `factory/verify/store.py` and mirrored here so
+#: tests that need to set it do not hardcode a string.
+EVIDENCE_STORE_ALLOW_REAL_ENV = "ERGANE_EVIDENCE_STORE_ALLOW_REAL"
 
 #: Match the shape `test_roadmap_failure_notifications.py` uses for a roadmap id.
 ROADMAP_ID = "roadmap-specs"

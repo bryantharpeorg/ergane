@@ -30,6 +30,13 @@ from factory.activities.verify_activities import (
     VERIFICATION_DB_PATH_ENV,
 )
 from factory.cli.errors import EXIT_OK, EXIT_USER, EXIT_USAGE, OperatorError
+from factory.env import (
+    ERGANE_ROOT_ENV,
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    FACTORY_ROOT_ENV,
+    FACTORY_VERIFICATION_DB_PATH_ENV,
+    resolve_env_path,
+)
 from factory.cli.nouns import Noun, _open_preflight_client
 from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.notify.service import (
@@ -51,7 +58,10 @@ from factory.verify.store import (
     pending_escalations,
     pending_questions,
 )
-from factory.activities.agent_activities import FACTORY_ROOT_ENV
+from factory.activities.agent_activities import (
+    DEFAULT_FACTORY_ROOT as DEFAULT_FACTORY_ROOT_PATH,
+    FACTORY_ROOT_ENV,
+)
 from factory.workgraph.worktree import resolve_factory_root
 from factory.workgraph.models import (
     WorkGraph,
@@ -437,8 +447,10 @@ async def _send_signal(epic_id: str, signal_name: str) -> int:
 
 
 def _verification_store_path() -> Path:
-    return Path(
-        os.environ.get(VERIFICATION_DB_PATH_ENV) or DEFAULT_VERIFICATION_DB_PATH
+    return resolve_env_path(
+        ERGANE_VERIFICATION_DB_PATH_ENV,
+        FACTORY_VERIFICATION_DB_PATH_ENV,
+        DEFAULT_VERIFICATION_DB_PATH,
     )
 
 
@@ -550,7 +562,9 @@ async def _reset_epic(graph: WorkGraph) -> int:
                 "refusing to reset while the workflow is active"
             )
 
-    factory_root = resolve_factory_root(FACTORY_ROOT_ENV)[0]
+    factory_root = resolve_env_path(
+        ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, DEFAULT_FACTORY_ROOT_PATH
+    )
 
     for node in graph.nodes:
         actions = reset_worktree(

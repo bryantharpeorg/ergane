@@ -55,6 +55,7 @@ from factory.activities import usage_activities
 from factory.activities.usage_activities import (
     ATTRIBUTION_INCOMPLETE,
     DEFAULT_LEDGER_PATH,
+    ERGANE_LEDGER_PATH_ENV,
     KEY_ISSUANCE_FAILED,
     LEDGER_PATH_ENV,
     IssueKeyInput,
@@ -98,7 +99,8 @@ def proxy(
     transport, so `from_env` still resolves the master key and the fake still
     401s if the wrong one arrives.
     """
-    monkeypatch.setenv(LEDGER_PATH_ENV, str(ledger_path))
+    monkeypatch.setenv(ERGANE_LEDGER_PATH_ENV, str(ledger_path))
+    monkeypatch.delenv(LEDGER_PATH_ENV, raising=False)
     monkeypatch.setattr(
         usage_activities,
         "open_client",
@@ -745,7 +747,8 @@ async def test_a_failed_ledger_write_leaves_the_key_alive(
     spend_rows_for(proxy, lease.key)
     blocked = tmp_path / "blocked"
     blocked.write_text("not a directory")
-    monkeypatch.setenv(LEDGER_PATH_ENV, str(blocked / "ledger.db"))
+    monkeypatch.setenv(ERGANE_LEDGER_PATH_ENV, str(blocked / "ledger.db"))
+    monkeypatch.delenv(LEDGER_PATH_ENV, raising=False)
 
     with pytest.raises(OSError):
         await tear_down(env, lease)
@@ -765,7 +768,8 @@ async def test_the_ledger_path_defaults_to_the_documented_location(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(LEDGER_PATH_ENV)
+    monkeypatch.delenv(LEDGER_PATH_ENV, raising=False)
+    monkeypatch.delenv(ERGANE_LEDGER_PATH_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
 
     lease = await issue(env)

@@ -75,7 +75,10 @@ from factory.activities.notify_activities import (
     find_ferried_question,
     send_question,
 )
-from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
+from factory.activities.verify_activities import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    VERIFICATION_DB_PATH_ENV,
+)
 from factory.verify import store
 from factory.verify.models import QuestionRecord
 
@@ -192,7 +195,8 @@ def db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     lives in the same database the escalations table does.
     """
     path = tmp_path / ".factory" / "verification.db"
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(path))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(path))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
     return path
 
 
@@ -486,7 +490,8 @@ async def test_a_question_that_cannot_be_recorded_is_an_error_not_a_message(
     # nothing downstream can resolve (the `ESCALATION_NOT_RECORDED` precedent).
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding="utf-8")
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(blocked / "verification.db"))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(blocked / "verification.db"))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
 
     with pytest.raises(ApplicationError) as excinfo:
         await send(env)

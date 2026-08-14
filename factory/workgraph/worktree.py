@@ -70,6 +70,11 @@ from enum import StrEnum
 from pathlib import Path
 
 from factory.usage.models import Termination
+from factory.env import (
+    ERGANE_ROOT_ENV,
+    FACTORY_ROOT_ENV,
+    resolve_env_path,
+)
 from factory.verify.factory_yaml import FactoryConfigError, load_factory_config, resolve_manifest_path
 from factory.verify.gates import scrubbed_env
 
@@ -132,20 +137,24 @@ def resolve_factory_root(
 ) -> tuple[Path, RuntimeRootChoice]:
     """Return the runtime root to use and which name was chosen.
 
-    Preferred name is `.ergane/`; legacy `.factory/` is honored with a one-time
-    deprecation warning naming the migration command.  When both exist,
+    Preferred directory name is `.ergane/`; legacy `.factory/` is honored with a
+    one-time deprecation warning naming the migration command.  When both exist,
     `.ergane/` wins and the ignored legacy directory is named in the warning.
 
-    An explicit environment override wins over both names and suppresses the
-    deprecation warning, because the operator has already expressed a choice.
+    An explicit environment override wins over both directory names.  The
+    override itself is read through `factory.env.resolve_env_path` so both
+    `ERGANE_ROOT` and `FACTORY_ROOT` are honored; using the legacy env name emits
+    a one-time deprecation about the variable name (US3, trap 7).
 
-    The warning is gated by a module-level flag because this resolver is invoked
-    many times per epic and a per-read warning trains the operator to ignore it
-    (trap 7).
+    The directory warning is gated by a module-level flag because this resolver
+    is invoked many times per epic and a per-read warning trains the operator to
+    ignore it (trap 7).
     """
-    override = os.environ.get(env_name)
-    if override is not None:
-        return Path(override), RuntimeRootChoice.NEW
+    override = resolve_env_path(
+        ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, default=""
+    )
+    if override != Path(""):
+        return override, RuntimeRootChoice.NEW
 
     new = DEFAULT_RUNTIME_ROOT
     legacy = LEGACY_FACTORY_ROOT

@@ -14,10 +14,15 @@ from pathlib import Path
 from typing import Any
 
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
+from factory.env import (
+    ERGANE_LEDGER_PATH_ENV,
+    FACTORY_LEDGER_PATH_ENV,
+    resolve_env_path,
+)
 from factory.usage.cli import UNMEASURED, open_readonly, render_table
 from factory.usage.ledger import ROLLUP_DIMENSIONS, rollup
 
-LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"
+LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"  # legacy re-export
 DEFAULT_LEDGER_PATH = Path(".factory") / "ledger.db"
 
 
@@ -31,7 +36,7 @@ def add_usage_parser(subparsers: argparse._SubParsersAction) -> argparse.Argumen
         "--db",
         type=Path,
         default=_default_ledger_path(),
-        help=f"ledger file (default: ${LEDGER_PATH_ENV} or {DEFAULT_LEDGER_PATH})",
+        help=f"ledger file (default: ${ERGANE_LEDGER_PATH_ENV} or {DEFAULT_LEDGER_PATH})",
     )
     parser.add_argument(
         "--by",
@@ -76,9 +81,11 @@ def usage_command(args: argparse.Namespace) -> int:
 
 
 def _default_ledger_path() -> Path:
-    from os import environ
-
-    return Path(environ.get(LEDGER_PATH_ENV) or DEFAULT_LEDGER_PATH)
+    return resolve_env_path(
+        ERGANE_LEDGER_PATH_ENV,
+        FACTORY_LEDGER_PATH_ENV,
+        DEFAULT_LEDGER_PATH,
+    )
 
 
 def _iso_day(value: str) -> str:

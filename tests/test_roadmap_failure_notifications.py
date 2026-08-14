@@ -39,7 +39,10 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner
 
-from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
+from factory.activities.verify_activities import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    VERIFICATION_DB_PATH_ENV,
+)
 
 import factory.activities.roadmap_activities as roadmap_activities
 import factory.roadmap.workflow as factory_roadmap_workflow
@@ -123,7 +126,9 @@ async def env(tmp_path: Path) -> AsyncIterator[WorkflowEnvironment]:
     """
     db_path = str(tmp_path / "verification.db")
     old_db = os.environ.get(VERIFICATION_DB_PATH_ENV)
-    os.environ[VERIFICATION_DB_PATH_ENV] = db_path
+    old_ergane_db = os.environ.get(ERGANE_VERIFICATION_DB_PATH_ENV)
+    os.environ[ERGANE_VERIFICATION_DB_PATH_ENV] = db_path
+    os.environ.pop(VERIFICATION_DB_PATH_ENV, None)
     environment = await WorkflowEnvironment.start_time_skipping()
     _SCRIPT.statuses = {}
     _SCRIPT.on_dispatch = None
@@ -133,6 +138,10 @@ async def env(tmp_path: Path) -> AsyncIterator[WorkflowEnvironment]:
         yield environment
     finally:
         await environment.shutdown()
+        if old_ergane_db is None:
+            os.environ.pop(ERGANE_VERIFICATION_DB_PATH_ENV, None)
+        else:
+            os.environ[ERGANE_VERIFICATION_DB_PATH_ENV] = old_ergane_db
         if old_db is None:
             os.environ.pop(VERIFICATION_DB_PATH_ENV, None)
         else:
@@ -504,7 +513,7 @@ async def test_failure_is_recorded_when_notifier_is_down(
     # before the send was attempted.
     from factory.verify.store import connect
 
-    db_path = os.environ.get(VERIFICATION_DB_PATH_ENV)
+    db_path = os.environ.get(ERGANE_VERIFICATION_DB_PATH_ENV)
     assert db_path is not None
     conn = connect(db_path)
     try:
@@ -924,7 +933,7 @@ async def test_recovery_leaves_zero_escalation_rows(
 
     from factory.verify.store import connect
 
-    db_path = os.environ.get(VERIFICATION_DB_PATH_ENV)
+    db_path = os.environ.get(ERGANE_VERIFICATION_DB_PATH_ENV)
     assert db_path is not None
     conn = connect(db_path)
     try:

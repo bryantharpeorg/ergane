@@ -23,6 +23,7 @@ import pytest
 
 import factory.workgraph.worktree as worktree_module
 from factory.activities.agent_activities import (
+    ERGANE_ROOT_ENV,
     FACTORY_ROOT_ENV,
     factory_root,
 )
@@ -41,6 +42,7 @@ MIGRATION_COMMAND = "ergane repo migrate-runtime-root"
 def _unset_factory_root(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make sure the resolver reads the default, not an env override."""
     monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
+    monkeypatch.delenv(ERGANE_ROOT_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True)

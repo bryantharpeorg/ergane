@@ -10,6 +10,10 @@ import argparse
 import os
 
 from factory.cli.errors import EXIT_OK
+from factory.env import (
+    ERGANE_LEDGER_PATH_ENV,
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+)
 from factory.notify.service import (
     BOT_TOKEN_ENV,
     DEFAULT_TEMPORAL_ADDRESS,
@@ -18,7 +22,6 @@ from factory.notify.service import (
     TEMPORAL_NAMESPACE_ENV,
 )
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
-from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
 
 #: Credential-like variables whose values must never be printed.
 _SECRET_VARS = {MASTER_KEY_ENV, BOT_TOKEN_ENV}
@@ -30,8 +33,8 @@ _ENTRIES: list[tuple[str, str | None, str]] = [
     (PROXY_URL_ENV, None, "required"),
     (MASTER_KEY_ENV, None, "required"),
     (BOT_TOKEN_ENV, None, "required"),
-    ("FACTORY_LEDGER_PATH", None, "default .factory/ledger.db"),
-    (VERIFICATION_DB_PATH_ENV, None, "default .factory/doctor.db"),
+    (ERGANE_LEDGER_PATH_ENV, None, "default .factory/ledger.db"),
+    (ERGANE_VERIFICATION_DB_PATH_ENV, None, "default .factory/verification.db"),
 ]
 
 

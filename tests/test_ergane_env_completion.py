@@ -74,8 +74,8 @@ def test_env_lists_every_variable_and_source(
         "LITELLM_PROXY_URL",
         "LITELLM_MASTER_KEY",
         "TELEGRAM_BOT_TOKEN",
-        "FACTORY_LEDGER_PATH",
-        "FACTORY_VERIFICATION_DB_PATH",
+        "ERGANE_LEDGER_PATH",
+        "ERGANE_VERIFICATION_DB_PATH",
     ):
         assert name in result.stdout
 

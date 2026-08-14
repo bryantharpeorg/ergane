@@ -61,6 +61,7 @@ import pytest
 from temporalio.testing import ActivityEnvironment
 
 from factory.activities.usage_activities import (
+    ERGANE_LEDGER_PATH_ENV,
     LEDGER_PATH_ENV,
     IssueKeyInput,
     TeardownInput,
@@ -216,7 +217,8 @@ def judgement(
     """
     ledger_path = tmp_path_factory.mktemp("live-judge-ledger") / ".factory" / "ledger.db"
     with pytest.MonkeyPatch.context() as patch:
-        patch.setenv(LEDGER_PATH_ENV, str(ledger_path))
+        patch.setenv(ERGANE_LEDGER_PATH_ENV, str(ledger_path))
+        patch.delenv(LEDGER_PATH_ENV, raising=False)
         return asyncio.run(_run_judgement(live_config, ledger_path))
 
 
