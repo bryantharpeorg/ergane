@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Drafted 2026-08-13 by the operator session, at 46f7e8b, on Bryan's word
