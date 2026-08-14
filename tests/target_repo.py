@@ -34,8 +34,10 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "target_repo"
 #: Directory of variant manifests — bookkeeping, never copied into a built repo.
 MANIFEST_DIR = FIXTURE_ROOT / "manifests"
 
+_manifest_name: str = "ergane.yaml"
+
 #: The committed manifest's filename at the repo root (contracts/factory-yaml.md).
-MANIFEST_NAME = "factory.yaml"
+MANIFEST_NAME = _manifest_name
 
 #: Gate scripts append their name here; gitignored, so running gates leaves the
 #: worktree clean and gate evidence never masquerades as agent work.

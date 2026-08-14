@@ -186,6 +186,26 @@ def test_a_missing_or_malformed_factory_yaml_fails_naming_the_loaders_error() ->
     assert "malformed_yaml" in finding.detail
 
 
+def test_factory_yaml_finding_key_is_unchanged() -> None:
+    """US1-S5/FR-010: the `factory_yaml` finding key must not be renamed.
+
+    The ledger counts recurrence by this stable key; renaming it would silently
+    reset that history and corrupt recurrence-based constitution promotions.
+    """
+    profile = evaluate_repo(
+        repo=REPO,
+        default_branch=DEFAULT_BRANCH,
+        visibility="public",
+        queue_enabled=True,
+        required_checks=("test",),
+        declared_gates=("test",),
+    )
+    checks = [f.check for f in profile.findings]
+    assert "factory_yaml" in checks
+    finding = _finding_by_check(profile.findings, "factory_yaml")
+    assert finding.passed is True
+
+
 def test_every_failing_finding_detail_names_the_remedy() -> None:
     """Actionable: each failing detail says what to change, not just what is wrong."""
     profile = evaluate_repo(

@@ -77,6 +77,7 @@ from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     FactoryConfigError,
     load_factory_config,
+    resolve_manifest_path,
 )
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import (
@@ -663,6 +664,7 @@ def _declared_standards(target_repo: str) -> str | None:
     diagnosis attached. Raising here would pre-empt that with strictly less.
     """
     try:
-        return load_factory_config(Path(target_repo) / MANIFEST_NAME).standards
+        manifest_path, _ = resolve_manifest_path(target_repo)
+        return load_factory_config(manifest_path).standards
     except FactoryConfigError:
         return None
