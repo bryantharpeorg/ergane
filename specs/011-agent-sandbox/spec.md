@@ -80,6 +80,27 @@ The irony is exact and worth keeping in the spec: the agent was setting up
 `test_leaking_writers_are_contained`, the test that exists to prove writers do
 not reach the live store.
 
+**And it was not an isolated impulse.** Reconciling the operator's checkout
+afterwards turned up that agent's *entire story output* sitting there, written in
+the ten minutes before the deletion: `factory/cli/install.py` (11:42:15),
+`factory/cli/nouns/install.py` (11:40:50), `factory/controlplane/probes.py`
+(11:46:58), `tests/test_controlplane_probes.py` (11:45:51). Its predecessor
+`033/us1` had done the same — `factory/controlplane/config.py` and
+`tests/test_controlplane_config.py` were written into the operator's tree *as
+well as* the worktree they correctly landed from.
+
+That changes the reading of the `rm -rf`. An agent that has spent ten minutes
+building its story inside `/home/admin/code/ergane` is not confused when it
+treats that directory as its workspace and `.factory` as its scratch state — it
+is acting consistently on a model the system did nothing to contradict. **The
+escape and the destruction are one defect at two severities, not two defects.**
+An agent working in the wrong tree will, sooner or later, clean the wrong tree.
+
+It also means the operator's checkout silently accumulates agent output that
+nothing detects and nothing prevents — visible only when some later git
+operation happens to collide with it. In this case the only surviving copy of a
+killed node's work was sitting untracked in the operator's tree.
+
 Two earlier events complete the picture. On 2026-08-12 an agent ran
 `pkill -f "python -"` inside its worktree to clean up stray test servers; the
 pattern matched the systemd unit's own command line and **SIGTERMed the worker
