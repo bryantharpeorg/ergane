@@ -1,7 +1,8 @@
 # Plan: Ergane Install — the control plane's config
 
-All line references were read against the tree at `ace6229` on 2026-08-13. Grep
-the construct beside each anchor rather than trusting the number — see trap 8.
+All line references were re-read against the tree at `d13fc4a` on 2026-08-14,
+after 040-manifest-rename landed. Grep the construct beside each anchor rather
+than trusting the number — see trap 8.
 
 This epic is the config plane and nothing else. If you find yourself writing a
 Temporal workflow, a systemd unit, or a messenger adapter, you have wandered
@@ -16,8 +17,9 @@ into 041 or 042 — stop and read this plan's scope fence (trap 1).
 | A worked probe, gather and judgment both | `factory/doctor/probes.py:243` — grep `class OrphanedKeyProbe` | US2 — copy its shape, not its subject |
 | The "dependency won't answer" signal | `factory/doctor/probes.py:30` — grep `class ServiceNotAnswering` | US2 — distinct from skipped-by-declaration; trap 3 |
 | **The check-finding grammar the spec actually means** | `factory/mergequeue/models.py:208` — grep `class Finding` (`check`, `passed`, `detail`) | US2 — trap 2, and read it before you write a line |
-| The manifest parser's error grammar | `factory/verify/factory_yaml.py:80` — grep `class FactoryConfigError` (`rule`, `problem`, `source`) | US1 — FR-002's "stable named rules" is this shape, for a different file |
-| Its rejection style, worked | `factory_yaml.py:205` (`_read_gates`), `:165` (`_read_version`) | US1 — how a violation names the rule and renders the value |
+| The manifest parser's error grammar | `factory/verify/factory_yaml.py:87` — grep `class FactoryConfigError` (`rule`, `problem`, `source`) | US1 — FR-002's "stable named rules" is this shape, for a different file |
+| Its rejection style, worked | `factory_yaml.py:212` (`_read_gates`), `:172` (`_read_version`) | US1 — how a violation names the rule and renders the value |
+| **The env-variable resolution convention 040 just set** | `factory/env.py` — grep `def resolve_env_path` (`ERGANE_*` wins, `FACTORY_*` honored, one `DeprecationWarning` per process via `_WARNED`) | US1 — trap 9; FR-001's config-path override is a new operator-facing variable and must arrive already following this |
 | The persona registry FR-014 must stay compatible with | `factory/config.py:41` (`DEFAULT_REGISTRY_PATH`), `:65` (`class Persona`), `:88` (`load_personas`) | US1 — the `direct`-mode LLM block's shape |
 | The LLM client the LLM probe drives | `factory/usage/litellm_client.py:107` (`LiteLLMClient`), `:56`/`:57` (`PROXY_URL_ENV`, `MASTER_KEY_ENV`) | US2 |
 | The Telegram sender the escalation probe delivers through | `factory/notify/service.py` — grep `class CallbackBridge`; live suite at `tests/test_live_notify.py` | US2 — today's transport; 041 replaces the gather, not the judgment |
@@ -110,10 +112,22 @@ either; if `specs/034-ergane-init` has landed, its US2 has both. Two resolvers
 disagreeing about where state lives is a bug that surfaces as an empty registry
 on a host that has one.
 
+Re-verified against `d13fc4a` on 2026-08-14: still zero hits for
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `fcntl`, `flock`, `filelock` anywhere in
+`factory/`. 040 did not change this.
+
 Both need a test override, and it belongs in 030's session fixture
 (`tests/conftest.py`, grep `_isolated_test_store`) so isolation is the default
 rather than something each test remembers. A test that writes the operator's
 real `~/.config/ergane/config.toml` has rewritten this host's control plane.
+
+The override's *name and resolution* are no longer a free choice. 040 landed
+`factory/env.py` and with it the house rule for every operator-facing path
+variable: an `ERGANE_*` name that wins, a `FACTORY_*` legacy name still honored,
+a conflict reported once, and one `DeprecationWarning` per process rather than
+one per read. Do not hand-roll `os.environ.get` for this epic's override —
+`resolve_env_path(new, old, default)` already exists and a second convention
+introduced one epic later is the drift this whole rename was spent avoiding.
 
 ### Trap 6 — a five-subsystem interview cannot be a monkeypatched `input()`
 
@@ -139,6 +153,40 @@ Nineteen stories landed on 2026-08-13 alone. Grep for the construct —
 `class Probe`, `class Finding`, `FactoryConfigError`, `LiteLLMClient`,
 `load_personas`, `_isolated_test_store` — and if a citation here disagrees with
 the tree, the tree wins and you say so in the commit message.
+
+### Trap 9 — the seam that makes a gather testable is the seam that hides it, and it shipped yesterday
+
+The Verification section below says SC-006 exists because 015 shipped a command
+that could not start. That is no longer the only example, and the newest one is
+in the epic immediately before this one.
+
+040-manifest-rename/US2 added `ergane repo migrate-runtime-root`. Its refusal
+path calls a module-level client seam, `_temporal_client_factory`, defaulting to
+`_open_client()` (`factory/cli/repo.py:63`). `_open_client` reads
+`os.environ.get(...)` at `:51`–`:52` — and the module never imports `os`. Every
+test rebinds the seam, so the real function's body is executed by nothing. The
+suite reported **2265 passed**, the judge passed it, the merge queue landed it,
+and the verb cannot run:
+
+```
+$ ergane repo migrate-runtime-root
+ergane: unexpected error (name 'os' is not defined)
+```
+
+Filed as `cli/migrate-runtime-root-cannot-run` (critical, 2026-08-14).
+
+This epic is more exposed to that failure than 040 was. US2 is *five* probes
+whose entire purpose is touching the world — a proxy, a Temporal server, a
+messenger, an OTLP endpoint — and every one of them will be scripted in tests
+for exactly the right reasons. The gather/judgment split is correct; what it
+cannot do by itself is prove the gather runs. SC-006's live double is not
+ceremony, and "the judgment is table-tested and the gather is obvious" is the
+sentence that precedes this defect every time.
+
+Concretely: for each probe, at least one test must execute the **real**
+`gather()` with the seam unrebound, against a live double or a closed port, and
+the diff must show which test that is. A probe whose real `gather()` is never
+entered by any test in the diff is not implemented — it is described.
 
 ## Approach
 

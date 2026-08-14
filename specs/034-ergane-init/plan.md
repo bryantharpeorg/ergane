@@ -1,7 +1,8 @@
 # Plan: Ergane Init
 
-All line references were read against the tree at `bee1f5f` on 2026-08-13. Grep
-the construct beside each anchor rather than trusting the number — see trap 10.
+All line references were re-read against the tree at `d13fc4a` on 2026-08-14,
+after 040-manifest-rename landed. Grep the construct beside each anchor rather
+than trusting the number — see trap 10.
 
 This epic is unusual in how much of it is *new surface*. Three of the mechanisms
 it needs have no precedent anywhere in `factory/` (trap 4), so the reuse
@@ -12,39 +13,60 @@ what it omits, it omits because a grep found nothing.
 
 | What | Where | Used by |
 | --- | --- | --- |
-| **The shared readiness seam** (NOT the activity) | `factory/activities/merge_activities.py:590` — grep `def onboard_target_repo` | US4 — the one function both the Temporal activity and the offline CLI already call; trap 2 |
+| **The shared readiness seam** (NOT the activity) | `factory/activities/merge_activities.py:589` — grep `def onboard_target_repo` | US4 — the one function both the Temporal activity and the offline CLI already call; trap 2 |
 | The pure judgment | `factory/mergequeue/onboard.py:49` — grep `def evaluate_repo` | US4 — extended with init's new checks, never forked |
 | Its finding grammar | `factory/mergequeue/models.py:208` — grep `class Finding` (`check`, `passed`, `detail`) | US4 — init's new checks emit the same three fields |
 | Its table-test style (no fakes at all) | `tests/test_onboard.py` — twelve cases, grep `def test_a_fully_conforming_repo` | US4 — the shape your new check cases take |
 | The `gh` seam | `factory/mergequeue/gh.py:128` (`GhClient`), `:106` (`GhRunner` protocol) | US3 — script the runner; do not shell out to `gh` directly |
 | The injectable-seam idiom | `merge_activities.py:296` — grep `_client_factory` | US1 (the prompter), US3 (the `gh` client) — a module-level callable a test rebinds |
-| **The `repo` noun, which already exists** | `factory/cli/nouns/repo.py` (registration, order 43); `factory/cli/repo.py:26` — grep `def add_repo_parser` | US2, US5 — new verbs go *beside* `onboard`; trap 3 |
-| The unified CLI error boundary | `factory/cli/errors.py` — grep `class OperatorError` | US1–US5 — every refusal in this spec is an `OperatorError` with a code |
-| The manifest parser and its rejections | `factory/verify/factory_yaml.py:99` (`parse_factory_config`), `:331` (`load_factory_config`), `:80` (`FactoryConfigError`) | US1 — FR-004 validates *with this*, never with a second copy of the rules |
-| Its top-level key list | `factory_yaml.py:75` — grep `_TOP_LEVEL_KEYS` | US1 — the interview's question list is derived from it, not hand-maintained |
-| The open-epic capacity read | `factory/activities/roadmap_activities.py:468` (`count_open_epics`), seam at `:462` (`_open_epics_provider`) | US5 — FR-011's refusal; read trap 6 first, it does not answer the per-repo question |
-| The `input()` precedent, and its limits | `factory/cli/nouns/build.py:412`; its test at `tests/test_ergane_build.py:867` | US1 — one y/N works this way, a six-question interview does not; trap 5 |
+| **The `repo` noun, which already exists** | `factory/cli/nouns/repo.py` (registration, order 43); `factory/cli/repo.py:74` — grep `def add_repo_parser` | US2, US5 — new verbs go *beside* `onboard` and `migrate-runtime-root`; trap 3 |
+| The unified CLI error boundary | `factory/cli/errors.py:30` — grep `class OperatorError` | US1–US5 — every refusal in this spec is an `OperatorError` with a code |
+| The manifest parser and its rejections | `factory/verify/factory_yaml.py:106` (`parse_factory_config`), `:386` (`load_factory_config`), `:87` (`FactoryConfigError`) | US1 — FR-004 validates *with this*, never with a second copy of the rules |
+| **The two-name manifest resolver 040 landed** | `factory_yaml.py:341` (`resolve_manifest_path`), `:418` (`load_factory_config_with_name`), `:59`/`:65` (`MANIFEST_NAME`, `LEGACY_MANIFEST_NAME`) | US1, US4 — trap 1; the answer to "which manifest does this repo have" is already written |
+| **The runtime-root resolver 040 landed** | `factory/workgraph/worktree.py:135` (`resolve_factory_root`), `:82`/`:85` (`DEFAULT_RUNTIME_ROOT`, `LEGACY_FACTORY_ROOT`), and `RuntimeRootChoice` | US4, US5 — trap 12; a repo mid-migration has `.factory/`, not `.ergane/` |
+| **The env-variable resolution convention 040 set** | `factory/env.py` — grep `def resolve_env_path` | US2 — FR-006's state-home override is a new operator-facing variable and must follow this, not `os.environ.get` |
+| Its top-level key list | `factory_yaml.py:82` — grep `_TOP_LEVEL_KEYS` (six keys: `version`, `runtime`, `gates`, `timeouts`, `standards`, `landing_branch`) | US1 — the interview's question list is derived from it, not hand-maintained; the six are why FR-005 is a six-question interview |
+| The open-epic capacity read | `factory/activities/roadmap_activities.py:469` (`count_open_epics`), seam at `:465` (`_open_epics_provider`) | US5 — FR-011's refusal; read trap 6 first, it does not answer the per-repo question |
+| The `input()` precedent, and its limits | `factory/cli/nouns/build.py:420`; its test at `tests/test_ergane_build.py:867` | US1 — one y/N works this way, a six-question interview does not; trap 5 |
 | 030's session isolation fixture | `tests/conftest.py` — grep `_isolated_test_store` | US2 — the registry's test redirect belongs here, beside the store's; trap 8 |
 | The source-scanning test precedent | `tests/test_gh_client.py` — grep `test_no_code_path_passes_delete_branch` | any story asserting "no call site does X" |
 
-**Deliberately absent, verified by grep over `factory/`:** XDG or state-home
-resolution (zero hits for `XDG_STATE_HOME`, `Path.home()` outside
-`adapter.py:758`), file locking (zero hits for `fcntl`, `flock`, `filelock`),
-git worktree detection (zero hits for `--git-common-dir`, `--show-toplevel`,
-`is_inside_work_tree`), and `.gitignore` writing (one hit, and it is a comment).
-See trap 4.
+**Deliberately absent, re-verified by grep over `factory/` at `d13fc4a` on
+2026-08-14:** XDG or state-home resolution (zero hits for `XDG_STATE_HOME`,
+`XDG_CONFIG_HOME`, and now zero for `Path.home()` — the `adapter.py` hit this
+plan cited on 2026-08-13 is gone), file locking (zero hits for `fcntl`, `flock`,
+`filelock`), git worktree detection (zero hits for `--git-common-dir`,
+`--show-toplevel`, `is_inside_work_tree`), and `.gitignore` writing (one hit,
+and it is a comment). See trap 4.
 
 ## Traps
 
 ### Trap 1 — the manifest is named `ergane.yaml` by 040, not by you
 
-`MANIFEST_NAME = "factory.yaml"` (`factory_yaml.py:58`) is what the tree says
-today, and three further call sites hardcode the literal. 040-manifest-rename
-is in this spec's `depends_on_landed` precisely so that by the time you read
-this, the parser resolves both names. **If you find yourself editing a manifest
-filename in this epic, stop** — you are doing 040's work, and doing it in one
-place while the other three sites fail *quietly* is the exact defect 040 exists
-to prevent. Write `ergane.yaml`; call the resolver; change no constant.
+**040 landed on 2026-08-14 (`41f0aa3`, `2f1688c`, `d13fc4a`).** This trap is no
+longer a warning about the future; it is a map of what is already there, and
+re-deriving any of it is how this epic wastes an attempt.
+
+- `MANIFEST_NAME = "ergane.yaml"` (`factory_yaml.py:59`) and
+  `LEGACY_MANIFEST_NAME` (`:65`). Both are constants. Change neither.
+- `resolve_manifest_path(repo_root)` (`:341`) returns `(path, name)` and already
+  encodes the whole policy: `ergane.yaml` wins, a lone `factory.yaml` loads with
+  a deprecation, and when both exist the ignored one is named. It warns; you do
+  not.
+- `load_factory_config_with_name(repo_root)` (`:418`) is the same thing with the
+  parse attached — the one US4 wants when it needs to say *which* manifest it
+  judged.
+
+**If you find yourself editing a manifest filename in this epic, stop** — you
+are doing 040's work, and doing it in one place while the other sites fail
+*quietly* is the exact defect 040 existed to prevent. Write `ergane.yaml`; call
+the resolver; change no constant.
+
+One live consequence for US4: this repository currently carries **both**
+`ergane.yaml` and `factory.yaml` at its root, byte-identical, because 040 added
+the new name without removing the old. So the "both present" branch is not a
+hypothetical your tests invent — it is the state of the tree you are working in,
+and a `--check` that treats it as a failure will fail against Ergane itself.
 
 ### Trap 2 — the readiness gathering is not the Temporal activity
 
@@ -58,15 +80,26 @@ therefore *already true* for the 003 checks; your job is to add init's checks
 to the same judgment, not to build a second one that agrees with it today and
 drifts next month.
 
-### Trap 3 — `ergane repo` exists, and it already has a verb
+### Trap 3 — `ergane repo` exists, and it now has two verbs, one of which is the model
 
-`factory/cli/nouns/repo.py` registers the noun; `factory/cli/repo.py:26` gives
-it `onboard`. US2 adds `list` and `rebuild`, US5 adds `forget`. Do not create a
-second noun, do not rename `onboard`, do not move it. Note also what
-`repo onboard` does and do not copy it: it delegates to the legacy
-`factory.workgraph.cli.onboard_command` and translates `_OperatorError` into
-`OperatorError`. New verbs raise `OperatorError` directly. The legacy path is
-inherited, not exemplary.
+`factory/cli/nouns/repo.py` registers the noun; `factory/cli/repo.py:74`
+(`add_repo_parser`) gives it `onboard` and — as of 040/US2 —
+`migrate-runtime-root`. US2 adds `list` and `rebuild`, US5 adds `forget`. Do not
+create a second noun, do not rename either verb, do not move them.
+
+The two existing verbs are not equally worth copying:
+
+- `repo onboard` (`:119`) delegates to the legacy
+  `factory.workgraph.cli.onboard_command` and translates `_OperatorError` into
+  `OperatorError`. **Inherited, not exemplary.**
+- `repo migrate-runtime-root` (`:132`) is the shape your verbs take: it raises
+  `OperatorError` directly with an explicit `code=`, it is a dry run unless
+  given `--yes`, it is idempotent and says so when there is nothing to do, and
+  it refuses while epics are running rather than racing them. US5's
+  `repo forget --clean-runtime` is the same verb with a different noun-object;
+  read it before writing.
+
+Copy its **shape**, not its body — see trap 6 for the defect inside it.
 
 ### Trap 4 — three mechanisms this repository has never used
 
@@ -109,17 +142,55 @@ list of answers a test hands in. FR-005's claim — unchanged answers produce a
 byte-identical manifest — is otherwise untestable, and it is the claim most
 likely to be quietly false.
 
-### Trap 6 — "is an epic running against *this repo*" has no answer today
+### Trap 6 — "is an epic running against *this repo*" still has no answer, and the CLI path that asks the blunt question is broken
 
-`count_open_epics` (`roadmap_activities.py:468`) lists open `epic-*` workflows
-across the namespace, and `workflow_id()` is `f"epic-{epic_id}"`
-(`cli/nouns/build.py:83`) — **no repo token anywhere in it**. FR-007 says the
-slug is *meant* to be the namespace token; nothing weaves it in yet, and doing
-so is not this story's scope. So US5's `--clean-runtime` refusal refuses when
-*any* epic is open, and says so in its message and its commit. Do not write a
-per-repo filter over ids that contain no repo: it would match nothing, pass
-every test you thought to write, and delete a live epic's evidence the first
-time it mattered.
+Two halves. Read both before writing US5.
+
+**The question is still unanswerable per-repo.** `count_open_epics`
+(`roadmap_activities.py:469`) lists open `epic-*` workflows across the
+namespace, and `workflow_id()` is `f"epic-{epic_id}"` (`cli/nouns/build.py:91`)
+— **no repo token anywhere in it**. FR-007 says the slug is *meant* to be the
+namespace token; nothing weaves it in yet, and doing so is not this story's
+scope. So US5's `--clean-runtime` refusal refuses when *any* epic is open, and
+says so in its message and its commit. Do not write a per-repo filter over ids
+that contain no repo: it would match nothing, pass every test you thought to
+write, and delete a live epic's evidence the first time it mattered.
+
+**The CLI-side helper now exists — and it does not work.** 040/US2 added
+`_running_epic_ids()` (`factory/cli/repo.py:66`), which is genuinely the right
+pattern and the one to reuse: it runs the existing activity outside a workflow
+through `temporalio.testing.ActivityEnvironment`, so the CLI asks the same
+question the roadmap asks without a second implementation. Reuse the pattern.
+
+But it is reached through `_temporal_client_factory` (`:63`), which defaults to
+`_open_client()` (`:49`), which calls `os.environ.get` at `:51`–`:52` in a module
+that **never imports `os`**. Every test rebinds the seam, so nothing executes the
+default. Measured on 2026-08-14 against a scratch repo holding only `.factory/`:
+
+```
+$ ergane repo migrate-runtime-root
+ergane: unexpected error (name 'os' is not defined)
+```
+
+The suite was green — 2265 passed — through the merge queue and the judge.
+Filed as `cli/migrate-runtime-root-cannot-run` (critical).
+
+Three things follow, and the third is the one that costs you an attempt:
+
+1. Reuse `_running_epic_ids`, but do not assume it runs. One test in your diff
+   must reach the real `_open_client` — with the seam unrebound, pointed at a
+   closed port — and assert it fails as a transport error rather than a
+   `NameError`. That test fails today, which is the point.
+2. Fixing the missing import is inside your blast radius and you should fix it,
+   because US5 cannot otherwise honour FR-011. Name the finding in the commit.
+3. **Do not fix it in isolation.** `doctor/findings-store-not-routed-through-runtime-root-resolver`
+   (critical) records that the findings ledger still hardcodes
+   `.factory/doctor.db` in four places (`cli/doctor.py:41`, `doctor/cli.py:40`,
+   `doctor/probes.py:133`). Today the `NameError` is the only thing preventing a
+   migration, and a migration silently abandons every recurrence count — the
+   number that decides what gets promoted to the constitution. Repairing the
+   crash without routing the ledger arms that trap. If you are not also fixing
+   the ledger, say so in the commit and leave the migration verb refusing.
 
 ### Trap 7 — the judge sees the diff, never your terminal
 
@@ -183,12 +254,39 @@ means the schedule id must carry the repo slug (FR-014) — the same token trap 
 records as missing from `workflow_id()`. Do not repeat that omission in a
 surface being written from scratch.
 
+### Trap 12 — a repo that has not migrated has `.factory/`, and US4 must not call that a failure
+
+040/US2 made `.ergane/` the runtime root and left `.factory/` working, reachable
+through `resolve_factory_root()` (`worktree.py:135`), which returns the path
+*and* a `RuntimeRootChoice` saying which one it found. `DEFAULT_RUNTIME_ROOT` is
+`.ergane` (`:82`), `LEGACY_FACTORY_ROOT` is `.factory` (`:85`).
+
+This touches two stories:
+
+- **US4's "`.ergane/` is gitignored" check.** A repo that has not run
+  `migrate-runtime-root` has a populated `.factory/` and no `.ergane/` at all.
+  A check that asserts `.ergane/` is ignored and stops there reports a failure
+  the operator cannot act on and misses the directory actually holding their
+  state. Ask the resolver which root this repo has, and require *that* one
+  ignored — then, if it is the legacy one, emit a second finding naming
+  `ergane repo migrate-runtime-root` as the remedy. That is a `Finding` in the
+  same grammar, not a warning printed to the side.
+- **US5's `--clean-runtime`.** It deletes a runtime root. Deleting the one whose
+  name you assumed, rather than the one the resolver found, is a no-op on an
+  unmigrated repo — and a silent one, which is worse than a refusal.
+
+The operator's own checkout is the live example: at `d13fc4a` it has `.factory/`
+and no `.ergane/`, because the verb that would migrate it cannot run (trap 6).
+
 ### Trap 10 — anchors rot, and this tree is moving fast
 
-Nineteen stories landed on 2026-08-13 alone. Grep for the construct —
-`onboard_target_repo`, `evaluate_repo`, `add_repo_parser`, `count_open_epics`,
-`_client_factory`, `_isolated_test_store` — and if a citation here disagrees
-with the tree, the tree wins and you say so in the commit message.
+Nineteen stories landed on 2026-08-13 and three more on 2026-08-14. Every
+anchor above was re-read at `d13fc4a`; roughly a third had moved since this plan
+was first written. Grep for the construct — `onboard_target_repo`,
+`evaluate_repo`, `add_repo_parser`, `count_open_epics`, `_client_factory`,
+`_isolated_test_store`, `resolve_factory_root`, `resolve_manifest_path` — and if
+a citation here disagrees with the tree, the tree wins and you say so in the
+commit message.
 
 ## Approach
 
@@ -234,10 +332,12 @@ with the tree, the tree wins and you say so in the commit message.
 ### US4 — the check: init's facts, the 003 judgment
 
 1. Call `onboard_target_repo` (trap 2) for the facts 003 already gathers.
-2. Add init's checks as `Finding`s in the same grammar: `.ergane/` gitignored,
-   registry entry present and pointing here, landing branch exists, control
-   plane reachable (one summary finding delegating to 033's probes; when 033 has
-   not landed, that finding fails honestly rather than being omitted).
+2. Add init's checks as `Finding`s in the same grammar: the repo's *resolved*
+   runtime root gitignored (trap 12 — ask `resolve_factory_root()`, do not
+   assume `.ergane/`), registry entry present and pointing here, landing branch
+   exists, control plane reachable (one summary finding delegating to 033's
+   probes; when 033 has not landed, that finding fails honestly rather than
+   being omitted).
 3. One finding per check, no masking, non-zero exit on any failure. Prove SC-004
    by breaking each precondition one at a time and asserting exactly one
    finding flips.

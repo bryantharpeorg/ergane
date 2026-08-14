@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Drafted 2026-08-11 from an operator planning conversation (the brownfield
 # onboarding / provisioning session). Decisions this spec assumes, made in that
 # session: the brand rename (`.ergane/` runtime root, `ergane.yaml` manifest —

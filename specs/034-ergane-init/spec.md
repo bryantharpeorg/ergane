@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Drafted 2026-08-11 in the same operator planning session as 033-ergane-install.
 # The pair divides the provisioning model: 033 is once-per-host (the control
 # plane), this is once-per-repo (membership). Decisions assumed, made in that
