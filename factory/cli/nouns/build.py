@@ -51,10 +51,8 @@ from factory.verify.store import (
     pending_escalations,
     pending_questions,
 )
-from factory.activities.agent_activities import (
-    DEFAULT_FACTORY_ROOT as DEFAULT_FACTORY_ROOT_PATH,
-    FACTORY_ROOT_ENV,
-)
+from factory.activities.agent_activities import FACTORY_ROOT_ENV
+from factory.workgraph.worktree import resolve_factory_root
 from factory.workgraph.models import (
     WorkGraph,
     WorkGraphError,
@@ -552,9 +550,7 @@ async def _reset_epic(graph: WorkGraph) -> int:
                 "refusing to reset while the workflow is active"
             )
 
-    factory_root = Path(
-        os.environ.get(FACTORY_ROOT_ENV) or DEFAULT_FACTORY_ROOT_PATH
-    )
+    factory_root = resolve_factory_root(FACTORY_ROOT_ENV)[0]
 
     for node in graph.nodes:
         actions = reset_worktree(

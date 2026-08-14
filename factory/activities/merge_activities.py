@@ -307,7 +307,8 @@ def _landing_body_dir() -> Path:
     the worker host's state. Body files are scratch — the PR create reads them
     once — so a fixed name is fine and cleanup is not this activity's job.
     """
-    return Path(os.environ.get(FACTORY_ROOT_ENV) or worktrees.DEFAULT_FACTORY_ROOT)
+    root, _choice = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
+    return root
 
 
 # --- the activities -----------------------------------------------------------
@@ -371,7 +372,7 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
             request.target_repo,
             request.epic_id,
             request.node_id,
-            factory_root=Path(os.environ.get(FACTORY_ROOT_ENV) or worktrees.DEFAULT_FACTORY_ROOT),
+            factory_root=worktrees.resolve_factory_root(FACTORY_ROOT_ENV)[0],
         )
     except worktrees.WorktreeError as exc:
         raise ApplicationError(str(exc), type=PUSH_FAILED) from exc
@@ -481,9 +482,7 @@ async def sync_landing_branch(request: SyncLandingBranchInput) -> SyncLandingBra
             request.target_repo,
             request.epic_id,
             request.node_id,
-            factory_root=Path(
-                os.environ.get(FACTORY_ROOT_ENV) or worktrees.DEFAULT_FACTORY_ROOT
-            ),
+            factory_root=worktrees.resolve_factory_root(FACTORY_ROOT_ENV)[0],
         )
     except worktrees.WorktreeError as exc:
         return SyncLandingBranchResult(

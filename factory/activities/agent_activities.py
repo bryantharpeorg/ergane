@@ -159,9 +159,11 @@ def factory_root() -> Path:
     """The worker host's state directory (plan.md § Storage).
 
     Relative by default, so it resolves against the worker's working directory
-    exactly the way 001's ledger and 002's evidence store do.
+    exactly the way 001's ledger and 002's evidence store do.  Honors the legacy
+    `.factory/` name and reports it once per process.
     """
-    return Path(os.environ.get(FACTORY_ROOT_ENV) or DEFAULT_FACTORY_ROOT)
+    root, _choice = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
+    return root
 
 
 def _usage_reader(key: str) -> Callable[[], Awaitable[UsageSnapshot]]:

@@ -61,18 +61,26 @@ do" that would let a node advance on an empty record.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
+import warnings
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from factory.usage.models import Termination
 from factory.verify.factory_yaml import FactoryConfigError, load_factory_config, resolve_manifest_path
 from factory.verify.gates import scrubbed_env
 
-#: Worker-host state directory (plan.md); relative so it resolves against the
-#: worker's working directory the same way 001's ledger path does.
-DEFAULT_FACTORY_ROOT = Path(".factory")
+#: Modern worker-host state directory (US2).  `.ergane/` is the new default.
+DEFAULT_RUNTIME_ROOT = Path(".ergane")
+
+#: Legacy worker-host state directory name, still honored during the rename.
+LEGACY_FACTORY_ROOT = Path(".factory")
+
+#: Backward-compatible alias kept for callers that import the old constant.
+DEFAULT_FACTORY_ROOT = DEFAULT_RUNTIME_ROOT
 
 #: Who the factory's salvage commits are by. Deliberately a `.invalid` address:
 #: these commits are machine-made and there is no mailbox behind them.
@@ -106,6 +114,71 @@ class WorktreeError(RuntimeError):
     against: by the time this surfaces the operator is looking at a node id and
     needs to know which directory git refused.
     """
+
+
+class RuntimeRootChoice(StrEnum):
+    """Which runtime root name `resolve_factory_root` chose."""
+
+    NEW = "new"
+    LEGACY = "legacy"
+
+
+#: Module-level sentinel so the deprecation warning fires once per command/process.
+_DEPRECATED_LEGACY_ROOT: str | None = None
+
+
+def resolve_factory_root(
+    env_name: str = "FACTORY_ROOT",
+) -> tuple[Path, RuntimeRootChoice]:
+    """Return the runtime root to use and which name was chosen.
+
+    Preferred name is `.ergane/`; legacy `.factory/` is honored with a one-time
+    deprecation warning naming the migration command.  When both exist,
+    `.ergane/` wins and the ignored legacy directory is named in the warning.
+
+    An explicit environment override wins over both names and suppresses the
+    deprecation warning, because the operator has already expressed a choice.
+
+    The warning is gated by a module-level flag because this resolver is invoked
+    many times per epic and a per-read warning trains the operator to ignore it
+    (trap 7).
+    """
+    override = os.environ.get(env_name)
+    if override is not None:
+        return Path(override), RuntimeRootChoice.NEW
+
+    new = DEFAULT_RUNTIME_ROOT
+    legacy = LEGACY_FACTORY_ROOT
+
+    new_exists = new.is_dir()
+    legacy_exists = legacy.is_dir()
+
+    if new_exists:
+        if legacy_exists:
+            _warn_legacy_root_once(
+                f"{legacy} is ignored in favor of {new}; "
+                f"run `ergane repo migrate-runtime-root` to remove the legacy directory"
+            )
+        return new, RuntimeRootChoice.NEW
+
+    if legacy_exists:
+        _warn_legacy_root_once(
+            f"{legacy} is deprecated; run `ergane repo migrate-runtime-root` "
+            f"to move it to {new}"
+        )
+        return legacy, RuntimeRootChoice.LEGACY
+
+    new.mkdir(parents=True, exist_ok=True)
+    return new, RuntimeRootChoice.NEW
+
+
+def _warn_legacy_root_once(message: str) -> None:
+    """Emit a `DeprecationWarning` for the legacy root once per Python process."""
+    global _DEPRECATED_LEGACY_ROOT
+    if _DEPRECATED_LEGACY_ROOT is not None:
+        return
+    _DEPRECATED_LEGACY_ROOT = message
+    warnings.warn(message, DeprecationWarning, stacklevel=2)
 
 
 @dataclass(frozen=True)
