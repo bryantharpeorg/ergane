@@ -1,0 +1,8 @@
+{
+  "id": "3",
+  "subject": "Implement typed ControlPlaneConfig parser",
+  "description": "Implement frozen typed dataclasses, tomllib parser, stable named rule refusals matching FactoryConfigError grammar, secret shape checks, adapter registry, one-namespace enforcement, managed mode refusal. Keep parser pure and separate from path resolution.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

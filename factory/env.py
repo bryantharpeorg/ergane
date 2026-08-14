@@ -18,11 +18,17 @@ ERGANE_VERIFICATION_DB_PATH_ENV = "ERGANE_VERIFICATION_DB_PATH"
 ERGANE_LEDGER_PATH_ENV = "ERGANE_LEDGER_PATH"
 ERGANE_EVIDENCE_STORE_ALLOW_REAL_ENV = "ERGANE_EVIDENCE_STORE_ALLOW_REAL"
 
+#: 033: the control-plane config file may be relocated by the operator.
+ERGANE_CONFIG_PATH_ENV = "ERGANE_CONFIG_PATH"
+
 #: Legacy names still honored during the rename.
 FACTORY_ROOT_ENV = "FACTORY_ROOT"
 FACTORY_VERIFICATION_DB_PATH_ENV = "FACTORY_VERIFICATION_DB_PATH"
 FACTORY_LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"
 FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV = "FACTORY_EVIDENCE_STORE_ALLOW_REAL"
+
+#: 033 legacy alias for the control-plane config path.
+FACTORY_CONFIG_PATH_ENV = "FACTORY_CONFIG_PATH"
 
 #: Keys already warned about this process.  One deprecation per variable pair.
 _WARNED: set[tuple[str, str]] = set()

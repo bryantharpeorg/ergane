@@ -1,0 +1,8 @@
+{
+  "id": "2",
+  "subject": "Write T001–T006 parser tests first",
+  "description": "Create tests/test_controlplane_config.py with the six failing tests for US1: happy parse, one-namespace refusal, secret-shape refusals table, unknown-adapter refusal, fail-closed no-file case, managed-mode refusal. Tests must fail before implementation exists.",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}
