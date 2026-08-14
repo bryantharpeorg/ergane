@@ -22,6 +22,18 @@ commit once per task.
       four terminations — completed, agent error, timeout, killed — because the
       breach is likeliest on the paths that end badly (spec US1-S1) — must fail.
 
+- [ ] T004a [P] [US1] Write the runtime-root case FIRST: an attempt whose agent
+      removes or truncates an evidence store, a ledger, or a sibling node's
+      worktree files a critical finding naming those paths (spec US1-S5, FR-012)
+      — must fail. A tracked-file diff of the target repo **cannot** see this;
+      the runtime root is gitignored, which is why the 2026-08-14 destruction
+      would have produced silence from T001's detector.
+- [ ] T004b [P] [US1] Write the detector-survives-the-destruction case FIRST:
+      the agent deletes the runtime root outright and the detector still reports,
+      rather than failing because what it meant to compare against is what was
+      destroyed (spec US1-S6, FR-013) — must fail. Hold the start-state snapshot
+      somewhere the agent cannot reach.
+
 ## Implementation for User Story 1
 
 - [ ] T005 [US1] Capture the target repository's tracked-file state at attempt
@@ -31,6 +43,10 @@ commit once per task.
       bracket first as the precedent for that.
 - [ ] T006 [US1] Give the finding a key that makes recurrence countable per
       epic/node, and put the changed paths in its evidence.
+- [ ] T006a [US1] Extend the capture to the runtime root: the evidence store,
+      both ledgers and every sibling worktree (FR-012). Keep the start snapshot
+      outside the runtime root so FR-013 holds — a snapshot stored in the
+      directory under threat is not a snapshot.
 
 ## Tests for User Story 2 (write FIRST, must fail)
 
@@ -64,6 +80,22 @@ commit once per task.
       with the boundary driven by a substituted seam and no container runtime on
       the host. A skip is not a pass here (plan.md trap 5, FR-010) — must fail.
 
+- [ ] T013a [P] [US2] Write the **destruction** case FIRST, using the literal
+      2026-08-14 command: a scripted agent runs
+      `cd <target-repo> && rm -rf .factory` inside the boundary; it fails, and
+      the evidence store, both ledgers, every sibling worktree and its own
+      worktree are all intact afterwards (spec US2-S7, FR-014, SC-007) — must
+      fail. Paste the before/after sizes and row counts into the test.
+- [ ] T013b [P] [US2] Write the **signal** case FIRST: a scripted agent runs
+      `pkill -f "python -"` inside the boundary and the worker process is still
+      alive afterwards (spec US2-S8, FR-015, SC-008) — must fail. Assert on the
+      worker's liveness, never on `pkill`'s exit code, which is 1 whenever it
+      matched nothing and is therefore indistinguishable from success.
+- [ ] T013c [P] [US2] Write the **control** FIRST: with the boundary disabled,
+      T013a and T013b both reproduce the damage (SC-009) — this is the test that
+      proves the boundary is what is doing the work. A containment claim proven
+      only in the passing direction has not been proven.
+
 ## Implementation for User Story 2
 
 - [ ] T014 [US2] Put the agent launch behind a substitutable seam, following the
@@ -73,7 +105,16 @@ commit once per task.
       parsed at `factory/verify/factory_yaml.py:99` — and run the agent inside it,
       rootless (plan.md trap 6). Mount the worktree writable, the git plumbing per
       T007, a writable temp dir, and a home for the agent CLI; do not mount the
-      target repo's working tree or the operator's home.
+      target repo's working tree or the operator's home. **Mount the node
+      worktree leaf, never the runtime root that contains it** (FR-014, plan.md
+      trap 9): the worktree lives at `<runtime-root>/worktrees/<epic>/<node>`, so
+      mounting the runtime root for convenience hands the agent every store,
+      every ledger and every sibling node — which is precisely the 2026-08-14
+      blast radius.
+- [ ] T015a [US2] Deny the agent the ability to signal processes outside its
+      boundary (FR-015). A container's PID namespace gives this; if the chosen
+      mechanism does not, say so and close it deliberately rather than inheriting
+      it by luck.
 - [ ] T016 [US2] Re-establish termination so the deadline still kills the agent
       and everything it spawned (FR-006). Do not assume the existing pgid path
       still reaches the agent — trap 2.
@@ -108,4 +149,9 @@ commit once per task.
       unchanged (SC-003). A PASS verdict is not this evidence — run the thing.
 - [ ] T024 Confirm `git status` in the target repository is byte-identical before
       and after that attempt (SC-002).
+- [ ] T025 Run the two historical commands by hand against a live boundary and
+      paste the results: `rm -rf .factory` (SC-007) and `pkill -f "python -"`
+      (SC-008). Then run both again with the boundary disabled and confirm they
+      still do damage (SC-009). Verify by control, not by a green suite — the
+      thing being replaced was also believed to work.
 - [ ] Final gate command passes green.

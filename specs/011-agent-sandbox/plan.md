@@ -55,8 +55,15 @@ Wrap the launch at `adapter.py:469` so the agent executes inside the resolved
 - a home for the agent CLI's own state (see trap 3, and 018's discussion of why
   a bare home is enough).
 
-What must **not** be inside it: the target repository's working tree, and the
-operator's home.
+What must **not** be inside it: the target repository's working tree, the
+operator's home, and — added after 2026-08-14 — **the factory's runtime root**:
+the evidence store, both ledgers, the transcripts, and every node worktree but
+this one. See trap 9; the worktree is a leaf of the runtime root, so the mount
+must name the leaf.
+
+The agent must also be unable to signal anything outside the boundary (FR-015).
+A container's PID namespace gives this for free, but "for free" is how it gets
+lost in a later refactor — state it and test it (trap 11).
 
 ## US3 — the gates
 
@@ -130,6 +137,61 @@ see it and no test can assert it. Prefer something that works unprivileged.
 reporting on the operator's own tree, which may contain the operator's own
 uncommitted work. A detector that "helpfully" stashes or checks out destroys real
 work to make a metric look clean. Read-only, always.
+
+**Trap 9 — the node worktree is a leaf of the runtime root, and mounting the
+root is the whole disaster.** This is the trap the 2026-08-14 incident bought,
+and it is the easiest one to walk into because the convenient mount is the wrong
+one. The layout is:
+
+```
+<runtime-root>/                     <- .ergane/ (or legacy .factory/)
+  verification.db  doctor.db  ledger.db   <- the factory's memory
+  transcripts/  run/  homes/
+  worktrees/<epic>/<node>           <- the agent's worktree, and its siblings
+```
+
+So the thing the agent needs is *four levels down* inside the thing it must never
+touch. Mounting `<runtime-root>` and trusting the agent to stay in its
+subdirectory is the same containment as `cwd=`, which is what this spec exists to
+delete. Mount the leaf.
+
+Two consequences worth stating because they are not obvious:
+
+- **"Clean my scratch state" and "destroy every running node" are the same
+  command** while worktrees live under the runtime root. The 033/us2 agent
+  believed it was doing the first. Consider whether the boundary should also move
+  worktrees out from under the state root — that is a larger change than this
+  spec, and if you decide against it, say so in the commit so the next person
+  knows it was weighed rather than missed.
+- **The agent's own worktree was inside the blast radius**, so the attempt killed
+  itself, no escalation fired, and the dependent node died too. A boundary that
+  protects the stores but still lets an agent delete its own worktree has fixed
+  the reporting and not the outage.
+
+**Trap 10 — a detector that lives in the directory it watches reports nothing on
+the worst case.** FR-013. US1's natural implementation snapshots state at attempt
+start and compares at teardown. If that snapshot lives under the runtime root, the
+one event it most needs to catch is the one that deletes the snapshot. Hold it
+somewhere the agent cannot reach, and test the case where the whole root is gone
+rather than the case where one file changed.
+
+**Trap 11 — `pkill` exit codes cannot tell you the boundary worked.** FR-015 and
+SC-008. `pkill -f <pattern>` exits 1 when it matched nothing, which is exactly
+what a contained agent should see — and also exactly what an *uncontained* agent
+sees when its pattern happens to miss. The assertion that means something is the
+worker's own liveness after the call. On 2026-08-12 the pattern `python -` matched
+the worker's systemd command line and SIGTERMed it mid-attempt; the mitigation
+since was to respell `ExecStart` so it carries no `python -` substring, which
+dodges one string and is not a boundary. Do not let that mitigation be mistaken
+for this requirement being already met.
+
+**Trap 12 — prove this by control, not by a passing suite.** SC-009. Everything
+in this spec is a claim that something *cannot* happen, and the failure mode for
+that class of claim is a test that passes because the dangerous thing was never
+actually attempted. Each containment test needs its negative twin: the same
+scripted agent, the boundary disabled, the damage reproduced. The factory already
+believed it had store isolation — `hardening/test-suite-writes-to-the-live-evidence-store`
+is marked resolved, and the store was destroyed anyway by a route no test covered.
 
 **Trap 8 — do not contain the worker.** Out of scope, and worth restating here
 because the refactor invites it: the activities, the workflow and the merge-queue

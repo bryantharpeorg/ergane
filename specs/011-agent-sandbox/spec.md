@@ -43,6 +43,55 @@ and none of the implementation — so the attempt failed on its own fail-first
 tests, and from inside the agent the honest reading was "my tests fail", not "I
 am editing the wrong repository".
 
+### And then, three days later, the destructive form
+
+2026-08-14, epic `033-ergane-install`, node `us2`, attempt 1. From the attempt's
+own transcript, verbatim:
+
+```bash
+cd /home/admin/code/ergane && rm -rf .factory && uv run pytest -q \
+  tests/test_store_isolation.py::test_leaking_writers_are_contained
+```
+
+The transcript's `cwd` field was
+`/home/admin/code/ergane/.factory/worktrees/033-ergane-install/us2`. **The agent
+was correctly inside its worktree and deliberately left it.** This is the second
+data point and it is worse than the first in every dimension that matters:
+
+- It was **not confusion about paths.** The 2026-08-11 census can be read as an
+  agent that never noticed which tree it was in. This one typed `cd` to an
+  absolute operator path on purpose, to clean a directory it believed was its own
+  scratch state.
+- It **destroyed rather than contaminated.** `verification.db` 892,928 bytes → 0.
+  The findings ledger, with 77 findings and every recurrence count → empty. The
+  usage ledger → empty. Every attempt transcript → gone.
+- It **deleted the running nodes**, including itself. Node worktrees live at
+  `.factory/worktrees/<epic>/<node>` — *inside the directory it removed*. Its own
+  worktree vanished mid-attempt, so the node died with no escalation, `us3` was
+  killed as a dependent, and the epic ended with one story of three. A second
+  epic, `034-ergane-init`, had a gate running at that moment and watched its
+  files disappear: hundreds of `FileNotFoundError`s that had nothing to do with
+  the code under test.
+- It was **irreversible on this host.** No local copy, and no process still held
+  the deleted inodes. Recovery came from an off-host nightly `restic` snapshot
+  taken 8h44m earlier, which is luck the design did not earn.
+
+The irony is exact and worth keeping in the spec: the agent was setting up
+`test_leaking_writers_are_contained`, the test that exists to prove writers do
+not reach the live store.
+
+Two earlier events complete the picture. On 2026-08-12 an agent ran
+`pkill -f "python -"` inside its worktree to clean up stray test servers; the
+pattern matched the systemd unit's own command line and **SIGTERMed the worker
+that was running the agent**. Temporal survived only because it is a Go binary.
+That is filed as `hardening/agent-pkill-kills-the-live-worker`, and the mitigation
+shipped since — spelling the unit's `ExecStart` so it carries no `python -`
+substring — is a dodge of one string, not a boundary.
+
+Taken together: an agent can currently read anything the operator can read, write
+anything the operator can write, delete the factory's own state and running
+nodes, and signal any process on the host including the worker executing it.
+
 ## Why this is critical rather than untidy
 
 - **Verification goes blind.** Gates, judge and diff all read the worktree. Work
@@ -54,7 +103,18 @@ am editing the wrong repository".
 - **The concurrency guarantee stops holding.** Worktree isolation is one of the
   four layers that let nodes run in parallel. At `--max-concurrent-nodes > 1`
   two agents can edit the same operator file simultaneously, neither aware of
-  the other.
+  the other. On 2026-08-14 this stopped being hypothetical: with two epics
+  running, one epic's agent destroyed the other's in-flight attempt.
+- **The factory can lose its own memory.** The evidence store, the findings
+  ledger and the usage ledger all live under the runtime root, which is a
+  perfectly ordinary directory to an agent holding an absolute path. The findings
+  ledger is the thing that makes "this defect has recurred" a countable fact
+  rather than a recollection — Principle-promotion depends on it — and it was
+  reduced to an empty schema by one command.
+- **An agent can end its own attempt, and its neighbours'.** Because node
+  worktrees live *inside* the runtime root, "clean the state directory" and
+  "destroy every running node" are the same command. No escalation fires, because
+  the machinery that would raise one is what got deleted.
 
 ## What this is not
 
@@ -98,6 +158,18 @@ its worktree; assert silence.
 4. **Given** the detector runs, **When** it inspects the target repository,
    **Then** it only reads: it never stashes, checks out, cleans or otherwise
    mutates the operator's tree.
+5. **Given** an attempt whose agent removes or truncates a file under the
+   factory's runtime root that belongs to another node or to the engine — an
+   evidence store, a ledger, a sibling's worktree — **When** the attempt tears
+   down, **Then** a critical finding names those paths. A tracked-file diff of
+   the target repository cannot see this: the runtime root is gitignored, so the
+   2026-08-14 destruction would have produced **silence** from a detector that
+   only watched tracked files.
+6. **Given** an attempt whose agent deletes the runtime root outright, **When**
+   the detector runs at teardown, **Then** it still reports, rather than failing
+   because the state it meant to compare against is the state that was destroyed.
+   A detector that dies with the thing it is watching reports nothing on exactly
+   the worst case.
 
 ### User Story 2 - The agent runs inside the runtime the manifest already declares (Priority: P1)
 
@@ -134,6 +206,16 @@ which is what proves the git plumbing survived.
 6. **Given** a manifest whose `runtime:` names an image, **When** an attempt is
    dispatched, **Then** the image actually used is that one, and a mismatch is a
    refusal rather than a silent host fallback.
+7. **Given** an agent inside the boundary, **When** it runs
+   `rm -rf /home/<operator>/code/<repo>/.factory` — the literal 2026-08-14
+   command — **Then** it fails, and afterwards the evidence store, both ledgers,
+   every sibling node's worktree and its own worktree are all intact. The mount
+   set exposes the node's **own** worktree, never the runtime root that contains
+   it.
+8. **Given** an agent inside the boundary, **When** it runs `pkill -f "python -"`
+   or otherwise signals by pattern, **Then** no process outside the boundary
+   receives a signal, and the worker executing the attempt is still running
+   afterwards. Assert on the worker's liveness, not on the exit code of `pkill`.
 
 ### User Story 3 - Verification does not reopen what the agent boundary closed (Priority: P2)
 
@@ -165,10 +247,26 @@ the host.
   at start and at teardown, and MUST file a critical finding when they differ.
 - **FR-002**: The detector MUST be read-only with respect to the target
   repository; it MUST NOT stash, clean, check out or otherwise mutate it.
+- **FR-012**: The detector MUST also cover the factory's own runtime root — the
+  evidence store, the ledgers, and every node worktree other than the attempt's
+  own — and MUST file a critical finding when any of them is removed, truncated
+  or replaced during an attempt. The runtime root is gitignored, so FR-001's
+  tracked-file comparison is structurally blind to it.
+- **FR-013**: The detector MUST still report when the state it compares against
+  has itself been destroyed; it MUST NOT depend on reading anything under the
+  runtime root at teardown to know that the runtime root is gone.
 - **FR-003**: The agent process MUST execute inside the runtime image named by
   the resolved `factory.yaml`'s `runtime:` key.
 - **FR-004**: The agent's filesystem view MUST include its node worktree as
   writable, and MUST NOT include the target repository's working tree.
+- **FR-014**: The agent's filesystem view MUST NOT include the factory's runtime
+  root, any evidence store or ledger, any other node's worktree, or the parent
+  directory of its own worktree. Mounting the runtime root and relying on the
+  agent to stay in its subdirectory reproduces exactly the containment this spec
+  exists to replace — the node worktree is a *leaf* of the runtime root, and only
+  that leaf may be mounted.
+- **FR-015**: The agent MUST NOT be able to signal, terminate or otherwise affect
+  any process outside its own boundary, including the worker that dispatched it.
 - **FR-005**: The agent's filesystem view MUST include whatever git metadata the
   worktree requires to commit, diff and branch — the worktree's `gitdir` and the
   shared object store — without exposing the working tree those live beside.
@@ -214,17 +312,30 @@ the host.
 - **SC-005**: The full suite passes on a host with no container runtime installed.
 - **SC-006**: The full suite stays green and no dependency outside the approved
   roster is added.
+- **SC-007**: The literal 2026-08-14 command —
+  `cd <target-repo> && rm -rf .factory` — executed by a scripted agent inside the
+  boundary, leaves the evidence store, both ledgers and every node worktree
+  byte-identical. Measured by comparing file sizes and row counts before and
+  after, pasted into the diff.
+- **SC-008**: A scripted agent running `pkill -f "python -"` inside the boundary
+  leaves the worker process alive, asserted by the worker's own liveness rather
+  than by the signal command's exit status.
+- **SC-009**: With the boundary deliberately disabled, the same two scripted
+  agents reproduce the damage, and with it enabled they do not. A containment
+  claim proven only in the passing direction has not been proven — this is the
+  control, and it is what distinguishes this from the guard that was already
+  believed to exist.
 
 ## Work Graph
 
 ```yaml
 US1:
   depends_on: []
-  implements: [FR-001, FR-002]
+  implements: [FR-001, FR-002, FR-012, FR-013]
 US2:
   depends_on: []
   depends_on_merged: [US1]
-  implements: [FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-010, FR-011]
+  implements: [FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-010, FR-011, FR-014, FR-015]
 US3:
   depends_on: []
   depends_on_merged: [US2]
