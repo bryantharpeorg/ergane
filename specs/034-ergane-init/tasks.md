@@ -193,9 +193,63 @@ Chains on US2 merged. Independent of US3. **Read plan trap 2 first: the seam is
 
 - [ ] T032 [US4] Full suite green: `uv run pytest -q`.
 
-## Phase 5: User Story 5 — A repo can leave (Priority: P3)
+## Phase 5: User Story 6 — The repo gets a scheduler (Priority: P1)
 
-Chains on US4 merged.
+Chains on US4 merged — both extend the same readiness finding set, so they do
+not run beside each other. **Read plan trap 11 first: nothing in this tree
+creates a schedule, so there is no seam to reuse and no precedent to copy.**
+Task ids continue from US5's block below; execution order is this phase, then
+that one.
+
+### Tests for User Story 6 (write FIRST, must fail)
+
+- [ ] T039 [US6] Write the schedule-creation case FIRST against a scripted
+      control-plane seam — never a live server (spec US6-S1, FR-014): after
+      init, a schedule exists whose identifier carries the repo's slug and
+      whose arguments carry that repo's specs root, target repo and landing
+      branch. Assert the slug is *in the identifier*; a shared control plane
+      with one namespace is the whole reason (plan trap 11).
+
+- [ ] T040 [US6] Write the declared-dials case FIRST (spec US6-S2, FR-015):
+      a manifest declaring cadence, `max_concurrent_epics` and
+      `max_concurrent_nodes` produces a live schedule carrying those values;
+      changing the manifest and re-running reconciles the live schedule.
+
+- [ ] T041 [US6] Write the idempotence case FIRST (spec US6-S3): an unchanged
+      re-run reports already-satisfied and mutates nothing.
+
+- [ ] T042 [US6] Write the forget case FIRST (spec US6-S4, FR-016): forget
+      deletes the schedule. Assert deletion, not "forget succeeded" — an
+      orphaned schedule keeps firing at a specs root that may not exist.
+
+- [ ] T043 [US6] Write the check-finding cases FIRST (spec US6-S5, FR-016):
+      absent, paused, and argument-drifted schedules each flip exactly their
+      own finding with a remedy named. Follow US4's one-break-one-finding
+      discipline — no masking.
+
+- [ ] T044 [US6] Write the unreachable-control-plane case FIRST (spec US6-S6,
+      FR-017): scaffold and registry complete; the schedule step reports
+      failed with its reason; nothing repo-local is rolled back.
+
+### Implementation for User Story 6
+
+- [ ] T045 [US6] Implement create/reconcile/delete behind one seam, with the
+      slug-scoped identifier and the manifest-declared cadence and dials.
+      Extend the manifest's typed shape rather than reading raw config.
+
+- [ ] T046 [US6] Add the schedule findings to the existing `evaluate_repo`
+      set — the same extension US4 made, never a second judgment — and wire
+      creation as a reported step of a full init run.
+
+- [ ] T047 [US6] Full suite green: `uv run pytest -q`. Paste the SC-007
+      evidence verbatim into a comment block: a spec flipped to `ready`
+      dispatching with no hand-run command and no hand-created schedule. If
+      you cannot run a control plane in your environment, say so plainly in
+      the commit rather than asserting it.
+
+## Phase 6: User Story 5 — A repo can leave (Priority: P3)
+
+Chains on US6 merged — `forget` must delete the schedule US6 creates.
 
 ### Tests for User Story 5 (write FIRST, must fail)
 
@@ -217,7 +271,8 @@ Chains on US4 merged.
 ### Implementation for User Story 5
 
 - [ ] T036 [US5] Add `forget` to the existing `repo` parser with `--clean-runtime`
-      and `--export`, entry removal only by default.
+      and `--export`, entry removal only by default — plus the schedule
+      deletion US6's T042 asserts.
 
 - [ ] T037 [US5] Implement export: slug-selected rows, outside `.ergane/`, no
       secret values, committing nothing. Produce the byte-identity evidence and
@@ -234,3 +289,4 @@ Chains on US4 merged.
 - [ ] The lock has a contended test.
 - [ ] No second readiness judgment exists — `evaluate_repo` has one caller shape.
 - [ ] No manifest-name constant was edited (040 owns it).
+- [ ] The schedule identifier carries the repo slug, and `forget` deletes it.

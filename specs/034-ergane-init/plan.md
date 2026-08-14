@@ -152,6 +152,37 @@ Job names equal gate names, one to one, nothing else required. And wire `gh`
 through the `GhRunner` protocol (`gh.py:106`) with a scripted runner: the live
 tier is opt-in and is not where this story is proven.
 
+### Trap 11 — US6 has no seam to reuse, because the capability does not exist
+
+Every other story in this spec extends something. US6 does not. Verified on
+2026-08-13 against `0a47cc5`:
+
+- `factory/cli/roadmap.py` registers exactly five verbs — `start`, `pause`,
+  `resume`, `status`, `promote`. None creates a schedule.
+- `grep -rn "create_schedule\|ScheduleSpec" --include=*.py factory/` returns
+  **nothing**.
+- The one live schedule, `ergane-roadmap`, was created by hand with the
+  `temporal schedule` CLI and reports `CreatedAt 5 days ago`. Its arguments are
+  a base64-encoded payload, which is why `max_concurrent_epics` has never been
+  changed.
+
+Two consequences. First, there is no existing shape to copy, so put the whole
+create/reconcile/delete lifecycle behind one seam and script it in tests — this
+spec's suite must not require a live Temporal (trap 8's discipline).
+
+Second, and this is the trap: `roadmap promote` **signals a running roadmap
+workflow**, and the roadmap does not run continuously — it is a schedule that
+starts a workflow every few minutes and exits. Running `ergane roadmap promote`
+against an idle floor fails with `no roadmap 'specs' is running here`. If you
+reach for that verb as the model for "how the engine talks to the roadmap", you
+will build against a workflow that is usually not there. The schedule is server
+state; talk to it as server state.
+
+The identifier is the other half. One namespace and one shared control plane
+means the schedule id must carry the repo slug (FR-014) — the same token trap 6
+records as missing from `workflow_id()`. Do not repeat that omission in a
+surface being written from scratch.
+
 ### Trap 10 — anchors rot, and this tree is moving fast
 
 Nineteen stories landed on 2026-08-13 alone. Grep for the construct —

@@ -159,6 +159,50 @@ The homelab copies can change without this repository noticing. Quote what you
 read, in your commit, with the date — and if a unit on the host disagrees with
 this plan, the host wins and you say so.
 
+### Trap 9 — the `ExecStart` spelling is load-bearing, and the obvious one is wrong
+
+The prior art's `ergane-worker.service` does not exec the worker. It runs a
+wrapper, and the wrapper ends:
+
+```bash
+uv sync --locked --quiet
+exec "$ERGANE/.venv/bin/python3" -m factory.worker
+```
+
+Not `uv run python -m factory.worker`, which is what every other invocation in
+this repository uses and what a generator will reach for. From the wrapper's own
+comment, verbatim:
+
+```
+# Why the indirection matters: on 2026-08-12 the 032 agent ran
+# `pkill -f "python -"` inside its worktree to clean up test servers. That
+# pattern matched this unit's `uv run python -m factory.worker` command line
+# and the bridge's, and SIGTERMed both — killing the worker that was running
+# the agent. ergane-temporal survived only because it is a Go binary. The
+# `python3 -m` spelling below carries no "python -" substring, which is
+# exactly why the venv's own interpreter child survived that sweep.
+```
+
+A generated unit spelling it `uv run python -m factory.worker` is correct,
+starts, restarts, and dies the next time an agent sweeps its own strays. Assert
+the generated text on the same pass as SC-006: no supervised unit's command line
+contains the substring `python -`.
+
+Say the honest thing in the commit, because the prior art does: this is
+mitigation, not a fix. The defect is that an agent can signal anything on the
+host at all — `hardening/agent-sandbox` (promoted) and
+`hardening/agent-pkill-kills-the-live-worker` (open). A different pattern still
+reaches us, and a generated unit that merely dodges *this* string has bought
+time, not safety.
+
+The wrapper's other half is a design question this epic must answer rather than
+inherit: systemd cannot `eval` a command substitution, and the environment
+arrives from a command that emits `export` lines. So the engine either generates
+a wrapper script alongside each unit, or resolves the environment at install
+time into the unit. Choose deliberately and record why — the prior art chose the
+wrapper specifically so secrets never touch disk, and that reason survives the
+rename of everything around it.
+
 ## Approach
 
 ### US1 — the alert that works when Temporal does not

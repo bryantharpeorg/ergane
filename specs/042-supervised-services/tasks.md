@@ -56,6 +56,13 @@ each is a verbatim line from the prior art and each was paid for.**
       own installation. Plan trap 7 is the clearest way this epic fails while
       looking finished.
 
+- [ ] T007a [US2] Write the command-line spelling assertion FIRST (plan trap 9):
+      no generated unit's command line contains the substring `python -`. The
+      obvious spelling — `uv run python -m factory.worker` — is what an agent's
+      `pkill -f "python -"` matched on 2026-08-12, killing the worker that was
+      running it. Scan the generated text, and say in the commit that this is
+      mitigation and not a fix (`hardening/agent-pkill-kills-the-live-worker`).
+
 - [ ] T008 [US2] Write the whole-tree-stops case FIRST (spec US2-S2, FR-004,
       SC-002): stopping a unit with child processes leaves none behind. Count
       processes before and after and paste both counts. Plan trap 1 quotes why
@@ -169,6 +176,7 @@ Chains on US2 merged.
 
 - [ ] Final gate command passes green.
 - [ ] The generated unit text contains no path outside the operator's installation.
+- [ ] No generated unit's command line contains `python -` (plan trap 9).
 - [ ] Process counts before and after a unit stop are pasted in the diff.
 - [ ] The three reaping conditions are discriminated by test, not by comment.
 - [ ] Workflow history survived a managed-unit restart, with evidence.

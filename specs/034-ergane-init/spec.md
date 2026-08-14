@@ -286,10 +286,71 @@ formats, and two exports against an untouched engine are byte-identical.
 
 ---
 
+### User Story 6 - The repo gets a scheduler, not just a worker (Priority: P1)
+
+As an operator, joining a repo gives it a roadmap schedule on the control
+plane, so that flipping a spec to `ready` actually dispatches something.
+Today nothing in this engine creates one: `factory/cli/roadmap.py` has
+`start`, `pause`, `resume`, `status` and `promote`, and no verb that
+creates a schedule; there is no `create_schedule` call anywhere in
+`factory/`. The only roadmap that exists was made by hand with the
+`temporal schedule` CLI. A repo that completes every other story in this
+spec — scaffolded, registered, wired, passing `--check` — still has no
+scheduler, and nothing tells the operator one was supposed to exist.
+
+**Why this priority**: it is the difference between a joined repo and a
+dispatchable one. The whole provisioning set ends with an operator flipping
+a spec to `ready`; without this story that flip does nothing, forever, with
+no error. It rides at P1 for the same reason the registry does — the repo
+is not actually joined until this is true.
+
+**Independent Test**: after init, a schedule exists on the control plane
+whose identifier carries the repo's slug and whose arguments name that
+repo's specs root, target repo and landing branch; flipping a spec to
+`ready` produces a dispatch without any hand-run command; `ergane repo
+forget` removes it.
+
+**Evidence rule**: as US1 — the judge sees the diff and these criteria, so
+the schedule's live behaviour is met by tool output pasted verbatim into a
+comment block in the test file.
+
+**Acceptance Scenarios**:
+
+1. **Given** a repo being initialised, **When** init completes, **Then** a
+   roadmap schedule exists whose identifier carries the repo's slug, and
+   whose arguments carry that repo's specs root, target repo and landing
+   branch — one shared control plane means the identifier must distinguish
+   repos, exactly as workflow identifiers should and currently do not.
+2. **Given** a manifest declaring a roadmap cadence and concurrency dials,
+   **When** init completes, **Then** the live schedule carries those values,
+   and changing them in the manifest and re-running init reconciles the live
+   schedule to match — a dial reachable only by editing a base64-encoded
+   workflow payload is not a dial an operator has.
+3. **Given** an existing schedule for the slug, **When** init re-runs
+   unchanged, **Then** it reports the schedule already-satisfied and changes
+   nothing — same idempotence contract as every other act in this spec.
+4. **Given** a registered repo with a schedule, **When** `ergane repo
+   forget` runs, **Then** the schedule is deleted. A schedule that keeps
+   firing at a repo the engine has forgotten dispatches work nobody is
+   watching, against a specs root that may no longer exist.
+5. **Given** a repo whose schedule is missing, paused, or pointed at a
+   different specs root, **When** `ergane init --check` runs, **Then** a
+   finding reports it and names the remedy — a joined repo with no
+   scheduler must not read as ready.
+6. **Given** a control plane that cannot be reached, **When** init runs,
+   **Then** the scaffold and registry still complete and the schedule step
+   reports as failed with the reason — the repo-local work must not be lost
+   to an unreachable engine.
+
+---
+
 ### Edge Cases
 
 - Init run at a subdirectory of a repo: operate on the repo root (found via
   git), report the root being used.
+- A schedule already exists under the slug's identifier and the engine did
+  not create it: reported, reconciled only on the operator's confirmation —
+  the same restraint every other collision in this set is given.
 - The directory name yields an invalid slug (spaces, case, unicode):
   propose the normalized form; the operator confirms — declared, never
   silently rewritten.
@@ -377,6 +438,21 @@ formats, and two exports against an untouched engine are byte-identical.
   the repo's slug, written outside `.ergane/`, containing no secret values,
   committing nothing. Export is strictly opt-in: forget without the flag
   writes no files. (Rides US5's priority; nothing else depends on it.)
+- **FR-014**: `ergane init` MUST create or reconcile the repo's roadmap
+  schedule on the control plane. The schedule's identifier MUST carry the
+  repo's slug, and its arguments MUST carry that repo's specs root, target
+  repo and landing branch. No repo may depend on a schedule created by hand.
+- **FR-015**: The roadmap's cadence and its concurrency dials
+  (`max_concurrent_epics`, `max_concurrent_nodes`) MUST be declared in the
+  manifest and MUST be changeable by editing the manifest and re-running
+  init. A dial reachable only by editing an encoded workflow payload does
+  not count as declared.
+- **FR-016**: `ergane repo forget` MUST delete the repo's schedule, and
+  `--check` MUST render a finding when the schedule is absent, paused, or
+  carrying arguments that disagree with the manifest.
+- **FR-017**: An unreachable control plane MUST NOT lose the repo-local
+  work: the scaffold and registry complete, and the schedule step reports
+  as failed with its reason.
 
 ### Key Entities
 
@@ -409,6 +485,10 @@ formats, and two exports against an untouched engine are byte-identical.
   cache is derived, not authoritative.
 - **SC-006**: A repo registered, forgotten, and re-registered under the
   same slug ends byte-identical in-tree across the cycle.
+- **SC-007**: A repo taken through init end-to-end dispatches an epic from
+  a spec flipped to `ready` with no hand-run command and no hand-created
+  schedule — the whole provisioning set's closing claim, and the one that is
+  false today.
 
 ## Assumptions
 
@@ -452,8 +532,17 @@ US4:
   depends_on: []
   depends_on_merged: [US2]
   implements: [FR-010]
-US5:
+US6:
   depends_on: []
   depends_on_merged: [US4]
+  implements: [FR-014, FR-015, FR-016, FR-017]
+US5:
+  depends_on: []
+  depends_on_merged: [US6]
   implements: [FR-013]
 ```
+
+US6 rides behind US4 rather than beside it because both extend the same
+readiness finding set, and US5 rides behind US6 because `forget` must delete
+the schedule US6 creates. The serial tail is deliberate: it costs merge
+latency and buys the absence of two nodes editing one judgment.
