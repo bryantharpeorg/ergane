@@ -118,6 +118,7 @@ from factory.workgraph.models import (
 )
 from factory.workgraph.worktree import (
     DEFAULT_FACTORY_ROOT,
+    DEFAULT_RUNTIME_ROOT,
     PreparedWorktree,
     branch_name,
 )
@@ -199,7 +200,7 @@ def env() -> ActivityEnvironment:
 @pytest.fixture
 def factory_root(tmp_path: Path) -> Path:
     """The worker host's state directory: worktrees, transcripts, pid files."""
-    return tmp_path / ".factory"
+    return tmp_path / ".ergane"
 
 
 @pytest.fixture(autouse=True)
@@ -1001,16 +1002,21 @@ async def test_the_factory_root_defaults_to_the_documented_location(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Everything that reads this state — the operator, the sweep, the next
-    worker — has to agree with the writer about where `.factory/` is, so the
-    default is the documented one and the env var is the only override."""
+    worker — has to agree with the writer about where the runtime root is, so the
+    default is the documented one and the env var is the only override.
+
+    040/US2 renames the default from `.factory/` to `.ergane/`; the constant name
+    is kept for compatibility with older callers.
+    """
     monkeypatch.delenv(FACTORY_ROOT_ENV)
     monkeypatch.chdir(tmp_path)
     write_control(home_path(factory_root, EPIC, NODE))
 
     result = await env.run(run_agent_attempt, context())
 
-    assert str(DEFAULT_FACTORY_ROOT) == ".factory"
-    expected = Path(DEFAULT_FACTORY_ROOT) / "transcripts" / EPIC / NODE / f"attempt-{ATTEMPT}"
+    assert str(DEFAULT_FACTORY_ROOT) == str(DEFAULT_RUNTIME_ROOT)
+    assert str(DEFAULT_RUNTIME_ROOT) == ".ergane"
+    expected = Path(DEFAULT_RUNTIME_ROOT) / "transcripts" / EPIC / NODE / f"attempt-{ATTEMPT}"
     assert result.transcript_path == str(expected)
     assert (tmp_path / expected / STDOUT_LOG_NAME).is_file()
 
