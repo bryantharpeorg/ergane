@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "Implement US1 tests and command",
+  "description": "Write tests first for refusals, bare invocation, scaffold, D-009 proposal, history untouched, re-run. Then implement init command: repo root resolution, refusals, prompter seam, interview derived from _TOP_LEVEL_KEYS, validate with parse_factory_config, write ergane.yaml/.gitignore/.ergane/, no commit, print paths and suggested git commands.",
+  "activeForm": "Implementing US1 tests and command",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}
