@@ -41,6 +41,7 @@ from temporalio.testing import ActivityEnvironment
 
 from factory.activities import usage_activities
 from factory.activities.usage_activities import (
+    ERGANE_LEDGER_PATH_ENV,
     LEDGER_PATH_ENV,
     IssueKeyInput,
     TeardownInput,
@@ -77,7 +78,8 @@ def proxy(
     The ledger path points somewhere nothing has created, so "polling wrote
     nothing" is checkable as the file's absence rather than as a row count.
     """
-    monkeypatch.setenv(LEDGER_PATH_ENV, str(ledger_path))
+    monkeypatch.setenv(ERGANE_LEDGER_PATH_ENV, str(ledger_path))
+    monkeypatch.delenv(LEDGER_PATH_ENV, raising=False)
     monkeypatch.setattr(
         usage_activities,
         "open_client",

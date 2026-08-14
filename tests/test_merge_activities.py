@@ -103,7 +103,8 @@ def _prepare_node_worktree(repo: Path, tmp_path: Path, monkeypatch: pytest.Monke
     `<tmp>/.factory/worktrees/<epic>/<node>`, and points `FACTORY_ROOT` at it.
     """
     root = tmp_path
-    monkeypatch.setenv("FACTORY_ROOT", str(root))
+    monkeypatch.setenv("ERGANE_ROOT", str(root))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
     prepared = worktrees.ensure(repo, EPIC, NODE, factory_root=root)
     worktree = Path(prepared.path)
     (worktree / "landed.txt").write_text("work\n", encoding="utf-8")
@@ -312,7 +313,8 @@ def _advance_and_push(repo: Path) -> str:
 def _node_worktree_with_work(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A prepared node worktree with a commit on the branch, pushed to origin."""
     root = tmp_path
-    monkeypatch.setenv("FACTORY_ROOT", str(root))
+    monkeypatch.setenv("ERGANE_ROOT", str(root))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
     prepared = worktrees.ensure(repo, EPIC, NODE, factory_root=root)
     worktree = Path(prepared.path)
     (worktree / "landed.txt").write_text("work\n", encoding="utf-8")
@@ -329,7 +331,8 @@ def _node_worktree_editing_calc(repo: Path, tmp_path: Path, monkeypatch: pytest.
     that produces one.
     """
     root = tmp_path
-    monkeypatch.setenv("FACTORY_ROOT", str(root))
+    monkeypatch.setenv("ERGANE_ROOT", str(root))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
     prepared = worktrees.ensure(repo, EPIC, NODE, factory_root=root)
     worktree = Path(prepared.path)
     (worktree / "src/calc.py").write_text(

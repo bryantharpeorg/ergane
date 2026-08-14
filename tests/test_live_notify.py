@@ -84,7 +84,10 @@ from factory.activities.notify_activities import (
     SentEscalation,
     send_escalation,
 )
-from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
+from factory.activities.verify_activities import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    VERIFICATION_DB_PATH_ENV,
+)
 from factory.verify.store import EVIDENCE_STORE_ALLOW_REAL_ENV
 from factory.notify.messages import (
     CALLBACK_DATA_LIMIT,
@@ -222,7 +225,8 @@ def escalation(live_config: LiveConfig) -> LiveEscalation:
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv(TELEGRAM_BOT_TOKEN_ENV, live_config.token)
         patch.setenv(TELEGRAM_CHAT_ID_ENV, live_config.chat_id)
-        patch.setenv(VERIFICATION_DB_PATH_ENV, str(live_config.db_path))
+        patch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(live_config.db_path))
+        patch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
         if live_config.shared_store:
             # The operator pointed the live smoke at a shared real store.  Open
             # the explicit acknowledgment door, and only for this module scope.

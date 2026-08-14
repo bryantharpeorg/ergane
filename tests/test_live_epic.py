@@ -114,9 +114,12 @@ from temporalio.service import RPCError, RPCStatusCode
 from temporalio.worker import Worker
 
 from factory import worker as factory_worker
-from factory.activities.agent_activities import FACTORY_ROOT_ENV
-from factory.activities.usage_activities import LEDGER_PATH_ENV
-from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
+from factory.activities.agent_activities import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV
+from factory.activities.usage_activities import ERGANE_LEDGER_PATH_ENV, LEDGER_PATH_ENV
+from factory.activities.verify_activities import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    VERIFICATION_DB_PATH_ENV,
+)
 from factory.config import load_personas
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
@@ -412,9 +415,12 @@ def live_epic(
     workspace = build_workspace(tmp_path_factory.mktemp("live-epic"), live_config)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setenv(FACTORY_ROOT_ENV, str(workspace.factory_root))
-        patch.setenv(LEDGER_PATH_ENV, str(workspace.ledger_path))
-        patch.setenv(VERIFICATION_DB_PATH_ENV, str(workspace.verification_db))
+        patch.setenv(ERGANE_ROOT_ENV, str(workspace.factory_root))
+        patch.delenv(FACTORY_ROOT_ENV, raising=False)
+        patch.setenv(ERGANE_LEDGER_PATH_ENV, str(workspace.ledger_path))
+        patch.delenv(LEDGER_PATH_ENV, raising=False)
+        patch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(workspace.verification_db))
+        patch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
 
         # The worker runs on its own loop in its own thread and STAYS UP while
         # the tests below read the epic's leavings, because that is the shape

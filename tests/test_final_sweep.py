@@ -55,6 +55,7 @@ from temporalio.testing import ActivityEnvironment
 
 from factory.activities import usage_activities
 from factory.activities.usage_activities import (
+    ERGANE_LEDGER_PATH_ENV,
     LEDGER_PATH_ENV,
     IssueKeyInput,
     TeardownInput,
@@ -172,7 +173,8 @@ def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Worker:
 
     monkeypatch.setenv(PROXY_URL_ENV, proxy.base_url)
     monkeypatch.setenv(MASTER_KEY_ENV, SECRET)
-    monkeypatch.setenv(LEDGER_PATH_ENV, str(ledger_path))
+    monkeypatch.setenv(ERGANE_LEDGER_PATH_ENV, str(ledger_path))
+    monkeypatch.delenv(LEDGER_PATH_ENV, raising=False)
     monkeypatch.setattr(
         usage_activities,
         "open_client",
@@ -293,7 +295,8 @@ async def a_ledger_that_cannot_be_written(worker: Worker) -> object:
     lease = await worker.issue()
     obstruction = worker.workspace / "not-a-directory"
     obstruction.write_text("")
-    worker.monkeypatch.setenv(LEDGER_PATH_ENV, str(obstruction / "ledger.db"))
+    worker.monkeypatch.setenv(ERGANE_LEDGER_PATH_ENV, str(obstruction / "ledger.db"))
+    worker.monkeypatch.delenv(LEDGER_PATH_ENV, raising=False)
     return await worker.teardown(lease)
 
 

@@ -84,6 +84,7 @@ from temporalio.testing import ActivityEnvironment
 
 from factory.activities import agent_activities
 from factory.activities.agent_activities import (
+    ERGANE_ROOT_ENV,
     FACTORY_ROOT_ENV,
     GRAPH_INVALID,
     PROMPT_SOURCE_MISSING,
@@ -229,7 +230,8 @@ def worker_host(
     ):
         monkeypatch.delenv(name, raising=False)
 
-    monkeypatch.setenv(FACTORY_ROOT_ENV, str(factory_root))
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(factory_root))
+    monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
     monkeypatch.setenv("LITELLM_MASTER_KEY", MASTER_KEY)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("LANG", "en_US.UTF-8")
@@ -1008,7 +1010,8 @@ async def test_the_factory_root_defaults_to_the_documented_location(
     040/US2 renames the default from `.factory/` to `.ergane/`; the constant name
     is kept for compatibility with older callers.
     """
-    monkeypatch.delenv(FACTORY_ROOT_ENV)
+    monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
+    monkeypatch.delenv(ERGANE_ROOT_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
     write_control(home_path(factory_root, EPIC, NODE))
 

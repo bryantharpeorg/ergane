@@ -57,6 +57,8 @@ from temporalio.exceptions import ApplicationError
 
 from factory.activities.verify_activities import (
     DEFAULT_VERIFICATION_DB_PATH,
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    FACTORY_VERIFICATION_DB_PATH_ENV,
     VERIFICATION_DB_PATH_ENV,
 )
 from factory.notify.messages import (
@@ -653,8 +655,12 @@ def _store_path() -> Path:
     Escalations are evidence about a node, and an operator reading one epic opens
     one database (quickstart §5).
     """
-    return Path(
-        os.environ.get(VERIFICATION_DB_PATH_ENV) or DEFAULT_VERIFICATION_DB_PATH
+    from factory.env import resolve_env_path
+
+    return resolve_env_path(
+        ERGANE_VERIFICATION_DB_PATH_ENV,
+        FACTORY_VERIFICATION_DB_PATH_ENV,
+        DEFAULT_VERIFICATION_DB_PATH,
     )
 
 

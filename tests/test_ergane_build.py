@@ -36,6 +36,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from factory.activities.agent_activities import (
+    ERGANE_ROOT_ENV,
     FACTORY_ROOT_ENV,
     GRAPH_INVALID,
     LoadPromptSourcesInput,
@@ -880,7 +881,8 @@ def test_kill_without_yes_refuses_and_sends_nothing(
 def verification_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A fresh verification store at a temporary path, wired into the CLI env."""
     path = tmp_path / "verification.db"
-    monkeypatch.setenv("FACTORY_VERIFICATION_DB_PATH", str(path))
+    monkeypatch.setenv("ERGANE_VERIFICATION_DB_PATH", str(path))
+    monkeypatch.delenv("FACTORY_VERIFICATION_DB_PATH", raising=False)
     return path
 
 
@@ -1135,7 +1137,8 @@ def test_reset_commits_archives_removes_and_reports_per_node(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """US3-S1/S2: reset archives survivors, reports each action, is idempotent."""
-    monkeypatch.setenv(FACTORY_ROOT_ENV, str(tmp_path / ".factory"))
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(tmp_path / ".factory"))
+    monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
     # Set the env before creating survivors: reset must resolve the factory root
     # from the environment, and the test verifies it operates on that root.
     repo, factory_root, graph_path, worktrees = _make_reset_target(
@@ -1204,7 +1207,8 @@ async def test_reset_guard_cases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """US3-S3/S4 and FR-010: RUNNING refusal, NOT_FOUND proceed, dead server exit 3."""
-    monkeypatch.setenv(FACTORY_ROOT_ENV, str(tmp_path / ".factory"))
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(tmp_path / ".factory"))
+    monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
     repo, factory_root, graph_path, worktrees = _make_reset_target(
         target_repo, tmp_path
     )
@@ -1268,7 +1272,8 @@ def test_reset_preserves_all_history_and_ensure_rebuilds_fresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """US3-S5/S6: no ref deleted, history archived, ensure() yields fresh tree."""
-    monkeypatch.setenv(FACTORY_ROOT_ENV, str(tmp_path / ".factory"))
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(tmp_path / ".factory"))
+    monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
     repo, factory_root, graph_path, _ = _make_reset_target(target_repo, tmp_path)
     node_id = NODE_IDS[0]
 

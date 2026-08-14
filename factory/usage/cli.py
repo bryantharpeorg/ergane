@@ -18,6 +18,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
+from factory.env import (
+    ERGANE_LEDGER_PATH_ENV,
+    FACTORY_LEDGER_PATH_ENV,
+    resolve_env_path,
+)
 from factory.usage.ledger import ROLLUP_DIMENSIONS, rollup
 
 #: Where the rest of the factory writes, so the quickstart's invocation works
@@ -26,7 +31,7 @@ DEFAULT_LEDGER_PATH = Path(".factory") / "ledger.db"
 
 #: Deployments that keep the ledger elsewhere set this once instead of passing
 #: `--db` on every call; an explicit `--db` still wins.
-LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"
+LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"  # legacy re-export
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -105,7 +110,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--db",
         type=Path,
         default=_default_ledger_path(),
-        help=f"ledger file (default: ${LEDGER_PATH_ENV} or {DEFAULT_LEDGER_PATH})",
+        help=f"ledger file (default: ${ERGANE_LEDGER_PATH_ENV} or {DEFAULT_LEDGER_PATH})",
     )
     parser.add_argument(
         "--by",
@@ -137,7 +142,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 def _default_ledger_path() -> Path:
     """Resolved per invocation, so the environment is read when the CLI runs."""
-    return Path(os.environ.get(LEDGER_PATH_ENV) or DEFAULT_LEDGER_PATH)
+    return resolve_env_path(
+        ERGANE_LEDGER_PATH_ENV,
+        FACTORY_LEDGER_PATH_ENV,
+        DEFAULT_LEDGER_PATH,
+    )
 
 
 

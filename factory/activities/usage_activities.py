@@ -64,6 +64,11 @@ from temporalio.exceptions import ApplicationError
 
 from factory.usage import ledger
 from factory.usage.aggregate import aggregate_rows
+from factory.env import (
+    ERGANE_LEDGER_PATH_ENV,
+    FACTORY_LEDGER_PATH_ENV,
+    resolve_env_path,
+)
 from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient, LiteLLMError
 from factory.usage.models import (
     AggregatedUsage,
@@ -93,7 +98,8 @@ _ATTRIBUTION_FIELDS = ("epic_id", "node_id", "persona", "spec_ref")
 #: database (contracts/cli.md).
 DEFAULT_LEDGER_PATH = ".factory/ledger.db"
 
-LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"
+LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"  # legacy re-export
+ERGANE_LEDGER_PATH_ENV = ERGANE_LEDGER_PATH_ENV  # re-export
 
 #: A credential the proxy rejected is a worker-host misconfiguration; retrying
 #: it for ten minutes only delays the diagnosis.
@@ -518,7 +524,11 @@ def _issuance_failed(exc: LiteLLMError, *, permanent: bool) -> ApplicationError:
 
 
 def _ledger_path() -> Path:
-    return Path(os.environ.get(LEDGER_PATH_ENV) or DEFAULT_LEDGER_PATH)
+    return resolve_env_path(
+        ERGANE_LEDGER_PATH_ENV,
+        FACTORY_LEDGER_PATH_ENV,
+        DEFAULT_LEDGER_PATH,
+    )
 
 
 def _now_iso() -> str:

@@ -73,7 +73,10 @@ from factory.activities.notify_activities import (
     expire_escalation,
     send_escalation,
 )
-from factory.activities.verify_activities import VERIFICATION_DB_PATH_ENV
+from factory.activities.verify_activities import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    VERIFICATION_DB_PATH_ENV,
+)
 from factory.notify.messages import callback_data
 from factory.verify import store
 from factory.verify.models import EscalationChoice
@@ -191,7 +194,8 @@ def db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     one epic opens one database (quickstart §5).
     """
     path = tmp_path / ".factory" / "verification.db"
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(path))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(path))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
     return path
 
 
@@ -557,7 +561,8 @@ async def test_an_escalation_that_cannot_be_recorded_is_an_error_not_a_message(
     # nothing downstream can resolve.
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding="utf-8")
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(blocked / "verification.db"))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(blocked / "verification.db"))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
 
     with pytest.raises(ApplicationError) as excinfo:
         await send(env)

@@ -80,6 +80,11 @@ from factory.verify.models import (
     OutputCheck,
     VerificationResult,
 )
+from factory.env import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    FACTORY_VERIFICATION_DB_PATH_ENV,
+    resolve_env_path,
+)
 from factory.verify.question import (
     QUESTION_HEADING,  # noqa: F401  -- re-exported for the prompt contract (T008)
     QuestionMarker,
@@ -120,7 +125,8 @@ SPEC_FILENAME = "spec.md"
 #: beside component 1's ledger under the same `.factory/` (quickstart §5).
 DEFAULT_VERIFICATION_DB_PATH = ".factory/verification.db"
 
-VERIFICATION_DB_PATH_ENV = "FACTORY_VERIFICATION_DB_PATH"
+VERIFICATION_DB_PATH_ENV = "FACTORY_VERIFICATION_DB_PATH"  # legacy re-export
+ERGANE_VERIFICATION_DB_PATH_ENV = ERGANE_VERIFICATION_DB_PATH_ENV  # re-export
 
 #: Pause between the judge's HTTP attempts, at module scope so a test can zero it
 #: without waiting out a backoff to prove an outage is an outage.
@@ -538,6 +544,8 @@ def _has_drifted(source: Path, snapshot_sha256: str) -> bool:
 
 
 def _store_path() -> Path:
-    return Path(
-        os.environ.get(VERIFICATION_DB_PATH_ENV) or DEFAULT_VERIFICATION_DB_PATH
+    return resolve_env_path(
+        ERGANE_VERIFICATION_DB_PATH_ENV,
+        FACTORY_VERIFICATION_DB_PATH_ENV,
+        DEFAULT_VERIFICATION_DB_PATH,
     )

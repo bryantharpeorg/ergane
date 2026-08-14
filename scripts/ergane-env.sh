@@ -81,7 +81,7 @@ emit TEMPORAL_NAMESPACE "${TEMPORAL_NAMESPACE:-factory}"
 # worktree add`, and git resolves a relative path against the CLONE while the
 # Python side resolves it against the worker's cwd — a relative root splits the
 # worktree from its record (found live, first 003 crossover start 2026-08-06).
-emit FACTORY_ROOT "${FACTORY_ROOT:-$HOME/code/ergane/.factory}"
+emit ERGANE_ROOT "${ERGANE_ROOT:-${FACTORY_ROOT:-$HOME/code/ergane/.factory}}"
 
 # -- Telegram escalation bridge -----------------------------------------------
 # Out-of-repo secrets: decrypted to memory only, never to a plaintext file.

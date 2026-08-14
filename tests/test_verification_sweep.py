@@ -67,6 +67,7 @@ from factory.activities.notify_activities import (
     send_escalation,
 )
 from factory.activities.verify_activities import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
     VERIFICATION_DB_PATH_ENV,
     CheckOutputInput,
     RecordVerificationInput,
@@ -316,7 +317,8 @@ def component(
     monkeypatch.setenv("LITELLM_PROXY_URL", proxy.base_url)
     monkeypatch.setenv(TELEGRAM_BOT_TOKEN_ENV, BOT_TOKEN)
     monkeypatch.setenv(TELEGRAM_CHAT_ID_ENV, CHAT_ID)
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(db_path))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(db_path))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
 
     monkeypatch.setattr(verify_activities, "judge_transport", lambda: proxy.transport)
     monkeypatch.setattr(verify_activities, "JUDGE_RETRY_BACKOFF_S", 0.0)
@@ -577,7 +579,8 @@ async def an_escalation_the_store_refuses(
 ) -> object:
     obstruction = component.workspace / "not-a-directory"
     obstruction.write_text("", encoding="utf-8")
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(obstruction / "verification.db"))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(obstruction / "verification.db"))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
     return await component.run(send_escalation, send_request())
 
 
@@ -627,7 +630,8 @@ async def an_expiry_against_an_unreadable_store(
 ) -> object:
     obstruction = component.workspace / "also-not-a-directory"
     obstruction.write_text("", encoding="utf-8")
-    monkeypatch.setenv(VERIFICATION_DB_PATH_ENV, str(obstruction / "verification.db"))
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(obstruction / "verification.db"))
+    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
     return await component.run(expire_escalation, ExpireEscalationInput("0123456789ab"))
 
 

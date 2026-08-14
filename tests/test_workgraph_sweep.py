@@ -70,6 +70,7 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 
 from factory.activities.agent_activities import (
+    ERGANE_ROOT_ENV,
     FACTORY_ROOT_ENV,
     LoadPromptSourcesInput,
     PrepareWorktreeInput,
@@ -307,7 +308,8 @@ def worker_host(
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 
-    monkeypatch.setenv(FACTORY_ROOT_ENV, str(factory_root))
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(factory_root))
+    monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
     monkeypatch.setenv("LITELLM_MASTER_KEY", MASTER_KEY)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("LITELLM_PROXY_URL", PROXY_URL)
