@@ -838,7 +838,7 @@ async def test_a_missing_manifest_is_one_config_error_not_an_empty_gate_list(
     assert config.exit_code is None
     # The message names the rule violated, because the operator's next action is
     # to edit the manifest (contracts/factory-yaml.md).
-    assert "factory.yaml" in config.output_tail
+    assert "ergane.yaml" in config.output_tail
 
 
 async def test_a_manifest_outside_the_worktree_and_an_overridden_deadline(

@@ -63,7 +63,7 @@ from factory.mergequeue.messages import pr_title, render_pr_body
 from factory.mergequeue.models import CheckFailure, PrSnapshot, TargetRepoProfile
 from factory.mergequeue.onboard import evaluate_repo
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
-from factory.verify.factory_yaml import FactoryConfigError, load_factory_config
+from factory.verify.factory_yaml import FactoryConfigError, load_factory_config, resolve_manifest_path
 from factory.verify.models import VerificationResult
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import transcript_dir
@@ -609,10 +609,10 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
     and the offline CLI (`ergane repo onboard`) can drive the same logic against
     whichever `GhClient` their caller wired.
     """
-    manifest = Path(target_repo) / "factory.yaml"
+    manifest_path, _ = resolve_manifest_path(target_repo)
 
     try:
-        config = load_factory_config(manifest)
+        config = load_factory_config(manifest_path)
         declared_gates = tuple(config.gates.keys())
         manifest_error = None
     except FactoryConfigError as error:
@@ -754,7 +754,7 @@ def _profile_from_gh_failure(
             Finding(
                 "factory_yaml",
                 False,
-                f"factory.yaml failed to load: {manifest_error}",
+                f"manifest failed to load: {manifest_error}",
             )
         )
     return TargetRepoProfile(

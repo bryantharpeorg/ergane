@@ -67,7 +67,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from factory.usage.models import Termination
-from factory.verify.factory_yaml import FactoryConfigError, load_factory_config
+from factory.verify.factory_yaml import FactoryConfigError, load_factory_config, resolve_manifest_path
 from factory.verify.gates import scrubbed_env
 
 #: Worker-host state directory (plan.md); relative so it resolves against the
@@ -465,10 +465,9 @@ def landing_branch(repo: Path | str) -> str:
     *decision* about which branch matters for landing, and it replaces the three
     separate guesses the factory used to make.
     """
-    from factory.verify.factory_yaml import MANIFEST_NAME
-
     try:
-        return load_factory_config(Path(repo) / MANIFEST_NAME).landing_branch
+        manifest_path, _ = resolve_manifest_path(repo)
+        return load_factory_config(manifest_path).landing_branch
     except (FactoryConfigError, OSError):
         # Missing manifest or one the schema refuses: preserve today's behaviour.
         # The gate run will report the bad manifest as a CONFIG_ERROR; a branch

@@ -1192,7 +1192,9 @@ async def test_load_prompt_sources_carries_the_repos_declared_standards_path(
 
     assert (await env.run(load_prompt_sources, request)).standards is None
 
-    manifest = repo / "factory.yaml"
+    from tests.target_repo import MANIFEST_NAME as TARGET_MANIFEST_NAME
+
+    manifest = repo / TARGET_MANIFEST_NAME
     manifest.write_text(
         f"{manifest.read_text(encoding='utf-8')}\nstandards: {PRESENT_STANDARDS}\n",
         encoding="utf-8",

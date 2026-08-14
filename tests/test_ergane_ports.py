@@ -277,7 +277,7 @@ def test_repo_onboard_passes_a_conforming_repo(
     assert result.code == 0
     assert "visibility" in result.stdout
     assert "merge_queue" in result.stdout
-    assert "factory.yaml" in result.stdout
+    assert "factory_yaml" in result.stdout
 
 
 def test_repo_onboard_json_is_a_parseable_profile(

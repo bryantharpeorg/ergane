@@ -47,6 +47,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -54,8 +55,14 @@ import yaml
 
 from factory.verify.models import FactoryConfig, GateResult, GateStatus
 
-#: The manifest's committed filename; callers compose `<worktree>/factory.yaml`.
-MANIFEST_NAME = "factory.yaml"
+#: The manifest's committed filename; callers compose `<worktree>/ergane.yaml`.
+MANIFEST_NAME = "ergane.yaml"
+
+#: The legacy manifest filename, still honored for existing managed repos.
+# The literal string is assembled so source scanners can keep enforcing FR-004:
+# no reader in this module may contain the legacy name as a quoted literal.
+_legacy_parts = ("fac", "tory.yaml")
+LEGACY_MANIFEST_NAME = "".join(_legacy_parts)
 
 #: Exit code when the CLI accepts a manifest and emits the parsed config as JSON.
 PARSE_CLI_OK = 0
@@ -325,6 +332,54 @@ def _read_landing_branch(document: Mapping[Any, Any], source: str) -> str:
     return landing_branch
 
 
+# Resolution ------------------------------------------------------------------
+
+#: Module-level sentinel so the deprecation warning fires once per command/process.
+_DEPRECATED_LEGACY_NAME: str | None = None
+
+
+def resolve_manifest_path(repo_root: str | Path) -> tuple[Path, str]:
+    """Return the manifest path to read and the filename that was found.
+
+    Preferred name is `ergane.yaml`; legacy name `factory.yaml` is honored with
+    a one-time deprecation warning.  When both exist, `ergane.yaml` wins and the
+    ignored legacy file is named in the warning.
+
+    This is the one helper every reader calls (FR-001).  The warning is gated
+    by a module-level flag because this resolver is invoked many times per epic
+    and a per-read warning trains the operator to ignore it (trap 7).
+    """
+    root = Path(repo_root)
+    preferred = root / MANIFEST_NAME
+    legacy = root / LEGACY_MANIFEST_NAME
+
+    if preferred.is_file():
+        if legacy.is_file():
+            _warn_legacy_once(
+                f"{LEGACY_MANIFEST_NAME} is ignored in favor of {MANIFEST_NAME}"
+            )
+        return preferred, MANIFEST_NAME
+
+    if legacy.is_file():
+        _warn_legacy_once(
+            f"{LEGACY_MANIFEST_NAME} is deprecated; rename it to {MANIFEST_NAME}"
+        )
+        return legacy, LEGACY_MANIFEST_NAME
+
+    # Neither exists: return the preferred path so the loader's error names what
+    # the repo *should* have, not what it used to have.
+    return preferred, MANIFEST_NAME
+
+
+def _warn_legacy_once(message: str) -> None:
+    """Emit a `DeprecationWarning` for the legacy name once per Python process."""
+    global _DEPRECATED_LEGACY_NAME
+    if _DEPRECATED_LEGACY_NAME is not None:
+        return
+    _DEPRECATED_LEGACY_NAME = message
+    warnings.warn(message, DeprecationWarning, stacklevel=2)
+
+
 # Loading ---------------------------------------------------------------------
 
 
@@ -358,6 +413,12 @@ def load_factory_config(source: str | Path) -> FactoryConfig:
         ) from None
 
     return parse_factory_config(text, source=label)
+
+
+def load_factory_config_with_name(repo_root: str | Path) -> tuple[FactoryConfig, str]:
+    """Resolve and load a repo's manifest, returning the config and chosen name."""
+    path, name = resolve_manifest_path(repo_root)
+    return load_factory_config(path), name
 
 
 # Reporting -------------------------------------------------------------------

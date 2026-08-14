@@ -158,13 +158,13 @@ def _manifest_finding(
     findings: list[Finding], factory_yaml_error: str | None
 ) -> None:
     if factory_yaml_error is None:
-        findings.append(Finding("factory_yaml", True, "factory.yaml is valid"))
+        findings.append(Finding("factory_yaml", True, "manifest is valid"))
     else:
         findings.append(
             Finding(
                 "factory_yaml",
                 False,
-                f"factory.yaml failed to load: {factory_yaml_error} — fix the "
+                f"manifest failed to load: {factory_yaml_error} — fix the "
                 "manifest so the repo declares its gates",
             )
         )

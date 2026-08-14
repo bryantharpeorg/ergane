@@ -53,6 +53,7 @@ until the module lands, every test here fails at import.
 from __future__ import annotations
 
 import textwrap
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,7 +64,9 @@ from factory.verify.factory_yaml import (
     FactoryConfigError,
     config_error_result,
     load_factory_config,
+    load_factory_config_with_name,
     parse_factory_config,
+    resolve_manifest_path,
 )
 import json
 import subprocess
@@ -201,8 +204,8 @@ def test_load_reads_the_manifest_from_disk(tmp_path: Path) -> None:
 
 
 def test_manifest_name_is_the_committed_filename() -> None:
-    """The runner composes `<worktree>/factory.yaml` from this constant."""
-    assert MANIFEST_NAME == "factory.yaml"
+    """The runner composes `<worktree>/ergane.yaml` from this constant (040/US1)."""
+    assert MANIFEST_NAME == "ergane.yaml"
 
 
 # Standards (005 research R11) -------------------------------------------------
@@ -1176,3 +1179,141 @@ def test_cli_additivity_and_constants_preserve_library_behavior() -> None:
 
     assert "source" in inspect.signature(parse_factory_config).parameters
     assert "source" in inspect.signature(load_factory_config).parameters
+
+
+# 040/US1 manifest rename: resolution, deprecation, and no literal readers -------
+
+
+MANIFEST_CONTENT = _yaml(
+    """
+    version: 1
+    runtime: python:3.11-bookworm
+    gates:
+      test: "uv run pytest -q"
+    """
+)
+
+
+def test_ergane_yaml_only_loads(tmp_path: Path) -> None:
+    """US1-S1: a repo with only `ergane.yaml` parses like `factory.yaml` does today."""
+    repo = tmp_path / "ergane-only"
+    repo.mkdir()
+    (repo / "ergane.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
+
+    config, resolved_name = load_factory_config_with_name(repo)
+
+    assert resolved_name == "ergane.yaml"
+    assert config == parse_factory_config(MANIFEST_CONTENT, source="ergane.yaml")
+
+
+def test_factory_yaml_only_loads_and_deprecates(tmp_path: Path) -> None:
+    """US1-S2: a repo with only `factory.yaml` still loads and warns once by name."""
+    repo = tmp_path / "factory-only"
+    repo.mkdir()
+    (repo / "factory.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
+
+    with warnings.catch_warnings(record=True) as warning_list:
+        warnings.simplefilter("always", DeprecationWarning)
+        import factory.verify.factory_yaml as factory_yaml
+
+        factory_yaml._DEPRECATED_LEGACY_NAME = None
+        config, resolved_name = load_factory_config_with_name(repo)
+
+    assert resolved_name == "factory.yaml"
+    assert config == parse_factory_config(MANIFEST_CONTENT, source="factory.yaml")
+    deprecation_warnings = [w for w in warning_list if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecation_warnings) == 1, "deprecation must be emitted exactly once"
+    message = str(deprecation_warnings[0].message)
+    assert "factory.yaml" in message
+    assert "rename" in message.lower() or "deprecated" in message.lower()
+    assert "ergane.yaml" in message
+
+
+def test_both_manifests_ergane_wins_and_ignored_file_is_named(tmp_path: Path) -> None:
+    """US1-S3: when both exist, `ergane.yaml` wins and the ignored file is named."""
+    repo = tmp_path / "both"
+    repo.mkdir()
+    (repo / "ergane.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
+    (repo / "factory.yaml").write_text(
+        MANIFEST_CONTENT.replace("python:3.11-bookworm", "node:22-bookworm"),
+        encoding="utf-8",
+    )
+
+    with warnings.catch_warnings(record=True) as warning_list:
+        warnings.simplefilter("always", DeprecationWarning)
+        # Reset the module-level deprecation latch so this test observes the
+        # warning regardless of test order, while still asserting the resolver
+        # only warns once for a single repo.
+        import factory.verify.factory_yaml as factory_yaml
+
+        factory_yaml._DEPRECATED_LEGACY_NAME = None
+        config, resolved_name = load_factory_config_with_name(repo)
+
+    assert resolved_name == "ergane.yaml"
+    assert config.runtime == "python:3.11-bookworm"
+    deprecation_warnings = [w for w in warning_list if issubclass(w.category, DeprecationWarning)]
+    assert len(deprecation_warnings) == 1
+    message = str(deprecation_warnings[0].message)
+    assert "factory.yaml" in message
+    assert "ergane.yaml" in message
+    assert "ignored" in message.lower()
+
+
+def test_resolve_manifest_path_returns_legacy_for_factory_yaml(tmp_path: Path) -> None:
+    """The resolver reports which name it chose so callers can act on it."""
+    repo = tmp_path / "legacy"
+    repo.mkdir()
+    (repo / "factory.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
+
+    path, name = resolve_manifest_path(repo)
+
+    assert name == "factory.yaml"
+    assert path.name == "factory.yaml"
+
+
+def test_resolve_manifest_path_returns_ergane_for_ergane_yaml(tmp_path: Path) -> None:
+    repo = tmp_path / "preferred"
+    repo.mkdir()
+    (repo / "ergane.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
+
+    path, name = resolve_manifest_path(repo)
+
+    assert name == "ergane.yaml"
+    assert path.name == "ergane.yaml"
+
+
+def test_resolve_manifest_path_prefers_ergane_yaml(tmp_path: Path) -> None:
+    repo = tmp_path / "both-resolve"
+    repo.mkdir()
+    (repo / "ergane.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
+    (repo / "factory.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
+
+    path, name = resolve_manifest_path(repo)
+
+    assert name == "ergane.yaml"
+    assert path.name == "ergane.yaml"
+
+
+def test_no_literal_factory_yaml_in_manifest_readers() -> None:
+    """US1-S4/FR-004: every reader goes through the resolver, not a literal string.
+
+    This is the same structural guard `test_gh_client.py` uses for
+    `--delete-branch`: inspect the source of the modules that read the manifest
+    and assert the forbidden literal is absent.
+    """
+    import inspect
+
+    from factory.activities import agent_activities
+    from factory.activities import merge_activities
+    from factory.mergequeue import onboard
+    from factory.verify import factory_yaml
+
+    modules = (agent_activities, merge_activities, onboard, factory_yaml)
+    forbidden = '"factory.yaml"'
+    found = [
+        f"{module.__name__}:{lineno}"
+        for module in modules
+        for lineno, line in enumerate(inspect.getsourcelines(module)[0], start=1)
+        if forbidden in line
+    ]
+    assert not found, f"literal {forbidden!r} found in manifest readers: {found}"

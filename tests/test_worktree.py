@@ -201,7 +201,7 @@ def test_ensure_creates_the_nodes_worktree_on_its_own_branch(
 
     # A real checkout of the repo, not an empty directory.
     assert (expected / TRACKED_FILE).is_file()
-    assert (expected / "factory.yaml").is_file()
+    assert (expected / "ergane.yaml").is_file()
 
     assert prepared.branch == BRANCH
     assert git(expected, "rev-parse", "--abbrev-ref", "HEAD").strip() == BRANCH
