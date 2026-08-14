@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "Read more supporting files for init design",
+  "description": "Read CLI main entrypoint, nouns __init__, tests/test_ergane_cli.py and test_factory_yaml.py patterns, and worktree resolver. Also check factory.yaml/pyproject.toml for gates command.",
+  "activeForm": "Reading supporting files for init design",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}
