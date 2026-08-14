@@ -1,7 +1,8 @@
 # Plan: Escalation is a workflow, and its transport is an adapter
 
-All line references were read against the tree at `ace6229` on 2026-08-13. Grep
-the construct beside each anchor rather than trusting the number — see trap 8.
+All line references were re-read against the tree at `d13fc4a` on 2026-08-14,
+after 040-manifest-rename landed. Grep the construct beside each anchor rather
+than trusting the number — see trap 8.
 
 This epic touches code the operator uses every day. US3 in particular refactors
 the live escalation path while the channel is in use. Read trap 1 before you
@@ -11,11 +12,11 @@ touch anything under `tests/`.
 
 | What | Where | Used by |
 | --- | --- | --- |
-| **The caller-supplies-the-id seam, already built** | `factory/activities/notify_activities.py:150` — `SendEscalationInput.escalation_id` is optional and reused when given; `_pending_record` at `:355` honours it | US2 — this is how the correlation id becomes the workflow ID without inventing a mechanism; trap 3 |
-| The delivery activity | `notify_activities.py:272` — grep `async def send_escalation` | US2 — the workflow's delivery step |
-| The expiry activity, **which already settles the race** | `notify_activities.py:318` — grep `async def expire_escalation` | US2 — FR-007 is mostly already satisfied here; trap 2 |
-| The store's guarded UPDATE | `factory/verify/store.py:469` — grep `UPDATE escalations SET resolution` | US2 — press arbitration, unchanged |
-| The two tables and why there are two | `store.py:131` (`escalations`), `:159` (`questions`) | US2, US4 — trap 5 |
+| **The caller-supplies-the-id seam, already built** | `factory/activities/notify_activities.py:151` — `SendEscalationInput.escalation_id` is optional and reused when given; `_pending_record` at `:357` honours it | US2 — this is how the correlation id becomes the workflow ID without inventing a mechanism; trap 3 |
+| The delivery activity | `notify_activities.py:275` — grep `async def send_escalation` | US2 — the workflow's delivery step |
+| The expiry activity, **which already settles the race** | `notify_activities.py:320` — grep `async def expire_escalation` | US2 — FR-007 is mostly already satisfied here; trap 2 |
+| The store's guarded UPDATE | `factory/verify/store.py:477` — grep `UPDATE escalations SET resolution` | US2 — press arbitration, unchanged |
+| The two tables and why there are two | `store.py:138` (`escalations`), `:166` (`questions`) | US2, US4 — trap 5 |
 | The two signals | `factory/workgraph/workflow.py:571` (`escalation_resolved(id, choice)`), `:582` (`question_answered(id, text)`) | US2, US3 — trap 5 |
 | **The escalation park being extracted** | `workflow.py:1950`–`:1990` — grep `send_escalation` then `wait_condition` | US3 — read the whole block, including the undelivered branch |
 | The question park being extracted | `workflow.py:1362`–`:1460` — grep `send_question` | US3 |
@@ -23,7 +24,7 @@ touch anything under `tests/`.
 | The bridge that ferries replies today | `factory/notify/service.py:126` (`CallbackBridge`), `:365` (`run_bridge`) | US1 — the inbound half of the seam |
 | Message rendering, which does not change | `factory/notify/messages.py` | US1 — the adapter receives an *already-rendered* message |
 | **039's workflow-scope env guard, which discovers new modules by construction** | `tests/test_workflow_env_guard.py:184` — grep `_discover_workflow_modules` | US2 — trap 4 |
-| The legitimate activity-scope store read | `notify_activities.py:650` — grep `def _store_path` | US2 — activity scope is fine; workflow scope is not |
+| The legitimate activity-scope store read | `notify_activities.py:652` — grep `def _store_path` | US2 — activity scope is fine; workflow scope is not |
 | The 008 behavior suite US3 may not edit | `tests/test_notify.py`, `tests/test_notify_activities.py`, `tests/test_operator_question.py`, `tests/test_question_delivery.py`, `tests/test_question_reply.py` | US3 — trap 1 |
 | The Telegram live suite | `tests/test_live_notify.py`; marker at `pyproject.toml:34` | US1 — trap 7 |
 | 033's typed config | `escalation.adapter`, `escalation.authorized_responders` | US1, US4 |
@@ -43,9 +44,9 @@ edit to make inside this story.
 
 FR-007 asks that an answer racing expiry resolve to exactly one deterministic
 outcome. That is already true, in code, at two levels:
-`store.expire_escalation` (`store.py:469`) is a guarded UPDATE that permits
+`store.expire_escalation` (`store.py:477`) is a guarded UPDATE that permits
 exactly one terminal transition, and the `expire_escalation` activity
-(`notify_activities.py:318`) reads the row back when the guard matches nothing
+(`notify_activities.py:320`) reads the row back when the guard matches nothing
 and hands the workflow the operator's answer *instead of* the kill — the R12
 case, documented in its docstring. Its other documented promise matters too: it
 never raises on an unknown id or an unreadable store, because "the caller's
@@ -60,7 +61,7 @@ sometimes.
 FR-004 makes the workflow ID the correlation id. A workflow ID must exist
 before `start_workflow`, and `secrets.token_hex` cannot be called from workflow
 scope (non-deterministic). Today the id is minted inside the activity
-(`_pending_record`, `notify_activities.py:355`).
+(`_pending_record`, `notify_activities.py:357`).
 
 The seam for this is already there and already used: `SendEscalationInput`
 carries an optional `escalation_id` that the activity reuses rather than
@@ -75,6 +76,55 @@ workflow's timer agree; the extracted workflow must still set its timer from
 the same instant, or the bridge and the workflow will disagree about whether a
 press was in time.
 
+### Trap 9 — the table you are building a lifecycle over does not currently get settled
+
+Trap 2 tells you the race is already settled and not to settle it twice. That is
+true of the *arbitration*. It is not true of the write-back, and the live store
+says so. Measured on 2026-08-14 against `.factory/verification.db`:
+
+| | count |
+| --- | --- |
+| escalations, `resolution IS NULL` | **14** |
+| escalations, resolved by `BUTTON` | 5 |
+| escalations, resolved by `TIMEOUT` | **1** |
+| questions, settled at all | **0 of 5** |
+
+The timeout write-back has fired **once, ever**. No question has ever been
+marked `ANSWERED` or `EXPIRED`. All 14 pending escalations are past their
+`expires_at`, the oldest by eight days.
+
+This is not workflows dying. `027-gate-suite-fake-time` and
+`028-epic-relaunch-reset` both completed and landed, and between them left four
+pending rows — `027/us2` sent at 14:55Z and 16:52Z, `028/us3` at 16:19Z and
+17:14Z on 2026-08-13, every one with `delivered=1`. Filed as
+`notify/escalations-and-questions-are-never-settled-in-the-store`.
+
+Three things this changes for you:
+
+1. **`idx_esc_pending` is 70% garbage.** Any surface that means "the pending
+   escalations" — a list command, a recovery sweep, a startup reconciliation —
+   reads fourteen rows belonging to nodes that finished over a week ago. If US2
+   or US4 grows such a surface, it needs a predicate that survives this, and a
+   test seeded with an abandoned row rather than only well-formed ones.
+2. **Those buttons are still live.** Every one of the fourteen was delivered to
+   Telegram, so its `callback_data` is still pressable today. A press resolves
+   against a node that no longer exists. Whatever US2's workflow does when a
+   signal arrives for an escalation it does not own must be *decided*, not
+   discovered — and the honest options are to ignore it or to reply saying the
+   epic is over, not to write a resolution nobody can act on.
+3. **Do not treat "settled" as a thing you inherit.** The extraction in US3 is
+   supposed to preserve behavior, and the behavior it is preserving includes
+   this gap. Preserving it is acceptable and probably correct for this epic —
+   but say so in the commit rather than implying the lifecycle is complete,
+   because FR-007's "exactly one deterministic outcome" reads, to anyone
+   auditing later, like a claim that every row reaches one.
+
+The mechanism is not yet discriminated between two candidates: a second
+escalation outstanding for a node that resolves by another route is abandoned
+without settlement, or the expiry write-back is simply not reached when the park
+exits for any reason other than its own timer. If your work makes it obvious
+which, that is worth a line in the commit and an update to the finding.
+
 ### Trap 4 — 039's guard will find your new workflow module without being told
 
 `tests/test_workflow_env_guard.py` discovers workflow-defining modules by
@@ -83,7 +133,7 @@ way. Your new `@workflow.defn` module is covered the moment it exists, and an
 `os.environ` read at workflow scope in it fails a test you did not write. This
 is the defect that wedged the roadmap for eleven hours on 2026-08-13; FR-012
 keeps it closed. Note the distinction the guard already makes correctly:
-`notify_activities._store_path()` (`:650`) is an *activity*-scope read and is
+`notify_activities._store_path()` (`:652`) is an *activity*-scope read and is
 legitimate. Keep store-path resolution on that side of the line.
 
 ### Trap 5 — there are two signals and two tables, and the second of each exists for a reason
@@ -91,8 +141,8 @@ legitimate. Keep store-path resolution on that side of the line.
 `escalation_resolved(escalation_id, choice)` carries a choice pinned to a closed
 enum by the `escalations` table's CHECK constraints. `question_answered(
 question_id, answer_text)` exists as a sibling because free text cannot pass
-through that enum — the `questions` table (`store.py:159`) is a sibling of
-`escalations` (`:131`) for the same reason. The tempting simplification is one
+through that enum — the `questions` table (`store.py:166`) is a sibling of
+`escalations` (`:138`) for the same reason. The tempting simplification is one
 signal and one table. It may even be right — but it is a behavior change to
 the operator channel, and this epic's whole discipline is that behavior does
 not change. Carry both; if you want to unify them, that is a finding and a
