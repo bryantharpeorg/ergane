@@ -390,6 +390,8 @@ class TestGatherOwnsExactlyOneEventLoop:
         self, fake_temporal: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ERGANE_ROOT", raising=False)
+        monkeypatch.delenv("FACTORY_ROOT", raising=False)
         (tmp_path / ".factory" / "worktrees" / "closed-epic" / "us1").mkdir(parents=True)
         fake_temporal(
             {
@@ -408,6 +410,8 @@ class TestGatherOwnsExactlyOneEventLoop:
         self, fake_temporal: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("ERGANE_ROOT", raising=False)
+        monkeypatch.delenv("FACTORY_ROOT", raising=False)
         alias = "closed-epic:us1:1:implementer"
 
         class _StubProxy:

@@ -24,7 +24,7 @@ from typing import Any, Protocol, Sequence
 from factory.doctor.models import Finding, Severity, Status
 from factory.usage.litellm_client import LiteLLMClient, LiteLLMError
 from factory.workgraph.cli import workflow_id
-from factory.workgraph.worktree import worktree_path
+from factory.workgraph.worktree import resolve_factory_root, worktree_path
 
 
 class ServiceNotAnswering(Exception):
@@ -128,12 +128,14 @@ _WORKER_CMDLINE_RE = re.compile(
     r"^(?:\S*/)?python[0-9.]*(?:\s+\S+)*?\s+-m\s+factory\.worker(?:\s|$)"
 )
 
-#: Evidence stores the factory depends on.
-_EVIDENCE_STORES = (
-    Path(".factory") / "doctor.db",
-    Path(".factory") / "ledger.db",
-    Path(".factory") / "verification.db",
-)
+#: Basename of each evidence store under the resolved runtime root.
+_EVIDENCE_STORE_NAMES = ("doctor.db", "ledger.db", "verification.db")
+
+
+def _evidence_store_paths() -> tuple[Path, ...]:
+    """Resolved paths to the three evidence stores (US2)."""
+    root, _choice = resolve_factory_root()
+    return tuple(root / name for name in _EVIDENCE_STORE_NAMES)
 
 
 def _alias_epic_id(alias: str) -> str | None:
@@ -265,7 +267,7 @@ class OrphanedKeyProbe:
                 candidate_epics.add(epic)
 
         # Also include worktree directories as candidates for closed-ness.
-        worktrees_root = Path(".factory") / "worktrees"
+        worktrees_root = resolve_factory_root()[0] / "worktrees"
         if worktrees_root.exists():
             candidate_epics.update(
                 p.name for p in worktrees_root.iterdir() if p.is_dir()
@@ -372,7 +374,7 @@ class StaleWorktreeProbe:
     name = "stale-worktree"
 
     async def _gather_async(self) -> WorktreeSnapshot:
-        worktrees_root = Path(".factory") / "worktrees"
+        worktrees_root = resolve_factory_root()[0] / "worktrees"
         worktrees: list[Path] = []
         if worktrees_root.exists():
             for epic_dir in worktrees_root.iterdir():
@@ -424,7 +426,7 @@ class StoreIntegrityProbe:
 
     def gather(self) -> StoreIntegritySnapshot:
         results: list[tuple[Path, str]] = []
-        for path in _EVIDENCE_STORES:
+        for path in _evidence_store_paths():
             results.append((path, _quick_check(path)))
         return StoreIntegritySnapshot(stores=results)
 
