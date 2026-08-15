@@ -4,7 +4,7 @@ Each node works its own story's slice, test-first, and commits once per task. Re
 `plan.md` before the first commit — its traps are the difference between a one-line
 fix and a repeat of the defect this spec exists to close.
 
-## US1 — The leak detector stops requiring the live store's absence
+## Phase 1: User Story 1 — The leak detector stops requiring the live store's absence
 
 - [ ] T001 Add a fixture that records the default store path's existence, size and
       modification time before the leaking-writer body runs (spec US1-S1).
@@ -28,7 +28,7 @@ fix and a repeat of the defect this spec exists to close.
       the failure, and commit it as the control that the fix changed an outcome
       (spec US1-S1, SC-004, plan trap 6).
 
-## US2 — The findings ledger is addressed through the resolver
+## Phase 2: User Story 2 — The findings ledger is addressed through the resolver
 
 - [ ] T008 Write the split-state test first — `.ergane/` present without a ledger,
       `.factory/doctor.db` populated to recurrence three — and watch it fail before
@@ -54,7 +54,7 @@ fix and a repeat of the defect this spec exists to close.
 - [ ] T016 Assert in a test that none of the three doctor modules carries a path
       default built from a runtime-root directory literal (spec US2-S3).
 
-## US3 — `ergane repo migrate-runtime-root` can start
+## Phase 3: User Story 3 — `ergane repo migrate-runtime-root` can start
 
 - [ ] T017 Write the closed-port test first, leaving `_temporal_client_factory` at
       its default, and watch it raise `NameError` before you fix anything
@@ -69,7 +69,7 @@ fix and a repeat of the defect this spec exists to close.
       runtime root and a reachable Temporal with no epics open; commit the pasted
       dry-run output (spec US3-S2, plan trap 7).
 
-## US4 — The migration refusal names the variable the operator set
+## Phase 4: User Story 4 — The migration refusal names the variable the operator set
 
 - [ ] T021 Teach the resolver to report which variable supplied the override, or
       read the precedence from `factory/env.py`; state the route and the reason in

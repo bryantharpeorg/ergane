@@ -4,7 +4,9 @@ Five stories, chained on merge edges: US1 → US2 → US3 → US4 → US5. Work
 test-first and commit once per task. The backend is decided — bwrap; read
 plan.md's "Decided at refinement" before the first commit.
 
-## Tests for User Story 1 (write FIRST, must fail)
+## Phase 1: User Story 1 — An attempt that writes outside its worktree is caught and named
+
+### Tests for this story (write FIRST, must fail)
 
 - [ ] T001 [P] [US1] Write the detection case FIRST: an attempt whose scripted
       agent modifies a tracked file in the target repository outside its worktree
@@ -34,7 +36,7 @@ plan.md's "Decided at refinement" before the first commit.
       destroyed (spec US1-S6, FR-013) — must fail. Hold the start-state snapshot
       somewhere the agent cannot reach (plan.md trap 10).
 
-## Implementation for User Story 1
+### Implementation for this story
 
 - [ ] T007 [US1] Capture the target repository's tracked-file state at attempt
       start and at teardown, and file a critical finding on difference. Read
@@ -48,7 +50,9 @@ plan.md's "Decided at refinement" before the first commit.
       outside the runtime root so FR-013 holds — a snapshot stored in the
       directory under threat is not a snapshot.
 
-## Tests for User Story 2 (write FIRST, must fail)
+## Phase 2: User Story 2 — The launch goes behind a seam, and an absent backend is a refusal
+
+### Tests for this story (write FIRST, must fail)
 
 - [ ] T010 [US2] Write the parity case FIRST: an attempt dispatched through the
       seam with a fake backend substituted hands the fake an argv, prompt path,
@@ -63,7 +67,7 @@ plan.md's "Decided at refinement" before the first commit.
       the old container-image form is a validation refusal naming `bwrap` as
       the supported backend (spec US2-S3) — must fail.
 
-## Implementation for User Story 2
+### Implementation for this story
 
 - [ ] T013 [US2] Put the agent launch behind a substitutable seam, following
       the `GateExecutor` Protocol precedent at `factory/verify/gates.py:208`.
@@ -79,14 +83,16 @@ plan.md's "Decided at refinement" before the first commit.
       launch is decided and nothing about what the agent is asked to do.
 - [ ] T016 [US2] Prove the suite is green with no backend on the host: seam
       tests drive the fake, and the detection guard the live tests will use in
-      US3/US4 exists and is exercised (FR-010, spec US2-S4, plan.md trap 5).
-      A skip is not a pass here.
+      later stories exists and is exercised (FR-010, spec US2-S4, plan.md
+      trap 5). A skip is not a pass here.
 
-## Tests for User Story 3 (write FIRST, must fail)
+## Phase 3: User Story 3 — The agent's filesystem is its worktree, not the host
 
-- [ ] T017 [US3] Write the **git plumbing** case FIRST, before any other US3
-      test: an agent inside the boundary runs `git add`, `git commit` and `git
-      diff` in its worktree and all succeed. This is plan.md trap 1 — a
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T017 [US3] Write the **git plumbing** case FIRST, before any other test
+      in this story: an agent inside the boundary runs `git add`, `git commit`
+      and `git diff` in its worktree and all succeed. This is plan.md trap 1 — a
       worktree's `.git` is a file pointing into the target repo's `.git`, so the
       naive mount set breaks every operation the attempt performs at its end.
       Failing here first is what stops that being discovered at commit time
@@ -103,7 +109,7 @@ plan.md's "Decided at refinement" before the first commit.
       worktree are all intact afterwards (spec US3-S4, FR-014, SC-007) — must
       fail. Paste the before/after sizes and row counts into the test.
 
-## Implementation for User Story 3
+### Implementation for this story
 
 - [ ] T021 [US3] The bwrap executor, per plan.md § US3: invoke `/usr/bin/bwrap`
       by absolute path (trap 6), `--ro-bind /usr` with `/bin` and `/lib`
@@ -115,7 +121,9 @@ plan.md's "Decided at refinement" before the first commit.
       leaves read-only (trap 13 — bind the symlink targets, set `PATH`),
       `--unshare-pid --die-with-parent`, and **no** `--unshare-net`.
 
-## Tests for User Story 4 (write FIRST, must fail)
+## Phase 4: User Story 4 — Deadlines, transcripts and signals survive the boundary
+
+### Tests for this story (write FIRST, must fail)
 
 - [ ] T022 [P] [US4] Write the timeout case FIRST with a deliberately hanging
       agent: the attempt is classified `timeout` and **no process from it
@@ -140,7 +148,7 @@ plan.md's "Decided at refinement" before the first commit.
       test that proves the boundary is what is doing the work. A containment
       claim proven only in the passing direction has not been proven.
 
-## Implementation for User Story 4
+### Implementation for this story
 
 - [ ] T026 [US4] Re-establish termination so the deadline still kills the agent
       and everything it spawned (FR-006). The pid file at
@@ -155,7 +163,9 @@ plan.md's "Decided at refinement" before the first commit.
       rather than inheriting it by luck, so a later refactor cannot drop the
       flag with nothing failing.
 
-## Tests for User Story 5 (write FIRST, must fail)
+## Phase 5: User Story 5 — Verification does not reopen what the agent boundary closed
+
+### Tests for this story (write FIRST, must fail)
 
 - [ ] T029 [P] [US5] Write the escape case FIRST: a gate command reading or
       writing outside the worktree fails inside the boundary where it would have
@@ -167,7 +177,7 @@ plan.md's "Decided at refinement" before the first commit.
       killed with every process it spawned, as it is today (spec US5-S3) — must
       fail.
 
-## Implementation for User Story 5
+### Implementation for this story
 
 - [ ] T032 [US5] Add a second `GateExecutor` implementation beside the host one
       at `factory/verify/gates.py:351`. **Do not edit the host implementation
