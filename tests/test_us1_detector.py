@@ -309,3 +309,38 @@ async def test_agent_writing_only_inside_worktree_files_nothing(
         conn.close()
 
 
+# --- T003: operator work is reported but left untouched ---
+
+
+async def test_operator_work_is_reported_and_untouched(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    repo: Path,
+    worker_host: Path,
+) -> None:
+    """US1-S3/S4 / FR-002: intent is not attributed, and the detector is read-only."""
+    target_file = repo / TRACKED_FILE
+    original = target_file.read_text(encoding="utf-8")
+    operator_file = repo / "operator_work.txt"
+    operator_file.write_text("operator uncommitted work\n", encoding="utf-8")
+
+    write_control(home_path(factory_root, EPIC, NODE), stdout="done")
+    await env.run(run_agent_attempt, context())
+
+    conn = connect(factory_root / "doctor.db")
+    try:
+        finding = get_finding(conn, finding_key(EPIC, NODE))
+        assert finding is not None
+        assert finding.severity is Severity.CRITICAL
+        assert "operator_work.txt" in finding.summary or any(
+            "operator_work.txt" in ref for ref in finding.refs
+        )
+        # The detector must not have tidied the operator's work.
+        assert operator_file.read_text(encoding="utf-8") == "operator uncommitted work\n"
+        assert target_file.read_text(encoding="utf-8") == original
+    finally:
+        conn.close()
+
+
