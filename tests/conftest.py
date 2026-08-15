@@ -619,3 +619,41 @@ def node_worktree(
         return add_worktree(repo, tmp_path / f"{repo.name}-worktree", branch=branch)
 
     return build
+
+
+# --- every activity-driven agent runs on the host, not in a real sandbox ------
+
+
+@pytest.fixture(autouse=True)
+def host_launch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Substitute the host launch wherever a test drives `run_agent_attempt`.
+
+    Fixture manifests declare `runtime: bwrap` — the only value the schema
+    admits — so the adapter would otherwise resolve the real sandbox for every
+    activity-level test, which the suite must not require: a host without
+    bubblewrap still has to run green (011 FR-010).
+
+    The substitution belongs here, on the module attribute the activity looks
+    up, and **not** inside `run_agent_attempt`. An unconditional
+    `adapter._backend = HostAgentBackend(...)` on that path is exactly what
+    pinned every production attempt of `011-agent-sandbox` to the host while
+    US3-US5 built and proved a boundary no dispatch could reach; the guard
+    against its return is
+    `test_agent_activities.py::test_run_agent_attempt_does_not_override_the_resolved_backend`.
+
+    Tests that mean to exercise the real boundary (`tests/test_us3_boundary.py`)
+    construct `ClaudeCodeAdapter` themselves and are untouched by this.
+    """
+    from factory.activities import agent_activities
+    from factory.workgraph.adapter import (
+        ClaudeCodeAdapter,
+        HostAgentBackend,
+        adapter_for,
+    )
+
+    def _host_adapter(agent: str, **options: object) -> ClaudeCodeAdapter:
+        adapter = adapter_for(agent, **options)
+        adapter._backend = HostAgentBackend(executable=adapter.executable)
+        return adapter
+
+    monkeypatch.setattr(agent_activities, "adapter_for", _host_adapter)

@@ -68,6 +68,7 @@ T015): until the module lands, every test here fails at import.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import subprocess
@@ -1236,3 +1237,33 @@ async def test_an_absent_prompt_source_fails_the_dispatch_naming_the_path(
     assert "plan.md" in str(raised.value)
     # An epic's documents are committed files; a re-run finds the same absence.
     assert raised.value.non_retryable is True
+
+
+# --- the dispatch path must honour the manifest's runtime ---------------------
+
+
+def test_run_agent_attempt_does_not_override_the_resolved_backend() -> None:
+    """The production dispatch path may not pin a launch backend (regression).
+
+    `011-agent-sandbox` landed five green stories building and proving a
+    bubblewrap boundary, and not one real attempt ran inside it: this activity
+    assigned `adapter._backend = HostAgentBackend(...)` immediately before
+    calling `run_attempt`, so the manifest resolution the other four stories
+    were written against never decided anything in production. Verified on
+    2026-08-15 against a live agent whose mount and PID namespaces were
+    identical to the operator shell's, with no `bwrap` process on the host.
+
+    A gate cannot observe a namespace, which is why this asserts on the source
+    of the dispatch path instead: nothing between resolving the adapter and
+    running the attempt may write to `_backend`. The companion fact — that the
+    resolution returns the manifest's backend — is
+    `test_adapter.py`'s; the fact this test owns is that production lets it.
+    """
+    source = inspect.getsource(run_agent_attempt)
+    assert "_backend" not in source, (
+        "run_agent_attempt assigns a launch backend, bypassing the manifest "
+        "resolution in factory/workgraph/adapter.py:_resolve_backend. Tests "
+        "that need the host launch declare `runtime: host` in their fixture "
+        "manifest resolution; substitute the backend in a test fixture instead "
+        "(see the `host_launch` fixture in this file)."
+    )
