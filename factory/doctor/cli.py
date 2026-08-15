@@ -29,7 +29,6 @@ from factory.doctor.store import (
     report,
     resolve,
     resolve_by_spec,
-    resolved_doctor_db_path,
 )
 from factory.roadmap.models import _split_frontmatter
 from factory.workgraph.derive import DerivationError, derive_workgraph
@@ -37,6 +36,8 @@ from factory.workgraph.derive import DerivationError, derive_workgraph
 EXIT_OK = 0
 EXIT_USER = 1
 EXIT_TRANSPORT = 2
+
+DEFAULT_DB_PATH = Path(".factory") / "doctor.db"
 
 #: Credential-like values must never reach findings, events, snapshots,
 #: scaffolds, or output. This pattern mirrors the 001 sweep.

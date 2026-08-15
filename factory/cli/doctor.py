@@ -34,10 +34,11 @@ from factory.doctor.store import (
     report,
     resolve,
     resolve_by_spec,
-    resolved_doctor_db_path,
 )
 from factory.roadmap.models import _split_frontmatter
 from factory.workgraph.derive import DerivationError, derive_workgraph
+
+DEFAULT_DB_PATH = Path(".factory") / "doctor.db"
 
 #: Credential-like values must never reach findings or output.
 _CREDENTIAL_RE = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
@@ -146,11 +147,10 @@ def add_doctor_parser(subparsers: argparse._SubParsersAction) -> argparse.Argume
         help="run all registered probes",
         description="Run every registered probe and file any findings.",
     )
-    default_path = resolved_doctor_db_path()
     parser.add_argument(
         "--db",
-        default=str(default_path),
-        help=f"path to the findings store (default: {default_path})",
+        default=str(DEFAULT_DB_PATH),
+        help=f"path to the findings store (default: {DEFAULT_DB_PATH})",
     )
     parser.set_defaults(run=doctor_command)
     return parser
@@ -231,12 +231,11 @@ def _report_if_new(
 
 
 def add_findings_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    default_path = resolved_doctor_db_path()
     db_parent = argparse.ArgumentParser(add_help=False)
     db_parent.add_argument(
         "--db",
-        default=str(default_path),
-        help=f"path to the findings store (default: {default_path})",
+        default=str(DEFAULT_DB_PATH),
+        help=f"path to the findings store (default: {DEFAULT_DB_PATH})",
     )
 
     parser = subparsers.add_parser(
