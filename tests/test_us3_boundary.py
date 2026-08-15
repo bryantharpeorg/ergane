@@ -17,6 +17,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -71,7 +72,7 @@ def _context(worktree_path: str, home_path: str, target_repo: str) -> AttemptCon
 def _build_target_repo(tmp_path: Path, runtime: str = "bwrap") -> Path:
     from tests.target_repo import build_target_repo as _build_fixture_repo
 
-    return _build_fixture_repo(tmp_path / "target-repo", variant="passing")
+    return _build_fixture_repo(Path(tempfile.mkdtemp(prefix="target-")) / "repo", variant="passing")
 
 
 @pytest.fixture(autouse=True)
@@ -101,10 +102,10 @@ def _script_git_plumbing(home: Path) -> None:
         "git add -A",
         "git diff --cached --name-only",
         "git status --short",
-        "git commit --quiet --allow-empty -m 'agent commit inside boundary'",
+        "git commit --allow-empty -m 'agent commit inside boundary'",
         "git diff HEAD~1 --name-only",
     ]
-    write_control(home, stdout="\n".join(commands), exit_code=0)
+    write_control(home, commands="\n".join(commands), exit_code=0)
 
 
 def _script_write_absolute(home: Path, target_path: str) -> None:
@@ -113,7 +114,7 @@ def _script_write_absolute(home: Path, target_path: str) -> None:
         f"echo 'attempting-write-to: {target_path}'",
         f"echo 'agent-write' > '{target_path}' || echo 'write-failed: ' $?",
     ]
-    write_control(home, stdout="\n".join(commands), exit_code=0)
+    write_control(home, commands="\n".join(commands), exit_code=0)
 
 
 def _script_read_outside(home: Path, target_path: str) -> None:
@@ -122,18 +123,24 @@ def _script_read_outside(home: Path, target_path: str) -> None:
         f"echo 'attempting-read-from: {target_path}'",
         f"cat '{target_path}' || echo 'read-failed: ' $?",
     ]
-    write_control(home, stdout="\n".join(commands), exit_code=0)
+    write_control(home, commands="\n".join(commands), exit_code=0)
 
 
-def _script_destruction(home: Path, target_repo: str) -> None:
-    """Script the stub to run the literal 2026-08-14 command inside the boundary."""
+def _script_destruction(home: Path, factory_root: str) -> None:
+    """Script the stub to run the literal 2026-08-14 command inside the boundary.
+
+    The original incident ran `rm -rf .factory` and `rm -rf .ergane` from the
+    target repository's working tree, expecting to clean scratch state. Inside the
+    boundary those paths do not exist; the destructive equivalent on the runtime
+    root is an absolute `rm -rf` against the factory root, which must fail.
+    """
     commands = [
-        f"cd '{target_repo}'",
+        f"cd '{factory_root}'",
         "echo 'agent-pwd-after-cd: '$(pwd)",
-        "rm -rf .factory || echo 'rm-failed: ' $?",
-        "rm -rf .ergane || echo 'rm-ergane-failed: ' $?",
+        f"rm -rf '{factory_root}/.factory' || echo 'rm-failed: ' $?",
+        f"rm -rf '{factory_root}/.ergane' || echo 'rm-ergane-failed: ' $?",
     ]
-    write_control(home, stdout="\n".join(commands), exit_code=0)
+    write_control(home, commands="\n".join(commands), exit_code=0)
 
 
 async def wait_until(
@@ -184,7 +191,7 @@ async def test_git_plumbing_succeeds_inside_bwrap_boundary(
         pytest.skip(f"{BWRAP_BACKEND_BINARY} not available on this host")
 
     repo = _build_target_repo(tmp_path)
-    worktree = tmp_path / "node-worktree"
+    worktree = tmp_path / "worktrees" / EPIC / NODE
     worktree.mkdir(parents=True)
     # Make the node worktree a real git worktree so git operations mean something.
     subprocess.run(
@@ -235,7 +242,7 @@ async def test_write_to_target_repo_working_tree_fails_and_leaves_tree_unchanged
     target_file.write_text("original operator content\n", encoding="utf-8")
     original = target_file.read_text(encoding="utf-8")
 
-    worktree = tmp_path / "node-worktree"
+    worktree = tmp_path / "worktrees" / EPIC / NODE
     worktree.mkdir(parents=True)
     subprocess.run(
         ["git", "-C", str(repo), "worktree", "add", "--quiet", "-b", "factory/us3", str(worktree)],
@@ -276,17 +283,17 @@ async def test_read_outside_mount_set_fails(
         pytest.skip(f"{BWRAP_BACKEND_BINARY} not available on this host")
 
     repo = _build_target_repo(tmp_path)
-    worktree = tmp_path / "node-worktree"
+    worktree = tmp_path / "worktrees" / EPIC / NODE
     worktree.mkdir(parents=True)
     subprocess.run(
         ["git", "-C", str(repo), "worktree", "add", "--quiet", "-b", "factory/us3", str(worktree)],
         check=True,
     )
 
-    operator_secret = tmp_path / "operator-home" / ".config" / "gh"
+    operator_secret = Path(tempfile.mkdtemp(prefix="operator-")) / "home" / ".config" / "gh"
     operator_secret.parent.mkdir(parents=True)
     operator_secret.write_text("operator token\n", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(tmp_path / "operator-home"))
+    monkeypatch.setenv("HOME", str(operator_secret.parent.parent))
 
     _script_read_outside(per_node_home, str(operator_secret))
 
@@ -314,7 +321,13 @@ def _size_or_count(path: Path) -> Any:
         return "missing"
     if path.is_file():
         return path.stat().st_size
-    return sum(1 for _ in path.rglob("*") if _.is_file())
+    # The stub writes its own record files under `.stub-agent/`, which are part
+    # of the test harness, not the worktree contents being protected.
+    return sum(
+        1
+        for item in path.rglob("*")
+        if item.is_file() and ".stub-agent" not in item.parts
+    )
 
 
 @pytest.mark.asyncio
@@ -328,16 +341,22 @@ async def test_literal_rm_rf_factory_bounces_and_stores_survive(
         pytest.skip(f"{BWRAP_BACKEND_BINARY} not available on this host")
 
     repo = _build_target_repo(tmp_path)
-    worktree = tmp_path / "node-worktree"
+    worktree = tmp_path / "worktrees" / EPIC / NODE
     worktree.mkdir(parents=True)
     subprocess.run(
         ["git", "-C", str(repo), "worktree", "add", "--quiet", "-b", "factory/us3", str(worktree)],
         check=True,
     )
 
-    # Pre-populate stores, ledgers and a sibling worktree.
+    # Pre-populate stores, ledgers and a sibling worktree. The literal
+    # 2026-08-14 command targeted `.factory` and `.ergane` directories, so those
+    # must exist for `rm -rf` to produce observable failure evidence.
     for name in ("doctor.db", "ledger.db", "verification.db"):
         (factory_root / name).write_text(f"{name} initial content\n", encoding="utf-8")
+    (factory_root / ".factory").mkdir(exist_ok=True)
+    (factory_root / ".ergane").mkdir(exist_ok=True)
+    (factory_root / ".factory" / "marker.txt").write_text("factory marker\n", encoding="utf-8")
+    (factory_root / ".ergane" / "marker.txt").write_text("ergane marker\n", encoding="utf-8")
     sibling = factory_root / "worktrees" / EPIC / "us2"
     sibling.mkdir(parents=True)
     (sibling / "sibling.txt").write_text("sibling content\n", encoding="utf-8")
@@ -350,7 +369,7 @@ async def test_literal_rm_rf_factory_bounces_and_stores_survive(
         "own_worktree": _size_or_count(worktree),
     }
 
-    _script_destruction(per_node_home, str(_target_repo_worktree(repo)))
+    _script_destruction(per_node_home, str(factory_root))
 
     adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH))
     await adapter.run_attempt(
@@ -394,7 +413,7 @@ async def test_bwrap_absence_is_a_named_refusal(
     from factory.workgraph import adapter as adapter_module
 
     repo = _build_target_repo(tmp_path)
-    worktree = tmp_path / "worktree"
+    worktree = tmp_path / "worktrees" / EPIC / NODE
     worktree.mkdir(parents=True)
 
     missing_binary = tmp_path / "missing" / "bwrap"
