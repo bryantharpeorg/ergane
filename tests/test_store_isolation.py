@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from dataclasses import dataclass
 from temporalio.testing import ActivityEnvironment
 
 from factory.activities import notify_activities
@@ -64,6 +65,64 @@ def _is_under(path: Path, base: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+@dataclass(frozen=True)
+class _StorePreState:
+    """What the default store looked like before the leaking-writer body ran.
+
+    Records existence, byte size and modification time so the detector can
+    assert *non-mutation* instead of *non-existence*.  The test constructs a
+    populated layout in tmp for SC-001 and T007, never touching the operator's
+    live store (plan trap 10).
+    """
+
+    path: Path
+    exists: bool
+    size: int
+    mtime_ns: int
+
+    @classmethod
+    def capture(cls, path: Path) -> "_StorePreState":
+        if path.exists():
+            st = path.stat()
+            return cls(path=path, exists=True, size=st.st_size, mtime_ns=st.st_mtime_ns)
+        return cls(path=path, exists=False, size=-1, mtime_ns=-1)
+
+    def to_snapshot_line(self) -> str:
+        return (
+            f"default store {self.path}: "
+            f"exists={self.exists}, size={self.size}, mtime_ns={self.mtime_ns}"
+        )
+
+    def assert_unchanged(self) -> None:
+        current = _StorePreState.capture(self.path)
+        assert current.exists == self.exists, (
+            f"cwd-relative default store {self.path} existence changed: "
+            f"before {self.exists}, after {current.exists}"
+        )
+        if self.exists:
+            assert current.size == self.size, (
+                f"cwd-relative default store {self.path} size changed: "
+                f"before {self.size}, after {current.size}"
+            )
+            assert current.mtime_ns == self.mtime_ns, (
+                f"cwd-relative default store {self.path} mtime changed: "
+                f"before {self.mtime_ns}, after {current.mtime_ns}"
+            )
+
+    def assert_modified(self) -> None:
+        """Control path: the leaking-writer detector must notice a mutation."""
+        current = _StorePreState.capture(self.path)
+        changed = (
+            current.exists != self.exists
+            or (self.exists and current.size != self.size)
+            or (self.exists and current.mtime_ns != self.mtime_ns)
+        )
+        assert changed, (
+            f"cwd-relative default store was not modified as expected: "
+            f"before {self.to_snapshot_line()}, after {current.to_snapshot_line()}"
+        )
 
 
 # In-suite invariant: the session fixture has redirected the state env variables
@@ -145,12 +204,32 @@ def test_poisoned_shell_isolation(
 # the session's tmp store and the cwd-relative default was not created.
 
 
-async def test_leaking_writers_are_contained(
-    env: ActivityEnvironment,
-    tmp_path_factory: pytest.TempPathFactory,
-) -> None:
-    base = tmp_path_factory.getbasetemp()
+@pytest.fixture
+def _default_store_pre_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _StorePreState:
+    """Record the cwd-relative default store's pre-test state for the leak detector.
 
+    The fixture builds a populated layout when the caller asks for one by setting
+    ``ERGANE_US1_POPULATE_DEFAULT_STORE=1``.  This lets the same test prove the
+    detector on both an absent store and a store that already holds rows (US1-S1,
+    US1-S3) without ever pointing at the operator's real runtime root.
+    """
+    default_db = tmp_path / ".factory" / "verification.db"
+    if os.environ.get("ERGANE_US1_POPULATE_DEFAULT_STORE") == "1":
+        subprocess.run(
+            [sys.executable, "/tmp/us1-populate-db.py", str(default_db)],
+            check=True,
+        )
+    pre_state = _StorePreState.capture(default_db)
+    # The activity under test resolves the default relative to cwd, so pin cwd.
+    monkeypatch.chdir(tmp_path)
+    return pre_state
+
+
+async def _run_leaking_writers(
+    env: ActivityEnvironment,
+    db_path_env: str,
+) -> None:
+    """Body shared between the contained and control leaking-writer tests."""
     sent = await env.run(
         send_escalation,
         SendEscalationInput(
@@ -167,12 +246,22 @@ async def test_leaking_writers_are_contained(
     count_result = await env.run(
         record_roadmap_failure,
         RecordRoadmapFailureInput(
-            db_path=os.environ[VERIFICATION_DB_PATH_ENV],
+            db_path=db_path_env,
             roadmap_id=ROADMAP_ID,
             failure_text=FAILURE_TEXT,
         ),
     )
     assert count_result.count == 1
+
+
+async def test_leaking_writers_are_contained(
+    env: ActivityEnvironment,
+    tmp_path_factory: pytest.TempPathFactory,
+    _default_store_pre_state: _StorePreState,
+) -> None:
+    base = tmp_path_factory.getbasetemp()
+
+    await _run_leaking_writers(env, os.environ[VERIFICATION_DB_PATH_ENV])
 
     db_path = Path(os.environ[VERIFICATION_DB_PATH_ENV])
     assert _is_under(db_path, base)
@@ -197,10 +286,33 @@ async def test_leaking_writers_are_contained(
     finally:
         conn.close()
 
+    # The test's own activities must not have created or modified the cwd-relative
+    # default store.  Whether the host already held a live database is not the test's
+    # business (spec FR-001, trap 6).
+    _default_store_pre_state.assert_unchanged()
+
+
+async def test_leaking_writers_default_path_is_contained(
+    env: ActivityEnvironment,
+    _default_store_pre_state: _StorePreState,
+) -> None:
+    """Control: when the test is forced to write the cwd default, the detector fails.
+
+    The activity is given a db_path that resolves to the cwd-relative default
+    ``.factory/verification.db``.  The fixture has already monkeypatched cwd to a
+    tmp directory, so the default is still the *path* the production resolver names
+    even though it sits under pytest's tmp tree.  The test asserts the detector
+    reports the mutation and names the offending path (spec US1-S2).
+    """
     default_db = Path(".factory/verification.db")
-    assert not default_db.exists(), (
-        f"cwd-relative default store {default_db} was created"
+    await _run_leaking_writers(env, str(default_db))
+
+    assert default_db.exists(), (
+        f"control did not create the cwd-relative default store {default_db}"
     )
+    with pytest.raises(AssertionError) as exc_info:
+        _default_store_pre_state.assert_unchanged()
+    assert str(default_db) in str(exc_info.value), exc_info.value
 
 
 # US2: the store refuses to be constructed outside tmp during a test, unless the
