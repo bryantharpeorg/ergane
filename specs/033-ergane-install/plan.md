@@ -8,6 +8,24 @@ This epic is the config plane and nothing else. If you find yourself writing a
 Temporal workflow, a systemd unit, or a messenger adapter, you have wandered
 into 041 or 042 — stop and read this plan's scope fence (trap 1).
 
+## What has landed since this plan was written
+
+**US1 landed 2026-08-14** (`5b4351a`, PR #68, first attempt). The typed shape
+exists at `factory/controlplane/config.py`: `ControlPlaneConfig` (`:99`),
+`ControlPlaneConfigError` (`:74`, in the `FactoryConfigError` grammar),
+`resolve_config_path` (`:174`, already following `resolve_env_path` with
+`ERGANE_CONFIG_PATH`/`FACTORY_CONFIG_PATH`), `load_controlplane_config` (`:197`)
+and `parse_controlplane_config` (`:237`). US2 consumes *that*, as it exists on
+the branch — not this plan's description of it. Rebuild none of it; US1's tasks
+are provenance.
+
+**034/us1 landed the same day** (`7055ea5`, PR #69), which discharges the
+"if 034 landed first" conditionals below: the prompter seam exists at
+`factory/cli/init.py:42` (`_prompter_factory`, `_TerminalPrompter` at `:53`) and
+US3's interview reuses it (trap 6). The XDG *state*-home resolver and the lock
+do **not** exist yet — 034/us2 has not landed — so trap 5's lock guidance
+stands.
+
 ## Reuse inventory
 
 | What | Where | Used by |
@@ -25,13 +43,16 @@ into 041 or 042 — stop and read this plan's scope fence (trap 1).
 | The Telegram sender the escalation probe delivers through | `factory/notify/service.py` — grep `class CallbackBridge`; live suite at `tests/test_live_notify.py` | US2 — today's transport; 041 replaces the gather, not the judgment |
 | The live-double / auto-skip discipline | `tests/test_live_proxy.py:1-40` (its docstring is the doctrine), markers in `pyproject.toml:33-37` | US2 — SC-006's "gather executes against a live double" |
 | The CLI error boundary | `factory/cli/errors.py` — grep `class OperatorError` | US1–US3 |
-| The `input()` precedent and its limits | `factory/cli/nouns/build.py:412`; test at `tests/test_ergane_build.py:867` | US3 — same limit 034 hit; trap 6 |
-| 034's XDG resolver and registry lock, **if 034 landed first** | `specs/034-ergane-init` US2 | US1, US3 — trap 5 |
+| The `input()` precedent and its limits | `factory/cli/nouns/build.py:420`; test at `tests/test_ergane_build.py:867` | US3 — same limit 034 hit; trap 6 |
+| **034/us1's prompter seam — landed** | `factory/cli/init.py:42` (`_prompter_factory`), `:53` (`_TerminalPrompter`) | US3 — trap 6; reuse, do not build a second |
+| **This spec's own landed US1** | `factory/controlplane/config.py` — see "What has landed" above | US2, US3 — the typed shape and the rule table |
 
-**Deliberately absent, verified by grep over `factory/`:** any XDG resolution,
-any file locking, and any TOML handling at all. Python is `>=3.11`
-(`pyproject.toml:5`), so `tomllib` reads TOML in the stdlib — **and nothing in
-the stdlib writes it.** See traps 4 and 5.
+**Deliberately absent, re-verified by grep over `factory/` at `0bf0c93` on
+2026-08-14:** file locking (zero hits for `fcntl`, `flock`, `filelock`) and any
+TOML *writing*. XDG config resolution and `tomllib` reading are no longer
+absent — US1 landed both. Python is `>=3.11` (`pyproject.toml:5`), so `tomllib`
+reads TOML in the stdlib — **and nothing in the stdlib writes it.** See traps 4
+and 5.
 
 ## Traps
 
@@ -112,9 +133,12 @@ either; if `specs/034-ergane-init` has landed, its US2 has both. Two resolvers
 disagreeing about where state lives is a bug that surfaces as an empty registry
 on a host that has one.
 
-Re-verified against `d13fc4a` on 2026-08-14: still zero hits for
-`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `fcntl`, `flock`, `filelock` anywhere in
-`factory/`. 040 did not change this.
+Re-verified against `0bf0c93` on 2026-08-14: `XDG_CONFIG_HOME` now has hits —
+this spec's own US1 landed the config-home resolver
+(`factory/controlplane/config.py:174`, `:190`). `XDG_STATE_HOME`, `fcntl`,
+`flock` and `filelock` are still zero. If 034/us2 lands before US3 runs, its
+state-home resolver and lock exist and are reused; otherwise US3's lock is the
+first lock in this tree, and 034 reuses *it*.
 
 Both need a test override, and it belongs in 030's session fixture
 (`tests/conftest.py`, grep `_isolated_test_store`) so isolation is the default
@@ -132,11 +156,12 @@ introduced one epic later is the drift this whole rename was spent avoiding.
 ### Trap 6 — a five-subsystem interview cannot be a monkeypatched `input()`
 
 Identical to 034's trap: the only precedent is one y/N at
-`build.py:412`, tested by rebinding `builtins.input`
+`build.py:420`, tested by rebinding `builtins.input`
 (`tests/test_ergane_build.py:867`). US3 branches on mode per subsystem, loads
-existing values as defaults, and validates each answer at entry. Put the
-prompter behind a module-level seam so a scripted interview is a list of
-answers. If 034 landed first, use the seam it built.
+existing values as defaults, and validates each answer at entry. 034/us1 has
+landed exactly the seam this calls for — `_prompter_factory` at
+`factory/cli/init.py:42`, `_TerminalPrompter` at `:53` — so use it. A second
+prompter convention one epic later is the same drift trap 5 exists to prevent.
 
 ### Trap 7 — the probe that hangs is the probe that passed review
 
@@ -188,9 +213,24 @@ Concretely: for each probe, at least one test must execute the **real**
 the diff must show which test that is. A probe whose real `gather()` is never
 entered by any test in the diff is not implemented — it is described.
 
+### Trap 10 — a live Temporal double that outlives its test kills the host
+
+The live double T018 wants for the Temporal probe is exactly the process class
+that OOM-killed this host on 2026-08-11: 8,131 orphaned `temporal-test-server`
+processes holding 123 GiB, each orphaned when its parent died to a bare signal,
+because nothing reaped them. The finding
+`hardening/orphaned-test-servers-exhaust-host-memory` is open, at outage
+severity. 027 and 030 cleared the fixtures, gates and adapter; the surviving
+discipline is the `try/finally` shutdown bracket — see
+`tests/test_verification_flow.py:466-470`, where every `WorkflowEnvironment` is
+shut down in a `finally` no matter how the test ends. Start your double the
+same way or reuse an existing fixture; never a bare `subprocess.Popen` in a
+test body. A probe suite that leaks one server per run recreates the outage at
+exactly the cadence `install --verify` is meant to be run.
+
 ## Approach
 
-### US1 — the parser, and only the parser
+### US1 — the parser, and only the parser (LANDED `5b4351a` — provenance only)
 
 1. Resolve the config path from the XDG config home with an override (trap 5).
    Read with `tomllib`.
@@ -210,8 +250,10 @@ entered by any test in the diff is not implemented — it is described.
 
 1. Implement each as the `Probe` protocol (`probes.py:69`): a thin `gather()`
    that touches the world and returns a frozen snapshot, a pure `evaluate()`
-   over it. The judgment is table-tested with no fakes; the gather is exercised
-   at least once against a live double (SC-006).
+   over it. Each probe reads its subsystem's block from the **landed**
+   `ControlPlaneConfig` (`factory/controlplane/config.py:99`), never from raw
+   TOML. The judgment is table-tested with no fakes; the gather is exercised
+   at least once against a live double (SC-006, trap 10).
 2. Render `Finding(check, passed, detail)` — the mergequeue grammar (trap 2) —
    one per check, no masking, non-zero exit on any failure.
 3. Details name what was *done*, not that it was fine: "completed a 1-token

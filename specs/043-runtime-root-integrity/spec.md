@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Scaffolded by `ergane findings promote` on 2026-08-14 from four findings, then

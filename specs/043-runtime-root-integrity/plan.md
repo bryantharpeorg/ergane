@@ -17,17 +17,17 @@ Scaffolded by `ergane findings promote` from four findings:
 | Thing | Location | Note |
 | --- | --- | --- |
 | `resolve_factory_root(env_name="FACTORY_ROOT") -> (Path, RuntimeRootChoice)` | `factory/workgraph/worktree.py:135` | The resolver US2 must route through. **Creates the directory as a side effect** — see trap 2. |
-| `RuntimeRootChoice` (`NEW` / `LEGACY`) | `factory/workgraph/worktree.py:125` | Describes the *directory*, never the *variable*. Relevant to US4. |
-| `_warn_legacy_root_once` + `_DEPRECATED_LEGACY_ROOT` | `factory/workgraph/worktree.py:185` | Process-global sentinel — see trap 3. |
+| `RuntimeRootChoice` (`NEW` / `LEGACY`) | `factory/workgraph/worktree.py:124` | Describes the *directory*, never the *variable*. Relevant to US4. |
+| `_warn_legacy_root_once` + `_DEPRECATED_LEGACY_ROOT` | `factory/workgraph/worktree.py:184`, `:132` | Process-global sentinel — see trap 3. |
 | `resolve_env_path(new, old, default)` | `factory/env.py:37` | Owns `ERGANE_*` / `FACTORY_*` precedence. Reuse it; do not re-implement it. |
-| `_WARNED` deprecation sentinel | `factory/env.py:33` | Second process-global — see trap 3. |
+| `_WARNED` deprecation sentinel | `factory/env.py:34` | Second process-global — see trap 3. |
 | `DEFAULT_VERIFICATION_DB_PATH = ".factory/verification.db"` | `factory/activities/verify_activities.py:126` | The literal US1's assertion collides with. |
-| Doctor path literals | `factory/cli/doctor.py:41`, `factory/doctor/cli.py:40`, `factory/doctor/probes.py:133` and `:135` | The four sites US2 must remove. |
+| Doctor path literals | `factory/cli/doctor.py:41`, `factory/doctor/cli.py:40`, `factory/doctor/probes.py:133`, `:134`, `:135`, `:268`, `:375` | The **seven** sites US2 must remove — five of them in `probes.py`, and only two of those five are the store defaults the finding quotes. |
 | `_open_client` | `factory/cli/repo.py:49` | Missing `import os`; `os.environ` at `:51-52`. |
 | `_temporal_client_factory` seam | `factory/cli/repo.py:63` | Defaults to `_open_client`. No test enters the default. |
 | Override refusal | `factory/cli/repo.py:152` | Hardcodes `FACTORY_ROOT` in the message. |
 | `_running_epic_ids()` call site | `factory/cli/repo.py:160` | The only real path through the verb. |
-| The failing assertion | `tests/test_store_isolation.py:199-202` | Landed by 030/US1 in `c572fdb`. |
+| The failing assertion | `tests/test_store_isolation.py:200-203` | Landed by 030/US1 in `c572fdb`. |
 | Its stated intent | `tests/test_store_isolation.py:143-145` (comment) | Says "was not created" — the intent is right, the implementation is not. |
 | Poison-path assertions | `tests/test_store_isolation.py:135-138`, `:229-230` | These are `/nonexistent-030-proof/...`. **Safe. Leave them alone.** |
 
@@ -42,9 +42,15 @@ the way `039/US1` did.
 `factory/cli/repo.py` and name whichever is set — small, but duplicates a precedence
 rule `factory/env.py:resolve_env_path` already owns, and duplicated precedence is
 how the two names drift apart. (b) Extend the resolver to report the source
-alongside the path — better placed, but `resolve_factory_root` has a second caller
-at `factory/activities/merge_activities.py:310` that must keep working. Prefer (b);
-if you take (a), say why.
+alongside the path — better placed, but count the callers before you change the
+signature. There are five call sites plus one import: **three unpack the tuple
+and break the moment the arity changes** — `factory/activities/agent_activities.py:171`
+(the dispatch path — break this and no epic starts), `factory/cli/repo.py:143`
+and `factory/activities/merge_activities.py:310` — while
+`merge_activities.py:375` and `:485` take `[0]` and survive an appended element,
+and `factory/cli/nouns/build.py:65` imports the name. If route (b) widens the
+return, every unpacking caller is part of the diff. Prefer (b); if you take (a),
+say why.
 
 ## Traps
 
@@ -61,13 +67,14 @@ watch it fail before you touch a path default.
 
 **Trap 2 — the resolver creates directories.** `resolve_factory_root()` ends with
 `new.mkdir(parents=True, exist_ok=True)` when neither root exists
-(`factory/workgraph/worktree.py:179`). A test that calls it without `monkeypatch.chdir`
+(`factory/workgraph/worktree.py:180`). A test that calls it without `monkeypatch.chdir`
 into a tmp directory creates `.ergane/` inside whatever cwd it inherited — which,
 for a gate run, is the node worktree, and for an operator run is the checkout.
 Every test you add for US2 and US4 must chdir into tmp first.
 
 **Trap 3 — two process-global warning sentinels will make your tests lie.**
-`_DEPRECATED_LEGACY_ROOT` (`worktree.py:185`) and `_WARNED` (`env.py:33`) are
+`_DEPRECATED_LEGACY_ROOT` (`worktree.py:132`, fired via `_warn_legacy_root_once`
+at `:184`) and `_WARNED` (`env.py:34`) are
 module-level, deliberately, so operators are not flooded. The consequence for you is
 that a test asserting a deprecation fires passes when run alone and fails in the
 full suite, or the reverse, depending on which test ran first. Reset the sentinel in
@@ -106,7 +113,19 @@ impossible path. Confirming is the task. Changing them is not.
 
 **Trap 9 — `.factory` appears in prose all over this tree.** Docstrings, comments,
 this plan. US2-S3 is about *path defaults*, not about the string. A grep-driven
-sweep will rewrite documentation and miss `probes.py:135`. Walk the code.
+sweep will rewrite documentation (`probes.py:370` and `:415` are prose — leave
+them) and miss code. Walk the code.
+
+**Trap 10 — US1's populated store must be built, never borrowed.** US1-S1 and
+T003 need a `.factory/verification.db` holding rows so the pass is proven
+against a populated host. The cheapest way to get one is to point the test at
+the operator's live store — which is the exact move that destroyed it on
+2026-08-14, and this spec exists because of that day. Construct the populated
+layout yourself, inside pytest's tmp path (chdir first — trap 2) or your own
+worktree, and read "a host whose store holds rows" everywhere in the tasks as
+*a layout the test builds*, never a runtime root above your worktree. An
+absolute path to the operator's checkout anywhere in your diff is a defect in
+your diff.
 
 ## Verification the operator will run, independent of the gate
 

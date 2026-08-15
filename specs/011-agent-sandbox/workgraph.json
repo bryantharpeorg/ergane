@@ -2,7 +2,7 @@
   "epic_id": "011-agent-sandbox",
   "feature": "011-agent-sandbox",
   "specs_root": "specs",
-  "target_repo": "/home/admin/code/ergane-011-target",
+  "target_repo": "/home/admin/code/ergane",
   "nodes": [
     {
       "id": "us1",
@@ -12,7 +12,9 @@
       "requirement_keys": [
         "US1",
         "FR-001",
-        "FR-002"
+        "FR-002",
+        "FR-012",
+        "FR-013"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -25,11 +27,6 @@
       "spec_ref": "011-agent-sandbox:US2",
       "requirement_keys": [
         "US2",
-        "FR-003",
-        "FR-004",
-        "FR-005",
-        "FR-006",
-        "FR-007",
         "FR-008",
         "FR-010",
         "FR-011"
@@ -47,11 +44,46 @@
       "spec_ref": "011-agent-sandbox:US3",
       "requirement_keys": [
         "US3",
-        "FR-009"
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-014"
       ],
       "depends_on": [],
       "depends_on_merged": [
         "us2"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "implementer",
+      "spec_ref": "011-agent-sandbox:US4",
+      "requirement_keys": [
+        "US4",
+        "FR-006",
+        "FR-007",
+        "FR-015"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us3"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us5",
+      "story_key": "US5",
+      "persona": "implementer",
+      "spec_ref": "011-agent-sandbox:US5",
+      "requirement_keys": [
+        "US5",
+        "FR-009"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us4"
       ],
       "timeout_override_s": null
     }

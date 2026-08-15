@@ -9,6 +9,30 @@ it needs have no precedent anywhere in `factory/` (trap 4), so the reuse
 inventory below is short on purpose: what it lists is genuinely reusable, and
 what it omits, it omits because a grep found nothing.
 
+## What has landed since this plan was written
+
+**US1 landed 2026-08-14** (`7055ea5`, PR #69, first attempt):
+`factory/cli/init.py` — repo-root resolution and both refusals, the prompter
+seam (`_prompter_factory` at `:42`, `_TerminalPrompter` at `:53`), the
+`_TOP_LEVEL_KEYS`-derived interview validated by `parse_factory_config`, and
+the closed write list. US2 onward consumes what landed, not this plan's
+description of it; US1's tasks are provenance. Trap 4's worktree-detection
+third is discharged (US1 landed it); its state-home and locking thirds still
+stand. Trap 5 is discharged the same way — the seam it demands is the one US1
+built.
+
+**033/us1 landed the same day** (`5b4351a`, PR #68): XDG *config*-home
+resolution now exists at `factory/controlplane/config.py:174`/`:190`. FR-006's
+state-home resolver follows that pattern and `resolve_env_path`, and the two
+resolvers must not drift apart — 033's trap 5 is the mirror of this warning.
+
+**A prior us2 attempt was killed mid-flight on 2026-08-14** — the `rm -rf`
+incident took the floor down; the work was never judged and never landed. Its
+diff survives at `refs/heads/archive/factory/034-ergane-init/us2/b52cf465ec42`:
+a partial registry/lock implementation. Reference material only, written
+before this plan's current form — read it critically if at all; the tasks
+bind, not the archive.
+
 ## Reuse inventory
 
 | What | Where | Used by |
@@ -31,13 +55,13 @@ what it omits, it omits because a grep found nothing.
 | 030's session isolation fixture | `tests/conftest.py` — grep `_isolated_test_store` | US2 — the registry's test redirect belongs here, beside the store's; trap 8 |
 | The source-scanning test precedent | `tests/test_gh_client.py` — grep `test_no_code_path_passes_delete_branch` | any story asserting "no call site does X" |
 
-**Deliberately absent, re-verified by grep over `factory/` at `d13fc4a` on
-2026-08-14:** XDG or state-home resolution (zero hits for `XDG_STATE_HOME`,
-`XDG_CONFIG_HOME`, and now zero for `Path.home()` — the `adapter.py` hit this
-plan cited on 2026-08-13 is gone), file locking (zero hits for `fcntl`, `flock`,
-`filelock`), git worktree detection (zero hits for `--git-common-dir`,
-`--show-toplevel`, `is_inside_work_tree`), and `.gitignore` writing (one hit,
-and it is a comment). See trap 4.
+**Deliberately absent, re-verified by grep over `factory/` at `0bf0c93` on
+2026-08-14:** state-home resolution and file locking (zero hits for
+`XDG_STATE_HOME`, `fcntl`, `flock`, `filelock`) — still yours to introduce,
+see trap 4. **No longer absent**: XDG *config* resolution (033/us1,
+`factory/controlplane/config.py`), and worktree detection and `.gitignore`
+writing (this spec's own US1, `factory/cli/init.py`). See "What has landed"
+above.
 
 ## Traps
 
@@ -103,9 +127,13 @@ Copy its **shape**, not its body — see trap 6 for the defect inside it.
 
 ### Trap 4 — three mechanisms this repository has never used
 
-The greps above found no precedent for the state home, for file locking, or for
-worktree detection. That means there is nothing to copy and no house style to
-match, so each one is a decision you make and record in the commit message:
+The greps above found no precedent for the state home or for file locking
+(worktree detection has since landed with US1 — its bullet below is kept
+because the reasoning matters if the code is ever touched). For the two that
+remain there is nothing to copy and no house style to match, so each is a
+decision you make and record in the commit message — though the archived us2
+attempt (see "What has landed") contains one prior, unjudged answer worth a
+critical skim:
 
 - **State home (FR-006).** The registry lives outside every repo. Resolve
   `XDG_STATE_HOME` with the documented `~/.local/state` fallback, and make the
@@ -133,14 +161,14 @@ match, so each one is a decision you make and record in the commit message:
 
 ### Trap 5 — a six-question interview cannot be a monkeypatched `input()`
 
-The only precedent is `build.py:412`, one bare `input()` for a y/N, tested by
+The only precedent was `build.py:420`, one bare `input()` for a y/N, tested by
 rebinding `builtins.input` (`tests/test_ergane_build.py:867`). That does not
 scale to an interview with defaults, per-answer validation, and a re-run that
-loads the existing manifest. Put a prompter behind a module-level seam in the
-`_client_factory` style (`merge_activities.py:296`) so a scripted interview is a
-list of answers a test hands in. FR-005's claim — unchanged answers produce a
-byte-identical manifest — is otherwise untestable, and it is the claim most
-likely to be quietly false.
+loads the existing manifest — which is why US1 put the prompter behind a
+module-level seam in the `_client_factory` style, and **US1 has landed**:
+`_prompter_factory` at `factory/cli/init.py:42`. This trap is now the record of
+why the seam exists. Later stories that script an interview drive that seam;
+none may reach for `builtins.input`.
 
 ### Trap 6 — "is an epic running against *this repo*" still has no answer, and the CLI path that asks the blunt question is broken
 
@@ -174,6 +202,16 @@ ergane: unexpected error (name 'os' is not defined)
 
 The suite was green — 2265 passed — through the merge queue and the judge.
 Filed as `cli/migrate-runtime-root-cannot-run` (critical).
+
+**Order check first — 043 probably got here before you.**
+`043-runtime-root-integrity` precedes this epic in the agreed dispatch order
+(043 → 011 → 033 → 034) and lands both halves of what follows: the `import os`
+repair with an AST guard over the module (its US3), and the findings ledger
+routed through the resolver (its US2). Before acting on items 2 and 3 below,
+run the verb against a closed port (`TEMPORAL_ADDRESS=127.0.0.1:1`): if it
+refuses with a transport error naming the address, 043 landed and both items
+are already done — verify and move on, and do not re-fix landed work. The
+instructions below bind only if the `NameError` is still live.
 
 Three things follow, and the third is the one that costs you an attempt:
 
@@ -275,8 +313,12 @@ This touches two stories:
   name you assumed, rather than the one the resolver found, is a no-op on an
   unmigrated repo — and a silent one, which is worse than a refusal.
 
-The operator's own checkout is the live example: at `d13fc4a` it has `.factory/`
-and no `.ergane/`, because the verb that would migrate it cannot run (trap 6).
+The operator's own checkout is the live example, now in the **split** state: at
+`0bf0c93` it has `.ergane/` (holding `homes/`) *and* a populated `.factory/`
+(all three databases) — precisely the layout 043's US2 exists to keep readable.
+And if 043 landed before this epic, the migration verb works and the checkout
+may have been fully migrated by the time you read this. Ask the resolver;
+never assume either name.
 
 ### Trap 10 — anchors rot, and this tree is moving fast
 

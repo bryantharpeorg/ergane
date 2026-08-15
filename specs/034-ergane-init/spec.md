@@ -12,7 +12,7 @@ state: ready
 #
 # Numbered 034: 032 is replay-determinism (48aa133, a concurrent session's),
 # 033 is ergane-install, 011–014 stay reserved for audit-triage epics.
-depends_on_landed: [003-merge-queue, 019-operator-cli, 040-manifest-rename]
+depends_on_landed: [003-merge-queue, 019-operator-cli, 040-manifest-rename, 043-runtime-root-integrity, 033-ergane-install]
 ---
 
 # Feature Specification: Ergane Init

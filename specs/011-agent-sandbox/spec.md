@@ -1,12 +1,19 @@
 ---
-state: draft
+state: ready
+depends_on_landed: [043-runtime-root-integrity]
 # specs_root: specs
-# target_repo: /home/admin/code/ergane-011-target
+# target_repo: /home/admin/code/ergane (the old ergane-011-target scratch repo
+#   never existed on this host; the boundary code lands in factory/, so the
+#   factory is the target, as with every self-build epic)
 # Scaffolded by `ergane findings promote` from two findings that are one subject:
 #   hardening/agent-sandbox (critical, audit-2026-08-07 F1, "#1 blast radius")
 #   hardening/agent-edits-the-operator-checkout-not-its-worktree (critical,
 #     operator-2026-08-11 — the live incident that proved F1)
 # Refined against the tree at 5f0042e on 2026-08-11.
+# Re-refined 2026-08-14 against 0bf0c93: sandbox backend decided (bwrap — see
+#   plan.md "Decided at refinement"), and the oversized US2 split into
+#   US2/US3/US4 with the old US3 renumbered US5. Nothing had landed, so the
+#   renumbering was free.
 #
 # Numbered 011 because F1 is an audit-triage finding and 011-014 are reserved
 # for those. 010 took the B-series; this takes the first F.
@@ -192,20 +199,65 @@ its worktree; assert silence.
    A detector that dies with the thing it is watching reports nothing on exactly
    the worst case.
 
-### User Story 2 - The agent runs inside the runtime the manifest already declares (Priority: P1)
+### User Story 2 - The launch goes behind a seam, and an absent backend is a refusal (Priority: P1)
 
-The agent process runs inside the image named by `factory.yaml`'s `runtime:` key,
-with its node worktree and the git plumbing that worktree requires bind-mounted
-writable, and the target repository's working tree absent from its filesystem
-entirely. A write outside the worktree fails at the OS, and the agent sees the
-error on its own tool call.
+The agent launch moves behind a substitutable seam, the way gate execution
+already sits behind `GateExecutor`. The seam resolves the sandbox backend named
+by the manifest's `runtime:` key — on this floor, `bwrap` — and a backend that
+cannot be provided is a refusal naming the backend and the platform, never a
+silent fallback to the host. Tests drive the seam with a fake, so the suite
+never needs the backend present.
 
-**Why this priority**: It is the fix. Everything else here is scaffolding around it.
+**Why this priority**: The seam is what makes every containment claim after it
+testable, and it is the cross-platform story: Linux hosts (and Windows hosts,
+which run Ergane inside WSL2's real Linux kernel) use bwrap; a macOS backend
+(Seatbelt) is a future second implementation behind this same seam, not a
+change to it.
+
+**Independent Test**: Dispatch through the seam with a fake backend
+substituted; assert the fake received exactly what today's direct launch
+builds, and that an unavailable backend refuses by name.
+
+**Acceptance Scenarios**:
+
+1. **Given** the launch behind the seam, **When** an attempt is dispatched with
+   a fake backend substituted, **Then** the argv, the prompt, the standards
+   path and the persona routing the fake receives are identical to what the
+   direct launch builds today.
+2. **Given** a manifest naming `bwrap` on a host where the backend is absent,
+   **When** an attempt is dispatched, **Then** dispatch refuses with a message
+   naming the backend and the platform, and no agent process runs on the host.
+3. **Given** a manifest whose `runtime:` still holds a container image
+   reference — the pre-this-spec value — **When** the manifest is validated,
+   **Then** validation refuses and names the supported backend, and this
+   repository's own `factory.yaml` is updated to `runtime: bwrap` in the same
+   diff.
+4. **Given** a host with no sandbox backend installed, **When** the full suite
+   runs, **Then** it is green: seam-driven tests pass against the fake, and
+   live-boundary tests guard on backend *detection* — a skip standing in for a
+   seam-provable claim is not compliance.
+
+### User Story 3 - The agent's filesystem is its worktree, not the host (Priority: P1)
+
+The bwrap backend mounts the node worktree writable, the git plumbing that
+worktree requires, a writable temp, a factory-owned home and the read-only
+toolchain — and nothing else. The target repository's working tree, the
+factory's runtime root and the operator's home are absent from the agent's
+filesystem entirely. A write outside the mount set fails at the OS, and the
+agent sees the error on its own tool call.
+
+**Why this priority**: It is the fix. Everything else here is scaffolding
+around it.
 
 **Independent Test**: Run an attempt whose scripted agent attempts to write an
-absolute path into the target repo's working tree; assert the write fails and the
-operator's tree is unchanged. Then assert the same attempt can still commit,
-which is what proves the git plumbing survived.
+absolute path into the target repo's working tree; assert the write fails and
+the operator's tree is unchanged. Then assert the same attempt can still
+commit, which is what proves the git plumbing survived.
+
+**Evidence rule for every scenario below**: the judge is given the diff and
+these criteria — never a terminal, never the base tree (constitution VIII).
+Live-boundary claims are met by tool output pasted verbatim into a comment
+block in the test file.
 
 **Acceptance Scenarios**:
 
@@ -215,30 +267,53 @@ which is what proves the git plumbing survived.
 2. **Given** an agent inside the boundary, **When** it runs `git add`, `git
    commit` and `git diff` in its worktree, **Then** all succeed — the worktree's
    `.git` indirection into the parent repository is satisfied.
-3. **Given** an agent inside the boundary, **When** its attempt exceeds the
-   persona's timeout, **Then** the attempt is terminated and classified `timeout`
-   exactly as it is today, and no process from it survives.
-4. **Given** an attempt inside the boundary that completes, **When** it tears
-   down, **Then** its stdout log and session transcript are archived to the same
-   paths, with the same contents, as an attempt produces today.
-5. **Given** an agent inside the boundary, **When** it attempts to read the
-   operator's `~/.config/gh` or any path outside what was mounted, **Then** the
+3. **Given** an agent inside the boundary, **When** it attempts to read the
+   operator's `~/.config/gh` or any path outside the mount set, **Then** the
    read fails.
-6. **Given** a manifest whose `runtime:` names an image, **When** an attempt is
-   dispatched, **Then** the image actually used is that one, and a mismatch is a
-   refusal rather than a silent host fallback.
-7. **Given** an agent inside the boundary, **When** it runs
+4. **Given** an agent inside the boundary, **When** it runs
    `rm -rf /home/<operator>/code/<repo>/.factory` — the literal 2026-08-14
    command — **Then** it fails, and afterwards the evidence store, both ledgers,
    every sibling node's worktree and its own worktree are all intact. The mount
    set exposes the node's **own** worktree, never the runtime root that contains
    it.
-8. **Given** an agent inside the boundary, **When** it runs `pkill -f "python -"`
+
+### User Story 4 - Deadlines, transcripts and signals survive the boundary (Priority: P1)
+
+The attempt lifecycle keeps every property it has today with the agent inside
+the boundary: the deadline kills the agent and everything it spawned, the
+stdout log and session transcript archive to the same paths with the same
+contents, and nothing the agent signals reaches a process outside the boundary.
+
+**Why this priority**: A boundary that leaks processes past their deadline or
+loses transcripts trades one incident class for two new ones. These are the
+properties plan traps 2 and 3 exist for, and the 2026-08-12 `pkill` incident
+is the third.
+
+**Independent Test**: A deliberately hanging scripted agent is killed at
+deadline with no surviving process; a completing one archives its transcript
+byte-identically; a `pkill`-ing one leaves the worker alive.
+
+**Evidence rule for every scenario below**: as US3 — live claims land as
+verbatim pasted output committed in the diff.
+
+**Acceptance Scenarios**:
+
+1. **Given** an agent inside the boundary, **When** its attempt exceeds the
+   persona's timeout, **Then** the attempt is terminated and classified `timeout`
+   exactly as it is today, and no process from it survives.
+2. **Given** an attempt inside the boundary that completes, **When** it tears
+   down, **Then** its stdout log and session transcript are archived to the same
+   paths, with the same contents, as an attempt produces today.
+3. **Given** an agent inside the boundary, **When** it runs `pkill -f "python -"`
    or otherwise signals by pattern, **Then** no process outside the boundary
    receives a signal, and the worker executing the attempt is still running
    afterwards. Assert on the worker's liveness, not on the exit code of `pkill`.
+4. **Given** the boundary deliberately disabled through the seam's explicit
+   host implementation, **When** the scripted agents from US3-S4 and US4-S3 run
+   again, **Then** the damage reproduces — the control that proves the boundary
+   is what does the work (SC-009).
 
-### User Story 3 - Verification does not reopen what the agent boundary closed (Priority: P2)
+### User Story 5 - Verification does not reopen what the agent boundary closed (Priority: P2)
 
 Gates run inside the same boundary as the agent that produced the diff. A gate
 command is repo-authored text executed as `bash -c`; running it on the host after
@@ -246,11 +321,14 @@ containing the agent would leave the escape open one step later in the ladder.
 
 **Why this priority**: It closes the leak, but the leak requires an agent to have
 already written a hostile or confused gate command, which is a narrower path than
-the one already observed. It is the right third story and the wrong first one.
+the one already observed. It is the right final story and the wrong first one.
 
 **Independent Test**: Point a fixture repo's gate command at a path outside the
 worktree; assert it fails inside the boundary where it would have succeeded on
 the host.
+
+**Evidence rule**: as US3 — live claims land as verbatim pasted output
+committed in the diff.
 
 **Acceptance Scenarios**:
 
@@ -276,8 +354,10 @@ the host.
 - **FR-013**: The detector MUST still report when the state it compares against
   has itself been destroyed; it MUST NOT depend on reading anything under the
   runtime root at teardown to know that the runtime root is gone.
-- **FR-003**: The agent process MUST execute inside the runtime image named by
-  the resolved `factory.yaml`'s `runtime:` key.
+- **FR-003**: The agent process MUST execute inside the sandbox backend named by
+  the resolved `factory.yaml`'s `runtime:` key. The key's value domain becomes a
+  backend name — `bwrap` — no longer a container image reference; the image form
+  is refused at validation.
 - **FR-004**: The agent's filesystem view MUST include its node worktree as
   writable, and MUST NOT include the target repository's working tree.
 - **FR-014**: The agent's filesystem view MUST NOT include the factory's runtime
@@ -296,13 +376,14 @@ the host.
   classified `timeout` as it is today.
 - **FR-007**: The stdout log and session transcript MUST be archived to the same
   paths with the same contents as an attempt produces today.
-- **FR-008**: A runtime that cannot be provided MUST be a refusal naming the
-  image, never a silent fallback to running on the host.
+- **FR-008**: A sandbox backend that cannot be provided MUST be a refusal naming
+  the backend and the platform, never a silent fallback to running on the host.
 - **FR-009**: Gate execution MUST run inside the same boundary as the agent, and
   gate outcomes MUST be unchanged from host execution for gates that stay inside
   the worktree.
-- **FR-010**: The test suite MUST NOT require a container runtime to be present;
-  the boundary MUST sit behind a seam a test can substitute.
+- **FR-010**: The test suite MUST NOT require the sandbox backend to be present;
+  the boundary MUST sit behind a seam a test can substitute, and tests that do
+  exercise the live backend MUST guard on detecting it rather than on markers.
 - **FR-011**: This feature MUST NOT change what an agent is asked to do: the
   prompt, the standards path, the gates declared by the target repo, the judge
   and every routing decision are untouched.
@@ -311,7 +392,15 @@ the host.
 
 - **Network isolation and egress policy.** The boundary this spec builds is a
   filesystem one. An agent still reaches the proxy, and must. Restricting egress
-  is a separate feature with its own failure modes.
+  is a separate feature with its own failure modes. Concretely for the backend:
+  do not pass `--unshare-net`.
+- **A macOS backend.** bwrap is built on Linux kernel namespaces and has no Mac
+  form; the macOS equivalent is Seatbelt (`sandbox-exec`), reached most credibly
+  through Anthropic's `sandbox-runtime`, and it is a *second implementation
+  behind US2's seam* for a future spec with a Mac host to prove it on — not
+  this one. Windows needs no backend of its own: Ergane on Windows runs inside
+  WSL2, a real Linux kernel where bwrap works unchanged, and what WSL2 needs is
+  install documentation, not code.
 - **Containing the worker or the workflow.** Only the agent (US2) and the gates
   (US3) move. The Temporal worker, the activities and the interpreter stay on the
   host; containing them is a deployment change, not this.
@@ -330,9 +419,12 @@ the host.
 - **SC-003**: An attempt inside the boundary commits, is judged and lands through
   the merge queue with no change to its evidence trail.
 - **SC-004**: A timeout inside the boundary leaves no surviving process.
-- **SC-005**: The full suite passes on a host with no container runtime installed.
+- **SC-005**: The full suite passes on a host with no sandbox backend installed:
+  seam-driven tests run against the fake, live-boundary tests guard by
+  detection. A skip standing in for a seam-provable claim is not compliance.
 - **SC-006**: The full suite stays green and no dependency outside the approved
-  roster is added.
+  roster is added. bwrap is a host binary, not a Python dependency; the roster
+  does not change.
 - **SC-007**: The literal 2026-08-14 command —
   `cd <target-repo> && rm -rf .factory` — executed by a scripted agent inside the
   boundary, leaves the evidence store, both ledgers and every node worktree
@@ -356,9 +448,17 @@ US1:
 US2:
   depends_on: []
   depends_on_merged: [US1]
-  implements: [FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-010, FR-011, FR-014, FR-015]
+  implements: [FR-008, FR-010, FR-011]
 US3:
   depends_on: []
   depends_on_merged: [US2]
+  implements: [FR-003, FR-004, FR-005, FR-014]
+US4:
+  depends_on: []
+  depends_on_merged: [US3]
+  implements: [FR-006, FR-007, FR-015]
+US5:
+  depends_on: []
+  depends_on_merged: [US4]
   implements: [FR-009]
 ```

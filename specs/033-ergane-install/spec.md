@@ -30,7 +30,7 @@ state: ready
 # replay-determinism (48aa133) in a concurrent operator session, and 011–014
 # stay reserved for audit-triage epics. This spec was briefly 032 before that
 # collision surfaced; no other session ever saw it under the old number.
-depends_on_landed: [008-operator-channel, 015-factory-doctor, 019-operator-cli, 040-manifest-rename]
+depends_on_landed: [008-operator-channel, 015-factory-doctor, 019-operator-cli, 040-manifest-rename, 043-runtime-root-integrity, 011-agent-sandbox]
 ---
 
 # Feature Specification: Ergane Install — the control plane's config

@@ -8,10 +8,16 @@ within a story and commit once per task.
 
 Read `plan.md` first. Trap 1 fences the manifest name (040 owns it), trap 2 names
 the seam US4 must reuse, trap 3 says the `repo` noun already exists, trap 4 is
-the three mechanisms with no precedent in this tree, and trap 7 says which
+the mechanisms with no precedent in this tree, and trap 7 says which
 claims are only met by pasted output committed in the diff.
 
-## Phase 1: User Story 1 — The scaffold writes the repo's declarations (Priority: P1) 🎯 MVP
+**US1 is landed** (`7055ea5`, PR #69, 2026-08-14). T001–T009 are recorded for
+provenance and must not be re-executed; the prompter seam and the refusals
+exist at `factory/cli/init.py`. A prior us2 attempt survives, unlanded, at
+`refs/heads/archive/factory/034-ergane-init/us2/b52cf465ec42` — see the plan's
+"What has landed".
+
+## Phase 1: User Story 1 — The scaffold writes the repo's declarations (Priority: P1) 🎯 MVP — **LANDED `7055ea5`**
 
 ### Tests for User Story 1 (write FIRST, must fail)
 
@@ -98,6 +104,13 @@ stops a test writing the operator's real registry.**
       one registry, the second blocked or refused. A lock tested only
       uncontended is a lock nobody has tested (plan trap 4).
 
+- [ ] T014a [US2] Write the destruction-convergence case FIRST (SC-005): delete
+      the registry file outright, run `repo rebuild` against the still-present
+      repos, and assert the rebuilt registry converges to the same entries. The
+      cache's whole claim is that losing it is an inconvenience, not amnesia —
+      T012 proves pruning; this proves rebirth. Paste the before/after listings'
+      identity into the diff (plan trap 7).
+
 ### Implementation for User Story 2
 
 - [ ] T015 [US2] Resolve the state home — `XDG_STATE_HOME` with the documented
@@ -111,7 +124,7 @@ stops a test writing the operator's real registry.**
       it is the first lock in this tree.
 
 - [ ] T017 [US2] Add `list` and `rebuild` to the **existing** `repo` parser
-      (`factory/cli/repo.py:26`, grep `add_repo_parser`). Do not create a second
+      (`factory/cli/repo.py:74`, grep `add_repo_parser`). Do not create a second
       noun and do not touch `repo onboard`; new verbs raise `OperatorError`
       directly rather than growing the legacy `_OperatorError` path (plan trap 3).
 

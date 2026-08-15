@@ -10,7 +10,12 @@ Read `plan.md` first. Trap 1 is the scope fence — no workflow, no systemd unit
 no messenger adapter in this epic. Trap 2 is the one that will bite hardest:
 "the doctor's findings grammar" names the wrong `Finding` class.
 
-## Phase 1: User Story 1 — The control plane has a typed, refusing config (Priority: P1) 🎯 MVP
+**US1 is landed** (`5b4351a`, PR #68, 2026-08-14). T001–T010 are recorded for
+provenance and must not be re-executed. The remaining work is US2 and US3, and
+US2 consumes the landed shape at `factory/controlplane/config.py:99` — as it
+exists on the branch, not as this file describes it.
+
+## Phase 1: User Story 1 — The control plane has a typed, refusing config (Priority: P1) 🎯 MVP — **LANDED `5b4351a`**
 
 ### Tests for User Story 1 (write FIRST, must fail)
 
@@ -99,6 +104,11 @@ before touching the escalation probe.**
       distinguishable from both a deferral and a `ServiceNotAnswering`
       (plan trap 3 — all three must be tellable apart).
 
+- [ ] T015a [US2] Write the absent-client-library case FIRST (spec edge case):
+      a probe whose client library cannot be imported renders a *failing
+      finding naming the missing dependency*, never a traceback — the
+      operator's remedy is an install command, not a stack read.
+
 ### Implementation for User Story 2
 
 - [ ] T016 [US2] Implement the five probes against the doctor's `Probe`
@@ -117,7 +127,11 @@ before touching the escalation probe.**
       stub HTTP endpoint. Follow the auto-skip discipline in
       `tests/test_live_proxy.py`'s docstring and the markers at
       `pyproject.toml:33-37`. SC-006 is a claim about which code paths ran, so
-      name in the commit which double covered which gather.
+      name in the commit which double covered which gather. **Read plan trap 10
+      before starting any server**: the Temporal double runs inside a
+      `try/finally` shutdown bracket (the `tests/test_verification_flow.py:466-470`
+      shape) or an existing fixture — never a bare `Popen`. Orphans of exactly
+      this process class OOM-killed the host on 2026-08-11.
 
 - [ ] T019 [US2] Full suite green: `uv run pytest -q`.
 
@@ -142,6 +156,17 @@ Chains on US2 merged.
       plaintext secret entered where a reference belongs is refused at entry
       with the same named rule the parser would use — one rule table, not two.
 
+- [ ] T022a [US3] Write the managed-mode-at-entry case FIRST: answering
+      `temporal.mode = "managed"` in the interview is refused at entry naming
+      042 as the epic that implements it, with the same named rule the landed
+      parser uses (US1-S6's rule — one table, not two).
+
+- [ ] T022b [US3] Write the unreadable-config case FIRST (spec edge case): an
+      existing config file the process cannot read (permissions) fails closed
+      naming the path and the permission problem — in the walkthrough's
+      defaults load and in any consumer reaching it through the landed
+      resolver. Never a half-parsed default.
+
 - [ ] T023 [US3] Write the **contended** lock case FIRST (spec US3-S4, FR-007):
       two install processes, one config path, the second waits or is refused. A
       lock only ever tested uncontended is a lock nobody has tested.
@@ -161,6 +186,12 @@ Chains on US2 merged.
       helper if that epic landed first (plan trap 5).
 
 - [ ] T027 [US3] End the command by executing US2's verification (FR-007).
+
+- [ ] T027a [US3] Prove SC-002: in a scripted end-to-end walkthrough-and-verify
+      run, grep the written config file and every captured log for each
+      credential value the session used and assert zero hits; commit the pasted
+      output (SC-002 — the spec's evidence rule applies: pasted verbatim, in
+      the diff).
 
 - [ ] T028 [US3] Full suite green: `uv run pytest -q`.
 
