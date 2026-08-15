@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Split out of 033-ergane-install on 2026-08-13. 033 as drafted carried seven
 # stories across three unrelated domains — a config parser, a Temporal workflow
 # type, and systemd unit management. This spec is the middle one: escalation

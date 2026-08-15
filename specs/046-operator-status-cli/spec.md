@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Drafted 2026-08-15 by an operator session at the operator's request: "what's
 # the CLI-native way to get the status table" — answer: there isn't one, and
 # probing for one found cli/roadmap-verbs-cannot-see-schedule-driven-runs

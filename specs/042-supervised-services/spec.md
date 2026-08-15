@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Split out of 033-ergane-install on 2026-08-13. 033 as drafted carried seven
 # stories across three unrelated domains; this spec is the third — supervision
 # and systemd. Was 033's US4 and US7; its FR-004..FR-011 were 033's FR-008,

@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Drafted 2026-08-15 by an operator session, same morning as the incident in the
 # Context. Scaffolded by hand, not by `ergane findings promote`; the driving
 # finding is `interpreter/prompt-assembly-fails-only-at-dispatch` (critical,

@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Drafted 2026-08-15 by an operator session, from three open critical findings
 # sharing one mechanism: `mergequeue/agent-session-home-lands-on-the-landing-branch`,
 # `verify/judge-cannot-see-a-large-diff`, and
