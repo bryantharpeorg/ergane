@@ -126,19 +126,20 @@ def _script_read_outside(home: Path, target_path: str) -> None:
     write_control(home, commands="\n".join(commands), exit_code=0)
 
 
-def _script_destruction(home: Path, factory_root: str) -> None:
+def _script_destruction(home: Path, target_repo: str) -> None:
     """Script the stub to run the literal 2026-08-14 command inside the boundary.
 
-    The original incident ran `rm -rf .factory` and `rm -rf .ergane` from the
-    target repository's working tree, expecting to clean scratch state. Inside the
-    boundary those paths do not exist; the destructive equivalent on the runtime
-    root is an absolute `rm -rf` against the factory root, which must fail.
+    The original incident ran, verbatim,
+    `cd /home/admin/code/ergane && rm -rf .factory` — the runtime root as a
+    path *inside the target repository's working tree*. The scenario (US3-S4)
+    requires that literal command to fail: the target repo is bound read-only
+    inside the boundary, so the paths are visible but immutable.
     """
     commands = [
-        f"cd '{factory_root}'",
+        f"cd '{target_repo}'",
         "echo 'agent-pwd-after-cd: '$(pwd)",
-        f"rm -rf '{factory_root}/.factory' || echo 'rm-failed: ' $?",
-        f"rm -rf '{factory_root}/.ergane' || echo 'rm-ergane-failed: ' $?",
+        f"rm -rf '{target_repo}/.factory' || echo 'rm-failed: ' $?",
+        f"rm -rf '{target_repo}/.ergane' || echo 'rm-ergane-failed: ' $?",
     ]
     write_control(home, commands="\n".join(commands), exit_code=0)
 
@@ -240,6 +241,15 @@ async def test_write_to_target_repo_working_tree_fails_and_leaves_tree_unchanged
     repo = _build_target_repo(tmp_path)
     target_file = repo / "invasion.txt"
     target_file.write_text("original operator content\n", encoding="utf-8")
+    # Committed, not just written: the detector's start snapshot is the
+    # committed tree, so an uncommitted fixture file would be reported as
+    # pre-existing operator work — correct behavior (US1-S3), but noise for
+    # the "nothing happened" assertion this test makes below.
+    subprocess.run(["git", "-C", str(repo), "add", "invasion.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--quiet", "-m", "operator file the agent must not touch"],
+        check=True,
+    )
     original = target_file.read_text(encoding="utf-8")
 
     worktree = tmp_path / "worktrees" / EPIC / NODE
@@ -251,21 +261,38 @@ async def test_write_to_target_repo_working_tree_fails_and_leaves_tree_unchanged
 
     _script_write_absolute(per_node_home, str(target_file))
 
+    context = _context(str(worktree), str(per_node_home), str(repo))
+
     adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH))
-    await adapter.run_attempt(
-        _context(str(worktree), str(per_node_home), str(repo)),
-        factory_root=factory_root,
-    )
+    await adapter.run_attempt(context, factory_root=factory_root)
 
     log = _stdout_log(factory_root)
     # Evidence: the failed write is observed by the agent's own shell.
     #
     # attempting-write-to: <target-repo>/invasion.txt
-    # /bin/bash: line 2: <target-repo>/invasion.txt: No such file or directory
+    # /bin/bash: line 2: <target-repo>/invasion.txt: Read-only file system
     # write-failed:  1
     assert "attempting-write-to:" in log
     assert "write-failed:" in log, f"write did not report failure; log:\n{log}"
     assert target_file.read_text(encoding="utf-8") == original
+
+    # US3-S1's third Then: US1's detector reports nothing, because nothing
+    # happened — the write failed at the OS, so there is no change to report.
+    # `run_attempt` already brackets the attempt with `capture_start` /
+    # `compare_and_report` (adapter.py — grep `capture_start`), so the
+    # assertion is on that bracket's *output*: a reported change would be
+    # persisted to the out-of-band batch beside the runtime root (FR-013's
+    # surviving record) and to doctor.db. Both must be absent.
+    detector_batch = (
+        factory_root.parent / f"{factory_root.name}-detector" / "findings.json"
+    )
+    assert not detector_batch.exists(), (
+        "detector reported a change after a write the boundary blocked: "
+        f"{detector_batch.read_text(encoding='utf-8') if detector_batch.exists() else ''}"
+    )
+    assert not (factory_root / "doctor.db").exists(), (
+        "detector wrote a finding to doctor.db after a blocked write"
+    )
 
 
 # --- T019 [P] [US3] reach: read outside the mount set fails -----------------
@@ -348,18 +375,20 @@ async def test_literal_rm_rf_factory_bounces_and_stores_survive(
         check=True,
     )
 
-    # Pre-populate stores, ledgers and a sibling worktree. The literal
-    # 2026-08-14 command targeted `.factory` and `.ergane` directories, so those
-    # must exist for `rm -rf` to produce observable failure evidence.
+    # Pre-populate the runtime root's stores, ledgers and a sibling worktree —
+    # what the 2026-08-14 command actually destroyed — and put `.factory` and
+    # `.ergane` directories *inside the target repository's working tree*,
+    # because that is where the literal command pointed: the runtime root lives
+    # in the target repo, and `rm -rf .factory` ran from the repo root.
     for name in ("doctor.db", "ledger.db", "verification.db"):
         (factory_root / name).write_text(f"{name} initial content\n", encoding="utf-8")
-    (factory_root / ".factory").mkdir(exist_ok=True)
-    (factory_root / ".ergane").mkdir(exist_ok=True)
-    (factory_root / ".factory" / "marker.txt").write_text("factory marker\n", encoding="utf-8")
-    (factory_root / ".ergane" / "marker.txt").write_text("ergane marker\n", encoding="utf-8")
     sibling = factory_root / "worktrees" / EPIC / "us2"
     sibling.mkdir(parents=True)
     (sibling / "sibling.txt").write_text("sibling content\n", encoding="utf-8")
+    (repo / ".factory").mkdir(exist_ok=True)
+    (repo / ".ergane").mkdir(exist_ok=True)
+    (repo / ".factory" / "verification.db").write_text("live store\n", encoding="utf-8")
+    (repo / ".ergane" / "marker.txt").write_text("ergane marker\n", encoding="utf-8")
 
     before = {
         "doctor.db": _size_or_count(factory_root / "doctor.db"),
@@ -367,9 +396,11 @@ async def test_literal_rm_rf_factory_bounces_and_stores_survive(
         "verification.db": _size_or_count(factory_root / "verification.db"),
         "sibling": _size_or_count(sibling),
         "own_worktree": _size_or_count(worktree),
+        "repo/.factory": _size_or_count(repo / ".factory"),
+        "repo/.ergane": _size_or_count(repo / ".ergane"),
     }
 
-    _script_destruction(per_node_home, str(factory_root))
+    _script_destruction(per_node_home, str(repo))
 
     adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH))
     await adapter.run_attempt(
@@ -378,14 +409,17 @@ async def test_literal_rm_rf_factory_bounces_and_stores_survive(
     )
 
     log = _stdout_log(factory_root)
-    # Evidence: the agent's own shell sees the failure.
+    # Evidence: the agent's own shell sees the failure on the literal paths.
+    # Captured verbatim from this test's archived stdout log on 2026-08-15
+    # (stderr lines land after the echoes in the archive):
     #
-    # agent-pwd-after-cd: <target-repo>
-    # rm: cannot remove '.factory': No such file or directory
+    # agent-pwd-after-cd: /tmp/target-llyakboo/repo
     # rm-failed:  1
-    # rm: cannot remove '.ergane': No such file or directory
     # rm-ergane-failed:  1
-    assert "rm-failed:" in log, f"rm -rf .factory did not report failure; log:\n{log}"
+    # rm: cannot remove '/tmp/target-llyakboo/repo/.factory/verification.db': Read-only file system
+    # rm: cannot remove '/tmp/target-llyakboo/repo/.ergane/marker.txt': Read-only file system
+    assert "rm-failed:" in log, f"rm -rf <repo>/.factory did not report failure; log:\n{log}"
+    assert "rm-ergane-failed:" in log, f"rm -rf <repo>/.ergane did not report failure; log:\n{log}"
 
     after = {
         "doctor.db": _size_or_count(factory_root / "doctor.db"),
@@ -393,6 +427,8 @@ async def test_literal_rm_rf_factory_bounces_and_stores_survive(
         "verification.db": _size_or_count(factory_root / "verification.db"),
         "sibling": _size_or_count(sibling),
         "own_worktree": _size_or_count(worktree),
+        "repo/.factory": _size_or_count(repo / ".factory"),
+        "repo/.ergane": _size_or_count(repo / ".ergane"),
     }
 
     # Pasted before/after sizes and counts.
