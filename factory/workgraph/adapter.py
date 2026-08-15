@@ -61,6 +61,7 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import FactoryConfigError, MANIFEST_NAME, load_factory_config, resolve_manifest_path
+from factory.verify.gates import ordered_binds
 from factory.workgraph.detector import compare_and_report, capture_start
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
@@ -383,18 +384,25 @@ class BwrapBackend:
             "--tmpfs", "/tmp",
         ]
 
-        # The node worktree: only the leaf, at the same absolute path. Bind
-        # its parent read-only first so bwrap does not create a writable
-        # intermediate directory that exposes sibling worktrees (trap 9).
-        argv.extend(["--ro-bind", str(worktree.parent), str(worktree.parent)])
-        argv.extend(["--bind", str(worktree), str(worktree)])
-        argv.extend(["--chdir", str(worktree)])
+        # Every filesystem bind is collected here and emitted by `ordered_binds`,
+        # shallowest destination first, so a containing path can never overlay
+        # the more specific bind inside it. Listing order below is for the
+        # reader; the mount order is the helper's. See `ordered_binds` for the
+        # 2026-08-15 failure that made this ordering explicit rather than
+        # incidental.
+        binds: list[tuple[str, str, str]] = []
+
+        # The node worktree: only the leaf, at the same absolute path. Its
+        # parent is read-only so bwrap does not create a writable intermediate
+        # directory that exposes sibling worktrees (trap 9).
+        binds.append(("--ro-bind", str(worktree.parent), str(worktree.parent)))
+        binds.append(("--bind", str(worktree), str(worktree)))
 
         # The factory-owned per-node home is the only writable home. The runtime
-        # root that contains it is bound read-only first so stores and sibling
-        # worktrees cannot be altered, then the home leaf is bound writable on
-        # top (trap 9, US3-S4). The runtime root is the parent of the `homes/`
-        # directory, i.e. three levels above the node home.
+        # root that contains it is read-only so stores and sibling worktrees
+        # cannot be altered, and the home leaf is writable inside it (trap 9,
+        # US3-S4). The runtime root is the parent of the `homes/` directory,
+        # i.e. three levels above the node home.
         runtime_root_candidates = [home.parent, home.parent.parent, home.parent.parent.parent]
         runtime_root = next(
             (candidate for candidate in reversed(runtime_root_candidates)
@@ -402,26 +410,31 @@ class BwrapBackend:
             home.parent.parent.parent,
         ).parent
         if runtime_root.is_dir() and runtime_root not in (Path("/"), worktree.parent):
-            argv.extend(["--ro-bind", str(runtime_root), str(runtime_root)])
-        argv.extend(["--bind", str(home), str(home)])
-        argv.extend(["--setenv", "HOME", str(home)])
+            binds.append(("--ro-bind", str(runtime_root), str(runtime_root)))
+        binds.append(("--bind", str(home), str(home)))
 
-        # Git plumbing: whole parent .git writable. The working tree stays
-        # outside the boundary (trap 1). Bind the working tree root read-only
-        # *before* the writable `.git` bind so the latter wins where it must and
-        # the working tree itself stays read-only (US3-S1).
+        # Git plumbing: whole parent .git writable. The working tree root is
+        # read-only, and depth ordering is what makes the writable `.git` and
+        # the writable worktree survive inside it (trap 1, US3-S1).
         if target_git_dir is not None:
             target_worktree = target_git_dir.parent
             if target_worktree not in (worktree.parent, home):
-                argv.extend(["--ro-bind", str(target_worktree), str(target_worktree)])
-            argv.extend(["--bind", str(target_git_dir), str(target_git_dir)])
+                binds.append(("--ro-bind", str(target_worktree), str(target_worktree)))
+            binds.append(("--bind", str(target_git_dir), str(target_git_dir)))
 
         # Read-only toolchain leaves (trap 13).
-        for flag, source, dest in self._toolchain_binds():
-            argv.extend([flag, source, dest])
+        binds.extend(self._toolchain_binds())
 
         # The executable itself, when it is an absolute path not already mounted.
-        argv.extend(self._bind_executable(invocation))
+        executable_bind = self._bind_executable(invocation)
+        if executable_bind:
+            binds.append(
+                (executable_bind[0], executable_bind[1], executable_bind[2])
+            )
+
+        argv.extend(ordered_binds(binds))
+        argv.extend(["--chdir", str(worktree)])
+        argv.extend(["--setenv", "HOME", str(home)])
 
         # PATH must name the bind points inside the container; inherited PATH
         # points at host paths that may not be mounted.

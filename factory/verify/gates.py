@@ -43,7 +43,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Mapping, Protocol
+from typing import IO, Mapping, Protocol, Sequence
 
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
@@ -109,6 +109,36 @@ DEFAULT_KILL_GRACE_S = 10.0
 #: permits unprivileged user namespaces only for the system binary at this path
 #: (trap 6); a copied or vendored binary has no profile and fails with EPERM.
 BWRAP_BACKEND_BINARY = Path("/usr/bin/bwrap")
+
+
+def ordered_binds(binds: Sequence[tuple[str, str, str]]) -> list[str]:
+    """Flatten filesystem binds into argv, shallowest path first.
+
+    bwrap applies mounts in argv order, so a bind whose destination *contains*
+    an earlier one silently replaces it. Every path in this factory has that
+    shape: a node worktree lives at
+    ``<target_repo>/.factory/worktrees/<epic>/<node>``, inside both the runtime
+    root and the target repository, so emitting the worktree writable and the
+    repository read-only afterwards made the worktree read-only.
+
+    That is not hypothetical — it shipped. `011-agent-sandbox/US5` put gates
+    behind the boundary and the first real epic to run under it
+    (`033-ergane-install/us2`, 2026-08-15) failed its gate with
+    ``failed to remove directory .venv/bin: Read-only file system``, because
+    ``--ro-bind <target_repo>`` was emitted after ``--bind <worktree>``.
+
+    Sorting by depth makes the most specific bind win regardless of the order
+    callers happen to list them in, which is the property the mount set needs
+    and the one an ad-hoc "is this the immediate parent?" guard cannot provide.
+    Ties keep the caller's order, so two binds at the same depth stay as
+    written.
+    """
+    ordered = sorted(binds, key=lambda bind: len(Path(bind[2]).parts))
+    argv: list[str] = []
+    for flag, source, dest in ordered:
+        argv.extend([flag, source, dest])
+    return argv
+
 
 _READ_CHUNK = 64 * 1024
 
@@ -538,34 +568,55 @@ class BwrapGateExecutor:
             "--tmpfs", "/tmp",
         ]
 
-        # The node worktree: only the leaf, at the same absolute path. Bind
-        # its parent read-only first so bwrap does not create a writable
-        # intermediate directory that exposes sibling worktrees (trap 9).
+        # Every filesystem bind is collected here and emitted by `ordered_binds`,
+        # shallowest destination first, so a containing path can never overlay
+        # the more specific bind inside it. Listing order below is for the
+        # reader; the mount order is the helper's.
+        binds: list[tuple[str, str, str]] = []
+
+        # The parent read-only so bwrap does not create a writable intermediate
+        # directory exposing sibling worktrees (trap 9); the node worktree
+        # writable — only the leaf, at the same absolute path.
         if worktree.parent not in (Path("/"),):
-            argv.extend(["--ro-bind", str(worktree.parent), str(worktree.parent)])
-        argv.extend(["--bind", str(worktree), str(worktree)])
-        argv.extend(["--chdir", str(worktree)])
+            binds.append(("--ro-bind", str(worktree.parent), str(worktree.parent)))
+        binds.append(("--bind", str(worktree), str(worktree)))
 
         # Git plumbing: a linked worktree's `.git` file points back to the
         # parent repo's `.git/worktrees/<name>`. Bind the whole parent `.git`
-        # writable so commit/diff work; the working tree stays outside the
-        # boundary (trap 1).
+        # writable so commit/diff work; the working tree is read-only.
         target_git_dir = _resolve_target_git_dir(worktree)
         if target_git_dir is not None:
             target_worktree = target_git_dir.parent
             if target_worktree not in (worktree.parent, Path("/")):
-                argv.extend(["--ro-bind", str(target_worktree), str(target_worktree)])
-            argv.extend(["--bind", str(target_git_dir), str(target_git_dir)])
+                binds.append(
+                    ("--ro-bind", str(target_worktree), str(target_worktree))
+                )
+            binds.append(("--bind", str(target_git_dir), str(target_git_dir)))
+
+        # Read-only toolchain leaves (trap 13), collected with the rest so a
+        # leaf inside the worktree could not be overlaid by it either, plus the
+        # interpreter the worktree's venv points at.
+        for source, dest in self._toolchain_binds():
+            binds.append(("--ro-bind", source, dest))
+        for source, dest in self._interpreter_binds(worktree):
+            binds.append(("--ro-bind", source, dest))
+        for source, dest in self._resolver_binds():
+            binds.append(("--ro-bind", source, dest))
+
+        # The package cache is writable, and is the one bind outside the
+        # worktree that is: see `_cache_binds`.
+        cache_binds = self._cache_binds()
+        for source, dest in cache_binds:
+            binds.append(("--bind", source, dest))
+
+        argv.extend(ordered_binds(binds))
+        argv.extend(["--chdir", str(worktree)])
 
         # A factory-owned home for the gate, writable but not the operator's.
         argv.extend(["--tmpfs", str(home)])
         argv.extend(["--setenv", "HOME", str(home)])
-
-        # Read-only toolchain leaves (trap 13). `uv` and `git` are the binaries
-        # gate commands are known to shell out to; `node` is kept for parity
-        # with the agent mount set even though fixture gates do not use it.
-        for source, dest in self._toolchain_binds():
-            argv.extend(["--ro-bind", source, dest])
+        for _, dest in cache_binds:
+            argv.extend(["--setenv", "UV_CACHE_DIR", dest])
 
         # PATH must name the bind points inside the container.
         argv.extend(["--setenv", "PATH", self._container_path()])
@@ -586,6 +637,93 @@ class BwrapGateExecutor:
         node = "/home/admin/.nvm/versions/node/v22.22.2/bin/node"
         if Path(node).is_file():
             binds.append((node, node))
+        return binds
+
+    def _resolver_binds(self) -> list[tuple[str, str]]:
+        """Name resolution and trust roots, so a gate's network works at all.
+
+        The boundary deliberately does not unshare the network (egress is out
+        of scope), but a namespace with no `/etc/resolv.conf` cannot resolve a
+        hostname, and one with no trust store cannot complete a TLS handshake.
+        The result is not "no network" — it is `Temporary failure in name
+        resolution` in the middle of a package install, which reads like a
+        broken dependency rather than a missing mount.
+
+        Only these two paths are exposed, never `/etc` wholesale: the rest of
+        it is host configuration the gate has no business reading.
+        """
+        binds: list[tuple[str, str]] = []
+        for path in ("/etc/resolv.conf", "/etc/ssl"):
+            if Path(path).exists():
+                binds.append((path, path))
+        return binds
+
+    def _cache_binds(self) -> list[tuple[str, str]]:
+        """The package cache, writable, so a gate resolves as it does on the host.
+
+        `HOME` inside the boundary is a tmpfs, so a package manager finds an
+        empty cache and re-downloads everything a sync touches — on a host
+        whose cache is already warm, that turns a two-second gate into a
+        network-bound one, and on a host without egress it turns a passing
+        gate into a failing one. Binding the real cache makes the boundary's
+        behaviour match the host's, which is the property a verification
+        boundary needs: it changes *where a gate may write*, not *whether the
+        gate can run*.
+
+        Writable on purpose — a read-only cache is worse than none, because
+        the manager treats it as a corrupt one. `UV_CACHE_DIR` is set beside
+        this bind (the tmpfs HOME would otherwise send uv looking elsewhere).
+        """
+        cache = Path.home() / ".cache" / "uv"
+        return [(str(cache), str(cache))] if cache.is_dir() else []
+
+    def _interpreter_binds(self, worktree: Path) -> list[tuple[str, str]]:
+        """Bind the interpreter the worktree's virtualenv points at, if any.
+
+        A `uv` virtualenv's `bin/python` is a symlink to an interpreter outside
+        the worktree — on this host, under `~/.local/share/uv/python/`. Inside
+        a boundary that does not carry it the symlink dangles, `uv` reports
+        "Ignoring existing virtual environment linked to non-existent Python
+        interpreter" and tries to *rebuild* the venv, which is how
+        `033-ergane-install/us2` turned a read-only worktree into
+        ``failed to remove directory .venv/bin`` rather than a clean error.
+
+        The path is read from the venv rather than hardcoded: a Python version
+        bump moves it, and a stale literal here would reintroduce the same
+        failure with a new version number in it. Nothing is bound when there is
+        no venv — a repo whose gates need no interpreter is not this method's
+        business.
+        """
+        binds: list[tuple[str, str]] = []
+
+        # The managed-interpreter store, whole. Binding only the one version a
+        # venv currently points at is not enough: when the manager decides to
+        # rebuild the environment it re-runs interpreter *discovery*, and a
+        # store holding a single version reads as a store missing the one it
+        # wants — it then falls back to the system python, and the gate silently
+        # runs on a different interpreter than the host. Measured on
+        # 2026-08-15: the boundary reported 3.12.3 where the host reported
+        # 3.13.12. A verification boundary that changes the interpreter changes
+        # what verification measures, so the whole read-only store is bound.
+        store = Path.home() / ".local" / "share" / "uv" / "python"
+        if store.is_dir():
+            binds.append((str(store), str(store)))
+
+        # And the interpreter the venv actually points at, wherever it lives —
+        # a system or pyenv interpreter is outside the store above.
+        link = worktree / ".venv" / "bin" / "python"
+        try:
+            target = link.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return binds
+        if not target.is_file():
+            return binds
+        # The interpreter's own installation tree — its stdlib sits beside the
+        # binary, so binding the executable alone yields an interpreter that
+        # cannot import anything.
+        root = target.parent.parent
+        if not str(root).startswith(str(store)):
+            binds.append((str(root), str(root)))
         return binds
 
     def _container_path(self) -> str:
