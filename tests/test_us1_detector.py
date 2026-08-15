@@ -418,3 +418,50 @@ async def test_detector_runs_on_completed_agent_error_timeout_and_killed(
         conn.close()
 
 
+# --- T005: runtime-root changes are detected even though they are gitignored ---
+
+
+async def test_agent_truncating_runtime_root_store_files_finding(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    runtime_root: Path,
+    sibling_worktree: Path,
+    worker_host: Path,
+) -> None:
+    """US1-S5 / FR-012: evidence store / ledger / sibling worktree truncation is caught."""
+    # Pre-populate the evidence stores.
+    for name in ("doctor.db", "ledger.db", "verification.db"):
+        (runtime_root / name).write_text("initial store content\n", encoding="utf-8")
+
+    write_control(home_path(factory_root, EPIC, NODE), stdout="done", sleep_s=3.0)
+    # Truncate while the attempt runs.
+    running = asyncio.create_task(env.run(run_agent_attempt, context()))
+    await wait_until(lambda: stub_is_up(worktree, ATTEMPT), what="the agent to launch")
+    (runtime_root / "doctor.db").write_text("", encoding="utf-8")
+    (runtime_root / "ledger.db").write_text("", encoding="utf-8")
+    (sibling_worktree / "sibling.txt").write_text("", encoding="utf-8")
+    await running
+
+    conn = connect(factory_root / "doctor.db")
+    try:
+        finding = get_finding(conn, finding_key(EPIC, NODE))
+        assert finding is not None
+        assert finding.severity is Severity.CRITICAL
+        summary = finding.summary
+        assert "doctor.db" in summary
+        assert "ledger.db" in summary
+        assert str(sibling_worktree.relative_to(runtime_root)) in summary or any(
+            str(sibling_worktree.relative_to(runtime_root)) in ref for ref in finding.refs
+        )
+        # The detector is read-only: it must not undo the truncation of files
+        # it merely reports on.  `doctor.db` is where the finding itself is stored,
+        # so it legitimately changes at teardown; `ledger.db` and the sibling
+        # worktree must stay truncated.
+        assert (runtime_root / "ledger.db").stat().st_size == 0
+        assert (sibling_worktree / "sibling.txt").stat().st_size == 0
+    finally:
+        conn.close()
+
+
