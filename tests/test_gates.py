@@ -974,7 +974,7 @@ def test_candidate_acceptance_runs_declared_gates_despite_worker_refusing(
     (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
     manifest = worktree / MANIFEST_NAME
     manifest.write_text(
-        "version: 1\nruntime: python:3.11-bookworm\n"
+        "version: 1\nruntime: bwrap\n"
         "gates:\n  test: bash gates/test.sh\nfuture_key: not-yet-known\n",
         encoding="utf-8",
     )
@@ -1009,7 +1009,7 @@ def test_candidate_rejection_is_one_config_error_and_runs_nothing(
     (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
     manifest = worktree / MANIFEST_NAME
     manifest.write_text(
-        "version: 1\nruntime: python:3.11-bookworm\n"
+        "version: 1\nruntime: bwrap\n"
         "gates:\n  test: bash gates/test.sh\nfuture_key: not-yet-known\n",
         encoding="utf-8",
     )
@@ -1077,7 +1077,7 @@ def test_candidate_cannot_run_falls_back_with_worker_and_reason_in_tail(
     (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
     manifest = worktree / MANIFEST_NAME
     manifest.write_text(
-        "version: 1\nruntime: python:3.11-bookworm\n"
+        "version: 1\nruntime: bwrap\n"
         "gates:\n  test: bash gates/test.sh\nfuture_key: not-yet-known\n",
         encoding="utf-8",
     )
@@ -1108,7 +1108,7 @@ def test_candidate_cannot_run_with_good_manifest_runs_todays_gates(
     (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
     manifest = worktree / MANIFEST_NAME
     manifest.write_text(
-        "version: 1\nruntime: python:3.11-bookworm\n"
+        "version: 1\nruntime: bwrap\n"
         "gates:\n  test: bash gates/test.sh\n  lint: bash gates/lint.sh\n",
         encoding="utf-8",
     )

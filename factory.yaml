@@ -12,7 +12,7 @@ version: 1
 # It names a uv image rather than a bare `python:` one because the gate command
 # below is `uv run` — the day the sandbox executor honours this field, the image
 # it pulls has to be able to run it.
-runtime: ghcr.io/astral-sh/uv:python3.11-bookworm
+runtime: bwrap
 
 # One gate, because one gate is what this repo has: `pytest` is the whole of its
 # green. Declaring `lint`/`typecheck` here would fail every node — ruff and mypy

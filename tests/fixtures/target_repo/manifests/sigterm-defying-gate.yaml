@@ -4,7 +4,7 @@
 # A test using this fixture is only bounded by the runner's grace period, so it
 # belongs with a shortened grace unless a 10s test is acceptable.
 version: 1
-runtime: python:3.11-bookworm
+runtime: bwrap
 gates:
   test: "bash gates/hang-ignoring-sigterm.sh"
 timeouts:

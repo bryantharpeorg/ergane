@@ -93,6 +93,7 @@ from factory.workgraph.adapter import (
     PASSTHROUGH_ENV,
     STDOUT_LOG_NAME,
     ClaudeCodeAdapter,
+    HostAgentBackend,
     adapter_for,
     attempt_env,
     home_path,
@@ -1794,7 +1795,10 @@ async def test_a_real_attempt_archives_outside_every_checkout_and_salvage_keeps_
     assert tree == worktree_path(factory_root, EPIC, NODE)
 
     write_control(home_path(factory_root, EPIC, NODE), stdout="agent: implemented US1")
-    adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH))
+    adapter = ClaudeCodeAdapter(
+        executable=str(STUB_AGENT_PATH),
+        backend=HostAgentBackend(executable=str(STUB_AGENT_PATH)),
+    )
     result = await adapter.run_attempt(
         context(worktree_path=str(tree)), factory_root=factory_root
     )
@@ -1867,7 +1871,11 @@ async def test_a_killed_attempt_archives_outside_the_worktree_too(
     tree = Path(prepared.path)
 
     write_control(home_path(factory_root, EPIC, NODE), sleep_s=30.0)
-    adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH), grace_s=0.4)
+    adapter = ClaudeCodeAdapter(
+        executable=str(STUB_AGENT_PATH),
+        grace_s=0.4,
+        backend=HostAgentBackend(executable=str(STUB_AGENT_PATH)),
+    )
     attempt = asyncio.ensure_future(
         adapter.run_attempt(context(worktree_path=str(tree)), factory_root=factory_root)
     )

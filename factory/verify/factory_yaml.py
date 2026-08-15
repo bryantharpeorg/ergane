@@ -79,6 +79,10 @@ PARSE_CLI_REJECTED = 65
 #: checks to gates 1:1. Arbitrary names are a `version: 2` conversation.
 KNOWN_GATES = ("test", "lint", "typecheck")
 
+#: Supported sandbox backends in US2. The value domain of `runtime:` changes from
+#: a container image reference to a backend name; only these names are accepted.
+SUPPORTED_BACKENDS = ("bwrap",)
+
 _TOP_LEVEL_KEYS = ("version", "runtime", "gates", "timeouts", "standards", "landing_branch")
 
 _SUPPORTED_VERSION = 1
@@ -194,16 +198,23 @@ def _read_runtime(document: Mapping[Any, Any], source: str) -> str:
     if "runtime" not in document:
         raise FactoryConfigError(
             "runtime",
-            "declares no `runtime`; schema v1 requires a container image "
-            "reference, e.g. `runtime: python:3.11-bookworm`",
+            "declares no `runtime`; schema v1 requires a supported sandbox "
+            f"backend name, e.g. `runtime: {SUPPORTED_BACKENDS[0]}`",
             source=source,
         )
     runtime = document["runtime"]
     if not isinstance(runtime, str) or not runtime.strip():
         raise FactoryConfigError(
             "runtime",
-            f"declares `runtime: {runtime!r}`; it must be a non-empty container "
-            "image reference, e.g. `python:3.11-bookworm`",
+            f"declares `runtime: {runtime!r}`; it must be a supported sandbox "
+            f"backend name, e.g. `{SUPPORTED_BACKENDS[0]}`",
+            source=source,
+        )
+    if runtime not in SUPPORTED_BACKENDS:
+        raise FactoryConfigError(
+            "runtime",
+            f"declares `runtime: {runtime!r}`; the supported backend is "
+            f"`{SUPPORTED_BACKENDS[0]}`",
             source=source,
         )
     return runtime

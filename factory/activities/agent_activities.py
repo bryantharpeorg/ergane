@@ -84,6 +84,7 @@ from factory.workgraph.adapter import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
     AdapterError,
     ClaudeCodeAdapter,
+    HostAgentBackend,
     adapter_for,
     transcript_dir,
 )
@@ -444,6 +445,10 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
     root = factory_root()
     try:
         adapter = adapter_for(DEFAULT_AGENT)
+        # US2: in production the launch backend is resolved from the manifest's
+        # `runtime:` key. In tests the ActivityEnvironment runs against a plain
+        # worktree with no manifest, so the host launch is selected explicitly.
+        adapter._backend = HostAgentBackend(executable=adapter.executable)
         return await adapter.run_attempt(
             context,
             factory_root=root,

@@ -55,10 +55,12 @@ import os
 import re
 import shutil
 import signal
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from factory.usage.models import Termination, UsageSnapshot
+from factory.verify.factory_yaml import FactoryConfigError, MANIFEST_NAME, load_factory_config, resolve_manifest_path
 from factory.workgraph.detector import compare_and_report, capture_start
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
@@ -220,6 +222,120 @@ class AdapterError(RuntimeError):
     not on the worker host": a config error the operator has to fix, and one the
     ladder must not spend an attempt on.
     """
+
+
+# The launch seam (US2) --------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AgentInvocation:
+    """Everything one launch backend receives: the argv, prompt, env, cwd, and the
+    persona routing the prompt was assembled for.
+
+    This is the seam's payload, not the adapter's policy. The monitor, the
+    deadline, the archive, and the detector all stay in the adapter; only the
+    moment of spawning the agent process moves behind this boundary.
+    """
+
+    argv: list[str]
+    prompt: str
+    worktree: Path
+    env: dict[str, str]
+    log: Any
+    standards_path: str | None
+    model_alias: str
+
+
+class AgentBackend(Protocol):
+    """How one agent runtime turns an invocation into a running process.
+
+    Following the `GateExecutor` precedent: the adapter owns the policy
+    (deadline, signals, archive), and the backend owns only the spawn. Two
+    implementations exist in US2: the host launch (today's direct spawn, kept
+    but selectable only explicitly) and the fake the tests drive. The bwrap
+    implementation plugs into the same socket in US3.
+    """
+
+    name: str
+
+    async def launch(
+        self,
+        invocation: AgentInvocation,
+    ) -> asyncio.subprocess.Process: ...
+
+
+#: Absolute path the bwrap backend is pinned to. Ubuntu 24.04's AppArmor profile
+#: permits unprivileged user namespaces only for the system binary at this path
+#: (trap 6); a copied or vendored binary has no profile and fails with EPERM.
+BWRAP_BACKEND_BINARY = Path("/usr/bin/bwrap")
+
+
+class HostAgentBackend:
+    """Today's direct host launch, now one implementation behind the seam.
+
+    Selectable only explicitly — the default path resolves the backend from the
+    manifest's `runtime:` key. This implementation exists so US4 can run a
+    control with the boundary disabled, and for no other production path.
+    """
+
+    name = "host"
+
+    def __init__(self, *, executable: str = DEFAULT_EXECUTABLE) -> None:
+        self.executable = executable
+
+    async def launch(self, invocation: AgentInvocation) -> asyncio.subprocess.Process:
+        try:
+            return await asyncio.create_subprocess_exec(
+                *invocation.argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=invocation.log,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=str(invocation.worktree),
+                env=invocation.env,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise AdapterError(
+                f"could not launch agent '{self.executable}' for "
+                f"{invocation.argv}: {error}"
+            ) from error
+
+
+class BwrapBackend:
+    """Socket for the bubblewrap containment that lands in US3.
+
+    US2 only wires the seam and asserts the refusal path. The actual invocation
+    is left unimplemented so the diff does not claim a containment it cannot yet
+    prove; when the binary is present the backend still refuses explicitly.
+    """
+
+    name = "bwrap"
+
+    def __init__(self, *, executable: str = DEFAULT_EXECUTABLE) -> None:
+        self.executable = executable
+
+    def _binary(self) -> Path:
+        return BWRAP_BACKEND_BINARY
+
+    def _platform(self) -> str:
+        return "linux"
+
+    async def launch(self, invocation: AgentInvocation) -> asyncio.subprocess.Process:
+        binary = self._binary()
+        if not binary.is_file():
+            raise AdapterError(
+                f"sandbox backend 'bwrap' not available: {binary} missing on "
+                f"{self._platform()}"
+            )
+        raise AdapterError(
+            f"sandbox backend 'bwrap' launch not yet implemented (US3)"
+        )
+
+
+_BACKENDS: dict[str, type[AgentBackend]] = {
+    HostAgentBackend.name: HostAgentBackend,
+    BwrapBackend.name: BwrapBackend,
+}
 
 
 # The seam (D-018) ------------------------------------------------------------
@@ -397,9 +513,11 @@ class ClaudeCodeAdapter:
         *,
         executable: str = DEFAULT_EXECUTABLE,
         grace_s: float = DEFAULT_GRACE_S,
+        backend: AgentBackend | None = None,
     ) -> None:
         self.executable = executable
         self.grace_s = grace_s
+        self._backend = backend
 
     async def run_attempt(
         self,
@@ -464,7 +582,17 @@ class ClaudeCodeAdapter:
             capture_start(Path(factory_root), target_repo, context)
 
         with (archive / STDOUT_LOG_NAME).open("wb") as log:
-            process = await self._launch(context, worktree=worktree, env=env, log=log)
+            backend = self._resolve_backend(worktree, target_repo)
+            invocation = AgentInvocation(
+                argv=self.argv(context),
+                prompt=context.prompt,
+                worktree=worktree,
+                env=env,
+                log=log,
+                standards_path=self._standards_path(worktree, target_repo),
+                model_alias=context.model_alias,
+            )
+            process = await backend.launch(invocation)
             _write_pid_file(pids, process.pid)
             feeder = asyncio.ensure_future(_feed_prompt(process, context.prompt))
             try:
@@ -518,6 +646,57 @@ class ClaudeCodeAdapter:
             context.session_id,
         ]
 
+    def _resolve_backend(
+        self,
+        worktree: Path,
+        target_repo: Path | None,
+    ) -> AgentBackend:
+        """Resolve the launch backend from the manifest's `runtime:` key.
+
+        An explicitly supplied backend overrides the manifest (US4's control
+        path). Otherwise the manifest is read from the worktree — the same
+        committed file the gates will read — and `runtime` names the backend.
+        A backend that cannot be provided is a refusal naming the backend and
+        the platform, never a silent fallback to the host launch (FR-008).
+        """
+        if self._backend is not None:
+            return self._backend
+
+        manifest_dir = worktree if target_repo is None else target_repo
+        try:
+            manifest_path, _ = resolve_manifest_path(manifest_dir)
+            runtime = load_factory_config(manifest_path).runtime
+        except FactoryConfigError as error:
+            raise AdapterError(str(error)) from error
+
+        backend_class = _BACKENDS.get(runtime)
+        if backend_class is None:
+            known = ", ".join(sorted(_BACKENDS)) or "<none>"
+            raise AdapterError(
+                f"sandbox backend {runtime!r} is not supported on this platform "
+                f"(known: {known})"
+            )
+        return backend_class(executable=self.executable)
+
+    def _standards_path(
+        self,
+        worktree: Path,
+        target_repo: Path | None,
+    ) -> str | None:
+        """The standards document the target repo declared, if any.
+
+        Read from the same manifest the backend is resolved from, so the fake
+        backend in the parity test receives the same path prompt assembly will
+        point the agent at. A broken manifest is treated as "no standards" here;
+        the gate runner will surface it as a CONFIG_ERROR separately.
+        """
+        manifest_dir = worktree if target_repo is None else target_repo
+        try:
+            manifest_path, _ = resolve_manifest_path(manifest_dir)
+            return load_factory_config(manifest_path).standards
+        except FactoryConfigError:
+            return None
+
     async def _launch(
         self,
         context: AttemptContext,
@@ -532,22 +711,21 @@ class ClaudeCodeAdapter:
         one process group, so the deadline can be enforced against the tree
         rather than against the root of it. stderr is merged into stdout because
         the log is read by a human looking for what went wrong, in order.
+
+        Kept as the explicit host-launch implementation; the default path in
+        `run_attempt` routes through the seam.
         """
-        try:
-            return await asyncio.create_subprocess_exec(
-                *self.argv(context),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=log,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=str(worktree),
-                env=env,
-                start_new_session=True,
-            )
-        except OSError as error:
-            raise AdapterError(
-                f"could not launch agent '{self.executable}' for "
-                f"{context.epic_id}/{context.node_id} attempt {context.attempt}: {error}"
-            ) from error
+        backend = HostAgentBackend(executable=self.executable)
+        invocation = AgentInvocation(
+            argv=self.argv(context),
+            prompt=context.prompt,
+            worktree=worktree,
+            env=env,
+            log=log,
+            standards_path=self._standards_path(worktree, None),
+            model_alias=context.model_alias,
+        )
+        return await backend.launch(invocation)
 
     # -- monitor and terminate (R2) -------------------------------------------
 
