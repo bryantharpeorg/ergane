@@ -84,7 +84,6 @@ from factory.workgraph.adapter import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
     AdapterError,
     ClaudeCodeAdapter,
-    HostAgentBackend,
     adapter_for,
     transcript_dir,
 )
@@ -444,11 +443,14 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
     """
     root = factory_root()
     try:
+        # The launch backend is resolved from the target repo's `runtime:` key
+        # by the adapter itself (011-US2). Nothing overrides it here: an
+        # unconditional assignment on this line pinned every production attempt
+        # to the host launch for the whole of 011, while US3/US4/US5 proved a
+        # boundary no dispatch could reach. Tests that need the host launch
+        # declare `runtime: host` in their fixture manifest and get it through
+        # the same resolution production uses.
         adapter = adapter_for(DEFAULT_AGENT)
-        # US2: in production the launch backend is resolved from the manifest's
-        # `runtime:` key. In tests the ActivityEnvironment runs against a plain
-        # worktree with no manifest, so the host launch is selected explicitly.
-        adapter._backend = HostAgentBackend(executable=adapter.executable)
         return await adapter.run_attempt(
             context,
             factory_root=root,
