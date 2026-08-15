@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from factory.doctor.models import Finding, FindingEvent, Severity, Status
-from factory.workgraph.worktree import LEGACY_FACTORY_ROOT, resolve_factory_root
 
 #: Bumping this means the DDL below changed shape and existing stores need a
 #: migration path. Recorded in the database so a reader can tell.
@@ -82,41 +81,6 @@ CREATE TABLE IF NOT EXISTS finding_events (
 CREATE INDEX IF NOT EXISTS idx_finding_events_key
     ON finding_events(finding_key, seen_at);
 """
-
-
-def _has_ledger_data(path: Path) -> bool:
-    """True when ``path`` holds a doctor findings table with at least one row."""
-    if not path.exists():
-        return False
-    try:
-        conn = sqlite3.connect(path)
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE type='table' AND name='findings'"
-            ).fetchone()
-            return row is not None and row[0] == 1
-        finally:
-            conn.close()
-    except sqlite3.DatabaseError:
-        return False
-
-
-def resolved_doctor_db_path() -> Path:
-    """Resolve the findings ledger path through the runtime-root resolver.
-
-    Follows the populated ledger when the resolved root has none and a legacy
-    `.factory/doctor.db` still holds data (FR-006).  This prevents a silent
-    empty ledger from being opened during a runtime-root migration.
-    """
-    root, _choice = resolve_factory_root()
-    resolved_db = root / "doctor.db"
-    if _has_ledger_data(resolved_db):
-        return resolved_db
-    legacy_db = LEGACY_FACTORY_ROOT / "doctor.db"
-    if _has_ledger_data(legacy_db):
-        return legacy_db
-    return resolved_db
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
