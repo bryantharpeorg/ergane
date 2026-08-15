@@ -61,7 +61,7 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import FactoryConfigError, MANIFEST_NAME, load_factory_config, resolve_manifest_path
-from factory.verify.gates import ordered_binds
+from factory.verify.gates import BwrapGateExecutor, ordered_binds
 from factory.workgraph.detector import compare_and_report, capture_start
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
@@ -422,8 +422,23 @@ class BwrapBackend:
                 binds.append(("--ro-bind", str(target_worktree), str(target_worktree)))
             binds.append(("--bind", str(target_git_dir), str(target_git_dir)))
 
-        # Read-only toolchain leaves (trap 13).
+        # Read-only toolchain leaves (trap 13), plus the three things any
+        # attempt that runs the repo's own suite needs. The agent runs the gate
+        # command itself during its inner loop, so its mount set must carry
+        # everything the gate executor's does — proven on 2026-08-15 by giving
+        # the agent the boundary without them: `uv run` inside the namespace
+        # died with `Temporary failure in name resolution` before a single test
+        # ran. The gate executor owns the definitions; reusing them is what
+        # keeps the two mount sets from drifting apart again.
         binds.extend(self._toolchain_binds())
+        gate_boundary = BwrapGateExecutor()
+        for source, dest in gate_boundary._interpreter_binds(worktree):
+            binds.append(("--ro-bind", source, dest))
+        for source, dest in gate_boundary._resolver_binds():
+            binds.append(("--ro-bind", source, dest))
+        cache_binds = gate_boundary._cache_binds()
+        for source, dest in cache_binds:
+            binds.append(("--bind", source, dest))
 
         # The executable itself, when it is an absolute path not already mounted.
         executable_bind = self._bind_executable(invocation)
@@ -435,6 +450,8 @@ class BwrapBackend:
         argv.extend(ordered_binds(binds))
         argv.extend(["--chdir", str(worktree)])
         argv.extend(["--setenv", "HOME", str(home)])
+        for _, dest in cache_binds:
+            argv.extend(["--setenv", "UV_CACHE_DIR", dest])
 
         # PATH must name the bind points inside the container; inherited PATH
         # points at host paths that may not be mounted.
