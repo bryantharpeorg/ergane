@@ -285,3 +285,27 @@ async def test_agent_modifying_tracked_file_in_target_repo_files_finding(
         conn.close()
 
 
+# --- T002: an attempt that writes only inside its worktree files nothing ---
+
+
+async def test_agent_writing_only_inside_worktree_files_nothing(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    worker_host: Path,
+) -> None:
+    """US1-S2: a well-behaved attempt produces no boundary finding."""
+    (worktree / "src").mkdir(exist_ok=True)
+    (worktree / NEW_FILE).write_text("VALUE = 1\n", encoding="utf-8")
+
+    write_control(home_path(factory_root, EPIC, NODE), stdout="done")
+    await env.run(run_agent_attempt, context())
+
+    conn = connect(factory_root / "doctor.db")
+    try:
+        assert get_finding(conn, finding_key(EPIC, NODE)) is None
+    finally:
+        conn.close()
+
+
