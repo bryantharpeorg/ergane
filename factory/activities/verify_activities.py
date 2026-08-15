@@ -275,7 +275,11 @@ async def run_gates(request: RunGatesInput) -> list[GateResult]:
         request.worktree_path,
         manifest_path=request.factory_yaml_path,
         executor=_HeartbeatingExecutor(
-            gates.SubprocessGateExecutor(), asyncio.get_running_loop()
+            gates.resolve_gate_executor(
+                request.worktree_path,
+                manifest_path=request.factory_yaml_path,
+            ),
+            asyncio.get_running_loop(),
         ),
         timeout_overrides=request.timeout_overrides,
     )
