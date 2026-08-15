@@ -465,3 +465,41 @@ async def test_agent_truncating_runtime_root_store_files_finding(
         conn.close()
 
 
+# --- T006: detector survives deletion of the runtime root ---
+
+
+async def test_detector_reports_even_when_runtime_root_is_deleted(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    runtime_root: Path,
+    sibling_worktree: Path,
+    worker_host: Path,
+) -> None:
+    """US1-S6 / FR-013: the snapshot lives outside the blast radius."""
+    for name in ("doctor.db", "ledger.db", "verification.db"):
+        (runtime_root / name).write_text("initial store content\n", encoding="utf-8")
+
+    write_control(home_path(factory_root, EPIC, NODE), stdout="done", sleep_s=3.0)
+    running = asyncio.create_task(env.run(run_agent_attempt, context()))
+    await wait_until(lambda: stub_is_up(worktree, ATTEMPT), what="the agent to launch")
+
+    # The agent deletes the runtime root outright.
+    subprocess.run(["rm", "-rf", str(runtime_root)], check=True)
+
+    await running
+
+    # The finding store was deleted too, so we cannot read it from the runtime root.
+    # The detector must have kept its start snapshot somewhere else.
+    snapshot_dir = _detector_snapshot_dir(factory_root)
+    assert snapshot_dir is not None, "detector did not keep a snapshot outside the runtime root"
+    assert snapshot_dir.exists(), "detector snapshot directory was also deleted"
+
+    # Reconstitute the finding by replaying the detector with the saved snapshot.
+    # (The implementation writes a findings batch file or the finding row itself
+    # outside the runtime root; this test reads that artifact.)
+    finding = _read_surviving_finding(snapshot_dir, EPIC, NODE)
+    assert finding is not None, "expected a surviving finding after runtime root deletion"
+    assert finding.severity is Severity.CRITICAL
+    assert "runtime root" in finding.summary or "doctor.db" in finding.summary
