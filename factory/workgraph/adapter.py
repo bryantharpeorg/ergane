@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from factory.usage.models import Termination, UsageSnapshot
+from factory.workgraph.detector import compare_and_report, capture_start
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 
@@ -448,6 +449,7 @@ class ClaudeCodeAdapter:
         await self._reap(pids)
 
         worktree = Path(context.worktree_path).resolve()
+        target_repo = Path(context.target_repo) if context.target_repo else None
         # `ATTEMPT_ARCHIVE` is the one constructed env var beyond the two
         # attempt credentials and the four passthroughs: the agent's ferry files
         # live in the archive directory (never the worktree, where salvage would
@@ -456,6 +458,10 @@ class ClaudeCodeAdapter:
         # knowledge, derived from the same identity the transcript directory is.
         env = attempt_env(context)
         env[ATTEMPT_ARCHIVE_ENV] = str(archive)
+
+        # US1: capture the target repository's tracked-file state before the agent runs.
+        if target_repo is not None:
+            capture_start(Path(factory_root), target_repo, context)
 
         with (archive / STDOUT_LOG_NAME).open("wb") as log:
             process = await self._launch(context, worktree=worktree, env=env, log=log)
@@ -482,12 +488,16 @@ class ClaudeCodeAdapter:
                 await self._reclaim(process)
                 self._archive_session(context, worktree, env, archive)
                 _clear_pid_file(pids)
+                if target_repo is not None:
+                    compare_and_report(Path(factory_root), target_repo, context)
                 raise
             finally:
                 await _stop_feeding(feeder)
 
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
+        if target_repo is not None:
+            compare_and_report(Path(factory_root), target_repo, context)
         return AdapterResult(
             termination=termination,
             transcript_path=str(archive),
