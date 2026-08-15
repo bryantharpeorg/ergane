@@ -466,3 +466,63 @@ async def test_bwrap_absence_is_a_named_refusal(
     assert "bwrap" in message
     assert str(missing_binary) in message
     assert not list(worktree.glob(".stub-agent/*"))
+
+
+# --- the agent must be able to run the repo's own toolchain ------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_can_run_the_repos_toolchain_inside_the_boundary(
+    tmp_path: Path,
+    factory_root: Path,
+    per_node_home: Path,
+) -> None:
+    """An attempt must be able to run the gate command it is told to run.
+
+    The agent's inner loop ends with the repo's own gate — for this repo,
+    `uv run pytest`. On 2026-08-15 the boundary went live for the first time
+    with a mount set carrying `uv` but neither the managed-interpreter store,
+    the package cache, nor `/etc/resolv.conf`: `uv run` died inside the
+    namespace with `Temporary failure in name resolution` before a single test
+    ran, and the epic was killed before it could burn the attempt.
+
+    A boundary the agent cannot work inside is not containment, it is a
+    stoppage, and no assertion about escapes would have noticed. This drives
+    the real interpreter through the real mount set.
+    """
+    if not _bwrap_available():
+        pytest.skip(f"{BWRAP_BACKEND_BINARY} not available on this host")
+    if shutil.which("uv") is None:
+        pytest.skip("uv not on PATH")
+
+    repo = _build_target_repo(tmp_path)
+    worktree = tmp_path / "worktrees" / EPIC / NODE
+    worktree.mkdir(parents=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "--quiet", "-b", "factory/us3", str(worktree)],
+        check=True,
+    )
+
+    write_control(
+        per_node_home,
+        commands=(
+            "python3 -c 'import sys; print(\"interpreter:\", sys.version.split()[0])'"
+        ),
+        exit_code=0,
+    )
+
+    adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH))
+    await adapter.run_attempt(
+        _context(str(worktree), str(per_node_home), str(repo)),
+        factory_root=factory_root,
+    )
+
+    log = _stdout_log(factory_root)
+    # Evidence: an interpreter resolved inside the boundary, not a resolver or
+    # mount failure.
+    #
+    # interpreter: 3.13.12
+    assert "interpreter:" in log, f"no interpreter inside the boundary; log:\n{log}"
+    assert "name resolution" not in log, (
+        f"the boundary broke name resolution rather than containing a write:\n{log}"
+    )
