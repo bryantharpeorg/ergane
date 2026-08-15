@@ -31,6 +31,7 @@ import pytest
 
 from factory.verify.gates import (
     BwrapGateExecutor,
+    ordered_binds,
     GateInvocation,
     GateStatus,
     SubprocessGateExecutor,
@@ -288,3 +289,118 @@ def test_bwrap_gate_executor_refuses_when_bwrap_missing(monkeypatch: pytest.Monk
     assert outcome.exit_code != 0
     assert "bwrap" in outcome.output.lower()
     assert "missing" in outcome.output.lower() or "not available" in outcome.output.lower()
+
+
+# --- the production worktree shape: nested inside the target repository -------
+
+
+def _build_nested_worktree_repo(root: Path, command: str) -> tuple[Path, Path]:
+    """A repo whose node worktree sits *inside* it, as the factory's really do.
+
+    Production worktrees live at
+    `<target_repo>/.factory/worktrees/<epic>/<node>`. Every other test in this
+    file puts the worktree beside the repo instead, which is exactly why the
+    2026-08-15 defect survived a green suite: with the worktree outside, a
+    read-only bind of the repository cannot overlay it, and the mount ordering
+    never mattered.
+    """
+    repo = build_target_repo(root / "repo", variant="passing")
+    (repo / "ergane.yaml").write_text(
+        f"""\
+version: 1
+runtime: bwrap
+gates:
+  test: "{command}"
+timeouts:
+  test: 30
+""",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "nested worktree gate", "--quiet")
+
+    worktree = repo / ".factory" / "worktrees" / "epic" / "us1"
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "worktree", "add", "--quiet", "-b", "node/nested", str(worktree))
+    return repo, worktree
+
+
+@pytest.mark.skipif(not BWRAP_PRESENT, reason="bwrap not installed")
+def test_gate_can_write_in_its_own_nested_worktree_inside_the_boundary() -> None:
+    """A gate may write in its own worktree even when that worktree is nested.
+
+    The regression this pins: `_build_argv` emitted `--bind <worktree>`
+    (writable) and then `--ro-bind <target_repo>` — and because the worktree
+    lives inside the repository, bwrap's in-order mounting replaced the
+    writable bind with the read-only one. The first real epic to run under the
+    boundary (`033-ergane-install/us2`) failed its gate with
+    `failed to remove directory .venv/bin: Read-only file system`.
+
+    Writing a file in the worktree is the whole assertion: it is what every
+    real gate does (a venv, a build directory, a coverage file) and what the
+    boundary must never prevent.
+    """
+    root = Path(tempfile.mkdtemp(prefix="ergane-us5-nested-"))
+    try:
+        _, worktree = _build_nested_worktree_repo(
+            root, "touch gate-wrote-this && echo wrote"
+        )
+
+        results = _results_by_name(run_gates(worktree, executor=BwrapGateExecutor()))
+        gate = results["test"]
+
+        assert gate.status is GateStatus.PASS, (
+            "a gate must be able to write in its own worktree; got "
+            f"{gate.status.value}: {gate.output_tail}"
+        )
+        assert (worktree / "gate-wrote-this").is_file(), (
+            "the gate reported success but its write did not reach the host"
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.skipif(not BWRAP_PRESENT, reason="bwrap not installed")
+def test_the_target_repository_is_still_read_only_from_a_nested_worktree() -> None:
+    """Depth ordering must not widen the boundary: the repo stays read-only.
+
+    The companion to the test above — a writable worktree is only correct if
+    the repository containing it is still refused. Ordering by depth is what
+    lets both hold at once, which an ad-hoc "skip the ancestor bind" fix would
+    not.
+    """
+    root = Path(tempfile.mkdtemp(prefix="ergane-us5-nested-ro-"))
+    try:
+        repo, worktree = _build_nested_worktree_repo(
+            root, "touch ../../../../operator-invasion.txt"
+        )
+
+        results = _results_by_name(run_gates(worktree, executor=BwrapGateExecutor()))
+        gate = results["test"]
+
+        assert gate.status is GateStatus.FAIL, (
+            f"writing into the target repository must fail: {gate.output_tail}"
+        )
+        assert not (repo / "operator-invasion.txt").exists(), (
+            "the gate wrote into the target repository's working tree"
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_ordered_binds_puts_containing_paths_first() -> None:
+    """The ordering rule itself, without needing bwrap to observe it."""
+    argv = ordered_binds(
+        [
+            ("--bind", "/repo/.factory/worktrees/e/us1", "/repo/.factory/worktrees/e/us1"),
+            ("--ro-bind", "/repo", "/repo"),
+            ("--ro-bind", "/repo/.factory/worktrees/e", "/repo/.factory/worktrees/e"),
+        ]
+    )
+
+    destinations = [argv[index] for index in range(2, len(argv), 3)]
+    assert destinations == [
+        "/repo",
+        "/repo/.factory/worktrees/e",
+        "/repo/.factory/worktrees/e/us1",
+    ], f"binds must be emitted shallowest-first, got {destinations}"
