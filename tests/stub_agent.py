@@ -144,6 +144,11 @@ class Control:
     write_transcript: bool = True
     stdout: str = ""
     stderr: str = ""
+    #: US3 boundary tests need the stub to drive real tool invocations inside the
+    #: bwrap namespace (git, rm, cat). Each line is a shell command run with
+    #: `/bin/bash -c`; output is written to stdout/stderr so the archived log
+    #: carries the tool's own evidence. Empty (the default) runs no commands.
+    commands: str = ""
     ignore_sigterm: bool = False
     spawn_child: bool = False
     child_sleep_s: float = 300.0
@@ -166,6 +171,7 @@ class Control:
             "write_transcript": self.write_transcript,
             "stdout": self.stdout,
             "stderr": self.stderr,
+            "commands": self.commands,
             "ignore_sigterm": self.ignore_sigterm,
             "spawn_child": self.spawn_child,
             "child_sleep_s": self.child_sleep_s,
@@ -417,6 +423,11 @@ def main(argv: list[str]) -> int:
     if control.stderr:
         print(control.stderr, file=sys.stderr, flush=True)
 
+    # US3 boundary tests: run the scripted shell commands and stream their
+    # output into the archived log as the agent's own tool evidence.
+    if control.commands:
+        _run_commands(control.commands)
+
     if control.write_transcript:
         _write_transcript(home, cwd, session_id, TRANSCRIPT_START)
 
@@ -439,6 +450,26 @@ def main(argv: list[str]) -> int:
         _write_transcript(home, cwd, session_id, TRANSCRIPT_END)
 
     return control.exit_code
+
+
+def _run_commands(commands: str) -> None:
+    """Execute a multi-line shell script inside the boundary.
+
+    The commands are the agent's own tool invocations (US3). Their output is the
+    evidence, so stdout and stderr are printed to the same stream the adapter is
+    archiving. A non-zero exit is ignored here; the test's assertion will fail
+    when the expected output is absent, which is what constitution VIII wants.
+    """
+    result = subprocess.run(
+        ["/bin/bash", "-c", commands],
+        cwd=os.getcwd(),
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout:
+        print(result.stdout, end="", flush=True)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end="", flush=True)
 
 
 def _run_ferry(control: Control, archive: str | None) -> str | None:
