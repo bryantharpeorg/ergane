@@ -1,8 +1,0 @@
-{
-  "id": "4",
-  "subject": "Ensure full suite green",
-  "description": "Run uv run pytest -q after implementation. Fix any existing regressions or test issues caused by new code. Verify T001–T006 pass.",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

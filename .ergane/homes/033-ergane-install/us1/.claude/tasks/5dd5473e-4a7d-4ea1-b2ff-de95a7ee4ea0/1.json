@@ -1,8 +1,0 @@
-{
-  "id": "1",
-  "subject": "Set up control plane config skeleton and path resolver",
-  "description": "Create factory/controlplane/config.py module, add env var constants to factory/env.py, implement XDG-based config path resolution with ERGANE_CONFIG_PATH/FACTORY_CONFIG_PATH override, and add test isolation to tests/conftest.py.",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

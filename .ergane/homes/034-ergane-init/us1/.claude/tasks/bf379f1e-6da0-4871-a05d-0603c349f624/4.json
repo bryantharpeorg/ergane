@@ -1,9 +1,0 @@
-{
-  "id": "4",
-  "subject": "Commit US1 work per task",
-  "description": "Commit the refusal implementation, prompter/interview implementation, and file-writing/tests as separate commits matching the task list. Also verify no constants renamed.",
-  "activeForm": "Committing US1 work per task",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}

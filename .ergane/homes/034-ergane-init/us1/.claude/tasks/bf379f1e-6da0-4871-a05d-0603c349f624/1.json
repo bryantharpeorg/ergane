@@ -1,9 +1,0 @@
-{
-  "id": "1",
-  "subject": "Inspect repo and read binding documents",
-  "description": "Read constitution, factory_yaml parser, CLI errors, repo noun registration, and current test setup to understand boundaries for US1.",
-  "activeForm": "Inspecting repo and binding documents",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
-}
