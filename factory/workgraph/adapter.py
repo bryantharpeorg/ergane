@@ -302,11 +302,32 @@ class HostAgentBackend:
 
 
 class BwrapBackend:
-    """Socket for the bubblewrap containment that lands in US3.
+    """Bubblewrap containment: the agent's filesystem is its worktree, not the host.
 
-    US2 only wires the seam and asserts the refusal path. The actual invocation
-    is left unimplemented so the diff does not claim a containment it cannot yet
-    prove; when the binary is present the backend still refuses explicitly.
+    The mount set is deliberately minimal (US3). `/usr` is read-only with the
+    usual `/bin` and `/lib` symlinks; there is no `/lib64` on this aarch64 host.
+    `/proc`, `/dev`, and a tmpfs `/tmp` give the shell and toolchain enough of a
+    runtime to function. The node worktree is bound writable at the same absolute
+    path, and only the leaf worktree — never the runtime root that contains it.
+
+    Git worktrees keep their metadata in the parent repository's `.git` tree:
+    the worktree's `.git` file points back to `.git/worktrees/<name>`. The
+    minimal set (shared object store + worktree metadata) proved brittle: git
+    needs to write `index.lock`, refs and objects during commit/diff. Binding the
+    parent repo's whole `.git` directory writable is therefore the chosen route;
+    the working tree remains outside the boundary (trap 1).
+
+    The toolchain is bound read-only at the exact paths the agent needs:
+    `claude` is mounted by binding its symlink target at the symlink path so it is
+    not dangling inside the container; `uv`, `node` and `git` are bound as leaf
+    binaries. `PATH` inside the container names these bind points. No operator
+    home directory is exposed (trap 13); the factory-owned per-node home is the
+    only writable location beyond the worktree (trap 3).
+
+    The process gets its own PID namespace (`--unshare-pid`) and bwrap dies with
+    its parent (`--die-with-parent`) so the existing process-group kill reaches
+    the whole namespaced tree (trap 2). Network is intentionally not unshared so
+    the agent can reach the proxy.
     """
 
     name = "bwrap"
@@ -320,6 +341,175 @@ class BwrapBackend:
     def _platform(self) -> str:
         return "linux"
 
+    def _toolchain_binds(self) -> list[tuple[str, str, str]]:
+        """Return read-only leaf binds for the agent's toolchain (trap 13).
+
+        Each tuple is (bwrap flag, host source, container destination). The
+        claude binary is a symlink in the operator's home; binding its target at
+        the symlink path keeps it usable inside the boundary.
+        """
+        # These are the concrete paths that work on this host. A version bump
+        # that moves one will fail the corresponding launch with a named refusal
+        # rather than silently widening the mount set.
+        return [
+            ("--ro-bind", "/home/admin/.local/share/claude/versions/2.1.223", "/home/admin/.local/bin/claude"),
+            ("--ro-bind", "/home/admin/.local/bin/uv", "/home/admin/.local/bin/uv"),
+            ("--ro-bind", "/home/admin/.nvm/versions/node/v22.22.2/bin/node", "/home/admin/.nvm/versions/node/v22.22.2/bin/node"),
+            ("--ro-bind", "/usr/bin/git", "/usr/bin/git"),
+        ]
+
+    def _build_argv(self, invocation: AgentInvocation) -> list[str]:
+        """Assemble the bwrap command from the proven mount set."""
+        binary = str(self._binary())
+        worktree = invocation.worktree.resolve()
+        env = invocation.env
+        home = Path(env.get("HOME") or worktree)
+        home = home.resolve()
+
+        # Find the target repository root from the worktree's .git file so the
+        # whole parent .git directory can be bound writable for git plumbing.
+        target_git_dir = self._resolve_target_git_dir(worktree)
+
+        argv: list[str] = [
+            binary,
+            # Minimal system tree: read-only /usr plus the symlinks Ubuntu uses
+            # on aarch64. No /lib64 on this host.
+            "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/bin", "/bin",
+            "--symlink", "usr/lib", "/lib",
+            # Runtime pseudo-filesystems.
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--tmpfs", "/tmp",
+        ]
+
+        # The node worktree: only the leaf, at the same absolute path. Bind
+        # its parent read-only first so bwrap does not create a writable
+        # intermediate directory that exposes sibling worktrees (trap 9).
+        argv.extend(["--ro-bind", str(worktree.parent), str(worktree.parent)])
+        argv.extend(["--bind", str(worktree), str(worktree)])
+        argv.extend(["--chdir", str(worktree)])
+
+        # The factory-owned per-node home is the only writable home. The runtime
+        # root that contains it is bound read-only first so stores and sibling
+        # worktrees cannot be altered, then the home leaf is bound writable on
+        # top (trap 9, US3-S4). The runtime root is the parent of the `homes/`
+        # directory, i.e. three levels above the node home.
+        runtime_root_candidates = [home.parent, home.parent.parent, home.parent.parent.parent]
+        runtime_root = next(
+            (candidate for candidate in reversed(runtime_root_candidates)
+             if candidate.is_dir() and candidate.name == "homes"),
+            home.parent.parent.parent,
+        ).parent
+        if runtime_root.is_dir() and runtime_root not in (Path("/"), worktree.parent):
+            argv.extend(["--ro-bind", str(runtime_root), str(runtime_root)])
+        argv.extend(["--bind", str(home), str(home)])
+        argv.extend(["--setenv", "HOME", str(home)])
+
+        # Git plumbing: whole parent .git writable. The working tree stays
+        # outside the boundary (trap 1). Bind the working tree root read-only
+        # *before* the writable `.git` bind so the latter wins where it must and
+        # the working tree itself stays read-only (US3-S1).
+        if target_git_dir is not None:
+            target_worktree = target_git_dir.parent
+            if target_worktree not in (worktree.parent, home):
+                argv.extend(["--ro-bind", str(target_worktree), str(target_worktree)])
+            argv.extend(["--bind", str(target_git_dir), str(target_git_dir)])
+
+        # Read-only toolchain leaves (trap 13).
+        for flag, source, dest in self._toolchain_binds():
+            argv.extend([flag, source, dest])
+
+        # The executable itself, when it is an absolute path not already mounted.
+        argv.extend(self._bind_executable(invocation))
+
+        # PATH must name the bind points inside the container; inherited PATH
+        # points at host paths that may not be mounted.
+        container_path = ":".join(
+            [
+                "/home/admin/.local/bin",
+                "/home/admin/.nvm/versions/node/v22.22.2/bin",
+                "/usr/bin",
+            ]
+        )
+        argv.extend(["--setenv", "PATH", container_path])
+
+        # Pass through the remaining allowlisted env vars from the invocation.
+        for name in PASSTHROUGH_ENV:
+            if name in env and name != "PATH":
+                argv.extend(["--setenv", name, env[name]])
+        for name in (
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            ATTEMPT_ARCHIVE_ENV,
+            # Git identity and configuration are intentionally suppressed in the
+            # allowlist, but the seeded `.gitconfig` in the per-node home is not
+            # always enough for linked worktrees; pass the variables through
+            # when the worker provides them so commit/diff succeed (US3-S2).
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+        ):
+            if name in env:
+                argv.extend(["--setenv", name, env[name]])
+
+        # Process/signal boundary (trap 2).
+        argv.extend(["--unshare-pid", "--die-with-parent"])
+
+        # Finally the agent itself.
+        argv.append("--")
+        argv.extend(invocation.argv)
+        return argv
+
+    def _resolve_target_git_dir(self, worktree: Path) -> Path | None:
+        """Return the parent repository's `.git` directory if this is a worktree.
+
+        A normal git repository has `.git` as a directory. A linked worktree
+        has `.git` as a file pointing at the real metadata under the parent
+        repo's `.git/worktrees/<name>`. Either way the parent `.git` directory
+        must be mounted writable for commit/diff to work (trap 1).
+        """
+        git_file = worktree / ".git"
+        if not git_file.exists():
+            return None
+        if git_file.is_dir():
+            return git_file.resolve()
+        # Linked worktree: parse `gitdir: <path>`.
+        try:
+            text = git_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        prefix = "gitdir:"
+        if not text.startswith(prefix):
+            return None
+        gitdir = Path(text[len(prefix):].strip()).resolve()
+        # The worktree metadata lives under <repo>/.git/worktrees/<name>; the
+        # parent repo root is the directory containing .git.
+        return gitdir.parent.parent.resolve()
+
+    def _bind_executable(self, invocation: AgentInvocation) -> list[str]:
+        """Bind the agent executable itself so it is resolvable inside the namespace.
+
+        The executable argv may be an absolute path to a script (the test stub) or
+        a name found on PATH (the real `claude` CLI). An absolute path that is not
+        under `/usr` or another already-mounted tree must be bound explicitly, or
+        bwrap's execvp sees `No such file or directory`. A bare name is left to
+        the container PATH.
+        """
+        argv0 = invocation.argv[0]
+        if not argv0.startswith("/"):
+            return []
+        path = Path(argv0).resolve()
+        # Already covered by a previous mount (e.g. /usr/bin/claude).
+        for mounted in ("/usr",):
+            if str(path).startswith(mounted):
+                return []
+        return ["--ro-bind", str(path), str(path)]
+
     async def launch(self, invocation: AgentInvocation) -> asyncio.subprocess.Process:
         binary = self._binary()
         if not binary.is_file():
@@ -327,9 +517,24 @@ class BwrapBackend:
                 f"sandbox backend 'bwrap' not available: {binary} missing on "
                 f"{self._platform()}"
             )
-        raise AdapterError(
-            f"sandbox backend 'bwrap' launch not yet implemented (US3)"
-        )
+
+        argv = self._build_argv(invocation)
+        try:
+            return await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=invocation.log,
+                stderr=asyncio.subprocess.STDOUT,
+                # cwd is still the worktree on the host side; the real chdir is
+                # the `--chdir` inside the mount namespace.
+                cwd=str(invocation.worktree),
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise AdapterError(
+                f"could not launch sandbox backend 'bwrap' for "
+                f"{invocation.argv}: {error}"
+            ) from error
 
 
 _BACKENDS: dict[str, type[AgentBackend]] = {
