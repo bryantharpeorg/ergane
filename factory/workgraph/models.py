@@ -315,6 +315,10 @@ class AttemptContext:
     #: Optional context-window tokens the persona declares for its model.
     #: None means the adapter emits no context-window variable (FR-010).
     context_window: int | None = None
+    #: Path to the target repository this attempt is dispatched against.
+    #: The US1 detector compares the target repo's tracked-file state at start
+    #: and teardown; it is part of the context because it is fixed at dispatch.
+    target_repo: str = ""
 
 
 @dataclass(frozen=True)

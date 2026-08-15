@@ -289,6 +289,7 @@ def context(worktree: Path, factory_root: Path) -> Callable[..., AttemptContext]
             "model_alias": MODEL_ALIAS,
             "session_id": SESSION_ID,
             "timeout_s": TIMEOUT_S,
+            "target_repo": str(repo),
         }
         return AttemptContext(**(fields | overrides))
 
