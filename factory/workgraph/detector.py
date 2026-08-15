@@ -164,6 +164,10 @@ def _committed_state(repo: Path) -> TrackedState:
     return TrackedState(repo=repo, blobs=blobs)
 
 
+def _finding_key(epic_id: str, node_id: str) -> str:
+    return f"hardening/agent-worktree-boundary/{epic_id}/{node_id}"
+
+
 def _snapshot_path(factory_root: Path, context: AttemptContext) -> Path:
     snapshot_dir = factory_root / "detector-snapshots"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -200,7 +204,7 @@ def compare_and_report(
     snapshot_path = _snapshot_path(factory_root, context)
     if not snapshot_path.exists():
         finding = Finding(
-            key=f"hardening/{context.epic_id}/{context.node_id}",
+            key=_finding_key(context.epic_id, context.node_id),
             category="hardening",
             severity=Severity.CRITICAL,
             status=Status.OPEN,
