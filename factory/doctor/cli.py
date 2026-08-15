@@ -51,7 +51,7 @@ def _store_path(args: argparse.Namespace) -> Path:
     explicit = getattr(args, "db", None)
     if explicit is not None:
         return Path(explicit)
-    root, _choice = resolve_factory_root()
+    root, _choice, _source = resolve_factory_root()
     return _resolve_store_path(root)
 
 

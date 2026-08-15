@@ -168,7 +168,7 @@ def factory_root() -> Path:
     exactly the way 001's ledger and 002's evidence store do.  Honors the legacy
     `FACTORY_ROOT` env name and reports it once per process.
     """
-    root, _choice = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
+    root, _choice, _source = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
     return root
 
 

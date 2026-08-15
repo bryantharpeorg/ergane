@@ -307,7 +307,7 @@ def _landing_body_dir() -> Path:
     the worker host's state. Body files are scratch — the PR create reads them
     once — so a fixed name is fine and cleanup is not this activity's job.
     """
-    root, _choice = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
+    root, _choice, _source = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
     return root
 
 
