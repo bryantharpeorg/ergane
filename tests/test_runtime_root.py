@@ -13,6 +13,7 @@ tests rely on.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import sqlite3
 import warnings
@@ -112,6 +113,35 @@ def test_factory_root_helper_routes_through_resolver(
 
     with pytest.warns(DeprecationWarning, match=MIGRATION_COMMAND):
         assert factory_root().resolve() == tmp_path / LEGACY_FACTORY_ROOT
+
+
+# --- T017: seam default exercised ---------------------------------------------
+
+
+def test_running_epic_ids_default_factory_raises_transport_not_nameerror(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real _temporal_client_factory default is entered by at least one test.
+
+    With TEMPORAL_ADDRESS aimed at a closed port, the default seam must raise
+    OperatorError naming the address and carrying EXIT_TRANSPORT, not NameError.
+    This test intentionally does not rebind _temporal_client_factory.
+    """
+    import factory.cli.repo as repo_module
+    from factory.cli.errors import EXIT_TRANSPORT, OperatorError
+    from factory.notify.service import TEMPORAL_ADDRESS_ENV
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(TEMPORAL_ADDRESS_ENV, raising=False)
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, "127.0.0.1:1")
+
+    with pytest.raises(OperatorError) as excinfo:
+        asyncio.run(repo_module._running_epic_ids())
+
+    error = excinfo.value
+    assert error.code == EXIT_TRANSPORT
+    assert "127.0.0.1:1" in str(error)
 
 
 # --- T009/T012: migration -----------------------------------------------------

@@ -1,0 +1,2 @@
+would move .factory/ to .ergane/
+re-run with --yes to perform the move
