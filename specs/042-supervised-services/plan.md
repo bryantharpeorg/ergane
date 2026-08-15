@@ -1,7 +1,18 @@
 # Plan: Supervised services
 
-All line references were read against the tree at `ace6229` on 2026-08-13. Grep
+All line references were re-read against the tree at `ca122ad` on 2026-08-15,
+after 033's config parser and 011-agent-sandbox's first stories landed. Grep
 the construct beside each anchor rather than trusting the number — see trap 8.
+
+Findings this spec closes, narrows, or points at:
+
+| Finding | Sev | Disposition |
+| --- | --- | --- |
+| `hardening/stack-supervision` | critical, 2× | The driver. Its scope correction is load-bearing: liveness alone would NOT have prevented the 2026-08-11 outage — memory headroom and orphan count are why the probe checks more than `is-active` |
+| `hardening/orphaned-test-servers-exhaust-host-memory` | critical | Closed by FR-006 (trap 3); narrowed first by 011's boundary — see Assumptions |
+| `hardening/operator-channel-has-no-listening-half-supervised` | critical | Closed by US2's bridge unit + probe — trap 10 explains why the bridge is the unit whose death is otherwise invisible |
+| `hardening/agent-pkill-kills-the-live-worker` | critical | Fixed at the root by 011/US4 (signal isolation); trap 9's spelling discipline stays as defense in depth |
+| `hardening/self-landing-stales-the-running-worker` | critical | **Out of scope, deliberately** — see the spec's Out of Scope for why unit-liveness cannot see it |
 
 ## Read the prior art first. It is not in this repository.
 
@@ -33,9 +44,9 @@ reconstructible from an outage.
 | **The unit set, as prior art** | `/home/admin/code/homelab/infra/ergane-supervision/*.service`, `*.timer`, `*.slice` | US2, US3 — the design input |
 | **The probe, as prior art** | same directory, `ergane-probe.sh` — read its header comment in full | US1, US2 |
 | 041's adapter, as a plain library | 041 FR-002 — callable with no Temporal client and no workflow context | US1 — this epic is the caller that requirement exists for |
-| 033's typed config | `temporal.mode`, `escalation.adapter` | US1, US3 |
-| The XDG state home resolver | whichever of 033/034 landed it | US2 — the probe's status/heartbeat files |
-| The open-epic capacity read | `factory/activities/roadmap_activities.py:468` (`count_open_epics`), seam at `:462` | US2 — FR-012's refusal |
+| 033's typed config, **landed** | `factory/controlplane/config.py` — `Temporal` block at `:146` (mode/address/namespace), `Escalation` at `:165`, managed refusal `RULE_TEMPORAL_MANAGED_NOT_IMPLEMENTED` at `:54` | US1, US3 — US3's T027 removes that refusal rule |
+| The XDG state home resolver | 034/us2's registry state home if landed by dispatch (check `ergane spec landed specs/034-ergane-init --default-branch ergane-buildout`); otherwise derive from `XDG_STATE_HOME` directly, matching `resolve_config_path`'s pattern (`factory/controlplane/config.py:174`), and say which in the commit | US2 — the probe's status/heartbeat files |
+| The open-epic capacity read | `factory/activities/roadmap_activities.py:469` (`count_open_epics`) | US2 — FR-012's refusal |
 | The CLI error boundary | `factory/cli/errors.py` — grep `class OperatorError` | US1–US3 |
 | The source-scanning test precedent | `tests/test_gh_client.py` — grep `test_no_code_path_passes_delete_branch` | US2 — SC-006's "no path outside the installation" |
 
@@ -188,12 +199,13 @@ starts, restarts, and dies the next time an agent sweeps its own strays. Assert
 the generated text on the same pass as SC-006: no supervised unit's command line
 contains the substring `python -`.
 
-Say the honest thing in the commit, because the prior art does: this is
-mitigation, not a fix. The defect is that an agent can signal anything on the
-host at all — `hardening/agent-sandbox` (promoted) and
-`hardening/agent-pkill-kills-the-live-worker` (open). A different pattern still
-reaches us, and a generated unit that merely dodges *this* string has bought
-time, not safety.
+The root defect — an agent able to signal anything on the host — is fixed as
+of 2026-08-15: 011-agent-sandbox/US4 denies cross-boundary signals outright
+(`--unshare-pid`; its US4-S3 scenario is literally `pkill -f "python -"`
+failing to reach the worker). Keep the spelling discipline anyway, and say why
+in the commit: it costs nothing, and it still protects the one caller class
+the boundary does not cover — operator-side and boundary-disabled runs, the
+same class that keeps FR-006's reap alive.
 
 The wrapper's other half is a design question this epic must answer rather than
 inherit: systemd cannot `eval` a command substitution, and the environment
@@ -202,6 +214,20 @@ a wrapper script alongside each unit, or resolves the environment at install
 time into the unit. Choose deliberately and record why — the prior art chose the
 wrapper specifically so secrets never touch disk, and that reason survives the
 rename of everything around it.
+
+### Trap 10 — the bridge is the unit whose death is invisible, so its unit is the one that matters most
+
+From `hardening/operator-channel-has-no-listening-half-supervised`, observed
+2026-08-12: a question reached Telegram at 14:09Z, the operator answered at
+15:08Z, and the answer fell on the floor — no process was running `run_bridge`
+(`factory/notify/service.py:365`), so nothing polled for replies. The dangerous
+property is the asymmetry: the SENDING half is a workflow activity that needs
+no bridge, so questions keep flowing outward and the channel looks healthy
+from the factory's side while every inbound answer is lost. Nothing inside the
+factory can notice this — which makes the probe's liveness check on the bridge
+unit the *only* watcher the answering half has. Treat `ergane-bridge` inactive
+as exactly as page-worthy as the worker being down (FR-007 draws no
+distinction between units; this trap is why it must not).
 
 ## Approach
 

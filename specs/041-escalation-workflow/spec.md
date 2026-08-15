@@ -173,6 +173,18 @@ timer or signal handling of its own.
    path in it reads the process environment from workflow scope — 039's guard
    covers every workflow-defining module by construction, and a new workflow
    module is exactly the case it was built for.
+6. **Given** a lifecycle that reaches any terminal state — answered through any
+   channel, or expired — **When** the workflow completes, **Then** no pending
+   row remains for it in the store: settlement is the workflow's own
+   transition, never the delivery channel's. The live store proves this is not
+   inherited: fourteen escalations and every question ever asked sit unsettled
+   today because write-back belonged to whichever channel answered. Proven by a
+   committed test that drives one lifecycle per channel and asserts the row.
+7. **Given** a stored escalation carrying CI check evidence, **When** it is
+   read back from the store, **Then** the evidence survives the round trip, and
+   `typing.get_type_hints(EscalationRecord)` resolves without error — today the
+   field is silently dropped on read and the annotation names a module the file
+   never imports. Proven by a committed test.
 
 ---
 
@@ -212,6 +224,15 @@ is answered, and resumes the epic exactly as before.
    deadlock 017 was held at draft over is structurally impossible for a second
    consumer, and a test proves a second concurrent escalation is not blocked by
    the first.
+5. **Given** the operator verbs `ergane build answer` and `ergane build resolve`
+   — which today signal the epic's own handlers, the exact handlers this story
+   deletes — **When** the migration lands, **Then** both verbs still work,
+   proven by a committed test, and a resolution sent through either one settles
+   its store row exactly as a Telegram button press does. Today it does not:
+   only the button path writes the row
+   (`interpreter/resolved-escalation-never-clears-in-the-store`, recurred), and
+   a migration that silently broke or half-migrated these verbs would take the
+   operator's daily tools with it.
 
 ---
 
@@ -315,6 +336,14 @@ subsequent authorized answer does.
 - **FR-012**: No module defining the EscalationWorkflow MAY read the process
   environment from workflow scope — 039's guard applies by construction and
   MUST stay green.
+- **FR-013**: Store settlement MUST be performed by the workflow's own
+  transitions and MUST be channel-independent: an escalation answered via
+  button, CLI verb, webhook relay or expiry MUST leave no pending row. No
+  delivery channel may be the difference between a settled row and an abandoned
+  one.
+- **FR-014**: `EscalationRecord` MUST survive a store round trip with every
+  field intact — including `check_evidence` — and every annotation on it MUST
+  resolve under `typing.get_type_hints`.
 
 ### Key Entities
 
@@ -345,8 +374,13 @@ subsequent authorized answer does.
 
 ## Assumptions
 
-- 033 lands first and provides `escalation.adapter` and
-  `escalation.authorized_responders` in the typed config.
+- 033's config parser has landed (2026-08-15) and provides `escalation.adapter`
+  in the typed config (`factory/controlplane/config.py:165-172`, with
+  `chat_id_env`, `bot_token_env`, `timeout_s`). **It does not provide
+  `authorized_responders`** — US4 adds that field to the typed config itself,
+  following the parser's existing refusal conventions. The remaining 033
+  stories (verify, walkthrough) land ahead of this epic per
+  `depends_on_landed`.
 - 008's store schema and its guarded-UPDATE arbitration are kept as they are;
   this spec changes who owns the clock, not what the rows mean.
 - The operator channel is in daily use throughout this epic, so US3's
@@ -361,6 +395,13 @@ subsequent authorized answer does.
 - Additional adapters beyond `telegram` and `webhook` — `webhook` is the
   extension point, deliberately.
 - Any change to what an escalation *says*; message rendering is 008's and stays.
+- **Fixing the RETRY disposition** (`interpreter/escalation-retry-kills-the-node`,
+  open critical: answering RETRY at the recovery-exhausted stage tears the node
+  down instead of retrying). US3 migrates that response mapping and MUST
+  preserve it as-is, characterized by a test that documents the defect and
+  cites the finding — a behavior-preserving migration that silently fixed it
+  would hide the defect behind fresh code, and one that accidentally fixed it
+  would fail its own unedited-suite criterion. The fix is its own spec.
 
 ## Work Graph
 
@@ -371,7 +412,7 @@ US1:
 US2:
   depends_on: []
   depends_on_merged: [US1]
-  implements: [FR-004, FR-005, FR-006, FR-007, FR-008, FR-012]
+  implements: [FR-004, FR-005, FR-006, FR-007, FR-008, FR-012, FR-013, FR-014]
 US3:
   depends_on: []
   depends_on_merged: [US2]

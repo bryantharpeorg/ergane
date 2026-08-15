@@ -1,8 +1,19 @@
 # Plan: Escalation is a workflow, and its transport is an adapter
 
-All line references were re-read against the tree at `d13fc4a` on 2026-08-14,
-after 040-manifest-rename landed. Grep the construct beside each anchor rather
-than trusting the number — see trap 8.
+All line references were re-read against the tree at `ca122ad` on 2026-08-15,
+after 043-runtime-root-integrity landed in full and 011-agent-sandbox began
+landing. Grep the construct beside each anchor rather than trusting the number
+— see trap 8.
+
+Findings this spec closes, narrows, or deliberately carries:
+
+| Finding | Sev | Disposition |
+| --- | --- | --- |
+| `notify/escalations-and-questions-are-never-settled-in-the-store` | warning | Closed by FR-013 — settlement becomes the workflow's transition (trap 9 has the measurements) |
+| `interpreter/resolved-escalation-never-clears-in-the-store` | critical, 2× | Closed by FR-013 + US3-S5 — the channel stops deciding whether a row settles (trap 10) |
+| `verify/escalation-check-evidence-is-dropped-on-store-read` | warning | Closed by FR-014 (trap 12) |
+| `verify/escalation-record-annotation-cannot-resolve` | warning | Closed by FR-014 (trap 12) |
+| `interpreter/escalation-retry-kills-the-node` | critical | **Carried, characterized, NOT fixed** — see Out of Scope and trap 11 |
 
 This epic touches code the operator uses every day. US3 in particular refactors
 the live escalation path while the channel is in use. Read trap 1 before you
@@ -27,7 +38,10 @@ touch anything under `tests/`.
 | The legitimate activity-scope store read | `notify_activities.py:652` — grep `def _store_path` | US2 — activity scope is fine; workflow scope is not |
 | The 008 behavior suite US3 may not edit | `tests/test_notify.py`, `tests/test_notify_activities.py`, `tests/test_operator_question.py`, `tests/test_question_delivery.py`, `tests/test_question_reply.py` | US3 — trap 1 |
 | The Telegram live suite | `tests/test_live_notify.py`; marker at `pyproject.toml:34` | US1 — trap 7 |
-| 033's typed config | `escalation.adapter`, `escalation.authorized_responders` | US1, US4 |
+| 033's typed config, **landed** | `factory/controlplane/config.py:165-172` — `Escalation(adapter, chat_id_env, bot_token_env, timeout_s)`; adapter closed set at `:41` | US1, US4 — **no `authorized_responders` field exists; US4 adds it** following the parser's refusal conventions |
+| The CLI verbs US3 must not strand | `factory/cli/nouns/build.py:457` (`answer_command`), `:527` (`resolve_command`) — grep the names; both signal the epic's handlers | US3 — trap 10 |
+| The round-trip gap FR-014 closes | `factory/verify/models.py:498` (`check_evidence` annotation), `factory/verify/store.py:451` (`_ESCALATION_COLUMNS`), `:624` (`_escalation_from_row`) | US2 — trap 12 |
+| The workflow-listing precedent for FR-008 | `factory/activities/roadmap_activities.py:448` — grep `list_workflows` | US2 |
 
 ## Traps
 
@@ -176,6 +190,53 @@ Nineteen stories landed on 2026-08-13 alone. Grep for the construct —
 `_discover_workflow_modules`, `CallbackBridge` — and if a citation here
 disagrees with the tree, the tree wins and you say so in the commit message.
 
+### Trap 10 — the operator's daily verbs signal the handlers US3 deletes
+
+`ergane build answer` (`factory/cli/nouns/build.py:457`) and
+`ergane build resolve` (`:527`) send `question_answered` and
+`escalation_resolved` to the **epic** workflow — the two handlers FR-010
+removes. Migrate the park without re-pointing these verbs and they signal a
+handler that no longer exists, on the day the operator needs them.
+
+They also carry the store defect this spec closes: the finding's root-cause
+isolation showed the discriminator between a settled row and an abandoned one
+is the CHANNEL — button-resolved escalations carry a full record
+(`resolution`, `resolved_at`, `resolved_via=BUTTON`); CLI-resolved ones carry
+nothing, because the CLI signals and walks away. Do not fix this by teaching
+the CLI to write rows — that adds a third writer. FR-013 fixes it structurally:
+the workflow settles its own row on every transition, so every channel becomes
+equal because no channel writes. US3-S5 is the proof.
+
+### Trap 11 — a known defect lives in the block you are migrating; carry it, do not touch it
+
+`interpreter/escalation-retry-kills-the-node` (open, critical): answering RETRY
+at the recovery-exhausted stage cancels the expiry timer, runs
+`remove_worktree` within the same second, and records the node KILLED — the
+choice that was supposed to save the work executes the kill default. This
+mapping lives in exactly the code US3 re-expresses. The migration MUST
+reproduce it bit for bit: write a characterization test that documents the
+defect and cites the finding key, so the behavior is pinned on purpose rather
+than preserved by accident. Fixing it here would be a behavior change inside a
+story whose criterion is an unedited suite; silently fixing it would hide an
+open critical behind fresh code. Both are worse than carrying it visibly. The
+fix is a separate spec.
+
+### Trap 12 — the record you are writing at every transition drops a field and cannot be introspected
+
+Two small defects sit in the exact files US2 touches, both landed by
+`025-ci-red-recovery/us2` (59842eb). First: `EscalationRecord.check_evidence`
+(`factory/verify/models.py:498`) reaches the outgoing Telegram message but not
+the store — `_ESCALATION_COLUMNS` (`store.py:451`) has no such column and
+`_escalation_from_row` (`:624`) never passes it, so every read-back gets the
+default `()`. Second: the annotation names
+`factory.mergequeue.models.CheckFailure` in a module that never imports
+`factory` — `from __future__ import annotations` hides it at definition time,
+and `typing.get_type_hints(EscalationRecord)` raises `NameError` the day
+anything introspects it. FR-014 closes both. Route choice: persist the column
+(the store has `schema_version` for exactly this) or delete the field and its
+pretense — but the annotation must resolve either way, and a workflow that
+writes rows at every transition should not be writing rows that lose fields.
+
 ## Approach
 
 ### US1 — the interface, and Telegram behind it
@@ -201,9 +262,16 @@ disagrees with the tree, the tree wins and you say so in the commit message.
 3. Preserve the undelivered fail-safe: today an undelivered escalation returns
    the kill default *without waiting* (`workflow.py:1968`). Keep that shape.
 4. `ergane escalations list` queries running EscalationWorkflows (FR-008) —
-   the capacity read at `factory/activities/roadmap_activities.py:432` is the
-   precedent for listing workflows by id prefix.
-5. Prove standalone and as a child of a *test* parent. The real parent is US3.
+   the `list_workflows` read at `factory/activities/roadmap_activities.py:448`
+   is the precedent for listing workflows by id prefix.
+5. Settlement is the workflow's own transition (FR-013): on `answered` and on
+   `expired` alike, the workflow's activity writes the terminal row, so no
+   pending row outlives its lifecycle whatever channel answered. Seed trap 9's
+   abandoned-row shape in the test, not only well-formed rows.
+6. Close the record's round-trip gap while you are in these files (FR-014,
+   trap 12): the annotation must resolve and `check_evidence` must survive a
+   store round trip.
+7. Prove standalone and as a child of a *test* parent. The real parent is US3.
 
 ### US3 — the migration, behind an unedited suite
 
@@ -211,11 +279,22 @@ disagrees with the tree, the tree wins and you say so in the commit message.
    park (`:1362`–`:1460`) with start-child-and-await.
 2. Remove the epic's own escalation timer and signal handlers (FR-010) — and
    only those; the pause, resume and kill signals stay.
-3. Run the five behavior-suite files unchanged (trap 1) and paste the result.
-4. Add the two-concurrent-escalations test for FR-010 (trap 6).
+3. Re-point `ergane build answer` and `ergane build resolve` at the child
+   workflow (trap 10) and prove their resolutions now settle the store row
+   (US3-S5) — the finding's button-vs-CLI asymmetry becomes impossible, not
+   merely fixed.
+4. Characterize the RETRY-kills-the-node mapping before migrating it, and carry
+   it unchanged (trap 11); the test cites the finding key.
+5. Run the five behavior-suite files unchanged (trap 1) and paste the result.
+6. Add the two-concurrent-escalations test for FR-010 (trap 6).
 
 ### US4 — webhook, identity, and `ergane answer`
 
+0. Add `authorized_responders` to the typed config's `Escalation` block
+   (`factory/controlplane/config.py:165-172`) — the landed parser does not have
+   it (the spec's assumption section corrects the original claim that 033 would
+   provide it). Follow the parser's existing refusal conventions for a
+   malformed value.
 1. The webhook adapter POSTs rendered message plus correlation id; the test
    double is a local HTTP listener.
 2. `ergane answer <correlation-id> <text>` signals the EscalationWorkflow named

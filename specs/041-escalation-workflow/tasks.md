@@ -54,7 +54,7 @@ correlation id comes from.
 ## Phase 2: User Story 2 — Escalation is a workflow type (Priority: P1)
 
 Chains on US1 merged. **This story does not touch the epic workflow's park —
-that is US3.** Read plan traps 2, 3 and 4 before writing.
+that is US3.** Read plan traps 2, 3, 4, 9 and 12 before writing.
 
 ### Tests for User Story 2 (write FIRST, must fail)
 
@@ -74,17 +74,30 @@ that is US3.** Read plan traps 2, 3 and 4 before writing.
       why adding a second arbiter beside the store's guarded UPDATE is how a
       press that beat the timer starts losing sometimes.
 
+- [ ] T010a [US2] Write the settlement case FIRST (spec US2-S6, FR-013): one
+      lifecycle per channel — signal, expiry — and after each, no pending row
+      remains; settlement is the workflow's transition, never the channel's.
+      Seed plan trap 9's abandoned-row shape too, not only well-formed rows —
+      fourteen live rows prove the well-formed assumption is the bug.
+
 - [ ] T011 [US2] Write the operator-surface case FIRST (spec US2-S4, FR-008):
       `ergane escalations list` shows every unanswered escalation with its
       question and deadline, sourced from running workflows, and drains as they
       resolve. The workflow-listing precedent is
-      `factory/activities/roadmap_activities.py:432`.
+      `factory/activities/roadmap_activities.py:448` (grep `list_workflows`).
 
 - [ ] T012 [US2] Confirm 039's guard covers the new module (spec US2-S5,
       FR-012). It discovers workflow modules by scanning for the decorator
       (`tests/test_workflow_env_guard.py:184`), so it needs no edit — assert
       that it *found* your module rather than merely that it passed, or a
       discovery bug would read as compliance.
+
+- [ ] T012a [US2] Write the round-trip case FIRST (spec US2-S7, FR-014, plan
+      trap 12): a stored `EscalationRecord` carrying `check_evidence` reads
+      back with it intact, and `typing.get_type_hints(EscalationRecord)`
+      resolves. Both halves fail today — the store has no column
+      (`factory/verify/store.py:451`, `:624`) and the annotation
+      (`factory/verify/models.py:498`) names a module the file never imports.
 
 ### Implementation for User Story 2
 
@@ -99,7 +112,14 @@ that is US3.** Read plan traps 2, 3 and 4 before writing.
       from the row's own instant raced against the answer signal; on timeout,
       call `expire_escalation` and take its answer. Preserve the undelivered
       fail-safe — today an undelivered escalation returns the kill default
-      *without waiting* (`factory/workgraph/workflow.py:1968`).
+      *without waiting* (`factory/workgraph/workflow.py:1968`). Settlement
+      happens here, on every terminal transition, whatever the channel
+      (FR-013).
+
+- [ ] T014a [US2] Close the record's round-trip gap (FR-014): persist
+      `check_evidence` through a `schema_version` migration or delete the
+      field's pretense — state which and why in the commit — and make the
+      annotation resolve either way.
 
 - [ ] T015 [US2] Add `ergane escalations list`.
 
@@ -108,8 +128,10 @@ that is US3.** Read plan traps 2, 3 and 4 before writing.
 ## Phase 3: User Story 3 — The epic park becomes parent-awaits-child (Priority: P2)
 
 Chains on US2 merged. Independent of US4. **The riskiest story in this spec:
-it refactors the escalation path the operator uses daily. Read plan trap 1
-first — the guard is a suite you may not edit.**
+it refactors the escalation path the operator uses daily. Read plan traps 1,
+10 and 11 first — the guard is a suite you may not edit, the operator's verbs
+signal handlers you are deleting, and a known defect must be carried, not
+fixed.**
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
@@ -137,6 +159,20 @@ first — the guard is a suite you may not edit.**
       (`factory/workgraph/workflow.py:1050`). This is the 017 deadlock made
       structurally impossible, and inspection cannot show it — plan trap 6.
 
+- [ ] T020a [US3] Write the operator-verbs case FIRST (spec US3-S5, plan
+      trap 10): after migration, `ergane build answer` and
+      `ergane build resolve` (`factory/cli/nouns/build.py:457`, `:527`) still
+      work, and a resolution sent through either settles its store row exactly
+      as a button press does — the channel asymmetry the finding measured
+      becomes impossible.
+
+- [ ] T020b [US3] Write the RETRY characterization FIRST (plan trap 11): the
+      migrated response mapping reproduces today's behavior at the
+      recovery-exhausted stage bit for bit — including the defect where RETRY
+      tears the node down. The test documents it and cites
+      `interpreter/escalation-retry-kills-the-node`; it pins the behavior on
+      purpose so the separate fix spec has a baseline. Do NOT fix it here.
+
 ### Implementation for User Story 3
 
 - [ ] T021 [US3] Replace the escalation park
@@ -146,6 +182,11 @@ first — the guard is a suite you may not edit.**
 - [ ] T022 [US3] Replace the question park (`workflow.py:1362`–`:1460`) the same
       way. Keep both signals and both tables — plan trap 5 explains why the
       second of each exists and why unifying them belongs in a different spec.
+
+- [ ] T022a [US3] Re-point the operator verbs at the child workflow (plan
+      trap 10). Do not teach the CLI to write store rows — that is a third
+      writer; FR-013 already made settlement the workflow's, which is what
+      T020a proves.
 
 - [ ] T023 [US3] Full suite green: `uv run pytest -q`, and paste the
       behavior-suite result verbatim.
@@ -175,6 +216,12 @@ Chains on US2 merged. Independent of US3.
 
 ### Implementation for User Story 4
 
+- [ ] T027a [US4] Add `authorized_responders` to the typed config's
+      `Escalation` block (`factory/controlplane/config.py:165-172`) with the
+      parser's existing refusal conventions — the landed 033 parser does not
+      have the field; the spec's Assumptions section corrects the original
+      claim that it would.
+
 - [ ] T028 [US4] Implement the webhook adapter — outbound POST only; it decides
       nothing.
 
@@ -196,3 +243,7 @@ Chains on US2 merged. Independent of US3.
 - [ ] Two concurrent escalations, neither blocking the other, is a passing test.
 - [ ] 039's env guard found the new workflow module and passed.
 - [ ] No arbitration was added beside the store's guarded UPDATE.
+- [ ] No lifecycle leaves a pending row, whichever channel answered (FR-013).
+- [ ] `ergane build answer` and `ergane build resolve` work post-migration and
+      settle their rows (T020a).
+- [ ] The RETRY defect is characterized with the finding key, not fixed (T020b).

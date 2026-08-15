@@ -82,7 +82,10 @@ each is a verbatim line from the prior art and each was paid for.**
 
 - [ ] T011 [US2] Write the dead-unit alert case FIRST (spec US2-S4, FR-007): a
       unit not active produces an alert naming the unit and the outage duration
-      through US1's path, while it is still down.
+      through US1's path, while it is still down. Cover the bridge unit
+      explicitly, not only the worker — plan trap 10: the bridge's death is
+      invisible from inside the factory because the sending half needs no
+      bridge, so this probe check is the only watcher the answering half has.
 
 - [ ] T012 [US2] Write the bounded-restart assertion FIRST (spec US2-S5,
       FR-005): the generated unit bounds its restart rate. Flapping during a
@@ -119,12 +122,15 @@ each is a verbatim line from the prior art and each was paid for.**
 - [ ] T018 [US2] Implement `ergane worker install` / `uninstall`, enabling
       linger, recording provenance, and refusing uninstall while an epic is in
       flight (FR-012) via the existing capacity read
-      (`factory/activities/roadmap_activities.py:468`).
+      (`factory/activities/roadmap_activities.py:469`, `count_open_epics`).
 
 - [ ] T019 [US2] Implement the probe: unit liveness, TCP reachability, host
       memory headroom, orphan detection and reap, slice memory as a note.
-      Edge-triggered with a heartbeat, state under the XDG state home
-      (reuse whichever of 033/034 landed that resolver).
+      Edge-triggered with a heartbeat, state under the XDG state home — reuse
+      034/us2's registry state home if it has landed by your dispatch;
+      otherwise derive from `XDG_STATE_HOME` matching `resolve_config_path`'s
+      pattern (`factory/controlplane/config.py:174`) and say which route you
+      took in the commit (plan reuse inventory).
 
 - [ ] T020 [US2] Full suite green: `uv run pytest -q`, with the SC-002 and
       SC-003 measurements pasted verbatim into the test files.

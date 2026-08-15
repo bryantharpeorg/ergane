@@ -307,9 +307,18 @@ exists and verify's finding says whose contract the uptime is.
 
 ## Assumptions
 
-- 033 lands first and provides the typed config, including `temporal.mode`.
+- 033's config parser has landed (2026-08-15): `temporal.mode` and the managed
+  refusal exist at `factory/controlplane/config.py` (`Temporal` block `:146`,
+  `RULE_TEMPORAL_MANAGED_NOT_IMPLEMENTED` `:54`). The remaining 033 stories
+  land ahead of this epic per `depends_on_landed`.
 - 041 lands first and provides the messenger adapter as a plain library
   callable with no Temporal client (041 FR-002).
+- 011-agent-sandbox has landed: agents — and gates — run inside a
+  pid-namespaced boundary that dies with its attempt, so the orphan class the
+  probe reaps (FR-006) is narrowed to non-attempt sources: operator-run
+  suites, boundary-disabled control runs, and anything predating 011. The reap
+  stays, as the backstop rather than the primary defense — the 2026-08-11
+  outage taught that a class believed closed still deserves a net.
 - systemd with user sessions is the supervision substrate; hosts without it can
   use every feature except managed mode and `worker install`.
 - The operator's existing hand-written units are prior art, not a dependency:
@@ -322,6 +331,12 @@ exists and verify's finding says whose contract the uptime is.
 - Migrating the operator's existing hand-written units — this epic generates
   its own; adopting them is an operator action.
 - Anything about what an escalation says or how it is answered (041).
+- Detecting a live worker running stale code after a factory self-landing
+  (`hardening/self-landing-stales-the-running-worker`, open critical): the
+  worker stays *active* while every workflow task fails, so unit-liveness
+  supervision cannot see it. It needs its own mechanism — restart-on-landing
+  or task-failure detection — and folding it in here would give this epic a
+  Temporal-client dependency its alert path exists to avoid.
 
 ## Work Graph
 
