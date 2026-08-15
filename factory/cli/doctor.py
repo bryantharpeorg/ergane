@@ -37,8 +37,9 @@ from factory.doctor.store import (
 )
 from factory.roadmap.models import _split_frontmatter
 from factory.workgraph.derive import DerivationError, derive_workgraph
+from factory.workgraph.worktree import resolve_factory_root
+import factory.doctor.cli as _doctor_cli
 
-DEFAULT_DB_PATH = Path(".factory") / "doctor.db"
 
 #: Credential-like values must never reach findings or output.
 _CREDENTIAL_RE = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
@@ -49,7 +50,11 @@ def _utcnow() -> str:
 
 
 def _store_path(args: argparse.Namespace) -> Path:
-    return Path(args.db)
+    explicit = getattr(args, "db", None)
+    if explicit is not None:
+        return Path(explicit)
+    root, _choice = resolve_factory_root()
+    return _doctor_cli._resolve_store_path(root)
 
 
 def _contains_secret(value: str | None) -> bool:
@@ -149,8 +154,8 @@ def add_doctor_parser(subparsers: argparse._SubParsersAction) -> argparse.Argume
     )
     parser.add_argument(
         "--db",
-        default=str(DEFAULT_DB_PATH),
-        help=f"path to the findings store (default: {DEFAULT_DB_PATH})",
+        default=None,
+        help="path to the findings store (default: resolved runtime root / doctor.db)",
     )
     parser.set_defaults(run=doctor_command)
     return parser
@@ -234,8 +239,8 @@ def add_findings_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     db_parent = argparse.ArgumentParser(add_help=False)
     db_parent.add_argument(
         "--db",
-        default=str(DEFAULT_DB_PATH),
-        help=f"path to the findings store (default: {DEFAULT_DB_PATH})",
+        default=None,
+        help="path to the findings store (default: resolved runtime root / doctor.db)",
     )
 
     parser = subparsers.add_parser(

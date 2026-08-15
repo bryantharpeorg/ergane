@@ -17,7 +17,6 @@ from temporalio.client import WorkflowExecutionStatus
 from temporalio.service import RPCError, RPCStatusCode
 
 import factory.doctor.probes as probes
-from factory.workgraph.cli import workflow_id
 from factory.doctor.models import Severity
 from factory.doctor.probes import (
     KeyListSnapshot,
@@ -32,6 +31,8 @@ from factory.doctor.probes import (
     _closed_epics_from_temporal,
     _discover_worker_pid,
 )
+from factory.workgraph.cli import workflow_id
+from factory.workgraph.worktree import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV
 
 
 class TestOrphanedKeyProbe:
@@ -389,6 +390,11 @@ class TestGatherOwnsExactlyOneEventLoop:
     def test_stale_worktree_gather_from_sync_context(
         self, fake_temporal: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        # The session fixture pins the runtime-root env vars so tests cannot reach
+        # the operator's checkout.  This gather path now routes through the resolver,
+        # so drop the override and let it read the cwd (US2).
+        monkeypatch.delenv(ERGANE_ROOT_ENV, raising=False)
+        monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".factory" / "worktrees" / "closed-epic" / "us1").mkdir(parents=True)
         fake_temporal(

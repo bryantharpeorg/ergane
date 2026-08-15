@@ -32,12 +32,11 @@ from factory.doctor.store import (
 )
 from factory.roadmap.models import _split_frontmatter
 from factory.workgraph.derive import DerivationError, derive_workgraph
+from factory.workgraph.worktree import LEGACY_FACTORY_ROOT, resolve_factory_root
 
 EXIT_OK = 0
 EXIT_USER = 1
 EXIT_TRANSPORT = 2
-
-DEFAULT_DB_PATH = Path(".factory") / "doctor.db"
 
 #: Credential-like values must never reach findings, events, snapshots,
 #: scaffolds, or output. This pattern mirrors the 001 sweep.
@@ -49,7 +48,34 @@ def _utcnow() -> str:
 
 
 def _store_path(args: argparse.Namespace) -> Path:
-    return Path(args.db)
+    explicit = getattr(args, "db", None)
+    if explicit is not None:
+        return Path(explicit)
+    root, _choice = resolve_factory_root()
+    return _resolve_store_path(root)
+
+
+def _resolve_store_path(root: Path) -> Path:
+    """Return the findings store path, honoring FR-006 in the split state.
+
+    If the resolver points at a root with no ledger while a populated legacy
+    ledger exists at the previously-used path, follow the data rather than
+    silently creating an empty store at the new root.  The resolver already
+    warned about the legacy directory; this rule only decides which file to
+    open.
+    """
+    new_db = root / "doctor.db"
+    if new_db.exists():
+        return new_db
+    legacy_db = LEGACY_FACTORY_ROOT / "doctor.db"
+    if legacy_db.exists() and not new_db.exists():
+        return legacy_db
+    return new_db
+
+
+def _resolve_store_path_for_root(root: Path) -> Path:
+    """Same as `_resolve_store_path`, exported for the CLI noun wrapper."""
+    return _resolve_store_path(root)
 
 
 class _UserError(Exception):
