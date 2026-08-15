@@ -849,7 +849,7 @@ async def test_a_manifest_outside_the_worktree_and_an_overridden_deadline(
     worktree = node_worktree("passing")
     manifest = tmp_path / "operator-factory.yaml"
     manifest.write_text(
-        "version: 1\nruntime: python:3.11-bookworm\ngates:\n  test: \"sleep 30\"\n",
+        "version: 1\nruntime: bwrap\ngates:\n  test: \"sleep 30\"\n",
         encoding="utf-8",
     )
 

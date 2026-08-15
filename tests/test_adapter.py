@@ -77,6 +77,7 @@ from factory.workgraph.adapter import (
     STDOUT_LOG_NAME,
     AdapterError,
     ClaudeCodeAdapter,
+    HostAgentBackend,
     adapter_for,
     attempt_env,
     home_path,
@@ -234,7 +235,11 @@ def adapter(stub_home_dir: Path) -> ClaudeCodeAdapter:
     The stub's control file is written into the factory's per-node home so the
     child reads it from the `HOME` the adapter constructs.
     """
-    adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH), grace_s=TEST_GRACE_S)
+    adapter = ClaudeCodeAdapter(
+        executable=str(STUB_AGENT_PATH),
+        grace_s=TEST_GRACE_S,
+        backend=HostAgentBackend(executable=str(STUB_AGENT_PATH)),
+    )
     adapter._node_home_for_control = stub_home_dir  # type: ignore[attr-defined]
     return adapter
 
@@ -722,9 +727,10 @@ async def test_the_default_executable_is_claude_found_on_the_childs_path(
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     write_control(stub_home_dir)
 
-    result = await ClaudeCodeAdapter(grace_s=TEST_GRACE_S).run_attempt(
-        attempt(), factory_root=factory_root
-    )
+    result = await ClaudeCodeAdapter(
+        grace_s=TEST_GRACE_S,
+        backend=HostAgentBackend(),
+    ).run_attempt(attempt(), factory_root=factory_root)
 
     assert result.termination == Termination.COMPLETED
     assert Path(last_invocation(worktree).argv[0]).name == "claude"

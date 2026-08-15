@@ -156,7 +156,7 @@ def add_init_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
 #: order `_TOP_LEVEL_KEYS` declares, and the interview follows it.
 _PROMPTS: dict[str, str] = {
     "version": "schema version",
-    "runtime": "runtime image",
+    "runtime": "runtime backend",
     "gates": "gates (YAML mapping of gate name to command)",
     "timeouts": "timeouts in seconds (YAML mapping of gate name to seconds, optional)",
     "standards": "standards document path (optional)",
@@ -165,7 +165,7 @@ _PROMPTS: dict[str, str] = {
 
 #: Placeholder values that keep a partial manifest valid for full-parser checks.
 _PLACEHOLDERS: dict[str, Any] = {
-    "runtime": "ghcr.io/astral-sh/uv:python3.11-bookworm",
+    "runtime": "bwrap",
     "gates": {"test": "true"},
     "landing_branch": "main",
 }

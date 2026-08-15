@@ -273,7 +273,9 @@ def worktree(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def context(worktree: Path, factory_root: Path) -> Callable[..., AttemptContext]:
+def context(
+    worktree: Path, factory_root: Path, repo: Path
+) -> Callable[..., AttemptContext]:
     """Build the attempt's context; `context(attempt=3)` overrides one field."""
 
     def build(**overrides: Any) -> AttemptContext:

@@ -955,7 +955,7 @@ def test_a_target_repo_cannot_declare_a_judge_gate() -> None:
 
     with pytest.raises(factory_yaml.FactoryConfigError) as excinfo:
         factory_yaml.parse_factory_config(
-            "version: 1\nruntime: python:3.11\n"
+            "version: 1\nruntime: bwrap\n"
             "gates:\n  judge: 'python -m factory.verify.judge'\n"
         )
     assert "judge" in str(excinfo.value)

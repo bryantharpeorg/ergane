@@ -2,7 +2,7 @@
 # the three v1 gate names. The other half of the runner's CONFIG_ERROR path: a
 # manifest that `yaml.safe_load` accepts happily and only the schema rejects.
 version: 1
-runtime: python:3.11-bookworm
+runtime: bwrap
 gates:
   test: "bash gates/test.sh"
   build: "make all"

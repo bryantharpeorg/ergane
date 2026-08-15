@@ -85,7 +85,7 @@ def _yaml(text: str) -> str:
 CONTRACT_EXAMPLE = _yaml(
     """
     version: 1                      # REQUIRED — integer literal 1
-    runtime: python:3.11-bookworm   # REQUIRED — container image reference (string).
+    runtime: bwrap                  # REQUIRED — supported sandbox backend name.
     gates:                          # REQUIRED — at least one key
       test: "uv run pytest -q"      # each value: non-empty string, run via `bash -c`
       lint: "uv run ruff check ."   #   with cwd = the node worktree
@@ -122,7 +122,7 @@ def test_contract_example_parses_to_the_declared_config() -> None:
 
     assert config == FactoryConfig(
         version=1,
-        runtime="python:3.11-bookworm",
+        runtime="bwrap",
         gates={
             "test": "uv run pytest -q",
             "lint": "uv run ruff check .",
@@ -144,7 +144,7 @@ def test_gate_declaration_order_is_preserved() -> None:
         _yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               lint: "uv run ruff check ."
               typecheck: "uv run mypy ."
@@ -167,7 +167,7 @@ def test_timeouts_are_optional_and_stay_sparse() -> None:
         _yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
@@ -183,7 +183,7 @@ def test_a_single_gate_is_enough() -> None:
         _yaml(
             """
             version: 1
-            runtime: node:22-bookworm
+            runtime: bwrap
             gates:
               test: "npm test"
             timeouts:
@@ -233,7 +233,7 @@ def test_standards_records_the_declared_path() -> None:
         _yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             standards: .specify/memory/constitution.md
@@ -274,7 +274,7 @@ def test_standards_survives_a_round_trip_from_disk(tmp_path: Path) -> None:
         _yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             standards: .specify/memory/constitution.md
@@ -305,7 +305,7 @@ def test_landing_branch_records_the_declared_name() -> None:
         _yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             landing_branch: ergane-buildout
@@ -339,7 +339,7 @@ def test_landing_branch_rejects_empty_string() -> None:
     text = _yaml(
         """
         version: 1
-        runtime: python:3.11-bookworm
+        runtime: bwrap
         gates:
           test: "uv run pytest -q"
         landing_branch: ""
@@ -358,7 +358,7 @@ def test_landing_branch_rejects_whitespace_only() -> None:
     text = _yaml(
         """
         version: 1
-        runtime: python:3.11-bookworm
+        runtime: bwrap
         gates:
           test: "uv run pytest -q"
         landing_branch: "   "
@@ -376,7 +376,7 @@ def test_landing_branch_rejects_null() -> None:
     text = _yaml(
         """
         version: 1
-        runtime: python:3.11-bookworm
+        runtime: bwrap
         gates:
           test: "uv run pytest -q"
         landing_branch:
@@ -395,7 +395,7 @@ def test_landing_branch_rejects_non_string() -> None:
     text = _yaml(
         """
         version: 1
-        runtime: python:3.11-bookworm
+        runtime: bwrap
         gates:
           test: "uv run pytest -q"
         landing_branch: true
@@ -416,7 +416,7 @@ def test_landing_branch_survives_a_round_trip_from_disk(tmp_path: Path) -> None:
         _yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             landing_branch: some-branch
@@ -510,7 +510,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates: [unclosed
             """
         ),
@@ -521,7 +521,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             - version: 1
-            - runtime: python:3.11-bookworm
+            - runtime: bwrap
             """
         ),
         rule="malformed_yaml",
@@ -545,7 +545,7 @@ REJECTIONS: list[Rejection] = [
         id="version-missing",
         text=_yaml(
             """
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
@@ -557,7 +557,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 2
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
@@ -570,7 +570,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: "1"
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
@@ -583,7 +583,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: true
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
@@ -633,7 +633,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             """
         ),
         rule="gates",
@@ -643,7 +643,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates: {}
             """
         ),
@@ -654,7 +654,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               - "uv run pytest -q"
             """
@@ -666,7 +666,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
               build: "make all"
@@ -680,7 +680,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
               lint: ""
@@ -694,7 +694,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               lint: "   "
             """
@@ -707,7 +707,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: 7
             """
@@ -720,7 +720,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test:
             """
@@ -733,7 +733,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             image: python:3.11-bookworm
             gates:
               test: "uv run pytest -q"
@@ -747,7 +747,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             timeouts: 900
@@ -761,7 +761,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             timeouts:
@@ -776,7 +776,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             timeouts:
@@ -791,7 +791,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             timeouts:
@@ -806,7 +806,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             timeouts:
@@ -821,7 +821,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             timeouts:
@@ -836,7 +836,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             timeouts:
@@ -851,7 +851,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             standards: ""
@@ -865,7 +865,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             standards: "   "
@@ -878,7 +878,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             standards:
@@ -892,7 +892,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             standards: 42
@@ -906,7 +906,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             standards:
@@ -922,7 +922,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             landing_branch: ""
@@ -936,7 +936,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             landing_branch: "   "
@@ -949,7 +949,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             landing_branch:
@@ -963,7 +963,7 @@ REJECTIONS: list[Rejection] = [
         text=_yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             landing_branch: true
@@ -1078,7 +1078,7 @@ def test_load_errors_name_the_file_they_came_from(tmp_path: Path) -> None:
         _yaml(
             """
             version: 2
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
@@ -1126,7 +1126,7 @@ def test_cli_rejects_unknown_top_level_key_with_distinguished_code(tmp_path: Pat
         _yaml(
             """
             version: 1
-            runtime: python:3.11-bookworm
+            runtime: bwrap
             image: python:3.11-bookworm
             gates:
               test: "uv run pytest -q"
@@ -1187,7 +1187,7 @@ def test_cli_additivity_and_constants_preserve_library_behavior() -> None:
 MANIFEST_CONTENT = _yaml(
     """
     version: 1
-    runtime: python:3.11-bookworm
+    runtime: bwrap
     gates:
       test: "uv run pytest -q"
     """
@@ -1235,7 +1235,7 @@ def test_both_manifests_ergane_wins_and_ignored_file_is_named(tmp_path: Path) ->
     repo.mkdir()
     (repo / "ergane.yaml").write_text(MANIFEST_CONTENT, encoding="utf-8")
     (repo / "factory.yaml").write_text(
-        MANIFEST_CONTENT.replace("python:3.11-bookworm", "node:22-bookworm"),
+        MANIFEST_CONTENT.replace("bwrap", "unsupported-backend"),
         encoding="utf-8",
     )
 
@@ -1250,7 +1250,7 @@ def test_both_manifests_ergane_wins_and_ignored_file_is_named(tmp_path: Path) ->
         config, resolved_name = load_factory_config_with_name(repo)
 
     assert resolved_name == "ergane.yaml"
-    assert config.runtime == "python:3.11-bookworm"
+    assert config.runtime == "bwrap"
     deprecation_warnings = [w for w in warning_list if issubclass(w.category, DeprecationWarning)]
     assert len(deprecation_warnings) == 1
     message = str(deprecation_warnings[0].message)

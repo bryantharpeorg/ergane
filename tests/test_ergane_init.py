@@ -34,14 +34,14 @@ T005 re-run byte-identity transcript (captured from `test_init_rerun_changes_onl
 
     First manifest (pretty-printed YAML):
     version: 1
-    runtime: ghcr.io/astral-sh/uv:python3.11-bookworm
+    runtime: bwrap
     gates:
       test: uv run pytest -q
     landing_branch: main
 
     Second manifest after changing only standards:
     version: 1
-    runtime: ghcr.io/astral-sh/uv:python3.11-bookworm
+    runtime: bwrap
     gates:
       test: uv run pytest -q
     standards: docs/STANDARDS.md
@@ -166,7 +166,7 @@ def make_bare_repo(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
 # landing_branch, then slug.
 DEFAULT_ANSWERS: list[str] = [
     str(_SUPPORTED_VERSION),  # version
-    "ghcr.io/astral-sh/uv:python3.11-bookworm",  # runtime
+    "bwrap",  # runtime
     'test: "uv run pytest -q"',  # gates
     "",  # timeouts (empty -> omitted)
     "",  # standards (empty -> omitted)
@@ -247,7 +247,7 @@ def test_init_writes_scaffold_and_manifest_parses(
     assert manifest.exists()
     config = parse_factory_config(manifest.read_text(encoding="utf-8"), source=str(manifest))
     assert config.version == 1
-    assert config.runtime == "ghcr.io/astral-sh/uv:python3.11-bookworm"
+    assert config.runtime == "bwrap"
     assert config.gates == {"test": "uv run pytest -q"}
     assert config.timeouts == {}
     assert config.standards is None
@@ -283,7 +283,7 @@ def test_init_proposal_is_confirmed_and_leaves_no_trace(
     # Operator accepts version, runtime, then *corrects* the proposed gate.
     answers = [
         str(_SUPPORTED_VERSION),
-        "ghcr.io/astral-sh/uv:python3.11-bookworm",
+        "bwrap",
         'lint: "uv run ruff check ."',  # corrected from proposed test gate
         "",
         "",
