@@ -105,6 +105,11 @@ FALLBACK_PATH = "/usr/local/bin:/usr/bin:/bin"
 #: verification's deadline.
 DEFAULT_KILL_GRACE_S = 10.0
 
+#: Absolute path the bwrap backend is pinned to. Ubuntu 24.04's AppArmor profile
+#: permits unprivileged user namespaces only for the system binary at this path
+#: (trap 6); a copied or vendored binary has no profile and fails with EPERM.
+BWRAP_BACKEND_BINARY = Path("/usr/bin/bwrap")
+
 _READ_CHUNK = 64 * 1024
 
 #: The drain trims back to the tail once it holds this multiple of the limit —
@@ -437,6 +442,186 @@ def _drain(stream: IO[bytes] | None, buffer: _TailBuffer) -> None:
         stream.close()
 
 
+# Bubblewrap executor --------------------------------------------------------
+
+
+class BwrapGateExecutor:
+    """Runs a gate inside the same bubblewrap boundary as the agent (US5).
+
+    The mount set is deliberately minimal: a read-only system tree, a tmpfs
+    for the gate's scratch state, the node worktree writable, the parent repo's
+    `.git` writable for git plumbing, and read-only toolchain leaves. Network
+    is intentionally not unshared — egress is out of scope — and the gate runs
+    in its own PID namespace with `--die-with-parent` so the existing group-kill
+    path reaches the whole tree.
+    """
+
+    def __init__(self, *, grace_s: float = DEFAULT_KILL_GRACE_S) -> None:
+        self.grace_s = grace_s
+
+    def run(self, invocation: GateInvocation) -> ExecutionOutcome:
+        started = time.monotonic()
+        binary = BWRAP_BACKEND_BINARY
+        if not binary.is_file():
+            return ExecutionOutcome(
+                exit_code=127,
+                output=(
+                    f"sandbox backend 'bwrap' not available: {binary} "
+                    "missing on this host"
+                ),
+                duration_s=0.0,
+                timed_out=False,
+            )
+
+        argv = self._build_argv(invocation)
+        process = subprocess.Popen(
+            argv,
+            cwd=str(invocation.cwd),
+            env=dict(invocation.env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+        buffer = _TailBuffer()
+        drain = threading.Thread(
+            target=_drain,
+            args=(process.stdout, buffer),
+            name=f"gate-{invocation.name}-output",
+            daemon=True,
+        )
+        drain.start()
+
+        timed_out = False
+        try:
+            process.wait(timeout=invocation.timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            self._reclaim(process)
+
+        drain.join(timeout=_DRAIN_JOIN_S)
+        duration_s = time.monotonic() - started
+
+        return ExecutionOutcome(
+            exit_code=None if timed_out else process.returncode,
+            output=buffer.text(),
+            duration_s=duration_s,
+            timed_out=timed_out,
+        )
+
+    def _reclaim(self, process: subprocess.Popen[bytes]) -> None:
+        """SIGTERM the gate's process group, then SIGKILL what survives (R3)."""
+        _signal_group(process, signal.SIGTERM)
+        try:
+            process.wait(timeout=self.grace_s)
+        except subprocess.TimeoutExpired:
+            pass
+        _signal_group(process, signal.SIGKILL)
+        process.wait()
+
+    def _build_argv(self, invocation: GateInvocation) -> list[str]:
+        """Assemble the bwrap command from the proven mount set."""
+        worktree = invocation.cwd.resolve()
+        home = Path("/tmp/ergane-gate-home")
+
+        argv: list[str] = [
+            str(BWRAP_BACKEND_BINARY),
+            # Minimal system tree: read-only /usr plus the symlinks Ubuntu uses
+            # on aarch64. No /lib64 on this host.
+            "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/bin", "/bin",
+            "--symlink", "usr/lib", "/lib",
+            # Runtime pseudo-filesystems.
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--tmpfs", "/tmp",
+        ]
+
+        # The node worktree: only the leaf, at the same absolute path. Bind
+        # its parent read-only first so bwrap does not create a writable
+        # intermediate directory that exposes sibling worktrees (trap 9).
+        if worktree.parent not in (Path("/"),):
+            argv.extend(["--ro-bind", str(worktree.parent), str(worktree.parent)])
+        argv.extend(["--bind", str(worktree), str(worktree)])
+        argv.extend(["--chdir", str(worktree)])
+
+        # Git plumbing: a linked worktree's `.git` file points back to the
+        # parent repo's `.git/worktrees/<name>`. Bind the whole parent `.git`
+        # writable so commit/diff work; the working tree stays outside the
+        # boundary (trap 1).
+        target_git_dir = _resolve_target_git_dir(worktree)
+        if target_git_dir is not None:
+            target_worktree = target_git_dir.parent
+            if target_worktree not in (worktree.parent, Path("/")):
+                argv.extend(["--ro-bind", str(target_worktree), str(target_worktree)])
+            argv.extend(["--bind", str(target_git_dir), str(target_git_dir)])
+
+        # A factory-owned home for the gate, writable but not the operator's.
+        argv.extend(["--tmpfs", str(home)])
+        argv.extend(["--setenv", "HOME", str(home)])
+
+        # Read-only toolchain leaves (trap 13). `uv` and `git` are the binaries
+        # gate commands are known to shell out to; `node` is kept for parity
+        # with the agent mount set even though fixture gates do not use it.
+        for source, dest in self._toolchain_binds():
+            argv.extend(["--ro-bind", source, dest])
+
+        # PATH must name the bind points inside the container.
+        argv.extend(["--setenv", "PATH", self._container_path()])
+
+        # Process/signal boundary (trap 2).
+        argv.extend(["--unshare-pid", "--die-with-parent"])
+
+        # Finally the gate itself, as `bash -c <command>`.
+        argv.extend(["--", "bash", "-c", invocation.command])
+        return argv
+
+    def _toolchain_binds(self) -> list[tuple[str, str]]:
+        """Read-only leaf binds for the toolchain the gate may invoke."""
+        binds: list[tuple[str, str]] = [
+            ("/home/admin/.local/bin/uv", "/home/admin/.local/bin/uv"),
+            ("/usr/bin/git", "/usr/bin/git"),
+        ]
+        node = "/home/admin/.nvm/versions/node/v22.22.2/bin/node"
+        if Path(node).is_file():
+            binds.append((node, node))
+        return binds
+
+    def _container_path(self) -> str:
+        return ":".join(
+            [
+                "/home/admin/.local/bin",
+                "/home/admin/.nvm/versions/node/v22.22.2/bin",
+                "/usr/bin",
+            ]
+        )
+
+
+def _resolve_target_git_dir(worktree: Path) -> Path | None:
+    """Return the parent repository's `.git` directory if this is a worktree.
+
+    A normal git repository has `.git` as a directory. A linked worktree
+    has `.git` as a file pointing at the real metadata under the parent
+    repo's `.git/worktrees/<name>`. Either way the parent `.git` directory
+    must be mounted writable for commit/diff to work (trap 1).
+    """
+    git_file = worktree / ".git"
+    if not git_file.exists():
+        return None
+    if git_file.is_dir():
+        return git_file.resolve()
+    try:
+        text = git_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    prefix = "gitdir:"
+    if not text.startswith(prefix):
+        return None
+    gitdir = Path(text[len(prefix):].strip()).resolve()
+    return gitdir.parent.parent.resolve()
+
+
 # Candidate parser implementation --------------------------------------------
 
 
@@ -648,6 +833,12 @@ def run_gates(
         worktree / MANIFEST_NAME if manifest_path is None else Path(manifest_path)
     )
 
+    # Resolve the backend early so a broken manifest still produces a CONFIG_ERROR
+    # from the same code path, and so an explicit executor wins over runtime.
+    backend = _resolve_gate_executor(
+        executor, _read_runtime_from_manifest(manifest)
+    )
+
     candidate_path = worktree / "factory" / "verify" / "factory_yaml.py"
     if candidate_runner is None:
         run_candidate = _default_candidate_runner.run
@@ -669,7 +860,7 @@ def run_gates(
             manifest,
             gates_view,
             timeouts_view,
-            executor=executor,
+            executor=backend,
             timeout_overrides=timeout_overrides,
             concurrency_limiter=concurrency_limiter,
         )
@@ -710,9 +901,55 @@ def run_gates(
     return _run_gate_list_from_config(
         worktree,
         config,
-        executor=executor,
+        executor=backend,
         timeout_overrides=timeout_overrides,
         concurrency_limiter=concurrency_limiter,
+    )
+
+
+def _resolve_gate_executor(
+    executor: GateExecutor | None, runtime: str | None
+) -> GateExecutor:
+    """Choose the gate backend from the manifest's `runtime:` when not overridden.
+
+    An explicit `executor` is used verbatim -- tests and callers that want a
+    specific backend keep control. When the manifest declares `runtime: bwrap`
+    and the system binary is present, the gate runs inside the same boundary as
+    the agent (US5, FR-009). Otherwise the host subprocess executor is used,
+    which keeps the suite green on hosts where bwrap is not installed (trap 5).
+    """
+    if executor is not None:
+        return executor
+    if runtime == "bwrap" and BWRAP_BACKEND_BINARY.is_file():
+        return BwrapGateExecutor()
+    return SubprocessGateExecutor()
+
+
+def _read_runtime_from_manifest(manifest: Path) -> str | None:
+    """Return the manifest's `runtime:` value, or None if the manifest is unusable."""
+    try:
+        return load_factory_config(manifest).runtime
+    except FactoryConfigError:
+        return None
+
+
+def resolve_gate_executor(
+    worktree: Path | str,
+    *,
+    manifest_path: Path | str | None = None,
+    executor: GateExecutor | None = None,
+) -> GateExecutor:
+    """Public helper for callers that need the runtime-selected backend.
+
+    The verify activity uses this so its heartbeating wrapper wraps the same
+    backend `run_gates` would have chosen (US5).
+    """
+    worktree = Path(worktree)
+    manifest = (
+        worktree / MANIFEST_NAME if manifest_path is None else Path(manifest_path)
+    )
+    return _resolve_gate_executor(
+        executor, _read_runtime_from_manifest(manifest)
     )
 
 
@@ -722,12 +959,12 @@ def _run_gate_list(
     gates_view: Mapping[str, str],
     timeouts_view: Mapping[str, int],
     *,
-    executor: GateExecutor | None,
+    executor: GateExecutor,
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
 ) -> list[GateResult]:
     """Run gates from a JSON view (candidate acceptance or fallback)."""
-    backend = executor if executor is not None else SubprocessGateExecutor()
+    backend = executor
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
     limiter = (
@@ -758,12 +995,12 @@ def _run_gate_list_from_config(
     worktree: Path,
     config,
     *,
-    executor: GateExecutor | None,
+    executor: GateExecutor,
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
 ) -> list[GateResult]:
     """Run gates from an in-process FactoryConfig (today's fallback path)."""
-    backend = executor if executor is not None else SubprocessGateExecutor()
+    backend = executor
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
     limiter = (
