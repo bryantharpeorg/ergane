@@ -1,0 +1,31 @@
+Audit of non-existence assertions in tests/test_store_isolation.py (US1-S4):
+
+Non-existence assertions found:
+
+1. Line 194: assert not poison_root.exists(), target /nonexistent-030-proof/factory-root
+   -> deliberately impossible path (trap 8). Safe.
+
+2. Line 195: assert not poison_db.exists(), target /nonexistent-030-proof/verification.db
+   -> deliberately impossible path (trap 8). Safe.
+
+3. Line 196: assert not poison_ledger.exists(), target /nonexistent-030-proof/ledger.db
+   -> deliberately impossible path (trap 8). Safe.
+
+4. Line 197: assert not poison_db.parent.exists(), target /nonexistent-030-proof
+   -> deliberately impossible path (trap 8). Safe.
+
+5. Line 341: assert not poison.exists(), target /nonexistent-030-proof-us2/live-evidence.db
+   -> deliberately impossible path (trap 8). Safe.
+
+6. Line 342: assert not poison.parent.exists(), target /nonexistent-030-proof-us2
+   -> deliberately impossible path (trap 8). Safe.
+
+The previous non-existence assertion at the original line 201
+(assert not default_db.exists()) has been replaced by
+_default_store_pre_state.assert_unchanged(), which records pre-test existence,
+size and mtime and compares them post-test.  No remaining assertion requires the
+non-existence of the production default path .factory/verification_db.
+
+Conclusion: every remaining non-existence assertion targets a deliberately
+impossible path; no assertion requires the non-existence of a path named by
+production defaults.

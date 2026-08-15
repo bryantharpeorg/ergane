@@ -1,0 +1,60 @@
+populated /tmp/tmpdvma9tkt/.factory/verification.db
+before: exists=True, size=12288, mtime_ns=1786779955470910865
+F                                                                        [100%]
+=================================== FAILURES ===================================
+______________________ test_leaking_writers_are_contained ______________________
+
+env = <temporalio.testing._activity.ActivityEnvironment object at 0xe50e78739e10>
+tmp_path_factory = TempPathFactory(_given_basetemp=None, _trace=<pluggy._tracing.TagTracerSub object at 0xe50e78ddb450>, _basetemp=PosixPath('/tmp/pytest-of-admin/pytest-542'), _retention_count=3, _retention_policy='all')
+_default_store_pre_state = _StorePreState(path=PosixPath('/tmp/pytest-of-admin/pytest-542/test_leaking_writers_are_conta0/.factory/verification.db'), exists=True, size=12288, mtime_ns=1786779955776911529)
+
+    async def test_leaking_writers_are_contained(
+        env: ActivityEnvironment,
+        tmp_path_factory: pytest.TempPathFactory,
+        _default_store_pre_state: _StorePreState,
+    ) -> None:
+        base = tmp_path_factory.getbasetemp()
+    
+        await _run_leaking_writers(env, os.environ[VERIFICATION_DB_PATH_ENV])
+    
+        db_path = Path(os.environ[VERIFICATION_DB_PATH_ENV])
+        assert _is_under(db_path, base)
+        assert db_path.exists(), "session store was not created"
+    
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT consecutive_count, last_failure_text FROM roadmap_failures WHERE roadmap_id = ?",
+                (ROADMAP_ID,),
+            ).fetchone()
+            assert row is not None, "roadmap_failures row missing from session store"
+            assert row[0] == 1, row
+            assert row[1] == FAILURE_TEXT, row
+    
+            escalation = conn.execute(
+                "SELECT delivered FROM escalations WHERE epic_id = ?",
+                (ROADMAP_ID,),
+            ).fetchone()
+            assert escalation is not None, "escalation row missing from session store"
+            assert escalation[0] == 0, escalation
+        finally:
+            conn.close()
+    
+        default_db = Path(".factory/verification.db")
+>       assert not default_db.exists(), (
+            f"cwd-relative default store {default_db} was created"
+        )
+E       AssertionError: cwd-relative default store .factory/verification.db was created
+E       assert not True
+E        +  where True = exists()
+E        +    where exists = PosixPath('.factory/verification.db').exists
+
+/home/admin/code/ergane/.factory/worktrees/043-runtime-root-integrity/us1/tests/test_store_isolation.py:290: AssertionError
+---------------------------- Captured stdout setup -----------------------------
+populated /tmp/pytest-of-admin/pytest-542/test_leaking_writers_are_conta0/.factory/verification.db
+------------------------------ Captured log call -------------------------------
+WARNING  factory.activities.notify_activities:notify_activities.py:435 escalation b9fc1a06838e: not sent — TELEGRAM_BOT_TOKEN is not set on this worker
+=========================== short test summary info ============================
+FAILED tests/test_store_isolation.py::test_leaking_writers_are_contained - As...
+1 failed in 0.22s
+

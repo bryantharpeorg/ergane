@@ -1,0 +1,49 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_leaking_writers_default_path_is_contained ________________
+
+env = <temporalio.testing._activity.ActivityEnvironment object at 0xffce293d1e50>
+_default_store_pre_state = _StorePreState(path=PosixPath('/tmp/pytest-of-admin/pytest-543/test_leaking_writers_default_p0/.factory/verification.db'), exists=False, size=-1, mtime_ns=-1)
+
+    async def test_leaking_writers_default_path_is_contained(
+        env: ActivityEnvironment,
+        _default_store_pre_state: _StorePreState,
+    ) -> None:
+        """Control: when the test is forced to write the cwd default, the detector fails.
+    
+        The activity is given a db_path that resolves to the cwd-relative default
+        ``.factory/verification.db``.  The fixture has already monkeypatched cwd to a
+        tmp directory, so the default is still the *path* the production resolver names
+        even though it sits under pytest's tmp tree.  The test asserts the detector
+        reports the mutation and names the offending path (spec US1-S2).
+        """
+        default_db = Path(".factory/verification.db")
+        await _run_leaking_writers(env, str(default_db))
+    
+        assert default_db.exists(), (
+            f"control did not create the cwd-relative default store {default_db}"
+        )
+>       _default_store_pre_state.assert_unchanged()
+
+/home/admin/code/ergane/.factory/worktrees/043-runtime-root-integrity/us1/tests/test_store_isolation.py:313: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = _StorePreState(path=PosixPath('/tmp/pytest-of-admin/pytest-543/test_leaking_writers_default_p0/.factory/verification.db'), exists=False, size=-1, mtime_ns=-1)
+
+    def assert_unchanged(self) -> None:
+        current = _StorePreState.capture(self.path)
+>       assert current.exists == self.exists, (
+            f"cwd-relative default store {self.path} existence changed: "
+            f"before {self.exists}, after {current.exists}"
+        )
+E       AssertionError: cwd-relative default store /tmp/pytest-of-admin/pytest-543/test_leaking_writers_default_p0/.factory/verification.db existence changed: before False, after True
+E       assert True == False
+E        +  where True = _StorePreState(path=PosixPath('/tmp/pytest-of-admin/pytest-543/test_leaking_writers_default_p0/.factory/verification.db'), exists=True, size=81920, mtime_ns=1786779960292921325).exists
+E        +  and   False = _StorePreState(path=PosixPath('/tmp/pytest-of-admin/pytest-543/test_leaking_writers_default_p0/.factory/verification.db'), exists=False, size=-1, mtime_ns=-1).exists
+
+/home/admin/code/ergane/.factory/worktrees/043-runtime-root-integrity/us1/tests/test_store_isolation.py:100: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  factory.activities.notify_activities:notify_activities.py:435 escalation 5fafa816d9fa: not sent — TELEGRAM_BOT_TOKEN is not set on this worker
+=========================== short test summary info ============================
+FAILED tests/test_store_isolation.py::test_leaking_writers_default_path_is_contained
+1 failed in 0.22s

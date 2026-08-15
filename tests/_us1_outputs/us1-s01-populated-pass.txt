@@ -1,0 +1,6 @@
+populated /tmp/tmps_c9bs5i/.factory/verification.db
+before: exists=True, size=12288, mtime_ns=1786779949590898111
+.                                                                        [100%]
+1 passed in 0.19s
+after:  exists=True, size=12288, mtime_ns=1786779949590898111
+unchanged: True

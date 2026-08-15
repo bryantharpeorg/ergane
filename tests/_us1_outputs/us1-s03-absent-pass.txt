@@ -1,0 +1,4 @@
+before: /tmp/tmpour6dy_r/.factory exists=False
+.                                                                        [100%]
+1 passed in 0.52s
+after:  /tmp/tmpour6dy_r/.factory exists=False
