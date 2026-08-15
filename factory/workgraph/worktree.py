@@ -126,6 +126,7 @@ class RuntimeRootChoice(StrEnum):
 
     NEW = "new"
     LEGACY = "legacy"
+    OVERRIDE = "override"
 
 
 #: Module-level sentinel so the deprecation warning fires once per command/process.
@@ -134,8 +135,8 @@ _DEPRECATED_LEGACY_ROOT: str | None = None
 
 def resolve_factory_root(
     env_name: str = "FACTORY_ROOT",
-) -> tuple[Path, RuntimeRootChoice]:
-    """Return the runtime root to use and which name was chosen.
+) -> tuple[Path, RuntimeRootChoice, str | None]:
+    """Return the runtime root to use, which name was chosen, and the env source.
 
     Preferred directory name is `.ergane/`; legacy `.factory/` is honored with a
     one-time deprecation warning naming the migration command.  When both exist,
@@ -144,7 +145,9 @@ def resolve_factory_root(
     An explicit environment override wins over both directory names.  The
     override itself is read through `factory.env.resolve_env_path` so both
     `ERGANE_ROOT` and `FACTORY_ROOT` are honored; using the legacy env name emits
-    a one-time deprecation about the variable name (US3, trap 7).
+    a one-time deprecation about the variable name (US3, trap 7).  When an
+    override is present, the returned source is the variable name that won
+    according to `resolve_env_path`'s precedence (US4).
 
     The directory warning is gated by a module-level flag because this resolver
     is invoked many times per epic and a per-read warning trains the operator to
@@ -154,7 +157,8 @@ def resolve_factory_root(
         ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, default=""
     )
     if override != Path(""):
-        return override, RuntimeRootChoice.NEW
+        source = _env_source(ERGANE_ROOT_ENV, FACTORY_ROOT_ENV)
+        return override, RuntimeRootChoice.OVERRIDE, source
 
     new = DEFAULT_RUNTIME_ROOT
     legacy = LEGACY_FACTORY_ROOT
@@ -168,17 +172,28 @@ def resolve_factory_root(
                 f"{legacy} is ignored in favor of {new}; "
                 f"run `ergane repo migrate-runtime-root` to remove the legacy directory"
             )
-        return new, RuntimeRootChoice.NEW
+        return new, RuntimeRootChoice.NEW, None
 
     if legacy_exists:
         _warn_legacy_root_once(
             f"{legacy} is deprecated; run `ergane repo migrate-runtime-root` "
             f"to move it to {new}"
         )
-        return legacy, RuntimeRootChoice.LEGACY
+        return legacy, RuntimeRootChoice.LEGACY, None
 
     new.mkdir(parents=True, exist_ok=True)
-    return new, RuntimeRootChoice.NEW
+    return new, RuntimeRootChoice.NEW, None
+
+
+def _env_source(new_name: str, old_name: str) -> str:
+    """Return the variable name that supplied an override, per resolve_env_path precedence."""
+    if os.environ.get(new_name) is not None:
+        return new_name
+    if os.environ.get(old_name) is not None:
+        return old_name
+    raise RuntimeError(
+        f"_env_source called when neither {new_name} nor {old_name} is set"
+    )
 
 
 def _warn_legacy_root_once(message: str) -> None:

@@ -131,7 +131,7 @@ _WORKER_CMDLINE_RE = re.compile(
 #: Evidence stores the factory depends on. Resolved lazily so tests that
 #: chdir into a tmp layout see the layout's root, not the repo's.
 def _evidence_stores() -> tuple[Path, ...]:
-    root, _choice = resolve_factory_root()
+    root, _choice, _source = resolve_factory_root()
     return (
         root / "doctor.db",
         root / "ledger.db",
@@ -268,7 +268,7 @@ class OrphanedKeyProbe:
                 candidate_epics.add(epic)
 
         # Also include worktree directories as candidates for closed-ness.
-        root, _choice = resolve_factory_root()
+        root, _choice, _source = resolve_factory_root()
         worktrees_root = root / "worktrees"
         if worktrees_root.exists():
             candidate_epics.update(
@@ -376,7 +376,7 @@ class StaleWorktreeProbe:
     name = "stale-worktree"
 
     async def _gather_async(self) -> WorktreeSnapshot:
-        root, _choice = resolve_factory_root()
+        root, _choice, _source = resolve_factory_root()
         worktrees_root = root / "worktrees"
         worktrees: list[Path] = []
         if worktrees_root.exists():

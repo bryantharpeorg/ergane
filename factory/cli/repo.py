@@ -140,16 +140,24 @@ def migrate_runtime_root_command(args: argparse.Namespace) -> int:
     nothing.  With `--yes` it performs the move; otherwise it is a dry run that
     says what it would do.
     """
-    root, choice = resolve_factory_root()
+    root, choice, source = resolve_factory_root()
+
+    if choice is RuntimeRootChoice.OVERRIDE:
+        # An env override wins over both directory names; treat that as an
+        # explicit, non-migratable configuration.
+        raise OperatorError(
+            f"{source} is set to {root}; migration only moves the default "
+            "legacy root when no override is present"
+        )
 
     if choice is RuntimeRootChoice.NEW:
         if root.resolve().name == str(DEFAULT_RUNTIME_ROOT):
             print("runtime root already migrated to .ergane/")
             return EXIT_OK
-        # An env override points somewhere else; treat that as an explicit,
-        # non-migratable configuration.
+        # A non-default new root should not happen given the resolver's rules,
+        # but guard it rather than silently moving the wrong directory.
         raise OperatorError(
-            f"FACTORY_ROOT is set to {root}; migration only moves the default "
+            f"unexpected runtime root {root}; migration only moves the default "
             "legacy root when no override is present"
         )
 

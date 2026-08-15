@@ -60,9 +60,10 @@ def test_resolve_no_root_creates_ergane(tmp_path: Path, monkeypatch: pytest.Monk
     """No runtime root -> the resolver creates and returns `.ergane/`."""
     _unset_factory_root(monkeypatch)
     monkeypatch.chdir(tmp_path)
-    root, choice = resolve_factory_root()
+    root, choice, source = resolve_factory_root()
     assert root.resolve() == tmp_path / DEFAULT_RUNTIME_ROOT
     assert choice is RuntimeRootChoice.NEW
+    assert source is None
     assert (tmp_path / DEFAULT_RUNTIME_ROOT).is_dir()
 
 
@@ -76,10 +77,11 @@ def test_resolve_legacy_only_uses_it_and_names_migration(
     (tmp_path / LEGACY_FACTORY_ROOT / "verification.db").write_text("legacy", encoding="utf-8")
 
     with pytest.warns(DeprecationWarning, match=MIGRATION_COMMAND):
-        root, choice = resolve_factory_root()
+        root, choice, source = resolve_factory_root()
 
     assert root.resolve() == tmp_path / LEGACY_FACTORY_ROOT
     assert choice is RuntimeRootChoice.LEGACY
+    assert source is None
     assert (tmp_path / DEFAULT_RUNTIME_ROOT).is_dir() is False
     assert (tmp_path / LEGACY_FACTORY_ROOT / "verification.db").read_text(encoding="utf-8") == "legacy"
 
@@ -96,10 +98,11 @@ def test_resolve_new_wins_when_both_exist(
     (tmp_path / LEGACY_FACTORY_ROOT / "verification.db").write_text("legacy", encoding="utf-8")
 
     with pytest.warns(DeprecationWarning, match="ignored"):
-        root, choice = resolve_factory_root()
+        root, choice, source = resolve_factory_root()
 
     assert root.resolve() == tmp_path / DEFAULT_RUNTIME_ROOT
     assert choice is RuntimeRootChoice.NEW
+    assert source is None
 
 
 def test_factory_root_helper_routes_through_resolver(
@@ -292,3 +295,60 @@ def test_migration_refuses_when_epic_running(
     assert code == 1
     assert "epic-040-live" in err
     assert (tmp_path / DEFAULT_RUNTIME_ROOT).exists() is False
+
+
+def test_migration_refusal_names_ergane_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    migration_runner: Callable[..., tuple[int, str, str]],
+    yes_args: argparse.Namespace,
+) -> None:
+    """US4-S1: with only ERGANE_ROOT set, the refusal names ERGANE_ROOT and quotes its value."""
+    override = tmp_path / "override-root"
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(override))
+    monkeypatch.delenv(FACTORY_ROOT_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    code, out, err = migration_runner(yes_args)
+
+    assert code == 1
+    assert f"ERGANE_ROOT is set to {override}" in err
+    assert "FACTORY_ROOT is set" not in err
+
+
+def test_migration_refusal_names_factory_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    migration_runner: Callable[..., tuple[int, str, str]],
+    yes_args: argparse.Namespace,
+) -> None:
+    """US4-S2: with only FACTORY_ROOT set, the refusal names FACTORY_ROOT."""
+    override = tmp_path / "override-root"
+    monkeypatch.setenv(FACTORY_ROOT_ENV, str(override))
+    monkeypatch.delenv(ERGANE_ROOT_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    code, out, err = migration_runner(yes_args)
+
+    assert code == 1
+    assert f"FACTORY_ROOT is set to {override}" in err
+
+
+def test_migration_refusal_names_ergane_root_when_both_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    migration_runner: Callable[..., tuple[int, str, str]],
+    yes_args: argparse.Namespace,
+) -> None:
+    """US4-S3: when both are set, ERGANE_ROOT wins and the refusal names it and its value."""
+    new_override = tmp_path / "new-root"
+    old_override = tmp_path / "old-root"
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(new_override))
+    monkeypatch.setenv(FACTORY_ROOT_ENV, str(old_override))
+    monkeypatch.chdir(tmp_path)
+
+    code, out, err = migration_runner(yes_args)
+
+    assert code == 1
+    assert f"ERGANE_ROOT is set to {new_override}" in err
+    assert "FACTORY_ROOT is set" not in err
