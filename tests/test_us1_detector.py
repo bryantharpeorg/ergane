@@ -39,6 +39,8 @@ EPIC = "011-agent-sandbox"
 NODE = "us1"
 ATTEMPT = 1
 SESSION_ID = "0f2c9a71-5d48-4c3b-8a6e-2b7c1d0e9f43"
+# Make valid UUIDs for derived session ids in T004
+_SESSION_ID_PREFIX = SESSION_ID[:-1]
 MODEL_ALIAS = "anthropic/CHANGEME"
 PROXY_URL = "http://litellm.test:4000"
 VIRTUAL_KEY = "sk-virtual-011-agent-sandbox-us1-1"
@@ -340,6 +342,78 @@ async def test_operator_work_is_reported_and_untouched(
         # The detector must not have tidied the operator's work.
         assert operator_file.read_text(encoding="utf-8") == "operator uncommitted work\n"
         assert target_file.read_text(encoding="utf-8") == original
+    finally:
+        conn.close()
+
+
+# --- T004: the detector runs on all four termination paths ---
+
+
+async def test_detector_runs_on_completed_agent_error_timeout_and_killed(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    repo: Path,
+    worker_host: Path,
+) -> None:
+    """US1-S1: the breach is likeliest on the bad paths, so detection must cover them."""
+    target_file = repo / TRACKED_FILE
+    original = target_file.read_text(encoding="utf-8")
+
+    terminations: dict[Termination, int] = {}
+    for termination, exit_code, sleep_s in (
+        (Termination.COMPLETED, 0, 0.0),
+        (Termination.AGENT_ERROR, 1, 0.0),
+        (Termination.TIMEOUT, 0, 300.0),
+        (Termination.KILLED, 0, 300.0),
+    ):
+        attempt = len(terminations) + 1
+        terminations[termination] = attempt
+        ctx = context(attempt=attempt, session_id=f"{_SESSION_ID_PREFIX}{attempt}")
+        write_control(
+            home_path(factory_root, EPIC, NODE),
+            exit_code=exit_code,
+            sleep_s=sleep_s,
+            stdout="working",
+        )
+        # Make a fresh change each iteration.
+        target_file.write_text(
+            original + f"\n# changed for {termination.value}\n", encoding="utf-8"
+        )
+
+        if termination is Termination.TIMEOUT:
+            monkeypatch = pytest.MonkeyPatch()
+            monkeypatch.setattr(agent_activities, "HEARTBEAT_INTERVAL_S", 0.05)
+            try:
+                result = await env.run(run_agent_attempt, ctx)
+            finally:
+                monkeypatch.undo()
+            assert result.termination == Termination.TIMEOUT
+        elif termination is Termination.KILLED:
+            monkeypatch = pytest.MonkeyPatch()
+            monkeypatch.setattr(agent_activities, "HEARTBEAT_INTERVAL_S", 0.05)
+            running = asyncio.create_task(env.run(run_agent_attempt, ctx))
+            try:
+                await wait_until(lambda: stub_is_up(worktree, attempt), what="the agent to launch")
+                env.cancel()
+                with pytest.raises((CancelledError, asyncio.CancelledError)):
+                    await running
+            finally:
+                monkeypatch.undo()
+        else:
+            await env.run(run_agent_attempt, ctx)
+
+    conn = connect(factory_root / "doctor.db")
+    try:
+        # At least one finding should exist and mention the tracked file.
+        finding = get_finding(conn, finding_key(EPIC, NODE))
+        assert finding is not None
+        assert finding.severity is Severity.CRITICAL
+        assert TRACKED_FILE in finding.summary or any(
+            TRACKED_FILE in ref for ref in finding.refs
+        )
+        assert finding.occurrences >= len(terminations)
     finally:
         conn.close()
 
