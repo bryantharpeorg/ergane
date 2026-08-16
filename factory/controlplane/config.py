@@ -529,6 +529,185 @@ def _read_escalation(
 
 
 # ---------------------------------------------------------------------------
+# Rendering (US3): the parser's inverse, deterministic by construction
+# ---------------------------------------------------------------------------
+#
+# `tomllib` reads TOML and nothing in the standard library writes it, and US3-S2
+# asks that a re-run changing one answer produce a diff touching exactly that
+# block.  Parsing, mutating and re-serialising cannot promise that: a comment or
+# a blank line moves the moment any writer touches the document.
+#
+# So the file is *rendered* from the typed shape every time, in a fixed block and
+# key order.  "The diff touches exactly one block" is then true by construction,
+# a re-run with unchanged answers is byte-identical for free, and no
+# round-tripping dependency enters the project.
+#
+# The consequence, stated out loud because an operator should meet it here rather
+# than in a diff: **a hand-edited config's comments, key order and blank-line
+# layout are not preserved** — the first `ergane install` re-run rewrites the
+# file in this canonical form.  A hand-written config remains equally valid
+# input; the parser is the contract.  Optional fields sitting at their documented
+# default are omitted, which is what keeps rendering a pure function of the typed
+# shape rather than of the text it came from.
+
+
+#: Block order in the rendered file, and the key order within each block.
+_RENDER_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("llm", ("mode", "base_url", "master_key_env", "timeout_s")),
+    ("memory", ("backend", "url", "api_key_env", "timeout_s")),
+    (
+        "temporal",
+        ("mode", "address", "namespace", "api_key_env", "tls_enabled", "timeout_s"),
+    ),
+    ("telemetry", ("otlp_endpoint", "timeout_s")),
+    ("escalation", ("adapter", "bot_token_env", "chat_id_env", "timeout_s")),
+)
+
+#: Key order inside each `[[llm.persona]]` table.
+_PERSONA_ORDER: tuple[str, ...] = ("name", "base_url", "model", "api_key_env", "timeout_s")
+
+
+def controlplane_document(config: ControlPlaneConfig) -> dict[str, Any]:
+    """Return the plain-data document for ``config``: what the renderer writes.
+
+    Optionals at their documented default are omitted, so two configs that parse
+    equal render equal.
+    """
+    # `llm.timeout_s` is deliberately not rendered: the parser does not read it
+    # (only `[[llm.persona]].timeout_s` is), and writing a key that changes
+    # nothing is a trap for whoever reads the file next.
+    llm: dict[str, Any] = {"mode": config.llm.mode}
+    if config.llm.mode == "gateway" and config.llm.gateway is not None:
+        llm["base_url"] = config.llm.gateway.base_url
+        llm["master_key_env"] = config.llm.gateway.master_key_env
+    if config.llm.mode == "direct":
+        llm["persona"] = [
+            _drop_default(
+                {
+                    "name": persona.name,
+                    "base_url": persona.base_url,
+                    "model": persona.model,
+                    "api_key_env": persona.api_key_env,
+                    "timeout_s": persona.timeout_s,
+                },
+                "timeout_s",
+                300,
+            )
+            for persona in config.llm.personas
+        ]
+
+    memory: dict[str, Any] = {"backend": config.memory.backend}
+    _set_if(memory, "url", config.memory.url)
+    _set_if(memory, "api_key_env", config.memory.api_key_env)
+    if config.memory.timeout_s != 5:
+        memory["timeout_s"] = config.memory.timeout_s
+
+    temporal: dict[str, Any] = {"mode": config.temporal.mode}
+    _set_if(temporal, "address", config.temporal.address)
+    _set_if(temporal, "namespace", config.temporal.namespace)
+    _set_if(temporal, "api_key_env", config.temporal.api_key_env)
+    if config.temporal.tls_enabled:
+        temporal["tls_enabled"] = True
+    if config.temporal.timeout_s != 5:
+        temporal["timeout_s"] = config.temporal.timeout_s
+
+    telemetry: dict[str, Any] = {}
+    _set_if(telemetry, "otlp_endpoint", config.telemetry.otlp_endpoint)
+    if config.telemetry.timeout_s != 5:
+        telemetry["timeout_s"] = config.telemetry.timeout_s
+
+    escalation: dict[str, Any] = {"adapter": config.escalation.adapter}
+    _set_if(escalation, "bot_token_env", config.escalation.bot_token_env)
+    _set_if(escalation, "chat_id_env", config.escalation.chat_id_env)
+    if config.escalation.timeout_s != 30:
+        escalation["timeout_s"] = config.escalation.timeout_s
+
+    return {
+        "version": config.version,
+        "llm": llm,
+        "memory": memory,
+        "temporal": temporal,
+        "telemetry": telemetry,
+        "escalation": escalation,
+    }
+
+
+def render_controlplane_document(document: Mapping[str, Any]) -> str:
+    """Render a config document to TOML text in the canonical order.
+
+    Takes plain data rather than the typed shape so the walkthrough can render
+    an in-progress answer set and hand the result straight to the parser — one
+    rule table, and the text that is validated is the text that is written.
+    """
+    lines: list[str] = [f"version = {_toml_value(document.get('version', 1))}"]
+
+    for block_name, key_order in _RENDER_ORDER:
+        block = document.get(block_name) or {}
+        if not isinstance(block, Mapping):
+            block = {}
+        lines.append("")
+        lines.append(f"[{block_name}]")
+        for key in key_order:
+            if key in block and block[key] is not None:
+                lines.append(f"{key} = {_toml_value(block[key])}")
+        # Anything the schema does not know is still rendered, so a value the
+        # operator typed is never silently dropped before the parser sees it.
+        for key in sorted(set(block) - set(key_order) - {"persona"}):
+            if block[key] is not None:
+                lines.append(f"{key} = {_toml_value(block[key])}")
+        if block_name == "llm":
+            for persona in block.get("persona") or []:
+                lines.append("")
+                lines.append("[[llm.persona]]")
+                if not isinstance(persona, Mapping):
+                    lines.append(f"# invalid persona entry: {persona!r}")
+                    continue
+                for key in _PERSONA_ORDER:
+                    if key in persona and persona[key] is not None:
+                        lines.append(f"{key} = {_toml_value(persona[key])}")
+                for key in sorted(set(persona) - set(_PERSONA_ORDER)):
+                    if persona[key] is not None:
+                        lines.append(f"{key} = {_toml_value(persona[key])}")
+
+    return "\n".join(lines) + "\n"
+
+
+def render_controlplane_config(config: ControlPlaneConfig) -> str:
+    """Render a typed config back to TOML text (FR-007's write path)."""
+    return render_controlplane_document(controlplane_document(config))
+
+
+def _set_if(block: dict[str, Any], key: str, value: Any) -> None:
+    if value is not None:
+        block[key] = value
+
+
+def _drop_default(values: dict[str, Any], key: str, default: Any) -> dict[str, Any]:
+    if values.get(key) == default:
+        values.pop(key)
+    return values
+
+
+def _toml_value(value: Any) -> str:
+    """Render one scalar as TOML. Non-scalars are quoted so the parser refuses them."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    text = value if isinstance(value, str) else str(value)
+    escaped = (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
+
+
+# ---------------------------------------------------------------------------
 # Generic block / field helpers
 # ---------------------------------------------------------------------------
 

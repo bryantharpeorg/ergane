@@ -1,18 +1,20 @@
 """The `install` noun: `ergane install` and `ergane install --verify`.
 
-This noun is intentionally small.  It lists what `ergane init` would configure,
-and `--verify` probes the five declared subsystems and prints one finding per
-check.  The heavy lifting lives in `factory.controlplane.verify` so it can be
-tested without the CLI boundary.
+This noun is intentionally small.  Bare `ergane install` runs the walkthrough
+(`factory.cli.install`), which interviews the operator, writes the control-plane
+config and ends by verifying it; `--verify` runs that verification alone.  The
+heavy lifting lives outside this module — in `factory.cli.install` and
+`factory.controlplane.verify` — so both can be tested without the CLI boundary
+and so noun discovery, which re-executes this file, holds no state.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 from typing import Any
 
 from factory.cli.errors import EXIT_OK, EXIT_USER
+from factory.cli.install import add_install_arguments, install_command
 from factory.cli.nouns import Noun
 from factory.controlplane.verify import render_findings, verify_controlplane
 
@@ -27,29 +29,31 @@ def _verify_command(_args: argparse.Namespace) -> int:
 def add_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser(
         "install",
-        help="verify or repair the Ergane control plane",
-        description="Install and verify the Ergane control-plane configuration.",
+        help="configure and verify the Ergane control plane",
+        description=(
+            "Interview the operator for the five control-plane subsystems, "
+            "write ~/.config/ergane/config.toml, and verify what was written. "
+            "Re-running loads the existing file as defaults."
+        ),
     )
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="probe the five declared subsystems and report one finding per check",
+        help="skip the interview: probe the declared subsystems and report one finding per check",
     )
+    add_install_arguments(parser)
     parser.set_defaults(run=_run)
 
 
 def _run(args: argparse.Namespace) -> int:
     if args.verify:
         return _verify_command(args)
-    # Bare `ergane install` prints a concise pointer; repair is handled by init.
-    print("Run `ergane install --verify` to probe the configured subsystems.")
-    print("Run `ergane init` to create or repair the control-plane configuration.")
-    return EXIT_OK
+    return install_command(args)
 
 
 NOUN = Noun(
     name="install",
-    summary="verify the control-plane configuration",
+    summary="configure and verify the control plane",
     order=5,
     add_parser=add_parser,
 )
