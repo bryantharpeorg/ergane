@@ -218,9 +218,9 @@ DEFAULT_SOURCE = "built-in default"
 class TemporalTarget:
     """Where Temporal is, and which source won for each half.
 
-    Address and namespace resolve *independently*: a resolver taking the
-    environment's whole answer the moment either variable was set would report a
-    namespace nobody chose.
+    Address and namespace resolve *independently*: taking the environment's
+    whole answer the moment either variable was set would report a namespace
+    nobody chose.
     """
 
     address: str
@@ -259,10 +259,9 @@ def temporal_target_for(
 
     For `factory/controlplane/verify.py`, pointed at one specific file it has
     already loaded: re-reading `resolve_config_path()` there would verify a
-    *different* config than the one named on the command line.
-    `resolve_temporal_target` is written in terms of this, so it is the same
-    function the operational path runs rather than a second copy of the rule —
-    which is what makes FR-016 structural: one function decides both.
+    *different* config than the one on the command line. `resolve_temporal_target`
+    is written in terms of this, so FR-016 is structural rather than promised —
+    one function decides both.
     """
     env = os.environ if environ is None else environ
     address_env, namespace_env = _temporal_env_names()
@@ -308,10 +307,9 @@ def _temporal_env_names() -> tuple[str, str]:
 
     Function-local on purpose: `factory/notify/service.py` costs 250 modules
     (measured) and this module is reached from `LiteLLMClient.from_env` on every
-    CLI path and activity, and a module-scope import would also run
+    CLI path and activity; a module-scope import would also run
     `factory.notify.adapter`'s control-plane import during
     `factory.controlplane`'s own — plan trap 11's neighbourhood.
-    `factory/roadmap/schedule.py` does the same, for the same reason.
     """
     from factory.notify.service import TEMPORAL_ADDRESS_ENV, TEMPORAL_NAMESPACE_ENV
 

@@ -5,9 +5,9 @@ the *same* precedence at `temporal.address` and `temporal.namespace`: the
 environment overrides the declaration, and the declaration is consulted only
 where the environment is silent. Three properties shape the tests below.
 
-- **The fixture config and environment disagree on every value they both
-  carry** (plan traps 5 and 8) — four distinct strings. If they agreed, no test
-  here could tell which source was consulted.
+- **The fixture config and environment disagree on every value they both carry**
+  (plan traps 5 and 8) — four distinct strings; if they agreed, no test here
+  could tell which source was consulted.
 - **Every test binds the config path explicitly**, so none reads the operator's
   real `~/.config/ergane/config.toml` (FR-012, plan trap 4) — a file that exists
   on this host and not on the grader's.
@@ -279,12 +279,10 @@ async def test_the_verify_probe_dials_the_address_the_worker_would_use(
     `verify.py` read the config *first* — the opposite precedence from the rest
     of the tree (plan trap 13). Where the two disagreed, `ergane install
     --verify` probed one server while the worker connected to another: a green
-    check about a machine nothing runs on, and worse than the parent defect,
-    which at least fails loudly at the first build.
-
-    Asserted against the fixture *literal*, never a second call to the resolver,
-    which would compare the production code with itself and survive a mutation
-    moving both.
+    check about a machine nothing runs on, worse than the parent defect, which
+    at least fails loudly at the first build. Asserted against the fixture
+    *literal*, never a second call to the resolver, which would compare the
+    production code with itself.
     """
     from factory.controlplane.config import load_controlplane_config
     from factory.controlplane import verify as verify_module
@@ -376,7 +374,7 @@ def _non_docstring_strings(tree: ast.AST) -> list[str]:
 
 #: Importing any of these reaches `os.environ` without spelling a forbidden
 #: literal — `os.environ.get(TEMPORAL_ADDRESS_ENV)` names no banned string at
-#: all. Closing only the literal route leaves a test that looks strict and is not.
+#: all, so closing only the literal route looks strict and is not.
 _CONTRACT_NAMES = (
     "TEMPORAL_ADDRESS_ENV",
     "TEMPORAL_NAMESPACE_ENV",
@@ -389,9 +387,8 @@ _CONTRACT_NAMES = (
 #: rule, since `resolve_temporal_target` is written in terms of the other.
 _RESOLVER_ENTRY_POINTS = ("resolve_temporal_target", "temporal_target_for")
 
-#: `notify/service.py` *defines* the constants, so the two rules above cannot
-#: hold it — but it dials Temporal like everything else and must resolve like
-#: everything else.
+#: `notify/service.py` *defines* the constants, so the rules above cannot hold
+#: it — but it dials Temporal, so it must resolve like everything else.
 _RESOLVER_SITES = _CONNECT_SITES + ("notify/service.py",)
 
 
@@ -570,7 +567,9 @@ def test_the_version_banner_still_says_not_configured_with_nothing_declared(
 #
 # Both ran against the COMMITTED implementation, so `git checkout --` reverted
 # to a green tree rather than an unimplemented one; both ended `tree after
-# battery: clean`. Counts are tests killed in this file.
+# battery: clean`. Every run purges `__pycache__` first: two mutations differing
+# only by a reordering share a SIZE, and a `.pyc` is validated on (mtime, size),
+# so the second silently ran the first's bytecode — 5 of M13b's 6 kills, once.
 #
 #   $ uv run pytest -q tests/test_declared_temporal.py [+ the file mutated]
 #
@@ -609,4 +608,4 @@ def test_the_version_banner_still_says_not_configured_with_nothing_declared(
 # --- The full suite, on the tree in this diff -------------------------------
 #
 #   $ uv run pytest -q
-#   2842 passed, 44 skipped, 5 warnings in 297.31s (0:04:57)
+#   2914 passed, 44 skipped, 5 warnings in 302.08s (0:05:02)
