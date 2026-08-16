@@ -45,6 +45,8 @@ from factory.notify.adapter import (
     RenderedMessage,
     resolve_adapter,
 )
+from factory.escalation.client import start_escalation
+from factory.escalation.workflow import OUTCOME_EXPIRED
 from factory.notify.service import (
     QUESTION_SIGNAL_NAME,
     BridgeOutcome,
@@ -61,7 +63,14 @@ from factory.verify import store
 # Fixtures, imported rather than re-declared: `db_path` and `env` are US2's and
 # `run_async` is the `escalations` noun's, and this story needs the same three.
 from tests.test_ergane_escalations import Run, run_async  # noqa: F401 - fixture
-from tests.test_escalation_workflow import db_path, env  # noqa: F401 - fixture
+from tests.test_escalation_workflow import (  # noqa: F401 - db_path/env are fixtures
+    TASK_QUEUE,
+    a_request,
+    db_path,
+    env,
+    escalation_worker,
+    row,
+)
 from tests.test_messenger_adapter import (
     FakePressUpdate,
     FakeTemporalClient,
@@ -521,28 +530,24 @@ async def test_an_authorized_reply_after_an_unauthorized_one_is_accepted(
 # --- T027 — US4-S4: no adapter code path can expire, answer or acknowledge -----
 
 
-async def test_expiry_over_the_webhook_is_the_factorys_and_never_the_transports(
-    db_path: Path, webhook: Listener
+async def test_expiry_over_the_webhook_is_the_workflows_and_never_the_transports(
+    env: WorkflowEnvironment, db_path: Path, webhook: Listener
 ) -> None:
-    """US4-S4: one POST is the whole of the transport's participation, and the
-    terminal row was written by a factory activity it cannot reach."""
-    from factory.activities.notify_activities import (
-        ExpireQuestionInput,
-        expire_question,
-    )
+    """US4-S4: a real `EscalationWorkflow` delivered over the second adapter,
+    expiring on its own durable timer. One POST is the whole of the transport's
+    participation: the hour is the workflow's, the terminal row is a factory
+    activity's, and the adapter was handed a message and an id and nothing else.
+    """
+    async with escalation_worker(env):
+        handle = await start_escalation(env.client, a_request(), task_queue=TASK_QUEUE)
+        outcome = await handle.result()  # nobody answers; the timer runs out
 
-    sent = await ActivityEnvironment().run(send_question, a_question("epic-w"))
-    expired = await ActivityEnvironment().run(
-        expire_question, ExpireQuestionInput(question_id=sent.question_id)
-    )
+    assert outcome.outcome == OUTCOME_EXPIRED
+    assert outcome.delivered is True
+    record = row(db_path, handle.id)
+    assert record is not None and record.resolution == store.EXPIRED
 
-    assert expired.final_state == store.EXPIRED
-    record = question(db_path, sent.question_id)
-    assert record is not None
-    assert record.resolution == store.EXPIRED
-
-    # One delivery, and nothing else ever crossed the seam.
-    assert [post["correlation_id"] for post in webhook.posted] == [sent.question_id]
+    assert [post["correlation_id"] for post in webhook.posted] == [handle.id]
 
 
 async def test_a_transport_that_cannot_send_is_data_and_not_an_error(
