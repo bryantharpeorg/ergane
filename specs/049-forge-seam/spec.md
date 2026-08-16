@@ -269,7 +269,10 @@ it and fetch its failing-check evidence through the forge — never by naming
 
 **Why this priority**: this is the half of the coupling that runs on every
 landing, and it is where a second forge's differences are loudest. It is also
-where the pure classifier still speaks GitHub.
+where the pure classifier still speaks GitHub. It depends on US1's protocol and
+on nothing else — the landing path and the readiness path are disjoint module
+sets (`classify.py` and the landing activities versus `onboard.py`), so this
+story and US2 move at the same time.
 
 **Independent Test**: drive one landing's whole life — find, open, request
 landing, observe merged, observe rejected, withdraw — against the fake forge,
@@ -309,8 +312,10 @@ half-applying a change.
 
 **Why this priority**: it is the operator-facing half of the same seam, and it is
 lower than US1–US3 because a target can always be wired by hand. It sits after
-US3 because it is the last consumer to move, and the sweep in US6 cannot be
-written until it has.
+US2, not US3: scenario 1 judges the mutated model with the *same* `evaluate_repo`
+that guards dispatch, and that assertion only means anything once US2 has made
+that judgment forge-neutral. It has no dependency on the landing path, which is
+the other half of the seam and moves in parallel.
 
 **Independent Test**: run the wiring operation against the fake repository model
 and confirm the factory's *own reader* then passes it — the same round trip
@@ -550,18 +555,18 @@ US2:
   implements: [FR-006, FR-007, FR-008]
 US3:
   depends_on: []
-  depends_on_merged: [US2]
+  depends_on_merged: [US1]
   implements: [FR-009, FR-010, FR-011]
 US4:
   depends_on: []
-  depends_on_merged: [US3]
+  depends_on_merged: [US2]
   implements: [FR-012, FR-013]
 US5:
   depends_on: []
-  depends_on_merged: [US4]
+  depends_on_merged: [US1]
   implements: [FR-014, FR-015]
 US6:
   depends_on: []
-  depends_on_merged: [US5]
+  depends_on_merged: [US2, US3, US4, US5]
   implements: [FR-016, FR-017]
 ```
