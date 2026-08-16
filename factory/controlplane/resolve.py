@@ -1,4 +1,12 @@
-"""One precedence, consulted everywhere the LLM gateway is needed (048-US1).
+"""One precedence, consulted everywhere the control plane is needed (048-US1, US4).
+
+Two pairs of values pass through here: the LLM gateway's endpoint and
+credential variable (US1), and Temporal's address and namespace (US4). They
+share the rule rather than each having one — the day before US4,
+`factory/controlplane/verify.py` read Temporal's config *first*, and
+`ergane install --verify` could report a clean bill of health on a server the
+worker never dialed.
+
 
 `ergane install` writes `~/.config/ergane/config.toml`; until this module
 existed, nothing on the dispatch path read it. `LiteLLMClient.from_env` took
@@ -198,6 +206,135 @@ def resolve_master_key_env(
     return _resolve_credential(env, declared, label)
 
 
+# --- Temporal: the same precedence, a second pair of values (048-US4) ---------
+
+#: The label a value carries when neither the environment nor the declaration
+#: supplied it. Temporal differs from the gateway in having a third source at
+#: all: `localhost:7233` / `factory` are real answers, so "nothing declared" is
+#: not a refusal here the way it is above.
+DEFAULT_SOURCE = "built-in default"
+
+
+@dataclasses.dataclass(frozen=True)
+class TemporalTarget:
+    """Where Temporal is, and which source won for each half.
+
+    Address and namespace resolve *independently*: a resolver that took the
+    environment's whole answer the moment either variable was set would report
+    a namespace nobody chose.
+    """
+
+    address: str
+    address_source: str
+    namespace: str
+    namespace_source: str
+
+
+def resolve_temporal_target(
+    *,
+    environ: Mapping[str, str] | None = None,
+    config_path: str | Path | None = None,
+    consult_config: bool = True,
+) -> TemporalTarget:
+    """Resolve Temporal's address and namespace (FR-015).
+
+    Same direction as the gateway above. Eleven operational sites read
+    `os.environ` directly before this existed, so an operator who declared an
+    address still had to export `TEMPORAL_ADDRESS` before anything connected.
+    """
+    env = os.environ if environ is None else environ
+    address_env, namespace_env = _temporal_env_names()
+    declared, label = _declared_temporal(
+        env, config_path, consult_config, needed=(address_env, namespace_env)
+    )
+    return temporal_target_for(declared, source=label, environ=env)
+
+
+def temporal_target_for(
+    declared: ControlPlaneConfig.Temporal | None,
+    *,
+    source: str,
+    environ: Mapping[str, str] | None = None,
+) -> TemporalTarget:
+    """Apply the precedence to a declaration the caller already parsed.
+
+    For `factory/controlplane/verify.py`, which `ergane install --verify`
+    points at one specific file that it has already loaded — re-reading
+    `resolve_config_path()` there would verify a *different* config than the
+    one named on the command line.
+
+    `resolve_temporal_target` is written in terms of this, so it is the same
+    function the operational path runs rather than a second copy of the rule.
+    That is what makes FR-016 structural: one function decides both.
+    """
+    env = os.environ if environ is None else environ
+    address_env, namespace_env = _temporal_env_names()
+    from factory.notify.service import (
+        DEFAULT_TEMPORAL_ADDRESS,
+        DEFAULT_TEMPORAL_NAMESPACE,
+    )
+
+    address, address_source = _one_of(
+        env.get(address_env),
+        address_env,
+        declared.address if declared is not None else None,
+        source,
+        DEFAULT_TEMPORAL_ADDRESS,
+    )
+    namespace, namespace_source = _one_of(
+        env.get(namespace_env),
+        namespace_env,
+        declared.namespace if declared is not None else None,
+        source,
+        DEFAULT_TEMPORAL_NAMESPACE,
+    )
+    return TemporalTarget(address, address_source, namespace, namespace_source)
+
+
+def _one_of(
+    override: str | None,
+    override_label: str,
+    declared: str | None,
+    declared_label: str,
+    fallback: str,
+) -> tuple[str, str]:
+    """One value's precedence: environment, then declaration, then default."""
+    if override:
+        return override, override_label
+    if declared:
+        return declared, declared_label
+    return fallback, DEFAULT_SOURCE
+
+
+def _temporal_env_names() -> tuple[str, str]:
+    """The two variable names, imported from where they are defined.
+
+    Function-local on purpose. `factory/notify/service.py` pulls in the Telegram
+    client and the verification store — 250 modules, measured — and this module
+    is reached from `LiteLLMClient.from_env`, which sits on every CLI path and
+    every activity. A module-scope import would put that weight behind all of
+    them and would run `factory.notify.adapter`'s own control-plane import
+    during `factory.controlplane`'s initialisation — the neighbourhood plan
+    trap 11 warns about. `factory/roadmap/schedule.py` does the same, for the
+    same reason.
+    """
+    from factory.notify.service import TEMPORAL_ADDRESS_ENV, TEMPORAL_NAMESPACE_ENV
+
+    return TEMPORAL_ADDRESS_ENV, TEMPORAL_NAMESPACE_ENV
+
+
+def _declared_temporal(
+    env: Mapping[str, str],
+    config_path: str | Path | None,
+    consult_config: bool,
+    *,
+    needed: tuple[str, ...],
+) -> tuple[ControlPlaneConfig.Temporal | None, str]:
+    """Read the declared Temporal block, through the shared declaration reader."""
+    config, label = _declared_config(env, config_path, consult_config, needed=needed)
+    return (config.temporal if config is not None else None), label
+
+
 # --- the precedence, in one place --------------------------------------------
 
 
@@ -253,15 +390,31 @@ def _declared_gateway(
     *,
     needed: tuple[str, ...],
 ) -> tuple[ControlPlaneConfig.LLMGateway | None, str]:
-    """Read the declared gateway, or explain why there is nothing to read.
+    """Read the declared gateway, or explain why there is nothing to read."""
+    config, label = _declared_config(env, config_path, consult_config, needed=needed)
+    return (config.llm.gateway if config is not None else None), label
 
-    Returns `(None, label)` when the config is absent, disabled or declares no
-    gateway; `label` is always the path the caller would have to fix, so the
-    refusals above can name it either way.
+
+def _declared_config(
+    env: Mapping[str, str],
+    config_path: str | Path | None,
+    consult_config: bool,
+    *,
+    needed: tuple[str, ...],
+) -> tuple[ControlPlaneConfig | None, str]:
+    """Read the declaration, or explain why there is nothing to read.
+
+    Returns `(None, label)` when the config is absent or disabled; `label` is
+    always the path the caller would have to fix, so the refusals above can
+    name it either way.
 
     The file is opened only when at least one of `needed` is missing from the
     environment — FR-002's second half, and what makes US1-S3 a scenario a
     resolver that opened the file could not pass.
+
+    Shared by both subsystems rather than copied for the second one: "when is
+    the file read, and what happens when it is broken" is one decision, and two
+    copies of it would drift the day one of them learned something.
     """
     path = Path(config_path) if config_path is not None else resolve_config_path()
     label = str(path)
@@ -285,4 +438,4 @@ def _declared_gateway(
             f"the control-plane config cannot be used: {error}"
         ) from None
 
-    return config.llm.gateway, label
+    return config, label

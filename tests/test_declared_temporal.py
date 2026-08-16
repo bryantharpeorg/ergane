@@ -1,36 +1,28 @@
 """048-US4: Temporal connects to what was declared.
 
 US1 built the precedence and pointed it at the LLM gateway. This story points
-the *same* precedence at a second pair of values — `temporal.address` and
-`temporal.namespace` — so that one rule holds everywhere: **the environment
-overrides the declaration, and the declaration is consulted only where the
-environment is silent.**
+the *same* precedence at `temporal.address` and `temporal.namespace`, so one
+rule holds everywhere: the environment overrides the declaration, and the
+declaration is consulted only where the environment is silent.
 
-Three properties of the tests below are worth stating because their shape is a
-consequence:
+Three properties of the tests below decide their shape:
 
 - **The fixture config and the fixture environment disagree on every value they
-  both carry** (plan traps 5 and 8). All four fixture values are distinct
-  strings. If the declared and overriding addresses agreed, no test here could
-  tell which source the resolver actually consulted, and every one of them
-  would pass against a resolver that read only one.
-- **Every test binds the config path explicitly** — a `config_path=` argument
-  or `ERGANE_CONFIG_PATH` on a `tmp_path` — so none can resolve the operator's
-  real `~/.config/ergane/config.toml` (FR-012, plan trap 4). `resolve_config_path()`
-  falls back to `$XDG_CONFIG_HOME` and then `Path.home()`, so a test that forgot
-  would read a file that exists on this host and not on the grader's.
-- **Every test deletes `TEMPORAL_ADDRESS` and `TEMPORAL_NAMESPACE` before it
-  asserts anything about the declared route.** `scripts/ergane-env.sh` exports
-  both on this development host, so a test that inherited them would be
-  measuring the shell rather than the resolver.
+  both carry** (plan traps 5 and 8) — four distinct strings. If they agreed, no
+  test here could tell which source was consulted.
+- **Every test binds the config path explicitly**, so none resolves the
+  operator's real `~/.config/ergane/config.toml` (FR-012, plan trap 4):
+  `resolve_config_path()` falls back to `$XDG_CONFIG_HOME` then `Path.home()`,
+  a file that exists on this host and not on the grader's.
+- **Every test deletes both `TEMPORAL_*` variables before asserting anything
+  about the declared route.** `scripts/ergane-env.sh` exports them here, so a
+  test that inherited them would measure the shell.
 
-Unlike the LLM gateway, Temporal has a third source: a built-in default
-(`DEFAULT_TEMPORAL_ADDRESS`, `DEFAULT_TEMPORAL_NAMESPACE`). So resolution never
-refuses for want of a value — it refuses only for a config the parser rejects,
-which is US1's FR-005 shape preserved one subsystem over.
+Unlike the gateway, Temporal has a third source — a built-in default — so
+resolution refuses only for a config the parser rejects (US1's FR-005 shape,
+one subsystem over).
 
-The runtime evidence — the red run, and one mutation per behaviour — is pasted
-verbatim at the bottom of this file (constitution VIII / D-037).
+Runtime evidence is pasted verbatim at the bottom (constitution VIII / D-037).
 """
 
 from __future__ import annotations
@@ -74,12 +66,10 @@ def _write_config(
 ) -> Path:
     """A complete, parseable config at a bound path.
 
-    All five blocks, because the parser requires all five. `temporal.address`
-    and `temporal.namespace` are both *required* when `temporal.mode` is
-    `"external"` (`config.py` `_read_temporal`, `_read_namespace`) — a fixture
-    omitting either is refused by the parser, and that refusal presents as
-    US1's broken-config error rather than as anything about Temporal
-    (plan trap 12b).
+    All five blocks, because the parser requires all five — and `address` and
+    `namespace` are both required when `temporal.mode = "external"`. A fixture
+    omitting either is refused, and that refusal presents as US1's broken-config
+    error rather than as anything about Temporal (plan trap 12b).
     """
     path = tmp_path / "config.toml"
     path.write_text(
@@ -123,9 +113,7 @@ def _bind_config_path(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setenv(FACTORY_CONFIG_PATH_ENV, str(path))
 
 
-# ---------------------------------------------------------------------------
-# T034 / US4-S2 — the override wins, and this host keeps connecting untouched
-# ---------------------------------------------------------------------------
+# --- T034 / US4-S2 — the override wins, and this host keeps connecting untouched
 
 
 def test_the_environment_overrides_the_declaration_for_both_values(
@@ -133,11 +121,10 @@ def test_the_environment_overrides_the_declaration_for_both_values(
 ) -> None:
     """US4-S2, FR-015: a host exporting both variables resolves exactly as today.
 
-    Written first, and it is the acceptance condition rather than a nicety
-    (plan trap 1). The worker running on this development host reads
-    `TEMPORAL_ADDRESS` and `TEMPORAL_NAMESPACE` from `scripts/ergane-env.sh` and
-    has no `~/.config/ergane/config.toml` behind it. A change that required
-    re-provisioning this machine to keep polling would be a failed change.
+    Written first, and the acceptance condition rather than a nicety (plan
+    trap 1): the worker here reads both variables from `scripts/ergane-env.sh`
+    with no config file behind them, and a change requiring this machine to be
+    re-provisioned to keep polling would be a failed change.
     """
     config_path = _write_config(tmp_path)
     monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, OVERRIDE_ADDRESS)
@@ -156,9 +143,7 @@ def test_the_environment_overrides_the_declaration_for_both_values(
     assert target.namespace != DECLARED_NAMESPACE
 
 
-# ---------------------------------------------------------------------------
-# T033 / US4-S1 — the declaration supplies both when nothing overrides it
-# ---------------------------------------------------------------------------
+# --- T033 / US4-S1 — the declaration supplies both when nothing overrides it
 
 
 def test_the_declaration_supplies_both_values_when_nothing_overrides(
@@ -166,9 +151,8 @@ def test_the_declaration_supplies_both_values_when_nothing_overrides(
 ) -> None:
     """US4-S1, FR-015: a freshly installed host connects to what it declared.
 
-    This is the whole defect in one assertion: before this story an operator
-    completed the interview, wrote an address, and still had to export
-    `TEMPORAL_ADDRESS` before anything connected.
+    The whole defect in one assertion: before this story an operator wrote an
+    address at the interview and still had to export `TEMPORAL_ADDRESS`.
     """
     config_path = _write_config(tmp_path)
     _no_overrides(monkeypatch)
@@ -187,9 +171,8 @@ def test_each_value_resolves_on_its_own_rather_than_as_a_block(
     """A host that exports one variable and declares the other reports both truthfully.
 
     The precedence is per *value*, not per subsystem. A resolver that took the
-    environment's whole `[temporal]` answer the moment any one variable was set
-    would pass every other test in this file and fail here — which is why this
-    mixed case is written rather than assumed.
+    environment's whole answer the moment any one variable was set would pass
+    every other test in this file and fail only here.
     """
     config_path = _write_config(tmp_path)
     _no_overrides(monkeypatch)
@@ -203,9 +186,7 @@ def test_each_value_resolves_on_its_own_rather_than_as_a_block(
     assert target.namespace_source == str(config_path)
 
 
-# ---------------------------------------------------------------------------
-# T036 / US4-S4 — neither source: the built-in defaults, exactly as today
-# ---------------------------------------------------------------------------
+# --- T036 / US4-S4 — neither source: the built-in defaults, exactly as today
 
 
 def test_neither_source_falls_back_to_the_built_in_defaults(
@@ -213,11 +194,9 @@ def test_neither_source_falls_back_to_the_built_in_defaults(
 ) -> None:
     """US4-S4: an unprovisioned host with no config keeps the pre-048 behaviour.
 
-    Unlike the LLM gateway, Temporal has a default, so "nothing declared" is
-    not a refusal here. The values asserted are the constants at
-    `factory/notify/service.py`, imported rather than restated: a test that
-    spelled `"localhost:7233"` out would still pass if a site quietly grew its
-    own copy, which is the very thing US4-S4's second half forbids.
+    The expected values are imported from `factory/notify/service.py` rather
+    than restated: a test spelling `"localhost:7233"` out would still pass if a
+    site grew its own copy, which is what US4-S4's second half forbids.
     """
     _no_overrides(monkeypatch)
     missing = tmp_path / "config.toml"
@@ -232,9 +211,7 @@ def test_neither_source_falls_back_to_the_built_in_defaults(
     assert str(missing) not in target.namespace_source
 
 
-# ---------------------------------------------------------------------------
-# FR-002, one subsystem over — when both overrides speak, the file is not opened
-# ---------------------------------------------------------------------------
+# --- FR-002, one subsystem over — when both overrides speak, the file is not opened
 
 
 def test_overrides_set_means_the_config_file_is_never_opened(
@@ -242,9 +219,9 @@ def test_overrides_set_means_the_config_file_is_never_opened(
 ) -> None:
     """Bound to unparseable TOML, resolution still succeeds.
 
-    A resolver that opened this file could not have passed: the parser refuses
-    it. Making the read fatal is the only way to observe a read that did not
-    happen — US1-S3's anti-vacuity, reused because the property is the same.
+    A resolver that opened this file could not have passed. Making the read
+    fatal is the only way to observe a read that did not happen — US1-S3's
+    anti-vacuity, reused because the property is the same.
     """
     broken = tmp_path / "config.toml"
     broken.write_text('version = 1\n[temporal\nmode = "external"\n', encoding="utf-8")
@@ -262,11 +239,9 @@ def test_a_config_the_parser_refuses_surfaces_the_parsers_own_reason(
 ) -> None:
     """FR-005 one subsystem over: refuse for a broken config, degrade for a missing one.
 
-    An operator who typo'd their config and is told "TEMPORAL_ADDRESS is not
-    set" exports a variable instead of fixing the file, and concludes the
-    config does nothing — the belief 048 exists to end (plan trap 3). Silently
-    falling back to `localhost:7233` would be worse still: a worker polling a
-    server the operator never named.
+    Falling back to `localhost:7233` because the file would not parse is the
+    worse half of this defect: a worker polling a server the operator never
+    named, silently (plan trap 3).
     """
     broken = tmp_path / "config.toml"
     broken.write_text('version = 1\n[temporal\nmode = "external"\n', encoding="utf-8")
@@ -281,13 +256,11 @@ def test_a_config_the_parser_refuses_surfaces_the_parsers_own_reason(
     assert DEFAULT_TEMPORAL_ADDRESS not in message
 
 
-# ---------------------------------------------------------------------------
-# T035 / US4-S3 / SC-006 — the probe and the worker agree about the server
-# ---------------------------------------------------------------------------
+# --- T035 / US4-S3 / SC-006 — the probe and the worker agree about the server
 
 
 class _DialRecorder:
-    """Captures what `Client.connect` was asked for, and connects to nothing."""
+    """Captures what `Client.connect` was asked for; connects to nothing."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -299,7 +272,7 @@ class _DialRecorder:
 
 @pytest.fixture
 def dialed(monkeypatch: pytest.MonkeyPatch) -> _DialRecorder:
-    """Replace the real Temporal connect so a probe dials no live server."""
+    """Replace the real connect so a probe dials no live server."""
     import temporalio.client
 
     recorder = _DialRecorder()
@@ -313,18 +286,17 @@ async def test_the_verify_probe_dials_the_address_the_worker_would_use(
 ) -> None:
     """US4-S3, FR-016, SC-006: the story's reason to exist.
 
-    `verify.py` read the config *first* and fell back to the environment — the
-    opposite precedence from everything else in the tree, and the only two such
-    sites in it (plan trap 13). Where the two disagreed, `ergane install
-    --verify` probed one server while the worker connected to another: a green
-    check about a machine nothing runs on. That is worse than the parent
-    defect, because the parent fails loudly at the first build and this one
-    never fails at all.
+    `verify.py` read the config *first* — the opposite precedence from the rest
+    of the tree, and the only two such sites in it (plan trap 13). Where the two
+    disagreed, `ergane install --verify` probed one server while the worker
+    connected to another: a green check about a machine nothing runs on, and
+    worse than the parent defect because the parent fails loudly at the first
+    build and this one never fails at all.
 
-    The assertion is against the fixture *literal*, never against a second call
-    to the resolver. Comparing the probe's address to `resolve_temporal_target()`
-    would compare the production code with itself and stay green under a
-    mutation that moved both.
+    Asserted against the fixture *literal*, never a second call to the
+    resolver: comparing the probe's address to `resolve_temporal_target()`
+    would compare the production code with itself and survive a mutation that
+    moved both.
     """
     from factory.controlplane.config import load_controlplane_config
     from factory.controlplane import verify as verify_module
@@ -347,10 +319,9 @@ async def test_the_probe_snapshot_names_the_server_it_actually_dialed(
 ) -> None:
     """SC-006: gather resolves once, so its report and its dial cannot disagree.
 
-    `TemporalProbe.gather` resolved the target itself and `_temporal_client_factory`
-    resolved it again, independently. Two copies of one rule agree only by
-    luck; this pins that the address the finding names is the address the
-    connect was given.
+    `gather` resolved the target and `_temporal_client_factory` resolved it
+    again, independently. Two copies of one rule agree only by luck; this pins
+    that the address the finding names is the address the connect was given.
     """
     from factory.controlplane.config import load_controlplane_config
     from factory.controlplane import verify as verify_module
@@ -368,13 +339,11 @@ async def test_the_probe_snapshot_names_the_server_it_actually_dialed(
     assert dialed.calls[0][1] == snapshot.namespace
 
 
-# ---------------------------------------------------------------------------
-# T036 second half / US4-S4 — no site keeps its own copy of the contract
-# ---------------------------------------------------------------------------
+# --- T036 second half / US4-S4 — no site keeps its own copy of the contract
 
 #: Every module that opens a Temporal connection. The plan named ten sites;
-#: `factory/roadmap/schedule.py` is an eleventh it missed, found by grepping
-#: for the constants rather than by reading the list.
+#: `factory/roadmap/schedule.py` is an eleventh it missed, found by grepping for
+#: the constants rather than by reading the list.
 _CONNECT_SITES = (
     "worker.py",
     "cli/nouns/__init__.py",
@@ -397,9 +366,9 @@ _FORBIDDEN_LITERALS = ("localhost:7233", "TEMPORAL_ADDRESS", "TEMPORAL_NAMESPACE
 def _non_docstring_strings(tree: ast.AST) -> list[str]:
     """Every string constant in `tree` that is not a docstring.
 
-    Docstrings are excluded because `factory/worker.py`'s own module docstring
-    contains a worked `TEMPORAL_ADDRESS=localhost:7233 ...` command line. That
-    is documentation of the environment contract, not a second copy of it.
+    Excluded because `factory/worker.py`'s module docstring carries a worked
+    `TEMPORAL_ADDRESS=localhost:7233 ...` command line — documentation of the
+    contract, not a second copy of it.
     """
     docstrings: set[int] = set()
     for node in ast.walk(tree):
@@ -421,9 +390,8 @@ def _non_docstring_strings(tree: ast.AST) -> list[str]:
 def test_no_connect_site_spells_the_temporal_contract_for_itself() -> None:
     """US4-S4: the constants are named, never restated.
 
-    Four sites carried hardcoded `"TEMPORAL_ADDRESS"` / `"localhost:7233"`
-    rather than the constants at `factory/notify/service.py`. They agreed with
-    the constants by luck, not design, and luck is not a contract: the day
+    Four sites carried hardcoded `"TEMPORAL_ADDRESS"` / `"localhost:7233"`.
+    They agreed with the constants by luck, not design: the day
     `DEFAULT_TEMPORAL_ADDRESS` changes, the copies keep dialing the old one.
     """
     factory_root = Path(__file__).resolve().parent.parent / "factory"
@@ -441,13 +409,46 @@ def test_no_connect_site_spells_the_temporal_contract_for_itself() -> None:
     assert offenders == []
 
 
-def test_every_connect_site_reaches_the_one_resolver() -> None:
-    """FR-015: "at every operational connect site", asserted rather than asserted-to.
+#: A site importing any of these reaches `os.environ` without spelling a
+#: forbidden literal: `os.environ.get(TEMPORAL_ADDRESS_ENV)` names no banned
+#: string at all. Closing only the literal route leaves a test that looks strict
+#: and is not.
+_CONTRACT_NAMES = (
+    "TEMPORAL_ADDRESS_ENV",
+    "TEMPORAL_NAMESPACE_ENV",
+    "DEFAULT_TEMPORAL_ADDRESS",
+    "DEFAULT_TEMPORAL_NAMESPACE",
+)
 
-    Walks the AST for the imported name, so a comment claiming the site was
-    moved cannot satisfy it. `factory/notify/service.py` is not in the list
-    because it *defines* the constants and its bridge entry point is checked
-    separately below.
+#: The two entry points into the one precedence. `verify.py` uses the second,
+#: having been pointed at a specific file it already parsed; both are the same
+#: rule, since `resolve_temporal_target` is written in terms of the other.
+_RESOLVER_ENTRY_POINTS = ("resolve_temporal_target", "temporal_target_for")
+
+
+def test_no_connect_site_reads_the_temporal_variables_for_itself() -> None:
+    """The second route to `os.environ`, closed alongside the first."""
+    factory_root = Path(__file__).resolve().parent.parent / "factory"
+    offenders: list[str] = []
+
+    for relative in _CONNECT_SITES:
+        path = factory_root / relative
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            for alias in node.names:
+                if alias.name in _CONTRACT_NAMES:
+                    offenders.append(f"{relative}: imports {alias.name}")
+
+    assert offenders == []
+
+
+def test_every_connect_site_reaches_the_one_resolver() -> None:
+    """FR-015: "at every operational connect site", asserted rather than claimed.
+
+    Walks the AST for the imported name, so a comment claiming a site moved
+    cannot satisfy it. `factory/notify/service.py` is checked separately below.
     """
     factory_root = Path(__file__).resolve().parent.parent / "factory"
     unmoved: list[str] = []
@@ -458,7 +459,7 @@ def test_every_connect_site_reaches_the_one_resolver() -> None:
         reaches = any(
             isinstance(node, ast.ImportFrom)
             and (node.module or "") == "factory.controlplane.resolve"
-            and any(alias.name == "resolve_temporal_target" for alias in node.names)
+            and any(alias.name in _RESOLVER_ENTRY_POINTS for alias in node.names)
             for node in ast.walk(tree)
         )
         if not reaches:
@@ -470,9 +471,8 @@ def test_every_connect_site_reaches_the_one_resolver() -> None:
 def test_the_escalation_bridge_also_reaches_the_resolver() -> None:
     """The tenth site: `factory/notify/service.py`'s own `main()`.
 
-    It defines the constants, so it cannot be held to the no-literals rule
-    above — but it dials Temporal like everything else and must resolve like
-    everything else.
+    It defines the constants, so the no-literals rule above cannot hold it — but
+    it dials Temporal like everything else and must resolve like everything else.
     """
     service = (
         Path(__file__).resolve().parent.parent
@@ -489,9 +489,7 @@ def test_the_escalation_bridge_also_reaches_the_resolver() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# T037 / US4-S5 — `ergane env --sources` reports Temporal too
-# ---------------------------------------------------------------------------
+# --- T037 / US4-S5 — `ergane env --sources` reports Temporal too
 
 
 def _run_sources(capsys: pytest.CaptureFixture[str]) -> str:
@@ -507,11 +505,7 @@ def _run_sources(capsys: pytest.CaptureFixture[str]) -> str:
 def test_env_sources_names_the_config_as_the_winner_for_temporal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """US4-S5: the two Temporal values are reported alongside the LLM values.
-
-    FR-011 says "for every value this spec resolves". Until this story that was
-    two of four.
-    """
+    """US4-S5: FR-011 says "every value this spec resolves" — until now, two of four."""
     config_path = _write_config(tmp_path)
     _no_overrides(monkeypatch)
     _bind_config_path(monkeypatch, config_path)
@@ -533,9 +527,8 @@ def test_env_sources_names_the_variable_as_the_winner_for_temporal(
 ) -> None:
     """US4-S5: on a host like this one, the report names the override.
 
-    The declared values must be absent from the output entirely — reporting
-    what the config *would* have said is exactly the confusion `--sources`
-    exists to remove, and it would mean opening a file FR-002 forbids reading.
+    The declared values must be absent entirely: reporting what the config
+    *would* have said would mean opening a file FR-002 forbids reading.
     """
     config_path = _write_config(tmp_path)
     _bind_config_path(monkeypatch, config_path)
@@ -552,9 +545,7 @@ def test_env_sources_names_the_variable_as_the_winner_for_temporal(
     assert DECLARED_NAMESPACE not in out
 
 
-# ---------------------------------------------------------------------------
-# Plan trap 12b — `ergane --version` reports what this install points at
-# ---------------------------------------------------------------------------
+# --- Plan trap 12b — `ergane --version` reports what this install points at
 
 
 def test_the_version_banner_reports_the_declared_control_plane(
@@ -562,11 +553,10 @@ def test_the_version_banner_reports_the_declared_control_plane(
 ) -> None:
     """Plan trap 12b: US1 left `cli/main.py:154` reading `os.environ` directly.
 
-    So `ergane --version` answered "not configured" about a gateway the
-    operator had just declared, and named `localhost:7233` on a host whose
-    config said otherwise. The banner is a claim about where this install
-    points; a banner that reads a different source than the dispatch path is a
-    diagnostic that lies, which is the class 048 exists to close.
+    So `ergane --version` answered "not configured" about a gateway just
+    declared, and named `localhost:7233` on a host whose config said otherwise.
+    A banner that reads a different source than the dispatch path is a
+    diagnostic that lies — the class 048 exists to close.
     """
     from factory.cli.main import _version_text
 
@@ -589,8 +579,8 @@ def test_the_version_banner_still_says_not_configured_with_nothing_declared(
 ) -> None:
     """The other half of trap 12b: an unprovisioned host reads as it did before.
 
-    Without this, `_version_text` could satisfy the test above by printing the
-    config's values unconditionally and would never be seen to fall back.
+    Without it, `_version_text` could satisfy the test above by printing the
+    config's values unconditionally and never be seen to fall back.
     """
     from factory.cli.main import _version_text
 

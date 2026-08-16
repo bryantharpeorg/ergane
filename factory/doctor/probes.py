@@ -480,8 +480,13 @@ async def _closed_epics_from_temporal(candidate_epics: set[str]) -> set[str]:
         WorkflowExecutionStatus.CONTINUED_AS_NEW,
     }
 
-    address = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
-    namespace = os.environ.get("TEMPORAL_NAMESPACE", "factory")
+    # 048-US4: was `os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")` — the
+    # contract spelled by hand, agreeing with `factory/notify/service.py`'s
+    # constants by luck rather than by reference.
+    from factory.controlplane.resolve import resolve_temporal_target
+
+    target = resolve_temporal_target()
+    address, namespace = target.address, target.namespace
 
     try:
         client = await Client.connect(address, namespace=namespace)

@@ -68,12 +68,7 @@ from factory.activities import (
     usage_activities,
     verify_activities,
 )
-from factory.notify.service import (
-    DEFAULT_TEMPORAL_ADDRESS,
-    DEFAULT_TEMPORAL_NAMESPACE,
-    TEMPORAL_ADDRESS_ENV,
-    TEMPORAL_NAMESPACE_ENV,
-)
+from factory.controlplane.resolve import resolve_temporal_target
 from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
 from factory.roadmap.workflow import (
@@ -222,8 +217,12 @@ def build_worker(client: Client) -> Worker:
 
 async def main() -> None:
     """Connect, register, and poll `workgraph` until interrupted."""
-    address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
+    # 048-US4: the environment still wins, so a host exporting TEMPORAL_ADDRESS
+    # — this one, via scripts/ergane-env.sh — polls exactly the server it did
+    # before. What changed is that a host which only *declared* an address now
+    # polls that instead of `localhost:7233`.
+    target = resolve_temporal_target()
+    address, namespace = target.address, target.namespace
 
     client = await Client.connect(address, namespace=namespace)
     logger.info(

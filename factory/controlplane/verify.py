@@ -25,8 +25,13 @@ from typing import Any, Protocol
 
 import httpx
 from factory.controlplane.config import ControlPlaneConfig
+from factory.controlplane.resolve import temporal_target_for
 from factory.mergequeue.models import Finding
 from factory.usage.litellm_client import LiteLLMClient
+
+#: What a Temporal value's source is called when this module resolved it.
+#: Nothing renders it — findings report the address, never where it came from.
+_DECLARED_SOURCE = "the control-plane config"
 
 
 class ServiceNotAnswering(Exception):
@@ -110,12 +115,22 @@ def _llm_client_factory(config: ControlPlaneConfig.LLM) -> LiteLLMClient:
 
 
 async def _temporal_client_factory(config: ControlPlaneConfig.Temporal) -> Any:
-    """Build the real Temporalio client from the environment."""
+    """Build the real Temporalio client, under the one precedence (048-US4).
+
+    This read `config.address or os.environ.get("TEMPORAL_ADDRESS", ...)` — the
+    config *first*, one of only two such sites in the tree. Since the parser
+    requires `temporal.address` the fallback never fired, so the probe always
+    dialed the declared address and ignored `TEMPORAL_ADDRESS` outright: on a
+    host where the two disagreed, `ergane install --verify` reported on one
+    server while the worker connected to another (FR-016, SC-006).
+
+    `temporal_target_for` rather than `resolve_temporal_target` because the
+    caller was pointed at one specific file and has already parsed it.
+    """
     from temporalio.client import Client
 
-    address = config.address or os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
-    namespace = config.namespace or os.environ.get("TEMPORAL_NAMESPACE", "factory")
-    return await Client.connect(address, namespace=namespace)
+    target = temporal_target_for(config, source=_DECLARED_SOURCE)
+    return await Client.connect(target.address, namespace=target.namespace)
 
 
 async def _describe_temporal_namespace(
@@ -284,8 +299,11 @@ class TemporalProbe:
     async def gather(self, config: ControlPlaneConfig) -> TemporalSnapshot:
         from temporalio.service import RPCError, RPCStatusCode
 
-        address = config.temporal.address or os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
-        namespace = config.temporal.namespace or os.environ.get("TEMPORAL_NAMESPACE", "factory")
+        # Resolved once, and the same resolution the connect below is built
+        # from, so the address this finding names and the address it dialed
+        # cannot differ (048-US4, SC-006).
+        target = temporal_target_for(config.temporal, source=_DECLARED_SOURCE)
+        address, namespace = target.address, target.namespace
         timeout = config.temporal.timeout_s
 
         try:

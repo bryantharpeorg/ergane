@@ -38,12 +38,7 @@ from temporalio.service import RPCError
 
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
 from factory.mergequeue.models import LandingConfig
-from factory.notify.service import (
-    DEFAULT_TEMPORAL_ADDRESS,
-    DEFAULT_TEMPORAL_NAMESPACE,
-    TEMPORAL_ADDRESS_ENV,
-    TEMPORAL_NAMESPACE_ENV,
-)
+from factory.controlplane.resolve import resolve_temporal_target
 from factory.roadmap.discovery import (
     RoadmapLocation,
     RoadmapOwner,
@@ -187,8 +182,8 @@ def _run_async(command: Any) -> Any:
 
 
 async def _connect() -> Client:
-    address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
+    target = resolve_temporal_target()
+    address, namespace = target.address, target.namespace
     try:
         return await Client.connect(address, namespace=namespace)
     except (RPCError, RuntimeError, OSError) as error:

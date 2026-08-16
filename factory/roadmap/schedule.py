@@ -145,15 +145,13 @@ async def _default_schedule_client() -> Any:
     """Connect to the operator's Temporal, or refuse and say why (guard one)."""
     from temporalio.client import Client
 
-    from factory.notify.service import (
-        DEFAULT_TEMPORAL_ADDRESS,
-        DEFAULT_TEMPORAL_NAMESPACE,
-        TEMPORAL_ADDRESS_ENV,
-        TEMPORAL_NAMESPACE_ENV,
-    )
+    # The eleventh connect site. The 048 plan listed ten and missed this one;
+    # a schedule that fired against a different server than the worker polls
+    # would be the same defect one process over (048-US4, FR-015).
+    from factory.controlplane.resolve import resolve_temporal_target
 
-    address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
+    target = resolve_temporal_target()
+    address, namespace = target.address, target.namespace
 
     if os.environ.get("PYTEST_CURRENT_TEST"):
         raise ScheduleUnavailable(

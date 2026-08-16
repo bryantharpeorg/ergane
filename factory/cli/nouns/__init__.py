@@ -16,12 +16,7 @@ from typing import Any, Awaitable, Callable
 from temporalio.client import Client
 from temporalio.service import RPCError
 
-from factory.notify.service import (
-    DEFAULT_TEMPORAL_ADDRESS,
-    DEFAULT_TEMPORAL_NAMESPACE,
-    TEMPORAL_ADDRESS_ENV,
-    TEMPORAL_NAMESPACE_ENV,
-)
+from factory.controlplane.resolve import resolve_temporal_target
 from factory.usage.litellm_client import LiteLLMClient
 from factory.cli.errors import EXIT_TRANSPORT, OperatorError
 
@@ -48,8 +43,8 @@ async def _open_client() -> Client:
     `set_defaults(run=...)` function references. Putting this seam on the
     package, which discovery never reloads, makes the patch stick.
     """
-    address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
+    target = resolve_temporal_target()
+    address, namespace = target.address, target.namespace
     try:
         return await Client.connect(address, namespace=namespace)
     except (RPCError, RuntimeError, OSError) as error:

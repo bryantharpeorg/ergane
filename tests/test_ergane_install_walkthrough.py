@@ -347,6 +347,12 @@ def walkthrough(
     def runner(answers: list[str], *argv: str) -> tuple[Run, ScriptedPrompter]:
         prompter = ScriptedPrompter(answers, watch=config_path)
         monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
+        # 048-US4: `--verify` resolves Temporal under the one precedence now, so
+        # an inherited `TEMPORAL_ADDRESS` would send the probe somewhere other
+        # than the address just typed — and the four distinct closed ports are
+        # the whole evidence that verify read the file the interview wrote.
+        monkeypatch.delenv("TEMPORAL_ADDRESS", raising=False)
+        monkeypatch.delenv("TEMPORAL_NAMESPACE", raising=False)
         return _invoke(["install", *argv]), prompter
 
     return runner

@@ -31,14 +31,11 @@ from factory.cli.errors import (
     run_cli,
 )
 from factory.cli.nouns import Noun
-from factory.notify.service import (
-    BOT_TOKEN_ENV,
-    DEFAULT_TEMPORAL_ADDRESS,
-    DEFAULT_TEMPORAL_NAMESPACE,
-    TEMPORAL_ADDRESS_ENV,
-    TEMPORAL_NAMESPACE_ENV,
+from factory.controlplane.resolve import (
+    ControlPlaneResolutionError,
+    resolve_proxy_url,
+    resolve_temporal_target,
 )
-from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 
 
 #: Package name used by discovery. Tests patch these two values to point at a
@@ -149,9 +146,27 @@ def _version_text() -> str:
     except Exception:
         revision = "unknown"
 
-    temporal_address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    temporal_namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
-    proxy_url = os.environ.get(PROXY_URL_ENV) or "not configured"
+    # 048-US4, plan trap 12b. All three lines read `os.environ` directly, so on
+    # a host that had completed `ergane install` the banner named
+    # `localhost:7233` and called the gateway "not configured" — about a control
+    # plane the operator had just declared. A banner that reads a different
+    # source than the dispatch path is a diagnostic that lies.
+    #
+    # A broken config must not stop `--version` answering: this is the command
+    # an operator runs to find out what they have. The refusal is rendered in
+    # place of the values instead.
+    try:
+        target = resolve_temporal_target()
+        temporal_address, temporal_namespace = target.address, target.namespace
+    except ControlPlaneResolutionError as refusal:
+        temporal_address, temporal_namespace = f"unresolved ({refusal})", "unresolved"
+
+    try:
+        proxy_url = resolve_proxy_url().url
+    except ControlPlaneResolutionError:
+        # Unchanged wording: nothing declared it and nothing exported it, which
+        # is what this string has always meant.
+        proxy_url = "not configured"
 
     return (
         f"ergane {pkg_version} ({revision})\n"
