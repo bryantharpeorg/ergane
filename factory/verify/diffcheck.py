@@ -69,6 +69,21 @@ manufacturing a failure either — an attempt that ran its gates would otherwise
 be refused for the log the gates themselves wrote. And it is asked of
 diff-scoped nodes only (045 FR-008): a read node's verdict never consulted git,
 so git can have no opinion about it.
+
+**And some clean diffs are simply too big to be judged** (045 FR-003). Over
+`diffbounds.DIFF_INPUT_LIMIT` the judge's copy of the diff is abridged per file
+and the verdict is flagged `truncated_input` — but that flag is a record, not a
+guard: the judge still rules, and an absence-of-evidence finding taken from a
+diff with its evidence cut out reads exactly like a real one. Measured here on
+2026-08-15: a 226,778-byte diff scored PASS on all five scenarios, and one line
+of the reasoning said "the elided midsection contains the remaining probe tests
+rather than omitting them" — an inference about a region the judge could not
+read, delivered in the voice it uses for what it did read. So size is decided
+here instead, before the completion is requested rather than after, and the
+record names the total, the limit and the files that spent the budget: an
+operator whose story is legitimately large has to choose between splitting it
+and raising the ceiling, and "too big" tells them neither. `prepare_diff`'s
+truncation stays exactly where it was, as the defense in depth behind this.
 """
 
 from __future__ import annotations
@@ -79,8 +94,10 @@ from typing import Sequence
 
 from factory.config import WriteScope
 from factory.env import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, resolve_env_path
+from factory.verify.diffbounds import DIFF_INPUT_LIMIT, size_refusal
 from factory.verify.gates import scrubbed_env
-from factory.verify.models import HygieneViolation, OutputCheck
+from factory.verify.models import DiffSizeRefusal, HygieneViolation, OutputCheck
+from factory.workgraph import worktree as worktrees
 from factory.workgraph.worktree import DEFAULT_RUNTIME_ROOT, LEGACY_FACTORY_ROOT
 
 #: Scopes whose proof of work is the diff (FR-004).
@@ -110,6 +127,7 @@ def decide_passed(
     has_diff: bool,
     artifacts_present: bool | None,
     violations: Sequence[HygieneViolation] = (),
+    refusal: DiffSizeRefusal | None = None,
 ) -> bool:
     """The whole anti-rubber-stamp rule, with no filesystem in the way.
 
@@ -121,13 +139,15 @@ def decide_passed(
 
     `violations` is the hygiene half (045 FR-001) and applies to diff scopes
     alone: a diff that carries paths nobody can judge is not a diff, however
-    much of it there is. It defaults to empty so the rule this function stated
-    before 045 is the rule it still states for every caller that has nothing to
-    add.
+    much of it there is. `refusal` is the size half (045 FR-003), and it is the
+    same sentence pointed the other way: a diff nobody can read *whole* is not
+    one either, however clean it is. Both default to "nothing to add", so the
+    rule this function stated before 045 is the rule it still states for every
+    caller that has nothing to add.
     """
     scope = _as_scope(write_scope)
     if scope in DIFF_SCOPES:
-        return has_diff and not violations
+        return has_diff and not violations and refusal is None
     if scope in ARTIFACT_SCOPES:
         return artifacts_present is True
     return False
@@ -138,6 +158,8 @@ def check_output(
     write_scope: WriteScope | str,
     expected_artifacts: list[str] | tuple[str, ...] | None = None,
     base_ref: str | None = None,
+    *,
+    diff_size_limit: int | None = DIFF_INPUT_LIMIT,
 ) -> OutputCheck:
     """Read the worktree and decide whether this node proved it did work.
 
@@ -146,15 +168,24 @@ def check_output(
     verdict someone disputes later can be re-read from the record rather than
     re-derived from a worktree that is long gone.
 
-    For a diff scope there are now two ways to fail: no diff at all, and a diff
-    carrying paths nobody can judge (045 FR-001). Both express themselves as
-    `passed=False` on this one record, so `judge_required` and `compose_result`
-    keep deciding the verdict exactly where they already did — the moment two
-    places can decide a FAIL, the stored row and the retry prompt can disagree.
+    For a diff scope there are now three ways to fail: no diff at all, a diff
+    carrying paths nobody can judge (045 FR-001), and a diff nobody can read
+    whole (045 FR-003). All three express themselves as `passed=False` on this
+    one record, so `judge_required` and `compose_result` keep deciding the
+    verdict exactly where they already did — the moment two places can decide a
+    FAIL, the stored row and the retry prompt can disagree.
+
+    `diff_size_limit` is the size check's seam, and it is a parameter rather
+    than an environment read so that turning it off is something a caller does
+    in the open: `None` disables the check, which is the control SC-004 needs to
+    show that this refusal changed an outcome rather than the outcome having
+    been impossible. The default is the judge's own cap, read from
+    `factory.verify.diffbounds` rather than restated here — a second copy of
+    that number would let tuning it silently do nothing.
 
     Raises `WorktreeMissingError` when the worktree is absent, or when git cannot
-    read it — the diff or the ignore rules — and the scope's verdict depends on
-    git.
+    read it — the diff, its size, or the ignore rules — and the scope's verdict
+    depends on git.
     """
     worktree = Path(worktree)
     artifacts = list(expected_artifacts or ())
@@ -173,6 +204,14 @@ def check_output(
     violations = (
         hygiene_violations(worktree, changed) if scope in DIFF_SCOPES else []
     )
+    # Diff scopes only, and only when there is a diff to weigh: an empty diff
+    # has already failed on `has_diff`, and a read node's patch is evidence
+    # rather than the criterion, so neither is worth a second read of the tree.
+    refusal = (
+        diff_size_refusal(worktree, base_ref, diff_size_limit)
+        if scope in DIFF_SCOPES and has_diff and diff_size_limit is not None
+        else None
+    )
     artifacts_present = (
         all(_is_artifact(worktree, path) for path in artifacts) if artifacts else None
     )
@@ -189,8 +228,10 @@ def check_output(
             has_diff=has_diff,
             artifacts_present=artifacts_present,
             violations=violations,
+            refusal=refusal,
         ),
         hygiene_violations=violations,
+        size_refusal=refusal,
     )
 
 
@@ -247,6 +288,45 @@ def hygiene_violations(
         if rule is not None:
             violations.append(HygieneViolation(path=path, rule=rule))
     return violations
+
+
+def diff_size_refusal(
+    worktree: Path | str,
+    base_ref: str | None = None,
+    limit: int | None = DIFF_INPUT_LIMIT,
+) -> DiffSizeRefusal | None:
+    """What this attempt's patch would cost the judge, if that is too much.
+
+    The patch is read exactly the way the judge's own copy of it is read —
+    `worktree.diff`, against the node's base, through a scratch index so the
+    worktree is left alone (D-027) — because the question being asked is about
+    the bytes `run_judge` would receive, and a second way of assembling them
+    would be a second answer. The measurement itself is
+    `diffbounds.size_refusal`, which weighs the same assembly `prepare_diff`
+    weighs, from the module both of them read so they cannot answer differently.
+
+    `None` for `limit` disables the check and is the seam SC-004's control
+    drives; the default is the judge's own cap.
+
+    Raises `WorktreeMissingError` when git cannot produce the patch — a base
+    that has gone missing, a worktree that has — because a diff whose size
+    cannot be known is not a small one. `_changed_paths` tolerates the same
+    failure deliberately: there the committed half is one of two sources and
+    losing it costs coverage, whereas here it *is* the judge's input, and
+    reporting an unknowable input as fitting would be the pass-by-default this
+    component refuses everywhere (FR-006).
+    """
+    if limit is None:
+        return None
+
+    try:
+        patch = worktrees.diff(worktree, base_ref=base_ref or "HEAD")
+    except worktrees.WorktreeError as exc:
+        raise WorktreeMissingError(
+            f"git could not read the diff of the node worktree: {worktree}"
+        ) from exc
+
+    return size_refusal(patch, limit=limit)
 
 
 def _as_scope(value: WriteScope | str) -> WriteScope | None:

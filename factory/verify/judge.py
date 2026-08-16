@@ -14,7 +14,12 @@ this module is a way to talk the factory into a false PASS:
   keeping every file's head and tail behind an explicit
   `[... N lines truncated ...]` marker, with the file list always complete (R6).
   The markers are what let the judge read an elision as an elision; an unmarked
-  cut turns a large, correct node into a confident FAIL.
+  cut turns a large, correct node into a confident FAIL. Since 045 FR-003 an
+  attempt whose diff is over that cap is refused by the output check before this
+  module is reached at all — a marked elision was still a verdict formed partly
+  out of what could not be read — so the truncation below is now the defense in
+  depth behind that floor, unchanged, and still the bound for every caller that
+  did not come through it.
 - **The response is parsed strictly, and the stricter reading wins.** Every
   dispatched scenario must appear exactly once, and a `verdict: pass` next to a
   `pass: false` finding is a RETRY (R5). Holistic passing is what FR-003 exists
@@ -46,6 +51,20 @@ from typing import Any, Sequence
 
 import httpx
 
+# The diff's own shape — the cap the judge may be shown, and the split into one
+# section per file — comes from `diffbounds`, which the output check reads too:
+# since 045 FR-003 it refuses an oversized diff before this module is asked for
+# anything, and it may not import the judge to learn the limit, because
+# importing the judge is what "can spend a completion" means here (FR-009).
+# Bound below under the names the budgeting already used, so the truncation that
+# check now stands in front of is left exactly as it was.
+from factory.verify.diffbounds import (
+    DIFF_INPUT_LIMIT,
+    DiffSection as _Section,
+    count_changes as _count_changes,
+    file_listing as _file_listing,
+    split_sections as _split_sections,
+)
 from factory.verify.models import (
     CriteriaSet,
     JudgeOutcome,
@@ -53,10 +72,6 @@ from factory.verify.models import (
     JudgeVerdict,
     VerificationConfig,
 )
-
-#: Diff bytes the judge may be shown (R6). ~15k tokens: comfortable beside the
-#: criteria and instructions in any cheap-tier model's context.
-DIFF_INPUT_LIMIT = 60 * 1024
 
 #: Judge invocations per verification cycle are 1 + this (SC-003). Sourced from
 #: `VerificationConfig` rather than restated — that field is the knob an operator
@@ -162,8 +177,6 @@ TRUNCATION_NOTICE = (
     "truncated. Elided lines are missing from this prompt, not from the work.\n\n"
 )
 
-_SECTION_SPLIT_RE = re.compile(r"(?m)^(?=diff --git )")
-_FILE_HEADER_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)")
 _FENCE_RE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
 
 
@@ -299,20 +312,6 @@ def build_prompt(
 # --- diff bounds (pure) -------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _Section:
-    """One file's slice of a unified diff, with its own stat line."""
-
-    path: str | None
-    text: str
-    added: int
-    removed: int
-
-    @property
-    def size(self) -> int:
-        return len(self.text.encode("utf-8"))
-
-
 def prepare_diff(diff_text: str, *, limit: int = DIFF_INPUT_LIMIT) -> PreparedDiff:
     """Fit `diff_text` under `limit`, disclosing anything that had to go (R6).
 
@@ -353,50 +352,6 @@ def prepare_diff(diff_text: str, *, limit: int = DIFF_INPUT_LIMIT) -> PreparedDi
             for rendered_text, section in zip(rendered, sections)
         ),
     )
-
-
-def _split_sections(diff_text: str) -> tuple[str, list[_Section]]:
-    """Split a unified diff into its leading text and one section per file."""
-    preamble = ""
-    sections: list[_Section] = []
-
-    for chunk in _SECTION_SPLIT_RE.split(diff_text):
-        if not chunk:
-            continue
-        header = _FILE_HEADER_RE.match(chunk)
-        if header is None:
-            # Only the leading chunk can lack a `diff --git` header; git emits
-            # nothing there, but a caller may have prefixed a summary.
-            preamble += chunk
-            continue
-        sections.append(_Section(header.group(1), chunk, *_count_changes(chunk)))
-
-    return preamble, sections
-
-
-def _count_changes(text: str) -> tuple[int, int]:
-    """`(added, removed)` content lines, ignoring the `---`/`+++` file headers."""
-    added = removed = 0
-    for line in text.splitlines():
-        if line.startswith(("+++", "---")):
-            continue
-        if line.startswith("+"):
-            added += 1
-        elif line.startswith("-"):
-            removed += 1
-    return added, removed
-
-
-def _file_listing(sections: Sequence[_Section]) -> str:
-    """The always-complete file list and stat summary that heads the diff."""
-    named = [section for section in sections if section.path]
-    if not named:
-        return ""
-    lines = [f"Changed files ({len(named)}):"]
-    lines += [
-        f"  {section.path} | +{section.added} -{section.removed}" for section in named
-    ]
-    return "\n".join(lines) + "\n\n"
 
 
 def _allocate(sizes: Sequence[int], allowance: int) -> list[int]:
