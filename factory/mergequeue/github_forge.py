@@ -25,7 +25,7 @@ visibility (FR-007) — as does `landing_title_remedy`.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from factory.mergequeue.forge import (
     DEFAULT_FORGE,
@@ -33,6 +33,7 @@ from factory.mergequeue.forge import (
     LandingPolicy,
     Proposal,
     RepositoryDescription,
+    WiringStep,
     register_forge,
 )
 from factory.mergequeue.gh import (
@@ -44,6 +45,7 @@ from factory.mergequeue.gh import (
     _tail,
 )
 from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
+from factory.mergequeue.wiring import wire_repo
 
 #: What GitHub calls "title this landing from the proposal" (D-041), spelled
 #: once, here, where it is true.
@@ -183,6 +185,28 @@ class GithubForge:
             self.client.disable_auto_merge(proposal)
         except GhError as error:
             raise _refused(error) from error
+
+    # --- the wiring half (049-US4, FR-012/FR-013) ----------------------------
+
+    def apply_landing_policy(
+        self, branch: str, required_checks: Sequence[str]
+    ) -> tuple[WiringStep, ...]:
+        """GitHub's answer to "make this branch gate, land and title correctly".
+
+        034/US3's `wire_repo` *is* this answer, reached here rather than moved:
+        a merge-queue ruleset on `branch` requiring exactly `required_checks`,
+        and `squash_merge_commit_title` at PR_TITLE. It is unchanged and
+        unreverted (FR-012) — the `enforcement` field GitHub's rulesets API
+        demands is still spelled only in `merge_queue_ruleset.json`, because this
+        package's own vocabulary sweep reserves that word.
+
+        `WiringRefused` travels up as it always did: `gh` missing, `gh` logged
+        out, no GitHub remote, a private repository (D-007), a token without
+        admin rights.
+        """
+        return wire_repo(
+            self.client, landing_branch=branch, gates=tuple(required_checks)
+        )
 
     def failing_check_evidence(
         self, proposal: int, check_names: tuple[str, ...]

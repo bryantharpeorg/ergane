@@ -38,6 +38,16 @@ scheduler dispatches nothing when a spec is flipped to `ready` — silently. Tha
 step never raises: an unreachable control plane is a failed *step* (FR-017),
 since the scaffold and registry entry are already the operator's. US7 adds the
 matching finding: the schedule is read here and judged in `onboard.py`.
+
+049's US4 finished the seam `_forge_factory` started: `--wire` now asks the
+forge it resolved to apply a landing policy, instead of resolving one and then
+reaching past it for GitHub's own client. One forge-shaped thing stays on this
+side of the seam, and is named here rather than left to be discovered: the gates
+workflow scaffolded into the operator's own tree is GitHub Actions' file in
+GitHub Actions' directory. It stays because it is a local write that needs no
+network and must survive a refusal from the forge — moving it behind the seam
+would mean a refused operator lost the file the manual steps tell them to
+commit. A second forge makes it a question; today it is a stated limit.
 """
 
 from __future__ import annotations
@@ -54,6 +64,7 @@ from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue import wiring
+from factory.mergequeue.forge import WiringRefused, format_step
 from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
 from factory.roadmap import schedule as roadmap_schedule
@@ -496,15 +507,15 @@ def _paths_to_commit(repo_root: Path) -> str:
 def _wire(
     repo_root: Path, manifest_values: dict[str, Any], *, requested: bool
 ) -> list[str]:
-    """The GitHub half of init: opt-in, idempotent, and reported line by line.
+    """The forge half of init: opt-in, idempotent, and reported line by line.
 
-    A flag rather than a further interview question, so a repo whose GitHub side
-    is already governed — or which is not on GitHub at all — is never asked;
-    plain `ergane init` names the flag instead.
+    A flag rather than a further interview question, so a repo whose forge side
+    is already governed is never asked; plain `ergane init` names the flag
+    instead.
 
-    The CI half is written before any `gh` call, because it needs no network: an
-    operator refused at the GitHub boundary still leaves with the file the manual
-    steps tell them to commit.
+    The CI half is written before the forge is asked anything, because it needs
+    no network: an operator refused at the forge boundary still leaves with the
+    file the manual steps tell them to commit.
     """
     if not requested:
         return [
@@ -516,17 +527,19 @@ def _wire(
     landing_branch = str(manifest_values.get("landing_branch") or "")
 
     lines = ["wiring:"]
-    lines.extend(wiring.format_step(wiring.scaffold_gates_workflow(repo_root, gates)))
+    lines.extend(format_step(wiring.scaffold_gates_workflow(repo_root, gates)))
 
     try:
-        steps = wiring.wire_repo(
-            # US4 puts wiring on the forge protocol; until then it speaks
-            # GitHub's client, reached through the one factory this file has.
-            _forge_factory(repo_path=str(repo_root)).client,
-            landing_branch=landing_branch,
-            gates=list(gates),
+        # 049 US4: wiring is a forge operation, so this asks whichever forge the
+        # repository is on rather than reaching past the seam for one forge's
+        # client. The scaffolded workflow above stays on this side of it: it is a
+        # write into the operator's own tree, needs no network, and is written
+        # first on purpose — an operator refused at the forge still leaves with
+        # the file the manual steps tell them to commit.
+        steps = _forge_factory(repo_path=str(repo_root)).apply_landing_policy(
+            landing_branch, list(gates)
         )
-    except wiring.WiringRefused as refusal:
+    except WiringRefused as refusal:
         raise OperatorError(
             "\n".join(
                 [
@@ -541,7 +554,7 @@ def _wire(
         ) from None
 
     for step in steps:
-        lines.extend(wiring.format_step(step))
+        lines.extend(format_step(step))
     return lines
 
 

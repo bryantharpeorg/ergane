@@ -178,32 +178,32 @@ exists to prevent.
 
 ### Tests for this story (write FIRST, must fail)
 
-- [ ] T030 [US4] Write the wire-then-judge round trip FIRST against the fake
+- [x] T030 [US4] Write the wire-then-judge round trip FIRST against the fake
       repository model: wiring mutates it, and the factory's own `evaluate_repo`
       then passes it — the assertion is the judged state, never the call log
       (spec US4-S1, FR-012; the pattern is
       `tests/test_ergane_init_wiring.py:348`, `:367-396`) — must fail.
-- [ ] T031 [P] [US4] Write the idempotence case: a second run reports every act
+- [x] T031 [P] [US4] Write the idempotence case: a second run reports every act
       already satisfied and mutates nothing, asserted against the **repository
       model's** mutation list (spec US4-S2) — must fail. It may not be routed
       through `tests/fake_gh.py`: an idempotence claim tested there is
       unfalsifiable by construction (plan trap 3).
-- [ ] T032 [P] [US4] Write the refusal case: a forge whose credentials cannot
+- [x] T032 [P] [US4] Write the refusal case: a forge whose credentials cannot
       change settings refuses before any write, carrying the by-hand steps, and
       nothing was mutated (spec US4-S3, FR-013) — must fail.
-- [ ] T033 [P] [US4] Write the CLI case: `--wire` resolves a forge by name rather
+- [x] T033 [P] [US4] Write the CLI case: `--wire` resolves a forge by name rather
       than constructing a client, and the existing `--wire` suite passes with no
       assertion changed (spec US4-S4) — must fail.
 
 ### Implementation for this story
 
-- [ ] T034 [US4] Add the wiring operation to the protocol and implement it on the
+- [x] T034 [US4] Add the wiring operation to the protocol and implement it on the
       `github` forge by moving `wire_repo` (`factory/mergequeue/wiring.py:258`)
       behind it — not reverting it, not rewriting it (FR-012). Keep
       `merge_queue_ruleset.json`'s role as the data file that spells what the
       shipped package may not (plan trap 5), and keep `WiringRefused` (`:78`) as
       the refusal shape (FR-013).
-- [ ] T035 [US4] Rewire `factory/cli/init.py:471` and `:706` to resolve a forge,
+- [x] T035 [US4] Rewire `factory/cli/init.py:471` and `:706` to resolve a forge,
       leaving the report format and the manual steps (`wiring.py:117`) as they
       read today.
 
@@ -267,4 +267,4 @@ exists to prevent.
 
 ## Verification
 
-- [ ] Final gate command passes green.
+- [x] Final gate command passes green.

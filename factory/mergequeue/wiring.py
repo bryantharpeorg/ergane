@@ -1,4 +1,12 @@
-"""034/US3: making true what `onboard.py` judges.
+"""034/US3: making true what `onboard.py` judges — GitHub's half of it.
+
+049's US4 put wiring on the forge seam, and this became the `github` forge's
+implementation of `apply_landing_policy` (FR-012): unchanged, not reverted and
+not rewritten, reached only through `GithubForge`. What crossed the seam is the
+*record* — `WiringStep`, `WiringRefused` and the three status words now live in
+`factory/mergequeue/forge.py`, because every forge reports its acts in them and
+a neutral forge cannot import GitHub's module to say so. They are imported back
+here, so `wiring.WiringRefused` still names the one class it always did.
 
 `evaluate_repo` (beside this file) decides whether a repo is dispatchable, and
 `EpicWorkflow._onboard_target` runs that decision at *every* epic start. Until
@@ -35,18 +43,19 @@ lives in a data file and the sweep stays intact.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import yaml
 
+from factory.mergequeue.forge import (
+    ALREADY_SATISFIED,
+    APPLIED,
+    ATTENTION,
+    WiringRefused,
+    WiringStep,
+)
 from factory.mergequeue.gh import GH_UNAVAILABLE, GhError
-
-#: Step outcomes, and the exact words the operator reads.
-APPLIED = "applied"
-ALREADY_SATISFIED = "already satisfied"
-ATTENTION = "attention"
 
 #: The squash-title source the landing grammar depends on: the merge queue
 #: squashes, and the delta reader parses the landing off the squashed subject.
@@ -64,54 +73,6 @@ _RULESET_TEMPLATE = Path(__file__).with_name("merge_queue_ruleset.json")
 
 _QUEUE_RULE = "merge_queue"
 _CHECKS_RULE = "required_status_checks"
-
-
-@dataclass(frozen=True)
-class WiringStep:
-    """One wiring act: what it was, what happened, and what the operator should know."""
-
-    name: str
-    status: str
-    detail: str
-
-
-class WiringRefused(Exception):
-    """A prerequisite the operator must fix, with its remedies and a manual path.
-
-    Raised at the point of refusal — before any write — so a repo is never left
-    half-wired, and always carrying the manual steps, because an operator blocked
-    on a missing tool still needs the repo wired today.
-    """
-
-    def __init__(
-        self,
-        headline: str,
-        *,
-        remedies: Sequence[str],
-        manual: Sequence[str],
-    ) -> None:
-        self.headline = headline
-        self.remedies = tuple(remedies)
-        self.manual = tuple(manual)
-        super().__init__(self.render())
-
-    def render(self) -> str:
-        lines = [self.headline, ""]
-        for remedy in self.remedies:
-            lines.append(f"  {remedy}")
-        lines.append("")
-        lines.append("or do the manual wiring steps yourself:")
-        for step in self.manual:
-            lines.append(f"  {step}")
-        return "\n".join(lines)
-
-
-def format_step(step: WiringStep) -> list[str]:
-    """A status line, and the detail indented under it."""
-    lines = [f"  {step.name}: {step.status}"]
-    for line in step.detail.splitlines():
-        lines.append(f"    {line}")
-    return lines
 
 
 def manual_steps(

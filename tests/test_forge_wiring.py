@@ -1,0 +1,330 @@
+"""049-US4: wiring a repository is a forge operation.
+
+034/US3 taught the factory to make a repository satisfy `evaluate_repo` — but it
+did it by speaking GitHub's client through a seam that only *resolved* a forge
+and then reached past it (`factory/cli/init.py`, the `.client` this story
+removes). Here the act itself crosses the seam: `apply_landing_policy` is the
+write side of `landing_policy`, and the GitHub implementation of it is 034/US3's
+`wire_repo` unchanged (FR-012).
+
+Every assertion here is on a **judged repository**, never on a call log. The
+distinction is the story: "we called the wiring function" is a claim about this
+code, and "the model now passes the gate that guards every epic start" is a
+claim about the world — only the second one can fail when the wiring is wrong.
+
+Neither model here is `tests/fake_gh.py`, and that is a requirement rather than
+a preference (FR-004, plan trap 3): its match loop consumes nothing, so the
+first matching expectation answers a command forever, a second identical command
+is unreachable, and **an idempotence claim tested through it cannot fail**
+(`ci/the-scripted-gh-fake-never-consumes-an-expectation`). The two models used
+instead are `FakeGitHub` (`tests/test_ergane_init_wiring.py`, GitHub as mutable
+state behind the real `gh` argv surface) and `RepositoryModel`
+(`tests/fake_forge.py`, a repository behind the seam itself).
+
+Every test answers "what edit would make this fail?" in its own docstring;
+the transcripts are committed at `specs/049-forge-seam/evidence/us4-mutations.md`.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import factory.cli.init as init_module
+from factory.activities.merge_activities import onboard_target_repo
+from factory.mergequeue import wiring
+from factory.cli.errors import EXIT_OK
+from factory.mergequeue.forge import ALREADY_SATISFIED, APPLIED, WiringRefused
+from factory.mergequeue.gh import GhClient
+from factory.mergequeue.github_forge import GithubForge
+from tests.fake_forge import FakeForge, RepositoryModel
+from tests.target_repo import build_target_repo
+from tests.test_ergane_init import ScriptedPrompter, _invoke, make_bare_repo
+from tests.test_ergane_init_check import bind_offline_seams
+from tests.test_ergane_init_wiring import FakeGitHub, answers, wiring_report
+
+#: The gates `tests/fixtures/target_repo/` declares — so gate↔check parity (Q4)
+#: is asked of exactly what wiring required.
+FIXTURE_GATES = ("lint", "test", "typecheck")
+
+
+def github_forge_over(model: FakeGitHub, repo: Path) -> GithubForge:
+    """The shipped forge, reading and writing one model of a GitHub repository.
+
+    A fresh forge per read: `describe_repository` caches, and a cached answer
+    could hide a wiring act that changed nothing.
+    """
+    return GithubForge(GhClient(repo=str(repo), runner=model))
+
+
+def failing(profile: Any) -> set[str]:
+    return {f.check for f in profile.findings if not f.passed}
+
+
+# --- US4-S1 / FR-012: the wired model passes the factory's own judgment --------
+
+
+def test_wiring_through_the_forge_makes_the_factorys_own_gate_pass_the_model(
+    tmp_path: Path,
+) -> None:
+    """US4-S1: one model, wired through the seam, judged by `evaluate_repo` — the
+    same judgment `EpicWorkflow._onboard_target` runs before every epic.
+
+    The control is built in: the *same* model is judged before the wiring and
+    fails on the three questions wiring exists to answer, so a judgment that
+    ignored the repository could not produce both verdicts.
+
+    What edit would make this fail: have `apply_landing_policy` report its acts
+    without issuing them, or require checks that are not the declared gates —
+    both leave the profile failing while every step still says `applied`.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = FakeGitHub(owner_repo="acme/app", default_branch="main")
+
+    unready = onboard_target_repo(github_forge_over(model, repo), str(repo))
+
+    assert unready.passed is False
+    assert failing(unready) >= {"gated_landing", "autonomous_landing", "landing_title"}
+
+    steps = github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
+
+    ready = onboard_target_repo(github_forge_over(model, repo), str(repo))
+
+    assert ready.passed is True, [f for f in ready.findings if not f.passed]
+    assert sorted(ready.required_checks) == sorted(FIXTURE_GATES)
+
+    # The acts are reported too — secondary to the verdict, and asserted as the
+    # operator reads them.
+    assert [step.status for step in steps] == [APPLIED, APPLIED]
+
+
+def test_a_forge_that_never_heard_of_github_is_wired_and_judged_the_same_way(
+    tmp_path: Path,
+) -> None:
+    """Wiring is an operation *on the seam*: a forge with no notion of a merge
+    queue, a ruleset or a repository's visibility is wired by the same call and
+    judged by the same `evaluate_repo`.
+
+    Stated honestly, because a test that overclaims is worse than none: the
+    implementation exercised on the wiring side here is the *model's*, so what
+    this pins is that the seam's wiring contract and the shared judgment agree
+    about what a wired repository is — answer one of Q2, Q3, Q5 and not the
+    others and the profile fails. That a non-GitHub forge is reached by
+    production code is `ergane init --wire`'s claim, asserted in this file's CLI
+    test, and the GitHub implementation's own round trip is the test above.
+
+    What edit would make this fail: drop `lands_without_a_human` from what
+    wiring asserts, or have `evaluate_repo` stop asking one of the three.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = RepositoryModel(address="acme/app", default_branch="main")
+
+    assert model.visibility == "", "the model must have no notion of visibility"
+    assert onboard_target_repo(FakeForge(model), str(repo)).passed is False
+
+    steps = FakeForge(model).apply_landing_policy("main", FIXTURE_GATES)
+
+    profile = onboard_target_repo(FakeForge(model), str(repo))
+
+    assert profile.passed is True, [f for f in profile.findings if not f.passed]
+    assert sorted(profile.required_checks) == sorted(FIXTURE_GATES)
+    assert [step.status for step in steps] == [APPLIED]
+    assert model.mutations == ["landing policy on main"]
+
+
+# --- US4-S2: a second run reports every act satisfied and mutates nothing ------
+
+
+def test_a_second_wiring_run_reports_every_act_satisfied_and_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    """US4-S2, asserted against the *repository model's* mutation list.
+
+    It could not be asserted through `tests/fake_gh.py`, and the reason is the
+    story: that fake scans its expectations from index 0 on every call and
+    consumes none, so the first match answers a command forever, a second
+    identical command is unreachable, and an idempotence claim made through it
+    is unfalsifiable by construction
+    (`ci/the-scripted-gh-fake-never-consumes-an-expectation`). `FakeGitHub` is a
+    repository as state, so a second write is reachable — and would show up here
+    three ways: a mutating call, a changed snapshot, an `applied` step.
+
+    What edit would make this fail: drop `_ruleset_satisfies`'s comparison, or
+    PATCH the squash title without reading it first — either re-writes a setting
+    that already said what it was asked to say.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = FakeGitHub(owner_repo="acme/app", default_branch="main")
+
+    github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
+    assert model.mutations(), "the first run must actually have wired something"
+
+    before = model.snapshot()
+    model.calls.clear()
+
+    steps = github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert [step.status for step in steps] == [ALREADY_SATISFIED, ALREADY_SATISFIED]
+    assert model.mutations() == []
+    assert model.snapshot() == before
+
+    # And the repository the second run left behind is still one the factory
+    # will dispatch against — "changed nothing" must not mean "unwired it".
+    assert onboard_target_repo(github_forge_over(model, repo), str(repo)).passed
+
+
+def test_the_neutral_forges_second_run_records_no_change_either(
+    tmp_path: Path,
+) -> None:
+    """The same claim one layer up, where the mutation list is the model's own
+    and not derived from argv: idempotence is a property of the *operation*, so
+    a forge whose acts are not `gh` calls answers it the same way.
+
+    What edit would make this fail: have `RepositoryModel.wire` write before it
+    compares, and the second run appends a second entry.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = RepositoryModel(address="acme/app", default_branch="main")
+
+    FakeForge(model).apply_landing_policy("main", FIXTURE_GATES)
+    steps = FakeForge(model).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert [step.status for step in steps] == [ALREADY_SATISFIED]
+    assert model.mutations == ["landing policy on main"]
+    assert onboard_target_repo(FakeForge(model), str(repo)).passed
+
+
+# --- US4-S3 / FR-013: a forge that cannot apply the policy refuses, whole ------
+
+
+def test_credentials_that_cannot_change_settings_refuse_and_leave_no_half_wiring(
+    tmp_path: Path,
+) -> None:
+    """US4-S3 against GitHub, and precisely: GitHub does not say a token lacks
+    admin until one is used, so the refusal lands at the *first* act and the
+    second never runs. What FR-013 buys is stated in the assertions — the
+    repository is byte-identical to what it was, and no ruleset exists, so
+    nothing was left gating on half of what it was asked to gate on.
+
+    A repository still failing readiness afterwards is the point: an operator
+    who could not wire must not be told they are ready.
+
+    What edit would make this fail: catch the refusal inside the wiring and carry
+    on to the queue act, and the ruleset assertion goes red; drop the manual
+    steps from `WiringRefused` and an operator blocked on credentials is left
+    with nothing to do today.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = FakeGitHub(owner_repo="acme/app", default_branch="main", admin=False)
+    before = model.snapshot()
+
+    with pytest.raises(WiringRefused) as raised:
+        github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
+
+    refusal = raised.value
+    assert model.snapshot() == before
+    assert model.rulesets == {}, "the second act ran after the first was refused"
+    assert "403" in str(refusal)
+    assert refusal.manual, "a refusal with no by-hand steps is a dead end"
+    assert any("squash_merge_commit_title=PR_TITLE" in step for step in refusal.manual)
+
+    assert onboard_target_repo(github_forge_over(model, repo), str(repo)).passed is False
+
+
+def test_a_forge_with_no_usable_credentials_refuses_before_reading_anything(
+    tmp_path: Path,
+) -> None:
+    """The other half of "before any write", and the literal one: when the forge
+    can say up front that it cannot write, nothing at all is issued.
+
+    Two forges say it two ways — GitHub through `gh auth status`, the neutral
+    model by knowing its own credentials — so the property belongs to the seam
+    rather than to one implementation.
+
+    What edit would make this fail: move the prerequisite probe after the first
+    read, and the `repo view` assertion goes red; or have the neutral forge write
+    first and refuse afterwards, and its mutation list is no longer empty.
+    """
+    repo = build_target_repo(tmp_path / "target")
+
+    unauthenticated = FakeGitHub(logged_in=False)
+    with pytest.raises(WiringRefused) as gh_refusal:
+        github_forge_over(unauthenticated, repo).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert unauthenticated.mutations() == []
+    assert [c for c in unauthenticated.calls if c[:2] == ("repo", "view")] == []
+    assert "gh auth login" in str(gh_refusal.value)
+
+    model = RepositoryModel(refuse_writes="this account may not change settings")
+    with pytest.raises(WiringRefused) as forge_refusal:
+        FakeForge(model).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert model.mutations == []
+    assert model.branches == {}
+    assert forge_refusal.value.manual, "a refusal with no by-hand steps is a dead end"
+    assert onboard_target_repo(FakeForge(model), str(repo)).passed is False
+
+
+def test_the_refusal_a_forge_raises_is_the_one_its_callers_catch() -> None:
+    """One class, not two that share a name — the shape of the defect that killed
+    nine tests on 2026-08-16, where nothing conflicted and the merge kept both.
+
+    `WiringRefused` moved onto the seam so a forge that never heard of GitHub can
+    refuse; `factory/mergequeue/wiring.py` imports it straight back, and a later
+    edit that gave that module its own class again would leave every `except` in
+    the CLI catching the other one — silently, since both would read correctly.
+
+    What edit would make this fail: define `class WiringRefused` in `wiring.py`
+    again.
+    """
+    assert wiring.WiringRefused is WiringRefused
+    assert (wiring.APPLIED, wiring.ALREADY_SATISFIED) == (APPLIED, ALREADY_SATISFIED)
+
+
+# --- US4-S4: `--wire` drives the forge it resolved, not that forge's client ----
+
+
+def test_init_wire_drives_the_forge_it_resolved_rather_than_a_forge_native_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """US4-S4. `ergane init --wire` already *resolved* a forge before this story
+    — and then reached past it for GitHub's client, which made the seam
+    decorative at the one call that writes. Here the CLI is given a forge that
+    has no client to reach for: a `FakeForge` exposes the protocol and nothing
+    else, so a `--wire` still speaking `.client` cannot even run.
+
+    And the assertion is the judged state rather than the CLI's exit code, which
+    `ergane init` returns as `EXIT_OK` whatever the check says: the repository
+    the operator's `--wire` left behind passes the gate that guards every epic
+    start, wired for the gates their own interview declared.
+
+    What edit would make this fail: return `_forge_factory(...).client` to
+    `_wire`, and this dies on the missing attribute — the mutation that proves
+    the seam is what the CLI now speaks.
+    """
+    repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
+    model = RepositoryModel(address="acme/app", default_branch="main")
+
+    # Every other outward seam bound first (schedules, control-plane probes);
+    # the forge is then rebound to the one this test is about, so nothing here
+    # reaches a real GitHub, a real Temporal or the operator's own control plane.
+    bind_offline_seams(monkeypatch)
+    monkeypatch.setattr(init_module, "_prompter_factory", lambda: ScriptedPrompter(answers()))
+    monkeypatch.setattr(init_module, "_forge_factory", lambda *, repo_path: FakeForge(model))
+
+    result = _invoke(["init", "--wire", str(repo)])
+
+    assert result.code == EXIT_OK, result.stderr
+
+    profile = onboard_target_repo(FakeForge(model), str(repo))
+    assert profile.passed is True, [f for f in profile.findings if not f.passed]
+    # The interview declared `test` and `lint`; those are the checks the forge
+    # was asked to gate on, so gate↔check parity holds by the operator's own
+    # declaration rather than by a constant in this test.
+    assert sorted(profile.required_checks) == ["lint", "test"]
+    assert model.mutations == ["landing policy on main"]
+
+    # The forge's own acts are what the operator read, in the wiring report.
+    assert APPLIED in wiring_report(result.stdout)
