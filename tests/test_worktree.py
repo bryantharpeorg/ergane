@@ -959,6 +959,11 @@ def test_a_target_with_no_remote_salvages_and_names_the_absent_remote(
     Constitution VI is unconditional, so the mirror reports the absence rather
     than raising it — the same posture `_remote_head` already takes when it pins
     a base ref in a clone with no origin.
+
+    The report says the remote is *absent*, not that git could not read it. Left
+    to `git push`, this case answers `'origin' does not appear to be a git
+    repository`, which reads as a broken remote — and "this target declares no
+    remote" and "this target's remote is broken" are different operator actions.
     """
     prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
     worktree = Path(prepared.path)
@@ -975,6 +980,7 @@ def test_a_target_with_no_remote_salvages_and_names_the_absent_remote(
 
     assert outcome.pushed is False
     assert "origin" in outcome.detail
+    assert "nothing to mirror to" in outcome.detail
     assert str(repo) in outcome.detail
     # The salvage itself is untouched: the work is committed and the tree clean.
     assert head(repo, BRANCH) == sha
