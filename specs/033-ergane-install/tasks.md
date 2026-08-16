@@ -141,64 +141,64 @@ Chains on US2 merged.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T020 [US3] Write the blank-host case FIRST (spec US3-S1) against a
+- [x] T020 [US3] Write the blank-host case FIRST (spec US3-S1) against a
       scripted interview (plan trap 6 — a seam, not a monkeypatched `input()`):
       the resulting file parses under US1 and the automatic verify runs, its
       findings being the command's final output.
 
-- [ ] T021 [US3] Write the surgical-edit case FIRST (spec US3-S2): a re-run
+- [x] T021 [US3] Write the surgical-edit case FIRST (spec US3-S2): a re-run
       changing only the OTLP endpoint yields a config diff touching exactly the
       `[telemetry]` block, and a re-run with unchanged answers is byte-identical.
       Plan trap 4 says how this is made true by construction rather than by a
       round-tripping library.
 
-- [ ] T022 [US3] Write the refuse-at-entry case FIRST (spec US3-S3): a
+- [x] T022 [US3] Write the refuse-at-entry case FIRST (spec US3-S3): a
       plaintext secret entered where a reference belongs is refused at entry
       with the same named rule the parser would use — one rule table, not two.
 
-- [ ] T022a [US3] Write the managed-mode-at-entry case FIRST: answering
+- [x] T022a [US3] Write the managed-mode-at-entry case FIRST: answering
       `temporal.mode = "managed"` in the interview is refused at entry naming
       042 as the epic that implements it, with the same named rule the landed
       parser uses (US1-S6's rule — one table, not two).
 
-- [ ] T022b [US3] Write the unreadable-config case FIRST (spec edge case): an
+- [x] T022b [US3] Write the unreadable-config case FIRST (spec edge case): an
       existing config file the process cannot read (permissions) fails closed
       naming the path and the permission problem — in the walkthrough's
       defaults load and in any consumer reaching it through the landed
       resolver. Never a half-parsed default.
 
-- [ ] T023 [US3] Write the **contended** lock case FIRST (spec US3-S4, FR-007):
+- [x] T023 [US3] Write the **contended** lock case FIRST (spec US3-S4, FR-007):
       two install processes, one config path, the second waits or is refused. A
       lock only ever tested uncontended is a lock nobody has tested.
 
 ### Implementation for User Story 3
 
-- [ ] T024 [US3] Add the prompter seam and the subsystem-by-subsystem
+- [x] T024 [US3] Add the prompter seam and the subsystem-by-subsystem
       interview: mode first, then only that mode's fields, existing values as
       defaults on re-run.
 
-- [ ] T025 [US3] Render the config file deterministically from the typed shape
+- [x] T025 [US3] Render the config file deterministically from the typed shape
       — fixed block and key order (plan trap 4) — and note in the commit that a
       hand-edited file's comments are not preserved, because that is a real
       consequence an operator should meet in a doc rather than in a diff.
 
-- [ ] T026 [US3] Hold the exclusive lock for the whole run, reusing 034's lock
+- [x] T026 [US3] Hold the exclusive lock for the whole run, reusing 034's lock
       helper if that epic landed first (plan trap 5).
 
-- [ ] T027 [US3] End the command by executing US2's verification (FR-007).
+- [x] T027 [US3] End the command by executing US2's verification (FR-007).
 
-- [ ] T027a [US3] Prove SC-002: in a scripted end-to-end walkthrough-and-verify
+- [x] T027a [US3] Prove SC-002: in a scripted end-to-end walkthrough-and-verify
       run, grep the written config file and every captured log for each
       credential value the session used and assert zero hits; commit the pasted
       output (SC-002 — the spec's evidence rule applies: pasted verbatim, in
       the diff).
 
-- [ ] T028 [US3] Full suite green: `uv run pytest -q`.
+- [x] T028 [US3] Full suite green: `uv run pytest -q`.
 
 ## Verification
 
-- [ ] Final gate command passes green.
-- [ ] Nothing in the diff writes to the findings store.
-- [ ] Every probe's gather ran against a live double, and the commit says which.
-- [ ] The config lock has a contended test.
-- [ ] No workflow, no systemd unit, no messenger adapter — those are 041 and 042.
+- [x] Final gate command passes green.
+- [x] Nothing in the diff writes to the findings store.
+- [x] Every probe's gather ran against a live double, and the commit says which. (US2)
+- [x] The config lock has a contended test.
+- [x] No workflow, no systemd unit, no messenger adapter — those are 041 and 042.

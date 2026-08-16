@@ -1,16 +1,18 @@
 """Tests for the `ergane install` walkthrough (US3 of 033-ergane-install).
 
 The walkthrough interviews the operator subsystem by subsystem, writes the
-control-plane config, and ends by running US2's verification.  Every test drives
+control-plane config, and ends by running US2's verification.  Most tests drive
 it through the CLI with the scripted prompter seam 034/us1 landed
-(`factory.cli.init._prompter_factory`) — never a monkeypatched `input()`.
+(`factory.cli.init._prompter_factory`) — never a monkeypatched `input()` — and
+one drives the *real* `_TerminalPrompter` over stdin, because a seam every test
+rebinds is a seam nothing executes (plan trap 9).
 
 **What each test has to be unable to pass without the production code**, because
 the defect that has cost this repository most is a fixture that makes a test
 unable to fail:
 
 - the blank-host test points every subsystem at a *distinct closed port* typed
-  at the prompt, so the findings printed at the end can only carry those
+  at the prompt, so the findings printed at the end can only carry those four
   addresses if the file just written was really loaded and really probed;
 - the re-run test seeds the existing file with values no built-in default could
   produce, and asserts the prompter was *offered* them as defaults;
@@ -18,73 +20,192 @@ unable to fail:
   question, so "refuse at entry, never write-then-fail" is asserted rather than
   assumed;
 - the lock tests hold the lock from a **separate OS process**, so a walkthrough
-  that took no lock would sail past them.
+  that took no lock would sail straight past them.
 
-Evidence rule (constitution VIII): runtime claims are pasted verbatim below.
+Evidence rule (constitution VIII): every runtime claim below is pasted verbatim
+from a run, and paths are elided only where a pytest tmp dir would add noise.
 
-Red before green — the tests in this file against the tree before
-`factory/cli/install.py`, `factory/locking.py` and the renderer existed:
+Red before green
+----------------
+
+The tests in this file against the tree before `factory/cli/install.py`,
+`factory/locking.py` and the renderer existed:
 
 .. code-block:: text
 
     $ uv run pytest tests/test_ergane_install_walkthrough.py -q
+    ==================================== ERRORS ====================================
+    __________ ERROR collecting tests/test_ergane_install_walkthrough.py ___________
     ImportError while importing test module '/…/tests/test_ergane_install_walkthrough.py'.
     Hint: make sure your test modules/packages have valid Python names.
     Traceback:
-    /usr/lib/python3.11/importlib/__init__.py:126: in import_module
+    /home/admin/.local/share/uv/python/cpython-3.13.12-linux-aarch64-gnu/lib/python3.13/importlib/__init__.py:88: in import_module
         return _bootstrap._gcd_import(name[level:], package, level)
-    tests/test_ergane_install_walkthrough.py:60: in <module>
+    tests/test_ergane_install_walkthrough.py:107: in <module>
         from factory.controlplane.config import (
-    E   ImportError: cannot import name 'render_controlplane_config' from
-        'factory.controlplane.config' (/…/factory/controlplane/config.py)
+    E   ImportError: cannot import name 'render_controlplane_config' from 'factory.controlplane.config'
     =========================== short test summary info ============================
     ERROR tests/test_ergane_install_walkthrough.py
-    1 error in 0.72s
+    !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+    1 error in 0.16s
 
-After the renderer, the lock and the walkthrough landed:
+Green, and the transcripts these tests print
+--------------------------------------------
 
 .. code-block:: text
 
     $ uv run pytest tests/test_ergane_install_walkthrough.py -q
-    ...........                                                              [100%]
-    11 passed in 6.05s
-
-The two lock tests are the ones worth reading a transcript of, because a lock
-that is never contended is a lock nobody has tested.  Printed by
-`test_a_second_install_is_refused_while_another_holds_the_lock` and
-`test_a_second_install_waits_for_the_lock_and_then_writes`:
-
-.. code-block:: text
-
-    child pid 3453401 holds /tmp/…/config.toml.lock
-    ergane: another `ergane install` holds the lock on /tmp/…/config.toml
-      (waited 0.5s); wait for it to finish or remove the lock file
-    refused after 0.51s, exit 1, config written: False
-
-    child pid 3453412 holds /tmp/…/config.toml.lock for 1.0s
-    walkthrough returned after 1.06s, exit 1, config written: True
-
-The full suite, after the story:
-
-.. code-block:: text
-
-    $ uv run pytest -q
-    2459 passed, 44 skipped, 4 warnings in 273.04s (0:04:33)
-
-SC-002 (no credential in the config file or the logs), printed by
-`test_walkthrough_and_verify_never_write_a_credential`:
-
-.. code-block:: text
-
+    .........
+    child pid 2499464 holds /tmp/…/test_a_second_install_is_refus0/ergane/config.toml.lock
+    ergane: another `ergane install` holds the lock on /tmp/…/ergane/config.toml (waited 0.5s); wait for it to finish, or remove config.toml.lock if no install is running
+    refused after 0.50s, exit 1, config written: False
+    .
+    child pid 2499492 holds /tmp/…/test_a_second_install_waits_fo0/ergane/config.toml.lock for 1.0s
+    walkthrough returned after 1.02s, exit 1, config written: True
+    ..
     credentials in play this session:
       ERGANE_LLM_MASTER_KEY       = 'sk-secret-llm-value-do-not-log'
       ERGANE_HINDSIGHT_KEY        = 'hs-secret-memory-value-do-not-log'
       ERGANE_TELEGRAM_BOT_TOKEN   = '123456:SECRET-bot-token-do-not-log'
-    the LLM probe sent its credential over the wire: True
     the escalation probe used its credential: True
-    occurrences in /tmp/…/config.toml : 0
+    occurrences in /tmp/…/ergane/config.toml: 0
     occurrences in captured stdout+stderr: 0
     env-var NAMES present in the config file: True
+    .                                                            [100%]
+    13 passed in 2.18s
+
+(That run predates the redaction test below by two commits, which is why it
+reports 13 tests and the SC-002 block has one fewer line than it does now.)
+
+Controls: each property switched off, and what goes red
+-------------------------------------------------------
+
+A green suite proves nothing about a test that cannot fail, so each of FR-007's
+clauses was disabled in turn and the file re-run.  The mutations, in order: the
+lock replaced by a no-op context manager; `_starting_document` forced to ignore
+an existing file; `_ask` returning the first answer unvalidated; the closing
+verification removed; and the refusal message left un-redacted.
+
+.. code-block:: text
+
+    ### mutation: nolock
+    FAILED …::test_a_second_install_is_refused_while_another_holds_the_lock
+    FAILED …::test_a_second_install_waits_for_the_lock_and_then_writes
+    2 failed, 11 passed in 0.69s
+
+    ### mutation: nodefaults
+    FAILED …::test_rerun_offers_the_existing_file_as_defaults_and_touches_only_telemetry
+    FAILED …::test_rerun_with_unchanged_answers_is_byte_identical
+    2 failed, 11 passed in 2.18s
+
+    ### mutation: novalidate
+    FAILED …::test_a_plaintext_secret_is_refused_at_entry_with_the_parsers_rule
+    FAILED …::test_managed_temporal_is_refused_at_entry_naming_042
+    2 failed, 11 passed in 2.19s
+
+    ### mutation: noverify
+    FAILED …::test_walkthrough_on_a_blank_host_writes_a_parsing_config_and_ends_with_findings
+    FAILED …::test_the_real_terminal_prompter_drives_the_interview
+    FAILED …::test_walkthrough_and_verify_never_write_a_credential
+    3 failed, 10 passed in 2.04s
+
+    ### mutation: noredact
+    FAILED …::test_the_real_terminal_prompter_drives_the_interview
+    FAILED …::test_a_plaintext_secret_is_refused_at_entry_with_the_parsers_rule
+    2 failed, 11 passed in 2.21s
+
+The command, run by hand
+------------------------
+
+A green suite has shipped a command that could not start, so the console script
+was driven from a shell with answers on stdin — including a pasted credential
+and a `managed` Temporal mode, both of which must be refused at entry.  The
+config path is redirected to a scratch file; `~/.config/ergane` below is that
+path, elided.
+
+.. code-block:: text
+
+    $ printf 'gateway\nhttp://127.0.0.1:1/v1\nsk-live-pasted-by-mistake\nERGANE_LLM_MASTER_KEY\nnone\nmanaged\nexternal\n127.0.0.1:4\nergane\n\n\nhttp://127.0.0.1:3\n\n\n\n' \
+        | ERGANE_CONFIG_PATH=…/config.toml uv run ergane install
+    llm mode (gateway|direct) [gateway]: llm gateway base_url [http://127.0.0.1:4000]: llm gateway master key env-var name [ERGANE_LLM_MASTER_KEY]:   ~/.config/ergane/config.toml: [secret_value_not_reference] `master_key_env` looks like a credential (<value withheld>); it must name an environment variable, not contain the secret value
+    llm gateway master key env-var name [ERGANE_LLM_MASTER_KEY]: memory backend (hindsight|none) [none]: temporal mode (external|managed) [external]:   ~/.config/ergane/config.toml: [temporal_managed_not_implemented] `temporal.mode = "managed"` is not implemented; it arrives with epic 042 (managed Temporal + worker units)
+    temporal mode (external|managed) [external]: temporal address [127.0.0.1:7233]: temporal namespace [ergane]: temporal api key env-var name (optional): temporal TLS enabled (true|false) [false]: telemetry OTLP endpoint (optional): escalation adapter (telegram) [telegram]: escalation bot token env-var name (optional) [TELEGRAM_BOT_TOKEN]: escalation chat id env-var name (optional) [TELEGRAM_CHAT_ID]: wrote ~/.config/ergane/config.toml
+
+    verifying the control plane...
+    [FAIL] llm: ERGANE_LLM_MASTER_KEY is not set; no credential to complete a round trip
+    [FAIL] temporal: Temporal at 127.0.0.1:4 did not answer: RuntimeError: Failed client connect: Server connection error: tonic::transport::Error(Transport, ConnectError(ConnectError("tcp connect error", 127.0.0.1:4, Os { code: 111, kind: ConnectionRefused, message: "Connection refused" })))
+    [PASS] memory: skipped by declaration: memory.backend is `none`
+    [FAIL] telemetry: could not export to OTLP endpoint http://127.0.0.1:3: ConnectError: All connection attempts failed
+    [FAIL] escalation: TELEGRAM_CHAT_ID is not set; cannot deliver a test escalation
+    EXIT=1
+
+    $ grep -c 'sk-live-pasted-by-mistake' run.log
+    0
+
+    $ cat config.toml
+    version = 1
+
+    [llm]
+    mode = "gateway"
+    base_url = "http://127.0.0.1:1/v1"
+    master_key_env = "ERGANE_LLM_MASTER_KEY"
+
+    [memory]
+    backend = "none"
+
+    [temporal]
+    mode = "external"
+    address = "127.0.0.1:4"
+    namespace = "ergane"
+
+    [telemetry]
+    otlp_endpoint = "http://127.0.0.1:3"
+
+    [escalation]
+    adapter = "telegram"
+    bot_token_env = "TELEGRAM_BOT_TOKEN"
+    chat_id_env = "TELEGRAM_CHAT_ID"
+
+The refused answers reached neither the file nor the transcript, and the file
+carries no `tls_enabled = false` — the canonical rendering omits a flag at its
+default, so a hand-written config does not gain a line on its first re-run.
+
+US3-S2 by hand: re-run, change only the OTLP endpoint, diff the file.
+
+.. code-block:: text
+
+    $ diff -u before.toml config.toml
+    --- ~/.config/ergane/before.toml	2026-08-16 03:57:19.294467675 +0000
+    +++ ~/.config/ergane/config.toml	2026-08-16 03:57:19.521917896 +0000
+    @@ -14,7 +14,7 @@
+     namespace = "ergane"
+
+     [telemetry]
+    -otlp_endpoint = "http://127.0.0.1:3"
+    +otlp_endpoint = "http://127.0.0.1:9"
+
+     [escalation]
+     adapter = "telegram"
+
+    # and a third run, changing nothing
+    byte-identical: yes
+
+One more thing that run found, before the redaction landed: an out-of-position
+answer (a URL where the TLS question was) was refused at entry rather than
+written, and the re-run stayed byte-identical.
+
+.. code-block:: text
+
+    temporal TLS enabled (true|false) [false]:   …/config.toml: [field_type] `temporal.tls_enabled` must be a boolean, not a str ('http://127.0.0.1:9')
+    temporal TLS enabled (true|false) [false]:
+
+The full suite
+--------------
+
+.. code-block:: text
+
+    $ uv run pytest -q
+    2486 passed, 44 skipped, 4 warnings in 282.56s (0:04:42)
 """
 
 from __future__ import annotations
