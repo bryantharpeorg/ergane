@@ -701,9 +701,10 @@ def test_the_export_never_opens_a_store_for_writing(tmp_path: Path) -> None:
 # The gate, run the way the factory runs it — the declared `test` gate inside the
 # real bwrap boundary over this worktree:
 #
-#   test: PASS exit=0 258.9s
-#   2848 passed, 44 skipped, 5 warnings in 258.19s (0:04:18)
+#   test: PASS exit=0 259.8s
+#   2848 passed, 44 skipped, 5 warnings in 259.01s (0:04:19)
 #
 # (2828 before this story: 16 tests here and in `test_repo_ast.py`, plus four
-# existing parametrized sweeps that now also cover `factory/cli/repo_export.py`.)
+# existing parametrized sweeps that now also cover `factory/cli/repo_export.py`.
+# The only edit made after that run was these five comment lines.)
 # -----------------------------------------------------------------------------
