@@ -95,6 +95,7 @@ from factory.verify.gates import BwrapGateExecutor, GateInvocation
 from factory.verify.toolchain import (
     ToolchainError,
     container_path,
+    find_install_root,
     find_tool,
     install_root,
     require_tool,
@@ -334,6 +335,65 @@ def test_install_root_is_read_from_the_layout_not_assumed(
     assert install_root(find_tool("claude")) == binary, (
         "a runner that is just a binary must not widen to its parent directory"
     )
+
+
+def test_the_installation_is_found_with_no_launcher_on_the_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The payload is reachable even when nothing links it onto `PATH`.
+
+    Reading the installation off the launcher's resolution is the obvious
+    route and it is not sufficient, because the two are absent independently.
+    The case that proved it: inside a gate boundary built by a factory that
+    predates this module, `~/.local/share/claude` is mounted and
+    `~/.local/bin/claude` is not — the old code bound the payload by literal and
+    never needed a launcher to find it. Discovery that could only arrive
+    *through* `PATH` therefore found nothing where the literal found the
+    directory, and the gate one level in failed with
+
+        ls: cannot access '/home/admin/.local/share/claude/versions':
+        No such file or directory
+
+    So `<prefix>/share/<name>` is checked for every `<prefix>/bin` on the search
+    path — the layout the installer really uses, and the reason the candidate
+    has to sit beside a directory actually named `bin` rather than beside any
+    directory at all. Here the launcher is deliberately never planted, and the
+    install directory sits beside a `bin` that is, in a `tmp_path` that cannot
+    be the operator's.
+    """
+    host = PlantedHost(tmp_path)
+    prefix = tmp_path / "prefix"
+    bin_dir = prefix / "bin"
+    for name in ("uv", "node", "git"):
+        host.plant(name, directory=bin_dir)
+    install = prefix / "share" / "claude"
+    _plant(install / "versions", FAKE_RUNNER_VERSION)
+    host.activate(monkeypatch, bin_dir)
+
+    assert find_tool("claude") is None, (
+        "the launcher must be absent for this test to be about anything"
+    )
+    assert find_install_root("claude") == install, (
+        f"the installation beside a searched bin directory must be found: "
+        f"{find_install_root('claude')}"
+    )
+
+    binds = _binds(
+        BwrapGateExecutor()._build_argv(
+            GateInvocation(
+                name="test", command="true", cwd=host.worktree, timeout_s=30, env={}
+            )
+        )
+    )
+
+    assert (str(install), str(install)) in binds, (
+        f"the gate must bind the installation it discovered: {binds}"
+    )
+    for source, destination in binds:
+        assert not source.startswith("/home/admin"), (
+            f"the gate reached for the operator's own installation at {source} "
+            f"instead of the one discovery found"
+        )
 
 
 # --- the agent sandbox -------------------------------------------------------

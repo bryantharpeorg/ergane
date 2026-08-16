@@ -42,7 +42,10 @@ symlink into `<install>/versions/<version>`; the version file is what must be
 bound at the symlink's path, or the symlink dangles inside the namespace. The
 gate boundary needs the whole install directory instead — see `install_root` —
 because a gate may launch an inner agent whose own version pin it cannot know.
-Both are derived from the one resolution, so neither can rot.
+Both are derived, so neither can rot. They are *separately* derived
+(`find_install_root`) rather than one read off the other, because the launcher
+and the payload go missing independently: a boundary built by a factory that
+predates this module carries the payload and not the launcher.
 
 Evidence that the host these literals described is unchanged. Discovery run in
 the worker's own environment — `PATH=/home/admin/.local/bin:/home/admin/
@@ -318,3 +321,50 @@ def install_root(tool: ResolvedTool) -> Path:
     if tool.real_path.parent.name == "versions":
         return tool.real_path.parent.parent
     return tool.real_path
+
+
+def find_install_root(
+    name: str, *, tool: ResolvedTool | None = None, env: Mapping[str, str] | None = None
+) -> Path | None:
+    """The runner's installation directory, launcher on `PATH` or not.
+
+    Two routes, tried in that order, because they fail independently:
+
+    1. **Through the launcher.** If `name` resolves, its installation is read
+       off the resolution (`install_root`). This is the authoritative route: it
+       names the installation the thing that would actually run belongs to.
+
+    2. **Beside a `bin` directory on the search path.** An XDG-layout installer
+       puts the launcher at `<prefix>/bin/<name>` and the payload at
+       `<prefix>/share/<name>`, so every `bin` directory already on the search
+       path names a candidate prefix. Nothing is assumed about which prefix, and
+       the candidate has to exist as a directory to qualify — which is also why
+       the directory must really be named `bin`, rather than the rule being
+       "look beside anything on the search path".
+
+    Route 2 is not defensive padding; it is the route the *nested* case needs,
+    and leaving it out was a measured regression. Inside a gate boundary built
+    by a factory that predates this module, `~/.local/share/claude` is mounted
+    but `~/.local/bin/claude` is not — the old code bound the payload by literal
+    and never needed a launcher to reach it. A discovery that could only arrive
+    *through* `PATH` therefore found nothing where the old literal found the
+    directory, and the gate one level in failed with
+
+        ls: cannot access '/home/admin/.local/share/claude/versions':
+        No such file or directory
+
+    which is the same test, and the same message, that made the previous commit
+    necessary. The same shape occurs outside any boundary, on any host that has
+    the runner installed but not linked onto the worker's `PATH`. Both routes
+    are derived; neither names a home or a version.
+    """
+    resolved = tool if tool is not None else find_tool(name, env=env)
+    if resolved is not None:
+        return install_root(resolved)
+    for directory in toolchain_search_dirs(env):
+        if directory.name != "bin":
+            continue
+        candidate = directory.parent / "share" / name
+        if candidate.is_dir():
+            return candidate
+    return None

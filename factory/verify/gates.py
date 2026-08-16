@@ -62,7 +62,7 @@ from factory.verify.toolchain import (
     ResolvedTool,
     ToolchainError,
     container_path,
-    install_root,
+    find_install_root,
     resolve_toolchain,
 )
 
@@ -718,17 +718,28 @@ class BwrapGateExecutor:
         it on the operator's own machine.
         """
         resolved = self._toolchain() if tools is None else tools
-        binds: list[tuple[str, str, str]] = []
-        for tool in resolved:
-            if tool.name == DEFAULT_AGENT_RUNNER:
-                root = install_root(tool)
-                binds.append(("--ro-bind", str(root), str(root)))
-                if tool.found_at != tool.real_path:
-                    binds.append(("--symlink", str(tool.real_path), str(tool.found_at)))
-                elif tool.found_at != root:
-                    binds.append(("--ro-bind", *tool.bind))
-                continue
-            binds.append(("--ro-bind", *tool.bind))
+        binds: list[tuple[str, str, str]] = [
+            ("--ro-bind", *tool.bind)
+            for tool in resolved
+            if tool.name != DEFAULT_AGENT_RUNNER
+        ]
+
+        # The runner, if this host has one. The installation is looked up
+        # independently of the launcher (`find_install_root`) rather than read
+        # off it, because the two are absent independently: a boundary built by
+        # a factory predating this module mounts the payload and not the
+        # launcher, and deriving one from the other lost the payload there.
+        runner = next((t for t in resolved if t.name == DEFAULT_AGENT_RUNNER), None)
+        root = find_install_root(DEFAULT_AGENT_RUNNER, tool=runner)
+        if root is not None:
+            binds.append(("--ro-bind", str(root), str(root)))
+        if runner is not None:
+            if runner.found_at != runner.real_path:
+                binds.append(
+                    ("--symlink", str(runner.real_path), str(runner.found_at))
+                )
+            elif runner.found_at != root:
+                binds.append(("--ro-bind", *runner.bind))
         return binds
 
     def _identity_env(self) -> dict[str, str]:
