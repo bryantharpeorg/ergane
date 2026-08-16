@@ -301,6 +301,26 @@ def test_a_repository_with_no_manifest_still_resolves_the_default_forge(
     assert isinstance(resolve_forge_for_repo(repo_path=str(repo)), GithubForge)
 
 
+def test_every_door_holding_a_repository_path_resolves_through_the_manifest() -> None:
+    """T041, and trap 14 in the shape that bit this epic twice: the boundary has
+    three doors — `merge_activities.py`, `workgraph/cli.py`, `cli/init.py` — and
+    a migration that moves two leaves one resolving a forge the repository never
+    declared, with nothing noticing.
+
+    Swept rather than listed, and compared against a non-empty literal rather
+    than `assert not offenders`, so a glob that stopped matching fails instead of
+    going quiet. Mutation: put `resolve_forge(repo_path=…)` back into any one of
+    the three and this fails.
+    """
+    callers = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "factory").rglob("*.py")
+        if "resolve_forge(" in path.read_text(encoding="utf-8")
+    }
+
+    assert callers == {"factory/mergequeue/forge.py"}
+
+
 def test_the_interview_asks_about_every_key_the_parser_knows() -> None:
     """`ergane init` drives its questions off `_TOP_LEVEL_KEYS`, which is the
     property that stops a new key from being invisible to the operator who has to
