@@ -1,66 +1,50 @@
 """The pure onboarding judgment: what a forge reported + gates → findings.
 
-`onboard_target_repo` (the activity half) reads a repository through a forge and
-hands the two readings here: a `RepositoryDescription` — can the factory reach
-this repository, by what name, and what does only this forge have to say about
-it — and a `LandingPolicy` for the branch it would land on. This module turns
-them into a `TargetRepoProfile` whose `findings` say, one check at a time,
-whether the repo is ready for the factory to dispatch against it. It is pure —
-no forge, no git, no filesystem, no clock — so it is table-tested with no fakes
-at all (`tests/test_onboard.py`).
+`onboard_target_repo` (the activity) reads a repository through a forge: what it
+calls the repository, what the branch a landing goes into does to a proposal,
+and the clone's committed `factory.yaml`. This module turns those readings into a
+`TargetRepoProfile` whose `findings` say, one check at a time, whether the repo
+is ready for the factory to dispatch against it. It is pure — no forge, no git,
+no filesystem, no clock — so it is table-tested with no fakes at all
+(`tests/test_onboard.py`).
 
-**049's US2 made the questions forge-neutral, and that is the point of the
-module.** Before it, this judgment asked every repository about three settings
+049's US2 made these questions forge-neutral: before it they were three settings
 only GitHub has, so a target on another forge failed onboarding not because it
-was unready but because the questions did not apply to it (D-046). What the
-factory actually
-needs from a forge is three things: propose a change, have it gated on evidence
-it can name, and land it with no human. The questions below are those, and
-nothing here spells one forge's configuration; `tests/test_forge_readiness.py`
-reads this file's source to keep it that way (FR-006).
+was unready but because the questions did not apply (D-046). Nothing here spells
+one forge's configuration, and `tests/test_forge_readiness.py` reads this file's
+source to keep it so (FR-006). The checks, each a `Finding`:
 
-The checks, each one a `Finding` (check slug, passed, actionable detail):
-
-- **`gated_landing`** (Q2) — the branch must refuse a landing until a set of
-  *named* checks passes. The weight is on **named**: the factory's contract is
-  that the gates its manifest declares are the gates the forge runs, and that is
-  checkable only if the checks are addressable by name.
-- **`autonomous_landing`** (Q3) — once those checks pass, the forge must
-  complete the merge on its own. Separate from Q2 because they are separately
-  actionable: a branch that gates correctly and then waits for a click is one
-  this factory cannot land through (D-024), and saying which of the two is
-  missing is the difference between a report and a riddle.
+- **`gated_landing`** (Q2) — the branch must refuse a landing until *named*
+  checks pass. The weight is on named: the contract is that the gates the
+  manifest declares are the gates the forge runs, checkable only by name.
+- **`autonomous_landing`** (Q3) — and then complete the merge on its own.
+  Separate from Q2 because they are separately actionable: a branch that gates
+  correctly and waits for a click is one this factory cannot land through
+  (D-024), and saying which of the two is missing is a report not a riddle.
 - **`factory_yaml`** — the repo must commit a valid, non-empty-gated
   `factory.yaml`. A missing or malformed manifest is a failing finding carrying
   the 002 loader's error, never a pass by default: a verifier that shrugged at
   a broken manifest would find no gates, therefore see nothing fail.
 - **`landing_title`** (Q5) — the commit the forge writes when it lands must
-  carry the proposal's title verbatim, because `ergane spec landed` reads the
-  story out of that subject line (`factory/workgraph/landed.py`). The forge's
-  own spelling of the setting behind it travels as evidence, and its own remedy
-  as the fix; neither is decided from here.
-- **`gate_check:<gate>`** (Q4) — every declared gate must have a required check
+  carry the proposal's title, because `ergane spec landed` reads the story out
+  of that subject line. The forge's spelling of the setting travels as evidence
+  and its remedy as the fix; neither is decided here.
+- **`gate_check:<gate>`** — every declared gate must have a required check
   named *exactly* after it. The naming convention is the contract between
   `factory.yaml` and the repo's CI; a declared gate with no matching check
-  would land a change that never runs that gate.
-- **`unknown_check:<name>`** (Q4) — every required check must map back to a
-  declared gate. Deterministic gates only is FR-003 made structural: a required
-  check that is not a declared gate is a check the factory does not control, and
-  this is precisely what keeps the LLM judge out of CI.
-
-Q1 — reachability and identity — is answered before this module runs: a
-repository nobody can read yields a `repo_read` finding from the activity, since
-nothing else about it is judgeable. What a forge alone knows arrives on
-`RepositoryDescription.findings` and is appended here without this module
-knowing what it means (FR-007). That is what lets a forge-specific rule fail a
-repository without the shared judgment learning that forge's vocabulary — and it
-is where the rule that a GitHub repository must be public now lives.
+  would land a PR that never runs that gate.
+- **`unknown_check:<name>`** — every required check must map back to a declared
+  gate. Deterministic gates only is FR-003 made structural: a required check
+  that is not a declared gate is a check the factory does not control, and this
+  is precisely what keeps the LLM judge out of CI.
 
 Each check fails closed: `passed` is the conjunction, and a repo that fails any
 check is rejected for dispatch with instructions for the operator (spec US3 AS2).
-`evaluate_repo` is deliberately handed already-loaded readings (the activity owns
-the forge calls and the `factory.yaml` read) so the judgment here can be proven
-in isolation.
+What a forge alone knows arrives on `RepositoryDescription.findings` and is
+appended here without this module knowing what it means (FR-007) — which is how
+a forge-specific rule fails a repository without the judgment learning that
+forge's vocabulary, and is where the rule that a GitHub repo must be public now
+lives.
 
 **034 US4 extends this judgment; it does not fork it.** `ergane init --check`
 gathers four more facts and passes them as `init_facts`; the 003 dispatch path
@@ -146,30 +130,20 @@ def evaluate_repo(
 ) -> TargetRepoProfile:
     """Judge a repository's two readings against what the factory needs.
 
-    Every argument is something a caller already read; this function holds no
-    I/O. `reading` answers Q1 — the repository's address, the branch it defaults
-    to, and whatever only its own forge can say about it. `policy` answers Q2,
-    Q3 and Q5 for the branch a landing would go into, and carries the checks
-    that branch will require, so Q4 can be asked here without this function
-    knowing where a forge keeps them. `declared_gates` is what the repo's own
-    `factory.yaml` names (`FactoryConfig.gates` keys). `factory_yaml_error`,
-    when set, is the 002 loader's `FactoryConfigError` message — a broken
-    manifest is a failing finding, never a pass by default.
-
-    `reading.findings` is what the forge answered about facts only it has (049
-    FR-007), appended without this function knowing what they mean, and read
-    *first* so a forge-authored refusal lands where an operator has always found
-    the repository's own health.
-
-    The profile's `findings` are ordered so the operator preflight reads that
-    health first, then the gate↔check mapping, which is where a
-    deterministic-CI repo most often diverges.
+    Each argument is something the caller already read; this function holds no
+    I/O. `reading` answers Q1 and carries what only this forge knows (FR-007),
+    appended without this function understanding it and read *first*, so a
+    forge-authored refusal lands where an operator has always found the repo's
+    own health. `policy` answers Q2, Q3 and Q5 for the branch a landing goes
+    into, and carries the checks that branch requires, so Q4 can be asked here
+    without knowing where a forge keeps them. `factory_yaml_error`, when set, is
+    the 002 loader's message — a broken manifest fails, never passes by default.
     """
 
     findings: list[Finding] = list(reading.findings)
 
     # Q2: the branch must refuse a landing until named checks pass, and Q3: it
-    # must then finish the job itself. One forge may answer both from one
+    # must then finish the job itself. One forge may answer both from a single
     # setting; that is its coincidence, not a property of forges, so they are
     # two findings and an operator is told which one is missing.
     _gated_landing_finding(findings, policy)
@@ -180,7 +154,7 @@ def evaluate_repo(
     # would read as "no gates, so nothing to fail".
     _manifest_finding(findings, factory_yaml_error)
 
-    # Q5: the landing commit must carry the proposal's title, so the landing
+    # Q5: the landing commit must carry the proposal's title so the landing
     # grammar survives the merge. A forge that would not say fails closed,
     # matching the factory_yaml precedent.
     _landing_title_finding(findings, policy)
@@ -212,65 +186,35 @@ def evaluate_repo(
 
 
 def _gated_landing_finding(findings: list[Finding], policy: "LandingPolicy") -> None:
-    """Q2. A branch that lands a change no check ran against gates nothing."""
     if policy.gates_on_named_checks:
-        findings.append(
-            Finding(
-                "gated_landing",
-                True,
-                f"{policy.branch} refuses a landing until its named checks pass",
-            )
-        )
-        return
-
-    findings.append(
-        Finding(
-            "gated_landing",
-            False,
-            f"{policy.branch!r} does not refuse a landing until named checks "
-            "pass, so a change could land with no gate having run; configure "
-            "the branch to require the gates this repository declares"
-            f"{_remedy(policy.gating_remedy)}",
-        )
-    )
+        findings.append(Finding(
+            "gated_landing", True,
+            f"{policy.branch} refuses a landing until its named checks pass",
+        ))
+    else:
+        findings.append(Finding(
+            "gated_landing", False,
+            f"{policy.branch!r} does not refuse a landing until named checks pass, "
+            "so a change could land with no gate having run; configure the branch "
+            "to require the gates this repository declares",
+        ))
 
 
 def _autonomous_landing_finding(
     findings: list[Finding], policy: "LandingPolicy"
 ) -> None:
-    """Q3, and its own finding on purpose: gating right and landing wrong is a
-    different repair from gating wrong, and one finding for both would tell an
-    operator to fix the half that already works."""
     if policy.lands_without_a_human:
-        findings.append(
-            Finding(
-                "autonomous_landing",
-                True,
-                f"{policy.branch} completes a landing without a human",
-            )
-        )
-        return
-
-    findings.append(
-        Finding(
-            "autonomous_landing",
-            False,
-            f"{policy.branch!r} will not complete a landing without a human; "
-            "this factory has no human in the loop by construction (D-024), so "
-            "configure the branch to land a proposal itself once its named "
-            f"checks pass{_remedy(policy.gating_remedy)}",
-        )
-    )
-
-
-def _remedy(remedy: str) -> str:
-    """A forge's own fix, appended when it offered one (FR-007).
-
-    Not every forge will, and a judgment that required one would be a judgment
-    that could not read a forge which stayed silent. What is wrong is always
-    said; how to fix it is said when somebody knew.
-    """
-    return f" — {remedy}" if remedy else ""
+        findings.append(Finding(
+            "autonomous_landing", True,
+            f"{policy.branch} completes a landing without a human",
+        ))
+    else:
+        findings.append(Finding(
+            "autonomous_landing", False,
+            f"{policy.branch!r} will not complete a landing without a human; this "
+            "factory has no human in the loop by construction (D-024), so configure "
+            "the branch to land a proposal itself once its named checks pass",
+        ))
 
 
 def _manifest_finding(
@@ -290,17 +234,10 @@ def _manifest_finding(
 
 
 def _landing_title_finding(findings: list[Finding], policy: "LandingPolicy") -> None:
-    """Q5. `ergane spec landed` reads the story off the landed subject line, so a
-    landing titled from anything but the proposal is a story this factory built
-    and cannot see it built."""
     if policy.landing_title_from_proposal:
-        findings.append(
-            Finding(
-                "landing_title",
-                True,
-                "a landing commit takes the proposal's title",
-            )
-        )
+        findings.append(Finding(
+            "landing_title", True, "a landing commit takes the proposal's title",
+        ))
         return
 
     if policy.landing_title_source is None:
@@ -308,16 +245,13 @@ def _landing_title_finding(findings: list[Finding], policy: "LandingPolicy") -> 
     else:
         observed = f"the forge reports its title source as {policy.landing_title_source!r}"
 
-    findings.append(
-        Finding(
-            "landing_title",
-            False,
-            f"a landing commit will not take the proposal's title — {observed}; "
-            "`ergane spec landed` reads a story out of the landed subject line, "
-            "so a landing titled from anything else is work this factory cannot "
-            f"see it did{_remedy(policy.landing_title_remedy)}",
-        )
-    )
+    findings.append(Finding(
+        "landing_title", False,
+        f"a landing commit will not take the proposal's title — {observed}; "
+        "`ergane spec landed` reads a story out of the landed subject line, so a "
+        "landing titled from anything else is work this factory cannot see it did"
+        + (f" — {policy.landing_title_remedy}" if policy.landing_title_remedy else ""),
+    ))
 
 
 def _gate_check_finding(findings: list[Finding], gate: str, matched: bool) -> None:

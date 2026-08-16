@@ -240,21 +240,15 @@ class TargetRepoProfile:
         findings: tuple["Finding", ...],
         passed: bool,
     ) -> "TargetRepoProfile":
-        """Build the report from a forge's two readings and a settled judgment.
+        """Build the report from a forge's two readings and a decided verdict.
 
-        The three descriptive fields above are this record's spelling, kept
-        because an operator's `ergane repo onboard` output and every stored
-        payload already read that way. 049's US2 made the *judgment* neutral —
-        it asks whether a branch gates on named checks, not whether a queue is
-        enabled — so the mapping from what a forge reported onto those names
-        belongs here, with the record that owns them, rather than in the
-        judgment that must never spell them (FR-006).
-
-        `reading` and `policy` are a `RepositoryDescription` and a
-        `LandingPolicy`; they are taken structurally rather than imported,
-        because `factory/mergequeue/forge.py` imports `Finding` from this module
-        and an import back would be a cycle. `passed` is handed in: the
-        conjunction is the judgment's call, not this record's.
+        The three descriptive fields above keep this record's own spelling: an
+        operator's `ergane repo onboard` output and every stored payload already
+        read that way. 049's US2 made the *judgment* neutral, so the mapping
+        onto those names belongs here, with the record that owns them, and not
+        in a judgment that may never spell them (FR-006). `reading` and `policy`
+        are taken structurally: `forge.py` imports `Finding` from here, so an
+        import back is a cycle.
         """
         return cls(
             repo=repo,

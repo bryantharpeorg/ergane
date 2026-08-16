@@ -87,12 +87,9 @@ class LandingPolicy:
     spelling of the setting behind it: evidence for a remedy, never something to
     decide from; `None` means the forge would not say.
 
-    The two remedy fields (049 US2, FR-007) are how a forge answers *how to fix
-    it* in its own terms. A finding whose detail names what is wrong but not
-    what to change is a finding nobody acts on, and "reconfigure the branch" is
-    as specific as a shared judgment can honestly be — only the forge knows the
-    one call that changes it. Empty means the forge offered none, and the
-    judgment says what it can without one.
+    `landing_title_remedy` (049 US2, FR-007) is how a forge answers *how to fix
+    that* — a title source is one call only the forge knows. Empty means it
+    offered none, and the judgment says what it can without one.
     """
 
     branch: str
@@ -101,8 +98,6 @@ class LandingPolicy:
     lands_without_a_human: bool = False
     landing_title_from_proposal: bool = False
     landing_title_source: str | None = None
-    #: How this forge says to make the branch gate a landing and complete it.
-    gating_remedy: str = ""
     #: How this forge says to make a landing take the proposal's title.
     landing_title_remedy: str = ""
 

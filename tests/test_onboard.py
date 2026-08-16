@@ -1,30 +1,32 @@
 """US3's pure onboarding judgment: repo facts + `factory.yaml` gates → findings.
 
 `factory/mergequeue/onboard.py` is the judgment half of US3 (plan.md § US3). The
-activity (`validate_target_repo`) gathers *facts* — repo visibility, whether the
-merge queue is enabled on the default branch, the queue's required checks, the
-clone's committed `factory.yaml` — and this module turns those facts into a
+activity (`onboard_target_repo`) reads a repository through a forge and hands
+over two records — a `RepositoryDescription`, and the `LandingPolicy` of the
+branch a landing goes into — and this module turns those readings into a
 `TargetRepoProfile` whose `findings` say, one check at a time, whether the repo
 is ready for the factory to dispatch against it (FR-010).
 
-Every check is a pure function of the facts it is handed, so this suite is
-table-tested with no fakes at all: no `gh`, no git, no network. Each check fails
+Every check is a pure function of the readings it is handed, so this suite is
+table-tested with no fakes at all: no forge, no git, no network. Each check fails
 closed — a repo that fails any check is rejected for dispatch with a finding
 that names what to change (spec US3 AS2).
 
-The checks (plan.md § US3):
+The checks (049's US2 made them forge-neutral; the questions are spec 049
+§ *What the factory actually needs*):
 
-- repo is public (merge queue is available on any plan, D-007) — `visibility`;
-- merge queue enabled on the default branch — `merge_queue`;
+- the branch refuses a landing until named checks pass (Q2) — `gated_landing`;
+- and then completes the merge with no human (Q3) — `autonomous_landing`;
 - `factory.yaml` present, valid, non-empty gates — `factory_yaml`;
+- the landing commit takes the proposal's title (Q5) — `landing_title`;
 - every declared gate has a required check named *exactly* after it —
   `gate_check:<gate>`;
 - every required check maps back to a declared gate (deterministic gates only,
   FR-003 — the structural guard that keeps the LLM judge out of CI) —
   `unknown_check:<name>`.
 
-Written before `factory/mergequeue/onboard.py` exists (T036 precedes T037):
-until the module lands, every test here fails at import.
+What a forge alone knows — GitHub's D-007 rule, for one — arrives on
+`RepositoryDescription.findings`; `tests/test_forge_readiness.py` owns that.
 """
 
 from __future__ import annotations
@@ -33,11 +35,32 @@ from typing import Sequence
 
 import pytest
 
+from factory.mergequeue.forge import LandingPolicy, RepositoryDescription
 from factory.mergequeue.models import Finding
 from factory.mergequeue.onboard import InitFacts, evaluate_repo
 
 REPO = "acme/widgets"
 DEFAULT_BRANCH = "main"
+
+#: A landing-title setting spelled the way a forge that is not GitHub would:
+#: evidence carried into a remedy, never what the judgment decides from.
+TITLE_SOURCE = "proposal-title"
+
+
+def _reading(**over: object) -> RepositoryDescription:
+    """A repository a forge could reach, saying nothing only that forge knows."""
+    base = dict(address=REPO, default_branch=DEFAULT_BRANCH)
+    return RepositoryDescription(**{**base, **over})  # type: ignore[arg-type]
+
+
+def _policy(**over: object) -> LandingPolicy:
+    """A branch answering every neutral question well, with named breaks."""
+    base = dict(
+        branch=DEFAULT_BRANCH, gates_on_named_checks=True,
+        required_checks=("test",), lands_without_a_human=True,
+        landing_title_from_proposal=True, landing_title_source=TITLE_SOURCE,
+    )
+    return LandingPolicy(**{**base, **over})  # type: ignore[arg-type]
 
 
 def _findings(**facts: object):
@@ -55,7 +78,7 @@ def _finding_by_check(findings: Sequence[object], check: str) -> object:
 
 
 def test_a_fully_conforming_repo_passes_with_one_finding_per_check() -> None:
-    """Public + queue + checks named after every gate → passed, all findings green.
+    """Gated + autonomous + titled + a check per gate → passed, all findings green.
 
     One passing Finding per check is the contract the operator preflight prints:
     `passed=True` is the conjunction, but each finding is reported so a human
@@ -63,19 +86,16 @@ def test_a_fully_conforming_repo_passes_with_one_finding_per_check() -> None:
     """
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test", "lint", "typecheck"),
+        reading=_reading(),
+        policy=_policy(required_checks=("test", "lint", "typecheck")),
         declared_gates=("test", "lint", "typecheck"),
-        squash_merge_commit_title="PR_TITLE",
     )
     assert profile.passed is True
     checks = [f.check for f in profile.findings]
-    assert "visibility" in checks
-    assert "merge_queue" in checks
+    assert "gated_landing" in checks
+    assert "autonomous_landing" in checks
     assert "factory_yaml" in checks
-    assert "squash_title" in checks
+    assert "landing_title" in checks
     assert "gate_check:test" in checks
     assert "gate_check:lint" in checks
     assert "gate_check:typecheck" in checks
@@ -86,12 +106,9 @@ def test_required_checks_and_declared_gates_need_not_be_ordered_the_same() -> No
     """The mapping is by name, not by position — a passing repo may list them differently."""
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("typecheck", "test", "lint"),
+        reading=_reading(),
+        policy=_policy(required_checks=("typecheck", "test", "lint")),
         declared_gates=("test", "lint", "typecheck"),
-        squash_merge_commit_title="PR_TITLE",
     )
     assert profile.passed is True
 
@@ -99,47 +116,27 @@ def test_required_checks_and_declared_gates_need_not_be_ordered_the_same() -> No
 # --- each failing check, and the remedy its detail names ----------------------
 
 
-def test_a_private_repo_fails_visibility_naming_the_remedy() -> None:
-    """Private-on-Free can't queue (D-007); the finding names what to change."""
+def test_a_branch_that_gates_on_nothing_fails_carrying_the_forges_remedy() -> None:
+    """Q2: a branch that will land a change no check ran against gates nothing."""
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="private",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(gates_on_named_checks=False),
         declared_gates=("test",),
     )
     assert profile.passed is False
-    finding = _finding_by_check(profile.findings, "visibility")
-    assert finding.passed is False
-    assert "public" in finding.detail
-
-
-def test_no_merge_queue_rule_fails_merge_queue_naming_the_remedy() -> None:
-    """A queue that is not enabled on the default branch cannot ever enqueue."""
-    profile = evaluate_repo(
-        repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=False,
-        required_checks=("test",),
-        declared_gates=("test",),
-    )
-    assert profile.passed is False
-    finding = _finding_by_check(profile.findings, "merge_queue")
+    finding = _finding_by_check(profile.findings, "gated_landing")
     assert finding.passed is False
     assert DEFAULT_BRANCH in finding.detail
-    assert "queue" in finding.detail.lower()
+    assert "configure the branch" in finding.detail
 
 
 def test_a_declared_gate_with_no_required_check_names_the_missing_check() -> None:
     """`gate_check:<gate>` fails, naming the exact check the repo must add."""
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(),
         declared_gates=("test", "lint"),
     )
     assert profile.passed is False
@@ -158,10 +155,8 @@ def test_a_required_check_with_no_declared_gate_is_rejected() -> None:
     """
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test", "judge"),
+        reading=_reading(),
+        policy=_policy(required_checks=("test", "judge")),
         declared_gates=("test",),
     )
     assert profile.passed is False
@@ -174,10 +169,8 @@ def test_a_missing_or_malformed_factory_yaml_fails_naming_the_loaders_error() ->
     """A broken manifest is a failing finding carrying the 002 loader's error."""
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(),
         declared_gates=(),
         factory_yaml_error="factory.yaml: [malformed_yaml] is not parseable YAML",
     )
@@ -195,10 +188,8 @@ def test_factory_yaml_finding_key_is_unchanged() -> None:
     """
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(),
         declared_gates=("test",),
     )
     checks = [f.check for f in profile.findings]
@@ -211,10 +202,13 @@ def test_every_failing_finding_detail_names_the_remedy() -> None:
     """Actionable: each failing detail says what to change, not just what is wrong."""
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="private",
-        queue_enabled=False,
-        required_checks=("test", "judge"),
+        reading=_reading(),
+        policy=_policy(
+            gates_on_named_checks=False,
+            lands_without_a_human=False,
+            landing_title_from_proposal=False,
+            required_checks=("test", "judge"),
+        ),
         declared_gates=("test",),
         factory_yaml_error="factory.yaml: [runtime] missing",
     )
@@ -230,68 +224,50 @@ def test_a_fully_conforming_repo_with_no_gate_checks_extra_is_still_passed() -> 
     """A single-gate repo (like Ergane itself) with matching checks passes."""
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(),
         declared_gates=("test",),
-        squash_merge_commit_title="PR_TITLE",
     )
     assert profile.passed is True
     assert _finding_by_check(profile.findings, "gate_check:test").passed is True
 
 
-# --- US1: squash-merge title must come from the PR title ----------------------
+# --- Q5: the landing commit must carry the proposal's title -------------------
 
 
-def test_squash_title_pr_title_passes() -> None:
-    """A repo whose squash merges carry the PR title passes the squash_title check."""
+def test_a_landing_titled_from_anything_else_fails_with_the_forges_remedy() -> None:
+    """The forge's own spelling travels as evidence and its own fix as remedy;
+    neither is decided from here."""
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
-        declared_gates=("test",),
-        squash_merge_commit_title="PR_TITLE",
-    )
-    finding = _finding_by_check(profile.findings, "squash_title")
-    assert finding.passed is True
-    assert profile.passed is True
-
-
-def test_squash_title_commit_or_pr_title_fails_with_remedy() -> None:
-    """A repo titling squash merges from commits fails with the exact PATCH call."""
-    profile = evaluate_repo(
-        repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
-        declared_gates=("test",),
-        squash_merge_commit_title="COMMIT_OR_PR_TITLE",
-    )
-    assert profile.passed is False
-    finding = _finding_by_check(profile.findings, "squash_title")
-    assert finding.passed is False
-    assert "COMMIT_OR_PR_TITLE" in finding.detail
-    assert "gh api -X PATCH repos/acme/widgets -f squash_merge_commit_title=PR_TITLE" in finding.detail
-
-
-def test_squash_title_unreadable_fails_closed() -> None:
-    """An absent/unreadable squash title setting is never a pass (FR-003)."""
-    profile = evaluate_repo(
-        repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(
+            landing_title_from_proposal=False,
+            landing_title_source="commit-title",
+            landing_title_remedy="title landings from the proposal",
+        ),
         declared_gates=("test",),
     )
     assert profile.passed is False
-    finding = _finding_by_check(profile.findings, "squash_title")
+    finding = _finding_by_check(profile.findings, "landing_title")
     assert finding.passed is False
-    assert "unreadable" in finding.detail.lower() or "push permission" in finding.detail.lower()
+    assert "commit-title" in finding.detail
+    assert "title landings from the proposal" in finding.detail
+
+
+def test_a_forge_that_will_not_report_its_title_source_fails_closed() -> None:
+    """An unreported title source is never a pass (FR-003), and a forge offering
+    no remedy still gets a finding saying what is wrong."""
+    profile = evaluate_repo(
+        repo=REPO,
+        reading=_reading(),
+        policy=_policy(landing_title_from_proposal=False, landing_title_source=None),
+        declared_gates=("test",),
+    )
+    assert profile.passed is False
+    finding = _finding_by_check(profile.findings, "landing_title")
+    assert finding.passed is False
+    assert "unreadable" in finding.detail.lower()
 
 
 # --- 034 US4: the same judgment, extended with the facts init creates ---------
@@ -328,15 +304,12 @@ def _init_facts(**overrides: object) -> InitFacts:
 
 
 def _judge(**overrides: object):
-    """Judge a conforming public repo whose init facts carry `overrides`."""
+    """Judge a conforming repo whose init facts carry `overrides`."""
     return evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(),
         declared_gates=("test",),
-        squash_merge_commit_title="PR_TITLE",
         init_facts=_init_facts(**overrides),
     )
 
@@ -350,19 +323,16 @@ def test_init_facts_omitted_leaves_the_dispatch_judgment_untouched() -> None:
     """
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(),
         declared_gates=("test",),
-        squash_merge_commit_title="PR_TITLE",
     )
     assert profile.passed is True
     assert [f.check for f in profile.findings] == [
-        "visibility",
-        "merge_queue",
+        "gated_landing",
+        "autonomous_landing",
         "factory_yaml",
-        "squash_title",
+        "landing_title",
         "gate_check:test",
     ]
 
@@ -384,13 +354,10 @@ def test_an_unloadable_manifest_leaves_the_landing_branch_unjudged_but_still_ren
     """
     profile = evaluate_repo(
         repo=REPO,
-        default_branch=DEFAULT_BRANCH,
-        visibility="public",
-        queue_enabled=True,
-        required_checks=("test",),
+        reading=_reading(),
+        policy=_policy(),
         declared_gates=(),
         factory_yaml_error="ergane.yaml declares no gates",
-        squash_merge_commit_title="PR_TITLE",
         init_facts=_init_facts(landing_branch=None, landing_branch_exists=False),
     )
     manifest = _finding_by_check(profile.findings, "factory_yaml")

@@ -574,9 +574,10 @@ async def test_validate_target_repo_gathers_repo_facts_and_loads_the_manifest(
     assert set(profile.required_checks) == {"lint", "test", "typecheck"}
     checks = [f.check for f in profile.findings]
     assert "visibility" in checks
-    assert "merge_queue" in checks
+    assert "gated_landing" in checks
+    assert "autonomous_landing" in checks
     assert "factory_yaml" in checks
-    assert "squash_title" in checks
+    assert "landing_title" in checks
     assert all(f.passed for f in profile.findings)
 
 
@@ -612,9 +613,9 @@ async def test_validate_target_repo_reports_a_queue_missing_repo_as_failing(
     ))
 
     assert profile.passed is False
-    queue_finding = next(f for f in profile.findings if f.check == "merge_queue")
-    assert queue_finding.passed is False
-    assert "main" in queue_finding.detail
+    gating = next(f for f in profile.findings if f.check == "gated_landing")
+    assert gating.passed is False
+    assert "main" in gating.detail
 
 
 async def test_validate_target_repo_falls_back_to_classic_protection_for_checks(
@@ -799,7 +800,7 @@ async def test_validate_target_repo_non_conforming_squash_title_fails_profile(
     ))
 
     assert profile.passed is False
-    finding = next(f for f in profile.findings if f.check == "squash_title")
+    finding = next(f for f in profile.findings if f.check == "landing_title")
     assert finding.passed is False
     assert "COMMIT_OR_PR_TITLE" in finding.detail
     assert "squash_merge_commit_title=PR_TITLE" in finding.detail
@@ -836,7 +837,7 @@ async def test_validate_target_repo_missing_squash_title_fails_closed(
     ))
 
     assert profile.passed is False
-    finding = next(f for f in profile.findings if f.check == "squash_title")
+    finding = next(f for f in profile.findings if f.check == "landing_title")
     assert finding.passed is False
     assert "unreadable" in finding.detail.lower() or "push permission" in finding.detail.lower()
 

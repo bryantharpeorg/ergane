@@ -607,12 +607,8 @@ def _profile_from_forge_failure(
     # own finding if the manifest also failed.
     from factory.mergequeue.models import Finding
 
-    # Q1's failing answer, in nobody's vocabulary: the forge's own taxonomy term
-    # rides in `kind`, so an operator still reads what their forge said.
-    detail = (
-        f"could not read the repo from its forge ({error.kind}): "
-        f"{error.detail or str(error)}"
-    )
+    # Wording verbatim from before the seam (SC-001); US2 neutralises the prose.
+    detail = f"could not read the repo via gh ({error.kind}): {error.detail or str(error)}"
     findings = [Finding("repo_read", False, detail)]
     if manifest_error is not None:
         findings.append(
