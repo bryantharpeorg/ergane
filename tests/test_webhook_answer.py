@@ -8,10 +8,10 @@ second adapter creates the problem: Telegram never had one, since a single chat
   (answer-or-not is the decision the seam keeps out of the transport, FR-001)
   and not workflow-side (it reads a file, which workflow code may not —
   constitution IV, FR-012). A signal crossing the boundary is pre-checked.
-- **`ergane answer` is not a second settling core.** It hands three inbound
-  terms to `CallbackBridge.handle_relay`, the core a Telegram reply reaches.
-- **An unauthorized reply is recorded.** A drop that logs nothing is
-  indistinguishable from a message lost in transit.
+- **`ergane answer` is not a second settling core.** It hands three terms to
+  `CallbackBridge.handle_relay`, the core a Telegram reply reaches.
+- **An unauthorized reply is recorded.** A silent drop is indistinguishable
+  from a message lost in transit.
 
 Evidence is pasted at the bottom, verbatim (constitution VIII / D-037).
 """
@@ -90,7 +90,7 @@ QUESTION_TEXT = (
 ANSWER_TEXT = "ship it"
 
 #: The operator the list admits and one it does not, spelled the way
-#: `TelegramAdapter._identity` spells a username: one list covers both
+#: `TelegramAdapter._identity` spells a username — one list covers both
 #: transports, because it is about people rather than protocols.
 AUTHORIZED = "@bryan"
 INTRUDER = "@not-bryan"
@@ -107,8 +107,8 @@ QUEUE = "webhook-answers-under-test"
 
 @workflow.defn
 class WaitingForAnswer:
-    """A workflow parked on `question_answered`, so US4-S1's "resumes the
-    waiting workflow with that text" can be a real result, not a recorded call."""
+    """Parked on `question_answered`, so US4-S1's "resumes the waiting workflow
+    with that text" is a real result rather than a recorded call."""
 
     def __init__(self) -> None:
         self._answer = ""
@@ -125,7 +125,7 @@ class WaitingForAnswer:
 
 class Listener:
     """A real HTTP endpoint on an ephemeral loopback port — other nodes share
-    this host, so a fixed port is a collision waiting for the second run."""
+    this host, so a fixed port is a collision waiting to happen."""
 
     def __init__(self) -> None:
         self.posted: list[dict[str, Any]] = []
@@ -204,8 +204,8 @@ def question(db_path: Path, question_id: str) -> Any:
 
 
 def press(data: str, *, username: str) -> Any:
-    """One Telegram button press from `username`, ready for `handle`, which
-    strips the keyboard on resolve — the one attribute the US1 fakes lack."""
+    """One press from `username`, ready for `handle`, which strips the keyboard
+    on resolve — the one attribute the US1 fakes lack."""
     update = FakePressUpdate(data, from_user=FakeUser(username=username))
 
     async def edited(*_args: Any, **_kwargs: Any) -> None:
@@ -217,7 +217,7 @@ def press(data: str, *, username: str) -> Any:
 
 def relay_from(correlation_id: str, text: str, identity: str) -> InboundRelay:
     """The three terms, through the adapter's own `relay` rather than by hand,
-    so "an inbound reply" here is the path `ergane answer` takes."""
+    so "an inbound reply" here is `ergane answer`'s path."""
     built = resolve_adapter(WEBHOOK_ADAPTER).relay(
         {
             "correlation_id": correlation_id,
@@ -263,8 +263,8 @@ async def test_a_question_posts_the_rendered_message_and_the_correlation_id(
     record = question(db_path, sent.question_id)
     assert record is not None
     assert record.message_id is None, (
-        "a webhook mints no message handle, which is why `ergane answer` has to "
-        "route by the factory's own id"
+        "a webhook mints no message handle, which is why `ergane answer` routes "
+        "by the factory's own id"
     )
 
 
@@ -278,8 +278,8 @@ async def test_ergane_answer_resumes_the_waiting_workflow_with_that_text(
 ) -> None:
     """US4-S1 end to end: ask over the webhook, answer at the CLI, resume.
 
-    The row carries no message id — the webhook minted none — so a verb that
-    kept Telegram's message-handle routing finds nothing here.
+    The row carries no message id — the webhook minted none — so a verb keeping
+    Telegram's message-handle routing finds nothing here.
     """
     async with Worker(
         env.client,
@@ -367,8 +367,8 @@ async def test_an_unauthorized_reply_does_not_resume_and_is_recorded(
 ) -> None:
     """US4-S2: no signal, no state change, no touched clock — and a record.
 
-    Four separate assertions because they fail separately: a check that refused
-    the reply but settled the row still satisfies "does not resume".
+    Four separate assertions because they fail separately: one that refused the
+    reply but settled the row still satisfies "does not resume".
     """
     sent = await ActivityEnvironment().run(send_question, a_question("epic-w"))
     before = question(db_path, sent.question_id)
@@ -409,9 +409,7 @@ async def test_an_unauthorized_press_is_refused_on_the_button_path_too(
     """The guard covers every act behind it, not only the one it was added for.
 
     Two inbound entries, no shared settling core: a press goes through `handle`,
-    a reply through `_settle_question`. Measured rather than assumed — the first
-    version of this test drove `handle_reply` and deleting the *press* guard
-    left it green (mutation 5, first run, transcript below).
+    a reply through `_settle_question`. Measured, not assumed — see mutation 5.
 
     Both directions against one seeded escalation, because a press refused for
     want of a row looks exactly like one refused for want of an identity.
@@ -454,10 +452,9 @@ async def test_the_authorized_list_is_read_from_the_control_plane_file(
 ) -> None:
     """FR-011's list is `escalation.authorized_responders`, really parsed.
 
-    Through a real config file rather than a patched attribute, and against a
-    bridge given no explicit list: what this guards against is a field that
-    parses and reaches nobody, which is how `check_evidence` was dropped for
-    three weeks.
+    Through a real config file and a bridge given no explicit list: what this
+    guards against is a field that parses and reaches nobody, which is how
+    `check_evidence` was dropped for three weeks.
     """
     monkeypatch.setenv(
         ERGANE_CONFIG_PATH_ENV,
@@ -497,9 +494,9 @@ async def test_an_authorized_reply_after_an_unauthorized_one_is_accepted(
 ) -> None:
     """US4-S3: ignoring an intruder must not cost the operator their answer.
 
-    The order is the whole test. Refusing the second reply because a first one
-    arrived is invisible to any test that sends one reply, and turns every
-    intruder into a denial of service on what they touched.
+    The order is the whole test. Refusing the second reply because a first
+    arrived is invisible to any test that sends one, and turns every intruder
+    into a denial of service on what they touched.
     """
     sent = await ActivityEnvironment().run(send_question, a_question("epic-w"))
     client = FakeTemporalClient()
@@ -535,8 +532,8 @@ async def test_expiry_over_the_webhook_is_the_workflows_and_never_the_transports
 ) -> None:
     """US4-S4: a real `EscalationWorkflow` delivered over the second adapter,
     expiring on its own durable timer. One POST is the whole of the transport's
-    participation: the hour is the workflow's, the terminal row is a factory
-    activity's, and the adapter was handed a message and an id and nothing else.
+    participation: the hour is the workflow's and the terminal row is a factory
+    activity's, neither of which the adapter can reach.
     """
     async with escalation_worker(env):
         handle = await start_escalation(env.client, a_request(), task_queue=TASK_QUEUE)
@@ -557,8 +554,7 @@ async def test_a_transport_that_cannot_send_is_data_and_not_an_error(
 
     A refusing endpoint and an unconfigured one are the same fact, and neither
     raises — 042's probe reaches an adapter on a host that is already failing,
-    and one that raised would fail the alert about the failure. The unset case
-    never opens a socket at all.
+    and one that raised would fail the alert about the failure.
     """
     webhook.status = 503
     refused = await WebhookAdapter().deliver(
@@ -593,14 +589,12 @@ def test_the_webhook_relays_only_what_it_can_translate() -> None:
     assert adapter.relay(object()) is None
 
 
-
-
 # --- EVIDENCE, pasted verbatim (constitution VIII / D-037) --------------------
 #
 # Every mutation was applied to a committed HEAD with `git status --porcelain`
-# empty and reverted after. Not ceremony: the first run of this battery predated
-# `webhook.py` and `answer.py` being tracked, so mutation 3's edit survived the
-# revert and made runs 4, 5 and 6 meaningless. These are the re-run.
+# empty and reverted after. Not ceremony: the first run predated `webhook.py`
+# and `answer.py` being tracked, so mutation 3's edit survived the revert and
+# made runs 4, 5 and 6 meaningless. These are the re-run.
 
 MUTATIONS = """
 1  `_refuse_unauthorized` returns None unconditionally — the guard does nothing
@@ -650,5 +644,5 @@ MUTATIONS = """
 
 FINAL_SUITE = """
 $ uv run pytest -q
-2843 passed, 44 skipped, 5 warnings in 296.86s (0:04:56)
+2904 passed, 44 skipped, 5 warnings in 306.46s (0:05:06)
 """

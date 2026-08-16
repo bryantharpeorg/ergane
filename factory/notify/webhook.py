@@ -12,8 +12,8 @@ things it deliberately is not:
   side of a boundary whose purpose is that the operator's side is theirs.
   Replies arrive through `ergane answer`, which is `relay`'s caller.
 - **Temporal-aware (FR-002).** No import, at module scope or in a function:
-  042's probe says the orchestrator is down, and that alert cannot be hosted by
-  the orchestrator.
+  042's probe says the orchestrator is down, and that alert cannot be hosted
+  by it.
 
 `delivered=False` is the whole vocabulary for "nobody was paged" — an unset
 URL, a refused connection, a 500 — because the factory's move is identical for

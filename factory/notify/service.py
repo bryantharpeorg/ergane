@@ -335,7 +335,7 @@ def configured_responders() -> tuple[str, ...]:
     Unrestricted with no control-plane file and with one this process cannot
     parse, the way `configured_adapter_name` falls back to the reference
     transport: refusing every reply over a malformed config would make the
-    parser the thing that silences the channel.
+    parser the thing that silenced the channel.
     """
     try:
         from factory.controlplane.config import (

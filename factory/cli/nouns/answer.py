@@ -13,8 +13,8 @@ the sender — `CallbackBridge` checks the relay's identity against
 `escalation.authorized_responders` (FR-011).
 
 **Not the escalation verb.** An escalation carries a choice from a closed enum
-and `ergane build resolve` sends it; this carries free text, which is why 008
-has two signals and two tables. The names read alike, so the help says which.
+and `ergane build resolve` sends it; this carries the free text that is the
+whole reason 008 has two signals and two tables.
 """
 
 from __future__ import annotations
