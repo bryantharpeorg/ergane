@@ -61,7 +61,7 @@ from factory.mergequeue.gh import (
 )
 from factory.mergequeue.messages import pr_title, render_pr_body
 from factory.mergequeue.models import CheckFailure, PrSnapshot, TargetRepoProfile
-from factory.mergequeue.onboard import evaluate_repo
+from factory.mergequeue.onboard import InitFacts, evaluate_init_facts, evaluate_repo
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 from factory.verify.factory_yaml import FactoryConfigError, load_factory_config, resolve_manifest_path
 from factory.verify.models import VerificationResult
@@ -586,7 +586,12 @@ async def fetch_check_failure(request: FetchCheckFailureInput) -> tuple[CheckFai
     return await asyncio.to_thread(_fetch)
 
 
-def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile:
+def onboard_target_repo(
+    client: GhClient,
+    target_repo: str,
+    *,
+    init_facts: "InitFacts | None" = None,
+) -> TargetRepoProfile:
     """US3's preflight: gather a repo's facts through `client` and judge it (FR-010).
 
     The fact-gathering half of onboarding — `evaluate_repo` (in
@@ -607,6 +612,13 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
     `client` is injected so both the activity (via the `_client_factory` seam)
     and the offline CLI (`ergane repo onboard`) can drive the same logic against
     whichever `GhClient` their caller wired.
+
+    `init_facts` is 034 US4's second door: `ergane init --check` gathers what init
+    created (runtime root, registry entry, landing branch, control plane) and
+    passes it straight through to `evaluate_repo`, so terminal and dispatch
+    render the *same* parity findings rather than two implementations that agree
+    today. It travels the `gh`-failure path too: a repo with no GitHub remote is
+    precisely the repo whose local findings must still render.
     """
     manifest_path, _ = resolve_manifest_path(target_repo)
 
@@ -635,7 +647,7 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
         return _profile_from_gh_failure(
             target_repo, visibility="", default_branch="", owner_repo="",
             manifest_error=manifest_error, declared_gates=declared_gates,
-            error=error,
+            error=error, init_facts=init_facts,
         )
 
     try:
@@ -665,7 +677,7 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
         return _profile_from_gh_failure(
             target_repo, visibility=visibility, default_branch=default_branch,
             owner_repo=owner_repo, manifest_error=manifest_error,
-            declared_gates=declared_gates, error=error,
+            declared_gates=declared_gates, error=error, init_facts=init_facts,
         )
 
     return evaluate_repo(
@@ -677,6 +689,7 @@ def onboard_target_repo(client: GhClient, target_repo: str) -> TargetRepoProfile
         declared_gates=declared_gates,
         factory_yaml_error=manifest_error,
         squash_merge_commit_title=squash_merge_commit_title,
+        init_facts=init_facts,
     )
 
 
@@ -732,6 +745,7 @@ def _profile_from_gh_failure(
     manifest_error: str | None,
     declared_gates: tuple[str, ...],
     error: GhError,
+    init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
     """A failed validation from a `gh` refusal — never a pass (FR-010).
 
@@ -756,6 +770,10 @@ def _profile_from_gh_failure(
                 f"manifest failed to load: {manifest_error}",
             )
         )
+    # A `gh` refusal is not a reason to stop judging the repo's own tree: init's
+    # findings come from the same function `evaluate_repo` calls, so the
+    # gitignore and registry checks survive a repo with no remote at all.
+    findings.extend(evaluate_init_facts(init_facts))
     return TargetRepoProfile(
         repo=owner_repo or target_repo,
         default_branch=default_branch,

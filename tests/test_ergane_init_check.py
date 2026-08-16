@@ -1,38 +1,28 @@
 """Tests for `ergane init --check` (034 US4).
 
-The check gathers a repo's facts and renders them through the *existing* pure
-judgment — `factory.mergequeue.onboard.evaluate_repo`, the one the 003 dispatch
-path already uses — extended with the facts init itself creates.  So these tests
-are about three things the pure table in `test_onboard.py` cannot reach:
+The check renders a repo's facts through the *existing* pure judgment —
+`factory.mergequeue.onboard.evaluate_repo`, the one the 003 dispatch path uses —
+extended with the facts init creates.  These tests cover what the pure table in
+`test_onboard.py` cannot reach: the gathering (git, registry, 033's probes, read
+without writing), the two doors rendering one judgment's findings byte for byte,
+and the contract (no masking, non-zero exit on any failure, nothing mutated).
 
-- **the gathering**: git, the registry and 033's probes, read without writing;
-- **the two doors**: `ergane init --check` and `ergane repo onboard` rendering
-  findings that came from one judgment, byte-for-byte;
-- **the contract**: one finding per check, no failure masking another, exit
-  non-zero on any failure, and nothing mutated by a command that only looks.
+No test here reaches GitHub or a control plane: `gh` is scripted through the
+`GhRunner` seam and the probes through `_controlplane_probe`.
 
-No test here reaches GitHub or a control plane.  `gh` is scripted through the
-`GhRunner` seam (`tests/fake_gh.py`) and the control-plane probes through the
-`_controlplane_probe` seam, so the whole suite is offline.
-
-Pasted evidence (plan trap 7) lives at the bottom of this file: the red run
-before the implementation existed, and the per-behaviour mutation transcripts.
+Pasted evidence (plan trap 7) is at the bottom: the red run before the
+implementation existed, and one mutation transcript per behaviour.
 """
 
 from __future__ import annotations
 
 import ast
-import io
-import subprocess
-import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
 import pytest
 
 import factory.cli.init as init_module
-import factory.cli.main as main_module
 import factory.workgraph.cli as workgraph_cli
 from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER
@@ -40,50 +30,15 @@ from factory.mergequeue.gh import GhClient
 from factory.mergequeue.models import Finding, TargetRepoProfile
 
 from tests.fake_gh import FakeGh
-from tests.target_repo import git_env
+from tests.test_ergane_init import ScriptedPrompter, _git, _invoke
 
 OWNER_REPO = "acme/widgets"
 
-
-# -----------------------------------------------------------------------------
-# Fixtures: a repo on disk, a scripted `gh`, a scripted control plane
-# -----------------------------------------------------------------------------
+#: The `wired` fixture's type, spelled once so signatures fit on one line.
+Wire = Callable[..., FakeGh]
 
 
-@dataclass
-class Run:
-    """One captured CLI invocation."""
-
-    code: int
-    stdout: str
-    stderr: str
-
-
-def _invoke(argv: list[str]) -> Run:
-    """Run `main_module.main(argv)`, capturing stdout and stderr."""
-    old_stdout, old_stderr = sys.stdout, sys.stderr
-    buf_out, buf_err = io.StringIO(), io.StringIO()
-    try:
-        sys.stdout, sys.stderr = buf_out, buf_err
-        try:
-            code = main_module.main(argv)
-        except SystemExit as exit_request:
-            code = 0 if exit_request.code is None else int(exit_request.code)
-    finally:
-        sys.stdout, sys.stderr = old_stdout, old_stderr
-    return Run(code, buf_out.getvalue(), buf_err.getvalue())
-
-
-def _git(repo: Path, *args: str) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=True,
-        env=git_env(),
-        check=True,
-    )
-    return completed.stdout
-
+# --- Fixtures: a repo on disk, a scripted `gh`, a scripted control plane ---
 
 MANIFEST = """\
 version: 1
@@ -105,9 +60,8 @@ def make_repo(
 ) -> Path:
     """A scaffolded repo: manifest, ignored runtime root, one commit on `main`.
 
-    Deliberately built by hand rather than by running the interview: a check
-    that only ever sees repos its own scaffold produced cannot report on the
-    repo an operator hands it.
+    Built by hand, not by the interview: a check that only ever sees repos its
+    own scaffold produced cannot report on an operator's repo.
     """
     repo = tmp_path / name
     repo.mkdir()
@@ -167,15 +121,50 @@ def conforming_gh(
 
 
 HEALTHY_PROBES: list[Finding] = [
-    Finding("llm", True, "completed a 1-token completion against persona `implementer`"),
     Finding("temporal", True, "Temporal at localhost:7233 has namespace `factory`"),
     Finding("memory", True, "skipped by declaration: memory.backend is `none`"),
 ]
 
 
+def bind_offline_seams(
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeGh | None = None,
+    *,
+    probes: list[Finding] | None = None,
+    probe_error: Exception | None = None,
+) -> FakeGh:
+    """Bind both outward seams so no test can reach GitHub or a control plane.
+
+    A function rather than only a fixture because every test that completes a
+    full `ergane init` needs it: init's last act is the check (FR-010), and an
+    unbound seam would spawn the real `gh` and deliver a real Telegram probe.
+    """
+    gh = fake if fake is not None else conforming_gh()
+    monkeypatch.setattr(
+        init_module,
+        "_gh_client_factory",
+        lambda *, repo_path: GhClient(repo=repo_path, runner=gh),
+    )
+    monkeypatch.setattr(
+        workgraph_cli,
+        "_onboard_client_factory",
+        lambda *, repo_path: GhClient(repo=repo_path, runner=gh),
+    )
+
+    findings = HEALTHY_PROBES if probes is None else probes
+
+    def probe() -> tuple[list[Finding], int]:
+        if probe_error is not None:
+            raise probe_error
+        return list(findings), 0 if all(f.passed for f in findings) else 1
+
+    monkeypatch.setattr(init_module, "_controlplane_probe", probe)
+    return gh
+
+
 @pytest.fixture
-def wired(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeGh]:
-    """Bind both outward seams so no test can reach GitHub or a control plane."""
+def wired(monkeypatch: pytest.MonkeyPatch) -> Wire:
+    """`bind_offline_seams`, curried with this test's monkeypatch."""
 
     def bind(
         fake: FakeGh | None = None,
@@ -183,27 +172,9 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeGh]:
         probes: list[Finding] | None = None,
         probe_error: Exception | None = None,
     ) -> FakeGh:
-        gh = fake if fake is not None else conforming_gh()
-        monkeypatch.setattr(
-            init_module,
-            "_gh_client_factory",
-            lambda *, repo_path: GhClient(repo=repo_path, runner=gh),
+        return bind_offline_seams(
+            monkeypatch, fake, probes=probes, probe_error=probe_error
         )
-        monkeypatch.setattr(
-            workgraph_cli,
-            "_onboard_client_factory",
-            lambda *, repo_path: GhClient(repo=repo_path, runner=gh),
-        )
-
-        findings = HEALTHY_PROBES if probes is None else probes
-
-        def probe() -> tuple[list[Finding], int]:
-            if probe_error is not None:
-                raise probe_error
-            return list(findings), 0 if all(f.passed for f in findings) else 1
-
-        monkeypatch.setattr(init_module, "_controlplane_probe", probe)
-        return gh
 
     return bind
 
@@ -223,14 +194,9 @@ def _detail(profile: TargetRepoProfile, check: str) -> str:
     raise AssertionError(f"no finding {check!r}; got {[f.check for f in profile.findings]}")
 
 
-# -----------------------------------------------------------------------------
-# T026 / US4-S1: the all-pass case
-# -----------------------------------------------------------------------------
+# --- T026 / US4-S1: the all-pass case ---
 
-
-def test_a_scaffolded_registered_wired_repo_passes_every_finding(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_a_scaffolded_registered_wired_repo_passes_every_finding(tmp_path: Path, wired: Wire) -> None:
     """US4-S1: every finding passes and the exit code is 0."""
     repo = make_repo(tmp_path)
     registry.register("widgets", repo)
@@ -258,19 +224,13 @@ def test_a_scaffolded_registered_wired_repo_passes_every_finding(
     assert "[FAIL]" not in result.stdout
 
 
-# -----------------------------------------------------------------------------
-# T027 / SC-004: each precondition broken one at a time
-# -----------------------------------------------------------------------------
+# --- T027 / SC-004: each precondition broken one at a time ---
 
-
-def test_a_runtime_root_missing_from_gitignore_fails_naming_the_line(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_a_runtime_root_missing_from_gitignore_fails_naming_the_line(tmp_path: Path, wired: Wire) -> None:
     """US4-S2: the failure this check exists to prevent, with the line to add.
 
-    A runtime root that reaches git history is how a node commits megabytes of
-    its own session transcripts onto a landing branch, so the detail must be
-    copy-pasteable rather than descriptive.
+    A runtime root reaching git history is how a node commits megabytes of its
+    own transcripts onto a landing branch, so the detail must be copy-pasteable.
     """
     repo = make_repo(tmp_path, gitignore_line=None)
     registry.register("widgets", repo)
@@ -287,28 +247,24 @@ def test_a_runtime_root_missing_from_gitignore_fails_naming_the_line(
     assert result.code == EXIT_USER
 
 
-def test_a_declared_gate_with_no_required_check_fails_the_parity_finding(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_a_declared_gate_with_no_required_check_fails_the_parity_finding(tmp_path: Path, wired: Wire) -> None:
     """US4-S3: the *existing* parity finding, unchanged — one judgment, two doors."""
     repo = make_repo(
         tmp_path,
-        gates={"test": "uv run pytest -q", "smoke": "uv run smoke"},
+        gates={"test": "uv run pytest -q", "lint": "uv run ruff check ."},
     )
     registry.register("widgets", repo)
     wired(conforming_gh(required_checks=("test",)))
 
     profile = init_module.check_repo(repo)
 
-    assert _failing(profile) == ["gate_check:smoke"]
-    detail = _detail(profile, "gate_check:smoke")
-    assert "smoke" in detail
+    assert _failing(profile) == ["gate_check:lint"]
+    detail = _detail(profile, "gate_check:lint")
+    assert "lint" in detail
     assert "required" in detail
 
 
-def test_a_repo_with_no_registry_entry_fails_only_the_registry_finding(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_a_repo_with_no_registry_entry_fails_only_the_registry_finding(tmp_path: Path, wired: Wire) -> None:
     """Dropping the registry entry flips exactly that finding (SC-004)."""
     repo = make_repo(tmp_path)
     registry.register("widgets", repo)
@@ -323,13 +279,13 @@ def test_a_repo_with_no_registry_entry_fails_only_the_registry_finding(
 
     assert set(before) == set(after)
     assert [check for check in after if not after[check]] == ["registry_entry"]
-    profile = init_module.check_repo(repo)
-    assert str(repo.resolve()) in _detail(profile, "registry_entry")
+    detail = _detail(init_module.check_repo(repo), "registry_entry")
+    assert str(repo.resolve()) in detail
+    assert str(registry.resolve_registry_path()) in detail
+    assert "ergane init" in detail
 
 
-def test_renaming_the_landing_branch_fails_only_the_landing_branch_finding(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_renaming_the_landing_branch_fails_only_the_landing_branch_finding(tmp_path: Path, wired: Wire) -> None:
     """The manifest declares a branch the repo no longer has (SC-004)."""
     repo = make_repo(tmp_path)
     registry.register("widgets", repo)
@@ -346,14 +302,9 @@ def test_renaming_the_landing_branch_fails_only_the_landing_branch_finding(
     assert f"git -C {repo.resolve()} branch main" in detail
 
 
-# -----------------------------------------------------------------------------
-# T028 / US4-S4: nothing masks anything
-# -----------------------------------------------------------------------------
+# --- T028 / US4-S4: nothing masks anything ---
 
-
-def test_a_down_control_plane_fails_its_finding_and_every_repo_local_finding_renders(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_a_down_control_plane_fails_its_finding_and_every_repo_local_finding_renders(tmp_path: Path, wired: Wire) -> None:
     """US4-S4: 033's probe detail is carried through; the rest of the report survives."""
     repo = make_repo(tmp_path)
     registry.register("widgets", repo)
@@ -379,9 +330,7 @@ def test_a_down_control_plane_fails_its_finding_and_every_repo_local_finding_ren
     assert "[FAIL] control_plane" in result.stdout
 
 
-def test_a_probe_that_raises_does_not_abort_the_render(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_a_probe_that_raises_does_not_abort_the_render(tmp_path: Path, wired: Wire) -> None:
     """Trap 3's real failure mode: an exception from one probe must not eat the report."""
     repo = make_repo(tmp_path)
     registry.register("widgets", repo)
@@ -394,14 +343,12 @@ def test_a_probe_that_raises_does_not_abort_the_render(
     assert _checks(profile)["runtime_root_ignored"] is True
 
 
-def test_a_repo_gh_cannot_read_still_renders_every_init_finding(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
-    """The spec's edge case: no GitHub remote at all, registered but not dispatchable.
+def test_a_repo_gh_cannot_read_still_renders_every_init_finding(tmp_path: Path, wired: Wire) -> None:
+    """The spec's edge case: no GitHub remote at all — registered, not dispatchable.
 
-    The `gh` refusal is the dominant 003 finding, and the repo-local judgments
-    still render — otherwise a repo with no remote would silently skip the one
-    check that keeps its runtime root out of git.
+    The `gh` refusal dominates the 003 findings, and the repo-local judgments
+    still render; otherwise a repo with no remote would silently skip the check
+    that keeps its runtime root out of git.
     """
     repo = make_repo(tmp_path, gitignore_line=None)
     registry.register("widgets", repo)
@@ -419,23 +366,18 @@ def test_a_repo_gh_cannot_read_still_renders_every_init_finding(
     assert checks["control_plane"] is True
 
 
-# -----------------------------------------------------------------------------
-# T029 / FR-010: one judgment, two doors
-# -----------------------------------------------------------------------------
+# --- T029 / FR-010: one judgment, two doors ---
 
-
-def test_both_doors_render_identical_parity_findings(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire) -> None:
     """The dispatch door and the init door agree on every 003 finding, verbatim.
 
-    Not "agree in spirit": the same `(check, passed, detail)` triples, because
-    both come from one call into `evaluate_repo`.  A second judgment that
-    happened to agree today is what this asserts against.
+    Not "in spirit": the same `(check, passed, detail)` triples, because both
+    come from one call into `evaluate_repo`.  A second judgment that agreed today
+    and drifted next month is what this asserts against.
     """
     repo = make_repo(
         tmp_path,
-        gates={"test": "uv run pytest -q", "smoke": "uv run smoke"},
+        gates={"test": "uv run pytest -q", "lint": "uv run ruff check ."},
     )
     registry.register("widgets", repo)
     wired(conforming_gh(required_checks=("test", "typecheck")))
@@ -460,7 +402,7 @@ def test_both_doors_render_identical_parity_findings(
         "control_plane",
     ]
     # The parity failures both doors care about are present and identical.
-    assert ("gate_check:smoke", False) in [(c, p) for c, p, _ in dispatch_findings]
+    assert ("gate_check:lint", False) in [(c, p) for c, p, _ in dispatch_findings]
     assert ("unknown_check:typecheck", False) in [(c, p) for c, p, _ in dispatch_findings]
 
 
@@ -478,34 +420,30 @@ JUDGMENT = Path(__file__).resolve().parents[1] / "factory" / "mergequeue" / "onb
 
 def _finding_slugs(module: Path) -> set[str]:
     """Every check slug this module passes as `Finding(...)`'s first argument."""
-    tree = ast.parse(module.read_text(encoding="utf-8"))
     slugs: set[str] = set()
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-        if name != "Finding":
+        if (func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")) != "Finding":
             continue
         first: ast.expr | None = node.args[0] if node.args else None
         for keyword in node.keywords:
             if keyword.arg == "check":
                 first = keyword.value
+        if isinstance(first, ast.JoinedStr) and first.values:
+            first = first.values[0]  # an f-string's literal head, e.g. `gate_check:`
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             slugs.add(first.value)
-        elif isinstance(first, ast.JoinedStr) and first.values:
-            head = first.values[0]
-            if isinstance(head, ast.Constant) and isinstance(head.value, str):
-                slugs.add(head.value)
     return slugs
 
 
 def test_only_the_shared_judgment_builds_the_readiness_findings() -> None:
-    """No module outside `onboard.py` constructs a readiness finding (tasks: no second judgment).
+    """No module outside `onboard.py` constructs a readiness finding.
 
     The guard is worth only as much as its own coverage, so it asserts first
-    that the judgment really does build all of them — otherwise a rename would
-    leave a test that passes because it is looking for nothing.
+    that the judgment does build all of them — otherwise a rename would leave a
+    test that passes because it is looking for nothing.
     """
     judged = _finding_slugs(JUDGMENT)
     assert GUARDED_SLUGS <= judged
@@ -525,10 +463,7 @@ def test_only_the_shared_judgment_builds_the_readiness_findings() -> None:
     assert offenders == {}
 
 
-# -----------------------------------------------------------------------------
-# Trap 1: a command that only looks must not write
-# -----------------------------------------------------------------------------
-
+# --- Trap 1: a command that only looks must not write ---
 
 def _tree(root: Path) -> dict[str, bytes]:
     """Every path under `root` except git's own bookkeeping, with its bytes."""
@@ -541,13 +476,11 @@ def _tree(root: Path) -> dict[str, bytes]:
     return snapshot
 
 
-def test_check_writes_nothing_anywhere(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_check_writes_nothing_anywhere(tmp_path: Path, wired: Wire) -> None:
     """The read-only property, proven rather than asserted (trap 1).
 
-    Working tree, refs, history, index status and the engine's registry are all
-    compared either side of a run that actually produced a report.
+    Working tree, refs, history, status and the engine's registry are compared
+    either side of a run that actually produced a report.
     """
     repo = make_repo(tmp_path)
     registry.register("widgets", repo)
@@ -571,15 +504,13 @@ def test_check_writes_nothing_anywhere(
     assert _git(repo, "status", "--porcelain") == status_before
 
 
-def test_check_does_not_create_the_runtime_root_it_is_judging(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_check_does_not_create_the_runtime_root_it_is_judging(tmp_path: Path, wired: Wire) -> None:
     """A repo with no runtime root is reported on, not repaired.
 
     `resolve_factory_root()` — the worker's resolver — *creates* `.ergane/` when
-    neither name is present, and resolves against the process's working
-    directory rather than the repo under judgment.  A check built on it would
-    both scaffold behind the operator's back and judge the wrong directory.
+    neither name is present, and resolves against the process's cwd rather than
+    the repo under judgment.  A check built on it would scaffold behind the
+    operator's back and judge the wrong directory.
     """
     repo = make_repo(tmp_path)
     (repo / ".ergane").rmdir()
@@ -593,9 +524,7 @@ def test_check_does_not_create_the_runtime_root_it_is_judging(
     assert _checks(profile)["runtime_root_ignored"] is True
 
 
-def test_a_repo_still_on_the_legacy_runtime_root_is_judged_on_that_root(
-    tmp_path: Path, wired: Callable[..., FakeGh]
-) -> None:
+def test_a_repo_still_on_the_legacy_runtime_root_is_judged_on_that_root(tmp_path: Path, wired: Wire) -> None:
     """Trap 12: an unmigrated repo has `.factory/`, and that is the root to ignore."""
     repo = make_repo(tmp_path, gitignore_line=".factory/", runtime_root=".factory")
     registry.register("widgets", repo)
@@ -609,31 +538,16 @@ def test_a_repo_still_on_the_legacy_runtime_root_is_judged_on_that_root(
     assert "ergane repo migrate-runtime-root" in _detail(profile, "runtime_root_migration")
 
 
-# -----------------------------------------------------------------------------
-# FR-010: the check is the automatic last act of a full init
-# -----------------------------------------------------------------------------
-
-
-class ScriptedPrompter:
-    """Answers the interview from a list, in order."""
-
-    def __init__(self, answers: list[str]) -> None:
-        self.answers = list(answers)
-
-    def ask(self, prompt: str, *, default: str | None = None, error: str | None = None) -> str:
-        if not self.answers:
-            raise AssertionError(f"prompter ran out of answers for: {prompt!r}")
-        return self.answers.pop(0)
-
+# --- FR-010: the check is the automatic last act of a full init ---
 
 def test_a_full_init_ends_by_running_the_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wired: Callable[..., FakeGh]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wired: Wire
 ) -> None:
     """FR-010: init's last act is the check, and its report reaches the operator.
 
-    The exit code stays 0 because the repo-local work succeeded: a scaffold that
-    is written and registered is not undone by a merge queue nobody has wired
-    yet (US3-S3), and the printed findings say exactly what remains.
+    The exit code stays 0 because the repo-local work succeeded: a written and
+    registered scaffold is not undone by a merge queue nobody has wired yet
+    (US3-S3), and the printed findings say what remains.
     """
     repo = tmp_path / "fresh"
     repo.mkdir()
@@ -659,35 +573,61 @@ def test_a_full_init_ends_by_running_the_check(
 # terminal.  Every transcript below was produced by the commands shown.
 # =============================================================================
 
-# --- the red run, before any implementation existed --------------------------
+# --- the red run, before any implementation existed (commit f30d2e8) ---------
 #
 # $ uv run pytest -q tests/test_onboard.py
-# tests/test_onboard.py:37: in <module>
-#     from factory.mergequeue.onboard import InitFacts, evaluate_repo
 # E   ImportError: cannot import name 'InitFacts' from 'factory.mergequeue.onboard'
-#     (.../factory/mergequeue/onboard.py)
-# =========================== short test summary info ============================
-# ERROR tests/test_onboard.py
 # !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
 # 1 error in 0.19s
 #
 # $ uv run pytest -q tests/test_ergane_init_check.py
-# E       AttributeError: <module 'factory.cli.init' from '.../factory/cli/init.py'>
-#         has no attribute '_gh_client_factory'
-# tests/test_ergane_init_check.py:187: AttributeError
-# =========================== short test summary info ============================
-# FAILED tests/test_ergane_init_check.py::test_a_scaffolded_registered_wired_repo_passes_every_finding
-# FAILED tests/test_ergane_init_check.py::test_a_runtime_root_missing_from_gitignore_fails_naming_the_line
-# FAILED tests/test_ergane_init_check.py::test_a_declared_gate_with_no_required_check_fails_the_parity_finding
-# FAILED tests/test_ergane_init_check.py::test_a_repo_with_no_registry_entry_fails_only_the_registry_finding
-# FAILED tests/test_ergane_init_check.py::test_renaming_the_landing_branch_fails_only_the_landing_branch_finding
-# FAILED tests/test_ergane_init_check.py::test_a_down_control_plane_fails_its_finding_and_every_repo_local_finding_renders
-# FAILED tests/test_ergane_init_check.py::test_a_probe_that_raises_does_not_abort_the_render
-# FAILED tests/test_ergane_init_check.py::test_a_repo_gh_cannot_read_still_renders_every_init_finding
-# FAILED tests/test_ergane_init_check.py::test_both_doors_render_identical_parity_findings
-# FAILED tests/test_ergane_init_check.py::test_only_the_shared_judgment_builds_the_readiness_findings
-# FAILED tests/test_ergane_init_check.py::test_check_writes_nothing_anywhere - ...
-# FAILED tests/test_ergane_init_check.py::test_check_does_not_create_the_runtime_root_it_is_judging
-# FAILED tests/test_ergane_init_check.py::test_a_repo_still_on_the_legacy_runtime_root_is_judged_on_that_root
-# FAILED tests/test_ergane_init_check.py::test_a_full_init_ends_by_running_the_check
+# E       AttributeError: <module 'factory.cli.init' ...> has no attribute
+#         '_gh_client_factory'
 # 14 failed in 0.26s
+#
+# --- mutation transcripts ----------------------------------------------------
+# One production change at a time, applied, run, reverted.  Command for every
+# row: `uv run pytest -q tests/test_onboard.py tests/test_ergane_init_check.py`
+# (rows M3 and M11-M17 ran the second module alone).  Counts are that run's
+# summary line; each is red only because the mutation is.
+#
+# M1  onboard.py `if facts.runtime_root_ignored` -> `if True`  3 failed, 30 passed
+# M2  the gitignore detail stops naming the line to add        1 failed, 32 passed
+# M3  init.py `_git_ignores` returns True for everything       2 failed, 12 passed
+# M4  registry_entry always passes                             2 failed, 31 passed
+# M5  landing_branch always passes                             2 failed, 31 passed
+# M6  an unloadable manifest emits no landing_branch finding   1 failed, 18 passed
+# M7  control_plane calls every probe set a pass               4 failed, 29 passed
+# M8  an empty probe set reads as reachable                    1 failed, 18 passed
+# M9  evaluate_init_facts returns after the first failure      3 failed, 30 passed
+# M10 merge_activities stops passing init_facts through       11 failed,  3 passed
+# M11 _profile_from_gh_failure drops evaluate_init_facts       1 failed, 13 passed
+# M12 _control_plane_facts loses its try/except                1 failed, 13 passed
+# M13 resolve_repo_runtime_root mkdir()s the missing root      1 failed, 13 passed
+# M14 resolve_repo_runtime_root ignores the legacy name        1 failed, 13 passed
+# M15 run_check always returns EXIT_OK                         2 failed, 12 passed
+# M16 init_command stops calling run_check                     1 failed, 13 passed
+# M17 init.py builds a Finding("registry_entry", ...) of its own
+#                                                              1 failed, 13 passed
+#
+# The names pytest printed, for the two mutations whose blast radius is the
+# contract itself:
+#
+# M9 (no masking):
+# FAILED tests/test_onboard.py::test_several_broken_preconditions_all_render_none_masked
+# FAILED tests/test_ergane_init_check.py::test_a_repo_with_no_registry_entry_fails_only_the_registry_finding
+# FAILED tests/test_ergane_init_check.py::test_a_repo_gh_cannot_read_still_renders_every_init_finding
+#
+# M11 (a gh refusal must not eat the repo-local findings):
+# FAILED tests/test_ergane_init_check.py::test_a_repo_gh_cannot_read_still_renders_every_init_finding
+#
+# --- the full suite, after the implementation --------------------------------
+#
+# $ uv run pytest -q
+# 2653 passed, 44 skipped, 4 warnings in 287.42s (0:04:47)
+#
+# One earlier whole-suite run failed test_pause_roadmap_parks_dispatch_between_epics
+# (tests/test_roadmap_operator_surface.py), which polls a live Temporal test
+# server under a 30s wall-clock timeout.  It passes alone, passes alone with
+# these changes stashed, and passed on the run above; nothing in this diff is
+# reachable from the roadmap workflow.  Recorded rather than hidden.

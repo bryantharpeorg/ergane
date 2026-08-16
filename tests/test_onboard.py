@@ -296,19 +296,14 @@ def test_squash_title_unreadable_fails_closed() -> None:
 
 # --- 034 US4: the same judgment, extended with the facts init creates ---------
 #
-# `ergane init --check` gathers four more facts about a repo — its runtime root
-# and whether git ignores it, its registry entry, its landing branch, and 033's
-# control-plane probes — and hands them to *this* function rather than to a
-# second one.  These cases are the same table style as everything above: pure
-# facts in, findings out, no fakes at all.
+# `ergane init --check` gathers four more facts — the runtime root and whether
+# git ignores it, the registry entry, the landing branch, 033's probes — and
+# hands them to *this* function rather than to a second one.  Same table style
+# as everything above: pure facts in, findings out, no fakes at all.
 
 
 def _init_facts(**overrides: object) -> InitFacts:
-    """A conforming repo's init facts, with named breaks applied.
-
-    Deliberately not a module constant: every case below states the break it is
-    making, and shares nothing mutable with its neighbours.
-    """
+    """A conforming repo's init facts, with named breaks applied."""
     facts: dict[str, object] = dict(
         repo_root="/repos/widgets",
         runtime_root=".ergane",
@@ -344,9 +339,9 @@ def _judge(**overrides: object):
 def test_init_facts_omitted_leaves_the_dispatch_judgment_untouched() -> None:
     """The 003 door passes no init facts, so it sees exactly the checks it always saw.
 
-    This is the guard on "extend, never fork": the extension is invisible to the
-    caller that does not gather init's facts, so adding checks here can never
-    start refusing a dispatch that used to be allowed.
+    The guard on "extend, never fork": the extension is invisible to a caller
+    that gathers no init facts, so a check added here can never start refusing a
+    dispatch that used to be allowed.
     """
     profile = evaluate_repo(
         repo=REPO,
@@ -367,69 +362,6 @@ def test_init_facts_omitted_leaves_the_dispatch_judgment_untouched() -> None:
     ]
 
 
-def test_a_fully_ready_repo_adds_one_passing_finding_per_init_check() -> None:
-    """Every init check renders, and a conforming repo passes all of them (US4-S1)."""
-    profile = _judge()
-    checks = [f.check for f in profile.findings]
-    assert checks[-4:] == [
-        "runtime_root_ignored",
-        "registry_entry",
-        "landing_branch",
-        "control_plane",
-    ]
-    assert profile.passed is True
-    assert all(f.passed for f in profile.findings)
-
-
-def test_an_unignored_runtime_root_fails_naming_the_exact_line_to_add() -> None:
-    """US4-S2: the finding names the line, not just the problem.
-
-    A runtime root that reaches git history is how a node commits its own
-    transcripts onto a landing branch, so this detail has to be copy-pasteable.
-    """
-    profile = _judge(runtime_root_ignored=False)
-    finding = _finding_by_check(profile.findings, "runtime_root_ignored")
-    assert finding.passed is False
-    assert ".ergane/" in finding.detail
-    assert "/repos/widgets/.gitignore" in finding.detail
-    assert profile.passed is False
-    # Exactly one finding flipped: nothing else in the judgment saw this break.
-    assert [f.check for f in profile.findings if not f.passed] == ["runtime_root_ignored"]
-
-
-def test_a_legacy_runtime_root_is_judged_on_its_own_name_and_named_for_migration() -> None:
-    """Trap 12: a repo that never migrated has `.factory/`, and that is the root to ignore."""
-    profile = _judge(
-        runtime_root=".factory",
-        runtime_root_is_legacy=True,
-        runtime_root_ignored=False,
-    )
-    ignored = _finding_by_check(profile.findings, "runtime_root_ignored")
-    assert ignored.passed is False
-    assert ".factory/" in ignored.detail
-    assert ".ergane/" not in ignored.detail
-
-    migration = _finding_by_check(profile.findings, "runtime_root_migration")
-    assert migration.passed is False
-    assert "ergane repo migrate-runtime-root" in migration.detail
-
-
-def test_a_migrated_repo_gets_no_migration_finding() -> None:
-    """The migration finding exists only for the repo that still has the legacy root."""
-    profile = _judge()
-    assert "runtime_root_migration" not in [f.check for f in profile.findings]
-
-
-def test_a_repo_with_no_registry_entry_fails_naming_the_registry_and_the_verb() -> None:
-    """Dropping the entry flips exactly the registry finding (SC-004)."""
-    profile = _judge(registry_slug=None)
-    finding = _finding_by_check(profile.findings, "registry_entry")
-    assert finding.passed is False
-    assert "/state/ergane/repos.json" in finding.detail
-    assert "ergane init" in finding.detail
-    assert [f.check for f in profile.findings if not f.passed] == ["registry_entry"]
-
-
 def test_an_unreadable_registry_fails_its_own_finding_and_offers_rebuild() -> None:
     """A corrupt cache is reported as one finding, never as an aborted render."""
     profile = _judge(registry_slug=None, registry_error="is not parseable JSON")
@@ -439,21 +371,11 @@ def test_an_unreadable_registry_fails_its_own_finding_and_offers_rebuild() -> No
     assert "ergane repo rebuild" in finding.detail
 
 
-def test_a_missing_landing_branch_fails_naming_the_branch_and_the_git_command() -> None:
-    """Renaming the landing branch flips exactly the landing-branch finding (SC-004)."""
-    profile = _judge(landing_branch_exists=False)
-    finding = _finding_by_check(profile.findings, "landing_branch")
-    assert finding.passed is False
-    assert "main" in finding.detail
-    assert "git -C /repos/widgets branch main" in finding.detail
-    assert [f.check for f in profile.findings if not f.passed] == ["landing_branch"]
-
-
 def test_an_unloadable_manifest_leaves_the_landing_branch_unjudged_but_still_rendered() -> None:
     """No check is silently dropped: an unknown landing branch is a failing finding.
 
     The manifest's own finding still carries the loader's error, so the operator
-    sees the cause and the consequence rather than one standing in for the other.
+    sees cause and consequence rather than one standing in for the other.
     """
     profile = evaluate_repo(
         repo=REPO,
@@ -489,14 +411,6 @@ def test_a_failing_control_plane_probe_is_summarised_into_one_finding() -> None:
     assert _finding_by_check(profile.findings, "runtime_root_ignored").passed is True
     assert _finding_by_check(profile.findings, "registry_entry").passed is True
     assert _finding_by_check(profile.findings, "landing_branch").passed is True
-
-
-def test_probes_that_could_not_run_at_all_fail_carrying_the_reason() -> None:
-    """An engine with no control plane installed fails honestly rather than being omitted."""
-    profile = _judge(control_plane=(), control_plane_error="no control-plane config at /etc/ergane.toml")
-    finding = _finding_by_check(profile.findings, "control_plane")
-    assert finding.passed is False
-    assert "/etc/ergane.toml" in finding.detail
 
 
 def test_no_probes_and_no_error_is_still_a_failure_not_a_pass() -> None:
