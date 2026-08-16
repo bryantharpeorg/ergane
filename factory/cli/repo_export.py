@@ -4,35 +4,33 @@
 store and one markdown digest, and that is the whole surface.  Four decisions
 carry it.
 
-**The repo's rows are the rows in the repo's own stores.**  No store in this
-engine has a repo column: `findings` is keyed by finding key, `usage_records` by
-epic, node and attempt, `escalations` by a token — and an epic's workflow id is
-`epic-{epic_id}` with no repo in it (034 plan, trap 6).  What *is* repo-scoped is
-the file: FR-012 puts each repo's runtime state under its own runtime root.  So
-selection is by store location, derived from the registry entry the slug names
-and never from the environment.  An `ERGANE_ROOT` pointing at the host's own root
-would otherwise export the operator's rows under a departing repo's name.
+**The repo's rows are the rows in the repo's own stores.**  No store here has a
+repo column: `findings` is keyed by finding key, `usage_records` by epic, node
+and attempt, `escalations` by a token — and a workflow id is `epic-{epic_id}`
+with no repo in it (034 plan, trap 6).  What *is* repo-scoped is the file, since
+FR-012 puts each repo's runtime state under its own runtime root.  So selection
+is by store location, derived from the registry entry the slug names and never
+from the environment: an `ERGANE_ROOT` pointing at the host's own root would
+otherwise export the operator's rows under a departing repo's name.
 
 **Read-only, and nothing is created.**  Every store is opened through the same
 `mode=ro` door `factory/verify/store.py` opens for reporting callers, where a
-write is refused by the driver rather than by this module's care, and where no
-file, directory or schema can be brought into being.  A repo that never ran an
-epic has no stores; its export says so with empty files rather than with three
-new databases in a repository the engine has just let go of.
+write is refused by the driver rather than by this module's care and no file,
+directory or schema can be brought into being.  A repo that never ran an epic has
+no stores; its export says so with empty files rather than with three new
+databases in a repository the engine has just let go of.
 
 **Deterministic by construction.**  Every query names its `ORDER BY`, every
-record is built in the store's own column order, and nothing written here is
-derived from a clock: there is no "exported at" line, because two exports of an
-untouched engine must be byte-identical and a timestamp is the one thing that
-cannot be.  The digest is rendered from the same records the JSONL is, so the two
-cannot disagree and neither can drift on its own.
+record is built in the store's own column order, and nothing written here comes
+from a clock: there is no "exported at" line, because two exports of an untouched
+engine must be byte-identical and a timestamp is the one thing that cannot be.
+The digest is rendered from the same records the JSONL is, so the two cannot
+disagree.
 
 **No secret value leaves.**  Every string passes through one redactor at one
 choke point, on the way out of the database and before either writer sees it.
 `history_summary` is why: it is a verbatim failure history, and a run whose
-output echoed a proxy key put that key in a store.  The patterns are the ones
-`factory/controlplane/config.py` refuses where a name belongs, plus the `sk-`
-shape the doctor's own sanitizer already strips.
+output echoed a proxy key put that key in a store.
 """
 
 from __future__ import annotations

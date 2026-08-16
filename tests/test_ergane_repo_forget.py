@@ -7,22 +7,22 @@ will not answer.  This story adds the two flags that make leaving complete:
 is running, and `--export <dir>`, which writes what the engine learned about the
 repo into open formats outside that root.
 
-Three claims here are the ones that would be easy to build vacuously, so each is
-written with the mutation that proves it is not:
+Three claims here would be easy to build vacuously, so each is written with the
+mutation that proves it is not (the battery is at the bottom):
 
 - **Two exports against an untouched engine are byte-identical** (US5's
-  independent test).  An export that wrote nothing satisfies byte-identity
-  trivially, so the comparison runs inside a test that first asserts the file
-  set and the row counts.  Mutation: putting a clock into the digest must turn
-  it red.
-- **`--clean-runtime` empties the departing repo's root and nothing else.**
-  The path it deletes is derived from the registry entry; the environment is
-  given a decoy root in the same test and must survive untouched.
-- **No test can empty a live runtime root.**  The guard is asserted through the
-  CLI with the tmp tree moved out from under the repo, so the enforcement is
-  exercised rather than assumed.  This repository lost its whole runtime root on
-  2026-08-14 to a process acting on a root it had been handed; D-045's answer to
-  the same class was a guard at the choke point, and this is that guard.
+  independent test).  An export that wrote nothing satisfies that trivially, so
+  the comparison runs inside a test that first asserts the file set and the row
+  counts, and a sibling test pins the record *order* — which byte-identity alone
+  cannot see.
+- **`--clean-runtime` empties the departing repo's root and nothing else.**  The
+  path it deletes is derived from the registry entry; the environment is given a
+  decoy root in the same test and must survive untouched.
+- **No test can empty a live runtime root.**  The guard is exercised through the
+  CLI with the tmp tree moved out from under the repo rather than assumed.  This
+  repository lost its whole runtime root on 2026-08-14 to a process acting on a
+  root it had been handed; D-045 answered that class with a guard at the choke
+  point, and this is that guard.
 
 Pasted evidence (constitution VIII / D-037) is at the bottom.
 """
@@ -281,8 +281,7 @@ def test_clean_runtime_refuses_while_any_epic_is_open(
     Refused on *any* open epic: workflow ids are `epic-{epic_id}` and carry no
     repo token (034 plan, trap 6), so a per-repo filter would match nothing and
     delete a live epic's evidence the first time it mattered.  The refusal lands
-    before the schedule is deleted, because a departure that half-happened is
-    worse than one that was refused.
+    before the schedule is deleted.
     """
     repo = registered(tmp_path)
     seed(floor, desired_for(repo))
@@ -316,11 +315,10 @@ def test_clean_runtime_empties_the_entrys_root_and_not_the_environments(
 ) -> None:
     """The root emptied comes from the registry entry, never from the environment.
 
-    `ERGANE_ROOT` and `FACTORY_ROOT` are pointed at a decoy holding a database of
-    its own.  A `--clean-runtime` that asked `resolve_factory_root()` — which
-    reads exactly those variables — would empty the decoy and leave the repo's
-    own root full, which is what happened to this repository on 2026-08-14.  The
-    directory itself survives because the repo's `.gitignore` still names it.
+    `ERGANE_ROOT` and `FACTORY_ROOT` point at a decoy holding a database of its
+    own.  A `--clean-runtime` that asked `resolve_factory_root()` — which reads
+    exactly those variables — would empty the decoy and leave this repo's root
+    full.  The directory itself survives: the repo's `.gitignore` still names it.
     """
     repo = registered(tmp_path)
     seed(floor, desired_for(repo))
@@ -349,13 +347,13 @@ def test_clean_runtime_is_refused_for_a_root_outside_the_tmp_tree(
     floor: FakeScheduleServer,
     no_epics: None,
 ) -> None:
-    """No test can empty a live runtime root, D-045's enforcement for a deletion.
+    """No test can empty a live runtime root: D-045's enforcement, for a deletion.
 
     The repo is real and its root is full; what moves is the tmp tree the guard
-    measures against, so the guard sees exactly what it would see against
-    `/home/<operator>/code/<repo>/.ergane`.  Deleting the guard leaves this test
-    red, and the assertion cannot be satisfied by a coincidental substring: it
-    names the finding key and then checks the files are still there.
+    measures against, so the guard sees what it would see against
+    `/home/<operator>/code/<repo>/.ergane`.  The assertion names the finding key
+    and then checks the files are still there, so a coincidental substring in
+    some other refusal cannot satisfy it.
     """
     repo = registered(tmp_path)
     seed(floor, desired_for(repo))
@@ -645,47 +643,67 @@ def test_the_export_never_opens_a_store_for_writing(tmp_path: Path) -> None:
 #
 #   $ cat first/digest.md
 #   # Ergane export — widgets
-#
-#   The engine's own record of the repository at `/tmp/us5-evidence/widgets`,
-#   written by `ergane repo forget --export`. Ergane never reads these files
-#   back: they are yours. Every string here passed through the credential
-#   redactor on the way out, so a value that looked like a key reads as
-#   `[REDACTED]`.
-#
+#   [... prose, then the store table, verbatim: ...]
 #   | store | rows | read from |
 #   | --- | --- | --- |
 #   | findings | 3 | .ergane/doctor.db |
 #   | usage | 2 | .ergane/ledger.db |
 #   | escalations | 1 | .ergane/verification.db |
-#
-#   ## findings.jsonl
-#
-#   One JSON object per line, one line per row of the `findings` table, ordered
-#   by `key`. Each carries an `events` array — its `finding_events` trail,
-#   oldest first — so the recurrence count that decides what gets promoted
-#   travels with the finding rather than behind it.
-#
+#   [... then one section per file, each documenting its format, and: ...]
 #   - `agent/escape` — critical, open, 2 occurrence(s): summary for agent/escape
 #   - `doctor/ledger` — critical, open, 3 occurrence(s): summary for doctor/ledger
-#   - `interpreter/ci-failure` — critical, open, 1 occurrence(s): summary for interpreter/ci-failure
-#   [... the usage and escalations sections follow, unchanged between runs ...]
+#   - `interpreter/ci-failure` — critical, open, 1 occurrence(s): summary for ...
 #
-#   $ head -c 320 first/findings.jsonl
-#   {"key":"agent/escape","category":"agent","severity":"critical","status":"open",
-#   "summary":"summary for agent/escape","refs":"[\"factory/a.py:1\"]","notes":null,
-#   "source":"operator","occurrences":2,"first_seen":"2026-01-01T00:00:00Z",
-#   "last_seen":"2026-01-09T00:00:00Z","promoted_spec":null,"resolved_at":null,
-#   "resolution":n
+#   $ head -c 200 first/findings.jsonl
+#   {"key":"agent/escape","category":"agent","severity":"critical","status":
+#   "open","summary":"summary for agent/escape","refs":"[\"factory/a.py:1\"]",
+#   "notes":null,"source":"operator","occurrences":2,"first_seen":"2026-01-01
 #
-# The findings are ordered by `key` rather than by insertion, which is the point:
-# they were seeded interpreter, agent, doctor and they come out agent, doctor,
-# interpreter.  An unordered `SELECT` happens to agree with insertion order on a
-# fresh SQLite file, so an export without the `ORDER BY` would have produced this
-# same pair of identical hashes and been wrong anyway.
+# The findings come out ordered by `key`, not by insertion: they were seeded
+# interpreter, agent, doctor.  That matters more than the identical hashes do —
+# an unordered `SELECT` agrees with insertion order on a fresh SQLite file, so it
+# would have produced this same pair of matching hashes and still been wrong.
 #
-# What makes this non-vacuous, proven by mutation rather than asserted (see the
-# commit that added the implementation): putting a clock in the digest —
-# `datetime.now(timezone.utc)` on one line — turns
-# `test_two_exports_of_an_untouched_engine_are_byte_identical` red, and nothing
-# else in the suite notices.
+# Mutation battery — one production behaviour broken at a time, against this
+# file plus `tests/test_repo_ast.py`.  A mutation nothing catches is a test that
+# cannot fail, so the run is committed rather than summarised:
+#
+#   M1  digest carries a clock                    CAUGHT  1 failed, 15 passed
+#   M2  findings read without ORDER BY            CAUGHT  1 failed, 15 passed
+#   M3  the credential redactor is a no-op        CAUGHT  1 failed, 15 passed
+#   M4  stores opened read-write, not mode=ro     CAUGHT  1 failed, 15 passed
+#   M5  runtime root comes from the environment   CAUGHT  6 failed, 10 passed
+#   M6  the tmp-tree removal guard is deleted     CAUGHT  1 failed, 15 passed
+#   M7  --clean-runtime never asks about epics    CAUGHT  1 failed, 15 passed
+#   M8  export destination never range-checked    CAUGHT  1 failed, 15 passed
+#   M9  export runs without --export              CAUGHT  1 failed, 15 passed
+#   M10 --clean-runtime empties nothing           CAUGHT  1 failed, 15 passed
+#   M11 a legacy .factory/ store is ignored       CAUGHT  1 failed, 15 passed
+#   M12 visit_Assign's empty-scope guard removed  CAUGHT  2 failed, 14 passed
+#
+# Three of those were NOT caught on the first run, and each named a real hole:
+#
+# - M2 and M11 were behaviours with no test at all — declared ordering, and the
+#   legacy-store fallback.  Both were written, both claimed in a docstring, and
+#   neither was ever executed against a case that could tell the difference.
+# - M8 is the one worth reading twice.  `test_export_refuses_a_destination_
+#   inside_the_runtime_root` passed with the check deleted, because the test also
+#   passed `--clean-runtime` without binding the capacity read: the CLI reached
+#   the operator's *real* Temporal, found a genuinely running epic, and refused
+#   for that reason instead.  Exit 1 either way, and the phrase the assertion
+#   looked for — "runtime root" — appears in both messages.  A test that consults
+#   a production control plane is also a test whose verdict depends on what the
+#   floor happens to be doing; `no_epics` and a refusal-specific assertion are
+#   the fix, and `factory/cli/repo.py::_open_client` having no pytest refusal of
+#   its own — unlike `factory/roadmap/schedule.py`, which has one — is reported
+#   as a finding rather than changed here.
+#
+# The gate, run the way the factory runs it — the declared `test` gate inside the
+# real bwrap boundary over this worktree:
+#
+#   test: PASS exit=0 258.9s
+#   2848 passed, 44 skipped, 5 warnings in 258.19s (0:04:18)
+#
+# (2828 before this story: 16 tests here and in `test_repo_ast.py`, plus four
+# existing parametrized sweeps that now also cover `factory/cli/repo_export.py`.)
 # -----------------------------------------------------------------------------

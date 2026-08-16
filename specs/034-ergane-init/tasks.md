@@ -280,33 +280,43 @@ Chains on US6 merged — `forget` must delete the schedule US6 creates.
 
 ### Tests for User Story 5 (write FIRST, must fail)
 
-- [ ] T033 [US5] Write the clean-departure case FIRST (spec US5-S1, SC-006):
+- [x] T033 [US5] Write the clean-departure case FIRST (spec US5-S1, SC-006):
       after forget the entry is gone, the repo's tree and history are untouched,
       and a fresh `ergane init .` re-registers the same slug to a byte-identical
-      tree.
+      tree. **This was already true when US5 started** — US7 built the verb — so
+      the test was green on arrival and is a regression guard, not new behaviour.
 
-- [ ] T034 [US5] Write the refusal case FIRST (spec US5-S2): with an epic open,
+- [x] T034 [US5] Write the refusal case FIRST (spec US5-S2): with an epic open,
       `--clean-runtime` refuses naming what it saw. Read plan trap 6 — the open
       count is namespace-wide because workflow ids carry no repo token, so refuse
       on *any* open epic and say so; do not filter ids that cannot be filtered.
 
-- [ ] T035 [US5] Write the export cases FIRST: `--export ./out` writes one JSONL
+- [x] T035 [US5] Write the export cases FIRST: `--export ./out` writes one JSONL
       per store holding exactly this repo's rows plus a markdown digest, removes
       the registry entry, and writes nothing anywhere else (spec US5-S3); forget
       without the flag writes no export at all (spec US5-S4).
 
 ### Implementation for User Story 5
 
-- [ ] T036 [US5] Add `forget` to the existing `repo` parser with `--clean-runtime`
-      and `--export`, entry removal only by default — plus the schedule
-      deletion US6's T042 asserts.
+- [x] T036 [US5] Add `--clean-runtime` and `--export` to the `forget` verb the
+      `repo` parser already carries, entry removal only by default.
+      **Corrected 2026-08-16 by the implementing session.** As written this task
+      said "add `forget` to the existing `repo` parser ... plus the schedule
+      deletion US6's T042 asserts", which contradicted T042: US7 owns T042, and
+      US7 landed the whole verb — parser entry, `registry.forget`, schedule
+      deletion and the orphan refusal. US5 extends it and builds none of it.
+      (The pointer was stale twice over: T042 moved from US6 to US7 when US6 was
+      split on 2026-08-16, and this line was never re-read against it.)
 
-- [ ] T037 [US5] Implement export: slug-selected rows, outside `.ergane/`, no
-      secret values, committing nothing. Produce the byte-identity evidence and
-      COMMIT IT (plan trap 7) — run two exports against an untouched engine and
-      paste both digests verbatim into a comment block in the test file.
+- [x] T037 [US5] Implement export: rows selected by the repo the slug names,
+      written outside the runtime root, no secret values, committing nothing.
+      Produce the byte-identity evidence and COMMIT IT (plan trap 7).
+      **Note on "slug-selected rows":** no store in this engine has a repo or
+      slug column, so selection is by store *location* — the runtime root under
+      the registry entry the slug names — and never from the environment. Same
+      root cause as plan trap 6: an epic's workflow id carries no repo token.
 
-- [ ] T038 [US5] Full suite green: `uv run pytest -q`.
+- [x] T038 [US5] Full suite green: `uv run pytest -q`.
 
 ## Verification
 

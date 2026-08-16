@@ -318,17 +318,13 @@ def repo_forget_command(args: argparse.Namespace) -> int:
     entry is unchanged, rather than removing the entry and leaving the schedule
     to dispatch unwatched work.
 
-    US5 adds two optional acts around that spine, and the order they run in is
-    the contract (FR-011, FR-013):
-
-    - Every refusal is taken before any act.  A departure that half-happened -
-      an export written, then a refusal; a runtime root emptied, then an entry
-      that survives - is worse than one that was refused, because the operator
-      cannot tell which half ran by looking.
-    - `--export` runs before `--clean-runtime`, because the records it reads
-      live in the root that flag empties.
-    - `--clean-runtime` runs last, after the entry is gone, so the state is
-      deleted only once nothing points at it.
+    US5 adds two optional acts around that spine, and their order is the contract
+    (FR-011, FR-013): every refusal is taken before any act, because a departure
+    that half-happened is worse than one that was refused - the operator cannot
+    tell which half ran by looking; `--export` runs before `--clean-runtime`,
+    because the records it reads live in the root that flag empties; and
+    `--clean-runtime` runs last, so state is deleted only once nothing points at
+    it.
     """
     slug = str(args.slug)
     try:
@@ -410,17 +406,16 @@ def runtime_root_for(repo: Path) -> Path:
     """The runtime root *of this repository*, decided by directory name alone.
 
     `resolve_factory_root()` answers a different question - which root the
-    current process should use - and answers it from the working directory and
-    from `ERGANE_ROOT`/`FACTORY_ROOT`.  Neither is a fact about the repository a
-    slug names, and `--clean-runtime` deletes what this function returns.  On
-    2026-08-14 this repository lost its whole runtime root to a process acting on
-    a root it had been handed rather than one it had derived; the environment is
-    not consulted here for that reason, and the result is a child of `repo` by
-    construction rather than by check.
+    current process should use - from the working directory and from
+    `ERGANE_ROOT`/`FACTORY_ROOT`.  Neither is a fact about the repository a slug
+    names, and `--clean-runtime` deletes what this returns.  On 2026-08-14 this
+    repository lost its whole runtime root to a process acting on a root it had
+    been handed rather than one it had derived; the environment is not consulted
+    here for that reason, and the result is a child of `repo` by construction
+    rather than by check.
 
-    The precedence is the resolver's own (034 plan, trap 12): `.ergane/` wins,
-    `.factory/` is honoured while it is the only one, and a repository with
-    neither gets the modern name.
+    Precedence is the resolver's own (034 plan, trap 12): `.ergane/` wins,
+    `.factory/` is honoured while it is the only one, neither gets the modern name.
     """
     modern = repo / DEFAULT_RUNTIME_ROOT
     if modern.is_dir():
@@ -471,12 +466,12 @@ def _refuse_unsafe_removal(root: Path) -> None:
     The enforcement D-045 put at `factory/verify/store.py::connect()`, at the one
     choke point every deletion in this verb goes through, and for the same
     reason: on 2026-08-14 this repository's live runtime root was emptied by a
-    process satisfying a test, and the convention that was meant to prevent that
-    had already decayed three times.  A convention is not a boundary for an act
-    that deletes.
+    process satisfying a test, and the convention meant to prevent that had
+    already decayed three times.  A convention is not a boundary for an act that
+    deletes.
 
     Unlike D-045 there is no acknowledgment variable.  D-045 has one because a
-    sanctioned live smoke has to open a real store; nothing needs to empty a real
+    sanctioned live smoke must open a real store; nothing needs to empty a real
     runtime root from inside a test, and a door with no user is only a way in.
     Production never sets `PYTEST_CURRENT_TEST`, so an operator's own
     `--clean-runtime` is byte-identical to the pre-guard behaviour, and the
