@@ -285,20 +285,25 @@ def resolve_forge_for_repo(*, repo_path: str, **seams: Any) -> Forge:
 def _manifest_forge_name(repo_path: str) -> str:
     """The forge name a repository's manifest declares, or the default.
 
-    Two tolerances, and the line between them is the whole of this function.
-
-    A repository with **no manifest** resolves the default, because a forge has
-    to be resolvable before one exists: `ergane init --check` judges repositories
-    that have nothing yet. A manifest that is present but broken for some *other*
-    reason also resolves the default — the reader that owns that complaint is the
-    one that should report it, and an operator should not first learn their
-    `version` is wrong from a forge lookup exploding underneath them.
+    One rule, and it is about *whose complaint it is*. Any way a manifest can be
+    unreadable other than its `forge` key belongs to the reader that owns it —
+    including there being no manifest at all, which is the state
+    `ergane init --check` exists to judge, and a `version` that is wrong, which
+    an operator should not first meet as a forge lookup exploding underneath
+    them. All of those resolve the default.
 
     A manifest whose `forge` key is itself the defect is the one case re-raised.
     Refusing an unknown forge is the entire point of the key, and swallowing it
     here would reinstate at the door exactly the silent fallback the loader
     refuses — a caller handed a GitHub forge for a manifest that said otherwise
     has already lost, whatever the parser said.
+
+    There is deliberately no `path.is_file()` guard in front of the read: an
+    absent file leaves `load_factory_config` as `missing_manifest`, which this
+    already handles. The guard was written, and the mutation that should have
+    killed the test covering it came back green because removing it changed
+    nothing (evidence M9). A second path to the same answer is a branch no test
+    can hold.
     """
     from factory.verify.factory_yaml import (
         DEFAULT_FORGE_NAME,
@@ -308,8 +313,6 @@ def _manifest_forge_name(repo_path: str) -> str:
     )
 
     path, _name = resolve_manifest_path(repo_path)
-    if not path.is_file():
-        return DEFAULT_FORGE_NAME
     try:
         return load_factory_config(path).forge
     except FactoryConfigError as error:

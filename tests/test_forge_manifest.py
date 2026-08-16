@@ -289,8 +289,12 @@ def test_a_repository_with_no_manifest_still_resolves_the_default_forge(
     """`ergane init --check` runs against repositories that have nothing yet, so
     a forge has to be resolvable before a manifest exists.
 
-    Mutation: read the manifest unconditionally and this fails on the
-    `missing_manifest` refusal.
+    Mutation: re-raise every `FactoryConfigError` in `_manifest_forge_name` and
+    this fails on `missing_manifest`. The mutation this docstring *used* to name
+    — "remove the `path.is_file()` guard" — came back green, because the absent
+    file arrives as a `FactoryConfigError` the tolerance already covers, so the
+    guard was a second path to an answer the first path already gave. The guard
+    is gone; evidence M9 is the transcript.
     """
     repo = _repo_with(tmp_path, None)
 
