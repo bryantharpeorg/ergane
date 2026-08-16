@@ -32,11 +32,10 @@ structural guard greps for must never appear in its command surface.
 
 `_client_factory` is the seam in the same sense as `open_bot` and
 `judge_transport`: since 049's US1 it resolves the *forge* the target repository
-is on, and tests replace it with one over a scripted `gh` or a modelled
-repository. The landing activities still speak GitHub's client and reach it
-through that same factory until US3 moves them onto forge operations, so this
-module never holds two factories for one boundary (049 trap 14). The name is
-US3's to change, with the consumers that still justify it.
+is on. The landing activities still speak GitHub's client and reach it through
+that same factory until US3 moves them, so this module never holds two factories
+for one boundary (049 trap 14); the name is US3's to change, with the consumers
+that still justify it.
 """
 
 from __future__ import annotations

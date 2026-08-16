@@ -11,8 +11,8 @@ written in terms no forge owns. US3 adds the landing half, US4 the wiring one.
 GitHub's vocabulary behind an interface and removed nothing. The test every
 operation and record field is held to — structurally, by
 `tests/test_forge_seam.py` — is whether a forge that never heard of a merge queue
-could answer it. "Does this forge refuse to land into this branch until named
-checks pass, and which checks" is answerable anywhere; "is the merge queue
+could answer it: "does this forge refuse to land into this branch until named
+checks pass, and which checks" is answerable anywhere, "is the merge queue
 enabled" is not.
 
 Nothing on this seam decides: no operation classifies, judges, retries or
@@ -99,9 +99,9 @@ class ForgeError(RuntimeError):
     """A forge that could not answer — data an activity returns, not a crash.
 
     `kind` is the implementation's own taxonomy term, carried through so an
-    operator sees what their forge actually said; `detail` is the tail of it.
-    The factory never branches on `kind`: a forge that cannot be read is a
-    repository that cannot be dispatched against, whichever way it failed.
+    operator sees what their forge said; `detail` is the tail of it. The factory
+    never branches on `kind`: a forge that cannot be read is a repository that
+    cannot be dispatched against, whichever way it failed.
     """
 
     def __init__(self, kind: str, message: str, detail: str = "") -> None:
@@ -118,8 +118,8 @@ class Forge(Protocol):
         """Name this repository and report what only this forge can report.
 
         Raises `ForgeError` when it cannot be read at all — the failure that
-        dominates every other question, since nothing else is judgeable about a
-        repository nobody can see.
+        dominates every other question, since nothing else about a repository
+        nobody can see is judgeable.
         """
         ...
 
@@ -127,8 +127,8 @@ class Forge(Protocol):
         """Report what `branch` does to a proposal, in the neutral terms above.
 
         Reports; it does not decide. Whether a policy is *good enough* is the
-        shared judgment's call, so that adding a forge cannot change what
-        readiness means.
+        shared judgment's call, so adding a forge cannot change what readiness
+        means.
         """
         ...
 
@@ -148,7 +148,7 @@ _REGISTRY: dict[str, ForgeBuilder] = {}
 
 
 def register_forge(name: str, build: ForgeBuilder) -> None:
-    """Register `build` under `name`; registering is how a forge becomes selectable."""
+    """Registering under `name` is how a forge becomes selectable."""
     _REGISTRY[name] = build
 
 
@@ -165,10 +165,10 @@ def registered_forges() -> tuple[str, ...]:
 def resolve_forge(name: str | None = None, **seams: Any) -> Forge:
     """Build the forge named by `name`, or the one every repository has today.
 
-    `seams` are handles the caller's own process owns — `repo_path` for the clone
-    a forge reads through, and whatever a test injects beneath it. A builder takes
-    what it recognises and ignores the rest, because a caller resolving a forge by
-    name cannot know which one it got.
+    `seams` are handles the caller's process owns — `repo_path` for the clone a
+    forge reads through, and whatever a test injects beneath it. A builder takes
+    what it recognises and ignores the rest, because a caller resolving a forge
+    by name cannot know which one it got.
     """
     chosen = name or DEFAULT_FORGE
     build = _REGISTRY.get(chosen)

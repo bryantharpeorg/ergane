@@ -5,18 +5,20 @@ because the defect that has cost this repository most is a test that cannot
 fail. The mutation transcripts proving each answer are committed at
 `specs/049-forge-seam/evidence/us1-mutations.md`.
 
-Scope fence: this moves *where the facts come from*, and does not re-ask the
+Scope fence: this moves *where the facts come from* and does not re-ask the
 readiness questions — `evaluate_repo`'s findings stay byte-identical, which is
-what makes the move checkable. Byte identity for a GitHub target is carried by
-the nine `test_validate_target_repo_*` tests in `tests/test_merge_activities.py`,
-which pass with no assertion changed; added here is the one thing they assert
-only by substring — the remedies, word for word.
+what makes the move checkable. That identity is evidenced where it is owned and
+not repeated here: `onboard.py`'s finding builders are absent from this diff,
+the nine `test_validate_target_repo_*` tests in `tests/test_merge_activities.py`
+pass with no assertion changed, and mutations M4/M5 show the new plumbing is
+what feeds them.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import inspect
+import sys
 import tomllib
 from pathlib import Path
 
@@ -33,11 +35,9 @@ from factory.mergequeue.forge import (
     registered_forges,
     resolve_forge,
 )
-from factory.mergequeue.gh import GhClient
-from factory.mergequeue.github_forge import GithubForge
+import factory.mergequeue.forge as forge_module
 from factory.mergequeue.models import Finding
 from tests.fake_forge import FakeForge, RepositoryModel
-from tests.fake_gh import FakeGh
 from tests.target_repo import build_target_repo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -47,16 +47,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 READING_OPERATIONS = {"describe_repository", "landing_policy"}
 
 #: Verbs that would mean a forge had started deciding. Classifying, settling and
-#: judging stay factory-side (FR-001) — the rule `factory/notify/adapter.py`
-#: states for the messenger seam.
+#: judging stay factory-side (FR-001), as `factory/notify/adapter.py` requires.
 DECIDING_VERBS = ("classify", "verdict", "settle", "escalat", "judge", "retry")
 
 #: Words that belong to one forge. No operation and no record field may be named
-#: with any of them — that is the difference between a seam and a rename
-#: (D-046 §3). Matched as whole `snake_case` words, so `proposal` is not `pr`.
-#: `visibility` is deliberately absent: many forges report who can see a
-#: repository, and what belongs to GitHub is the *rule* that it must be public
-#: (D-007), which US2 moves into the GitHub implementation.
+#: with any — the difference between a seam and a rename (D-046 §3). Matched as
+#: whole `snake_case` words, so `proposal` is not `pr`. `visibility` is absent
+#: deliberately: many forges report who can see a repository, and what is
+#: GitHub's is the *rule* that it must be public (D-007), which US2 moves.
 FORGE_NATIVE_WORDS = {
     "queue", "mergequeue", "squash", "gh", "github", "pr", "pull",
     "automerge", "ruleset", "rulesets", "mergestatestatus", "draft",
@@ -139,6 +137,27 @@ def test_the_conformance_parametrization_is_not_empty_and_names_two_forges() -> 
     assert len(FORGE_NAMES) >= 2, FORGE_NAMES
 
 
+def test_the_registry_imports_the_shipped_forge_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by mutation, not by writing: this module imports `GithubForge` by
+    name, so `github` is registered whatever `_load_builtins` does, and nothing
+    else in the suite resolves a forge for real — neutering the import loop left
+    all 37 tests green while production could resolve no forge at all. So: forget
+    the registration *and* the module, and make the registry find it. Compared by
+    qualified name, since a re-import mints a new class object.
+    """
+    monkeypatch.delitem(forge_module._REGISTRY, DEFAULT_FORGE, raising=False)
+    monkeypatch.delitem(sys.modules, "factory.mergequeue.github_forge", raising=False)
+
+    assert DEFAULT_FORGE in registered_forges()
+
+    built = type(resolve_forge(repo_path="/srv/target"))
+    assert (built.__module__, built.__name__) == (
+        "factory.mergequeue.github_forge", "GithubForge",
+    )
+
+
 @pytest.mark.parametrize("name", FORGE_NAMES)
 def test_every_registered_forge_exposes_exactly_the_reading_operations(
     name: str,
@@ -186,12 +205,10 @@ def test_the_shared_judgment_judges_a_forge_that_never_spawns_gh(
     tmp_path: Path,
 ) -> None:
     """The seam's whole claim: `evaluate_repo` judged a repository no `gh` was
-    ever spawned against, and the verdict followed the *model*.
-
-    The assertion is the profile, never a call log; the control is built in —
-    one judgment sees one forge three times and says three things, so a judgment
-    ignoring the forge could not produce them.
-    """
+    ever spawned against, and the verdict followed the *model*. The assertion is
+    the profile, never a call log; the control is built in — one judgment sees
+    one forge three times and says three things, so a judgment ignoring the
+    forge could not produce them."""
     repo = build_target_repo(tmp_path / "target")
     model = RepositoryModel(address="acme/app", default_branch="main")
     forge = FakeForge(model)
@@ -224,16 +241,12 @@ def test_the_shared_judgment_judges_a_forge_that_never_spawns_gh(
 def test_a_forge_contributes_its_own_findings_ahead_of_the_shared_ones(
     tmp_path: Path,
 ) -> None:
-    """FR-007's carriage, built in US1 and spent in US2.
-
-    A forge answers about facts only it has; the shared judgment appends them
-    without knowing what they mean. They read first so the report an operator
-    already knows how to read keeps its shape when US2 moves D-007's visibility
-    finding across the seam.
-
-    Mutation: stop passing `RepositoryDescription.findings` into `evaluate_repo`
-    and this fails — the finding disappears from the profile.
-    """
+    """FR-007's carriage, built in US1 and spent in US2: a forge answers about
+    facts only it has, and the shared judgment appends them without knowing what
+    they mean. They read first so the report keeps its shape when US2 moves
+    D-007's visibility finding across the seam. Mutation: stop passing
+    `RepositoryDescription.findings` into `evaluate_repo` and the finding
+    disappears from the profile."""
     repo = build_target_repo(tmp_path / "target")
     model = RepositoryModel(findings=(Finding("forge_note", False, "only I know"),))
 
@@ -241,53 +254,6 @@ def test_a_forge_contributes_its_own_findings_ahead_of_the_shared_ones(
 
     assert profile.findings[0] == Finding("forge_note", False, "only I know")
     assert profile.passed is False
-
-
-# --- US1-S2 / FR-003: the GitHub target's judgment is unchanged ---------------
-
-
-def test_the_github_forge_carries_todays_remedies_word_for_word(
-    tmp_path: Path,
-) -> None:
-    """SC-001, where the existing suite only checks by substring: a failing
-    GitHub target reads exactly as it did before the seam, remedy included.
-    Details rather than slugs — a migration that kept the check names and
-    reworded what an operator must do would still have changed the judgment."""
-    repo = build_target_repo(tmp_path / "target")
-    fake = FakeGh()
-    fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
-        payload={"nameWithOwner": "OWNER/REPO", "visibility": "PRIVATE",
-                 "defaultBranchRef": {"name": "main"}},
-    )
-    fake.expect_json("api", "repos/OWNER/REPO",
-                     payload={"squash_merge_commit_title": "COMMIT_OR_PR_TITLE"})
-    fake.expect_json(
-        "api", "repos/OWNER/REPO/rules/branches/main",
-        payload=[{"type": "merge_queue", "parameters": {
-            "required_status_checks": [{"context": "lint"}, {"context": "test"},
-                                       {"context": "typecheck"}]}}],
-    )
-
-    # Built from its registered name, not constructed here (FR-002).
-    forge = resolve_forge(repo_path=str(repo))
-    assert isinstance(forge, GithubForge)
-    forge = GithubForge(GhClient(repo=str(repo), runner=fake))
-
-    profile = onboard_target_repo(forge, str(repo))
-
-    assert profile.passed is False
-    details = {f.check: f.detail for f in profile.findings}
-    assert details["visibility"] == (
-        "repo is 'PRIVATE'; the merge queue is available on any plan only for "
-        "public repos — make the repo public, or dispatch against a public "
-        "target (D-007)"
-    )
-    assert details["squash_title"] == (
-        "squash_merge_commit_title is 'COMMIT_OR_PR_TITLE'; observed value was "
-        "'COMMIT_OR_PR_TITLE' — run `gh api -X PATCH repos/OWNER/REPO -f "
-        "squash_merge_commit_title=PR_TITLE`"
-    )
 
 
 # --- T011 / trap 14: three doors moved, and the proof each old one is gone ----

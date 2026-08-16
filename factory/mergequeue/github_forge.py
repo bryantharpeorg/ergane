@@ -14,8 +14,8 @@ and easy to lose in a rewrite: the required checks ride a *sibling*
 protected" is an answer rather than a failure.
 
 A seam needing this repository re-provisioned would be a failed seam (FR-003),
-so a GitHub target's judgment is byte-identical to the one it got before this
-module existed: same commands, same order, same findings.
+so a GitHub target's judgment is byte-identical: same commands, same order,
+same findings.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from factory.mergequeue.forge import (
 )
 from factory.mergequeue.gh import GH_NOT_FOUND, GhClient, GhError
 
-#: What GitHub calls "title this landing from the proposal" (D-041). Spelled
-#: once, here, where it is true — the shared judgment is US2's to free of it.
+#: What GitHub calls "title this landing from the proposal" (D-041), spelled
+#: once, here, where it is true.
 _TITLE_FROM_PROPOSAL = "PR_TITLE"
 
 

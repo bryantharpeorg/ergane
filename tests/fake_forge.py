@@ -1,23 +1,22 @@
 """A fake forge that is a *model of a repository*, never a call recorder (FR-004).
 
-`RepositoryModel` is the repository: its address, its branches, and what each
-branch's landing policy is. `FakeForge` serves every read out of that state, so
+`RepositoryModel` is the repository: its address, its branches, and each
+branch's landing policy. `FakeForge` serves every read out of that state, so
 changing the model changes what the factory's own `evaluate_repo` says about it
-— which is why the tests assert on the *judgment of the model* and never on
-which calls were made.
+— which is why the tests assert on the *judgment of the model*, never on which
+calls were made.
 
-**Why not `tests/fake_gh.py`.** That fake is the open finding
-`ci/the-scripted-gh-fake-never-consumes-an-expectation`: its `__call__` scans its
-expectations from index 0 every call and consumes nothing, so the first match
-answers a command forever and an idempotence claim made through it cannot fail.
+**Why not `tests/fake_gh.py`.** Its match loop consumes nothing, so the first
+match answers a command forever and an idempotence claim made through it cannot
+fail — the open finding `ci/the-scripted-gh-fake-never-consumes-an-expectation`.
 Nothing here is built on it or shaped like it, and it is not repaired here
-either — seven unrelated modules ride it, so that is its own work (trap 3). The
+either: seven unrelated modules ride it, so that is its own work (trap 3). The
 bar this copies is `FakeGitHub` in `tests/test_ergane_init_wiring.py`: mutable
-state, reads derived from it, and the factory's own reader judging the object.
+state, reads derived from it, the factory's own reader judging the object.
 
 `gate_on` is the repository's own act rather than a test helper: 049's US4 wires
-a repository by issuing exactly that change, and when it does it must mutate
-this model rather than get a scripted answer back.
+a repository by issuing exactly that change, and must mutate this model rather
+than get a scripted answer back.
 """
 
 from __future__ import annotations
@@ -49,10 +48,9 @@ class RepositoryModel:
     """One repository, as mutable state — the thing the fake forge reads.
 
     `visibility` defaults to `""`: *this forge has no notion of who can see a
-    repository*. That is a real forge shape, and 049's US2 is where a model in
-    that shape passes readiness; in US1 the shared judgment still asks GitHub's
-    questions, so a model has to answer them to pass. `unreachable`, when set,
-    is what the forge says when it cannot read the repository at all.
+    repository*. US2 is where a model in that shape passes readiness; in US1 the
+    shared judgment still asks GitHub's questions, so a model must answer them.
+    `unreachable` is what the forge says when it cannot read the repository.
     """
 
     address: str = "acme/app"
