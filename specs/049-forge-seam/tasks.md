@@ -267,4 +267,4 @@ exists to prevent.
 
 ## Verification
 
-- [ ] Final gate command passes green.
+- [x] Final gate command passes green.
