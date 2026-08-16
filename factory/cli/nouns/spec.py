@@ -39,7 +39,7 @@ from factory.workgraph.cli import (
 )
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkGraphError, WorkNode, validate_workgraph
-from factory.workgraph.preflight import check_prompt_assembly
+from factory.workgraph.preflight import check_prompt_assembly, check_slice_coverage
 from factory.workgraph.worktree import landing_branch
 
 #: The id grammar the criteria parser mints for acceptance scenarios.
@@ -230,6 +230,10 @@ def _validate_command(args: argparse.Namespace) -> int:
 
     epic_id = spec_dir.resolve().name
     findings: list[_ValidateFinding] = []
+    # Stated, never counted: 044 FR-006's orphan task ids are a fact the author
+    # confirms or acts on, not a refusal, so they ride a separate list and the
+    # exit code below reads `findings` alone.
+    information: list[_ValidateFinding] = []
 
     # 1. Frontmatter grammar against the spec's own corpus.
     _check_frontmatter(spec_dir, epic_id, findings)
@@ -294,6 +298,32 @@ def _validate_command(args: argparse.Namespace) -> int:
             }
         )
 
+    # 6. Which authored tasks the assembled slices drop (044 FR-005/006).
+    #
+    # The layer that catches what a refusal cannot: every node assembling a
+    # slice is not every node being handed its work. A task written for one
+    # story and left outside that story's slice is a defect; a task in no
+    # slice naming no story is stated and costs nothing.
+    coverage = None if graph is None else check_slice_coverage(graph, spec_dir)
+    if coverage is not None:
+        for entry in coverage:
+            target = information if entry.informational else findings
+            target.append(_ValidateFinding("slice_coverage", str(entry)))
+        checked.append("slice_coverage")
+    else:
+        skipped.append(
+            {
+                "layer": "slice_coverage",
+                "reason": (
+                    "the work graph did not compile, so there are no nodes to "
+                    "assemble a prompt for"
+                    if graph is None
+                    else "tasks.md could not be read, so it holds no slice to "
+                    "measure a task against"
+                ),
+            }
+        )
+
     report = {
         "spec_dir": str(spec_dir),
         "checked": checked,
@@ -302,26 +332,37 @@ def _validate_command(args: argparse.Namespace) -> int:
             {"layer": finding.layer, "message": finding.message}
             for finding in findings
         ],
+        "information": [
+            {"layer": note.layer, "message": note.message} for note in information
+        ],
     }
 
     if args.as_json:
         print(json.dumps(report, indent=2))
-    elif findings:
-        for finding in findings:
-            print(f"ergane spec validate: [{finding.layer}] {finding.message}", file=sys.stderr)
-        # Deliberately not the finding prefix: a layer that did not run is not a
-        # refusal, and a reader counting refusals must not count this line.
+    else:
+        if findings:
+            for finding in findings:
+                print(f"ergane spec validate: [{finding.layer}] {finding.message}", file=sys.stderr)
+        else:
+            print(
+                f"{spec_path}: frontmatter, work-graph derivation, persona registry, "
+                "scenario coverage, prompt assembly and slice coverage all pass"
+            )
+        # Deliberately not the finding prefix, on either line below: a layer that
+        # did not run is not a refusal, and neither is a fact the author is
+        # merely told. A reader counting refusals must not count them.
         for entry in skipped:
             print(
                 f"ergane spec validate — layer '{entry['layer']}' not checked: "
                 f"{entry['reason']}",
                 file=sys.stderr,
             )
-    else:
-        print(
-            f"{spec_path}: frontmatter, work-graph derivation, persona registry, "
-            "scenario coverage and prompt assembly all pass"
-        )
+        for note in information:
+            print(
+                f"ergane spec validate — noted, not a refusal: "
+                f"[{note.layer}] {note.message}",
+                file=sys.stderr,
+            )
 
     return EXIT_USER if findings else EXIT_OK
 

@@ -22,6 +22,18 @@ once per node and reports what it refuses. A check with its own copy of the
 heading grammar would agree with dispatch right up until the day one copy was
 edited, which is a worse position than having no check (044 FR-004).
 
+044 US3 adds the complement, `slice_coverage_findings`, because a refusal is
+only half the defect class. The same sweep that found the killed epic found a
+`tasks.md` whose phases were numbered against a story list that had since moved:
+three of its four nodes assembled a slice perfectly and were handed the *next*
+story's task list, and only the fourth — which no heading named at all —
+reported anything. A silent wrong answer is worse than a refusal, because
+nothing says so and the attempt bills for the misunderstanding. So the lint asks
+the second question assembly cannot: not whether a slice was found, but whether
+the work the author wrote for a story is inside the slice that story's node will
+be handed. It reads the slices through `task_slice_bounds` for the same reason
+assembly reads through `build_attempt_prompt` — one grammar, one answer.
+
 This is the pure core shared by the two callers that run a preflight:
 
 - `ergane build start` runs it in-process (CLI) before starting the workflow,
@@ -54,13 +66,15 @@ it so nothing that imported the CLI's name changes.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from factory.activities.usage_activities import key_alias_for
 from factory.config import Persona
 from factory.usage.litellm_client import LiteLLMClient, LiteLLMError
+from factory.verify.criteria import mask_fences
 from factory.workgraph.models import WorkGraph
 from factory.workgraph.prompt import (
     PLAN_DOCUMENT,
@@ -68,6 +82,7 @@ from factory.workgraph.prompt import (
     TASKS_DOCUMENT,
     PromptAssemblyError,
     build_attempt_prompt,
+    task_slice_bounds,
 )
 from factory.workgraph.workflow import JUDGE_PERSONA
 
@@ -223,6 +238,237 @@ def check_prompt_assembly(
         plan_text=texts[PLAN_DOCUMENT],
         tasks_text=texts[TASKS_DOCUMENT],
     )
+
+
+# --- slice coverage: the tasks that reach no agent (044 US3) ------------------
+
+#: A task id at the head of a list item, in the three shapes `tasks.md` writes
+#: them: `- [ ] T001`, `- [X] T001`, `- [ ] **T001**`, and the bare `- T001`.
+#: Anchored at the item, so a continuation line or a dependency note that
+#: mentions an id in prose is not mistaken for the task itself.
+_TASK_LINE_RE = re.compile(r"^\s*[-*]\s+(?:\[[^\]]*\]\s+)?\*{0,2}(T\d{3}[a-z]?)\b")
+
+#: The two ways a task line names the story it belongs to. Both are in this
+#: repository's own corpus — the template's tag, and the citation a task uses to
+#: point at the acceptance scenario it covers. A third form found later is a
+#: reason to widen this deliberately, not silently.
+_STORY_TAG_RE = re.compile(r"\[US(\d+)\]")
+_STORY_CITATION_RE = re.compile(r"\bspec\s+US(\d+)-")
+
+
+@dataclass(frozen=True)
+class CoverageFinding:
+    """One task line's relationship to the slices, when that relationship is news.
+
+    Two severities, because two different things are wrong and only one of them
+    is an error. A task that names a story and falls outside that story's slice
+    is a **defect** (FR-005): the author wrote work for a story, and no agent
+    building that story will ever see it. A task inside no slice that names no
+    story is **information** (FR-006): a setup or verification phase is a real
+    convention in this corpus, its ids are the operator's own closing pass, and
+    failing validation on them would fail specs that are correct.
+
+    `task_ids` is a tuple because the informational finding groups every orphan
+    into one line — an author reading five separate notes about the same
+    `## Verification` phase learns nothing the list did not already say.
+    """
+
+    task_ids: tuple[str, ...]
+    detail: str
+    informational: bool = False
+    story_key: str | None = None
+    slice_keys: tuple[str, ...] = ()
+
+    def __str__(self) -> str:
+        return self.detail
+
+
+@dataclass(frozen=True)
+class _TaskEntry:
+    """One task as authored: its id, the line it starts on, and its whole text.
+
+    Whole text because the story reference is not reliably on the id's line —
+    the tag usually is, the `spec US<n>-` citation frequently is not, since a
+    task wide enough to matter wraps. `line` is the id's own line, and it is
+    what decides which slice the task sits in: a task belongs where it starts.
+    """
+
+    task_id: str
+    line: int
+    text: str
+
+
+def _task_entries(
+    lines: Sequence[str], in_code: Sequence[bool]
+) -> list[_TaskEntry]:
+    """Every authored task in document order, continuations folded in.
+
+    Fence-masked with the assembler's own `mask_fences` (044 plan trap 2): the
+    tasks template quotes its own grammar, and a task quoted inside a fence is
+    text *about* a task. It is never cut into a slice and never handed to an
+    agent, so a lint that counted it would report a defect in a line that does
+    not exist.
+    """
+    entries: list[_TaskEntry] = []
+    index = 0
+    while index < len(lines):
+        if in_code[index]:
+            index += 1
+            continue
+        match = _TASK_LINE_RE.match(lines[index])
+        if match is None:
+            index += 1
+            continue
+        start = index
+        index += 1
+        while (
+            index < len(lines)
+            and not in_code[index]
+            and lines[index].strip()
+            and lines[index][:1].isspace()
+            and _TASK_LINE_RE.match(lines[index]) is None
+        ):
+            index += 1
+        entries.append(
+            _TaskEntry(
+                task_id=match.group(1),
+                line=start,
+                text="\n".join(lines[start:index]),
+            )
+        )
+    return entries
+
+
+def _referenced_stories(text: str) -> list[str]:
+    """The story keys a task names, deduplicated and in numeric order."""
+    numbers = {
+        int(number)
+        for number in _STORY_TAG_RE.findall(text) + _STORY_CITATION_RE.findall(text)
+    }
+    return [f"US{number}" for number in sorted(numbers)]
+
+
+def slice_coverage_findings(
+    graph: WorkGraph, *, tasks_text: str
+) -> list[CoverageFinding]:
+    """Which authored tasks the slices drop, and which reach nobody (FR-005/006).
+
+    Pure: a graph and one text in, findings out. The slices are not re-derived
+    here — `task_slice_bounds` is the assembler's own scan, so the lines this
+    calls "inside a slice" are exactly the lines dispatch would cut into one
+    (FR-004). What this adds is the complement, which assembly cannot see: a
+    slice that assembles is not a slice that contains the work.
+
+    Three verdicts per task, and the two that are silent matter as much as the
+    one that is not:
+
+    - It names a story and sits in that story's slice, or it names none and sits
+      in some slice: nothing. This is almost every task in the corpus.
+    - It names a story and sits somewhere else: a defect, naming the id, the
+      story and the slice it landed in. That covers both the phase-level
+      Tests/Implementation split (the work falls into no slice at all) and the
+      mis-numbered phase list (the work falls into the neighbouring story's).
+    - It names nothing and sits in no slice: information.
+
+    A task naming a story whose slice did not assemble is deliberately silent:
+    `check_prompt_assembly` already refuses that node by name, and restating it
+    once per task would bury the one fact the author has to act on under a list
+    of consequences of it.
+    """
+    lines = tasks_text.splitlines()
+    in_code = mask_fences(lines)
+
+    bounds: dict[str, tuple[int, int]] = {}
+    for node in graph.nodes:
+        try:
+            bounds[node.story_key] = task_slice_bounds(node, tasks_text)
+        except PromptAssemblyError:
+            continue
+
+    findings: list[CoverageFinding] = []
+    orphans: list[str] = []
+    for entry in _task_entries(lines, in_code):
+        inside = tuple(
+            story_key
+            for story_key, (start, end) in bounds.items()
+            if start <= entry.line < end
+        )
+        referenced = _referenced_stories(entry.text)
+
+        if not referenced:
+            if not inside:
+                orphans.append(entry.task_id)
+            continue
+
+        for story_key in referenced:
+            if story_key in inside:
+                continue
+            if inside:
+                landed = " and ".join(inside)
+                findings.append(
+                    CoverageFinding(
+                        task_ids=(entry.task_id,),
+                        story_key=story_key,
+                        slice_keys=inside,
+                        detail=(
+                            f"task {entry.task_id} names story {story_key}, but it "
+                            f"sits inside the task slice cut for {landed} — the "
+                            f"node building {story_key} is never shown it, and the "
+                            f"node building {landed} is shown it instead"
+                        ),
+                    )
+                )
+            elif story_key in bounds:
+                findings.append(
+                    CoverageFinding(
+                        task_ids=(entry.task_id,),
+                        story_key=story_key,
+                        detail=(
+                            f"task {entry.task_id} names story {story_key}, but it "
+                            f"falls outside the task slice cut for {story_key} and "
+                            "inside no other — no node is shown it"
+                        ),
+                    )
+                )
+
+    if orphans:
+        findings.append(
+            CoverageFinding(
+                task_ids=tuple(orphans),
+                informational=True,
+                detail=(
+                    "task ids inside no story's slice and naming no story, so they "
+                    "reach no node: " + ", ".join(orphans) + " — expected in a "
+                    "setup or verification phase the operator works by hand, a "
+                    "defect anywhere else"
+                ),
+            )
+        )
+    return findings
+
+
+def check_slice_coverage(
+    graph: WorkGraph,
+    feature_dir: str | Path,
+    *,
+    tasks_text: str | None = None,
+) -> list[CoverageFinding] | None:
+    """Read the epic's `tasks.md`, then report what its slices drop.
+
+    `None` means **not checked**, and a caller must report it that way rather
+    than as a pass: there is no `tasks.md` to locate a slice in, so the lint has
+    no opinion (044 plan trap 5). It is not conflated with the empty list, which
+    is the lint having looked and found nothing. `check_prompt_assembly` already
+    emits the finding that names the unreadable path, so this returns quietly
+    instead of duplicating it.
+    """
+    if tasks_text is None:
+        path = Path(feature_dir) / TASKS_DOCUMENT
+        try:
+            tasks_text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+    return slice_coverage_findings(graph, tasks_text=tasks_text)
 
 
 def first_attempt_aliases(graph: WorkGraph) -> set[str]:

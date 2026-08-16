@@ -429,15 +429,23 @@ def _names_story(number: str) -> Callable[[str], bool]:
     return lambda heading: pattern.search(heading) is not None
 
 
-def _first_section(
+def _first_section_bounds(
     lines: Sequence[str], in_code: Sequence[bool], names: Callable[[str], bool]
-) -> str | None:
-    """The first section whose heading `names` accepts, verbatim, or None.
+) -> tuple[int, int] | None:
+    """Where the first section whose heading `names` accepts starts and stops.
 
-    The section runs to the next heading at the same level or shallower, and the
-    scan is fence-masked: a heading quoted inside a fenced block — the tasks
-    template quotes its own — is text *about* a section, so it neither opens one
-    nor ends the one it sits inside.
+    Half-open, in line indices: `[start, end)`, `start` being the heading line
+    itself. The section runs to the next heading at the same level or shallower,
+    and the scan is fence-masked: a heading quoted inside a fenced block — the
+    tasks template quotes its own — is text *about* a section, so it neither
+    opens one nor ends the one it sits inside.
+
+    Bounds rather than text, because two callers need two different things out
+    of one scan. The assembler wants the words; 044's slice-coverage lint wants
+    to know which lines of the whole document fell inside a slice and which fell
+    outside every one. Cutting the text and then searching for it again would be
+    a second answer to "where does this section stop", which is the duplication
+    044 FR-004 exists to forbid.
     """
     for index, line in enumerate(lines):
         if in_code[index]:
@@ -445,9 +453,19 @@ def _first_section(
         header = HEADER_RE.match(line)
         if header is None or not names(header.group(2)):
             continue
-        end = section_end(lines, in_code, index, level=len(header.group(1)))
-        return "\n".join(lines[index:end]).strip()
+        return index, section_end(lines, in_code, index, level=len(header.group(1)))
     return None
+
+
+def _first_section(
+    lines: Sequence[str], in_code: Sequence[bool], names: Callable[[str], bool]
+) -> str | None:
+    """The first section whose heading `names` accepts, verbatim, or None."""
+    bounds = _first_section_bounds(lines, in_code, names)
+    if bounds is None:
+        return None
+    start, end = bounds
+    return "\n".join(lines[start:end]).strip()
 
 
 def _bullet(lines: Sequence[str], in_code: Sequence[bool], key: str) -> str | None:
@@ -476,12 +494,18 @@ def _bullet(lines: Sequence[str], in_code: Sequence[bool], key: str) -> str | No
 # --- the task slice (R9) ------------------------------------------------------
 
 
-def _task_slice(node: WorkNode, tasks_text: str) -> str:
-    """The phase section of `tasks.md` whose heading names this node's story.
+def task_slice_bounds(node: WorkNode, tasks_text: str) -> tuple[int, int]:
+    """Which lines of `tasks.md` this node's slice is cut from, or a refusal.
 
-    The one input the grammar cannot make structural — a spec author can write a
-    story and forget its phase — so it is the one input with an explicit failure
-    rule: no findable slice, no dispatch.
+    Half-open line indices into `tasks_text.splitlines()`, `start` being the
+    phase heading itself. Public because the slice's *extent* is a fact about
+    dispatch that a check running before dispatch needs: 044's slice-coverage
+    lint answers "does this task line reach an agent, and which one" by asking
+    where every slice begins and ends, and the only answer that cannot drift
+    from dispatch is the one dispatch itself computes (044 FR-004).
+
+    Raises `PromptAssemblyError` in exactly the two cases `_task_slice` does,
+    with the same words — it is the same call.
     """
     story = _STORY_KEY_RE.match(node.story_key)
     if story is None:
@@ -492,14 +516,27 @@ def _task_slice(node: WorkNode, tasks_text: str) -> str:
         )
 
     lines = tasks_text.splitlines()
-    text = _first_section(lines, mask_fences(lines), _names_story(story.group(1)))
-    if text is None:
+    bounds = _first_section_bounds(
+        lines, mask_fences(lines), _names_story(story.group(1))
+    )
+    if bounds is None:
         raise PromptAssemblyError(
             f"node '{node.id}': tasks.md declares no phase naming user story "
             f"{node.story_key}, so this node has no task slice to work (FR-006)",
             document=TASKS_DOCUMENT,
         )
-    return text
+    return bounds
+
+
+def _task_slice(node: WorkNode, tasks_text: str) -> str:
+    """The phase section of `tasks.md` whose heading names this node's story.
+
+    The one input the grammar cannot make structural — a spec author can write a
+    story and forget its phase — so it is the one input with an explicit failure
+    rule: no findable slice, no dispatch.
+    """
+    start, end = task_slice_bounds(node, tasks_text)
+    return "\n".join(tasks_text.splitlines()[start:end]).strip()
 
 
 # --- landing rejection evidence (US2) -----------------------------------------
