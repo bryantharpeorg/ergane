@@ -488,13 +488,67 @@ def test_control_with_the_config_branch_disabled_the_tree_refuses_as_before(
 
     message = str(excinfo.value)
     assert PROXY_URL_ENV in message
+    # Nothing was read out of the file: the refusal names it as a *route* the
+    # operator could take, and carries none of what it actually declares.
     assert DECLARED_BASE_URL not in message
-    assert str(config_path) not in message
+    assert DECLARED_KEY_VAR not in message
 
 
 # ---------------------------------------------------------------------------
 # FR-006 — the credential half of the roadmap path resolves the same way
 # ---------------------------------------------------------------------------
+
+
+def test_epic_start_needs_the_endpoint_and_not_the_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host exporting a proxy url and no master key still starts epics.
+
+    The endpoint is a workflow *input* threaded from the CLI; the credential is
+    read on the worker host by the activity that mints the attempt's key. This
+    story's first full-suite run refused seven tests that export exactly that
+    combination, because the first cut of the CLI seam resolved the whole
+    gateway. Pinned here so the two halves cannot be re-fused.
+    """
+    import factory.cli.nouns as nouns_package
+    from factory.cli.nouns import build as build_module
+
+    monkeypatch.setenv(PROXY_URL_ENV, OVERRIDE_BASE_URL)
+    monkeypatch.delenv(MASTER_KEY_ENV, raising=False)
+    _bind_config_path(monkeypatch, tmp_path / "absent" / "config.toml")
+
+    graph_path = _write_graph(tmp_path)
+    recorder = _RecordingClient()
+
+    async def _open_client() -> Any:
+        return recorder
+
+    async def _no_findings(graph: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(nouns_package, "_open_client", _open_client)
+    monkeypatch.setattr(build_module, "_run_preflight", _no_findings)
+
+    assert build_module.start_command(
+        Namespace(graph=str(graph_path), max_concurrent_nodes=1)
+    ) == 0
+    assert recorder.started[0][0][1].proxy_url == OVERRIDE_BASE_URL
+
+
+def test_the_endpoint_resolver_stands_alone_from_the_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same split at the resolver: an endpoint resolves with no credential anywhere."""
+    from factory.controlplane.resolve import resolve_proxy_url
+
+    config_path = _write_config(tmp_path)
+    _no_overrides(monkeypatch)
+    monkeypatch.delenv(DECLARED_KEY_VAR, raising=False)
+
+    endpoint = resolve_proxy_url(config_path=config_path)
+
+    assert endpoint.url == DECLARED_BASE_URL
+    assert endpoint.source == str(config_path)
 
 
 def test_the_credential_resolver_stands_alone_from_the_endpoint(

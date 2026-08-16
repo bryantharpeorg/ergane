@@ -83,8 +83,15 @@ def add_roadmap_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
     )
     start.add_argument(
         "--proxy-url",
-        default=os.environ.get(PROXY_URL_ENV, ""),
-        help=f"proxy URL for child epic keys (default: ${PROXY_URL_ENV})",
+        default="",
+        # Empty rather than `os.environ.get(PROXY_URL_ENV)`: an argparse default
+        # is evaluated when the parser is built, which is every `--help`, and
+        # the resolution now has a second source that would mean opening a file
+        # to render help text. `roadmap_start_command` resolves it instead.
+        help=(
+            f"proxy URL for child epic keys "
+            f"(default: ${PROXY_URL_ENV}, else the control-plane config)"
+        ),
     )
     start.add_argument(
         "--max-concurrent-epics",
@@ -195,16 +202,34 @@ def _workflow_id(args: argparse.Namespace) -> str:
     return roadmap_workflow_id(args.specs_root)
 
 
+def _resolved_proxy_url() -> str:
+    """The gateway a roadmap's child epics will be started against (048 FR-006).
+
+    Resolved here rather than at parser-construction time: an argparse default
+    is evaluated on every `ergane roadmap --help`, and reading the operator's
+    config file to render help text would be a file read nobody asked for.
+    `--proxy-url` still wins, because an operator naming an endpoint on the
+    command line is the most explicit source there is.
+    """
+    from factory.controlplane.resolve import (
+        ControlPlaneResolutionError,
+        resolve_proxy_url,
+    )
+
+    try:
+        return resolve_proxy_url().url
+    except ControlPlaneResolutionError as error:
+        raise OperatorError(
+            f"{error}; child epics need a proxy to issue virtual keys"
+        ) from error
+
+
 async def roadmap_start_command(args: argparse.Namespace) -> int:
     specs_root = Path(args.specs_root).resolve()
     if not specs_root.exists():
         raise OperatorError(f"specs root {specs_root} does not exist")
 
-    proxy_url = args.proxy_url or os.environ.get(PROXY_URL_ENV, "")
-    if not proxy_url:
-        raise OperatorError(
-            f"{PROXY_URL_ENV} is not set; child epics need a proxy to issue virtual keys"
-        )
+    proxy_url = args.proxy_url or _resolved_proxy_url()
 
     client = await _connect()
     workflow_id = _workflow_id(args)

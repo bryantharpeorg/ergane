@@ -31,7 +31,7 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
-from factory.usage.litellm_client import PROXY_URL_ENV, LiteLLMClient
+from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
 from factory.workgraph.delta import DeltaResult, derive_delta
 from factory.workgraph.derive import DerivationError, derive_workgraph
@@ -456,15 +456,28 @@ def start_command(args: argparse.Namespace) -> int:
     except WorkGraphError as error:
         raise _OperatorError(str(error)) from error
 
-    proxy_url = os.environ.get(PROXY_URL_ENV)
-    if not proxy_url:
+    # The same resolution `factory/cli/nouns/build.py` performs, through the
+    # same resolver rather than a second copy of the precedence (048 FR-006).
+    # This handler is still imported by `factory/cli/repo.py` and
+    # `factory/cli/nouns/spec.py` and still driven by two test modules;
+    # consolidating the two copies of the surrounding handler is deliberately
+    # a separate cleanup, but they may not disagree about which host they are
+    # on in the meantime.
+    from factory.controlplane.resolve import (
+        ControlPlaneResolutionError,
+        resolve_proxy_url,
+    )
+
+    try:
+        proxy_url = resolve_proxy_url().url
+    except ControlPlaneResolutionError as error:
         # No default is available and none would be honest: an epic started
         # against a guessed proxy mints keys the agent cannot use and burns an
         # attempt to discover it (constitution VII).
         raise _OperatorError(
-            f"{PROXY_URL_ENV} is not set; the agent's virtual key is only "
-            "honored at the proxy, so no epic can be started without it"
-        )
+            f"{error}; the agent's virtual key is only honored at the proxy, "
+            "so no epic can be started without it"
+        ) from error
 
     return asyncio.run(_start_epic(graph, proxy_url, args.max_concurrent_nodes))
 

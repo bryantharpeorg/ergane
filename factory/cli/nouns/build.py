@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -47,7 +46,7 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
-from factory.usage.litellm_client import PROXY_URL_ENV, LiteLLMClient
+from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 from factory.verify.store import (
@@ -368,14 +367,41 @@ def start_command(args: argparse.Namespace) -> int:
     except WorkGraphError as error:
         raise OperatorError(str(error)) from error
 
-    proxy_url = os.environ.get(PROXY_URL_ENV)
-    if not proxy_url:
-        raise OperatorError(
-            f"{PROXY_URL_ENV} is not set; the agent's virtual key is only "
-            "honored at the proxy, so no epic can be started without it"
-        )
+    proxy_url = _resolved_proxy_url()
 
     return asyncio.run(_start_epic(graph, proxy_url, args.max_concurrent_nodes))
+
+
+def _resolved_proxy_url() -> str:
+    """Where this host's gateway is, environment first, declaration second.
+
+    A CLI boundary is where this belongs: the endpoint is already a declared
+    workflow input threaded from here (`EpicInput.proxy_url`), so the workflow
+    reads neither the environment nor the disk and nothing about determinism
+    moves (048 FR-007, constitution IV).
+
+    The endpoint and not the credential: the master key is read on the worker
+    host by the activity that mints the attempt's virtual key, so demanding it
+    here would refuse to start an epic on a host well able to run it.
+
+    No default is available and none would be honest: an epic started against a
+    guessed proxy mints keys the agent cannot use and burns an attempt to
+    discover it (constitution VII). What changed in 048 is only that the
+    refusal now names *both* ways to satisfy it — the resolver supplies the
+    routes, this site supplies the reason.
+    """
+    from factory.controlplane.resolve import (
+        ControlPlaneResolutionError,
+        resolve_proxy_url,
+    )
+
+    try:
+        return resolve_proxy_url().url
+    except ControlPlaneResolutionError as error:
+        raise OperatorError(
+            f"{error}; the agent's virtual key is only honored at the proxy, "
+            "so no epic can be started without it"
+        ) from error
 
 
 async def _start_epic(

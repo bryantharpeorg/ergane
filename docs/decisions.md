@@ -996,3 +996,58 @@ times each.
    GitHub's rulesets API on this same day. It becomes the GitHub implementation of a
    wiring operation rather than a mistake — the seam is drawn around it, not through
    it.
+---
+
+## D-047 · The environment overrides the declaration: `LITELLM_*` win over `config.toml` (decided)
+
+Decided 2026-08-16, claimed at landing of spec `048-declared-control-plane` US1.
+`ergane install` has written `~/.config/ergane/config.toml` since 033, and until this
+story no code on the dispatch path read it: `LiteLLMClient.from_env` took
+`LITELLM_PROXY_URL` and `LITELLM_MASTER_KEY` straight from `os.environ`, so an
+operator who completed the interview was told a variable the interview never
+mentioned was not set, about an endpoint they had just declared. The two are now
+joined by one resolver, `factory/controlplane/resolve.py`, and the direction of the
+join is this entry.
+
+1. **The environment wins; the declaration is the fallback.** Where both sources
+   speak, `LITELLM_PROXY_URL` and `LITELLM_MASTER_KEY` decide, and the config file is
+   not opened at all for a value an override already supplied.
+
+2. **Why that direction, and not the other one.** This repository's own worker runs
+   from an environment loaded by `scripts/ergane-env.sh`, with no control-plane config
+   behind it. A change that required re-provisioning the machine the factory is built
+   on in order to keep building would be a failed change, not a migration. The
+   override direction is what makes the first consequence of joining the two sources
+   "nothing on this host moves".
+
+3. **It is revisitable, and inverting it is a story.** The day `ergane install` is the
+   normal way Ergane arrives on a host, config-first is the better precedence: a
+   declaration the operator wrote should not be quietly beaten by a variable some
+   shell profile exports. Inverting it then is a migration with its own spec, its own
+   decision entry superseding this one, and its own answer for hosts that export both.
+   It is not a refactor, and it is not a knob.
+
+4. **A resolution carries a variable name, never a credential.** `ControlPlaneConfig.
+   LLMGateway.master_key_env` holds the *name* of the variable holding the key
+   (principle V, enforced by the parser's `_reject_secret_shape`), and the resolver
+   preserves that shape end to end: `GatewayResolution` and `CredentialRef` hold names
+   and a URL, and the value is fetched at the last moment by whoever needs it. FR-003
+   and SC-005 are therefore true by construction rather than by care at each call site.
+
+5. **A *missing* config degrades; a *broken* one refuses.** `factory/registry.py` and
+   `factory/notify/adapter.py` swallow `ControlPlaneConfigError` wholesale because a
+   repo registration must work on an unprovisioned host. The dispatch path must not:
+   an operator who typo'd their config and is told `LITELLM_PROXY_URL is not set` will
+   export a variable instead of fixing the file, and will conclude the config does
+   nothing — which is the belief 048 exists to end. Where nothing resolves at all, the
+   refusal names *both* routes, so the operator is told the two ways to satisfy it.
+
+6. **Resolution happens at a CLI boundary or in an activity, never at workflow scope.**
+   The endpoint was already a declared workflow input (`EpicInput.proxy_url`), which is
+   what made this story cheap and what keeps constitution IV intact. The workflow-scope
+   guard added by 039 catches an `os.environ` read and would *not* catch a config-file
+   read, so this is a rule the diff keeps rather than one a guard enforces.
+
+The finding this closes is `install/the-config-install-writes-reaches-nothing-that-builds`,
+first consequence; the second — `llm.mode = "direct"` verifying green while being
+unable to dispatch — is US2's, with its own entry.
