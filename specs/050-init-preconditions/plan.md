@@ -88,6 +88,23 @@ Two facts make this cheaper than it looks:
    Whatever identity check you add must let the same repository reconcile its
    own schedule, or you break a workflow that works today.
 
+9. **A reachable control plane is not the same as the *operator's* control
+   plane, and this story only checks the first.** Two literals in the tree name
+   the Temporal namespace: `factory/cli/install.py:71` seeds the install
+   interview with `ergane`, and `factory/notify/service.py:111` sets
+   `DEFAULT_TEMPORAL_NAMESPACE = "factory"`. A caller that reaches the fallback
+   gets `factory`; an operator who pressed enter through the interview declared
+   `ergane`. FR-001 catches this on a fresh machine, where nothing is listening
+   and the step refuses — but it does **not** catch it on a machine that already
+   runs a control plane on `factory`, which is every developer box in this
+   project. That is how the orphan schedule `ergane-roadmap-repo` was created on
+   2026-08-16: an `env -i` init found a live `factory` namespace, passed every
+   readability check this spec will add, and scheduled into a namespace the
+   operator had never named. Do not widen this spec to fix the two literals —
+   that is `install/two-defaults-for-the-temporal-namespace-disagree` and it
+   carries a migration. Do make sure your refusal message says *which* namespace
+   it reached, so the next person sees the mismatch instead of a bare success.
+
 ## Sizing
 
 Small. US1 is a precondition and a second `FAILED` branch in a function that
