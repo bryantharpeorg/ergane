@@ -49,13 +49,12 @@ import pytest
 
 from factory.config import WriteScope
 from factory.verify.diffcheck import WorktreeMissingError, check_output
-from factory.verify.judge import (
+from factory.verify.diffbounds import (
     DIFF_INPUT_LIMIT,
     OVERSIZE_FILES_NAMED,
-    build_prompt,
-    prepare_diff,
     size_refusal,
 )
+from factory.verify.judge import build_prompt, prepare_diff
 from factory.verify.models import (
     CriteriaSet,
     DiffFileSize,

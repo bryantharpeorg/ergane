@@ -254,6 +254,43 @@ class HygieneViolation:
 
 
 @dataclass(frozen=True)
+class DiffFileSize:
+    """One file's contribution to a diff, in the unit the judge's cap is in.
+
+    Bytes rather than lines, because bytes are what `DIFF_INPUT_LIMIT` bounds —
+    a file of 40 very long lines can cost more of the budget than one of 400
+    short ones, and a record in the wrong unit sends the next attempt after the
+    wrong file.
+    """
+
+    path: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class DiffSizeRefusal:
+    """Why a diff was refused unread, in the terms its two readers need.
+
+    `total_bytes` beside `limit_bytes` answers *how far over am I* — the
+    question that decides between splitting the story and raising the ceiling,
+    and the reason the limit travels in the record instead of being looked up
+    later against a constant that may have moved. `largest_files` answers *what
+    spent it*, biggest first and bounded: a session home names itself in one
+    line, where a total on its own sends the next attempt hunting through the
+    whole diff for the file this list already names.
+
+    `total_bytes` is measured on the patch as the judge would have received it,
+    which the worktree read limit itself bounds (`worktree.DIFF_READ_LIMIT`);
+    past that bound the total is a floor, and a floor already an order of
+    magnitude over the cap answers the only question being asked of it.
+    """
+
+    total_bytes: int
+    limit_bytes: int
+    largest_files: list[DiffFileSize]
+
+
+@dataclass(frozen=True)
 class OutputCheck:
     """The anti-rubber-stamp check: did the node actually produce something?
 
@@ -269,6 +306,16 @@ class OutputCheck:
     anything the target repository's own ignore rules already refuse. It is a
     list of evidence rather than a flag so the refusal can name what to remove,
     and it defaults to empty so every row written before 045 loads unchanged.
+
+    `size_refusal` is the third way (045 FR-003): a diff can be present, clean
+    of both those classes, and still be more than the judge can be shown whole.
+    Truncating it and ruling anyway is what produced the 2026-08-15 verdict that
+    reasoned about an elided midsection in the same voice it used for what it
+    had read, so size decides here instead — before a completion is bought, on
+    this record, through the same `passed=False` the other two ways use. `None`
+    is the ordinary case, and it is also what keeps a passing row identical to
+    the rows written before this story (FR-004): the field is evidence of a
+    refusal, not a measurement taken on every attempt.
     """
 
     write_scope: str
@@ -277,6 +324,7 @@ class OutputCheck:
     artifacts_present: bool | None
     passed: bool
     hygiene_violations: list[HygieneViolation] = field(default_factory=list)
+    size_refusal: DiffSizeRefusal | None = None
 
 
 # Judge entities -------------------------------------------------------------

@@ -60,6 +60,8 @@ from factory.env import (
     resolve_env_flag,
 )
 from factory.verify.models import (
+    DiffFileSize,
+    DiffSizeRefusal,
     EscalationChoice,
     EscalationRecord,
     GateResult,
@@ -402,7 +404,41 @@ def _output_check_to_dict(check: OutputCheck) -> dict[str, Any]:
             {"path": violation.path, "rule": violation.rule}
             for violation in check.hygiene_violations
         ],
+        "size_refusal": _size_refusal_to_dict(check.size_refusal),
     }
+
+
+def _size_refusal_to_dict(refusal: DiffSizeRefusal | None) -> dict[str, Any] | None:
+    """The oversize record, or None — the shape a check that passed writes."""
+    if refusal is None:
+        return None
+    return {
+        "total_bytes": refusal.total_bytes,
+        "limit_bytes": refusal.limit_bytes,
+        "largest_files": [
+            {"path": named.path, "size_bytes": named.size_bytes}
+            for named in refusal.largest_files
+        ],
+    }
+
+
+def _size_refusal_from_dict(data: dict[str, Any] | None) -> DiffSizeRefusal | None:
+    """Read back what refused an oversized diff, if anything did.
+
+    Rows written before 045 FR-003 have no key at all, and rows written since
+    have `null` whenever the diff fit. Both mean the same thing — nothing was
+    refused for size — which is why the caller reads the key with `.get()`.
+    """
+    if data is None:
+        return None
+    return DiffSizeRefusal(
+        total_bytes=data["total_bytes"],
+        limit_bytes=data["limit_bytes"],
+        largest_files=[
+            DiffFileSize(path=item["path"], size_bytes=item["size_bytes"])
+            for item in data.get("largest_files", ())
+        ],
+    )
 
 
 def _output_check_from_dict(data: dict[str, Any]) -> OutputCheck:
@@ -419,6 +455,9 @@ def _output_check_from_dict(data: dict[str, Any]) -> OutputCheck:
             HygieneViolation(path=item["path"], rule=item["rule"])
             for item in data.get("hygiene_violations", ())
         ],
+        # Likewise for 045 FR-003: an absent key is a row from a run where no
+        # diff could be refused for its size, not one where a huge diff passed.
+        size_refusal=_size_refusal_from_dict(data.get("size_refusal")),
     )
 
 
