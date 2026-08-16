@@ -1,20 +1,19 @@
 # 049-US5 evidence
 
     $ uv run pytest -q
-    2883 passed, 44 skipped, 5 warnings in 297.72s (0:04:57)
+    2961 passed, 44 skipped, 6 warnings in 307.21s (0:05:07)
 
 44 skips is the baseline (live tiers without credentials); this story adds none.
-Five warnings, all pre-existing deprecations — `controlplane/config.py:177`,
-`workgraph/worktree.py:156` and `:178`, `factory_yaml.py`'s legacy-name path.
-One earlier full run, on the pre-`1ff351c` tree, reported six; every run since
-reports five and the sixth was never identified. Nothing this diff adds calls
-`warnings.warn`.
+Six warnings, all pre-existing — see *The `.pyc` cache* below for why that number
+moves between runs and why it is not this diff.
 
-One production edit at a time, applied to a green *committed* HEAD, run over
+Re-run whole after rebasing onto `6ca7211` (049-US3). One production edit at a
+time, applied to a green *committed* HEAD, run over
 `tests/test_forge_manifest.py tests/test_factory_yaml.py tests/test_forge_seam.py
-tests/test_ergane_init.py` (155 tests), reverted with `git checkout HEAD --` and
-the worktree confirmed clean at the end. Each edit is the one its test's
-docstring names.
+tests/test_ergane_init.py` (156 tests), reverted with `git checkout HEAD --`, the
+worktree confirmed clean at the end. **Every run purges every `__pycache__` under
+the worktree and executes with `PYTHONDONTWRITEBYTECODE=1`** — see below. Each
+edit is the one its test's docstring names.
 
 | edit | tests red |
 |---|---|
@@ -30,17 +29,9 @@ docstring names.
 | M10 `DEFAULT_FORGE` and the parser's constant disagree | 9 · one-spelling and everything that resolves a forge |
 | M11 `ergane.yaml` spends the key | 1 · scope fence (US5-S4) |
 | M12 the key reaches the parser but not the interview | 8 · interview keys, 6 · `ergane init`, offered defaults |
+| M13 the landing door builds a forge the repository never declared | 1 · every-door sweep |
 
-**One mutation came back green on its first run, and it changed the code.** The
-first M9 was "remove the `path.is_file()` guard from `_manifest_forge_name`" —
-all 155 green. The guard was dead: an absent manifest leaves
-`load_factory_config` as a `FactoryConfigError` with rule `missing_manifest`,
-which the tolerance three lines below already answered with the default. Two
-paths to one answer, and no test could hold the second. The guard was deleted
-(`1ff351c`), `test_a_repository_with_no_manifest_still_resolves_the_default_forge`
-now names the mutation that does kill it — M8 — and M9's slot was refilled with
-the dataclass-default half of the three-way spelling pin. The numbers above are
-that second run.
+Thirteen edits, thirteen kills, no survivors.
 
 **The two mutations that pull opposite ways are the point of M7 and M8.** M7
 (swallow every refusal) is the silent fallback US5-S2 forbids at the door; M8
@@ -49,6 +40,58 @@ an unrelated manifest defect. Neither shortcut passes both tests, which is what
 makes the rule — *a complaint about the `forge` key travels, every other
 complaint belongs to the reader that owns it* — a tested rule rather than a
 comment.
+
+## The mutation that survived, and its re-test
+
+An earlier battery's M9 was "remove the `path.is_file()` guard from
+`_manifest_forge_name`", and it came back **green**. The guard was dead: an
+absent manifest leaves `load_factory_config` as a `FactoryConfigError` with rule
+`missing_manifest`, which the tolerance three lines below already answered with
+the default. Two paths to one answer, and no test could hold the second. The
+guard was deleted (`b676585`), the test now names the mutation that does kill it
+(M8), and M9's slot was refilled with the dataclass-default half of the
+three-way spelling pin.
+
+That survival was later suspected of being a stale-`.pyc` artefact, so it was
+reconstructed with bytecode out of play — caches purged, `PYTHONDONTWRITEBYTECODE=1`
+— by putting the guard back and taking it out again:
+
+    A. pre-fix code: the `path.is_file()` guard is present
+      purged 14 __pycache__ dirs; PYTHONDONTWRITEBYTECODE=1
+      _manifest_forge_name('/nonexistent-repo-for-m9') -> github
+      156 passed in 0.84s
+
+    B. M9 applied: the guard is removed (this is the shipped code)
+      purged 0 __pycache__ dirs; PYTHONDONTWRITEBYTECODE=1
+      _manifest_forge_name('/nonexistent-repo-for-m9') -> github
+      156 passed in 0.83s
+
+The survival is real: the function answers `github` either way and the same 156
+tests pass either way. The guard was inert, and deleting it was right.
+
+## The `.pyc` cache, and the warning count
+
+CPython validates a cached `.pyc` on `(source mtime in whole seconds, source
+size)` only, so two mutants of one file with the same size written inside one
+wall-clock second let the second run execute the *first* one's bytecode. That
+fails toward green — it reads as an under-kill — which is why every run above
+purges the caches and forbids writing new ones.
+
+The same mechanism explains a wobble that went unexplained on the first pass:
+full-suite runs reported five warnings or six, seemingly at random. The sixth is
+`tests/test_ergane_status.py:161`'s pre-existing `SyntaxWarning: invalid escape
+sequence '\.'`, and a `SyntaxWarning` fires at **compile** time, so a run with a
+warm `__pycache__` never sees it:
+
+    $ find . -name __pycache__ -not -path ./.venv/* -exec rm -rf {} +
+    $ uv run pytest -q tests/test_ergane_status.py
+    .../tests/test_ergane_status.py:161: SyntaxWarning: invalid escape sequence '\.'
+    21 passed, 1 warning in 1.76s
+
+    $ uv run pytest -q tests/test_ergane_status.py     # caches now warm
+    21 passed in 1.05s
+
+Not this diff, and not a flake: a cold cache reports six, a warm one five.
 
 ## Scope fence (US5-S4, FR-015)
 
