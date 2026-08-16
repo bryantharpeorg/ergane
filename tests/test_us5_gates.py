@@ -23,6 +23,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import uuid
 import time
 from pathlib import Path
 from typing import Callable
@@ -237,6 +238,33 @@ def test_boundary_hanging_gate_times_out_and_kills_children(
     """
     worktree = node_worktree("hanging-gate")
 
+    # A sleep duration unique to this run. The orphan check below asks the whole
+    # machine whether a matching process survives, and `sleep 30` is not a
+    # question about this test: any concurrent run of this suite answers yes,
+    # and running four worktrees at once is ordinary here. Observed 2026-08-15 —
+    # this test went red on one of four full-suite runs and green in isolation,
+    # in a story that touched nothing it exercises. A red gate is not a flaky
+    # annoyance in this factory; it is a FAILED attempt that burns a rung of the
+    # node's ladder.
+    #
+    # Control, measured: with one unrelated `sleep 30` running on the host,
+    #
+    #     old:  1 failed, 11 deselected in 1.09s
+    #           where '2430693\n...' = CompletedProcess(
+    #               args=['pgrep', '-f', 'sleep 30'], returncode=0, ...)
+    #     new:  1 passed, 11 deselected in 1.08s
+    #
+    # The neighbour's pid is in the old failure's own output. Nothing about the
+    # boundary changed between those two runs; only the question did.
+    sentinel_seconds = f"30.{uuid.uuid4().int % 100000:05d}"
+    hang_script = worktree / "gates" / "hang.sh"
+    hang_script.write_text(
+        hang_script.read_text(encoding="utf-8").replace(
+            "sleep 30", f"sleep {sentinel_seconds}"
+        ),
+        encoding="utf-8",
+    )
+
     before = time.monotonic()
     results = run_gates(
         worktree,
@@ -255,7 +283,7 @@ def test_boundary_hanging_gate_times_out_and_kills_children(
 
     # No orphan from inside the boundary should still be running.
     ps = subprocess.run(
-        ["pgrep", "-f", "sleep 30"],
+        ["pgrep", "-f", f"sleep {sentinel_seconds}"],
         capture_output=True,
         text=True,
     )
