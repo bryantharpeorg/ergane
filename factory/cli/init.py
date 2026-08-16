@@ -15,6 +15,12 @@ key has either an operator answer or a valid placeholder default. After each
 answer the whole manifest is parsed; if the parser refuses, the operator is
 re-asked. This avoids maintaining a second copy of the parser rules while still
 catching mistakes at entry time (FR-004).
+
+US2 adds the last act: the completed init records the repo in the engine's
+registry (`factory/registry.py`) under the declared slug. That record lives
+under the engine's state home, never inside any repo, and it is the only place
+the slug exists — the manifest declares what the repo *is*, the registry
+records what the engine *calls* it.
 """
 
 from __future__ import annotations
@@ -26,7 +32,9 @@ from typing import Any, Callable
 
 import yaml
 
+from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
+from factory.locking import LockUnavailable, lock_path_for
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     _SUPPORTED_VERSION,
@@ -305,23 +313,89 @@ def init_command(args: argparse.Namespace) -> int:
         else:
             manifest_values[key] = value
 
-    # Slug is declared by the operator but not written into the manifest.
-    slug_default = repo_root.name
-    slug = prompter.ask("repo slug", default=slug_default)
+    # The slug is declared by the operator and lives in the engine's registry,
+    # never in the manifest: it is what the engine calls this repo, not what the
+    # repo declares about itself.
+    slug = _ask_for_slug(repo_root, prompter=prompter)
 
     text = _render_manifest(manifest_values)
     _write_scaffold(repo_root, text)
+
+    registration = _register(slug, repo_root)
 
     print(f"joined {repo_root.resolve()} as slug '{slug}'")
     print("written:")
     print(f"  {repo_root / MANIFEST_NAME}")
     print(f"  {repo_root / '.gitignore'}")
     print(f"  {repo_root / RUNTIME_ROOT}")
+    print(_registration_line(registration))
     print("next, run:")
     print(f"  git -C {repo_root.resolve()} add ergane.yaml .gitignore .ergane")
     print(f"  git -C {repo_root.resolve()} commit -m \"join ergane\"")
 
     return EXIT_OK
+
+
+def _ask_for_slug(repo_root: Path, *, prompter: Any) -> str:
+    """Ask for the repo's slug, re-asking until it is a usable namespace token.
+
+    The default is the slug this repo is already registered under, if any, so a
+    re-run edits rather than clobbers (FR-005); otherwise it is the *normalized*
+    directory name, proposed rather than applied — a directory called `My App`
+    yields the proposal `my-app`, and the operator confirms it like every other
+    declaration (D-009).
+    """
+    try:
+        known = registry.load_registry().for_path(repo_root)
+    except registry.RegistryError as problem:
+        raise OperatorError(str(problem), code=EXIT_USER) from None
+    default = known.slug if known is not None else registry.normalize_slug(repo_root.name)
+    error: str | None = None
+
+    while True:
+        answer = prompter.ask("repo slug", default=default, error=error).strip()
+        candidate = answer or default
+        if registry.is_valid_slug(candidate):
+            return candidate
+        error = str(registry.InvalidSlug(candidate))
+
+
+def _register(slug: str, repo_root: Path) -> registry.Registration:
+    """Record the repo in the engine's registry, refusing a slug collision.
+
+    Registration runs *after* the scaffold is written, so the repo-local work an
+    operator can still use is never lost to a refusal from the engine's side —
+    the refusal says so rather than leaving them to guess.
+    """
+    try:
+        return registry.register(slug, repo_root)
+    except registry.SlugCollision as collision:
+        raise OperatorError(
+            f"{collision}; the scaffold in {repo_root} was written and is unchanged",
+            code=EXIT_USER,
+        ) from None
+    except registry.RegistryError as error:
+        raise OperatorError(str(error), code=EXIT_USER) from None
+    except LockUnavailable as error:
+        raise OperatorError(
+            f"another `ergane` command holds the registry lock "
+            f"{lock_path_for(error.target)} (waited {error.timeout_s:g}s); "
+            "the scaffold was written — re-run init to finish registering",
+            code=EXIT_USER,
+        ) from None
+
+
+def _registration_line(registration: registry.Registration) -> str:
+    """One line saying what the registry did, including when it did nothing."""
+    entry = registration.entry
+    if registration.previous_slug is not None:
+        return (
+            f"registered: {entry.path} moved from slug "
+            f"'{registration.previous_slug}' to '{entry.slug}'"
+        )
+    if registration.changed:
+        return f"registered: '{entry.slug}' -> {entry.path}"
+    return f"registered: '{entry.slug}' -> {entry.path} (already recorded)"
 
 
 def _write_scaffold(repo_root: Path, manifest_text: str) -> None:

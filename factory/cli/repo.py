@@ -1,13 +1,21 @@
-"""Implementation of `ergane repo onboard` and `ergane repo migrate-runtime-root`.
+"""Implementation of the `ergane repo` verbs.
 
 `onboard` delegates to the legacy `factory.workgraph.cli.onboard_command` and
 converts its `_OperatorError` to the new `OperatorError` so the unified boundary
 handles it.
 
-`migrate-runtime-root` moves a populated `.factory/` to `.ergane/` (US2).  It
+`migrate-runtime-root` moves a populated `.factory/` to `.ergane/` (040 US2).  It
 lives under `repo` because the runtime root is a repository-local state tree,
 and putting it here keeps it visible rather than burying it inside an unrelated
 verb.
+
+`list` and `rebuild` (034 US2) are the registry's two faces.  `list` renders
+every entry *with its manifest status*, so a repo whose manifest was deleted
+after registration shows as drifted rather than disappearing — the cache reports
+disagreement with the authority, it never hides it.  `rebuild` re-derives the
+cache: it adopts the repo paths it is given, prunes entries whose repos are
+gone, and leaves live entries alone.  Both refuse through `OperatorError`
+directly rather than growing the legacy `_OperatorError` path.
 """
 
 from __future__ import annotations
@@ -23,8 +31,10 @@ from typing import Any, Awaitable, Callable
 from temporalio.client import Client
 from temporalio.testing import ActivityEnvironment
 
+from factory import registry
 from factory.activities import roadmap_activities
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
+from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue.gh import GhClient
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
@@ -105,6 +115,42 @@ def add_repo_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
     )
     migrate_parser.set_defaults(run=migrate_runtime_root_command)
 
+    list_parser = verbs.add_parser(
+        "list",
+        help="list the repositories the engine knows about",
+        description=(
+            "Render the repo registry: one line per entry with the current "
+            "status of its committed manifest (valid, invalid or missing)."
+        ),
+    )
+    list_parser.set_defaults(run=repo_list_command)
+
+    rebuild_parser = verbs.add_parser(
+        "rebuild",
+        help="re-derive the repo registry from committed manifests",
+        description=(
+            "The registry is a cache. Rebuilding adopts the repository paths "
+            "given, prunes entries whose repositories are gone, and leaves live "
+            "entries untouched. Safe to run at any time."
+        ),
+    )
+    rebuild_parser.add_argument(
+        "repo_path",
+        nargs="*",
+        help="repository paths to adopt (each must carry a committed manifest)",
+    )
+    rebuild_parser.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=registry.DEFAULT_LOCK_TIMEOUT_S,
+        metavar="SECONDS",
+        help=(
+            "how long to wait for another writer to release the registry lock "
+            f"before refusing (default: {registry.DEFAULT_LOCK_TIMEOUT_S:g})"
+        ),
+    )
+    rebuild_parser.set_defaults(run=repo_rebuild_command)
+
     return parser
 
 
@@ -128,6 +174,81 @@ def repo_onboard_command(args: argparse.Namespace) -> int:
     if code == EPIC_EXIT_USER:
         return 1
     return code
+
+
+def repo_list_command(args: argparse.Namespace) -> int:
+    """Render the registry, one line per entry, with each manifest's status."""
+    try:
+        entries = registry.load_registry().entries
+    except registry.RegistryError as error:
+        raise OperatorError(str(error), code=EXIT_USER) from None
+
+    if not entries:
+        print(
+            "no repos are registered; run `ergane init` inside a repository "
+            "to join one"
+        )
+        return EXIT_OK
+
+    # Written with plain loops rather than comprehensions: `tests/test_repo_ast.py`
+    # walks this module for names used without a binding it can see, and its
+    # scope checker does not model comprehension scopes.
+    rows: list[tuple[str, str, str]] = []
+    for entry in entries:
+        rows.append((entry.slug, registry.manifest_status(entry), str(entry.path)))
+
+    headers = ("slug", "manifest", "path")
+    widths: list[int] = []
+    for column in range(len(headers)):
+        width = len(headers[column])
+        for row in rows:
+            width = max(width, len(row[column]))
+        widths.append(width)
+
+    print(_render_row(headers, widths))
+    for row in rows:
+        print(_render_row(row, widths))
+    return EXIT_OK
+
+
+def _render_row(values: tuple[str, ...], widths: list[int]) -> str:
+    """One left-aligned listing row, with no trailing whitespace."""
+    cells: list[str] = []
+    for column in range(len(values)):
+        cells.append(values[column].ljust(widths[column]))
+    return "  ".join(cells).rstrip()
+
+
+def repo_rebuild_command(args: argparse.Namespace) -> int:
+    """Adopt the given repo paths, prune dead entries, report both."""
+    try:
+        result = registry.rebuild(
+            list(args.repo_path),
+            timeout_s=float(args.lock_timeout),
+        )
+    except registry.RegistryError as error:
+        raise OperatorError(str(error), code=EXIT_USER) from None
+    except LockUnavailable as error:
+        raise OperatorError(_lock_refusal(error), code=EXIT_USER) from None
+
+    if result.recovered:
+        print("the previous registry could not be read; rebuilt from the paths given")
+    for entry in result.adopted:
+        print(f"adopted {entry.slug} -> {entry.path}")
+    for slug, path in result.pruned:
+        print(f"pruned {slug} ({path} is gone)")
+    kept = len(result.kept)
+    print(f"{kept} {'entry' if kept == 1 else 'entries'} kept, {len(result.pruned)} pruned")
+    return EXIT_OK
+
+
+def _lock_refusal(error: LockUnavailable) -> str:
+    """One line naming the lock file, so a stale lock can be cleared by hand."""
+    return (
+        f"another writer holds the registry lock {lock_path_for(error.target)} "
+        f"(waited {error.timeout_s:g}s); wait for it to finish, or remove that "
+        "file if no `ergane` command is running"
+    )
 
 
 def migrate_runtime_root_command(args: argparse.Namespace) -> int:
