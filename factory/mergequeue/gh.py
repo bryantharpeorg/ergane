@@ -33,8 +33,11 @@ routed to escalation (spec edge case), not a workflow failure.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, Sequence
 
@@ -296,6 +299,61 @@ class GhClient:
             )
         return payload
 
+    # --- 034/US3 wiring: the writes that make a repo dispatchable -------------
+
+    def auth_status(self) -> str:
+        """`gh auth status` — the prerequisite probe, and a read.
+
+        Wiring calls this first so "gh is missing" and "gh is not logged in" are
+        refusals, not a traceback halfway through a half-applied change. An
+        absent binary surfaces as `GH_UNAVAILABLE` (the runner's `OSError`).
+        """
+        return self._run("auth", "status").stdout
+
+    def set_squash_merge_commit_title(self, owner_repo: str, value: str) -> None:
+        """Set the repo's squash-merge title source; repo-scoped, and read back
+        through `merge_settings` — which is what `evaluate_repo` judges."""
+        self._run(
+            "api", "-X", "PATCH", f"repos/{owner_repo}",
+            "-f", f"squash_merge_commit_title={value}",
+        )
+
+    def list_rulesets(self, owner_repo: str) -> list[dict[str, Any]]:
+        """The repo's branch rulesets, as summaries (`id`, `name`, `target`)."""
+        payload = self._run_json("api", f"repos/{owner_repo}/rulesets")
+        if isinstance(payload, list):
+            return [p for p in payload if isinstance(p, dict)]
+        raise GhError(GH_REFUSED, "gh api rulesets returned an unexpected JSON shape")
+
+    def ruleset(self, owner_repo: str, ruleset_id: int) -> dict[str, Any]:
+        """One ruleset in full — its conditions and its rules, which summaries omit."""
+        payload = self._run_json("api", f"repos/{owner_repo}/rulesets/{ruleset_id}")
+        if not isinstance(payload, dict):
+            raise GhError(
+                GH_REFUSED, "gh api rulesets/<id> returned an unexpected JSON shape"
+            )
+        return payload
+
+    def create_ruleset(self, owner_repo: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a branch ruleset from `payload`, returning what GitHub stored."""
+        with _json_body(payload) as body_file:
+            created = self._run_json(
+                "api", "-X", "POST", f"repos/{owner_repo}/rulesets",
+                "--input", body_file,
+            )
+        return created if isinstance(created, dict) else {}
+
+    def update_ruleset(
+        self, owner_repo: str, ruleset_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Replace a branch ruleset's contents with `payload`."""
+        with _json_body(payload) as body_file:
+            updated = self._run_json(
+                "api", "-X", "PUT", f"repos/{owner_repo}/rulesets/{ruleset_id}",
+                "--input", body_file,
+            )
+        return updated if isinstance(updated, dict) else {}
+
     # --- plumbing ------------------------------------------------------------
 
     def _run_json(self, *args: str) -> dict[str, Any] | list[Any]:
@@ -368,6 +426,29 @@ class GhClient:
             stderr=completed.stderr,
             returncode=completed.returncode,
         )
+
+
+@contextlib.contextmanager
+def _json_body(payload: dict[str, Any]):
+    """Write `payload` to a temp file and yield its absolute path, then remove it.
+
+    `gh api --input <file>` is how the nested rulesets payload is sent: `-f`
+    fields express only a flat mapping, and the runner seam is `(argv, cwd)` with
+    no stdin. `create_pr` passes its body the same way (`--body-file`). The path
+    is absolute because the client's `cwd` is the target clone.
+    """
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", encoding="utf-8", delete=False
+    )
+    try:
+        json.dump(payload, handle)
+        handle.close()
+        yield handle.name
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
 
 
 def _tail(text: str, limit: int = _STDERR_TAIL_LIMIT) -> str:

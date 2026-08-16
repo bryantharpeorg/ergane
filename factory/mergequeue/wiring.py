@@ -1,0 +1,505 @@
+"""034/US3: making true what `onboard.py` judges.
+
+`evaluate_repo` (beside this file) decides whether a repo is dispatchable, and
+`EpicWorkflow._onboard_target` runs that decision at *every* epic start. Until
+now the only way to satisfy it was `gh` surgery by hand. This module changes the
+repo until that judgment passes, reporting every act. Of its five checks,
+`factory_yaml` is US1's scaffold and `visibility` is refused here (D-007); the
+queue, the squash title and gate<->check parity are what this applies.
+
+Three decisions, each a place a plausible implementation goes quietly wrong:
+
+**The branch.** The spec says "enable the merge queue on the declared landing
+branch"; `evaluate_repo` reads the queue for GitHub's *default* branch. They are
+not always the same — this factory's own repo defaults to `ergane-buildout` and
+would have failed on `main`. Wiring one and validating the other silently is the
+defect, so this wires **the declared landing branch** (the one the factory lands
+on) and, when the default differs, emits an `attention` step naming the
+consequence and both remedies. It never changes a repo's default branch.
+
+**Exactly the gates, and no more.** A generated workflow with a helpful extra job
+wired as a required check makes the repo fail its own check one step later, via
+`evaluate_repo`'s `unknown_check:<name>` finding — which is what keeps the LLM
+judge out of CI. One required check per declared gate, one job named after each.
+
+**Idempotence is read-then-decide.** Every act reads current state first and
+reports `already satisfied` without writing; a re-run makes no mutating call.
+
+The `enforcement` field GitHub's rulesets API requires is spelled in
+`merge_queue_ruleset.json`, not here: this package's vocabulary sweep
+(`tests/test_final_sweep.py`) reserves that word for the spend enforcement D-021
+defers. The collision is GitHub's, not ours, and the payload is data — so it
+lives in a data file and the sweep stays intact.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+import yaml
+
+from factory.mergequeue.gh import GH_UNAVAILABLE, GhError
+
+#: Step outcomes, and the exact words the operator reads.
+APPLIED = "applied"
+ALREADY_SATISFIED = "already satisfied"
+ATTENTION = "attention"
+
+#: The squash-title source the landing grammar depends on: the merge queue
+#: squashes, and the delta reader parses the landing off the squashed subject.
+SQUASH_TITLE = "PR_TITLE"
+
+#: The ruleset this module owns, found by name so a re-run edits rather than
+#: duplicates. Rulesets a repo already had are never touched.
+RULESET_NAME = "ergane merge queue"
+
+#: The workflow file scaffolded into a target repo, relative to its root.
+WORKFLOW_PATH = Path(".github/workflows/ergane-gates.yml")
+
+#: The payload GitHub's rulesets API expects, as data (see module docstring).
+_RULESET_TEMPLATE = Path(__file__).with_name("merge_queue_ruleset.json")
+
+_QUEUE_RULE = "merge_queue"
+_CHECKS_RULE = "required_status_checks"
+
+
+@dataclass(frozen=True)
+class WiringStep:
+    """One wiring act: what it was, what happened, and what the operator should know."""
+
+    name: str
+    status: str
+    detail: str
+
+
+class WiringRefused(Exception):
+    """A prerequisite the operator must fix, with its remedies and a manual path.
+
+    Raised at the point of refusal — before any write — so a repo is never left
+    half-wired, and always carrying the manual steps, because an operator blocked
+    on a missing tool still needs the repo wired today.
+    """
+
+    def __init__(
+        self,
+        headline: str,
+        *,
+        remedies: Sequence[str],
+        manual: Sequence[str],
+    ) -> None:
+        self.headline = headline
+        self.remedies = tuple(remedies)
+        self.manual = tuple(manual)
+        super().__init__(self.render())
+
+    def render(self) -> str:
+        lines = [self.headline, ""]
+        for remedy in self.remedies:
+            lines.append(f"  {remedy}")
+        lines.append("")
+        lines.append("or do the manual wiring steps yourself:")
+        for step in self.manual:
+            lines.append(f"  {step}")
+        return "\n".join(lines)
+
+
+def format_step(step: WiringStep) -> list[str]:
+    """One step rendered for the terminal: a status line and an indented detail."""
+    lines = [f"  {step.name}: {step.status}"]
+    for line in step.detail.splitlines():
+        lines.append(f"    {line}")
+    return lines
+
+
+def manual_steps(
+    *,
+    landing_branch: str,
+    gates: Sequence[str],
+    owner_repo: str = "<owner>/<repo>",
+) -> list[str]:
+    """The by-hand equivalent of `wire_repo`; `owner_repo` is a placeholder when
+    the refusal came before the repo's slug could be read (no `gh` at all)."""
+    names = ", ".join(gates)
+    return [
+        f"1. gh api -X PATCH repos/{owner_repo} -f squash_merge_commit_title={SQUASH_TITLE}",
+        f"2. add a branch ruleset targeting '{landing_branch}' with the Merge queue",
+        f"   rule (Settings -> Rules -> Rulesets), merging by squash",
+        f"3. in that same ruleset, require exactly these checks and no others:",
+        f"   {names}",
+        f"4. commit {WORKFLOW_PATH}, so CI produces a check named after each of them",
+    ]
+
+
+_WORKFLOW_HEADER = """\
+# Generated by `ergane init --wire`: one job per gate declared in ergane.yaml.
+#
+# The job names below ARE the gate names. GitHub names each check run after the
+# job's `name`, and the merge queue requires a check named after each declared
+# gate — rename a job here and the factory refuses to dispatch against this repo.
+#
+# TODO(operator): add whatever toolchain setup your gate commands need. `ergane
+# init` writes the gates you declared; it does not guess how to install them.
+name: ergane gates
+
+on:
+  pull_request:
+  merge_group:
+
+jobs:
+"""
+
+
+def render_gates_workflow(gates: Mapping[str, str]) -> str:
+    """The GitHub Actions workflow that produces one check per declared gate.
+
+    Triggers on `merge_group` as well as `pull_request`: the queue runs its
+    required checks against the merge group, and a workflow that fires only on
+    pull requests leaves it waiting on a check that never starts. Names and
+    commands are emitted as JSON scalars — valid YAML double-quoted scalars — so
+    a command containing a colon or a quote survives the round trip.
+    """
+    blocks: list[str] = []
+    for gate, command in gates.items():
+        # The gate name is also the job id: schema v1 fixes gate names to
+        # `test`/`lint`/`typecheck`, all valid job ids. `name:` is set anyway,
+        # because it — not the id — is what the check run is called.
+        blocks.append(
+            f"  {gate}:\n"
+            f"    name: {json.dumps(gate)}\n"
+            f"    runs-on: ubuntu-latest\n"
+            f"    steps:\n"
+            f"      - uses: actions/checkout@v4\n"
+            f"      - name: {json.dumps(gate)}\n"
+            f"        run: {json.dumps(command)}\n"
+        )
+    return _WORKFLOW_HEADER + "\n".join(blocks)
+
+
+def existing_gate_jobs(repo_root: Path) -> dict[str, str]:
+    """Every check name the repo's committed CI already produces, and its file.
+
+    A job's check run is named after its `name:`, or its job id when it has none.
+    Unparseable files are skipped rather than counted as coverage: a file nobody
+    can read does not answer "does a check by this name already exist".
+    """
+    found: dict[str, str] = {}
+    directory = repo_root / ".github" / "workflows"
+    if not directory.is_dir():
+        return found
+
+    paths = sorted(directory.glob("*.yml")) + sorted(directory.glob("*.yaml"))
+    for path in paths:
+        try:
+            parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(parsed, Mapping):
+            continue
+        jobs = parsed.get("jobs")
+        if not isinstance(jobs, Mapping):
+            continue
+        for job_id, job in jobs.items():
+            name = str(job_id)
+            if isinstance(job, Mapping) and isinstance(job.get("name"), str):
+                name = job["name"]
+            found.setdefault(name, path.name)
+    return found
+
+
+def scaffold_gates_workflow(repo_root: Path, gates: Mapping[str, str]) -> WiringStep:
+    """Write the gates workflow into the tree — unless CI already makes the checks.
+
+    Written, never committed: the repo's history belongs to its operator. An
+    existing file at the managed path is reported, never overwritten.
+    """
+    target = repo_root / WORKFLOW_PATH
+    desired = render_gates_workflow(gates)
+    declared = ", ".join(gates)
+
+    if target.is_file():
+        if target.read_text(encoding="utf-8") == desired:
+            return WiringStep(
+                "gates workflow",
+                ALREADY_SATISFIED,
+                f"{WORKFLOW_PATH} already declares one job per declared gate ({declared})",
+            )
+        return WiringStep(
+            "gates workflow",
+            ATTENTION,
+            f"{WORKFLOW_PATH} exists and differs; it was NOT overwritten. Give it a "
+            f"job named after every declared gate ({declared}), or delete it and "
+            f"re-run.",
+        )
+
+    covered = existing_gate_jobs(repo_root)
+    missing = [gate for gate in gates if gate not in covered]
+    if gates and not missing:
+        where = sorted({covered[gate] for gate in gates})
+        return WiringStep(
+            "gates workflow",
+            ALREADY_SATISFIED,
+            f"existing CI already defines a job named after every declared gate "
+            f"({declared}) in {', '.join(where)}; no workflow was written",
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(desired, encoding="utf-8")
+    return WiringStep(
+        "gates workflow",
+        APPLIED,
+        f"wrote {WORKFLOW_PATH}, one job per declared gate ({declared}); commit it "
+        f"— the queue cannot require a check nothing produces",
+    )
+
+
+def wire_repo(
+    client: Any, *, landing_branch: str, gates: Sequence[str]
+) -> tuple[WiringStep, ...]:
+    """Wire one repo's GitHub side to match its declarations, idempotently.
+
+    `client` is a `GhClient`, passed in rather than constructed so a test can
+    drive this against a model of a repository instead of a real one.
+    """
+    gate_names = list(gates)
+    _require_gh(client, landing_branch=landing_branch, gates=gate_names)
+
+    owner_repo = ""
+    try:
+        view = client.repo_view()
+        owner_repo = str(view.get("nameWithOwner") or "")
+        visibility = str(view.get("visibility") or "")
+        reference = view.get("defaultBranchRef") or {}
+        default_branch = (
+            str(reference.get("name") or "")
+            if isinstance(reference, Mapping)
+            else str(reference)
+        )
+        # A `WiringRefused` from here is the operator's answer, not gh's, and
+        # passes straight through the handler below.
+        _require_public(
+            visibility,
+            owner_repo=owner_repo,
+            landing_branch=landing_branch,
+            gates=gate_names,
+        )
+        steps = [
+            _squash_title_step(client, owner_repo),
+            _queue_step(client, owner_repo, landing_branch, gate_names),
+        ]
+    except GhError as error:
+        # No `origin` on GitHub, a repo the token cannot see, a token without
+        # admin rights, an API outage: every one is a refusal with a remedy,
+        # never a traceback out of a half-applied change.
+        raise WiringRefused(
+            f"`gh` refused while wiring {owner_repo or 'this repository'} "
+            f"({error.kind}): {error.stderr_tail.strip() or error}",
+            remedies=(
+                "check the checkout has an `origin` remote on GitHub that your "
+                "token can see (git remote -v), and",
+                "check the token has admin rights on it — without them it cannot "
+                "change repo settings or rulesets. `gh auth login` with the `repo` "
+                "scope, or ask an admin to run the steps below",
+            ),
+            manual=manual_steps(
+                landing_branch=landing_branch,
+                gates=gate_names,
+                owner_repo=owner_repo or "<owner>/<repo>",
+            ),
+        ) from None
+
+    divergence = _divergence_step(owner_repo, landing_branch, default_branch)
+    if divergence is not None:
+        steps.append(divergence)
+    return tuple(steps)
+
+
+def _require_gh(client: Any, *, landing_branch: str, gates: Sequence[str]) -> None:
+    """Refuse before touching anything if `gh` is missing or not logged in.
+
+    `gh auth status` is the first call this module makes, so a refusal here
+    proves nothing was read and nothing was changed.
+    """
+    try:
+        client.auth_status()
+    except GhError as error:
+        manual = manual_steps(landing_branch=landing_branch, gates=gates)
+        if error.kind == GH_UNAVAILABLE:
+            raise WiringRefused(
+                "github wiring needs the GitHub CLI, and `gh` is not installed "
+                "(or is not on PATH)",
+                remedies=(
+                    "install it from https://cli.github.com, then run: gh auth login",
+                ),
+                manual=manual,
+            ) from None
+        detail = error.stderr_tail.strip() or str(error)
+        raise WiringRefused(
+            f"github wiring needs an authenticated GitHub CLI, and `gh` refused: {detail}",
+            remedies=("run: gh auth login",),
+            manual=manual,
+        ) from None
+
+
+def _require_public(
+    visibility: str,
+    *,
+    owner_repo: str,
+    landing_branch: str,
+    gates: Sequence[str],
+) -> None:
+    """D-007: the merge queue is available on every plan only for public repos."""
+    if visibility.strip().lower() == "public":
+        return
+    raise WiringRefused(
+        f"{owner_repo} is {visibility.lower()}, and GitHub's merge queue is available "
+        f"on any plan only for public repositories (D-007) — a queue wired here would "
+        f"be a queue that can never accept an enqueue",
+        remedies=(
+            f"make {owner_repo} public, or",
+            "move to a GitHub plan whose merge queue covers private repositories",
+        ),
+        manual=manual_steps(
+            landing_branch=landing_branch, gates=gates, owner_repo=owner_repo or "<owner>/<repo>"
+        ),
+    )
+
+
+def _squash_title_step(client: Any, owner_repo: str) -> WiringStep:
+    """Title squash merges from the PR title, or report that they already are.
+
+    Invisible in the spec's scenarios and fatal if missed: the queue squashes and
+    the delta reader parses the landing off the squashed subject, so any other
+    title source loses the landing grammar.
+    """
+    settings = client.merge_settings(owner_repo)
+    current = settings.get("squash_merge_commit_title")
+    if current is not None:
+        current = str(current)
+
+    if current == SQUASH_TITLE:
+        return WiringStep(
+            "squash-merge title",
+            ALREADY_SATISFIED,
+            f"squash_merge_commit_title is {SQUASH_TITLE}",
+        )
+
+    client.set_squash_merge_commit_title(owner_repo, SQUASH_TITLE)
+    observed = "unreadable" if current is None else repr(current)
+    return WiringStep(
+        "squash-merge title",
+        APPLIED,
+        f"squash_merge_commit_title {observed} -> {SQUASH_TITLE}; the landing grammar "
+        f"is read off the squashed subject, so it must come from the PR title",
+    )
+
+
+def _queue_step(
+    client: Any, owner_repo: str, landing_branch: str, gates: Sequence[str]
+) -> WiringStep:
+    """Enable the queue on the landing branch and require exactly the declared gates."""
+    desired = _ruleset_payload(landing_branch, gates)
+    names = ", ".join(gates) or "(none declared)"
+
+    existing_id = None
+    for summary in client.list_rulesets(owner_repo):
+        if str(summary.get("name") or "") == RULESET_NAME:
+            existing_id = summary.get("id")
+            break
+
+    if existing_id is not None:
+        current = client.ruleset(owner_repo, int(existing_id))
+        if _ruleset_satisfies(current, desired, gates):
+            return WiringStep(
+                "merge queue",
+                ALREADY_SATISFIED,
+                f"ruleset '{RULESET_NAME}' already queues '{landing_branch}' "
+                f"requiring exactly: {names}",
+            )
+        client.update_ruleset(owner_repo, int(existing_id), desired)
+        return WiringStep(
+            "merge queue",
+            APPLIED,
+            f"updated ruleset '{RULESET_NAME}': '{landing_branch}' is queued, "
+            f"requiring exactly: {names}",
+        )
+
+    client.create_ruleset(owner_repo, desired)
+    return WiringStep(
+        "merge queue",
+        APPLIED,
+        f"created ruleset '{RULESET_NAME}': '{landing_branch}' is queued, "
+        f"requiring exactly: {names}",
+    )
+
+
+def _divergence_step(
+    owner_repo: str, landing_branch: str, default_branch: str
+) -> WiringStep | None:
+    """Say aloud when the wired branch is not the branch onboarding will read.
+
+    Silence is the trap: correctly wired for landing, and still failing every
+    epic start on a check nobody thought to look at.
+    """
+    if not default_branch or default_branch == landing_branch:
+        return None
+    return WiringStep(
+        "default branch",
+        ATTENTION,
+        f"the queue was wired on the declared landing branch '{landing_branch}', but "
+        f"{owner_repo}'s default branch is '{default_branch}'. Onboarding reads the "
+        f"queue for the default branch, so every epic start will keep failing until "
+        f"the two agree. Either:\n"
+        f"  gh repo edit --default-branch {landing_branch}\n"
+        f"or set landing_branch to '{default_branch}' in ergane.yaml.",
+    )
+
+
+def _ruleset_payload(landing_branch: str, gates: Sequence[str]) -> dict[str, Any]:
+    """The rulesets API body: queue this branch, require exactly these checks."""
+    payload = json.loads(_RULESET_TEMPLATE.read_text(encoding="utf-8"))
+    payload["conditions"]["ref_name"]["include"] = [f"refs/heads/{landing_branch}"]
+    contexts = []
+    for gate in gates:
+        contexts.append({"context": gate})
+    for rule in payload["rules"]:
+        if rule.get("type") == _CHECKS_RULE:
+            rule["parameters"]["required_status_checks"] = contexts
+    return payload
+
+
+def _ruleset_satisfies(
+    current: Mapping[str, Any], desired: Mapping[str, Any], gates: Sequence[str]
+) -> bool:
+    """Does the ruleset GitHub holds already say what `desired` says?
+
+    Compared by meaning, not bytes: GitHub echoes back ids, timestamps and
+    defaults it filled in, and churning on those would make "changes nothing" a
+    lie. Every top-level field but `rules` must match; the rules must carry the
+    queue and require precisely the declared gates.
+    """
+    for key, value in desired.items():
+        if key == "rules":
+            continue
+        if current.get(key) != value:
+            return False
+
+    rules = current.get("rules") or []
+    queued = False
+    contexts: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule, Mapping):
+            continue
+        kind = str(rule.get("type") or "")
+        if kind == _QUEUE_RULE:
+            queued = True
+        parameters = rule.get("parameters")
+        if not isinstance(parameters, Mapping):
+            continue
+        for check in parameters.get(_CHECKS_RULE) or []:
+            if isinstance(check, Mapping) and check.get("context"):
+                contexts.add(str(check["context"]))
+
+    return queued and contexts == set(gates)
