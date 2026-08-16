@@ -74,7 +74,7 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
-from factory.notify.workflow import EscalationWorkflow
+from factory.escalation.workflow import EscalationWorkflow
 from factory.roadmap.workflow import (
     read_corpus_activity,
     read_spec_text_activity,

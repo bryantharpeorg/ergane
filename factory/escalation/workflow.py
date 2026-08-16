@@ -122,6 +122,7 @@ _FAST = {
     "retry_policy": _RETRIES,
 }
 
+
 @dataclasses.dataclass(frozen=True)
 class EscalationRequest:
     """One human decision, in the terms the operator will read it in.

@@ -22,8 +22,8 @@ from typing import Any, Sequence
 
 from factory.cli.errors import EXIT_OK
 from factory.cli.nouns import Noun
-from factory.notify import escalations as escalation_reader
-from factory.notify.workflow import OpenEscalation
+from factory.escalation import client as escalation_reader
+from factory.escalation.workflow import OpenEscalation
 
 
 def render(open_now: Sequence[OpenEscalation]) -> str:

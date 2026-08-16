@@ -8,7 +8,7 @@ scope and one of them cannot (`secrets` is not deterministic).
   id (FR-004, plan trap 3). A workflow id has to exist before `start_workflow`,
   so the starter mints it; the workflow reads it back from `workflow.info()`
   rather than being handed it twice. A workflow *parent* starting a child uses
-  `factory.notify.workflow.child_correlation_id()` instead, which is
+  `factory.escalation.workflow.child_correlation_id()` instead, which is
   replay-safe.
 
 - **`open_escalations`** answers "what is waiting on me" from running
@@ -38,7 +38,7 @@ from temporalio.client import (
 )
 from temporalio.service import RPCError
 
-from factory.notify.workflow import (
+from factory.escalation.workflow import (
     CORRELATION_ID_HEX,
     ESCALATION_STATUS_QUERY,
     EscalationRequest,
@@ -66,7 +66,7 @@ def mint_correlation_id() -> str:
 
     12 hex digits: the width that lets `esc:<id>:<choice>` fit inside Telegram's
     64-byte `callback_data` without ever carrying a workflow id (002 R11). The
-    workflow-scope sibling is `factory.notify.workflow.child_correlation_id`,
+    workflow-scope sibling is `factory.escalation.workflow.child_correlation_id`,
     which mints the same width deterministically.
     """
     return secrets.token_hex(CORRELATION_ID_HEX // 2)

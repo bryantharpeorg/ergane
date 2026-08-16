@@ -51,8 +51,8 @@ from temporalio import activity, workflow as workflow_api
 from temporalio.testing import WorkflowEnvironment
 
 import factory.worker as worker_module
-from factory.notify import workflow as escalation_workflow_module
-from factory.notify.workflow import EscalationWorkflow
+from factory.escalation import workflow as escalation_workflow_module
+from factory.escalation.workflow import EscalationWorkflow
 from factory.roadmap import workflow as roadmap_workflow_module
 from factory.workgraph import workflow as workflow_module
 from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow

@@ -1,6 +1,6 @@
 """Escalation is a workflow type: standalone, as a child, and settled by itself.
 
-041-US2. `factory/notify/workflow.py` hosts one escalation per workflow — the
+041-US2. `factory/escalation/workflow.py` hosts one escalation per workflow — the
 workflow ID *is* the correlation id, delivery is an activity through US1's
 configured adapter, expiry is the workflow's own durable timer, the answer
 arrives as 008's `escalation_resolved` signal, and the result is
@@ -45,9 +45,21 @@ nothing — the question this repository has paid most to learn to ask:
   any of them. An abandoned row in trap 9's live-store shape sits in the same
   table throughout and must come out exactly as it went in.
 
-Time skipping only advances while a *workflow result* is awaited, so every
-out-of-band store write below happens before any `result()` call and cannot race
-the timer it is setting up.
+Two properties of the harness are deliberate, and both were learned the
+expensive way in this file rather than assumed.
+
+**Nothing here polls the store to find out where a workflow is.** The waits ask
+the workflow's own `escalation_status` query. Polling SQLite would open a second
+connection to the file the send activity is still writing, and the out-of-band
+writes below — the ones standing in for the bridge — would be racing the thing
+they are meant to arrive after.
+
+**Time skipping only advances while a *workflow result* is awaited, and it
+advances to the next timer in the whole namespace.** So a test that awaited one
+escalation's result while a sibling still held its hour would expire the sibling
+as a side effect. Every answered lifecycle therefore waits until its own status
+query reports a resolution *before* its result is awaited, and the only results
+awaited with an hour outstanding are the ones whose expiry is the point.
 
 Runtime evidence — the red run before the implementation, the mutation
 transcripts, and the final suite line — is pasted verbatim at the bottom of this
@@ -87,9 +99,8 @@ from factory.notify.adapter import (
     register_adapter,
     unregister_adapter,
 )
-from factory.notify.escalations import mint_correlation_id, start_escalation
-from factory.notify.service import SIGNAL_NAME
-from factory.notify.workflow import (
+from factory.escalation.client import mint_correlation_id, start_escalation
+from factory.escalation.workflow import (
     ESCALATION_STATUS_QUERY,
     OUTCOME_ANSWERED,
     OUTCOME_EXPIRED,
@@ -97,6 +108,7 @@ from factory.notify.workflow import (
     EscalationWorkflow,
     child_correlation_id,
 )
+from factory.notify.service import SIGNAL_NAME
 from factory.verify import store
 from factory.verify.models import EscalationChoice, EscalationRecord
 
@@ -755,7 +767,7 @@ def test_039s_guard_found_this_workflow_module_and_can_still_fail() -> None:
     """US2-S5 / FR-012: discovered by construction, and provably not blind.
 
     Two claims, because either alone is worthless. The guard *found*
-    `factory/notify/workflow.py` — a discovery bug would otherwise read as
+    `factory/escalation/workflow.py` — a discovery bug would otherwise read as
     compliance — and the guard still has teeth on that module's real source: an
     `os.environ` read spliced into `run()` is flagged, naming the function.
 
@@ -768,7 +780,7 @@ def test_039s_guard_found_this_workflow_module_and_can_still_fail() -> None:
         _discover_workflow_modules,
     )
 
-    import factory.notify.workflow as escalation_workflow
+    import factory.escalation.workflow as escalation_workflow
 
     factory_root = Path(__file__).resolve().parent.parent / "factory"
     module_path = Path(escalation_workflow.__file__).resolve()
@@ -823,7 +835,7 @@ def test_the_workflow_reads_no_wall_clock() -> None:
     raised whenever the two disagree; it was reproduced exactly that way here
     before this test file's implementation landed.
     """
-    import factory.notify.workflow as escalation_workflow
+    import factory.escalation.workflow as escalation_workflow
 
     source = Path(escalation_workflow.__file__).read_text(encoding="utf-8")
     banned = {"datetime.now", "time.time", "time.monotonic", "random.random"}
@@ -840,7 +852,7 @@ def test_the_workflow_reads_no_wall_clock() -> None:
 # ============================================================================
 
 RED_BEFORE_THE_IMPLEMENTATION = """
-Written before `factory/notify/workflow.py` and `settle_escalation` exist, so
+Written before `factory/escalation/workflow.py` and `settle_escalation` exist, so
 every test here fails at import until they land (the 005/008/039 precedent).
 
 $ uv run pytest tests/test_escalation_workflow.py tests/test_ergane_escalations.py -q
@@ -857,7 +869,7 @@ E   ImportError: cannot import name 'settle_escalation' from
     'factory.activities.notify_activities' (.../factory/activities/notify_activities.py)
 ______________ ERROR collecting tests/test_ergane_escalations.py _______________
 tests/test_ergane_escalations.py:49: in <module>
-    from factory.notify import escalations
+    from factory.escalation import client as escalations
 E   ImportError: cannot import name 'escalations' from 'factory.notify'
     (.../factory/notify/__init__.py)
 =========================== short test summary info ============================
@@ -868,5 +880,102 @@ ERROR tests/test_ergane_escalations.py
 """
 
 MUTATIONS = """
-(pasted by the implementation commit, from runs actually made)
+Seven behaviours, seven mutations of the *production* code, each watched go red
+on its own and then reverted. Long absolute paths elided to `.../`; nothing else
+is edited.
+
+--- 1. the workflow stops settling an answered escalation (FR-013) ------------
+    `_settle_answer`: drop the `settle_escalation` call and return the signal's
+    choice, which is what the epic's park does today.
+
+$ uv run pytest tests/test_escalation_workflow.py -q --tb=line
+F....F.F....                                                             [100%]
+E   AssertionError: assert None == <EscalationChoice.RETRY: 'RETRY'>
+     +  where None = EscalationRecord(escalation_id='3de0b3f39da0', ... resolution=None, resolved_at=None, check_evidence=()).resolution
+.../tests/test_escalation_workflow.py:383: AssertionError
+E   AssertionError: assert 'ANSWERED' == 'EXPIRED'
+.../tests/test_escalation_workflow.py:577: AssertionError
+E   AssertionError: relayed: the lifecycle reached a terminal state and left a pending row - settlement belonged to the channel again (FR-013)
+    assert None is not None
+.../tests/test_escalation_workflow.py:681: AssertionError
+FAILED tests/test_escalation_workflow.py::test_a_standalone_escalation_delivers_awaits_and_answers
+FAILED tests/test_escalation_workflow.py::test_an_answer_that_lost_to_the_hour_does_not_reopen_it
+FAILED tests/test_escalation_workflow.py::test_settlement_is_the_workflows_own_transition_on_every_channel
+3 failed, 9 passed in 2.65s
+
+--- 2. the undelivered fail-safe is removed (002 R11) -------------------------
+    `run()`: drop the `if not sent.delivered` branch, so an undelivered
+    escalation falls through to the timer.
+
+$ uv run pytest tests/test_escalation_workflow.py -q --tb=line
+..F.........                                                             [100%]
+E   AssertionError: assert True is False
+     +  where True = EscalationOutcome(escalation_id='7b171438912e', outcome='EXPIRED', resolution='EXPIRED', identity='', delivered=True, late=None).delivered
+------------------------------ Captured log call -------------------------------
+WARNING  factory.activities.notify_activities:notify_activities.py:532 escalation 7b171438912e: not delivered
+.../tests/test_escalation_workflow.py:428: AssertionError
+FAILED tests/test_escalation_workflow.py::test_an_undelivered_escalation_gives_up_without_starting_a_timer
+1 failed, 11 passed in 2.90s
+
+--- 3. the expiry path stops asking the store who won (FR-007, 002 R12) -------
+    `_settle_unanswered`: `recorded = OUTCOME_EXPIRED` instead of taking what
+    `expire_escalation` read back. This is plan trap 2's "two arbiters" as a
+    one-line change.
+
+$ uv run pytest tests/test_escalation_workflow.py -q --tb=line
+....F.......                                                             [100%]
+E   AssertionError: assert 'EXPIRED' == 'ANSWERED'
+      - ANSWERED
+      + EXPIRED
+.../tests/test_escalation_workflow.py:543: AssertionError
+FAILED tests/test_escalation_workflow.py::test_a_press_that_beat_the_timer_decides_the_escalation
+1 failed, 11 passed in 2.86s
+
+--- 4. any reply becomes an answer (no error escapes) -------------------------
+    `_answer()`: return the first buffered reply without checking `_offered`.
+
+$ uv run pytest tests/test_escalation_workflow.py -q --tb=line
+......F.....                                                             [100%]
+E   AssertionError: assert 'ANSWERED' == 'EXPIRED'
+      - EXPIRED
+      + ANSWERED
+.../tests/test_escalation_workflow.py:609: AssertionError
+FAILED tests/test_escalation_workflow.py::test_a_choice_nobody_offered_is_not_an_answer
+1 failed, 11 passed in 2.90s
+
+--- 5. a wall clock is read in workflow scope (constitution IV) ---------------
+    `run()`: `datetime.now(timezone.utc)` at the top.
+
+$ uv run pytest tests/test_escalation_workflow.py -q --tb=line
+...........F                                                             [100%]
+E   AssertionError: workflow code reads a wall clock: {'datetime.now'}
+.../tests/test_escalation_workflow.py:835: AssertionError
+FAILED tests/test_escalation_workflow.py::test_the_workflow_reads_no_wall_clock
+1 failed, 11 passed in 3.14s
+
+--- 6. an os.environ read is put back into workflow scope (FR-012) -----------
+    `run()`: `os.environ.get('ERGANE_ROOT')`. This is the roadmap-wedging
+    defect of 2026-08-13, in the new module, and 039's guard catches it with no
+    edit of its own — which is the whole claim US2-S5 makes.
+
+$ uv run pytest tests/test_workflow_env_guard.py -q --tb=line
+F.                                                                       [100%]
+E   AssertionError: workflow-scoped environment read(s) found:
+    .../factory/escalation/workflow.py:294: run() reads process environment: os.environ
+.../tests/test_workflow_env_guard.py:212: AssertionError
+FAILED tests/test_workflow_env_guard.py::test_guard_discovers_workflow_modules_and_forbids_env_reads
+1 failed, 1 passed in 0.10s
+
+--- 7. the child's correlation id stops being replay-safe (US2-S3) -----------
+    `child_correlation_id`: `uuid.uuid4()` instead of `workflow.uuid4()`. The
+    only symptom is on replay, which is exactly why the replay test exists.
+
+$ uv run pytest tests/test_escalation_workflow.py -q --tb=line
+........F...                                                             [100%]
+E   temporalio.workflow._exceptions.NondeterminismError: Workflow activation completion failed:
+    "[TMPRL1100] Nondeterminism error: Child workflow id of scheduled event
+    'a6d7cb2564c8' does not match child workflow id of command 'ce68a49a81b9'"
+    force_cause: NonDeterministicError
+FAILED tests/test_escalation_workflow.py::test_every_lifecycle_replays
+1 failed, 11 passed in 3.02s
 """

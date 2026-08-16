@@ -269,5 +269,39 @@ hold no name `factory`.
 """
 
 MUTATIONS = """
-(pasted by the implementation commit)
+The red run above is already the strongest evidence these tests can fail: it is
+the production code doing nothing, because before this story it did nothing.
+Two further mutations pin the halves separately.
+
+--- 1. the read drops the column again ---------------------------------------
+    `_escalation_from_row`: `check_evidence=()` instead of decoding the column.
+    The write still happens, so the data is in SQLite and the reader throws it
+    away — which is exactly the shape of the original defect.
+
+$ uv run pytest tests/test_escalation_record.py -q --tb=line
+.F.F.                                                                    [100%]
+E   AssertionError: assert () == (CheckFailure...een deleted'))
+      Right contains 2 more items, first extra item: CheckFailure(name='build (merge_group)', ...)
+.../tests/test_escalation_record.py:124: AssertionError
+E   AssertionError: assert () == (CheckFailure...een deleted'))
+.../tests/test_escalation_record.py:221: AssertionError
+FAILED tests/test_escalation_record.py::test_check_evidence_survives_the_store_round_trip
+FAILED tests/test_escalation_record.py::test_a_store_written_before_this_story_migrates_in_place
+2 failed, 3 passed in 0.35s
+
+--- 2. the migration is removed ----------------------------------------------
+    `_migrate`: `pass` instead of the `ALTER TABLE`. A fresh store still works
+    — the DDL creates the column — so only the store that already exists
+    breaks, which is every store the factory has.
+
+$ uv run pytest tests/test_escalation_record.py -q --tb=line
+...F.                                                                    [100%]
+E   AssertionError: assert 'check_evidence' in {'choices', 'delivered', 'epic_id', 'escalation_id', 'expires_at', 'history_summary', ...}
+.../tests/test_escalation_record.py:207: AssertionError
+FAILED tests/test_escalation_record.py::test_a_store_written_before_this_story_migrates_in_place
+1 failed, 4 passed in 0.28s
+
+Note which tests survive mutation 2 and which does not: everything that builds
+its store from scratch passes. A suite without the pre-041 fixture would have
+been green on a change that breaks the running deployment.
 """

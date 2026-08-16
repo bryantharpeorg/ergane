@@ -46,8 +46,8 @@ import pytest
 
 from factory.cli import nouns
 from factory.cli.main import main as ergane_main
-from factory.notify import escalations
-from factory.notify.escalations import (
+from factory.escalation import client as escalations
+from factory.escalation.client import (
     RUNNING_ESCALATIONS_QUERY,
     open_escalations,
 )
@@ -290,11 +290,11 @@ h2 result (timer skip): expired
 """
 
 RED_BEFORE_THE_IMPLEMENTATION = """
-Written before `factory/notify/escalations.py` and the `escalations` noun exist.
+Written before `factory/escalation/client.py` and the `escalations` noun exist.
 
 $ uv run pytest tests/test_escalation_workflow.py tests/test_ergane_escalations.py -q
 tests/test_ergane_escalations.py:49: in <module>
-    from factory.notify import escalations
+    from factory.escalation import client as escalations
 E   ImportError: cannot import name 'escalations' from 'factory.notify'
     (.../factory/notify/__init__.py)
 =========================== short test summary info ============================
@@ -305,5 +305,36 @@ ERROR tests/test_ergane_escalations.py
 """
 
 MUTATIONS = """
-(pasted by the implementation commit, from runs actually made)
+The mutation this file exists for: `open_escalations` re-implemented as the
+store scrape FR-008 forbids — `pending_escalations()` mapped onto
+`OpenEscalation`, with `history_summary` standing in for the question. It is
+the most plausible wrong implementation, not a strawman: it is what
+`ergane build resolve` already does one epic at a time, and the sentence
+"every unanswered escalation appears with its question and its deadline" is
+satisfied by it.
+
+Both seeded facts fire, in opposite directions.
+
+$ uv run pytest tests/test_ergane_escalations.py -q --tb=line
+.FF                                                                      [100%]
+E   AssertionError: assert {'8efb9caab13...abab12345678'} == {'8efb9caab13...aa20d9ec315f'}
+      Extra items in the left set:
+      'abab12345678'
+      Extra items in the right set:
+      'aa20d9ec315f'
+.../tests/test_ergane_escalations.py:197: AssertionError
+
+E   AssertionError: assert 'us2 has exhausted its ladder - retry, kill, or pause the epic?' in
+    'abab12345678  027-gate-suite-fake-time/us2  expires 2026-08-06T15:55:00Z  a node that finished over a week ago\\n
+     49ea5...-workflow/us2   expires 2026-08-16T15:28:31Z  attempt 1 FAIL (gates)\\nattempt 2 FAIL (judge)\\nattempt 3 FAIL (gates)\\n'
+.../tests/test_ergane_escalations.py:254: AssertionError
+FAILED tests/test_ergane_escalations.py::test_open_escalations_reports_workflows_and_not_the_store
+FAILED tests/test_ergane_escalations.py::test_ergane_escalations_list_prints_what_is_waiting
+2 failed, 1 passed in 1.14s
+
+Read the second failure's actual output rather than the assertion: the operator
+is being shown `abab12345678  027-gate-suite-fake-time/us2  expires
+2026-08-06T15:55:00Z`, an escalation for a node that finished over a week ago,
+and the escalation that is genuinely waiting has lost its question to a wall of
+attempt history. That is the live store's `idx_esc_pending`, printed.
 """
