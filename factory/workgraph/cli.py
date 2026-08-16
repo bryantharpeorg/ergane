@@ -24,7 +24,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from factory.activities.merge_activities import onboard_target_repo
 from factory.config import ConfigError, Persona, WriteScope, load_personas
-from factory.mergequeue.gh import GhClient
+from factory.mergequeue.forge import resolve_forge
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
     DEFAULT_TEMPORAL_NAMESPACE,
@@ -64,10 +64,9 @@ EXIT_TRANSPORT = 2
 #: on the worker it will be, from the real `personas.yaml`.
 _STRUCTURAL_TIMEOUT_S = 1
 
-#: The seam US3's `onboard` command builds its `GhClient` through — production
-#: builds a real client against the clone the operator points at; tests replace
-#: this with one wired to a `FakeGh`, the same discipline as the activity seam.
-_onboard_client_factory = lambda *, repo_path: GhClient(repo=repo_path)
+#: The seam US3's `onboard` command reaches the forge through — since 049's US1
+#: it resolves a forge rather than building a client. One factory, no second.
+_onboard_client_factory = lambda *, repo_path: resolve_forge(repo_path=repo_path)
 
 
 class _OperatorError(Exception):
@@ -382,9 +381,9 @@ def onboard_command(args: argparse.Namespace) -> int:
     """
     from factory.activities.merge_activities import onboard_target_repo
 
-    client = _onboard_client_factory(repo_path=args.target_repo)
+    forge = _onboard_client_factory(repo_path=args.target_repo)
     try:
-        profile = onboard_target_repo(client, args.target_repo)
+        profile = onboard_target_repo(forge, args.target_repo)
     except _OperatorError:
         raise
     except Exception as error:  # pragma: no cover - defensive; onboard is data-safe

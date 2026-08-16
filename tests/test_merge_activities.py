@@ -68,12 +68,13 @@ def repo_with_origin(tmp_path: Path) -> Path:
 
 
 def _client_factory(fake: FakeGh, repo: Path):
-    """A client factory wired to `fake` against `repo` — the test seam."""
+    """A forge over `fake` against `repo` — the test seam (049-US1)."""
 
     def factory(*, repo_path: str):
         from factory.mergequeue.gh import GhClient
+        from factory.mergequeue.github_forge import GithubForge
 
-        return GhClient(repo=repo_path, runner=fake)
+        return GithubForge(GhClient(repo=repo_path, runner=fake))
 
     return factory
 
@@ -478,18 +479,19 @@ async def test_sync_landing_branch_surfaces_a_git_failure_as_data(
 
 
 def _onboard_client_factory(fake: FakeGh, repo: Path):
-    """A client factory wired to `fake` against `repo`, plus the gh surface scripted.
+    """The `github` forge over `fake` against `repo`, with the gh surface scripted.
 
     `validate_target_repo` resolves the owner/repo slug from the clone's `origin`
     remote, reads repo facts with `gh repo view`, and reads the merge-queue rule
     (with a classic-protection fallback) from the rules API. This wires a fake so
-    the activity constructs the exact `GhClient` it would in production.
+    the forge issues the exact `gh` commands it would in production.
     """
 
     def factory(*, repo_path: str):
         from factory.mergequeue.gh import GhClient
+        from factory.mergequeue.github_forge import GithubForge
 
-        return GhClient(repo=repo_path, runner=fake)
+        return GithubForge(GhClient(repo=repo_path, runner=fake))
 
     return factory
 
