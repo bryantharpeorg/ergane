@@ -13,15 +13,27 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from factory.cli.errors import EXIT_OK, EXIT_USER
+from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.cli.install import add_install_arguments, install_command
 from factory.cli.nouns import Noun
+from factory.controlplane.config import ControlPlaneConfigError
 from factory.controlplane.verify import render_findings, verify_controlplane
 
 
 def _verify_command(_args: argparse.Namespace) -> int:
-    """Run every verify probe, print findings, and return 0 only if all pass."""
-    findings, exit_code = verify_controlplane()
+    """Run every verify probe, print findings, and return 0 only if all pass.
+
+    A config the parser refuses — most often one that is simply not there yet —
+    is an *expected* condition on a first run, not a bug. Left uncaught it
+    reached `run_cli`'s defensive boundary and came back as `ergane: unexpected
+    error (…); re-run with --debug for the traceback`, which tells a new user
+    the tool is broken when in fact they have not run `ergane install` yet. The
+    guidance was already inside the message; only the wrapper was wrong.
+    """
+    try:
+        findings, exit_code = verify_controlplane()
+    except ControlPlaneConfigError as error:
+        raise OperatorError(str(error), code=EXIT_USER) from None
     print(render_findings(findings))
     return EXIT_OK if exit_code == 0 else EXIT_USER
 

@@ -386,3 +386,65 @@ def test_init_rerun_unchanged_is_byte_identical(
     manifest_after = (repo / "ergane.yaml").read_bytes()
 
     assert manifest_before == manifest_after
+
+
+# -----------------------------------------------------------------------------
+# Offered defaults: what the operator actually reads
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        1,
+        "main",
+        "bwrap",
+        "docs/STANDARDS.md",
+        {"test": "uv run pytest -q"},
+        {"test": 900},
+    ],
+)
+def test_offered_defaults_round_trip_and_scalars_stay_on_one_line(value: Any) -> None:
+    """`_yaml_repr` renders a default the operator can read *and* re-submit.
+
+    `yaml.safe_dump` closes a scalar document with an explicit `...` end marker,
+    which collections never get. That marker was reaching the terminal inside
+    the bracketed default, so the first two questions of `ergane init` read
+
+        schema version [1
+        ...]:
+        landing branch [main
+        ...]:
+
+    The round-trip half of this assertion is the guard on the fix: pressing
+    Enter feeds the offered text straight back through `yaml.safe_load`, so a
+    default that is merely *prettier* is not enough — it has to still load to
+    the value it was rendered from.
+    """
+    text = init_module._yaml_repr(value)
+    assert yaml.safe_load(text) == value
+    if not isinstance(value, (dict, list)):
+        assert "\n" not in text, f"scalar default rendered across lines: {text!r}"
+
+
+def test_the_interview_offers_no_multi_line_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: no question in a default `ergane init` shows a wrapped default."""
+    repo = make_bare_repo(tmp_path, {"README.md": "# app\n"})
+    monkeypatch.chdir(repo)
+
+    prompter = ScriptedPrompter(list(DEFAULT_ANSWERS))
+    monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
+    result = _invoke(["init"], monkeypatch)
+
+    assert result.code == EXIT_OK
+    wrapped = [
+        (prompt, default)
+        for prompt, default in prompter.calls
+        if default is not None and "\n" in default
+    ]
+    assert wrapped == [], f"multi-line defaults offered to the operator: {wrapped}"
+    # The two the operator meets first, spelled out.
+    assert ("schema version", "1") in prompter.calls
+    assert ("landing branch", "main") in prompter.calls
