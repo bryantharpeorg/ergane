@@ -67,13 +67,14 @@ def repo_with_origin(tmp_path: Path) -> Path:
     return repo
 
 
-def _client_factory(fake: FakeGh, repo: Path):
-    """A client factory wired to `fake` against `repo` — the test seam."""
+def _forge_factory(fake: FakeGh, repo: Path):
+    """A forge over `fake` against `repo` — the test seam (049-US1)."""
 
     def factory(*, repo_path: str):
         from factory.mergequeue.gh import GhClient
+        from factory.mergequeue.github_forge import GithubForge
 
-        return GhClient(repo=repo_path, runner=fake)
+        return GithubForge(GhClient(repo=repo_path, runner=fake))
 
     return factory
 
@@ -130,7 +131,7 @@ async def test_open_landing_pr_pushes_then_creates_a_ready_pr(
         "pr", "create", "--base", BASE, "--head", BRANCH, "--title", TITLE,
         "--body-file", "/tmp/body.md", payload={"number": PR_NUMBER, "url": "https://x/pull/7"},
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         OpenLandingPrInput,
@@ -167,7 +168,7 @@ async def test_open_landing_pr_is_idempotent_reusing_an_existing_pr(
         "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number,url",
         payload=[{"number": PR_NUMBER, "url": "https://x/pull/7"}],
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         OpenLandingPrInput,
@@ -197,7 +198,7 @@ async def test_enqueue_landing_issues_auto_merge_from_config(
 ) -> None:
     fake = FakeGh()
     fake.expect("pr", "merge", str(PR_NUMBER), "--auto")
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import (
         EnqueueLandingInput,
@@ -226,7 +227,7 @@ async def test_enqueue_landing_returns_a_queue_disabled_refusal_as_data(
         "pr", "merge", str(PR_NUMBER), "--auto",
         stderr="gh: error: merge queue is disabled for this repository", returncode=1,
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import (
         EnqueueLandingInput,
@@ -254,7 +255,7 @@ async def test_poll_landing_returns_a_pr_snapshot(
         "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,statusCheckRollup",
         payload=payload,
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import PollLandingInput, poll_landing
 
@@ -277,7 +278,7 @@ async def test_disable_auto_merge_is_best_effort(
         "pr", "merge", str(PR_NUMBER), "--disable-auto",
         stderr="gh: not found", returncode=1,
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import DisableAutoMergeInput, disable_auto_merge
 
@@ -414,7 +415,7 @@ async def test_recovery_reenqueue_reuses_the_same_pr(
         payload=[{"number": PR_NUMBER, "url": "https://x/pull/7"}],
     )
     fake.expect("pr", "merge", str(PR_NUMBER), "--auto")
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         EnqueueLandingInput,
@@ -477,19 +478,20 @@ async def test_sync_landing_branch_surfaces_a_git_failure_as_data(
 # --- validate_target_repo (US3 onboarding, FR-010) ---------------------------
 
 
-def _onboard_client_factory(fake: FakeGh, repo: Path):
-    """A client factory wired to `fake` against `repo`, plus the gh surface scripted.
+def _onboard_forge_factory(fake: FakeGh, repo: Path):
+    """The `github` forge over `fake` against `repo`, with the gh surface scripted.
 
     `validate_target_repo` resolves the owner/repo slug from the clone's `origin`
     remote, reads repo facts with `gh repo view`, and reads the merge-queue rule
     (with a classic-protection fallback) from the rules API. This wires a fake so
-    the activity constructs the exact `GhClient` it would in production.
+    the forge issues the exact `gh` commands it would in production.
     """
 
     def factory(*, repo_path: str):
         from factory.mergequeue.gh import GhClient
+        from factory.mergequeue.github_forge import GithubForge
 
-        return GhClient(repo=repo_path, runner=fake)
+        return GithubForge(GhClient(repo=repo_path, runner=fake))
 
     return factory
 
@@ -553,7 +555,7 @@ async def test_validate_target_repo_gathers_repo_facts_and_loads_the_manifest(
     """
     fake = FakeGh()
     _fake_gh_conforming(fake, repo_with_origin)
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -598,7 +600,7 @@ async def test_validate_target_repo_reports_a_queue_missing_repo_as_failing(
     fake.expect_json(
         "api", "repos/OWNER/REPO/rules/branches/main", payload=[]
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -645,7 +647,7 @@ async def test_validate_target_repo_falls_back_to_classic_protection_for_checks(
         "api", "repos/OWNER/REPO/branches/main/protection",
         payload={"required_status_checks": {"contexts": ["test"]}},
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -694,7 +696,7 @@ async def test_validate_target_repo_treats_unprotected_classic_as_no_checks(
         "api", "repos/OWNER/REPO/branches/main/protection",
         stderr="gh: Branch not protected (HTTP 404)", returncode=1,
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -727,7 +729,7 @@ async def test_validate_target_repo_a_gh_failure_is_a_failed_validation_not_a_pa
         "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
         stderr="gh: not found", returncode=1,
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -764,7 +766,7 @@ async def test_validate_target_repo_loads_the_clones_factory_yaml(
             {"context": "lint"}, {"context": "test"}, {"context": "typecheck"},
         ]}}],
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -785,7 +787,7 @@ async def test_validate_target_repo_non_conforming_squash_title_fails_profile(
     """A repo whose squash merges title from commits fails on the squash_title finding."""
     fake = FakeGh()
     _fake_gh_conforming(fake, repo_with_origin, squash_title="COMMIT_OR_PR_TITLE")
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -822,7 +824,7 @@ async def test_validate_target_repo_missing_squash_title_fails_closed(
             {"context": "lint"}, {"context": "test"}, {"context": "typecheck"},
         ]}}],
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -852,7 +854,7 @@ async def test_validate_target_repo_squash_title_gh_failure_is_failed_validation
         "api", "repos/OWNER/REPO",
         stderr="gh: HTTP 403", returncode=1,
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _onboard_forge_factory(fake, repo_with_origin))
 
     from factory.activities.merge_activities import (
         ValidateTargetRepoInput,
@@ -889,7 +891,7 @@ async def test_fetch_check_failure_returns_per_check_evidence(
         "run", "view", "101", "--log-failed",
         stdout="FAILED tests/test_calc.py::test_add\nmore\n",
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import (
         FetchCheckFailureInput,
@@ -935,7 +937,7 @@ async def test_fetch_check_failure_degrades_on_gh_error(
         "run", "view", "101", "--log-failed",
         stderr="gh: HTTP 503", returncode=1,
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import (
         FetchCheckFailureInput,
@@ -974,7 +976,7 @@ async def test_fetch_check_failure_degrades_when_link_has_no_run_id(
             },
         ],
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import (
         FetchCheckFailureInput,
@@ -1008,7 +1010,7 @@ async def test_fetch_check_failure_uses_asyncio_to_thread(
         "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
         payload=[],
     )
-    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
+    monkeypatch.setattr(merge_activities, "_forge_factory", _forge_factory(fake, Path(TARGET)))
 
     from factory.activities.merge_activities import (
         FetchCheckFailureInput,

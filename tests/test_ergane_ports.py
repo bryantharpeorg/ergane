@@ -208,10 +208,11 @@ def onboard_gh(monkeypatch: pytest.MonkeyPatch) -> "Any":
 
     def factory(*, repo_path: str):
         from factory.mergequeue.gh import GhClient
+        from factory.mergequeue.github_forge import GithubForge
 
-        return GhClient(repo=repo_path, runner=fake)
+        return GithubForge(GhClient(repo=repo_path, runner=fake))
 
-    monkeypatch.setattr("factory.workgraph.cli._onboard_client_factory", factory)
+    monkeypatch.setattr("factory.workgraph.cli._onboard_forge_factory", factory)
     return fake
 
 

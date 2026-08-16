@@ -91,6 +91,7 @@ from factory.activities.merge_activities import onboard_target_repo
 from factory.cli.errors import EXIT_OK, EXIT_USER
 from factory.mergequeue import wiring
 from factory.mergequeue.gh import GhClient
+from factory.mergequeue.github_forge import GithubForge
 from factory.mergequeue.onboard import evaluate_repo
 from factory.verify.factory_yaml import _SUPPORTED_VERSION, parse_factory_config
 
@@ -348,7 +349,9 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Run]:
 def onboarding_profile(repo: Path, github: FakeGitHub) -> Any:
     """`EpicWorkflow._onboard_target`'s judgment verbatim, run against the wired
     model. Nothing here knows what the wiring intended to do."""
-    return onboard_target_repo(GhClient(repo=str(repo), runner=github), str(repo))
+    return onboard_target_repo(
+        GithubForge(GhClient(repo=str(repo), runner=github)), str(repo)
+    )
 
 
 def wiring_report(stdout: str) -> str:

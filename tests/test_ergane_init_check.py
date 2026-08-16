@@ -27,6 +27,7 @@ import factory.workgraph.cli as workgraph_cli
 from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER
 from factory.mergequeue.gh import GhClient
+from factory.mergequeue.github_forge import GithubForge
 from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.roadmap import schedule as schedule_module
 
@@ -168,13 +169,13 @@ def bind_offline_seams(
     )
     monkeypatch.setattr(
         init_module,
-        "_gh_client_factory",
-        lambda *, repo_path: GhClient(repo=repo_path, runner=gh),
+        "_forge_factory",
+        lambda *, repo_path: GithubForge(GhClient(repo=repo_path, runner=gh)),
     )
     monkeypatch.setattr(
         workgraph_cli,
-        "_onboard_client_factory",
-        lambda *, repo_path: GhClient(repo=repo_path, runner=gh),
+        "_onboard_forge_factory",
+        lambda *, repo_path: GithubForge(GhClient(repo=repo_path, runner=gh)),
     )
 
     findings = HEALTHY_PROBES if probes is None else probes
@@ -425,7 +426,7 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
     from factory.activities.merge_activities import onboard_target_repo
 
     dispatch_door = onboard_target_repo(
-        workgraph_cli._onboard_client_factory(repo_path=str(repo)), str(repo)
+        workgraph_cli._onboard_forge_factory(repo_path=str(repo)), str(repo)
     )
     init_door = init_module.check_repo(repo)
 
