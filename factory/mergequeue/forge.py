@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from factory.mergequeue.models import Finding
+from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 
 #: The forge every repository is on until one says otherwise. 049's US5 teaches
 #: the manifest to name it; until then this is the only answer.
@@ -112,7 +112,7 @@ class ForgeError(RuntimeError):
 
 @runtime_checkable
 class Forge(Protocol):
-    """The reading half of the seam. Two operations, and no third."""
+    """The seam: two reading operations, six landing ones, and no ninth."""
 
     def describe_repository(self) -> RepositoryDescription:
         """Name this repository and report what only this forge can report.
@@ -130,6 +130,58 @@ class Forge(Protocol):
         shared judgment's call, so adding a forge cannot change what readiness
         means.
         """
+        ...
+
+    # --- the landing half (049-US3, FR-009) ----------------------------------
+    #
+    # Six operations, one per thing a forge's vocabulary differs about when work
+    # goes from a branch to the target. None decides: what an observation *means*
+    # is `classify`'s call. Each raises `ForgeError` when the forge will not
+    # answer — data the caller returns, not a fault.
+
+    def find_proposal(self, head: str) -> "Proposal | None":
+        """The open proposal for `head`, or `None`. A forge holds one landing per
+        head, so a retried open must find what it has rather than offer a second
+        and split the target's attention."""
+        ...
+
+    def open_proposal(
+        self, *, base: str, head: str, title: str, body_file: str
+    ) -> "Proposal":
+        """Offer `head` to `base` under `title`, the body read from a file. Ready,
+        never held back as unfinished — a forge that treats a proposal as a work
+        in progress never runs its gates on it."""
+        ...
+
+    def request_landing(self, proposal: int, *, declared_method: str = "") -> None:
+        """Ask the forge to land `proposal` itself, once its gates pass — D-024:
+        the factory never merges, it asks. `declared_method` is the operator's
+        stated intent about how the landing commit is formed, carried so a forge
+        that honours it can, defaulted because a branch whose landing policy owns
+        its method ignores it."""
+        ...
+
+    def observe_proposal(self, proposal: int) -> PrSnapshot:
+        """One observation of `proposal`, as the factory's own reader takes it.
+        The record's *name* is GitHub-shaped and stays so: it is rebuilt from live
+        workflow histories, and renaming it would edit
+        `factory/workgraph/workflow.py`, which FR-011 forbids. The field decided
+        from is neutral (FR-010) — that is the part that had to move."""
+        ...
+
+    def withdraw_landing(self, proposal: int) -> None:
+        """Take back the landing request, leaving the proposal open — the kill
+        path. A killed epic must stop trying to land, and the proposal is not the
+        factory's to close."""
+        ...
+
+    def failing_check_evidence(
+        self, proposal: int, check_names: tuple[str, ...]
+    ) -> tuple[CheckFailure, ...]:
+        """What each of `check_names` said when it failed, as far as it can say.
+        Evidence, never a conclusion: a forge that cannot produce a log states the
+        absence in the record's `note` and returns anyway, one record per
+        requested name, so the recovery cycle is not lost to its own evidence."""
         ...
 
 
@@ -188,3 +240,22 @@ def _load_builtins() -> None:
     for name, module in _BUILTIN_FORGE_MODULES.items():
         if name not in _REGISTRY:
             import_module(module)
+
+
+# --- the landing half's record (049-US3) --------------------------------------
+
+
+@dataclass(frozen=True)
+class Proposal:
+    """A change offered to a branch, as the forge identifies it.
+
+    `number` is the forge's own handle — what every later landing call addresses
+    it by, and what the workflow already carries in its histories; `url` is where
+    a person reads it. Two fields and no third: a record carrying a *state* would
+    invite a caller to decide from it without asking. Appended at the module's
+    end because US2 and US5 were building against this file at this commit, and a
+    diff confined to the ends cannot shadow theirs (trap 14).
+    """
+
+    number: int
+    url: str

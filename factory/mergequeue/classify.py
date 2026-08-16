@@ -13,10 +13,15 @@ The table is the plan's verbatim:
 |---|---|
 | `merged_at` set | `MERGED` — however it merged |
 | `state == CLOSED`, not merged | `DEQUEUED_BY_HUMAN` |
-| OPEN, `merge_state_status == DIRTY` | `CONFLICT` |
+| OPEN, `in_conflict` | `CONFLICT` |
 | OPEN, failing required checks | `CHECKS_FAILED` |
 | OPEN otherwise | pending (`None`) |
 | pending beyond `stall_after_s` | `STALLED` |
+
+049's US3 changed one row: it used to compare against one forge's status
+vocabulary, so a second forge could only be classified by translating itself
+into GitHub's spelling — making that spelling the interchange format, which
+moves the coupling rather than removing it (D-046 §3).
 
 One row from the plan's original table is deliberately gone: "auto-merge gone,
 clean and open → DEQUEUED_BY_HUMAN". A merge-queue PR reports
@@ -68,10 +73,11 @@ def classify(
     if snapshot.state == "CLOSED":
         return QueueOutcome.DEQUEUED_BY_HUMAN
 
-    # The positive rejection signals a poll CAN see: a dirty branch is a
-    # conflict the node can recover from; failing required checks are a
-    # rejection worth a recovery cycle.
-    if snapshot.merge_state_status == "DIRTY":
+    # The positive rejection signals a poll CAN see: a target that has moved
+    # under the proposal is a conflict the node can recover from; failing
+    # required checks are a rejection worth a recovery cycle. The conflict fact
+    # arrives in the factory's vocabulary, whichever forge observed it.
+    if snapshot.in_conflict:
         return QueueOutcome.CONFLICT
     if snapshot.failing_required_checks:
         return QueueOutcome.CHECKS_FAILED

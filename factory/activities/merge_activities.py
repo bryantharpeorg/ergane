@@ -14,28 +14,28 @@ The activities are one landing's life, in the plan's order:
   environment so they never cross a workflow boundary (constitution V).
 - `open_landing_pr` — salvage has already happened (the workflow salvages before
   it ever calls this); this *pushes* the node branch to the target clone's
-  `origin` (FR-001 — `gh` runs against the clone, so the branch has to exist on
-  that remote), then opens a ready PR. Never `--draft`, and idempotent: an
-  existing open PR for the branch is reused, not duplicated — the queue can hold
-  only one PR per head.
-- `enqueue_landing` — the factory's *only* merge invocation: `gh pr merge <n>
-  --auto --<method>`, the method read from `LandingConfig` (FR-002). A refused
-  enqueue (queue disabled mid-flight, the spec edge case) is returned as
-  rejection data, never raised — the workflow routes it to escalation.
-- `poll_landing` — one `gh pr view` → a `PrSnapshot`, the classifier's input.
+  `origin` (FR-001 — the forge reads that clone, so the branch has to exist on
+  that remote), then offers it. Offered ready, and idempotent: an existing
+  proposal for the branch is reused — a forge holds one landing per head.
+- `enqueue_landing` — asks the forge to land the proposal once its gates pass;
+  the factory never merges (D-024, FR-002). A refusal (the target stopped
+  accepting landings mid-flight, the spec edge case) is returned as rejection
+  data, never raised — the workflow routes it to escalation.
+- `poll_landing` — one observation → a `PrSnapshot`, the classifier's input.
 - `disable_auto_merge` — the kill-cleanup path: best-effort, so a killed epic's
   landing stops trying to land even when the call fails.
 
-No activity ever removes a branch (FR-008): the branch is the queue's to land,
+No activity ever removes a branch (FR-008): the branch is the target's to land,
 and this module never issues a branch-removal command — the string the
 structural guard greps for must never appear in its command surface.
 
 `_client_factory` is the seam in the same sense as `open_bot` and
 `judge_transport`: since 049's US1 it resolves the *forge* the target repository
-is on. The landing activities still speak GitHub's client and reach it through
-that same factory until US3 moves them, so this module never holds two factories
-for one boundary (049 trap 14); the name is US3's to change, with the consumers
-that still justify it.
+is on, and since US3 every landing activity speaks to that forge and nothing
+beneath it — none constructs a forge-native client or names one (FR-009). It
+keeps its name deliberately: twenty-one call sites in the landing suite bind it,
+and US3-S1 requires that suite to pass with no assertion changed, so a rename
+would rewrite the one file whose stillness is the evidence (trap 14).
 """
 
 from __future__ import annotations
@@ -44,18 +44,12 @@ import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from factory.mergequeue.forge import Forge, ForgeError, resolve_forge
-from factory.mergequeue.gh import (
-    GhError,
-    _FAILED_LOG_TOTAL_LIMIT,
-    _parse_run_id,
-    _tail,
-)
 from factory.mergequeue.messages import pr_title, render_pr_body
 from factory.mergequeue.models import CheckFailure, PrSnapshot, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts, evaluate_init_facts, evaluate_repo
@@ -83,11 +77,6 @@ LANDING_REFUSED = "LANDING_REFUSED"
 #: worktree operations: a lock or a slow filesystem is what a second attempt
 #: fixes.
 PUSH_FAILED = "PUSH_FAILED"
-
-#: The activity error type for a `gh` outage that should not be re-read as a
-#: verdict. The client classifies these; an activity that cannot reach `gh` at
-#: all reports the outage rather than guessing.
-GH_UNAVAILABLE_ACTIVITY = "GH_UNAVAILABLE"
 
 
 @dataclass(frozen=True)
@@ -299,11 +288,6 @@ def _forge(*, repo_path: str) -> Forge:
     return _client_factory(repo_path=repo_path)
 
 
-def _client(*, repo_path: str) -> Any:
-    """The GitHub client the landing half still speaks, via the one factory."""
-    return _forge(repo_path=repo_path).client
-
-
 def _landing_body_dir() -> Path:
     """Where prepared PR bodies are written, under the worker's state directory.
 
@@ -359,16 +343,16 @@ async def prepare_landing_pr(request: PrepareLandingPrInput) -> PrepareLandingPr
 
 @activity.defn
 async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
-    """Push the node branch, then open a ready PR for it (FR-001).
+    """Push the node branch, then offer it to the target (FR-001, FR-009).
 
     Salvage has already happened; the branch holds the durable work. Pushing to
     the target clone's `origin` is what makes the PR's head exist on the remote
-    the queue operates against, so the push comes first. Idempotent: an open PR
+    the forge operates against, so the push comes first. Idempotent: an open PR
     for the branch is reused, so a retry after an unrecorded success does not
     open a second PR for one head.
 
-    Raises `PUSH_FAILED` (retryable) when git refused, and re-raises a `GhError`
-    as its own kind when `gh` refused the create.
+    Raises `PUSH_FAILED` (retryable) when git refused, and lets the forge's own
+    `ForgeError` through when it refused the offer.
     """
     try:
         pushed_sha = await asyncio.to_thread(
@@ -381,15 +365,15 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
     except worktrees.WorktreeError as exc:
         raise ApplicationError(str(exc), type=PUSH_FAILED) from exc
 
-    client = _client(repo_path=request.target_repo)
+    forge = _forge(repo_path=request.target_repo)
 
-    existing = client.find_existing_pr(request.branch)
+    existing = forge.find_proposal(request.branch)
     if existing is not None:
         return OpenLandingPrResult(
             number=existing.number, url=existing.url, pushed_sha=pushed_sha
         )
 
-    created = client.create_pr(
+    created = forge.open_proposal(
         base=request.base,
         head=request.branch,
         title=request.title,
@@ -402,42 +386,44 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
 
 @activity.defn
 async def enqueue_landing(request: EnqueueLandingInput) -> EnqueueResult:
-    """Put the PR into GitHub's merge queue (FR-002).
+    """Ask the forge to land the proposal once its gates pass (FR-002, FR-009).
 
-    The factory's only merge invocation: `gh pr merge <n> --auto --<method>`.
-    A refusal — the queue disabled mid-flight, the spec edge case — comes back as
-    `EnqueueResult(rejected=True, reason=…)`, never as a raised crash, so the
-    workflow can route it to escalation.
+    The factory never merges: it asks (D-024). The operator's declared method
+    travels as stated intent; a branch whose landing policy owns the method
+    ignores it. A refusal — the target stopped accepting landings mid-flight,
+    the spec edge case — comes back as `EnqueueResult(rejected=True, reason=…)`,
+    never as a raised crash, so the workflow routes it to escalation.
     """
-    client = _client(repo_path=request.target_repo)
+    forge = _forge(repo_path=request.target_repo)
     try:
-        client.enqueue_pr(request.pr_number, merge_method=request.merge_method)
-    except GhError as exc:
-        return EnqueueResult(rejected=True, reason=exc.stderr_tail or str(exc))
+        forge.request_landing(
+            request.pr_number, declared_method=request.merge_method
+        )
+    except ForgeError as exc:
+        return EnqueueResult(rejected=True, reason=exc.detail or str(exc))
     return EnqueueResult(rejected=False, reason="")
 
 
 @activity.defn
 async def poll_landing(request: PollLandingInput) -> PrSnapshot:
-    """One `gh pr view` — the classifier's input."""
-    client = _client(repo_path=request.target_repo)
-    return client.poll_pr(request.pr_number)
+    """One observation of the proposal — the classifier's input (FR-009)."""
+    return _forge(repo_path=request.target_repo).observe_proposal(request.pr_number)
 
 
 @activity.defn
 async def disable_auto_merge(request: DisableAutoMergeInput) -> DisableResult:
-    """Take the PR out of the queue — best-effort (FR-008).
+    """Withdraw the landing request — best-effort (FR-008, FR-009).
 
     Called on the epic/node kill path so a killed epic does not keep landing. A
     failure is reported, never raised: the kill sequence must not be blocked on
-    the queue's availability, and a PR that could not be de-queued is a fact the
-    workflow surfaces, not a crash it dies on.
+    the forge's availability, and a landing that could not be withdrawn is a fact
+    the workflow surfaces, not a crash it dies on.
     """
-    client = _client(repo_path=request.target_repo)
+    forge = _forge(repo_path=request.target_repo)
     try:
-        client.disable_auto_merge(request.pr_number)
-    except GhError as exc:
-        return DisableResult(failed=True, reason=exc.stderr_tail or str(exc))
+        forge.withdraw_landing(request.pr_number)
+    except ForgeError as exc:
+        return DisableResult(failed=True, reason=exc.detail or str(exc))
     return DisableResult(failed=False, reason="")
 
 
@@ -507,85 +493,18 @@ async def sync_landing_branch(request: SyncLandingBranchInput) -> SyncLandingBra
 
 @activity.defn
 async def fetch_check_failure(request: FetchCheckFailureInput) -> tuple[CheckFailure, ...]:
-    """Fetch the failing-step log for each named failing check (US2, FR-005/006/007).
+    """Fetch each named failing check's evidence (US2, FR-005/006/007, FR-009).
 
-    Runs on a thread via `asyncio.to_thread` so the subprocess never blocks the
-    worker's event loop (trap 4). Every `gh` failure — auth, outage, refused,
-    expired log, malformed link — returns degraded evidence naming the check and
-    stating the absence, never a raise. A link that does not contain an actions
-    run id degrades to name + URL with a note saying so.
+    Runs on a thread via `asyncio.to_thread` so the forge's I/O never blocks the
+    worker's event loop (trap 4). How the evidence is gathered was GitHub detail
+    living in an activity and is the forge's since US3; what survives here is the
+    promise the workflow depends on — one record per requested name, degraded
+    with the absence stated rather than raised.
     """
 
     def _fetch() -> tuple[CheckFailure, ...]:
-        client = _client(repo_path=request.target_repo)
-        try:
-            entries = client.pr_checks(request.pr_number)
-        except GhError as exc:
-            return tuple(
-                CheckFailure(
-                    name=name,
-                    url="",
-                    log_tail="",
-                    note=f"log unavailable: could not list checks ({exc.kind})",
-                )
-                for name in request.check_names
-            )
-
-        by_name = {entry.name: entry for entry in entries}
-        results: list[CheckFailure] = []
-        total_bytes = 0
-        for name in request.check_names:
-            entry = by_name.get(name)
-            if entry is None:
-                results.append(
-                    CheckFailure(
-                        name=name,
-                        url="",
-                        log_tail="",
-                        note="log unavailable: check not present in gh pr checks",
-                    )
-                )
-                continue
-
-            run_id = _parse_run_id(entry.link)
-            if run_id is None:
-                results.append(
-                    CheckFailure(
-                        name=name,
-                        url=entry.link,
-                        log_tail="",
-                        note="log unavailable: could not resolve run id from check link",
-                    )
-                )
-                continue
-
-            try:
-                log = client.run_failed_log(run_id)
-            except GhError as exc:
-                results.append(
-                    CheckFailure(
-                        name=name,
-                        url=entry.link,
-                        log_tail="",
-                        note=f"log unavailable: could not fetch run log ({exc.kind})",
-                    )
-                )
-                continue
-
-            encoded = log.encode("utf-8")
-            if total_bytes + len(encoded) > _FAILED_LOG_TOTAL_LIMIT:
-                allowed = max(_FAILED_LOG_TOTAL_LIMIT - total_bytes, 0)
-                log = _tail(log, allowed)
-            total_bytes += len(log.encode("utf-8"))
-            results.append(
-                CheckFailure(
-                    name=name,
-                    url=entry.link,
-                    log_tail=log,
-                    note="",
-                )
-            )
-        return tuple(results)
+        forge = _forge(repo_path=request.target_repo)
+        return forge.failing_check_evidence(request.pr_number, request.check_names)
 
     return await asyncio.to_thread(_fetch)
 

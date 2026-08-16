@@ -26,9 +26,10 @@ from dataclasses import dataclass, field
 from factory.mergequeue.forge import (
     ForgeError,
     LandingPolicy,
+    Proposal,
     RepositoryDescription,
 )
-from factory.mergequeue.models import Finding
+from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 
 
 @dataclass
@@ -59,6 +60,10 @@ class RepositoryModel:
     findings: tuple[Finding, ...] = ()
     unreachable: str = ""
     branches: dict[str, BranchPolicy] = field(default_factory=dict)
+    #: US3: the proposals offered to this repository. The factory is deferred
+    #: through a lambda so `LandingModel` can live at the module's end, where a
+    #: diff cannot shadow the two siblings building against it (trap 14).
+    landings: "LandingModel" = field(default_factory=lambda: LandingModel())
 
     def gate_on(
         self,
@@ -111,3 +116,136 @@ class FakeForge:
             landing_title_from_proposal=policy.landing_title_from_proposal,
             landing_title_source=policy.landing_title_source,
         )
+
+    # --- the landing half (049-US3) -----------------------------------------
+    #
+    # Same rule: answers derived from `model.landings`, writes changing it, and
+    # no call log to assert against — a test that passes because a method was
+    # called would pass if the method did nothing.
+
+    def find_proposal(self, head: str) -> Proposal | None:
+        found = self.model.landings.by_head(head)
+        return None if found is None else Proposal(found.number, found.url)
+
+    def open_proposal(
+        self, *, base: str, head: str, title: str, body_file: str
+    ) -> Proposal:
+        opened = self.model.landings.open(head, self.model.address)
+        return Proposal(opened.number, opened.url)
+
+    def request_landing(self, proposal: int, *, declared_method: str = "") -> None:
+        state = self.model.landings.require(proposal)
+        if self.model.landings.refuse_landing:
+            raise ForgeError(
+                "FORGE_REFUSED", "this repository will not take a landing request",
+                self.model.landings.refuse_landing,
+            )
+        state.landing_requested = True
+
+    def observe_proposal(self, proposal: int) -> PrSnapshot:
+        state = self.model.landings.require(proposal)
+        return PrSnapshot(
+            state=state.state,
+            is_draft=False,
+            auto_merge_requested=state.landing_requested,
+            # Empty on purpose: this forge never heard of GitHub's status
+            # vocabulary, which makes the conflict case a control.
+            merge_state_status="",
+            merged_at=state.merged_at,
+            closed_at=None,
+            failing_required_checks=state.failing_checks,
+            observed_at=self.model.landings.observed_at,
+            in_conflict=state.in_conflict,
+        )
+
+    def withdraw_landing(self, proposal: int) -> None:
+        self.model.landings.require(proposal).landing_requested = False
+
+    def failing_check_evidence(
+        self, proposal: int, check_names: tuple[str, ...]
+    ) -> tuple[CheckFailure, ...]:
+        state = self.model.landings.require(proposal)
+        base = f"https://forge.invalid/{self.model.address}/proposals/{proposal}"
+        return tuple(
+            CheckFailure(
+                name,
+                f"{base}/checks/{name}" if name in state.failing_checks else "",
+                state.logs.get(name, ""),
+                "" if state.logs.get(name)
+                else "log unavailable: the forge kept none for this check",
+            )
+            for name in check_names
+        )
+
+
+# --- the landing half's model (049-US3) ---------------------------------------
+
+
+@dataclass
+class ProposalState:
+    """One proposal offered to this repository, and what became of it."""
+    number: int
+    url: str
+    head: str
+    state: str = "OPEN"
+    landing_requested: bool = False
+    merged_at: str | None = None
+    in_conflict: bool = False
+    failing_checks: tuple[str, ...] = ()
+    logs: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class LandingModel:
+    """The proposals a repository holds — mutable state, not a script.
+
+    Its methods are *acts*: things a forge or a person does, after which the test
+    asks the factory what it makes of the result. `refuse_landing`, when
+    non-empty, is a repository that will not take a landing request at all.
+    """
+
+    proposals: dict[int, ProposalState] = field(default_factory=dict)
+    next_number: int = 1
+    refuse_landing: str = ""
+    observed_at: str = "2026-08-16T10:05:00Z"
+
+    def open(self, head: str, address: str = "acme/app") -> ProposalState:
+        """Offer `head`, reusing the open proposal for it — one landing per head."""
+        existing = self.by_head(head)
+        if existing is not None:
+            return existing
+        number = self.next_number
+        self.next_number += 1
+        self.proposals[number] = ProposalState(
+            number, f"https://forge.invalid/{address}/proposals/{number}", head
+        )
+        return self.proposals[number]
+
+    def by_head(self, head: str) -> ProposalState | None:
+        """The *open* proposal for `head`, if this repository holds one."""
+        for proposal in self.proposals.values():
+            if proposal.head == head and proposal.state == "OPEN":
+                return proposal
+        return None
+
+    def require(self, number: int) -> ProposalState:
+        """The proposal, or a forge refusal — an unknown handle is not silence."""
+        found = self.proposals.get(number)
+        if found is None:
+            raise ForgeError("FORGE_NOT_FOUND", f"no proposal {number} here", "")
+        return found
+
+    def land(self, number: int, *, at: str = "2026-08-16T10:04:00Z") -> None:
+        """The forge landed it."""
+        proposal = self.require(number)
+        proposal.state, proposal.merged_at = "MERGED", at
+
+    def fail_checks(self, number: int, checks: tuple[str, ...], *, log: str = "") -> None:
+        """The named gates failed, and this is what they left behind."""
+        proposal = self.require(number)
+        proposal.failing_checks = checks
+        proposal.logs = {name: log for name in checks} if log else {}
+
+    def target_moved(self, number: int) -> None:
+        """The target moved under it: the change no longer applies."""
+        self.require(number).in_conflict = True
