@@ -61,7 +61,43 @@ should not — which is the thing a preflight is most dangerous for.
 
 Green after, same command::
 
-    5 passed in 1.31s
+    5 passed in 0.76s
+
+Proved by mutation, not by colour. Three separate breakages, each caught by
+exactly the tests that should catch it and no others:
+
+- Drop the assembly call from `preflight_spec` (the roadmap no longer checks)::
+
+    FAILED ...::test_a_spec_whose_prompts_cannot_assemble_parks_with_nothing_dispatched
+    FAILED ...::test_a_fixed_tasks_md_dispatches_on_the_next_roadmap_run
+    2 failed, 3 passed in 0.81s
+
+- Drop it from `build._run_preflight` (only the hand-started path stops checking)::
+
+    FAILED ...::test_build_start_refuses_an_epic_whose_prompts_cannot_assemble
+    1 failed, 4 passed in 0.81s
+
+- Keep the park but delete the `return` after it, so the roadmap parks the spec
+  *and* dispatches it anyway — the failure a park-only assertion would miss::
+
+    E       AssertionError: assert ['epic-001-ru...ic-002-bravo'] == ['epic-002-bravo']
+    E         At index 0 diff: 'epic-001-runtime-root' != 'epic-002-bravo'
+    FAILED ...::test_a_spec_whose_prompts_cannot_assemble_parks_with_nothing_dispatched
+    1 failed, 4 passed in 0.85s
+
+Run the thing, not the tests about it. The production `preflight_spec` activity,
+called directly over the reconstructed 043 trio (registry empty, proxy stubbed
+to serve nothing, so the only voice is the assembly check), verbatim::
+
+    park [preflight:prompt-assembly] tasks.md: node 'us1': tasks.md declares no phase naming user story US1, so this node has no task slice to work (FR-006). Nothing was dispatched.
+    park [preflight:prompt-assembly] tasks.md: node 'us2': tasks.md declares no phase naming user story US2, so this node has no task slice to work (FR-006). Nothing was dispatched.
+    park [preflight:prompt-assembly] tasks.md: node 'us3': tasks.md declares no phase naming user story US3, so this node has no task slice to work (FR-006). Nothing was dispatched.
+    park [preflight:prompt-assembly] tasks.md: node 'us4': tasks.md declares no phase naming user story US4, so this node has no task slice to work (FR-006). Nothing was dispatched.
+    findings=4 nodes=4
+
+...and over `903-well-formed`, the same activity, same stubs::
+
+    findings=0 nodes=2
 """
 
 from __future__ import annotations
