@@ -240,28 +240,28 @@ exists to prevent.
 
 ### Tests for this story (write FIRST, must fail)
 
-- [ ] T042 [US6] Write the vocabulary sweep FIRST: forge-native terms appear in
+- [x] T042 [US6] Write the vocabulary sweep FIRST: forge-native terms appear in
       the shipped package only in the modules an explicit **path** allowlist
       names (spec US6-S1, FR-016) — must fail against a deliberately planted
       term, then pass once it is removed.
-- [ ] T043 [P] [US6] Write the anti-vacuity assertion: the sweep asserts its own
+- [x] T043 [P] [US6] Write the anti-vacuity assertion: the sweep asserts its own
       file list is non-empty and contains the forge implementation (spec US6-S2,
       FR-016, plan trap 4; precedent `tests/test_final_sweep.py:644`) — must
       fail if the glob matches nothing.
-- [ ] T044 [P] [US6] Write the guard-coverage case: every forge module appears in
+- [x] T044 [P] [US6] Write the guard-coverage case: every forge module appears in
       `tests/test_mergequeue_sweep.py`'s `COMMAND_MODULES` (`:52-58`) *because it
       lives under `factory/mergequeue/`*, with no path added to the swept set by
       this spec — assert both halves, since "covered" and "covered by
       construction" are different claims and only the second survives the next
       refactor (spec US6-S3, FR-017, plan trap 6) — must fail if a forge module
       is moved out of the directory.
-- [ ] T045 [P] [US6] Write the reserved-vocabulary case: nothing this spec added
+- [x] T045 [P] [US6] Write the reserved-vocabulary case: nothing this spec added
       spells a word from `tests/test_final_sweep.py:462` (spec US6-S4, plan
       trap 5) — must pass before and after.
 
 ### Implementation for this story
 
-- [ ] T046 [US6] Land the sweep with its path allowlist and its coverage
+- [x] T046 [US6] Land the sweep with its path allowlist and its coverage
       assertion, and record in the module docstring which modules are allowed to
       name a forge natively and why (FR-016, FR-017).
 
