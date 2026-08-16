@@ -237,7 +237,14 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
     assert result.code == 0
     document = result.json
     assert document["findings"] == []
-    assert document["checked"] == [*EXISTING_LAYERS, "prompt_assembly"]
+    # US3 added a sixth layer over the same graph and the same `tasks.md`. The
+    # list stays exhaustive — a layer that runs must appear here — so it grew by
+    # exactly the name of the layer that now runs.
+    assert document["checked"] == [
+        *EXISTING_LAYERS,
+        "prompt_assembly",
+        "slice_coverage",
+    ]
     assert document["skipped"] == []
 
 
@@ -263,7 +270,12 @@ def test_prompt_assembly_is_reported_skipped_when_there_is_no_graph_to_check(
     assert result.code == 1
     document = result.json
     assert "prompt_assembly" not in document["checked"]
-    assert [entry["layer"] for entry in document["skipped"]] == ["prompt_assembly"]
+    # US3's slice-coverage layer is per node over the same graph, so a failed
+    # derivation skips it for the same reason and it is named the same way.
+    assert [entry["layer"] for entry in document["skipped"]] == [
+        "prompt_assembly",
+        "slice_coverage",
+    ]
     assert "US9" in result.messages
 
 

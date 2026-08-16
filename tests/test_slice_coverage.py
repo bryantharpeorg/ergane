@@ -71,25 +71,85 @@ The two that passed red had to, and they are the two that carry the calibration:
 
 Green after, same command::
 
-    GREEN_PLACEHOLDER
+    11 passed in 0.17s
 
 And the whole suite, `uv run pytest -q`::
 
-    SUITE_PLACEHOLDER
+    2457 passed, 44 skipped, 4 warnings in 277.42s (0:04:37)
+
+The fence masking was then mutated out — `in_code = [False] * len(lines)` in
+`_task_entries` — to check that the trap-2 test can fail. It can, and the lint
+without it reports a line nobody wrote::
+
+    FAILED tests/test_slice_coverage.py::test_task_ids_in_no_slice_with_no_story_reference_are_information
+    FAILED tests/test_slice_coverage.py::test_the_information_is_printed_without_the_refusal_prefix
+    FAILED tests/test_slice_coverage.py::test_a_task_quoted_inside_a_fence_is_text_about_a_task
+    3 failed, 8 passed in 0.17s
+
+    ergane spec validate: [slice_coverage] task T999 names story US2, but it sits inside the task slice cut for US1 — the node building US2 is never shown it, and the node building US1 is shown it instead
 
 Run the thing, not the tests about it. `uv run python -m factory.cli.main spec
 validate tests/fixtures/prompt_assembly/904-split-slice`, verbatim::
 
-    CLI_904_PLACEHOLDER
+    ergane spec validate: [slice_coverage] task T002 names story US1, but it falls outside the task slice cut for US1 and inside no other — no node is shown it
+    ergane spec validate: [slice_coverage] task T003 names story US1, but it falls outside the task slice cut for US1 and inside no other — no node is shown it
+    ergane spec validate: [slice_coverage] task T005 names story US2, but it falls outside the task slice cut for US2 and inside no other — no node is shown it
+    ergane spec validate — noted, not a refusal: [slice_coverage] task ids inside no story's slice and naming no story, so they reach no node: T006 — expected in a setup or verification phase the operator works by hand, a defect anywhere else
+    exit=1
 
-...and on `905-wrong-slice`, where the one refusal and the two silent wrong
-slices appear side by side::
+...and on `905-wrong-slice`, where the one refusal and the four silent wrong
+slices appear side by side — the top line is everything a refusal-only check
+sees, the four below it are the two nodes that would have been dispatched with
+the next story's work::
 
-    CLI_905_PLACEHOLDER
+    ergane spec validate: [prompt_assembly] tasks.md: node 'us4': tasks.md declares no phase naming user story US4, so this node has no task slice to work (FR-006)
+    ergane spec validate: [slice_coverage] task T004 names story US3, but it sits inside the task slice cut for US2 — the node building US3 is never shown it, and the node building US2 is shown it instead
+    ergane spec validate: [slice_coverage] task T005 names story US3, but it sits inside the task slice cut for US2 — the node building US3 is never shown it, and the node building US2 is shown it instead
+    ergane spec validate: [slice_coverage] task T006 names story US4, but it sits inside the task slice cut for US3 — the node building US4 is never shown it, and the node building US3 is shown it instead
+    ergane spec validate: [slice_coverage] task T007 names story US4, but it sits inside the task slice cut for US3 — the node building US4 is never shown it, and the node building US3 is shown it instead
+    ergane spec validate — noted, not a refusal: [slice_coverage] task ids inside no story's slice and naming no story, so they reach no node: T001 — expected in a setup or verification phase the operator works by hand, a defect anywhere else
+    exit=1
 
-...and on `906-orphan-tasks`, which passes::
+...and on `906-orphan-tasks`, which passes with the orphans stated::
 
-    CLI_906_PLACEHOLDER
+    ergane spec validate — noted, not a refusal: [slice_coverage] task ids inside no story's slice and naming no story, so they reach no node: T005, T006 — expected in a setup or verification phase the operator works by hand, a defect anywhere else
+    tests/fixtures/prompt_assembly/906-orphan-tasks/spec.md: frontmatter, work-graph derivation, persona registry, scenario coverage, prompt assembly and slice coverage all pass
+    exit=0
+
+Last, the layer was run over every trio under `specs/` in this tree, which is
+where trap 6 is either honoured or disproved. Twenty-odd specs report a `T001`
+setup id as information and pass; **two carry real defects, and nothing else in
+the tree reports them.** `specs/024-ledger-token-honesty` is the 011 shape
+exactly — `## Tests for User Story 1` followed by `## Implementation`, so the
+single node it compiles to would have been dispatched with its tests and none
+of its implementation::
+
+    ergane spec validate: [slice_coverage] task T005 names story US1, but it falls outside the task slice cut for US1 and inside no other — no node is shown it
+    ergane spec validate: [slice_coverage] task T006 names story US1, but it falls outside the task slice cut for US1 and inside no other — no node is shown it
+    ergane spec validate: [slice_coverage] task T007 names story US1, but it falls outside the task slice cut for US1 and inside no other — no node is shown it
+    ergane spec validate: [slice_coverage] task T008 names story US1, but it falls outside the task slice cut for US1 and inside no other — no node is shown it
+    ergane spec validate: [slice_coverage] task T009 names story US1, but it falls outside the task slice cut for US1 and inside no other — no node is shown it
+
+...and `specs/017-peer-channel` is the wrong-slice shape, still half-repaired:
+its phase headings were renumbered when the inserted story was found, its task
+tags were not, so every task below Phase 2 still names the story that used to
+own the phase it sits in::
+
+    ergane spec validate: [slice_coverage] task T008 names story US2, but it sits inside the task slice cut for US3 — the node building US2 is never shown it, and the node building US3 is shown it instead
+    ergane spec validate: [slice_coverage] task T009 names story US2, but it sits inside the task slice cut for US3 — the node building US2 is never shown it, and the node building US3 is shown it instead
+    ergane spec validate: [slice_coverage] task T010 names story US2, but it sits inside the task slice cut for US3 — the node building US2 is never shown it, and the node building US3 is shown it instead
+    ergane spec validate: [slice_coverage] task T011 names story US3, but it sits inside the task slice cut for US4 — the node building US3 is never shown it, and the node building US4 is shown it instead
+    ergane spec validate: [slice_coverage] task T012 names story US3, but it sits inside the task slice cut for US4 — the node building US3 is never shown it, and the node building US4 is shown it instead
+    ergane spec validate: [slice_coverage] task T013 names story US3, but it sits inside the task slice cut for US4 — the node building US3 is never shown it, and the node building US4 is shown it instead
+    ergane spec validate: [slice_coverage] task T014 names story US4, but it sits inside the task slice cut for US5 — the node building US4 is never shown it, and the node building US5 is shown it instead
+    ergane spec validate: [slice_coverage] task T015 names story US4, but it sits inside the task slice cut for US5 — the node building US4 is never shown it, and the node building US5 is shown it instead
+    ergane spec validate: [slice_coverage] task T016 names story US4, but it sits inside the task slice cut for US5 — the node building US4 is never shown it, and the node building US5 is shown it instead
+    ergane spec validate: [slice_coverage] task T017 names story US4, but it sits inside the task slice cut for US5 — the node building US4 is never shown it, and the node building US5 is shown it instead
+
+Both are at `state: draft`, so this landed before either could be dispatched,
+which is the whole point. Neither is edited here: repairing a spec is spec work
+and belongs to whoever refines it, and the tags are only half of what 017 is
+held at draft for.
 """
 
 from __future__ import annotations
