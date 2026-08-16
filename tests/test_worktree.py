@@ -1766,6 +1766,11 @@ def test_a_target_with_no_remote_reports_the_refs_as_unmirrored(
 #   GATE test: PASS in 260.4s
 #   2851 passed, 44 skipped, 5 warnings in 259.66s (0:04:19)
 #
+# Run twice, the second time on the finished tree — which differs from the first
+# only by the comment you are reading — and the counts are identical:
+#
+#   2851 passed, 44 skipped, 5 warnings in 249.72s (0:04:09)
+#
 # And the functions were hand-driven outside pytest, against real git (2.43.0)
 # in scratch clones, because a green suite is evidence and not proof. Verbatim,
 # that run's shas:
