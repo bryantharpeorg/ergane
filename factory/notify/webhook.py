@@ -6,9 +6,8 @@ email or a wall display is a bridge the operator writes in a few lines. Three
 things it deliberately is not:
 
 - **A decider.** Two operations, like every adapter (FR-001). Whether the
-  sender may *answer* is checked factory-side, in `CallbackBridge`, because an
-  adapter that filtered replies would make the one decision the seam keeps out
-  of the transport. There is no store, client or handle here to decide with.
+  sender may *answer* is `CallbackBridge`'s, factory-side; there is no store,
+  client or handle here to decide with.
 - **A listener.** An inbound HTTP server would put a socket on the factory's
   side of a boundary whose purpose is that the operator's side is theirs.
   Replies arrive through `ergane answer`, which is `relay`'s caller.
@@ -18,7 +17,7 @@ things it deliberately is not:
 
 `delivered=False` is the whole vocabulary for "nobody was paged" — an unset
 URL, a refused connection, a 500 — because the factory's move is identical for
-all three (002 R11), and nothing here raises for the same reason. There is no
+all three (002 R11), and nothing raises for the same reason. There is no
 `message_id`: a webhook mints no handle a reply could quote, which is why the
 correlation id travels in the body.
 """
@@ -135,7 +134,7 @@ class WebhookAdapter:
 
 
 async def _post_json(endpoint: str, body: dict[str, Any]) -> int:
-    """One POST, and the status it came back with. The only socket in this file."""
+    """One POST and its status — the only socket in this file."""
     import httpx
 
     async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT_S) as http:

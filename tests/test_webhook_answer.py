@@ -1,14 +1,13 @@
 """Any messenger, and only authorized answers.
 
 041-US4. The second adapter and the identity rule ship together because the
-second adapter is what creates the problem: Telegram never had one, since a
-single chat *was* the identity. Three facts the assertions turn on:
+second adapter creates the problem: Telegram never had one, since a single chat
+*was* the identity. Three facts the assertions turn on:
 
-- **The check is factory-side.** Not adapter-side (deciding answer-or-not is
-  the one decision the seam keeps out of the transport, FR-001); not
-  workflow-side (it reads the control-plane file, and workflow code may read
-  neither files nor the environment — constitution IV, FR-012). It lives in
-  `CallbackBridge`, so a signal crossing the workflow boundary is pre-checked.
+- **The check is factory-side**, in `CallbackBridge` — not adapter-side
+  (answer-or-not is the decision the seam keeps out of the transport, FR-001)
+  and not workflow-side (it reads a file, which workflow code may not —
+  constitution IV, FR-012). A signal crossing the boundary is pre-checked.
 - **`ergane answer` is not a second settling core.** It hands three inbound
   terms to `CallbackBridge.handle_relay`, the core a Telegram reply reaches.
 - **An unauthorized reply is recorded.** A drop that logs nothing is
@@ -19,14 +18,13 @@ Evidence is pasted at the bottom, verbatim (constitution VIII / D-037).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import threading
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, NamedTuple
+from typing import Any, Awaitable, Callable, Iterator
 
 import pytest
 from temporalio import workflow
@@ -37,12 +35,7 @@ from factory.activities.notify_activities import (
     SendQuestionInput,
     send_question,
 )
-from factory.activities.verify_activities import (
-    ERGANE_VERIFICATION_DB_PATH_ENV,
-    VERIFICATION_DB_PATH_ENV,
-)
 from factory.cli import nouns
-from factory.cli.main import main as ergane_main
 from factory.env import ERGANE_CONFIG_PATH_ENV, FACTORY_CONFIG_PATH_ENV
 from factory.notify.adapter import (
     ESCALATION_ADAPTER_ENV,
@@ -65,6 +58,10 @@ from factory.notify.webhook import (
 )
 from factory.verify import store
 
+# Fixtures, imported rather than re-declared: `db_path` and `env` are US2's and
+# `run_async` is the `escalations` noun's, and this story needs the same three.
+from tests.test_ergane_escalations import Run, run_async  # noqa: F401 - fixture
+from tests.test_escalation_workflow import db_path, env  # noqa: F401 - fixture
 from tests.test_messenger_adapter import (
     FakePressUpdate,
     FakeTemporalClient,
@@ -93,7 +90,7 @@ RESOLVED_AT = "2026-08-16T15:04:00Z"
 
 #: This file's own queue: nothing here should be servable by a worker an
 #: operator happens to be running.
-WAITER_QUEUE = "webhook-answers-under-test"
+QUEUE = "webhook-answers-under-test"
 
 
 # --- the world ---------------------------------------------------------------
@@ -152,20 +149,6 @@ class Listener:
         self._thread.join(timeout=5)
 
 
-class Run(NamedTuple):
-    code: int
-    stdout: str
-    stderr: str
-
-
-def _invoke(argv: tuple[str, ...]) -> int:
-    try:
-        code = ergane_main(list(argv))
-    except SystemExit as exit_request:
-        code = exit_request.code
-    return 0 if code is None else int(code)
-
-
 # --- fixtures ----------------------------------------------------------------
 
 
@@ -176,14 +159,6 @@ def listener() -> Iterator[Listener]:
         yield endpoint
     finally:
         endpoint.close()
-
-
-@pytest.fixture
-def db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / ".factory" / "verification.db"
-    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(path))
-    monkeypatch.delenv(VERIFICATION_DB_PATH_ENV, raising=False)
-    return path
 
 
 @pytest.fixture
@@ -199,25 +174,6 @@ def no_control_plane(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """No config file: unrestricted, which is what every 008 deployment is."""
     monkeypatch.setenv(ERGANE_CONFIG_PATH_ENV, str(tmp_path / "absent.toml"))
     monkeypatch.delenv(FACTORY_CONFIG_PATH_ENV, raising=False)
-
-
-@pytest.fixture
-async def env() -> AsyncIterator[WorkflowEnvironment]:
-    environment = await WorkflowEnvironment.start_time_skipping()
-    try:
-        yield environment
-    finally:
-        await environment.shutdown()
-
-
-@pytest.fixture
-def run_async(capsys: pytest.CaptureFixture[str]) -> Callable[..., Awaitable[Run]]:
-    async def invoke(*argv: str) -> Run:
-        code = await asyncio.to_thread(_invoke, argv)
-        captured = capsys.readouterr()
-        return Run(code, captured.out, captured.err)
-
-    return invoke
 
 
 # --- helpers -----------------------------------------------------------------
@@ -318,12 +274,12 @@ async def test_ergane_answer_resumes_the_waiting_workflow_with_that_text(
     """
     async with Worker(
         env.client,
-        task_queue=WAITER_QUEUE,
+        task_queue=QUEUE,
         workflows=[WaitingForAnswer],
         workflow_runner=UnsandboxedWorkflowRunner(),
     ):
         waiting = await env.client.start_workflow(
-            WaitingForAnswer.run, id="waiting-on-us4", task_queue=WAITER_QUEUE
+            WaitingForAnswer.run, id="waiting-on-us4", task_queue=QUEUE
         )
         sent = await ActivityEnvironment().run(
             send_question, a_question(waiting.id)
@@ -631,3 +587,58 @@ def test_the_webhook_relays_only_what_it_can_translate() -> None:
     assert adapter.relay({"reply_text": "yes"}) is None
     assert adapter.relay(object()) is None
 
+
+
+
+# --- EVIDENCE, pasted verbatim (constitution VIII / D-037) --------------------
+#
+# Every mutation was applied to a committed HEAD with `git status --porcelain`
+# empty and reverted after. Not ceremony: the first run of this battery predated
+# `webhook.py` and `answer.py` being tracked, so mutation 3's edit survived the
+# revert and made runs 4, 5 and 6 meaningless. These are the re-run.
+
+MUTATIONS = """
+1  `_refuse_unauthorized` returns None unconditionally — the guard does nothing
+   E  assert <BridgeOutcome.RESOLVED> is <BridgeOutcome.UNAUTHORIZED>
+   4 failed, 9 passed   (both inbound entries, the config case, and US4-S3)
+
+2  `configured_responders()` returns () — the guard never learns the list
+   E  assert () == ('@bryan',)
+   1 failed, 12 passed
+
+3  `status = 200` without POSTing — the webhook claims a delivery it never made
+   E  assert 0 == 1   +  where 0 = len([]) = <Listener>.posted
+   4 failed, 9 passed   (both round trips, the expiry case, and the R11 case)
+
+4  `_question_for` drops the `get_question` fallback — Telegram's routing only
+   E  assert 'already answered' in 'ergane: 38330e52d6d1 names no question this
+      factory ever asked; nothing was signalled'
+   5 failed, 8 passed
+
+5  the guard is deleted from the PRESS path only, leaving the reply path's
+   E  assert <BridgeOutcome.RESOLVED> is <BridgeOutcome.UNAUTHORIZED>
+   1 failed, 12 passed  ::test_an_unauthorized_press_is_refused_on_the_button_path_too
+
+   The mutation that mattered. On its first run it came back **green, 15
+   passed** — the test then drove `handle_reply`, which reaches the reply core,
+   so the press call site had no coverage at all. A guard's existence is not the
+   assertion that it covers what was put behind it.
+
+6  the refusal logs nothing — no signal, no state change, and no record
+   E  AssertionError: an unauthorized reply that logs nothing is a lost one
+      assert '@not-bryan' in ''
+   2 failed, 11 passed  (both inbound entries)
+
+7  `authorized_responders` parses and is never rendered back
+   E  authorized_responders: () != ('@bryan', '4242')
+   1 failed, 22 passed  ::test_a_responder_list_survives_the_render_round_trip
+
+8  the SECOND adapter breaks the seam: `mark_delivered` named in its own source
+   E  AssertionError: the webhook adapter names ['mark_delivered']
+   1 failed, 30 passed
+     ::test_no_adapter_code_path_can_acknowledge_answer_or_expire[webhook]
+
+   The conformance fix, measured. Against the parametrisation this story
+   replaces — `@pytest.mark.parametrize("name", ["telegram"])` — this mutation
+   is invisible: there is no `[webhook]` case to run.
+"""

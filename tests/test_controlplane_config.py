@@ -257,12 +257,11 @@ def test_unknown_escalation_adapter_refused(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# T027a [041-US4 / FR-011] `escalation.authorized_responders`
+# T027a [041-US4 / FR-011] `escalation.authorized_responders` — the field 033
+# was assumed to have landed and did not (a repo-wide grep on 2026-08-16 found
+# the name only in 041's spec, plan and tasks). Added with the parser's own
+# conventions: a wrong type is `field_type`, the slug every block already uses.
 # ---------------------------------------------------------------------------
-#
-# The field 033 was assumed to have landed and did not: a repo-wide grep on
-# 2026-08-16 found the name only in 041's spec, plan and tasks. Added with the
-# parser's conventions rather than new ones — a wrong type is `field_type`.
 
 
 def test_authorized_responders_parses_to_a_tuple_of_identities(tmp_path: Path) -> None:

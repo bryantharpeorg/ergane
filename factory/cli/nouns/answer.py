@@ -6,11 +6,11 @@ back through the operator: `ergane answer <correlation-id> "ship it"`.
 **Not a second settling core.** It builds the three terms an adapter relays and
 hands them to `CallbackBridge.handle_relay`, the same function a Telegram reply
 reaches. Exactly one place looks a question up, signals the workflow waiting on
-it and settles its row; a verb re-implementing any of that would be the third
-writer the store's channel asymmetry was made of
-(`interpreter/resolved-escalation-never-clears-in-the-store`). Nor does it
-decide whether the sender may answer — `CallbackBridge` checks the relay's
-identity against `escalation.authorized_responders` (FR-011).
+it and settles its row; re-implementing any of that would be the third writer
+the store's channel asymmetry was made of
+(`interpreter/resolved-escalation-never-clears-in-the-store`). Nor does it judge
+the sender — `CallbackBridge` checks the relay's identity against
+`escalation.authorized_responders` (FR-011).
 
 **Not the escalation verb.** An escalation carries a choice from a closed enum
 and `ergane build resolve` sends it; this carries free text, which is why 008
@@ -40,27 +40,16 @@ from factory.notify.webhook import WEBHOOK_ADAPTER
 #: id with nothing waiting can be — answered, expired, never asked — are told
 #: apart rather than collapsed: they call for three different next moves, and
 #: the settling core already distinguishes them. `None` means "this worked".
+_NOTHING = "; nothing was signalled"
 _REPORT: dict[BridgeOutcome, tuple[int | None, str]] = {
-    BridgeOutcome.RESOLVED: (
-        None,
-        "{id}: answer recorded; the workflow waiting on it has been signalled",
-    ),
-    BridgeOutcome.UNKNOWN: (
-        1,
-        "{id} names no question this factory ever asked; nothing was signalled",
-    ),
-    BridgeOutcome.ALREADY_RESOLVED: (
-        1,
-        "{id} is already answered; the first answer stands and nothing was signalled",
-    ),
-    BridgeOutcome.EXPIRED: (
-        1,
-        "{id} expired before this answer arrived; nothing was signalled",
-    ),
+    BridgeOutcome.RESOLVED: (None, "{id}: answer recorded, waiting workflow signalled"),
+    BridgeOutcome.UNKNOWN: (1, "{id} names no question this factory ever asked" + _NOTHING),
+    BridgeOutcome.ALREADY_RESOLVED: (1, "{id} is already answered" + _NOTHING),
+    BridgeOutcome.EXPIRED: (1, "{id} expired before this answer arrived" + _NOTHING),
     BridgeOutcome.UNAUTHORIZED: (
         1,
-        "{id}: '{identity}' is not in escalation.authorized_responders; "
-        "nothing was signalled — pass --as with the identity the list carries",
+        "{id}: '{identity}' is not in escalation.authorized_responders" + _NOTHING
+        + " — pass --as with the identity the list carries",
     ),
     BridgeOutcome.SIGNAL_FAILED: (
         EXIT_TRANSPORT,
@@ -90,9 +79,7 @@ async def _answer(correlation_id: str, text: str, identity: str) -> int:
     if relay is None:
         # The one shape the adapter refuses that an operator can type: an empty
         # answer. Recording it would park the node on nothing.
-        raise OperatorError(
-            f"{correlation_id}: an empty answer carries nothing; nothing was signalled"
-        )
+        raise OperatorError(f"{correlation_id}: an empty answer carries nothing")
 
     client = await _open_client()
     bridge = CallbackBridge(db_path=_store_path(), client=client)

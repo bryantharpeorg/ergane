@@ -133,8 +133,7 @@ _REPLY_SIGNAL_FAILED = "Could not reach the orchestrator — nothing recorded, r
 _REPLY_RESOLVED = "Answer recorded; the next attempt will carry it."
 
 #: What an identity the configured list does not carry is told (041-US4). Named
-#: back to them, because the ordinary cause is a spelling — `bryan` where the
-#: list says `@bryan` — and they are the one who can fix it.
+#: back to them: the ordinary cause is a spelling, `bryan` for `@bryan`.
 _UNAUTHORIZED = "{identity} is not an authorized responder; nothing was changed."
 
 
