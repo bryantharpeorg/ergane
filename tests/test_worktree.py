@@ -61,8 +61,10 @@ from typing import Callable
 import pytest
 
 from factory.usage.models import Termination
+from factory.verify.factory_yaml import MANIFEST_NAME
 from factory.workgraph.worktree import (
     DIFF_CLIP_NOTICE,
+    MirrorOutcome,
     PreparedWorktree,
     SyncResult,
     WorktreeError,
@@ -71,6 +73,7 @@ from factory.workgraph.worktree import (
     diff,
     ensure,
     landing_branch,
+    mirror_node_branch,
     push_branch,
     remove,
     salvage,
@@ -858,6 +861,261 @@ def test_repush_after_new_commits_succeeds(
     push_branch(repo, EPIC, NODE, factory_root=factory_root)
 
     assert head(bare, f"refs/heads/{prepared.branch}") == head(prepared.path)
+
+
+# --- mirror_node_branch (047 US1: salvage leaves the machine) ------------------
+#
+# Salvage already makes the durable artifact; until 047 nothing put a copy
+# anywhere else, because the only push in the tree belonged to the landing path
+# — precisely the path a killed, timed-out or failed node never takes. These
+# tests drive the mirror against the `origin_repo` bare remote above: a
+# filesystem path inside `tmp_path`, so no test here needs a network or a
+# credential.
+#
+# The pair to read together is the first two: one asserts the branch arrives,
+# the other asserts that with the mirror switched off at its seam it does not.
+# Without that control the first would pass on any fixture that happened to have
+# pushed the branch already.
+
+
+def _declare_landing_branch(repo: Path, branch: str) -> None:
+    """Make the target repo declare `branch` as the one the factory lands on.
+
+    The guard `push_branch` already carries reads the *declared* branch, so the
+    only way to exercise it honestly is to declare it — a node id colliding with
+    the trunk's name is the shape it exists for.
+    """
+    manifest = repo / MANIFEST_NAME
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8") + f"landing_branch: {branch}\n",
+        encoding="utf-8",
+    )
+    git(repo, "commit", "--quiet", "-a", "-m", "declare the landing branch")
+
+
+def test_the_mirror_puts_the_salvage_commit_on_the_targets_remote(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US1-S1: the node branch reaches origin at the sha salvage returned.
+
+    This is the whole of constitution VI's missing half. Four terminated nodes'
+    work exists on exactly one disk today because salvage committed and stopped.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.KILLED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert isinstance(outcome, MirrorOutcome)
+    assert outcome.pushed is True
+    assert outcome.branch == BRANCH
+    assert ref_exists(bare, f"refs/heads/{BRANCH}")
+    assert head(bare, f"refs/heads/{BRANCH}") == sha
+
+
+def test_without_the_mirror_the_salvage_never_leaves_the_machine(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US1-S6 / SC-004's control: the same setup, the mirror off at its seam.
+
+    The fixture pushes `main` and nothing else, so if this branch were on the
+    bare remote anyway the test above would be measuring the fixture rather than
+    the mirror. It is not: with the mirror disabled the work sits on this disk,
+    which is exactly the defect 047 exists to close.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    dirty(Path(prepared.path))
+
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.KILLED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root, enabled=False)
+
+    assert outcome.pushed is False
+    assert not ref_exists(bare, f"refs/heads/{BRANCH}")
+    # The salvage still happened; only the copy off this machine did not.
+    assert head(repo, BRANCH) == sha
+
+
+def test_a_target_with_no_remote_salvages_and_names_the_absent_remote(
+    repo: Path, factory_root: Path
+) -> None:
+    """US1-S2 / SC-003: no remote is a normal target, not a broken one.
+
+    Constitution VI is unconditional, so the mirror reports the absence rather
+    than raising it — the same posture `_remote_head` already takes when it pins
+    a base ref in a clone with no origin.
+    """
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.AGENT_ERROR,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert outcome.pushed is False
+    assert "origin" in outcome.detail
+    assert str(repo) in outcome.detail
+    # The salvage itself is untouched: the work is committed and the tree clean.
+    assert head(repo, BRANCH) == sha
+    assert status(worktree) == ""
+
+
+def test_an_unreachable_remote_is_reported_in_gits_own_words(
+    repo: Path, factory_root: Path, tmp_path: Path
+) -> None:
+    """US1-S3 / FR-002: git's refusal, carried rather than paraphrased.
+
+    The origin is added *after* the worktree exists because `ensure` fetches,
+    and a fetch against a path that is not there is a raise by design — this
+    test is about the mirror, which is the one call that must not.
+
+    `gone.git` appears in the report only if git's stderr was carried through:
+    nothing in the factory's own message formatting knows that path.
+    """
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    gone = tmp_path / "gone.git"
+    git(repo, "remote", "add", "origin", str(gone))
+
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.TIMEOUT,
+        attempt=2,
+        factory_root=factory_root,
+    )
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert outcome.pushed is False
+    assert str(gone) in outcome.detail
+    assert head(repo, BRANCH) == sha
+
+
+def test_a_second_mirror_of_an_unchanged_branch_is_a_success(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US1-S4 / FR-004: the activity-retry path mirrors, and adds no commit.
+
+    `salvage` short-circuits when this attempt's marker is already the head of a
+    clean tree, which is exactly what a retry after a *failed* push looks like.
+    A mirror reachable only through the commit branch would never run again for
+    that attempt, so the work would stay on one disk forever.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.COMPLETED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    first = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+    after_first = commit_count(worktree)
+
+    again = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.COMPLETED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    second = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert again == sha
+    assert commit_count(worktree) == after_first
+    assert first.pushed is True
+    assert second.pushed is True
+    assert head(bare, f"refs/heads/{BRANCH}") == sha
+
+
+def test_the_mirror_refuses_the_targets_declared_landing_branch(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US1-S5 / FR-003: the trunk is not a node's to push over.
+
+    The refusal is `push_branch`'s existing guard, reached through the mirror
+    rather than restated in a second place. The remote's copy of that branch is
+    compared byte-for-byte against what it held before, so "nothing was pushed"
+    is a fact about the remote and not just about the return value.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    git(repo, "push", "--quiet", "origin", BRANCH)
+    before = head(bare, f"refs/heads/{BRANCH}")
+
+    _declare_landing_branch(repo, BRANCH)
+    dirty(worktree)
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.KILLED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert sha != before
+    assert outcome.pushed is False
+    assert BRANCH in outcome.detail
+    assert head(bare, f"refs/heads/{BRANCH}") == before
+
+
+def test_the_mirror_never_forces_over_what_the_remote_already_holds(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """FR-004: no `--force`, proven by what a forced push would have destroyed.
+
+    A branch rewound behind the remote is the one shape where plain and forced
+    pushes differ observably: plain is refused, forced moves origin backwards
+    and takes the salvage commit already there with it.
+    """
+    repo, bare = origin_repo
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    salvage(
+        EPIC,
+        NODE,
+        termination=Termination.COMPLETED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+    mirrored = head(bare, f"refs/heads/{BRANCH}")
+
+    git(worktree, "reset", "--quiet", "--hard", "HEAD~1")
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert outcome.pushed is False
+    assert head(bare, f"refs/heads/{BRANCH}") == mirrored
+    assert head(worktree) != mirrored
 
 
 # --- sync_with_target (US2 recovery, plan.md § US2) ---------------------------
