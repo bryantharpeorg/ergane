@@ -404,3 +404,114 @@ def test_ordered_binds_puts_containing_paths_first() -> None:
         "/repo/.factory/worktrees/e",
         "/repo/.factory/worktrees/e/us1",
     ], f"binds must be emitted shallowest-first, got {destinations}"
+
+
+@pytest.mark.skipif(not BWRAP_PRESENT, reason="bwrap not installed")
+def test_a_gate_that_commits_is_not_asked_who_it_is() -> None:
+    """A gate may commit inside the boundary; `HOME` being a tmpfs must not stop it.
+
+    `HOME` inside the boundary is a fresh tmpfs, so git finds no global config
+    and refuses before it does any work. The first epic to run its gates under
+    the boundary (`033-ergane-install/us2`) failed on this in five separate
+    tests, none of which were about identity:
+
+        fatal: unable to auto-detect email address (got 'unknown@spark-9cb5.(none)')
+        subprocess.CalledProcessError: Command '['git', '-C', '/tmp/target-.../repo',
+        'commit', '--quiet', '-m', 'operator file the agent must not touch']'
+        returned non-zero exit status 128.
+
+    The environment names an identity so the commit succeeds. Note what the
+    gate's own environment cannot supply: `GIT_AUTHOR_NAME` is not in
+    `SCRUBBED_ENV_ALLOWLIST`, so nothing leaks in from the worker's process —
+    the boundary is the only source, which is what makes this test honest.
+    """
+    root = Path(tempfile.mkdtemp(prefix="ergane-us5-commit-"))
+    try:
+        _, worktree = _build_nested_worktree_repo(
+            root,
+            "git init -q throwaway && cd throwaway && echo hi > f "
+            "&& git add -A && git commit -q -m gate-commit && git log --oneline",
+        )
+
+        results = _results_by_name(run_gates(worktree, executor=BwrapGateExecutor()))
+        gate = results["test"]
+
+        assert gate.status is GateStatus.PASS, (
+            "a gate must be able to commit inside the boundary; got "
+            f"{gate.status.value}: {gate.output_tail}"
+        )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_the_operators_git_config_is_not_mounted_to_supply_that_identity() -> None:
+    """The identity comes from the environment, never from the operator's config.
+
+    Binding `~/.gitconfig` would also have made the commit above succeed, and
+    on this host that file carries GitHub credential helpers:
+
+        credential.https://github.com.helper=...
+        credential.https://gist.github.com.helper=...
+
+    A gate that can read those can push as the operator, which is the exact
+    authority the boundary exists to withhold. This test fails if a future
+    change reaches for the file instead of the environment.
+    """
+    executor = BwrapGateExecutor()
+    invocation = GateInvocation(
+        name="test",
+        command="true",
+        cwd=Path("/home/admin/code/ergane"),
+        timeout_s=30,
+        env={},
+    )
+
+    argv = executor._build_argv(invocation)
+
+    assert not any("gitconfig" in argument for argument in argv), (
+        f"the operator's git config must not be mounted into a gate: {argv}"
+    )
+    assert "GIT_AUTHOR_EMAIL" in argv, (
+        f"the gate must carry its own commit identity instead: {argv}"
+    )
+
+
+@pytest.mark.skipif(not BWRAP_PRESENT, reason="bwrap not installed")
+@pytest.mark.skipif(
+    not Path("/home/admin/.local/share/claude").is_dir(),
+    reason="agent runner not installed on this host",
+)
+def test_a_gate_can_launch_the_agent_runner_inside_the_boundary() -> None:
+    """A suite that exercises its own dispatch path launches the agent in a gate.
+
+    This repository's boundary tests start the agent runner, and that inner
+    launch binds the runner's install directory *by source path*. With the
+    directory outside the gate's mount set the inner boundary never starts:
+
+        bwrap: Can't find source path
+        /home/admin/.local/share/claude/versions/2.1.223: No such file or directory
+
+    which reached the suite as `assert <Termination....'agent_error'> ==
+    'completed'` in three tests that were asking about deadlines and signals,
+    and as a bare mount error in three more. Reading the install directory is
+    the whole assertion; whether the runner then runs is the agent boundary's
+    business, not this one's.
+    """
+    root = Path(tempfile.mkdtemp(prefix="ergane-us5-runner-"))
+    try:
+        _, worktree = _build_nested_worktree_repo(
+            root,
+            "ls /home/admin/.local/share/claude/versions >/dev/null "
+            "&& echo runner-install-visible",
+        )
+
+        results = _results_by_name(run_gates(worktree, executor=BwrapGateExecutor()))
+        gate = results["test"]
+
+        assert gate.status is GateStatus.PASS, (
+            "the agent runner's install directory must be readable inside the "
+            f"boundary; got {gate.status.value}: {gate.output_tail}"
+        )
+        assert "runner-install-visible" in gate.output_tail
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
