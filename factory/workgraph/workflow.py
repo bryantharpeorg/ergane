@@ -158,19 +158,16 @@ with workflow.unsafe.imports_passed_through():
     )
     from factory.activities.notify_activities import (
         DEFAULT_CHOICES,
-        ExpireEscalationInput,
-        ExpireQuestionInput,
-        FindFerriedQuestionInput,
         QUESTION_TIMEOUT_S,
-        SendEscalationInput,
-        SendQuestionInput,
-        SentEscalation,
-        SentQuestion,
-        expire_escalation,
-        expire_question,
-        find_ferried_question,
-        send_escalation,
-        send_question,
+    )
+    from factory.escalation.question import (
+        QuestionRequest,
+        QuestionWorkflow,
+    )
+    from factory.escalation.workflow import (
+        EscalationRequest,
+        EscalationWorkflow,
+        child_correlation_id,
     )
     from factory.activities.usage_activities import (
         IssueKeyInput,
@@ -205,7 +202,6 @@ with workflow.unsafe.imports_passed_through():
         TargetRepoProfile,
     )
     from factory.notify.messages import render_history, render_landing_history
-    from factory.notify.service import QUESTION_SIGNAL_NAME, SIGNAL_NAME
     from factory.usage.models import KeyLease, Termination, UsageSnapshot
     from factory.verify.ladder import DEBUGGER_PERSONA, next_action
     from factory.verify.models import (
@@ -502,29 +498,9 @@ class EpicWorkflow:
         #: wall-clock one, so replay rebuilds it exactly.
         self._landing_tasks: dict[str, asyncio.Task[None]] = {}
 
-        #: Operator answers keyed by escalation id, buffered rather than awaited.
-        #: A press can arrive before the send activity has returned the id it
-        #: belongs to — that is what happens when someone taps the button the
-        #: instant the message lands — so nothing here may assume the workflow is
-        #: already waiting.
-        self._resolutions: dict[str, str] = {}
-
-        #: 008-US2: the operator's answers to parked questions, keyed by question
-        #: id. The bridge's reply path sends `question_answered(question_id,
-        #: answer_text)`; the workflow buffers it here the same way it buffers
-        #: escalation resolutions, and a parked node's wait condition reads it.
-        #: The escalation signal cannot carry free text (the CHECK constraints
-        #: pin the choice enum), which is the whole reason a sibling signal
-        #: exists (plan § US2). An answer this epic never asked is stored and
-        #: never read, the same incurious discipline as `_resolutions`.
-        self._answers: dict[str, str] = {}
-
-        #: 008-US2: the question text keyed by question id, stashed at park time
-        #: so the un-park can build the `OperatorAnswer` (question + answer)
-        #: without a store round-trip — the workflow already has the marker text
-        #: the detector pulled off the transcript, and the answer section
-        #: reproduces it verbatim (FR-003). Cleared on un-park.
-        self._questions: dict[str, str] = {}
+        #: 041-US3: the epic buffers no operator answers of its own. Both
+        #: lifecycles are children now, each owning its handler, buffer and
+        #: timer — the 017 obstacle this removes.
 
         #: The steering wheel's whole state (FR-008). Two plain flags and no
         #: persistence: a signal is a history event, so replay rebuilds both
@@ -566,44 +542,6 @@ class EpicWorkflow:
         change their mind.
         """
         self._kill_requested = True
-
-    @workflow.signal(name=SIGNAL_NAME)
-    def escalation_resolved(self, escalation_id: str, choice: str) -> None:
-        """Record one operator decision (`factory/notify/service.py` sends it).
-
-        Deliberately incurious: an id this epic never escalated is stored and
-        never read, because the alternative — validating against state the
-        workflow may not have written yet — drops the presses that arrive
-        fastest (002's contract, and its reference flow's hardest-won ordering).
-        """
-        self._resolutions[escalation_id] = choice
-
-    @workflow.signal(name=QUESTION_SIGNAL_NAME)
-    def question_answered(self, question_id: str, answer_text: str) -> None:
-        """Record one operator answer to a parked question (008-US2).
-
-        The sibling of `escalation_resolved` for the one thing a button cannot
-        carry: free text. The escalation signal's args are `(escalation_id,
-        choice)` where `choice` is pinned to a closed enum by the escalations
-        table's CHECK constraints; an answer is whatever the operator typed, so
-        it rides its own signal and is buffered in `_answers` the same way
-        resolutions are buffered in `_resolutions`.
-
-        Deliberately incurious, for the same reason as `escalation_resolved`:
-        an id this epic never asked is stored and never read, because
-        validating against state the workflow may not have written yet would
-        drop the answers that arrive fastest (the bridge's hardest-won
-        ordering, the escalation precedent).
-
-        US2: the answer is what un-parks the node. The signal only buffers —
-        the parked node's `wait_condition` reads `_answers` and clears the pause
-        flag itself on un-park, the way it set it on park. The store's guarded
-        `resolve_question` is the ultimate arbiter (first-wins against the
-        `wait_condition` timeout), so an answer that lost the race to its own
-        expiry (the timeout fired a beat earlier) is still stored and never
-        read — the node already re-entered the ladder as a FAIL.
-        """
-        self._answers[question_id] = answer_text
 
     @workflow.query
     def epic_status(self) -> EpicStatus:
@@ -1329,47 +1267,20 @@ class EpicWorkflow:
                         # (FR-002). The send happens after salvage, so the branch the
                         # operator might be asked about is the one the question names.
                         #
-                        # 008-US3: when the in-attempt ferry already shipped this
-                        # question mid-flight (and the agent then degraded to the
-                        # marker path before an answer arrived), the row and the page
-                        # are already done — a ferried question for this attempt is in
-                        # the store. Reuse it instead of re-sending, so the operator
-                        # is paged once about one question, not twice. The ferry's row
-                        # carries the same text (the agent wrote it to the `question`
-                        # file before it wrote the marker), so the question the
-                        # operator sees is the question they would have. The store is
-                        # the source of truth for "did the ferry already ask," not the
-                        # adapter result — D-018's hole stays at one signal (the
-                        # marker), and the ferry's question id is evidence in the
-                        # store, not a second field on the result.
-                        ferried = await workflow.execute_activity(
-                            find_ferried_question,
-                            FindFerriedQuestionInput(
+                        # 041-US3: the lifecycle is a `QuestionWorkflow` now — send,
+                        # ferry dedup, the 8h window and the signal are all its, and
+                        # its row names *it*, so a reply reaches what is waiting.
+                        question = await workflow.start_child_workflow(
+                            QuestionWorkflow.run,
+                            QuestionRequest(
                                 epic_id=graph.epic_id,
                                 node_id=node.id,
                                 attempt=record.attempt,
+                                question_text=marker.text,
+                                timeout_s=QUESTION_TIMEOUT_S,
                             ),
-                            **_FAST,
+                            id=child_correlation_id(),
                         )
-                        if ferried.question_id is not None:
-                            sent = SentQuestion(
-                                question_id=ferried.question_id,
-                                message_id=None,
-                                sent_at="",
-                                expires_at="",
-                            )
-                        else:
-                            sent = await workflow.execute_activity(
-                                send_question,
-                                SendQuestionInput(
-                                    workflow_id=workflow.info().workflow_id,
-                                    epic_id=graph.epic_id,
-                                    node_id=node.id,
-                                    attempt=record.attempt,
-                                    question_text=marker.text,
-                                ),
-                                **_FAST,
-                            )
                         # Park the node and pause the epic — the operator's answer
                         # (US2) is what un-parks it. WAITING_OPERATOR is non-terminal
                         # and not a dead edge, so dependents stay PENDING; the pause
@@ -1383,8 +1294,7 @@ class EpicWorkflow:
                         # idles while it waits. The node clears the pause itself on
                         # un-park, the way it set it on park.
                         record.state = NodeState.WAITING_OPERATOR
-                        record.pending_question_id = sent.question_id
-                        self._questions[sent.question_id] = marker.text
+                        record.pending_question_id = question.id
                         self._paused = True
                         # Close the attempt key before the long wait: the park is
                         # non-terminal and may outlive this workflow activation, so
@@ -1392,38 +1302,31 @@ class EpicWorkflow:
                         # The next attempt mints a fresh key on answer or expiry.
                         await self._teardown(lease, termination, record.last_snapshot)
                         teardown_done = True
-                        # 008-US2: wait for the operator's reply, or for the question's
-                        # own window to elapse — whichever comes first. The window is
-                        # the question's 8h (`QUESTION_TIMEOUT_S`), not the escalation
-                        # hour: questions are routinely asked into an operator's sleep,
-                        # and an epic parked till morning is cheaper than a good
-                        # question burned at 3 AM (FR-004). The wait mirrors the
-                        # escalation's `wait_condition` + idempotent-store-transition
-                        # pattern rather than duplicating it: the bridge's reply path
-                        # signals `question_answered`, the signal buffers into
-                        # `_answers`, and this predicate flips the moment it lands. A
-                        # kill is also watched — 8h is too long to leave an operator's
-                        # stop unheard.
-                        try:
-                            await workflow.wait_condition(
-                                lambda: sent.question_id in self._answers
-                                or self._kill_requested,
-                                timeout=timedelta(seconds=QUESTION_TIMEOUT_S),
-                            )
-                        except asyncio.TimeoutError:
-                            # The operator never engaged. Expire the row (idempotent:
-                            # a reply that won the race by a millisecond keeps its
-                            # ANSWERED resolution and is handed back instead), then
-                            # re-enter the ladder as a FAIL — the one case where a
+                        # 008-US2: wait for the child to settle or for an operator's
+                        # kill. The child owns the window (the question's own 8h, not
+                        # the escalation hour, FR-004) and the signal; the kill is
+                        # watched here because it is the *epic's* stop. `Task.done()`
+                        # is a pure read, so this replays identically.
+                        await workflow.wait_condition(
+                            lambda: question.done() or self._kill_requested
+                        )
+                        if not question.done():
+                            # A kill landed while parked. Cancel the child so its 8h
+                            # timer dies with the park — the row stays pending, as it
+                            # did when the epic's own wait was abandoned — and leave
+                            # the node parked for the post-loop. Do not expire or
+                            # answer: a stopped epic is neither a reply nor a burn.
+                            question.cancel()
+                            action = NextAction.KILLED
+                            break
+                        answered = await question
+                        if not answered.answered:
+                            # The operator never engaged; the child expired the row.
+                            # Re-enter the ladder as a FAIL — the one case where a
                             # question burns a slot (FR-001/FR-004), because the node
                             # cannot park forever and the attempt that asked consumed
                             # a key. The FAIL `AttemptRecord` is what `_attempts_spent`
                             # counts, so appending it here is what consumes the slot.
-                            await workflow.execute_activity(
-                                expire_question,
-                                ExpireQuestionInput(question_id=sent.question_id),
-                                **_FAST,
-                            )
                             record.history.append(
                                 AttemptRecord(
                                     attempt=record.attempt,
@@ -1432,15 +1335,6 @@ class EpicWorkflow:
                                 )
                             )
                         else:
-                            if self._kill_requested:
-                                # A kill landed while parked. Leave the node parked —
-                                # the post-loop's WAITING_OPERATOR branch handles it
-                                # (the state is the truth, as on US1). Do not expire or
-                                # answer: the operator stopped the epic, which is not a
-                                # reply and not a burn.
-                                self._questions.pop(sent.question_id, None)
-                                action = NextAction.KILLED
-                                break
                             # The operator answered. Carry the exchange verbatim into
                             # the next attempt's prompt under a dedicated section
                             # (FR-003) — the question the agent asked and the answer the
@@ -1452,7 +1346,7 @@ class EpicWorkflow:
                             # budget it had before the question.
                             record.operator_answer = OperatorAnswer(
                                 question_text=marker.text,
-                                answer_text=self._answers[sent.question_id],
+                                answer_text=answered.answer_text,
                             )
                         # An answer or an expiry un-parks the node: an answer
                         # re-dispatches with the exchange in the prompt, an expiry
@@ -1463,7 +1357,6 @@ class EpicWorkflow:
                         # number naturally and the expiry's FAIL is already in history
                         # for the ladder to count. (The kill path above `break`s, leaving
                         # the pause set so the scheduler stays parked too.)
-                        self._questions.pop(sent.question_id, None)
                         record.pending_question_id = None
                         self._paused = False
                         continue
@@ -1947,11 +1840,13 @@ class EpicWorkflow:
         it patience (002 R11). A silence that runs out expires the row and takes
         the store's word for what happened — a press that beat the timer by a
         millisecond still decides the node (002 R12).
+
+        041-US3: all of that is an `EscalationWorkflow` child's now, and this
+        await parks no scheduler — `_run_node` is one task per node (FR-010).
         """
-        sent = await workflow.execute_activity(
-            send_escalation,
-            SendEscalationInput(
-                workflow_id=workflow.info().workflow_id,
+        outcome = await workflow.execute_child_workflow(
+            EscalationWorkflow.run,
+            EscalationRequest(
                 epic_id=graph.epic_id,
                 node_id=node.id,
                 # Every attempt, evidence and all (SC-005): the operator is being
@@ -1961,34 +1856,13 @@ class EpicWorkflow:
                 choices=list(DEFAULT_CHOICES),
                 timeout_s=config.escalation_timeout_s,
             ),
-            **_FAST,
+            # Workflow scope, so a replay mints the same correlation id.
+            id=child_correlation_id(),
         )
-
-        if not sent.delivered:
-            return _Escalation(
-                escalation_id=sent.escalation_id,
-                delivered=False,
-                resolution=EscalationChoice.KILL.value,
-            )
-
-        try:
-            await workflow.wait_condition(
-                lambda: sent.escalation_id in self._resolutions,
-                timeout=timedelta(seconds=config.escalation_timeout_s),
-            )
-        except asyncio.TimeoutError:
-            expired = await workflow.execute_activity(
-                expire_escalation,
-                ExpireEscalationInput(escalation_id=sent.escalation_id),
-                **_FAST,
-            )
-            # `None` means the store has no record at all, which is not consent.
-            resolution = expired.final_state or EscalationChoice.KILL.value
-        else:
-            resolution = self._resolutions[sent.escalation_id]
-
         return _Escalation(
-            escalation_id=sent.escalation_id, delivered=True, resolution=resolution
+            escalation_id=outcome.escalation_id,
+            delivered=outcome.delivered,
+            resolution=outcome.resolution,
         )
 
     async def _close_out(
@@ -2607,11 +2481,11 @@ class EpicWorkflow:
 
         The landing escalation carries the recovery evidence — every queue
         outcome in order and the recovery cycles spent — through the same
-        `send_escalation` / `expire_escalation` activities the verification
-        ladder uses, with choices `[RETRY | KILL | PAUSE_EPIC]` (FR-007). An
-        undelivered message applies the fail-safe KILL at once; an hour of
-        silence expires to KILL; the store's word on a press that beat the timer
-        by a millisecond still decides (002 R12).
+        `EscalationWorkflow` the verification ladder now uses, with choices
+        `[RETRY | KILL | PAUSE_EPIC]` (FR-007). An undelivered message applies
+        the fail-safe KILL at once; an hour of silence expires to KILL; the
+        store's word on a press that beat the timer by a millisecond still
+        decides (002 R12). 041-US3 moved all three into the child.
 
         US3: an optional `note` explains why this escalation fired when it is not
         the ordinary exhaustion case — e.g. a futile re-enqueue. The note is
@@ -2620,10 +2494,9 @@ class EpicWorkflow:
         history_summary = render_landing_history(record.landing)
         if note:
             history_summary = f"{history_summary}\n\n{note}"
-        sent = await workflow.execute_activity(
-            send_escalation,
-            SendEscalationInput(
-                workflow_id=workflow.info().workflow_id,
+        outcome = await workflow.execute_child_workflow(
+            EscalationWorkflow.run,
+            EscalationRequest(
                 epic_id=graph.epic_id,
                 node_id=record.node_id,
                 history_summary=history_summary,
@@ -2631,23 +2504,11 @@ class EpicWorkflow:
                 timeout_s=request.config.escalation_timeout_s,
                 check_evidence=record.landing.check_evidence,
             ),
-            **_FAST,
+            id=child_correlation_id(),
         )
-        if not sent.delivered:
+        if not outcome.delivered:
             return EscalationChoice.KILL.value
-        try:
-            await workflow.wait_condition(
-                lambda: sent.escalation_id in self._resolutions,
-                timeout=timedelta(seconds=request.config.escalation_timeout_s),
-            )
-        except asyncio.TimeoutError:
-            expired = await workflow.execute_activity(
-                expire_escalation,
-                ExpireEscalationInput(escalation_id=sent.escalation_id),
-                **_FAST,
-            )
-            return expired.final_state or EscalationChoice.KILL.value
-        return self._resolutions[sent.escalation_id]
+        return outcome.resolution
 
     async def _apply_landing_resolution(
         self,

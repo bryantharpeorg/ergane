@@ -1027,6 +1027,27 @@ def find_pending_question_by_attempt(
     return _question_from_row(row) if row is not None else None
 
 
+def adopt_question(
+    conn: sqlite3.Connection, question_id: str, *, workflow_id: str
+) -> bool:
+    """Point a pending question row at the workflow now waiting on it (041-US3).
+
+    `workflow_id` is the reply-routing column both `CallbackBridge` and
+    `ergane build answer` signal. A question the ferry shipped mid-flight names
+    the *epic*; once the agent degrades to the marker path the waiter is a
+    `QuestionWorkflow`, and a reply routed to the epic reaches no handler. Only
+    the routing column moves, only while the row is pending, never the
+    resolution — so this is no second writer of the transition (plan trap 10).
+    """
+    cursor = conn.execute(
+        "UPDATE questions SET workflow_id = ? "
+        "WHERE question_id = ? AND resolution IS NULL",
+        (workflow_id, question_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
 def resolve_question(
     conn: sqlite3.Connection,
     question_id: str,

@@ -74,6 +74,7 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
+from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
 from factory.roadmap.workflow import (
     read_corpus_activity,
@@ -84,15 +85,17 @@ from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
 
 logger = logging.getLogger(__name__)
 
-#: The factory's three workflow types (D-002 for the epic; 009 adds the roadmap;
-#: 041-US2 adds the escalation). `EpicWorkflow` is one epic over a `WorkGraph`;
+#: The factory's four workflow types (D-002 for the epic; 009 adds the roadmap;
+#: 041-US2 the escalation, US3 its `QuestionWorkflow` sibling).
+#: `EpicWorkflow` is one epic over a `WorkGraph`;
 #: `RoadmapWorkflow` is the long-lived scheduler that dispatches dispatchable
 #: specs as child epics (US2, FR-004); `EscalationWorkflow` is one human
 #: decision, started standalone by a caller with no epic or as a child by one
-#: that has. All three run on the one `workgraph` task queue, so a single worker
+#: that has. All four run on the one `workgraph` task queue, so a single worker
 #: poll serves epics an operator started, epics the roadmap dispatched, and the
-#: escalations either of them raised.
-WORKFLOWS = [EpicWorkflow, RoadmapWorkflow, EscalationWorkflow]
+#: escalations either of them raised. A child inherits its parent's queue, so a
+#: worker missing the last two would park every escalation forever.
+WORKFLOWS = [EpicWorkflow, RoadmapWorkflow, EscalationWorkflow, QuestionWorkflow]
 
 #: Every activity the three components ship, grouped by the component that owns
 #: it. The interpreter's own surface is first because it is the one whose
@@ -149,6 +152,7 @@ ACTIVITIES = [
     # ferry's question id is evidence in the store, never a second field on the
     # adapter result — D-018's hole stays at one signal (the marker).
     notify_activities.find_ferried_question,
+    notify_activities.settle_question,
     # 003 — the landing surface: prepare the body, push, open, enqueue, poll,
     # disable, and US2's recovery sync.
     merge_activities.prepare_landing_pr,
