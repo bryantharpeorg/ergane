@@ -167,6 +167,10 @@ The verb as an operator meets it, `uv run python -m factory.cli.main roadmap
 
     usage: ergane roadmap unpark [-h] --spec SPEC specs_root
       --spec SPEC  spec directory name to unpark
+
+And the whole suite again, `uv run pytest -q`::
+
+    2555 passed, 44 skipped, 4 warnings in 284.04s (0:04:44)
 """
 
 from __future__ import annotations
