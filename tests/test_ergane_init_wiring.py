@@ -10,65 +10,70 @@ surface: `FakeGitHub` below.
 Why that model cannot make a vacuous test pass — the trap this repository has
 paid for five times in two days:
 
-- It is a *model*, not a recorder: reads are served from mutable state, and only
-  a write verb production actually issued changes that state. Write payloads are
-  read back off the temp file `GhClient` wrote for `gh api --input`, so the model
-  learns what production sent, never what the test intended. An invocation it
-  does not model raises immediately.
+- It is a *model*, not a recorder: reads are served from mutable state, changed
+  only by a write production actually issued. Write payloads are read back off
+  the temp file `GhClient` wrote for `gh api --input`, so the model learns what
+  production sent, never what the test intended; an unmodelled call raises.
 - The primary assertion is not on the call log. It runs the factory's own reader
-  — `onboard_target_repo` -> `evaluate_repo`, the structural gate at every epic
-  start (`EpicWorkflow._onboard_target`) — and requires `profile.passed`. With
-  the wiring doing nothing the model keeps its fresh-repo state, so
-  `squash_title`, `merge_queue` and every `gate_check:*` finding fails.
+  — `onboard_target_repo` -> `evaluate_repo`, the gate at every epic start — and
+  requires `profile.passed`. With the wiring doing nothing the model keeps its
+  fresh-repo state, so `squash_title`, `merge_queue` and `gate_check:*` fail.
 
 **No real GitHub repository is touched by anything in this file**: every
 `GhClient` here is constructed with `runner=<the model>`.
 
-MUTATION EVIDENCE — for every behaviour the production line was disabled, the
-guarding test run, and the killing assertion pasted here (Principle VIII: the
-judge sees no terminal). All twelve were reverted immediately after their run.
+US4 LANDED MID-STORY and changed what this file can assert: FR-010 makes the
+check init's automatic last act, and the check *reads* GitHub, so plain `ergane
+init` is no longer silent on the wire — measured, three read-only calls. Two
+consequences, fixed rather than papered over:
 
-  1  set_squash_merge_commit_title(..) -> pass  onboarding_gate red on
-     [('squash_title', "squash_merge_commit_title is 'COMMIT_OR_PR_TITLE' ...")]
-  2  create_ruleset(..) -> pass                 red on [('merge_queue', "merge
-     queue is not enabled on the default branch 'main' ...")]
-  3  ruleset gains {"context": "coverage"}      red on [('unknown_check:coverage',
-     "...not a declared gate — deterministic gates only (FR-003)")]
-  4  _ruleset_satisfies -> return False         rewiring red: assert [('api',
-     '-X'...'1gkian.json')] == []   (the re-run issued a write)
-  5  `if current == SQUASH_TITLE:` -> `if False:`   rewiring red, same assertion
-  6  _require_public -> return                  private_repo red: assert 0 == 1
-  7  client.auth_status() -> pass               absent_gh AND unauthenticated_gh red:
-     assert 'unexpected error' not in 'ergane: une... traceback'
-  8  job `name:` -> `<gate>-job`   red: assert ['unknown_check:lint-job',
-     'unknown_check:test-job'] == []; workflow_jobs red too
-  9  _divergence_step -> return None            red: assert 'default branch' in
-     'joined /tmp/.../app as slug ...'
- 10  existing_gate_jobs -> return {}            red: assert True is False —
-     ergane-gates.yml written into a repo whose CI already had the checks
- 11  repo-resolution refusal catches ValueError, not GhError -> gh_cannot_resolve red
- 12  wiring-act refusal catches ValueError, not GhError -> token_without_admin red
-     (both: assert 'unexpected error' not in 'ergane: une...')
+- `test_plain_init_wires_nothing...` asserted `github.calls == []`, now false by
+  design; it asserts what it was really protecting (plain init *writes* nothing)
+  and pins those three reads exactly.
+- US4's check output itself says "default branch", so the divergence assertion
+  was unfalsifiable against whole stdout — with `_divergence_step` deleted the
+  phrase was still there, from the check. Both branch assertions now read
+  `wiring_report(...)` alone, and mutant 9 kills them again.
 
-REAL RUN — `ergane init --wire` from a terminal against a git repo with no GitHub
-remote. No mutating `gh` call is reachable there, which is what makes it safe,
-and it exercises the real `gh` binary, client and refusal — a green suite has
-shipped a command that could not start before:
+MUTATION EVIDENCE — each production line disabled on its own, the whole module
+re-run, that run's summary pasted. Command for every row:
+`uv run pytest -q tests/test_ergane_init_wiring.py` (13 items). All reverted.
 
-    $ ergane init --wire /tmp/.../smokerepo      # answers piped to the interview
+  1  squash-title PATCH never fires            3 failed, 10 passed
+  2  merge-queue ruleset never created         4 failed,  9 passed
+  3  ruleset requires one check more           3 failed, 10 passed
+  4  _ruleset_satisfies -> return False        1 failed, 12 passed
+  5  squash title re-PATCHed when correct      1 failed, 12 passed
+  6  D-007 visibility refusal dropped          1 failed, 12 passed
+  7  gh prerequisite probe dropped             2 failed, 11 passed
+  8  job `name:` drifts to `<gate>-job`        2 failed, 11 passed
+  9  divergence never reported                 1 failed, 12 passed
+ 10  existing CI never noticed                 1 failed, 12 passed
+ 11  gh refusals stop being caught             2 failed, 11 passed
+
+Rows 1-3 are load-bearing: each dies on the onboarding-gate assertion, naming the
+finding its missing act was meant to satisfy — 1 `('squash_title', "... is
+'COMMIT_OR_PR_TITLE'")`, 2 `('merge_queue', "not enabled on the default branch
+'main'")`, 3 `('unknown_check:coverage', "...not a declared gate (FR-003)")`.
+
+REAL RUN, re-captured on the merged tree — `ergane init --wire` against a git
+repo with no GitHub remote. No mutating call is reachable there, which is what
+makes it safe, and it drives the real `gh` binary, client and refusal:
+
+    $ ergane init --wire /tmp/.../smokerepo2     # answers piped to the interview
     ergane: `gh` refused while wiring this repository (GH_REFUSED): no git remotes
     found
       check the checkout has an `origin` remote on GitHub that your token can see
       (git remote -v), and
       ... [the admin-rights remedy, then the four manual steps]
-    the repo-local half of init is complete and unchanged in /tmp/.../smokerepo:
+    the repo-local half of init is complete and unchanged in /tmp/.../smokerepo2:
       gates workflow: applied
-        wrote .github/workflows/ergane-gates.yml with one job per declared gate
+        wrote .github/workflows/ergane-gates.yml, one job per declared gate
 
 FULL SUITE, after every mutation was reverted:
 
     $ uv run pytest -q
-    2655 passed, 44 skipped, 4 warnings in 284.79s (0:04:44)
+    2725 passed, 44 skipped, 4 warnings in 281.16s (0:04:41)
 """
 
 from __future__ import annotations
@@ -90,6 +95,7 @@ from factory.mergequeue.onboard import evaluate_repo
 from factory.verify.factory_yaml import _SUPPORTED_VERSION, parse_factory_config
 
 from tests.test_ergane_init import Run, ScriptedPrompter, _invoke, make_bare_repo
+from tests.test_ergane_init_check import bind_offline_seams
 
 # The model of a GitHub repository
 
@@ -329,11 +335,11 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Run]:
     def runner(*argv: str, script: list[str], github: FakeGitHub) -> Run:
         prompter = ScriptedPrompter(script)
         monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
-        monkeypatch.setattr(
-            init_module,
-            "_gh_client_factory",
-            lambda repo_root: GhClient(repo=str(repo_root), runner=github),
-        )
+        # US4's own binder, not a second copy: a full init's last act is the
+        # check (FR-010), which reaches the control plane as well as GitHub, so
+        # binding only the `gh` seam here would probe the operator's real one.
+        # `FakeGitHub` is a `GhRunner`, exactly like the `FakeGh` it expects.
+        bind_offline_seams(monkeypatch, github)
         return _invoke(list(argv))
 
     return runner
@@ -343,6 +349,12 @@ def onboarding_profile(repo: Path, github: FakeGitHub) -> Any:
     """`EpicWorkflow._onboard_target`'s judgment verbatim, run against the wired
     model. Nothing here knows what the wiring intended to do."""
     return onboard_target_repo(GhClient(repo=str(repo), runner=github), str(repo))
+
+
+def wiring_report(stdout: str) -> str:
+    """Only the `--wire` report. US4's check also says "default branch", so an
+    assertion over whole stdout could pass on the check's words, proving nothing."""
+    return stdout.split("wiring:", 1)[1].split("next, run:", 1)[0]
 
 
 def failed(profile: Any) -> list[tuple[str, str]]:
@@ -378,6 +390,10 @@ def test_wiring_makes_the_repo_pass_the_factorys_own_onboarding_gate(
     }
     assert profile.default_branch == "main"
     assert sorted(profile.required_checks) == ["lint", "test"]
+
+    # Landing branch and default branch agree here, so the report says nothing
+    # about branches: a warning that always fires is one nobody reads.
+    assert "default branch" not in wiring_report(result.stdout)
 
 
 def test_wiring_writes_a_workflow_whose_jobs_are_the_gates(
@@ -515,76 +531,58 @@ def test_a_private_repo_is_refused_at_the_visibility_check_citing_d007(
 # T021 / spec US3-S4 — `gh` absent or unauthenticated
 
 
-def test_an_absent_gh_is_refused_naming_the_prerequisite_and_the_manual_steps(
-    wired: Callable[..., Run], tmp_path: Path
+@pytest.mark.parametrize(
+    "flaw, expected",
+    [
+        # S4: `gh` absent — the prerequisite named, and the manual steps offered.
+        (
+            {"gh_installed": False},
+            ["not installed", "gh api -X PATCH repos/", "test", "lint"],
+        ),
+        # S4: `gh` present but not logged in — the exact login command.
+        ({"logged_in": False}, ["gh auth login", "manual"]),
+        # No GitHub `origin`: what a freshly `git init`-ed repo looks like.
+        ({"on_github": False}, ["git remote -v"]),
+        # A 403 partway through: the cause named, the manual steps still offered.
+        (
+            {"admin": False},
+            ["403", "gh auth login", "squash_merge_commit_title=PR_TITLE"],
+        ),
+    ],
+    ids=["gh-absent", "gh-unauthenticated", "no-github-remote", "token-without-admin"],
+)
+def test_every_github_prerequisite_failure_is_a_refusal_never_a_traceback(
+    wired: Callable[..., Run],
+    tmp_path: Path,
+    flaw: dict[str, bool],
+    expected: list[str],
 ) -> None:
-    """S4: a missing `gh` is a refusal that names the prerequisite, not a traceback."""
+    """S4 and its neighbours: each refusal names its cause and offers a way on.
+
+    `unexpected error` is what the CLI's boundary prints when an exception
+    escapes a handler, so its absence is the assertion that tells a refusal from
+    a crash. Nothing on any of these paths may change the repo.
+    """
     repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
-    github = FakeGitHub(gh_installed=False)
+    github = FakeGitHub(**flaw)
+    before = github.snapshot()
 
     result = wired("init", "--wire", str(repo), script=answers(), github=github)
 
     assert result.code == EXIT_USER
     assert "unexpected error" not in result.stderr
     assert "Traceback" not in result.stderr
-    assert "gh" in result.stderr
-    assert "not installed" in result.stderr.lower()
-    # The manual wiring steps are offered instead.
-    assert "gh api -X PATCH repos/" in result.stderr
-    assert "squash_merge_commit_title=PR_TITLE" in result.stderr
-    assert "test" in result.stderr and "lint" in result.stderr
-    assert github.mutations() == []
+    for phrase in expected:
+        assert phrase in result.stderr, phrase
+    # Not `mutations() == []`: the 403 case *does* attempt its write and is
+    # refused, which is the behaviour under test. The repo must never differ.
+    assert github.snapshot() == before
 
-
-def test_an_unauthenticated_gh_is_refused_naming_the_exact_login_command(
-    wired: Callable[..., Run], tmp_path: Path
-) -> None:
-    """S4: the refusal carries `gh auth login` verbatim and the manual steps."""
-    repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
-    github = FakeGitHub(logged_in=False)
-
-    result = wired("init", "--wire", str(repo), script=answers(), github=github)
-
-    assert result.code == EXIT_USER
-    assert "gh auth login" in result.stderr
-    assert "Traceback" not in result.stderr
-    assert "manual" in result.stderr.lower()
-    assert github.mutations() == []
-    # Not even a read got through, so nothing was half-wired.
-    assert [c for c in github.calls if c[:2] == ("repo", "view")] == []
-
-
-def test_a_checkout_gh_cannot_resolve_on_github_is_refused_not_crashed(
-    wired: Callable[..., Run], tmp_path: Path
-) -> None:
-    """Every `gh` failure is a refusal with a remedy, never a traceback. Found by
-    asking what a real run does in a repo with no GitHub `origin`."""
-    repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
-    github = FakeGitHub(on_github=False)
-
-    result = wired("init", "--wire", str(repo), script=answers(), github=github)
-
-    assert result.code == EXIT_USER
-    assert "unexpected error" not in result.stderr
-    assert "git remote -v" in result.stderr
-    assert github.mutations() == []
-
-
-def test_a_token_without_admin_rights_is_refused_naming_the_scope(
-    wired: Callable[..., Run], tmp_path: Path
-) -> None:
-    """A 403 halfway through wiring is a refusal that names the cause, not a crash."""
-    repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
-    github = FakeGitHub(admin=False)
-
-    result = wired("init", "--wire", str(repo), script=answers(), github=github)
-
-    assert result.code == EXIT_USER
-    assert "unexpected error" not in result.stderr
-    assert "403" in result.stderr
-    assert "gh auth login" in result.stderr
-    # The manual steps are still offered, so the operator is not stuck.
-    assert "squash_merge_commit_title=PR_TITLE" in result.stderr
+    # The two prerequisite failures are caught before anything is read or
+    # written, so nothing can be left half-wired behind them.
+    if "gh_installed" in flaw or "logged_in" in flaw:
+        assert github.mutations() == []
+        assert [c for c in github.calls if c[:2] == ("repo", "view")] == []
 
 
 # Plan trap 2 — the queue rule is read for GitHub's default branch
@@ -614,28 +612,16 @@ def test_a_landing_branch_that_is_not_the_default_is_wired_and_the_divergence_re
     assert github._rules_for_branch("release"), "the landing branch was not wired"
     assert github._rules_for_branch("main") == []
 
-    # Said so, with the remedy.
-    assert "release" in result.stdout
-    assert "default branch" in result.stdout
-    assert "gh repo edit --default-branch release" in result.stdout
+    # Said so, with the remedy — read out of the wiring report alone.
+    report = wiring_report(result.stdout)
+    assert "default branch" in report
+    assert "release" in report
+    assert "gh repo edit --default-branch release" in report
 
     # And the warning is true: the factory's gate reads `main` and still fails.
     profile = onboarding_profile(repo, github)
     assert not profile.passed
     assert "merge_queue" in [check for check, _ in failed(profile)]
-
-
-def test_a_landing_branch_that_is_the_default_reports_no_divergence(
-    wired: Callable[..., Run], tmp_path: Path
-) -> None:
-    """The common case says nothing about branches — a warning that always fires is noise."""
-    repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
-    github = FakeGitHub(default_branch="main")
-
-    result = wired("init", "--wire", str(repo), script=answers(landing_branch="main"), github=github)
-
-    assert result.code == EXIT_OK, result.stderr
-    assert "default branch" not in result.stdout
 
 
 # The CI half: "when the repo has no CI producing those checks"
@@ -694,16 +680,31 @@ def test_a_conflicting_managed_workflow_is_reported_never_clobbered(
 # Without `--wire`, init is exactly what US1 landed
 
 
-def test_plain_init_touches_no_github_and_offers_the_wiring(
+def test_plain_init_wires_nothing_and_only_reads_for_the_check(
     wired: Callable[..., Run], tmp_path: Path
 ) -> None:
-    """The GitHub half is opt-in: `ergane init` alone issues no `gh` call at all."""
+    """The wiring half is opt-in: plain `ergane init` changes nothing on GitHub.
+
+    This asserted `github.calls == []` until US4 landed. It cannot any more, and
+    should not: FR-010 makes the check the automatic last act of a full init, and
+    the check *reads* GitHub through `onboard_target_repo`. What `--wire` owns is
+    writing, so writing is what this pins — the repo model byte-identical, no
+    mutating call, and the only calls made are the check's three reads, named
+    exactly. A write added to the no-wire path fails here.
+    """
     repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
     github = FakeGitHub()
+    before = github.snapshot()
 
     result = wired("init", str(repo), script=answers(), github=github)
 
     assert result.code == EXIT_OK, result.stderr
-    assert github.calls == []
+    assert github.snapshot() == before
+    assert github.mutations() == []
+    assert github.calls == [
+        ("repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef"),
+        ("api", "repos/acme/app"),
+        ("api", "repos/acme/app/rules/branches/main"),
+    ]
     assert (repo / wiring.WORKFLOW_PATH).exists() is False
     assert "--wire" in result.stdout

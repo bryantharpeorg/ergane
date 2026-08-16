@@ -13,9 +13,9 @@ Three decisions, each a place a plausible implementation goes quietly wrong:
 branch"; `evaluate_repo` reads the queue for GitHub's *default* branch. They are
 not always the same — this factory's own repo defaults to `ergane-buildout` and
 would have failed on `main`. Wiring one and validating the other silently is the
-defect, so this wires **the declared landing branch** (the one the factory lands
-on) and, when the default differs, emits an `attention` step naming the
-consequence and both remedies. It never changes a repo's default branch.
+defect, so this wires **the declared landing branch** and, when the default
+differs, emits an `attention` step naming the consequence and both remedies. It
+never changes a repo's default branch.
 
 **Exactly the gates, and no more.** A generated workflow with a helpful extra job
 wired as a required check makes the repo fail its own check one step later, via
@@ -107,7 +107,7 @@ class WiringRefused(Exception):
 
 
 def format_step(step: WiringStep) -> list[str]:
-    """One step rendered for the terminal: a status line and an indented detail."""
+    """A status line, and the detail indented under it."""
     lines = [f"  {step.name}: {step.status}"]
     for line in step.detail.splitlines():
         lines.append(f"    {line}")
@@ -121,7 +121,7 @@ def manual_steps(
     owner_repo: str = "<owner>/<repo>",
 ) -> list[str]:
     """The by-hand equivalent of `wire_repo`; `owner_repo` is a placeholder when
-    the refusal came before the repo's slug could be read (no `gh` at all)."""
+    the refusal preceded reading it."""
     names = ", ".join(gates)
     return [
         f"1. gh api -X PATCH repos/{owner_repo} -f squash_merge_commit_title={SQUASH_TITLE}",

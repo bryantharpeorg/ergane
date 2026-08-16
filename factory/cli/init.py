@@ -64,19 +64,19 @@ RUNTIME_ROOT = Path(".ergane")
 #: Module-level seam so tests can inject a scripted prompter.
 _prompter_factory: Callable[[], Any] | None = None
 
-#: Module-level seam so tests can drive wiring against a model of a GitHub repo
-#: instead of a real one — the same idiom as `merge_activities._client_factory`.
-_gh_client_factory: Callable[[Path], Any] | None = None
-
-
 def _default_gh_client(*, repo_path: str) -> Any:
-    """Build the real `gh` client; imported late so the scaffold stays offline."""
+    """Build the real `gh` client; imported late so the scaffold stays offline.
+
+    `repo_path` becomes the client's `cwd` — how `gh` resolves owner/repo from
+    the checkout's `origin` remote (FR-001).
+    """
     from factory.mergequeue.gh import GhClient
 
     return GhClient(repo=repo_path)
 
 
-#: Seam: how `--check` reaches GitHub.  Rebound in tests to a scripted runner.
+#: Seam: how *both* `--check` (US4) and `--wire` (US3) reach GitHub. One name,
+#: one signature — rebound in tests to a scripted runner.
 _gh_client_factory: Callable[..., Any] = _default_gh_client
 
 
@@ -97,17 +97,6 @@ def _prompter() -> Any:
     if factory is not None:
         return factory()
     return _TerminalPrompter()
-
-
-def _gh_client(repo_root: Path) -> Any:
-    """The `gh` client wiring uses, defaulting to the real one — which spawns `gh`
-    with `cwd` = the repo, how `gh` resolves owner/repo from `origin` (FR-001)."""
-    factory = _gh_client_factory
-    if factory is not None:
-        return factory(repo_root)
-    from factory.mergequeue.gh import GhClient
-
-    return GhClient(repo=str(repo_root))
 
 
 class _TerminalPrompter:
@@ -479,7 +468,9 @@ def _wire(
 
     try:
         steps = wiring.wire_repo(
-            _gh_client(repo_root), landing_branch=landing_branch, gates=list(gates)
+            _gh_client_factory(repo_path=str(repo_root)),
+            landing_branch=landing_branch,
+            gates=list(gates),
         )
     except wiring.WiringRefused as refusal:
         raise OperatorError(
