@@ -58,6 +58,7 @@ from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
 from factory.roadmap import schedule as roadmap_schedule
 from factory.verify.factory_yaml import (
+    DEFAULT_FORGE_NAME,
     MANIFEST_NAME,
     _SUPPORTED_VERSION,
     _TOP_LEVEL_KEYS,
@@ -76,10 +77,15 @@ RUNTIME_ROOT = Path(".ergane")
 _prompter_factory: Callable[[], Any] | None = None
 
 def _default_forge(*, repo_path: str) -> Any:
-    """Resolve this repository's forge; imported late so init stays offline."""
-    from factory.mergequeue.forge import resolve_forge
+    """Resolve the forge this repository's manifest declares (049 FR-014).
 
-    return resolve_forge(repo_path=repo_path)
+    Imported late so init stays offline. A repository with no manifest yet — the
+    state `--check` exists to judge — resolves the default, so declaring the key
+    is what changes the answer and nothing else does.
+    """
+    from factory.mergequeue.forge import resolve_forge_for_repo
+
+    return resolve_forge_for_repo(repo_path=repo_path)
 
 
 #: Seam: how *both* `--check` (US4) and `--wire` (US3) reach the forge. One name,
@@ -237,11 +243,12 @@ _PROMPTS: dict[str, str] = {
         "roadmap dials (YAML mapping of cadence_s, max_concurrent_epics, "
         "max_concurrent_nodes, optional)"
     ),
+    "forge": "forge this repository is on (optional)",
 }
 
 #: Keys an empty answer omits rather than defaults.  Each is additive: a repo
 #: that declares none of them is a complete manifest.
-_OPTIONAL_KEYS = ("timeouts", "standards", "roadmap")
+_OPTIONAL_KEYS = ("timeouts", "standards", "roadmap", "forge")
 
 #: Spelled as a constant only because `tests/test_ergane_cli.py`'s guard against
 #: a hardcoded list of CLI noun names matches a bracket followed by any quoted
@@ -285,6 +292,16 @@ def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
         defaults["standards"] = config.standards
     if config.roadmap is not None:
         defaults[_ROADMAP_KEY] = dataclasses.asdict(config.roadmap)
+    if config.forge != DEFAULT_FORGE_NAME:
+        # Only a forge that is *not* the default is offered back. `forge` is
+        # resolved rather than nullable, so a manifest declaring `github` is
+        # indistinguishable here from one declaring nothing — and offering the
+        # default back to every repo would make an otherwise unchanged re-run
+        # write a key nobody asked for, which is 034 FR-005's complaint exactly.
+        # The cost is narrow and in the safe direction: a manifest that spells
+        # out the default loses that spelling on a re-run; one that names any
+        # other forge keeps it.
+        defaults["forge"] = config.forge
     return defaults
 
 
@@ -328,6 +345,8 @@ def _build_defaults(repo_root: Path) -> dict[str, Any]:
         defaults["standards"] = existing["standards"]
     if "roadmap" in existing:
         defaults[_ROADMAP_KEY] = existing[_ROADMAP_KEY]
+    if "forge" in existing:
+        defaults["forge"] = existing["forge"]
     return defaults
 
 

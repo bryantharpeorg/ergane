@@ -83,6 +83,17 @@ KNOWN_GATES = ("test", "lint", "typecheck")
 #: a container image reference to a backend name; only these names are accepted.
 SUPPORTED_BACKENDS = ("bwrap",)
 
+#: The forge a repository is on when its manifest names none (049 FR-014).
+#
+# Spelled here rather than imported from `factory.mergequeue.forge`, which owns
+# the same fact as `DEFAULT_FORGE`: that module's builtin loader reaches
+# `factory.mergequeue.gh`, which imports `factory.verify.gates`, which imports
+# this module — a cycle visible only at import time. `_read_forge` pays for the
+# real registry lazily and only when a manifest actually declares the key, so a
+# manifest that declares nothing imports nothing new.
+# `tests/test_forge_manifest.py` holds the spellings together.
+DEFAULT_FORGE_NAME = "github"
+
 _TOP_LEVEL_KEYS = (
     "version",
     "runtime",
@@ -91,6 +102,7 @@ _TOP_LEVEL_KEYS = (
     "standards",
     "landing_branch",
     "roadmap",
+    "forge",
 )
 
 #: The keys a `roadmap:` block may declare, and the dial each one sets.
@@ -138,6 +150,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     standards = _read_standards(document, source)
     landing_branch = _read_landing_branch(document, source)
     roadmap = _read_roadmap(document, source)
+    forge = _read_forge(document, source)
 
     return FactoryConfig(
         version=version,
@@ -147,6 +160,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         standards=standards,
         landing_branch=landing_branch,
         roadmap=roadmap,
+        forge=forge,
     )
 
 
@@ -354,6 +368,54 @@ def _read_landing_branch(document: Mapping[Any, Any], source: str) -> str:
             source=source,
         )
     return landing_branch
+
+
+def _read_forge(document: Mapping[Any, Any], source: str) -> str:
+    """The forge this repository is on, defaulting to `github` when undeclared.
+
+    Which forge a repository is on is a property of *that repository* — the same
+    kind of fact as `landing_branch` and `gates`, and for the same reason: one
+    host serves many repositories, possibly on different forges at once, so a
+    forge chosen in the operator's control-plane file would make the engine able
+    to serve only one at a time (049 FR-014, D-046).
+
+    Absent means `github`, which is what every repository that exists today is
+    on, so no manifest has to migrate. Declared means declared: a null, blank or
+    non-string value is a defect, the rule every optional key here follows.
+
+    A name nothing is registered under is **refused**, and the registered names
+    are listed so the operator can see what they could have written. Defaulting
+    instead would let a deployment ask for one forge, silently get another, and
+    open proposals — and land them — somewhere nobody was looking.
+
+    The registry import is deliberately inside the function and after the shape
+    checks. `factory.mergequeue.forge` loads the shipped forges, which reach
+    `factory.verify.gates`, which imports this module; at module scope that is a
+    cycle. Here it is paid only by a manifest that declares the key, so the path
+    every repository takes today is byte-identical to the one it took before.
+    """
+    if "forge" not in document:
+        return DEFAULT_FORGE_NAME
+    forge = document["forge"]
+    if not isinstance(forge, str) or not forge.strip():
+        raise FactoryConfigError(
+            "forge",
+            f"declares `forge: {forge!r}`; when declared it must be a non-empty "
+            f"forge name, e.g. `forge: {DEFAULT_FORGE_NAME}`",
+            source=source,
+        )
+
+    from factory.mergequeue.forge import registered_forges
+
+    known = registered_forges()
+    if forge not in known:
+        raise FactoryConfigError(
+            "forge",
+            f"declares `forge: {forge!r}`, which nothing is registered under; "
+            f"the forges this factory ships are {_names(known)}",
+            source=source,
+        )
+    return forge
 
 
 def _read_roadmap(document: Mapping[Any, Any], source: str) -> RoadmapDials | None:

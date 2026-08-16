@@ -33,8 +33,9 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 
-#: The forge every repository is on until one says otherwise. 049's US5 teaches
-#: the manifest to name it; until then this is the only answer.
+#: The forge every repository is on until its manifest says otherwise. US5
+#: taught the manifest the `forge:` key; absent, this is still the answer, and
+#: `resolve_forge_for_repo` below is where the two meet.
 DEFAULT_FORGE = "github"
 
 #: Forges that ship with the factory, and the module that registers each on
@@ -265,3 +266,53 @@ class Proposal:
 
     number: int
     url: str
+
+
+# --- the door a repository path goes through (049-US5) ------------------------
+
+
+def resolve_forge_for_repo(*, repo_path: str, **seams: Any) -> Forge:
+    """Build the forge the repository at `repo_path` declares (049 FR-014).
+
+    The door every caller holding a repository path goes through, so which forge
+    is used is decided by the repository rather than by whichever module got
+    there first. A manifest that declares nothing resolves `DEFAULT_FORGE`, which
+    is every repository that exists today — that path is unchanged.
+    """
+    return resolve_forge(_manifest_forge_name(repo_path), repo_path=repo_path, **seams)
+
+
+def _manifest_forge_name(repo_path: str) -> str:
+    """The forge name a repository's manifest declares, or the default.
+
+    Two tolerances, and the line between them is the whole of this function.
+
+    A repository with **no manifest** resolves the default, because a forge has
+    to be resolvable before one exists: `ergane init --check` judges repositories
+    that have nothing yet. A manifest that is present but broken for some *other*
+    reason also resolves the default — the reader that owns that complaint is the
+    one that should report it, and an operator should not first learn their
+    `version` is wrong from a forge lookup exploding underneath them.
+
+    A manifest whose `forge` key is itself the defect is the one case re-raised.
+    Refusing an unknown forge is the entire point of the key, and swallowing it
+    here would reinstate at the door exactly the silent fallback the loader
+    refuses — a caller handed a GitHub forge for a manifest that said otherwise
+    has already lost, whatever the parser said.
+    """
+    from factory.verify.factory_yaml import (
+        DEFAULT_FORGE_NAME,
+        FactoryConfigError,
+        load_factory_config,
+        resolve_manifest_path,
+    )
+
+    path, _name = resolve_manifest_path(repo_path)
+    if not path.is_file():
+        return DEFAULT_FORGE_NAME
+    try:
+        return load_factory_config(path).forge
+    except FactoryConfigError as error:
+        if error.rule == "forge":
+            raise
+        return DEFAULT_FORGE_NAME

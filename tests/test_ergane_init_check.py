@@ -602,7 +602,9 @@ def test_a_full_init_ends_by_running_the_check(
 
     wired(probes=[Finding("temporal", False, "Temporal at localhost:7233 did not answer")])
     prompter = ScriptedPrompter(
-        ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "widgets"]
+        # version, runtime, gates, timeouts, standards, landing_branch, roadmap,
+        # forge (049/US5, omitted — absent means github), slug
+        ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "widgets"]
     )
     monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
 

@@ -84,7 +84,7 @@ def _manifest(*, forge: str | None = None, version: int = 1) -> str:
 def _repo_with(tmp_path: Path, text: str | None) -> Path:
     """A directory that holds a manifest — or, when `text` is None, holds none."""
     repo = tmp_path / "target"
-    repo.mkdir()
+    repo.mkdir(parents=True)
     if text is not None:
         (repo / MANIFEST_NAME).write_text(text, encoding="utf-8")
     return repo
