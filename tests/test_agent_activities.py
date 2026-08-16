@@ -1196,6 +1196,73 @@ async def test_salvage_worktree_mirrors_on_the_retry_after_a_mirror_that_failed(
     assert head(bare, f"refs/heads/{BRANCH}") == sha
 
 
+def salvage_refs(repo: Path) -> dict[str, str]:
+    """Every `refs/salvage/**` ref in `repo`, mapped to the sha it names."""
+    out = git(repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/salvage")
+    return dict(line.split(" ", 1) for line in out.splitlines() if line)
+
+
+async def test_salvage_worktree_records_the_per_attempt_ref(
+    env: ActivityEnvironment, repo: Path
+) -> None:
+    """047 US2-S1 / FR-006: the activity is where the record is composed.
+
+    The sha this activity answers with is the one three call sites in
+    `EpicWorkflow` write into history and discard; until 047 the commit it named
+    was reachable only from the branch tip, so a later rewrite orphaned it and
+    `git gc` eventually collected it. The ref is what `gc` reads, and the wiring
+    is asserted here because a helper nothing calls saves nothing.
+    """
+    prepared = await prepare(env, repo)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+
+    sha = await env.run(
+        salvage_worktree,
+        SalvageWorktreeInput(
+            epic_id=EPIC, node_id=NODE, termination=Termination.KILLED, attempt=ATTEMPT
+        ),
+    )
+
+    assert sha == head(worktree)
+    assert salvage_refs(repo) == {
+        f"refs/salvage/{EPIC}/{NODE}/attempt-{ATTEMPT}-{sha[:12]}": sha
+    }
+
+
+async def test_salvage_worktree_records_the_ref_again_on_the_retry_path(
+    env: ActivityEnvironment, repo: Path
+) -> None:
+    """047 US2 / plan trap 5: the short-circuit must not skip the record either.
+
+    `salvage` returns before the commit when this attempt's marker already heads
+    a clean tree — the activity-retry path Temporal takes after an unrecorded
+    success. A ref written inside that commit branch would be silently skipped
+    exactly when the record is being re-made, so the ref is deleted here and the
+    retry has to put it back.
+    """
+    prepared = await prepare(env, repo)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    request = SalvageWorktreeInput(
+        epic_id=EPIC, node_id=NODE, termination=Termination.KILLED, attempt=ATTEMPT
+    )
+
+    sha = await env.run(salvage_worktree, request)
+    ref = f"refs/salvage/{EPIC}/{NODE}/attempt-{ATTEMPT}-{sha[:12]}"
+    git(repo, "update-ref", "-d", ref)
+    assert salvage_refs(repo) == {}
+    after_first = commit_count(worktree)
+
+    again = await env.run(salvage_worktree, request)
+
+    # The salvage itself short-circuited: same sha, no second marker.
+    assert again == sha
+    assert commit_count(worktree) == after_first
+    # And the record was written anyway.
+    assert salvage_refs(repo) == {ref: sha}
+
+
 async def test_salvage_worktree_survives_a_remote_it_cannot_reach(
     env: ActivityEnvironment, repo: Path, tmp_path: Path
 ) -> None:

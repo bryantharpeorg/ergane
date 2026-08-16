@@ -573,12 +573,17 @@ async def salvage_worktree(request: SalvageWorktreeInput) -> str:
     after an unrecorded success lands on the same commit.
 
     The commit is the durable artifact; the mirror is what gets it off this
-    machine (047 US1). It runs after the commit and outside the conversion
-    below, unconditionally — including on the retry path where `salvage`
-    short-circuits, because a retry after a failed push is exactly when a mirror
-    is worth running. Its failures are returned as data and logged, never
-    raised: an unreachable remote that failed this activity would turn a
-    successful salvage into a failed one.
+    machine (047 US1), and the per-attempt ref is what keeps the sha this
+    activity returns resolvable after the branch has moved on (047 US2). Both
+    run after the commit and outside the conversion below, unconditionally —
+    including on the retry path where `salvage` short-circuits, because a retry
+    after a failed push is exactly when a mirror is worth running, and a record
+    written only inside the commit branch would be skipped on the very path
+    Temporal takes to re-make it. Their failures are returned as data and
+    logged, never raised: an unreachable remote that failed this activity would
+    turn a successful salvage into a failed one.
+
+    The ref is written before the mirror so the mirror can carry it (FR-008).
 
     The return value stays a plain `str` (047 FR-005). Three call sites in
     `EpicWorkflow` already schedule this activity and discard what it answers;
@@ -598,6 +603,23 @@ async def salvage_worktree(request: SalvageWorktreeInput) -> str:
     except WorktreeError as exc:
         raise ApplicationError(str(exc), type=WORKTREE_FAILED) from exc
 
+    recorded = await asyncio.to_thread(
+        worktrees.record_salvage_ref,
+        request.epic_id,
+        request.node_id,
+        attempt=request.attempt,
+        sha=sha,
+        factory_root=factory_root(),
+    )
+    logger.info(
+        "salvage ref for %s/%s attempt %s: written=%s %s",
+        request.epic_id,
+        request.node_id,
+        request.attempt,
+        recorded.written,
+        recorded.detail,
+    )
+
     outcome = await asyncio.to_thread(
         worktrees.mirror_node_branch,
         request.epic_id,
@@ -605,12 +627,14 @@ async def salvage_worktree(request: SalvageWorktreeInput) -> str:
         factory_root=factory_root(),
     )
     logger.info(
-        "salvage mirror for %s/%s attempt %s: pushed=%s %s",
+        "salvage mirror for %s/%s attempt %s: pushed=%s %s; refs pushed=%s %s",
         request.epic_id,
         request.node_id,
         request.attempt,
         outcome.pushed,
         outcome.detail,
+        outcome.refs_pushed,
+        outcome.refs_detail,
     )
     return sha
 
