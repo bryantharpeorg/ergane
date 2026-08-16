@@ -8,8 +8,8 @@ Suite output:
 
 .. code-block:: text
 
-    ......                                                                   [100%]
-    6 passed in 0.59s
+    ........                                                                   [100%]
+    8 passed in 0.77s
 
 """
 
@@ -171,6 +171,98 @@ async def _loopback_memory_listener() -> AsyncIterator[str]:
         server = await asyncio.start_server(_handler, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]  # type: ignore[index]
         yield f"http://127.0.0.1:{port}"
+        server.close()
+        await server.wait_closed()
+    finally:
+        if server is not None:
+            server.close()
+            await server.wait_closed()
+
+
+@asynccontextmanager
+async def _loopback_llm_listener() -> AsyncIterator[str]:
+    """A tiny HTTP server that answers a chat completion on /chat/completions."""
+    server: asyncio.Server | None = None
+
+    async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            headers = bytearray()
+            while True:
+                line = await reader.readline()
+                if not line or line in (b"\r\n", b"\n"):
+                    break
+                headers.extend(line)
+            content_length = 0
+            for h in headers.split(b"\r\n"):
+                if h.lower().startswith(b"content-length:"):
+                    content_length = int(h.split(b":", 1)[1].strip())
+            if content_length:
+                await reader.readexactly(content_length)
+            body = b'{"choices":[{"message":{"content":"pong"}}]}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+            await asyncio.sleep(0.05)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    try:
+        server = await asyncio.start_server(_handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]  # type: ignore[index]
+        yield f"http://127.0.0.1:{port}"
+        server.close()
+        await server.wait_closed()
+    finally:
+        if server is not None:
+            server.close()
+            await server.wait_closed()
+
+
+@asynccontextmanager
+async def _loopback_telegram_listener(token: str) -> AsyncIterator[str]:
+    """A tiny HTTP server that answers Telegram's sendMessage with a stored message."""
+    server: asyncio.Server | None = None
+
+    async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            headers = bytearray()
+            while True:
+                line = await reader.readline()
+                if not line or line in (b"\r\n", b"\n"):
+                    break
+                headers.extend(line)
+            content_length = 0
+            for h in headers.split(b"\r\n"):
+                if h.lower().startswith(b"content-length:"):
+                    content_length = int(h.split(b":", 1)[1].strip())
+            if content_length:
+                await reader.readexactly(content_length)
+            # Telegram returns {"ok":true,"result":{"message_id":42,"chat":{...},"date":1,"text":...}}
+            body = (
+                b'{"ok":true,"result":{"message_id":42,"chat":{"id":-1,"type":"group"},'
+                b'"date":1,"text":"ergane install --verify test message"}}'
+            )
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+            await asyncio.sleep(0.05)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    try:
+        server = await asyncio.start_server(_handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]  # type: ignore[index]
+        yield f"http://127.0.0.1:{port}/bot{token}/"
         server.close()
         await server.wait_closed()
     finally:
@@ -571,6 +663,106 @@ async def test_verify_absent_client_library_fails_naming_dependency(
     assert escalation_finding.passed is False
     assert "telegram" in escalation_finding.detail.lower() or "dependency" in escalation_finding.detail.lower()
     assert "ModuleNotFoundError" not in escalation_finding.detail or "missing dependency" in escalation_finding.detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# T018 [US2-SC-006] live doubles: every gather executes against a real transport
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_llm_gather_against_live_double(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SC-006/T018: the LLM probe's real gather runs against a loopback HTTP double.
+
+    The probe first builds a LiteLLMClient from env, so we set the env variables
+    it expects to dummy values; the client has no chat_completion path, so the
+    gather falls back to httpx against the configured base_url — that is the code
+    path being exercised here.
+    """
+    async with _loopback_llm_listener() as llm_endpoint:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            _full_config_toml(
+                llm_base_url=llm_endpoint,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
+        monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
+        # LiteLLMClient.from_env() is called first and requires these env vars.
+        monkeypatch.setenv("LITELLM_PROXY_URL", "http://127.0.0.1:1")
+        monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-dummy")
+
+        from factory.controlplane.config import load_controlplane_config
+
+        config = load_controlplane_config(str(config_path))
+        probe = verify_module.LLMProbe()
+        snapshot = await probe.gather(config)
+
+    finding = probe.evaluate(snapshot)
+    assert finding.passed is True
+    assert "persona `implementer`" in finding.detail
+    assert "1-token" in finding.detail
+
+
+@pytest.mark.asyncio
+async def test_verify_escalation_gather_against_live_double(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SC-006/T018: the escalation probe's real gather runs against a loopback Telegram double.
+
+    We patch the bot factory to point the production Bot at the local HTTP
+    server via its base_url.  The real send_message path executes, including the
+    HTTPXRequest timeout wiring.
+    """
+    token = "123456:AAAA"
+    async with _loopback_telegram_listener(token) as telegram_base_url:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            _full_config_toml(
+                llm_base_url="http://llm.test/v1",
+                telemetry_endpoint=None,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
+        monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
+        monkeypatch.setenv("ERGANE_TELEGRAM_BOT_TOKEN", token)
+        monkeypatch.setenv("ERGANE_TELEGRAM_CHAT_ID", "-1")
+
+        def _local_telegram_bot_factory(config: Cfg.Escalation, *, timeout_s: int | None = None) -> Any:
+            from telegram import Bot
+            from telegram.request import HTTPXRequest
+
+            return Bot(
+                token,
+                base_url=telegram_base_url,
+                request=HTTPXRequest(
+                    connection_pool_size=1,
+                    connect_timeout=timeout_s,
+                    read_timeout=timeout_s,
+                    write_timeout=timeout_s,
+                ),
+            )
+
+        monkeypatch.setattr(verify_module, "_temporal_client_factory", _raising_temporal_factory)
+        monkeypatch.setattr(verify_module, "_telegram_bot_factory", _local_telegram_bot_factory)
+
+        from factory.controlplane.config import load_controlplane_config
+
+        config = load_controlplane_config(str(config_path))
+        probe = verify_module.EscalationProbe()
+        snapshot = await probe.gather(config)
+
+    finding = probe.evaluate(snapshot)
+    assert finding.passed is True
+    assert "telegram" in finding.detail
+    assert "message_id=42" in finding.detail
+    assert "deferred to epic 041" in finding.detail
 
 
 # Keep additional CLI integration tests for a later commit.
