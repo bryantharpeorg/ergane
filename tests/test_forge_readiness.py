@@ -1,20 +1,15 @@
 """049-US2: the readiness questions are forge-neutral, and D-007 is GitHub's.
 
-US1 moved *where* the facts come from. This is where the questions themselves
-stop being one forge's: `evaluate_repo` asks Q2, Q3, Q4 and Q5 of a
-`LandingPolicy` and Q1 of a `RepositoryDescription`, and GitHub's rule that a
-repo must be public (D-007) is now GitHub's own answer, contributed as a finding
-the judgment appends without knowing what it means. The neutral judgment's own
-table is `tests/test_onboard.py`; this file is the seam's story.
+US1 moved *where* the facts come from; this is where the questions themselves
+stop being one forge's. GitHub's rule that a repo must be public (D-007) is now
+GitHub's own answer, contributed as a finding the judgment appends without
+knowing what it means. The neutral judgment's table is `tests/test_onboard.py`.
 
 Every test answers "what edit would make this fail?" in its docstring, because
-the defect that has cost this repository most is a test that cannot fail. The
-mutation transcripts are at `specs/049-forge-seam/evidence/us2-mutations.md`.
-
-Neither fake here is a call recorder (FR-004, trap 3): `RepositoryModel`
-(`tests/fake_forge.py`) is a repository on a forge that never heard of GitHub,
-and `GithubRepositoryModel` below is GitHub's own state served as reads, so a
-changed field changes what `GithubForge` answers. No assertion is about traffic.
+the defect that has cost this repository most is a test that cannot fail; the
+transcripts are at `specs/049-forge-seam/evidence/us2-mutations.md`. Neither
+fake here is a call recorder (FR-004, trap 3) — both are repositories as state,
+so a changed field changes what the forge over it answers.
 """
 
 from __future__ import annotations
@@ -41,9 +36,8 @@ FIXTURE_GATES = ("lint", "test", "typecheck")
 #: A title source spelled the way a forge that is not GitHub would spell it.
 NEUTRAL_TITLE_SOURCE = "proposal-title"
 
-#: The remedy an operator reads today when their repo is private, verbatim from
-#: `onboard.py` before this story moved it — a literal, because "the same
-#: remedy" is the criterion, not "a similar one".
+#: Verbatim from `onboard.py` before this story moved it — a literal, because
+#: "the same remedy an operator reads today" is the criterion (US2-S2).
 D007_REMEDY = (
     "repo is 'PRIVATE'; the merge queue is available on any plan only for "
     "public repos — make the repo public, or dispatch against a public target "
@@ -65,8 +59,8 @@ def _failing(profile: Any) -> set[str]:
 
 
 def _ready_model() -> RepositoryModel:
-    """A repository that answers every neutral question well — and says nothing
-    at all about who can see it, because its forge has no such notion."""
+    """Answers every neutral question well, and says nothing about who can see
+    it, because its forge has no such notion."""
     model = RepositoryModel(address="acme/app", default_branch="main")
     model.gate_on("main", FIXTURE_GATES, title_source=NEUTRAL_TITLE_SOURCE)
     return model
@@ -83,18 +77,16 @@ def test_a_forge_reporting_no_visibility_passes_and_fails_when_gating_goes(
     A repository that gates on named checks, lands with no human, requires
     exactly the declared gates and titles the landing from the proposal is ready
     — and it never said who can see it (US2-S1, SC-002). Then the *same model*
-    stops gating and readiness fails (SC-003), so one object, one difference and
-    two verdicts show the neutral question deciding an outcome rather than the
-    case having been impossible either way (trap 4).
+    stops gating and fails (SC-003): one object, one difference, two verdicts,
+    so the neutral question is shown deciding rather than the case having been
+    impossible either way (trap 4). FR-008 rides along — manifest validity and
+    gate↔check parity are properties of a tree, so a forge contributing nothing
+    is still asked them.
 
     What edit would make this fail: put the visibility check back into the
-    shared judgment, and the model fails a question it cannot answer, as a
-    target on another forge does today; or read Q2 from anything but the forge's
-    landing policy — a hardcoded `True` — and the ungated half passes too.
-
-    FR-008 rides along: manifest validity and gate↔check parity are properties
-    of a tree, so a forge contributing nothing is still asked them.
-    `tests/test_ergane_init_check.py:441` holds the authorship half.
+    judgment and the model fails a question it cannot answer, as a target on
+    another forge does today; or read Q2 from a hardcoded `True` and the ungated
+    half passes too.
     """
     repo = build_target_repo(tmp_path / "target")
     model = _ready_model()
@@ -128,10 +120,9 @@ def test_a_forge_that_gates_but_waits_for_a_human_fails_a_distinct_finding(
     tmp_path: Path,
 ) -> None:
     """A branch that runs the gates and then waits for a click is not one this
-    factory can land through (D-024) — and telling an operator "gating is wrong"
-    when gating is right is a riddle, not a report. What edit would make this
-    fail: fold Q3 back into Q2, as GitHub's merge queue happens to answer them,
-    and this finding stops existing.
+    factory can land through (D-024), and telling an operator "gating is wrong"
+    when gating is right is a riddle. What edit would make this fail: fold Q3
+    back into Q2, as GitHub's merge queue happens to answer them.
     """
     repo = build_target_repo(tmp_path / "target")
     model = RepositoryModel(address="acme/app", default_branch="main")
@@ -162,10 +153,10 @@ def test_a_forge_that_gates_but_waits_for_a_human_fails_a_distinct_finding(
 class GithubRepositoryModel:
     """GitHub's own state for one repository, served as the `GhClient` reads.
 
-    A model rather than a script of expected calls: change `visibility` and the
-    reads change, which is what makes the assertions below about the repository
-    instead of about the traffic (`tests/fake_gh.py` cannot support that claim —
-    `ci/the-scripted-gh-fake-never-consumes-an-expectation`).
+    A model, not a script of expected calls: change `visibility` and the reads
+    change, which is what makes the assertions below about the repository rather
+    than about traffic (`ci/the-scripted-gh-fake-never-consumes-an-expectation`
+    is why `tests/fake_gh.py` cannot support that claim).
     """
 
     visibility: str = "PUBLIC"
@@ -198,13 +189,11 @@ class GithubRepositoryModel:
 def test_the_github_forge_authors_the_d007_finding_for_a_private_repository(
     tmp_path: Path,
 ) -> None:
-    """FR-007: the rule that a repository must be public did not soften and did
-    not become advice — it moved to the implementation where it is true, with
-    today's remedy character for character.
-
-    What edit would make this fail: stop contributing the finding, or reword the
-    remedy. The public case below is the control: one field changed, two
-    verdicts.
+    """FR-007: the rule that a repo must be public did not soften and did not
+    become advice — it moved to the implementation where it is true, with
+    today's remedy character for character. What edit would make this fail: stop
+    contributing the finding, or reword it. The public case below is the
+    control: one field changed, two verdicts.
     """
     repo = build_target_repo(tmp_path / "target")
     private = GithubForge(GithubRepositoryModel(visibility="PRIVATE"))
@@ -253,11 +242,10 @@ def _forge_owned_words_in(path: Path) -> list[str]:
 def test_the_shared_judgment_names_no_forges_own_configuration() -> None:
     """US2-S3, read off the module's source so a later edit cannot quietly put
     one back: a finding slug is a string, and a string reintroduced in six
-    months would pass every behavioural test in this file.
-
-    Its anti-vacuity control is the second assertion — the *same* scanner over
-    `github_forge.py` must find every word, so a scan that read nothing, a ban
-    list that emptied, or a matcher that stopped matching fails there first.
+    months would pass every behavioural test in this file. Its anti-vacuity
+    control is the second assertion — the *same* scanner over `github_forge.py`
+    must find every word, so a scan that read nothing, a ban list that emptied
+    or a matcher that stopped matching fails there first.
 
     What edit would make this fail: name a finding `merge_queue` again, or quote
     `squash_merge_commit_title` in a remedy the shared judgment writes.

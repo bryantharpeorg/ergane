@@ -385,13 +385,8 @@ def test_wiring_makes_the_repo_pass_the_factorys_own_onboarding_gate(
 
     checks = {f.check for f in profile.findings}
     assert checks == {
-        "visibility",
-        "gated_landing",
-        "autonomous_landing",
-        "factory_yaml",
-        "landing_title",
-        "gate_check:test",
-        "gate_check:lint",
+        "visibility", "gated_landing", "autonomous_landing", "factory_yaml",
+        "landing_title", "gate_check:test", "gate_check:lint",
     }
     assert profile.default_branch == "main"
     assert sorted(profile.required_checks) == ["lint", "test"]

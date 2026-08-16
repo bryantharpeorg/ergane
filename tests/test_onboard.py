@@ -12,8 +12,8 @@ table-tested with no fakes at all: no forge, no git, no network. Each check fail
 closed — a repo that fails any check is rejected for dispatch with a finding
 that names what to change (spec US3 AS2).
 
-The checks (049's US2 made them forge-neutral; the questions are spec 049
-§ *What the factory actually needs*):
+The checks (049's US2 made them forge-neutral — spec 049 § *What the factory
+actually needs*):
 
 - the branch refuses a landing until named checks pass (Q2) — `gated_landing`;
 - and then completes the merge with no human (Q3) — `autonomous_landing`;
@@ -25,8 +25,8 @@ The checks (049's US2 made them forge-neutral; the questions are spec 049
   FR-003 — the structural guard that keeps the LLM judge out of CI) —
   `unknown_check:<name>`.
 
-What a forge alone knows — GitHub's D-007 rule, for one — arrives on
-`RepositoryDescription.findings`; `tests/test_forge_readiness.py` owns that.
+What a forge alone knows arrives on `RepositoryDescription.findings`;
+`tests/test_forge_readiness.py` owns that story.
 """
 
 from __future__ import annotations
@@ -42,8 +42,7 @@ from factory.mergequeue.onboard import InitFacts, evaluate_repo
 REPO = "acme/widgets"
 DEFAULT_BRANCH = "main"
 
-#: A landing-title setting spelled the way a forge that is not GitHub would:
-#: evidence carried into a remedy, never what the judgment decides from.
+#: A landing-title setting spelled the way a forge that is not GitHub would.
 TITLE_SOURCE = "proposal-title"
 
 

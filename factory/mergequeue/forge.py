@@ -87,9 +87,8 @@ class LandingPolicy:
     spelling of the setting behind it: evidence for a remedy, never something to
     decide from; `None` means the forge would not say.
 
-    `landing_title_remedy` (049 US2, FR-007) is how a forge answers *how to fix
-    that* — a title source is one call only the forge knows. Empty means it
-    offered none, and the judgment says what it can without one.
+    `landing_title_remedy` (049 US2, FR-007) is how a forge says to fix that —
+    one call only it knows. Empty means it offered none.
     """
 
     branch: str

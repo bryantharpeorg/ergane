@@ -8,18 +8,16 @@ is ready for the factory to dispatch against it. It is pure — no forge, no git
 no filesystem, no clock — so it is table-tested with no fakes at all
 (`tests/test_onboard.py`).
 
-049's US2 made these questions forge-neutral: before it they were three settings
-only GitHub has, so a target on another forge failed onboarding not because it
-was unready but because the questions did not apply (D-046). Nothing here spells
-one forge's configuration, and `tests/test_forge_readiness.py` reads this file's
-source to keep it so (FR-006). The checks, each a `Finding`:
+049's US2 made these questions forge-neutral: they were three settings only
+GitHub has, so a target elsewhere failed onboarding not for being unready but
+because they did not apply (D-046). Nothing here spells one forge's
+configuration; `tests/test_forge_readiness.py` reads this source to keep it so.
 
 - **`gated_landing`** (Q2) — the branch must refuse a landing until *named*
-  checks pass: the contract is that the gates the manifest declares are the
-  gates the forge runs, checkable only by name.
-- **`autonomous_landing`** (Q3) — and then complete the merge on its own.
-  Separate because they are separately actionable: a branch that gates and then
-  waits for a click is one this factory cannot land through (D-024).
+  checks pass: the gates the manifest declares are the gates the forge runs.
+- **`autonomous_landing`** (Q3) — and then complete the merge itself, separate
+  because separately actionable: a branch that gates and waits for a click is
+  one this factory cannot land through (D-024).
 - **`factory_yaml`** — the repo must commit a valid, non-empty-gated
   `factory.yaml`. A missing or malformed manifest is a failing finding carrying
   the 002 loader's error, never a pass by default: a verifier that shrugged at
@@ -129,14 +127,14 @@ def evaluate_repo(
 ) -> TargetRepoProfile:
     """Judge a repository's two readings against what the factory needs.
 
-    Each argument is something the caller already read; this function holds no
-    I/O. `reading` answers Q1 and carries what only this forge knows (FR-007),
-    appended without this function understanding it and read *first*, so a
-    forge-authored refusal lands where an operator has always found the repo's
-    own health. `policy` answers Q2, Q3 and Q5 for the branch a landing goes
-    into, and carries the checks that branch requires, so Q4 can be asked here
-    without knowing where a forge keeps them. `factory_yaml_error`, when set, is
-    the 002 loader's message — a broken manifest fails, never passes by default.
+    Each argument is something the caller already read; this holds no I/O.
+    `reading` answers Q1 and carries what only this forge knows (FR-007),
+    appended without understanding it and read *first*, so a forge-authored
+    refusal lands where an operator has always found the repo's own health.
+    `policy` answers Q2, Q3 and Q5 for the branch a landing goes into and
+    carries the checks it requires, so Q4 can be asked without knowing where a
+    forge keeps them. `factory_yaml_error` is the 002 loader's message — a
+    broken manifest fails, never passes by default.
     """
 
     findings: list[Finding] = list(reading.findings)

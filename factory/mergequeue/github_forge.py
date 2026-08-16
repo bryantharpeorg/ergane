@@ -233,8 +233,7 @@ def _readiness_visibility_finding(visibility: str) -> Finding:
     """D-007 as GitHub's own finding, verbatim from the judgment it left.
 
     It did not soften crossing the seam — still *failing*, because
-    private-on-Free cannot ever enqueue and an advisory line is one nobody acts
-    on. The operator has two real answers: go public, or dispatch elsewhere.
+    private-on-Free cannot ever enqueue and advice is what nobody acts on.
     """
     if str(visibility).strip().lower() == "public":
         return Finding("visibility", True, "repo is public")
@@ -250,9 +249,8 @@ def _readiness_visibility_finding(visibility: str) -> Finding:
 def _readiness_title_remedy(address: str, title_source: str | None) -> str:
     """How to make GitHub title a landing from the proposal — one `gh` call.
 
-    An absent setting gets the cause too: GitHub hides its merge-settings fields
-    from a token without push permission, so an operator told only to PATCH
-    would run it and watch it fail.
+    An absent setting gets the cause too: GitHub hides these fields from a token
+    without push permission, so PATCH alone would be run and watched to fail.
     """
     call = (
         f"run `gh api -X PATCH repos/{address} "
