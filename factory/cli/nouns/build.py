@@ -377,18 +377,16 @@ def _resolved_proxy_url() -> str:
 
     A CLI boundary is where this belongs: the endpoint is already a declared
     workflow input threaded from here (`EpicInput.proxy_url`), so the workflow
-    reads neither the environment nor the disk and nothing about determinism
-    moves (048 FR-007, constitution IV).
-
+    reads neither the environment nor the disk (048 FR-007, constitution IV).
     The endpoint and not the credential: the master key is read on the worker
-    host by the activity that mints the attempt's virtual key, so demanding it
-    here would refuse to start an epic on a host well able to run it.
+    host by the activity that mints the key, so demanding it here would refuse
+    an epic on a host well able to run it.
 
     No default is available and none would be honest: an epic started against a
     guessed proxy mints keys the agent cannot use and burns an attempt to
     discover it (constitution VII). What changed in 048 is only that the
-    refusal now names *both* ways to satisfy it — the resolver supplies the
-    routes, this site supplies the reason.
+    refusal names *both* ways to satisfy it — the resolver supplies the routes,
+    this site supplies the reason.
     """
     from factory.controlplane.resolve import (
         ControlPlaneResolutionError,

@@ -1020,12 +1020,12 @@ join is this entry.
    override direction is what makes the first consequence of joining the two sources
    "nothing on this host moves".
 
-3. **It is revisitable, and inverting it is a story.** The day `ergane install` is the
+3. **It is revisitable, and inverting it is a story.** Once `ergane install` is the
    normal way Ergane arrives on a host, config-first is the better precedence: a
    declaration the operator wrote should not be quietly beaten by a variable some
    shell profile exports. Inverting it then is a migration with its own spec, its own
-   decision entry superseding this one, and its own answer for hosts that export both.
-   It is not a refactor, and it is not a knob.
+   superseding entry, and its own answer for hosts that export both — not a refactor,
+   and not a knob.
 
 4. **A resolution carries a variable name, never a credential.** The config already
    held the *name* of the variable holding the key (principle V, enforced by the
@@ -1042,10 +1042,10 @@ join is this entry.
    belief 048 exists to end. Where nothing resolves, the refusal names *both* routes.
 
 6. **Resolution happens at a CLI boundary or in an activity, never at workflow scope.**
-   The endpoint was already a declared workflow input (`EpicInput.proxy_url`), which is
-   what made this story cheap and what keeps constitution IV intact. The guard 039 added
-   catches an `os.environ` read at workflow scope and would *not* catch a config-file
-   read, so this is a rule the diff keeps rather than one a guard enforces.
+   The endpoint was already a declared workflow input, which is what made this story
+   cheap and what keeps constitution IV intact. 039's guard catches an `os.environ`
+   read at workflow scope and would *not* catch a file read, so this is a rule the
+   diff keeps rather than one a guard enforces.
 
 This closes the first consequence of
 `install/the-config-install-writes-reaches-nothing-that-builds`; the second — `direct`

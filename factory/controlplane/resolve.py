@@ -113,9 +113,7 @@ class GatewayResolution:
     """Where the LLM gateway is, and which variable holds its credential.
 
     Four fields and no secret: the endpoint, the credential's variable *name*,
-    and the source that won for each — an environment variable name, or the
-    control-plane config's path. Everything US1 needs is here, and FR-003 holds
-    by construction rather than by care.
+    and the source that won for each. FR-003 holds by construction, not care.
     """
 
     base_url: str
@@ -236,7 +234,7 @@ def _resolve_credential(
 def _both_routes(what: str, env_name: str, label: str) -> str:
     """FR-004: name the two ways to satisfy this, never only one.
 
-    Being told about one route is how an operator who completed the interview
+    Hearing about one route is how an operator who completed the interview
     concludes their answers were not used.
     """
     return (
@@ -262,10 +260,8 @@ def _declared_gateway(
     refusals above can name it either way.
 
     The file is opened only when at least one of `needed` is missing from the
-    environment. That is FR-002's second half — "when an override is set the
-    config file MUST NOT be read for that value" — and it is what makes
-    US1-S3 (both overrides set, config path bound to unparseable TOML) a
-    scenario a resolver that opened the file could not pass.
+    environment — FR-002's second half, and what makes US1-S3 a scenario a
+    resolver that opened the file could not pass.
     """
     path = Path(config_path) if config_path is not None else resolve_config_path()
     label = str(path)
