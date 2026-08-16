@@ -79,7 +79,103 @@ The one passing test is `test_the_resolver_would_have_created_the_runtime_root`
 — the control for the read-only assertion. It is *supposed* to pass before and
 after: it proves the mkdir side effect the status command must avoid is real.
 
-GREEN_BLOCK_PLACEHOLDER
+Green, with `factory/cli/status.py` and its noun in place:
+
+    $ uv run pytest -q tests/test_ergane_status.py
+    21 passed in 1.00s
+
+    $ uv run pytest -q
+    2494 passed, 44 skipped, 4 warnings in 281.47s (0:04:41)
+
+And live, in this worktree, against the real floor — the reason the readiness
+basis is not left to inherit the finding. Three commands, one after another,
+against the same corpus and the same git history:
+
+    $ ergane spec list specs
+    011-agent-sandbox                 ready     blocked by: 043-runtime-root-integrity
+    033-ergane-install                ready     blocked by: 043-runtime-root-integrity, 011-agent-sandbox
+    034-ergane-init                   ready     blocked by: 043-runtime-root-integrity, 033-ergane-install
+    041-escalation-workflow           ready     blocked by: 033-ergane-install
+    042-supervised-services           ready     blocked by: 033-ergane-install, 041-escalation-workflow
+    043-runtime-root-integrity        ready
+
+    $ ergane status          # the same six lines of the queue section
+      011-agent-sandbox              ready  dispatchable
+      033-ergane-install             ready  dispatchable
+      034-ergane-init                ready  blocked by: 033-ergane-install
+      041-escalation-workflow        ready  blocked by: 033-ergane-install
+      042-supervised-services        ready  blocked by: 033-ergane-install, 041-escalation-workflow
+      043-runtime-root-integrity     ready  dispatchable
+
+    $ ergane spec landed specs/043-runtime-root-integrity
+    default branch: ergane-buildout
+    US1 landed at cc806be3caae (observed)
+    US2 landed at 4f6ebda2194a (observed)
+    US3 landed at 4eb62382ea7f (observed)
+    US4 landed at ca122ad1d556 (observed)
+
+`033-ergane-install` was reported blocked by two specs whose every story has
+landed. It is not blocked, and `ergane status` says so. The floor's own control
+is on the next line: `034-ergane-init` is *still* blocked by
+`033-ergane-install`, because 033 has three stories and only two of them have
+landed —
+
+    $ ergane spec landed specs/033-ergane-install
+    default branch: ergane-buildout
+    US1 landed at 5b4351a63ec6 (observed)
+    US2 landed at 2ee4e3bb1440 (observed)
+    $ grep -c "^### User Story" specs/033-ergane-install/spec.md
+    3
+
+so the resolver discriminates rather than clearing everything.
+
+The whole verb, live, in 0.57s, with a schedule owning the roadmap:
+
+    $ ergane status
+    roadmap
+      schedule: ergane-roadmap (paused)
+      run: roadmap-specs-2026-08-15T09:40:00Z
+      next tick: 2026-08-15T20:00:00+00:00
+      dispatch: running
+      running: -
+      parked: 0
+
+    epics
+      none running
+
+    queue (readiness: attestation, plus landings on ergane-buildout (b193b01ca424) in <worktree>, read without fetching)
+      011-agent-sandbox              ready  dispatchable
+      ...
+
+    drafts
+      017-peer-channel          draft
+      022-validate-calibration  draft
+      024-ledger-token-honesty  draft
+      032-replay-determinism    draft
+      035-operator-completion   draft
+
+    pace
+      no epic is running
+
+    real    0m0.574s
+    $ ls -a | grep -E "^\.(ergane|factory)"     # after the run
+    nothing created
+
+Degraded, against a closed port, in the same worktree:
+
+    $ TEMPORAL_ADDRESS=127.0.0.1:1 ergane status
+    note: cannot reach Temporal at 127.0.0.1:1 (namespace 'factory'): Failed client connect: Server connection error: tonic::transport::Error(Transport, ConnectError(ConnectError("tcp connect error", 127.0.0.1:1, Os { code: 111, kind: ConnectionRefused, message: "Connection refused" }))); the roadmap and epics sections could not be read
+
+    roadmap
+      unavailable (see note)
+
+    epics
+      unavailable (see note)
+
+    queue (readiness: attestation, plus landings on ergane-buildout (b193b01ca424) in <worktree>, read without fetching)
+      011-agent-sandbox              ready  dispatchable
+      ...
+    [exit 3]
 ------------------------------------------------------------------------------
 """
 
