@@ -2,26 +2,22 @@
 
 `RepositoryModel` is the repository: its address, its branches, and what each
 branch's landing policy is. `FakeForge` serves every read out of that state, so
-changing the model changes what the factory's own `evaluate_repo` says about it.
-That is the whole point — a test asserts on the *judgment of the model*, not on
+changing the model changes what the factory's own `evaluate_repo` says about it
+— which is why the tests assert on the *judgment of the model* and never on
 which calls were made.
 
 **Why not `tests/fake_gh.py`.** That fake is the open finding
-`ci/the-scripted-gh-fake-never-consumes-an-expectation`: its `__call__` scans
-its expectation list from index 0 on every invocation and consumes nothing, so
-the first match answers a command forever, a second expectation for the same
-command is unreachable, and — the sharp consequence — an idempotence claim made
-through it cannot fail. Nothing here is built on it or shaped like it (plan
-trap 3). It is also not repaired here: seven unrelated test modules ride it, and
-that is its own piece of work.
-
-The bar this copies instead is `FakeGitHub` in `tests/test_ergane_init_wiring.py`
-— mutable state, reads derived from it, and the factory's own reader judging the
-same object.
+`ci/the-scripted-gh-fake-never-consumes-an-expectation`: its `__call__` scans its
+expectations from index 0 every call and consumes nothing, so the first match
+answers a command forever and an idempotence claim made through it cannot fail.
+Nothing here is built on it or shaped like it, and it is not repaired here
+either — seven unrelated modules ride it, so that is its own work (trap 3). The
+bar this copies is `FakeGitHub` in `tests/test_ergane_init_wiring.py`: mutable
+state, reads derived from it, and the factory's own reader judging the object.
 
 `gate_on` is the repository's own act rather than a test helper: 049's US4 wires
 a repository by issuing exactly that change, and when it does it must mutate
-this model rather than get a scripted answer.
+this model rather than get a scripted answer back.
 """
 
 from __future__ import annotations
@@ -38,12 +34,8 @@ from factory.mergequeue.models import Finding
 
 @dataclass
 class BranchPolicy:
-    """What one branch of the modelled repository does to a proposal.
-
-    The default is the honest default for a repository nobody has configured:
-    it gates on nothing, it will not land on its own, and it says nothing about
-    where a landing commit's subject comes from.
-    """
+    """What one branch does to a proposal; the default is a branch nobody
+    configured — gates on nothing, lands on nothing, says nothing."""
 
     gates_on_named_checks: bool = False
     required_checks: tuple[str, ...] = ()
@@ -56,13 +48,11 @@ class BranchPolicy:
 class RepositoryModel:
     """One repository, as mutable state — the thing the fake forge reads.
 
-    `visibility` defaults to `""`, meaning *this forge has no notion of who can
-    see a repository*. That is a real forge shape, and 049's US2 is where a
-    model in that shape passes readiness; in US1 the shared judgment still asks
-    GitHub's questions, so a model has to answer them to pass.
-
-    `unreachable`, when set, is what the forge says when it cannot read the
-    repository at all — Q1's failing answer.
+    `visibility` defaults to `""`: *this forge has no notion of who can see a
+    repository*. That is a real forge shape, and 049's US2 is where a model in
+    that shape passes readiness; in US1 the shared judgment still asks GitHub's
+    questions, so a model has to answer them to pass. `unreachable`, when set,
+    is what the forge says when it cannot read the repository at all.
     """
 
     address: str = "acme/app"

@@ -28,7 +28,7 @@ check-ignore`, `git show-ref`, a registry load, a manifest parse, 033's probes �
 and the judgment over them is the one the 003 dispatch path already uses
 (`onboard.evaluate_repo`), extended rather than forked, so a repo that fails at
 the operator's terminal fails the same way at dispatch. Two module-level seams
-in the `_client_factory` idiom keep it offline in tests: `_gh_client_factory`
+in the `_client_factory` idiom keep it offline in tests: `_forge_factory`
 and `_controlplane_probe`; no test here reaches either default.
 
 US6 adds the third act and the third seam. A full init now creates or reconciles
@@ -75,20 +75,18 @@ RUNTIME_ROOT = Path(".ergane")
 #: Module-level seam so tests can inject a scripted prompter.
 _prompter_factory: Callable[[], Any] | None = None
 
-def _default_gh_client(*, repo_path: str) -> Any:
-    """Build the real `gh` client; imported late so the scaffold stays offline.
+def _default_forge(*, repo_path: str) -> Any:
+    """Resolve this repository's forge; imported late so init stays offline."""
+    from factory.mergequeue.forge import resolve_forge
 
-    `repo_path` becomes the client's `cwd` — how `gh` resolves owner/repo from
-    the checkout's `origin` remote (FR-001).
-    """
-    from factory.mergequeue.gh import GhClient
-
-    return GhClient(repo=repo_path)
+    return resolve_forge(repo_path=repo_path)
 
 
-#: Seam: how *both* `--check` (US4) and `--wire` (US3) reach GitHub. One name,
-#: one signature — rebound in tests to a scripted runner.
-_gh_client_factory: Callable[..., Any] = _default_gh_client
+#: Seam: how *both* `--check` (US4) and `--wire` (US3) reach the forge. One name,
+#: one signature — rebound in tests. Exactly one factory for this boundary here:
+#: on 2026-08-16 two concurrent stories each added one to this file in different
+#: regions, nothing conflicted, the merge kept both and nine tests died (trap 14).
+_forge_factory: Callable[..., Any] = _default_forge
 
 
 def _default_controlplane_probe() -> tuple[list[Finding], int]:
@@ -503,7 +501,9 @@ def _wire(
 
     try:
         steps = wiring.wire_repo(
-            _gh_client_factory(repo_path=str(repo_root)),
+            # US4 puts wiring on the forge protocol; until then it speaks
+            # GitHub's client, reached through the one factory this file has.
+            _forge_factory(repo_path=str(repo_root)).client,
             landing_branch=landing_branch,
             gates=list(gates),
         )
@@ -812,8 +812,8 @@ def check_repo(repo_root: str | Path) -> TargetRepoProfile:
 
     root = Path(repo_root).resolve()
     facts = gather_init_facts(root)
-    client = _gh_client_factory(repo_path=str(root))
-    return onboard_target_repo(client, str(root), init_facts=facts)
+    forge = _forge_factory(repo_path=str(root))
+    return onboard_target_repo(forge, str(root), init_facts=facts)
 
 
 def render_check(profile: TargetRepoProfile, repo_root: Path, manifest_name: str) -> str:

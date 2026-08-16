@@ -174,7 +174,7 @@ def bind_offline_seams(
     )
     monkeypatch.setattr(
         workgraph_cli,
-        "_onboard_forge_factory",
+        "_onboard_client_factory",
         lambda *, repo_path: GithubForge(GhClient(repo=repo_path, runner=gh)),
     )
 
@@ -426,7 +426,7 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
     from factory.activities.merge_activities import onboard_target_repo
 
     dispatch_door = onboard_target_repo(
-        workgraph_cli._onboard_forge_factory(repo_path=str(repo)), str(repo)
+        workgraph_cli._onboard_client_factory(repo_path=str(repo)), str(repo)
     )
     init_door = init_module.check_repo(repo)
 

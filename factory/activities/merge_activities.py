@@ -31,10 +31,12 @@ and this module never issues a branch-removal command — the string the
 structural guard greps for must never appear in its command surface.
 
 `_client_factory` is the seam in the same sense as `open_bot` and
-`judge_transport`: production builds a `GhClient` that spawns real `gh` against
-the target clone, and tests replace the factory with one wired to a `FakeGh`.
-The activity itself never touches the runner — it names the repo and the method,
-and lets the client own the subprocess.
+`judge_transport`: since 049's US1 it resolves the *forge* the target repository
+is on, and tests replace it with one over a scripted `gh` or a modelled
+repository. The landing activities still speak GitHub's client and reach it
+through that same factory until US3 moves them onto forge operations, so this
+module never holds two factories for one boundary (049 trap 14). The name is
+US3's to change, with the consumers that still justify it.
 """
 
 from __future__ import annotations
@@ -43,17 +45,13 @@ import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from factory.mergequeue.forge import Forge, ForgeError, resolve_forge
 from factory.mergequeue.gh import (
-    GH_AUTH,
-    GH_NOT_FOUND,
-    GH_REFUSED,
-    GH_UNAVAILABLE,
-    GhClient,
     GhError,
     _FAILED_LOG_TOTAL_LIMIT,
     _parse_run_id,
@@ -290,14 +288,21 @@ class ValidateTargetRepoInput:
     target_repo: str
 
 
-#: The seam — a factory `(repo_path: str) -> GhClient`. Production builds a real
-#: client against the target clone; tests replace this with one wired to a
-#: `FakeGh` (same discipline as `open_bot` / `judge_transport`).
-_client_factory: Callable[..., Any] = lambda *, repo_path: GhClient(repo=repo_path)
+#: The seam — a factory `(repo_path: str) -> Forge`. Production resolves the
+#: forge the repository is on; tests replace this with one over a scripted `gh`
+#: or a modelled repository. One factory for this boundary, and no second.
+_client_factory: Callable[..., Forge] = lambda *, repo_path: resolve_forge(
+    repo_path=repo_path
+)
 
 
-def _client(*, repo_path: str) -> GhClient:
+def _forge(*, repo_path: str) -> Forge:
     return _client_factory(repo_path=repo_path)
+
+
+def _client(*, repo_path: str) -> Any:
+    """The GitHub client the landing half still speaks, via the one factory."""
+    return _forge(repo_path=repo_path).client
 
 
 def _landing_body_dir() -> Path:
@@ -587,37 +592,37 @@ async def fetch_check_failure(request: FetchCheckFailureInput) -> tuple[CheckFai
 
 
 def onboard_target_repo(
-    client: GhClient,
+    forge: Forge,
     target_repo: str,
     *,
     init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
-    """US3's preflight: gather a repo's facts through `client` and judge it (FR-010).
+    """US3's preflight: gather a repo's facts through `forge` and judge it (FR-010).
 
     The fact-gathering half of onboarding — `evaluate_repo` (in
     `factory/mergequeue/onboard.py`) is the pure judgment. This reads the world
-    at one moment:
+    at one moment, and since 049's US1 it reads it through a forge rather than
+    by naming `gh`:
 
-    - the repo's identity, visibility and default branch from `gh repo view`;
-    - the merge-queue rule's required checks from the rules API, falling back to
-      classic branch protection when the rules list carries none (plan.md § US3);
+    - the repository's address, default branch and forge-authored findings;
+    - the landing branch's policy — does it gate on named checks, which checks;
     - the clone's committed `factory.yaml` via the 002 loader.
 
-    Every `gh` failure is returned as a failed validation with a finding — never
+    Every forge failure is returned as a failed validation with a finding — never
     a pass — and a malformed manifest is a failing `factory_yaml` finding
     carrying the loader's error, never a shrug (FR-010, spec US3 AS2). The
     profile's `passed` is the conjunction of its findings; a failing profile
     blocks dispatch before any key is issued or worktree created (SC-005).
 
-    `client` is injected so both the activity (via the `_client_factory` seam)
-    and the offline CLI (`ergane repo onboard`) can drive the same logic against
-    whichever `GhClient` their caller wired.
+    `forge` is injected so both the activity (via the `_client_factory` seam) and
+    the offline CLI (`ergane repo onboard`) can drive the same logic against
+    whichever forge their caller resolved.
 
     `init_facts` is 034 US4's second door: `ergane init --check` gathers what init
     created (runtime root, registry entry, landing branch, control plane) and
     passes it straight through to `evaluate_repo`, so terminal and dispatch
     render the *same* parity findings rather than two implementations that agree
-    today. It travels the `gh`-failure path too: a repo with no GitHub remote is
+    today. It travels the read-failure path too: a repo with no remote at all is
     precisely the repo whose local findings must still render.
     """
     manifest_path, _ = resolve_manifest_path(target_repo)
@@ -631,123 +636,51 @@ def onboard_target_repo(
         manifest_error = str(error)
 
     try:
-        repo_view = client.repo_view()
-        owner_repo = str(repo_view.get("nameWithOwner") or "")
-        visibility = str(repo_view.get("visibility") or "")
-        # `defaultBranchRef` is an object (`{"name": ...}`), not a bare string —
-        # stringifying the dict sent the rules query to a branch named
-        # "{'name': 'ergane-buildout'}" on the first real onboarding run.
-        default_ref = repo_view.get("defaultBranchRef") or {}
-        default_branch = (
-            str(default_ref.get("name") or "")
-            if isinstance(default_ref, Mapping)
-            else str(default_ref)
-        )
-    except GhError as error:
-        return _profile_from_gh_failure(
-            target_repo, visibility="", default_branch="", owner_repo="",
+        repository = forge.describe_repository()
+    except ForgeError as error:
+        return _profile_from_forge_failure(
+            target_repo, visibility="", default_branch="", address="",
             manifest_error=manifest_error, declared_gates=declared_gates,
             error=error, init_facts=init_facts,
         )
 
     try:
-        merge_settings = client.merge_settings(owner_repo)
-        squash_merge_commit_title = merge_settings.get("squash_merge_commit_title")
-        if squash_merge_commit_title is not None:
-            squash_merge_commit_title = str(squash_merge_commit_title)
-
-        rules = client.rules_for_branch(owner_repo, default_branch)
-        queue_enabled, required_checks = _queue_from_rules(rules)
-        if required_checks is None:
-            # The queue is enabled but carries no checks in the rules payload:
-            # fall back to classic branch protection for the required checks.
-            try:
-                protection = client.classic_branch_protection(
-                    owner_repo, default_branch
-                )
-                required_checks = _classic_contexts(protection)
-            except GhError as error:
-                if error.kind != GH_NOT_FOUND:
-                    raise
-                # "Branch not protected" is an answer, not a failure (proved
-                # live 2026-08-07): the repo simply configures no checks there.
-                required_checks = []
-    except GhError as error:
+        policy = forge.landing_policy(repository.default_branch)
+    except ForgeError as error:
         # A repo the factory cannot read is not dispatchable.
-        return _profile_from_gh_failure(
-            target_repo, visibility=visibility, default_branch=default_branch,
-            owner_repo=owner_repo, manifest_error=manifest_error,
+        return _profile_from_forge_failure(
+            target_repo, visibility=repository.visibility,
+            default_branch=repository.default_branch,
+            address=repository.address, manifest_error=manifest_error,
             declared_gates=declared_gates, error=error, init_facts=init_facts,
         )
 
     return evaluate_repo(
-        repo=owner_repo or target_repo,
-        default_branch=default_branch,
-        visibility=visibility,
-        queue_enabled=queue_enabled,
-        required_checks=required_checks or (),
+        repo=repository.address or target_repo,
+        default_branch=repository.default_branch,
+        visibility=repository.visibility,
+        queue_enabled=policy.gates_on_named_checks,
+        required_checks=policy.required_checks,
         declared_gates=declared_gates,
         factory_yaml_error=manifest_error,
-        squash_merge_commit_title=squash_merge_commit_title,
+        squash_merge_commit_title=policy.landing_title_source,
+        forge_findings=repository.findings,
         init_facts=init_facts,
     )
 
 
-def _queue_from_rules(rules: list[dict[str, Any]]) -> tuple[bool, list[str] | None]:
-    """The merge-queue rule from a branch-rules list, and its required checks.
-
-    Returns `(queue_enabled, required_checks)`. In the real rulesets payload
-    the required checks ride a *sibling* `required_status_checks` rule (proved
-    live 2026-08-07); a queue rule may also embed them, and both places are
-    read. `required_checks` is `None` when the queue is enabled but no rule
-    names a check (so the caller falls back to classic protection); it is `[]`
-    when the queue rule is absent.
-    """
-    queue_enabled = False
-    contexts: list[str] = []
-    for rule in rules:
-        rule_type = str(rule.get("type") or "")
-        parameters = rule.get("parameters")
-        if rule_type == "merge_queue":
-            queue_enabled = True
-        elif rule_type != "required_status_checks":
-            continue
-        if not isinstance(parameters, dict):
-            continue
-        checks = parameters.get("required_status_checks")
-        if isinstance(checks, list):
-            contexts += [
-                str(c.get("context") or "") for c in checks if isinstance(c, dict)
-            ]
-    if not queue_enabled:
-        return False, []
-    # No rule named a check — the repo may configure them via classic
-    # protection, so the caller falls back (plan.md § US3).
-    return True, [c for c in contexts if c] or None
-
-
-def _classic_contexts(protection: dict[str, Any]) -> list[str]:
-    """The required-check contexts a classic branch-protection payload names."""
-    checks = protection.get("required_status_checks")
-    if isinstance(checks, dict):
-        contexts = checks.get("contexts")
-        if isinstance(contexts, list):
-            return [str(c) for c in contexts]
-    return []
-
-
-def _profile_from_gh_failure(
+def _profile_from_forge_failure(
     target_repo: str,
     *,
     visibility: str,
     default_branch: str,
-    owner_repo: str,
+    address: str,
     manifest_error: str | None,
     declared_gates: tuple[str, ...],
-    error: GhError,
+    error: ForgeError,
     init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
-    """A failed validation from a `gh` refusal — never a pass (FR-010).
+    """A failed validation from a forge refusal — never a pass (FR-010).
 
     A repo the factory cannot read is a repo the factory must not dispatch
     against. The findings carry the refusal and name the remedy; `queue_enabled`
@@ -760,7 +693,8 @@ def _profile_from_gh_failure(
     # own finding if the manifest also failed.
     from factory.mergequeue.models import Finding
 
-    detail = f"could not read the repo via gh ({error.kind}): {error.stderr_tail or str(error)}"
+    # Wording verbatim from before the seam (SC-001); US2 neutralises the prose.
+    detail = f"could not read the repo via gh ({error.kind}): {error.detail or str(error)}"
     findings = [Finding("repo_read", False, detail)]
     if manifest_error is not None:
         findings.append(
@@ -770,12 +704,12 @@ def _profile_from_gh_failure(
                 f"manifest failed to load: {manifest_error}",
             )
         )
-    # A `gh` refusal is not a reason to stop judging the repo's own tree: init's
+    # A forge refusal is not a reason to stop judging the repo's own tree: init's
     # findings come from the same function `evaluate_repo` calls, so the
     # gitignore and registry checks survive a repo with no remote at all.
     findings.extend(evaluate_init_facts(init_facts))
     return TargetRepoProfile(
-        repo=owner_repo or target_repo,
+        repo=address or target_repo,
         default_branch=default_branch,
         visibility=visibility,
         queue_enabled=False,
@@ -790,9 +724,9 @@ def _profile_from_gh_failure(
 async def validate_target_repo(request: ValidateTargetRepoInput) -> TargetRepoProfile:
     """US3's preflight activity: gather facts through the seam and judge (FR-010).
 
-    The thin wrapper: builds the `GhClient` through the injectable
-    `_client_factory` seam and hands it to `onboard_target_repo`, which both this
-    activity and the offline CLI share. Tests script the seam to a `FakeGh`; the
-    CLI builds a real client against the clone the operator points at.
+    The thin wrapper: resolves the forge through the injectable `_client_factory`
+    seam and hands it to `onboard_target_repo`, which both this activity and the
+    offline CLI share. Tests replace the seam with one over a `FakeGh`; the CLI
+    resolves a forge against the clone the operator points at.
     """
-    return onboard_target_repo(_client(repo_path=request.target_repo), request.target_repo)
+    return onboard_target_repo(_forge(repo_path=request.target_repo), request.target_repo)

@@ -120,6 +120,7 @@ def evaluate_repo(
     declared_gates: Sequence[str],
     factory_yaml_error: str | None = None,
     squash_merge_commit_title: str | None = None,
+    forge_findings: Sequence[Finding] = (),
     init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
     """Judge a target repo's facts against the factory's assumptions.
@@ -134,13 +135,18 @@ def evaluate_repo(
     merge setting read via the REST repo endpoint; `None` means the setting was
     absent or unreadable, which also fails closed.
 
+    `forge_findings` is what the forge answered about facts only it has (049
+    FR-007), appended without this function knowing what they mean, and read
+    *first* so US2 can move D-007's visibility finding across the seam without
+    reshaping the report.
+
     The profile's `findings` are ordered so the operator preflight reads the
     repo's own health first (visibility, queue, manifest, squash title), then
     the gate↔check mapping, which is where a deterministic-CI repo most often
     diverges.
     """
 
-    findings: list[Finding] = []
+    findings: list[Finding] = list(forge_findings)
 
     # The repo must be public: the queue is available on any plan only for
     # public repos (D-007). Private-on-Free cannot ever enqueue, so this fails
