@@ -11,6 +11,88 @@ Suite output:
     ........                                                                   [100%]
     8 passed in 0.77s
 
+
+Follow-up: two defects in `TemporalProbe`
+-----------------------------------------
+
+An independent review found that the temporal probe asked Temporal about a
+*workflow* (`ergane-install-verify`) and reported a `NOT_FOUND` on it as an
+absent namespace, and that nothing bounded the call.  Both were reproduced
+before either was fixed.
+
+**Defect 1 — the namespace was never checked.**  On the host the factory runs
+on, the namespace exists and the workflow does not:
+
+.. code-block:: text
+
+    $ temporal operator namespace describe -n factory
+      NamespaceInfo.Name                    factory
+      NamespaceInfo.Id                      d3e55ab2-5a0b-4735-9283-a66d4431ee5d
+      NamespaceInfo.Description
+      NamespaceInfo.OwnerEmail
+      NamespaceInfo.State                   Registered
+
+    $ temporal workflow describe --workflow-id ergane-install-verify --namespace factory
+    Error: failed describing workflow: workflow not found for ID: ergane-install-verify
+
+so `ergane install --verify` told the operator to create a namespace that was
+already registered.  Reproduced against a live dev server that registers
+`ergane-verify` and nothing else, using the probe as it then stood:
+
+.. code-block:: text
+
+    namespace registered on the server: ergane-verify
+    [FAIL] temporal: Temporal at 127.0.0.1:41611 does not have namespace `ergane-verify`;
+    create it with `temporal operator namespace create ergane-verify`
+
+The landed test hid this by starting a workflow with that exact id before
+running verify — it manufactured its own passing condition.  That arrangement
+is deleted; `test_verify_all_subsystems_pass` now asserts the workflow is
+*absent* and still expects the finding to pass.
+
+**Defect 2 — the call was unbounded.**  `Client.connect` against an address
+that accepts and never answers never returns; the old `elapsed >= timeout`
+branch could only run after some exception surfaced, so nothing ever fired:
+
+.. code-block:: text
+
+    blackhole at 127.0.0.1:33319
+    STILL HANGING after 12.00s -> unbounded
+
+Both new tests, run against the probe before the fix (red):
+
+.. code-block:: text
+
+    E       assert 1 == 0
+    E       Failed: TemporalProbe.gather did not return 12s into a 2s timeout
+            against a black-holed address — it is unbounded
+    =========================== short test summary info ============================
+    FAILED tests/test_controlplane_verify.py::test_verify_all_subsystems_pass - a...
+    FAILED tests/test_controlplane_verify.py::test_verify_temporal_bounds_a_blackholed_address
+    2 failed, 8 passed in 27.80s
+
+After the fix, the same two reproductions, unchanged except for the probe they
+run against — the namespace that was reported missing is now found, and the
+black-holed address returns inside its declared bound instead of never:
+
+.. code-block:: text
+
+    namespace registered on the server: ergane-verify
+    [PASS] temporal: Temporal at 127.0.0.1:33215 has namespace `ergane-verify`
+
+    blackhole at 127.0.0.1:37549 | declared timeout_s = 2
+    gather returned after 2.04s
+    [FAIL] temporal: timed out after 2s waiting for Temporal at 127.0.0.1:37549
+
+.. code-block:: text
+
+    $ uv run pytest tests/test_controlplane_verify.py -q
+    ..........                                                               [100%]
+    10 passed in 17.72s
+
+    $ uv run pytest -q
+    2448 passed, 44 skipped, 4 warnings in 269.32s (0:04:29)
+
 """
 
 from __future__ import annotations
@@ -27,7 +109,6 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 import pytest
 from temporalio.testing import WorkflowEnvironment
-from temporalio import workflow
 
 import factory.controlplane.verify as verify_module
 from factory.cli.main import main as ergane_main
@@ -50,6 +131,7 @@ def _full_config_toml(
     memory_api_key_env: str = "ERGANE_HINDSIGHT_KEY",
     temporal_address: str = "temporal.local:7233",
     temporal_namespace: str = "ergane",
+    temporal_timeout_s: int | None = None,
     telemetry_endpoint: str | None = "http://otel.local:4317",
     escalation_bot_token_env: str = "ERGANE_TELEGRAM_BOT_TOKEN",
     escalation_chat_id_env: str = "ERGANE_TELEGRAM_CHAT_ID",
@@ -71,6 +153,10 @@ def _full_config_toml(
         'mode = "external"',
         f'address = "{temporal_address}"',
         f'namespace = "{temporal_namespace}"',
+    ]
+    if temporal_timeout_s is not None:
+        lines.append(f'timeout_s = {temporal_timeout_s}')
+    lines += [
         '',
         '[telemetry]',
     ]
@@ -139,6 +225,37 @@ async def _loopback_otlp_listener() -> AsyncIterator[str]:
 def _closed_port() -> str:
     """An address that is certain to refuse a connection: the loopback discard port."""
     return "127.0.0.1:1"
+
+
+@asynccontextmanager
+async def _blackhole_listener() -> AsyncIterator[str]:
+    """A TCP listener that completes the handshake and then never answers.
+
+    This is the target US2-S4 actually needs.  `127.0.0.1:1` *refuses*, which
+    returns an error immediately and exercises the connection-refused path — it
+    says nothing about whether a probe is bounded.  A socket that accepts and
+    then goes silent is what makes an unbounded client wait forever, so it is
+    the only shape that can tell a timeout from patience.
+
+    Returns a `host:port` address (Temporal's form, no scheme).
+    """
+    stop = asyncio.Event()
+
+    async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            # Read nothing, write nothing: hold the connection open until teardown.
+            await stop.wait()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(_handler, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]  # type: ignore[index]
+    try:
+        yield f"127.0.0.1:{port}"
+    finally:
+        stop.set()
+        server.close()
+        await server.wait_closed()
 
 
 @asynccontextmanager
@@ -278,16 +395,45 @@ class _LiveDoubles:
     temporal_environment: WorkflowEnvironment
 
 
+#: The namespace the live Temporal double registers.  Nothing else is created in
+#: it — no workflow, no task queue — so a probe that passes here can only have
+#: passed by asking the server about the namespace itself.
+LIVE_NAMESPACE = "ergane-verify"
+
+#: A namespace that is never registered on the live double.
+ABSENT_NAMESPACE = "absent-namespace"
+
+
 @pytest.fixture
 async def live_doubles() -> AsyncIterator[_LiveDoubles]:
     """Provide live OTLP / memory listeners and a local Temporal dev server.
 
-    Follows trap 10: the Temporal test server is shut down in a `finally` block
-    so a bare signal cannot orphan it.
+    `start_local` rather than `start_time_skipping`: the time-skipping test
+    server auto-creates every namespace it is asked about, so a namespace check
+    against it can never fail and `ABSENT_NAMESPACE` would answer "exists".
+    Measured on temporalio 1.31.0 by describing three namespaces against each
+    server -- `test_absent_namespace_is_absent_on_the_live_double` below is the
+    committed, always-run form of the second half:
+
+    .. code-block:: text
+
+        # WorkflowEnvironment.start_time_skipping()
+        target_host: 127.0.0.1:46623
+        ergane-verify -> EXISTS ergane-verify 1
+        absent-namespace -> EXISTS absent-namespace 1
+        default -> EXISTS default 1
+
+        # WorkflowEnvironment.start_local()
+        target_host: 127.0.0.1:39469 ns: default
+        default -> EXISTS default
+        absent-namespace -> RPCError 5 Namespace absent-namespace is not found.
+
+    Follows trap 10: the Temporal server is shut down in a `finally` block so a
+    bare signal cannot orphan it.
     """
     async with _loopback_otlp_listener() as otlp_endpoint:
         async with _loopback_memory_listener() as memory_endpoint:
-            environment = await WorkflowEnvironment.start_time_skipping()
+            environment = await WorkflowEnvironment.start_local(namespace=LIVE_NAMESPACE)
             try:
                 yield _LiveDoubles(
                     otlp_endpoint=otlp_endpoint,
@@ -359,13 +505,6 @@ def _fake_memory_client_factory(config: Cfg.Memory) -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=config.url.rstrip("/"), timeout=config.timeout_s)
 
 
-@workflow.defn
-class _EmptyWorkflow:
-    @workflow.run
-    async def run(self) -> str:
-        return "ok"
-
-
 @pytest.fixture
 def fake_subsystems(monkeypatch: pytest.MonkeyPatch) -> tuple[_FakeLLMFactory, _FakeTelegramFactory]:
     """Patch the LLM and Telegram seams with fakes; tests needing live doubles
@@ -391,7 +530,14 @@ async def test_verify_all_subsystems_pass(
     live_doubles: _LiveDoubles,
     fake_subsystems: tuple[_FakeLLMFactory, _FakeTelegramFactory],
 ) -> None:
-    """US2-S1: when every subsystem answers, every finding passes and exit is 0."""
+    """US2-S1: when every subsystem answers, every finding passes and exit is 0.
+
+    Nothing is seeded into the namespace.  The earlier version of this test
+    started a workflow whose id was the one the probe happened to describe,
+    which meant the test manufactured the very condition it asserted; the
+    control below proves that workflow does *not* exist while the finding
+    still passes.
+    """
     config_path = tmp_path / "config.toml"
     temporal_address = live_doubles.temporal_environment.client.service_client.config.target_host
     config_path.write_text(
@@ -399,7 +545,7 @@ async def test_verify_all_subsystems_pass(
             llm_base_url="http://llm.test/v1",
             memory_url=live_doubles.memory_endpoint,
             temporal_address=temporal_address,
-            temporal_namespace="ergane-verify",
+            temporal_namespace=LIVE_NAMESPACE,
             telemetry_endpoint=live_doubles.otlp_endpoint,
         ),
         encoding="utf-8",
@@ -410,16 +556,17 @@ async def test_verify_all_subsystems_pass(
     monkeypatch.setenv("ERGANE_TELEGRAM_BOT_TOKEN", "123456:AAAA")
     monkeypatch.setenv("ERGANE_TELEGRAM_CHAT_ID", "-1")
 
-    # Seed the verification workflow ID so describe() succeeds and the
-    # namespace-exists check passes against the auto-creating test server.
+    # Control: the registered namespace holds no workflow at all, and in
+    # particular not the `ergane-install-verify` id the probe used to describe.
+    # A probe that answers "namespace exists" from a workflow describe fails
+    # here; a probe that asks about the namespace passes.
     from temporalio.client import Client
+    from temporalio.service import RPCError, RPCStatusCode
 
-    temp_client = await Client.connect(temporal_address, namespace="ergane-verify")
-    await temp_client.start_workflow(
-        _EmptyWorkflow.run,
-        id="ergane-install-verify",
-        task_queue="ergane-install-verify",
-    )
+    control_client = await Client.connect(temporal_address, namespace=LIVE_NAMESPACE)
+    with pytest.raises(RPCError) as absent_workflow:
+        await control_client.get_workflow_handle("ergane-install-verify").describe()
+    assert absent_workflow.value.status is RPCStatusCode.NOT_FOUND
 
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
 
@@ -431,7 +578,7 @@ async def test_verify_all_subsystems_pass(
     assert "persona `implementer`" in llm_finding.detail
     assert "1-token" in llm_finding.detail
     temporal_finding = next(f for f in findings if f.check == "temporal")
-    assert "has namespace `ergane-verify`" in temporal_finding.detail
+    assert f"has namespace `{LIVE_NAMESPACE}`" in temporal_finding.detail
     telemetry_finding = next(f for f in findings if f.check == "telemetry")
     assert "exported a test trace span" in telemetry_finding.detail
 
@@ -448,7 +595,12 @@ async def test_verify_no_masking_temporal_namespace_missing(
     live_doubles: _LiveDoubles,
     fake_subsystems: tuple[_FakeLLMFactory, _FakeTelegramFactory],
 ) -> None:
-    """US2-S2: a missing Temporal namespace fails only that finding; the other four still render."""
+    """US2-S2: a missing Temporal namespace fails only that finding; the other four still render.
+
+    The absence is real: the live double registered `LIVE_NAMESPACE` and
+    nothing else, so `ABSENT_NAMESPACE` is unregistered on a server that is
+    otherwise answering.
+    """
     config_path = tmp_path / "config.toml"
     temporal_address = live_doubles.temporal_environment.client.service_client.config.target_host
     config_path.write_text(
@@ -456,7 +608,7 @@ async def test_verify_no_masking_temporal_namespace_missing(
             llm_base_url="http://llm.test/v1",
             memory_url=live_doubles.memory_endpoint,
             temporal_address=temporal_address,
-            temporal_namespace="absent-namespace",
+            temporal_namespace=ABSENT_NAMESPACE,
             telemetry_endpoint=live_doubles.otlp_endpoint,
         ),
         encoding="utf-8",
@@ -477,6 +629,35 @@ async def test_verify_no_masking_temporal_namespace_missing(
     assert "temporal operator namespace create absent-namespace" in checks["temporal"].detail
     for check in ("llm", "memory", "telemetry", "escalation"):
         assert checks[check].passed is True
+
+
+@pytest.mark.asyncio
+async def test_absent_namespace_is_absent_on_the_live_double(
+    live_doubles: _LiveDoubles,
+) -> None:
+    """The double used by US2-S1/S2 answers about namespaces, not about workflows.
+
+    Without this, `test_verify_no_masking_temporal_namespace_missing` could pass
+    against a server that auto-registers namespaces — the failure would come
+    from an absent *workflow* and the test would still be green while the probe
+    was wrong.  This asserts the server itself calls `ABSENT_NAMESPACE` absent
+    and `LIVE_NAMESPACE` present, which is the property the probe is read
+    against.
+    """
+    from temporalio.api.workflowservice.v1 import DescribeNamespaceRequest
+    from temporalio.client import Client
+    from temporalio.service import RPCError, RPCStatusCode
+
+    address = live_doubles.temporal_environment.client.service_client.config.target_host
+    client = await Client.connect(address, namespace=LIVE_NAMESPACE)
+    service = client.service_client.workflow_service
+
+    present = await service.describe_namespace(DescribeNamespaceRequest(namespace=LIVE_NAMESPACE))
+    assert present.namespace_info.name == LIVE_NAMESPACE
+
+    with pytest.raises(RPCError) as absent:
+        await service.describe_namespace(DescribeNamespaceRequest(namespace=ABSENT_NAMESPACE))
+    assert absent.value.status is RPCStatusCode.NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +754,62 @@ async def test_verify_timeout_on_closed_port(
         assert finding.passed is False, f"{check_name} should have failed"
         assert elapsed < bound_s + 0.5, f"{check_name} took {elapsed}s, expected < {bound_s + 0.5}s"
         assert finding.detail.startswith("timed out") or "127.0.0.1:1" in finding.detail
+
+
+@pytest.mark.asyncio
+async def test_verify_temporal_bounds_a_blackholed_address(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US2-S4: a Temporal address that accepts and never answers fails inside its timeout.
+
+    "Hanging is a defect, not patience."  Measured against the unbounded probe,
+    `Client.connect` to such an address never returns:
+
+    .. code-block:: text
+
+        blackhole at 127.0.0.1:33319
+        STILL HANGING after 12.00s -> unbounded
+
+    so the assertion below is not a formality — nothing in the SDK bounds this
+    for us.  The gather is run under an outer `wait_for` well past the declared
+    timeout so an unbounded probe fails this test instead of wedging the suite.
+    """
+    timeout_s = 2
+    async with _blackhole_listener() as address:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            _full_config_toml(
+                llm_base_url="http://127.0.0.1:1/v1",
+                temporal_address=address,
+                temporal_namespace="factory",
+                temporal_timeout_s=timeout_s,
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
+
+        from factory.controlplane.config import load_controlplane_config
+
+        config = load_controlplane_config(str(config_path))
+        assert config.temporal.timeout_s == timeout_s
+
+        probe = verify_module.TemporalProbe()
+        start = time.monotonic()
+        try:
+            snapshot = await asyncio.wait_for(probe.gather(config), timeout_s + 10)
+        except TimeoutError:
+            pytest.fail(
+                f"TemporalProbe.gather did not return {timeout_s + 10}s into a "
+                f"{timeout_s}s timeout against a black-holed address — it is unbounded"
+            )
+        elapsed = time.monotonic() - start
+
+    finding = probe.evaluate(snapshot)
+    assert finding.passed is False
+    assert elapsed < timeout_s + 1.5, f"gather took {elapsed:.2f}s for a {timeout_s}s timeout"
+    assert f"timed out after {timeout_s}s" in finding.detail
+    assert address in finding.detail
 
 
 # ---------------------------------------------------------------------------

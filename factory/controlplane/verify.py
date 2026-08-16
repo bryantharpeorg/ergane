@@ -120,6 +120,26 @@ async def _temporal_client_factory(config: ControlPlaneConfig.Temporal) -> Any:
     return await Client.connect(address, namespace=namespace)
 
 
+async def _describe_temporal_namespace(
+    config: ControlPlaneConfig.Temporal,
+    namespace: str,
+) -> str:
+    """Connect and ask the server about `namespace`, returning the name it reports.
+
+    Raises `RPCError` with `NOT_FOUND` when the namespace is not registered —
+    the one condition that means "create it".  Kept separate from the probe so
+    the whole connect-plus-describe round trip can be wrapped in a single
+    timeout by the caller.
+    """
+    from temporalio.api.workflowservice.v1 import DescribeNamespaceRequest
+
+    client = await _temporal_client_factory(config)
+    response = await client.service_client.workflow_service.describe_namespace(
+        DescribeNamespaceRequest(namespace=namespace)
+    )
+    return response.namespace_info.name
+
+
 def _memory_client_factory(config: ControlPlaneConfig.Memory) -> httpx.AsyncClient:
     """Build an HTTP client for the memory backend if it has a URL."""
     assert config.url is not None
@@ -266,7 +286,19 @@ class LLMProbe:
 
 
 class TemporalProbe:
-    """Pings Temporal and confirms the configured namespace exists."""
+    """Pings Temporal and confirms the configured namespace exists.
+
+    The question this probe asks is `DescribeNamespace`, not "does some workflow
+    exist".  Those are different objects: a healthy factory host answers
+    `NOT_FOUND` for the workflow id `ergane-install-verify` while the namespace
+    is registered, so describing a workflow reports every correctly-installed
+    host as missing its namespace and tells the operator to create one that is
+    already there.
+
+    `describe_namespace` lives on the *workflow* service in temporalio 1.31.0
+    (the operator service carries only `delete_namespace`), which is why the
+    call below goes through `service_client.workflow_service`.
+    """
 
     name = "temporal"
 
@@ -277,15 +309,25 @@ class TemporalProbe:
         namespace = config.temporal.namespace or os.environ.get("TEMPORAL_NAMESPACE", "factory")
         timeout = config.temporal.timeout_s
 
-        start = time.monotonic()
         try:
-            client = await _temporal_client_factory(config.temporal)
-            handle = client.get_workflow_handle("ergane-install-verify")
-            await handle.describe()
-            exists = True
+            # The whole round trip is bounded, connect included.  An address that
+            # accepts and never answers — as opposed to one that refuses — leaves
+            # `Client.connect` waiting forever, and a timeout branch that can only
+            # be reached after an exception surfaces never runs at all.
+            await asyncio.wait_for(
+                _describe_temporal_namespace(config.temporal, namespace),
+                timeout,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            return TemporalSnapshot(
+                address=address,
+                namespace=namespace,
+                namespace_exists=False,
+                detail=f"timed out after {timeout}s waiting for Temporal at {address}",
+            )
         except RPCError as exc:
             if exc.status is RPCStatusCode.NOT_FOUND:
-                # The server answered but the namespace is not registered.
+                # The server answered, and it does not know this namespace.
                 return TemporalSnapshot(
                     address=address,
                     namespace=namespace,
@@ -302,14 +344,6 @@ class TemporalProbe:
                 detail=f"Temporal at {address} could not confirm namespace `{namespace}`: {type(exc).__name__}: {exc}",
             )
         except Exception as exc:
-            elapsed = time.monotonic() - start
-            if elapsed >= timeout:
-                return TemporalSnapshot(
-                    address=address,
-                    namespace=namespace,
-                    namespace_exists=False,
-                    detail=f"timed out after {timeout}s waiting for Temporal at {address}",
-                )
             return TemporalSnapshot(
                 address=address,
                 namespace=namespace,
@@ -320,7 +354,7 @@ class TemporalProbe:
         return TemporalSnapshot(
             address=address,
             namespace=namespace,
-            namespace_exists=exists,
+            namespace_exists=True,
             detail=f"Temporal at {address} has namespace `{namespace}`",
         )
 
