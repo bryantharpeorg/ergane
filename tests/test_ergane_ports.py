@@ -277,7 +277,7 @@ def test_repo_onboard_passes_a_conforming_repo(
 
     assert result.code == 0
     assert "visibility" in result.stdout
-    assert "merge_queue" in result.stdout
+    assert "gated_landing" in result.stdout
     assert "factory_yaml" in result.stdout
 
 
@@ -312,7 +312,7 @@ def test_repo_onboard_queue_less_repo_is_exit_one(
     result = invoke("repo", "onboard", str(repo))
 
     assert result.code == 1
-    assert "merge_queue" in result.stdout
+    assert "gated_landing" in result.stdout
 
 
 # Import at module bottom to avoid circular imports with fixtures.

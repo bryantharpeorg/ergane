@@ -229,6 +229,36 @@ class TargetRepoProfile:
     findings: tuple["Finding", ...]
     passed: bool
 
+    @classmethod
+    def from_readiness(
+        cls,
+        *,
+        repo: str,
+        reading: Any,
+        policy: Any,
+        declared_gates: tuple[str, ...],
+        findings: tuple["Finding", ...],
+        passed: bool,
+    ) -> "TargetRepoProfile":
+        """Build the report from a forge's two readings and a decided verdict.
+
+        The three descriptive fields above keep this record's own spelling — an
+        operator's report and every stored payload already read that way — so
+        the mapping onto them belongs with the record that owns them, not in a
+        judgment that may never spell them (049 US2, FR-006). `reading` and
+        `policy` are structural: `forge.py` imports `Finding` from here.
+        """
+        return cls(
+            repo=repo,
+            default_branch=reading.default_branch,
+            visibility=reading.visibility,
+            queue_enabled=policy.gates_on_named_checks,
+            required_checks=tuple(policy.required_checks),
+            declared_gates=declared_gates,
+            findings=findings,
+            passed=passed,
+        )
+
 
 @dataclass(frozen=True)
 class Finding:

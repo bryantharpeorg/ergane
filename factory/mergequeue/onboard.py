@@ -1,28 +1,31 @@
-"""US3's pure onboarding judgment: repo facts + gates → findings (FR-010).
+"""The pure onboarding judgment: what a forge reported + gates → findings.
 
-`validate_target_repo` (the activity) gathers *facts*: repo visibility, whether
-the merge queue is enabled on the default branch, the queue's required checks,
-and the clone's committed `factory.yaml`. This module turns those facts into a
+`onboard_target_repo` (the activity) reads a repository through a forge: what it
+calls the repository, what the branch a landing goes into does to a proposal,
+and the clone's committed `factory.yaml`. This module turns those readings into a
 `TargetRepoProfile` whose `findings` say, one check at a time, whether the repo
-is ready for the factory to dispatch against it. It is pure — no `gh`, no git,
+is ready for the factory to dispatch against it. It is pure — no forge, no git,
 no filesystem, no clock — so it is table-tested with no fakes at all
-(plan.md § US3, T036).
+(`tests/test_onboard.py`).
 
-The checks, each one a `Finding` (check slug, passed, actionable detail):
+049's US2 made these questions forge-neutral: they were three settings only
+GitHub has, so a target elsewhere failed onboarding not for being unready but
+because they did not apply (D-046). Nothing here spells one forge's
+configuration; `tests/test_forge_readiness.py` reads this source to keep it so.
 
-- **`visibility`** — the repo must be public, because the merge queue is
-  available on any plan only for public repos (D-007). Private-on-Free cannot
-  queue, so a private repo is rejected for dispatch.
-- **`merge_queue`** — the merge queue must be enabled on the default branch. A
-  queue that is not enabled cannot ever accept an enqueue.
+- **`gated_landing`** (Q2) — the branch must refuse a landing until *named*
+  checks pass: the gates the manifest declares are the gates the forge runs.
+- **`autonomous_landing`** (Q3) — and then complete the merge itself, separate
+  because separately actionable: a branch that gates and waits for a click is
+  one this factory cannot land through (D-024).
 - **`factory_yaml`** — the repo must commit a valid, non-empty-gated
   `factory.yaml`. A missing or malformed manifest is a failing finding carrying
   the 002 loader's error, never a pass by default: a verifier that shrugged at
   a broken manifest would find no gates, therefore see nothing fail.
-- **`squash_title`** — the repo must title squash merges from the PR title
-  (`squash_merge_commit_title` is `PR_TITLE`). Any other value, or an unreadable
-  value, fails with the one-call remedy (`gh api -X PATCH repos/<owner_repo> -f
-  squash_merge_commit_title=PR_TITLE`).
+- **`landing_title`** (Q5) — the commit the forge writes when it lands must
+  carry the proposal's title, because `ergane spec landed` reads the story out
+  of that subject line. The forge's spelling of the setting travels as evidence
+  and its remedy as the fix; neither is decided here.
 - **`gate_check:<gate>`** — every declared gate must have a required check
   named *exactly* after it. The naming convention is the contract between
   `factory.yaml` and the repo's CI; a declared gate with no matching check
@@ -34,9 +37,11 @@ The checks, each one a `Finding` (check slug, passed, actionable detail):
 
 Each check fails closed: `passed` is the conjunction, and a repo that fails any
 check is rejected for dispatch with instructions for the operator (spec US3 AS2).
-`evaluate_repo` is deliberately handed already-loaded facts (the activity owns
-the `gh` calls and the `factory.yaml` read) so the judgment here can be proven
-in isolation.
+What a forge alone knows arrives on `RepositoryDescription.findings` and is
+appended here without this module knowing what it means (FR-007) — which is how
+a forge-specific rule fails a repository without the judgment learning that
+forge's vocabulary, and is where the rule that a GitHub repo must be public now
+lives.
 
 **034 US4 extends this judgment; it does not fork it.** `ergane init --check`
 gathers four more facts and passes them as `init_facts`; the 003 dispatch path
@@ -64,6 +69,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
+from factory.mergequeue.forge import LandingPolicy, RepositoryDescription
 from factory.mergequeue.models import Finding, TargetRepoProfile
 
 
@@ -113,63 +119,46 @@ class InitFacts:
 def evaluate_repo(
     *,
     repo: str,
-    default_branch: str,
-    visibility: str,
-    queue_enabled: bool,
-    required_checks: Sequence[str],
+    reading: "RepositoryDescription",
+    policy: "LandingPolicy",
     declared_gates: Sequence[str],
     factory_yaml_error: str | None = None,
-    squash_merge_commit_title: str | None = None,
-    forge_findings: Sequence[Finding] = (),
     init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
-    """Judge a target repo's facts against the factory's assumptions.
+    """Judge a repository's two readings against what the factory needs.
 
-    Each argument is a *fact the activity already gathered*; this function holds
-    no I/O. `required_checks` is what the queue will demand of a PR (the
-    `merge_queue` rule's `required_status_checks`, or the classic-protection
-    fallback), and `declared_gates` is what the repo's own `factory.yaml` names
-    (`FactoryConfig.gates` keys). `factory_yaml_error`, when set, is the 002
-    loader's `FactoryConfigError` message — a broken manifest is a failing
-    finding, never a pass by default. `squash_merge_commit_title` is the repo's
-    merge setting read via the REST repo endpoint; `None` means the setting was
-    absent or unreadable, which also fails closed.
-
-    `forge_findings` is what the forge answered about facts only it has (049
-    FR-007), appended without this function knowing what they mean, and read
-    *first* so US2 can move D-007's visibility finding across the seam without
-    reshaping the report.
-
-    The profile's `findings` are ordered so the operator preflight reads the
-    repo's own health first (visibility, queue, manifest, squash title), then
-    the gate↔check mapping, which is where a deterministic-CI repo most often
-    diverges.
+    Each argument is something the caller already read; this holds no I/O.
+    `reading` answers Q1 and carries what only this forge knows (FR-007),
+    appended without understanding it and read *first*, so a forge-authored
+    refusal lands where an operator has always found the repo's own health.
+    `policy` answers Q2, Q3 and Q5 for the branch a landing goes into and
+    carries the checks it requires, so Q4 can be asked without knowing where a
+    forge keeps them. `factory_yaml_error` is the 002 loader's message — a
+    broken manifest fails, never passes by default.
     """
 
-    findings: list[Finding] = list(forge_findings)
+    findings: list[Finding] = list(reading.findings)
 
-    # The repo must be public: the queue is available on any plan only for
-    # public repos (D-007). Private-on-Free cannot ever enqueue, so this fails
-    # closed regardless of the queue flag.
-    _visibility_finding(findings, visibility)
-
-    # The queue must be enabled on the default branch; the activity read the
-    # merge-queue rule for exactly that branch.
-    _queue_finding(findings, default_branch, queue_enabled)
+    # Q2: the branch must refuse a landing until named checks pass, and Q3: it
+    # must then finish the job itself. One forge may answer both from a single
+    # setting; that is its coincidence, not a property of forges, so they are
+    # two findings and an operator is told which one is missing.
+    _gated_landing_finding(findings, policy)
+    _autonomous_landing_finding(findings, policy)
 
     # The manifest must be present, valid, and declare gates. A broken manifest
     # is a failing finding carrying the loader's error — never a shrug that
     # would read as "no gates, so nothing to fail".
     _manifest_finding(findings, factory_yaml_error)
 
-    # Squash-merge titles must come from the PR title so the landing grammar
-    # survives the merge. An unreadable setting (absent in the REST payload) is
-    # treated as a failure, matching the factory_yaml precedent.
-    _squash_title_finding(findings, repo, squash_merge_commit_title)
+    # Q5: the landing commit must carry the proposal's title so the landing
+    # grammar survives the merge. A forge that would not say fails closed,
+    # matching the factory_yaml precedent.
+    _landing_title_finding(findings, policy)
 
-    # The gate ↔ check mapping, by name (position is irrelevant).
+    # Q4: the gate ↔ check mapping, by name (position is irrelevant).
     declared = set(declared_gates)
-    required = set(required_checks)
+    required = set(policy.required_checks)
     for gate in declared:
         _gate_check_finding(findings, gate, gate in required)
     for check in sorted(required - declared):
@@ -180,12 +169,10 @@ def evaluate_repo(
     # read does not change shape underneath them.
     findings.extend(evaluate_init_facts(init_facts))
 
-    return TargetRepoProfile(
+    return TargetRepoProfile.from_readiness(
         repo=repo,
-        default_branch=default_branch,
-        visibility=visibility,
-        queue_enabled=queue_enabled,
-        required_checks=tuple(required_checks),
+        reading=reading,
+        policy=policy,
         declared_gates=tuple(declared_gates),
         findings=tuple(findings),
         passed=all(f.passed for f in findings),
@@ -195,39 +182,36 @@ def evaluate_repo(
 # --- the checks ----------------------------------------------------------------
 
 
-def _visibility_finding(findings: list[Finding], visibility: str) -> None:
-    public = str(visibility).strip().lower() == "public"
-    if public:
-        findings.append(Finding("visibility", True, "repo is public"))
+def _gated_landing_finding(findings: list[Finding], policy: "LandingPolicy") -> None:
+    if policy.gates_on_named_checks:
+        findings.append(Finding(
+            "gated_landing", True,
+            f"{policy.branch} refuses a landing until its named checks pass",
+        ))
     else:
-        findings.append(
-            Finding(
-                "visibility",
-                False,
-                f"repo is {visibility!r}; the merge queue is available on any "
-                "plan only for public repos — make the repo public, or dispatch "
-                "against a public target (D-007)",
-            )
-        )
+        findings.append(Finding(
+            "gated_landing", False,
+            f"{policy.branch!r} does not refuse a landing until named checks pass, "
+            "so a change could land with no gate having run; configure the branch "
+            "to require the gates this repository declares",
+        ))
 
 
-def _queue_finding(
-    findings: list[Finding], default_branch: str, queue_enabled: bool
+def _autonomous_landing_finding(
+    findings: list[Finding], policy: "LandingPolicy"
 ) -> None:
-    if queue_enabled:
-        findings.append(
-            Finding("merge_queue", True, f"merge queue enabled on {default_branch}")
-        )
+    if policy.lands_without_a_human:
+        findings.append(Finding(
+            "autonomous_landing", True,
+            f"{policy.branch} completes a landing without a human",
+        ))
     else:
-        findings.append(
-            Finding(
-                "merge_queue",
-                False,
-                f"merge queue is not enabled on the default branch "
-                f"{default_branch!r}; enable the `merge_queue` branch rule there "
-                "so a landing can enqueue",
-            )
-        )
+        findings.append(Finding(
+            "autonomous_landing", False,
+            f"{policy.branch!r} will not complete a landing without a human; this "
+            "factory has no human in the loop by construction (D-024), so configure "
+            "the branch to land a proposal itself once its named checks pass",
+        ))
 
 
 def _manifest_finding(
@@ -246,34 +230,25 @@ def _manifest_finding(
         )
 
 
-def _squash_title_finding(
-    findings: list[Finding], repo: str, squash_merge_commit_title: str | None
-) -> None:
-    if squash_merge_commit_title == "PR_TITLE":
-        findings.append(
-            Finding("squash_title", True, "squash merges are titled from the PR title")
-        )
+def _landing_title_finding(findings: list[Finding], policy: "LandingPolicy") -> None:
+    if policy.landing_title_from_proposal:
+        findings.append(Finding(
+            "landing_title", True, "a landing commit takes the proposal's title",
+        ))
         return
 
-    if squash_merge_commit_title is None:
-        observed = "unreadable"
-        cause = (
-            "the setting was not returned by the repo endpoint — this usually means "
-            "the token lacks push permission on the repo, which is what hides GitHub's "
-            "merge-settings fields"
-        )
+    if policy.landing_title_source is None:
+        observed = "the forge would not report its title source, so it is unreadable"
     else:
-        observed = repr(squash_merge_commit_title)
-        cause = f"observed value was {observed}"
+        observed = f"the forge reports its title source as {policy.landing_title_source!r}"
 
-    findings.append(
-        Finding(
-            "squash_title",
-            False,
-            f"squash_merge_commit_title is {observed}; {cause} — run "
-            f"`gh api -X PATCH repos/{repo} -f squash_merge_commit_title=PR_TITLE`",
-        )
-    )
+    findings.append(Finding(
+        "landing_title", False,
+        f"a landing commit will not take the proposal's title — {observed}; "
+        "`ergane spec landed` reads a story out of the landed subject line, so a "
+        "landing titled from anything else is work this factory cannot see it did"
+        + (f" — {policy.landing_title_remedy}" if policy.landing_title_remedy else ""),
+    ))
 
 
 def _gate_check_finding(findings: list[Finding], gate: str, matched: bool) -> None:
@@ -286,9 +261,10 @@ def _gate_check_finding(findings: list[Finding], gate: str, matched: bool) -> No
             Finding(
                 f"gate_check:{gate}",
                 False,
-                f"gate '{gate}' is declared in factory.yaml but the merge queue "
-                f"requires no check named '{gate}' — add it to the required "
-                "checks so the queue runs the gate the factory declares",
+                f"gate '{gate}' is declared in factory.yaml but the landing "
+                f"branch requires no check named '{gate}' — add it to the "
+                "branch's required checks so the forge runs the gate the "
+                "factory declares",
             )
         )
 

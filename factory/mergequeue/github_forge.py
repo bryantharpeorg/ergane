@@ -15,8 +15,12 @@ and easy to lose in a rewrite: the required checks ride a *sibling*
 protected" is an answer rather than a failure.
 
 A seam needing this repository re-provisioned would be a failed seam (FR-003),
-so a GitHub target's judgment is byte-identical: same commands, same order,
-same findings.
+so a GitHub target sees the same commands in the same order as before the seam.
+
+049's US2 moved D-007 here, where it is true: "the repo must be public" is a
+GitHub billing constraint, not a readiness question, so it arrives as a finding
+on `RepositoryDescription` instead of being asked of forges with no notion of
+visibility (FR-007) — as does `landing_title_remedy`.
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ from factory.mergequeue.gh import (
     _parse_run_id,
     _tail,
 )
-from factory.mergequeue.models import CheckFailure, PrSnapshot
+from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 
 #: What GitHub calls "title this landing from the proposal" (D-041), spelled
 #: once, here, where it is true.
@@ -71,10 +75,14 @@ class GithubForge:
             if isinstance(default_ref, dict)
             else str(default_ref)
         )
+        visibility = str(payload.get("visibility") or "")
         self._description = RepositoryDescription(
             address=str(payload.get("nameWithOwner") or ""),
             default_branch=default_branch,
-            visibility=str(payload.get("visibility") or ""),
+            visibility=visibility,
+            # D-007 is GitHub's own answer about whether this repository can be
+            # gated and landed at all, so GitHub is where it is stated (FR-007).
+            findings=(_readiness_visibility_finding(visibility),),
         )
         return self._description
 
@@ -119,6 +127,8 @@ class GithubForge:
             lands_without_a_human=gated,
             landing_title_from_proposal=title_source == _TITLE_FROM_PROPOSAL,
             landing_title_source=title_source,
+            # GitHub's own one-call fix, which no neutral sentence can express.
+            landing_title_remedy=_readiness_title_remedy(address, title_source),
         )
 
     # --- the landing half (049-US3, FR-009) ----------------------------------
@@ -217,6 +227,42 @@ class GithubForge:
             spent += len(log.encode("utf-8"))
             results.append(CheckFailure(name, entry.link, log, ""))
         return tuple(results)
+
+
+def _readiness_visibility_finding(visibility: str) -> Finding:
+    """D-007 as GitHub's own finding, verbatim from the judgment it left.
+
+    It did not soften crossing the seam — still *failing*, because
+    private-on-Free cannot ever enqueue and advice is what nobody acts on.
+    """
+    if str(visibility).strip().lower() == "public":
+        return Finding("visibility", True, "repo is public")
+    return Finding(
+        "visibility",
+        False,
+        f"repo is {visibility!r}; the merge queue is available on any "
+        "plan only for public repos — make the repo public, or dispatch "
+        "against a public target (D-007)",
+    )
+
+
+def _readiness_title_remedy(address: str, title_source: str | None) -> str:
+    """How to make GitHub title a landing from the proposal — one `gh` call.
+
+    An absent setting gets the cause too: GitHub hides these fields from a token
+    without push permission, so PATCH alone would be run and watched to fail.
+    """
+    call = (
+        f"run `gh api -X PATCH repos/{address} "
+        "-f squash_merge_commit_title=PR_TITLE`"
+    )
+    if title_source is None:
+        return (
+            "the setting was not returned by the repo endpoint — this usually "
+            "means the token lacks push permission on the repo, which is what "
+            f"hides GitHub's merge-settings fields — {call}"
+        )
+    return call
 
 
 def _refused(error: GhError) -> ForgeError:

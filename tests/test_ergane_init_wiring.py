@@ -17,7 +17,7 @@ paid for five times in two days:
 - The primary assertion is not on the call log. It runs the factory's own reader
   — `onboard_target_repo` -> `evaluate_repo`, the gate at every epic start — and
   requires `profile.passed`. With the wiring doing nothing the model keeps its
-  fresh-repo state, so `squash_title`, `merge_queue` and `gate_check:*` fail.
+  fresh-repo state, so `landing_title`, `gated_landing` and `gate_check:*` fail.
 
 **No real GitHub repository is touched by anything in this file**: every
 `GhClient` here is constructed with `runner=<the model>`.
@@ -92,6 +92,7 @@ from factory.cli.errors import EXIT_OK, EXIT_USER
 from factory.mergequeue import wiring
 from factory.mergequeue.gh import GhClient
 from factory.mergequeue.github_forge import GithubForge
+from factory.mergequeue.forge import LandingPolicy, RepositoryDescription
 from factory.mergequeue.onboard import evaluate_repo
 from factory.verify.factory_yaml import _SUPPORTED_VERSION, parse_factory_config
 
@@ -384,12 +385,8 @@ def test_wiring_makes_the_repo_pass_the_factorys_own_onboarding_gate(
 
     checks = {f.check for f in profile.findings}
     assert checks == {
-        "visibility",
-        "merge_queue",
-        "factory_yaml",
-        "squash_title",
-        "gate_check:test",
-        "gate_check:lint",
+        "visibility", "gated_landing", "autonomous_landing", "factory_yaml",
+        "landing_title", "gate_check:test", "gate_check:lint",
     }
     assert profile.default_branch == "main"
     assert sorted(profile.required_checks) == ["lint", "test"]
@@ -456,12 +453,12 @@ def test_the_generated_jobs_produce_no_unknown_check_finding(
 
     profile = evaluate_repo(
         repo="acme/app",
-        default_branch="main",
-        visibility="public",
-        queue_enabled=True,
-        required_checks=job_names,
+        reading=RepositoryDescription(address="acme/app", default_branch="main"),
+        policy=LandingPolicy(
+            branch="main", gates_on_named_checks=True, lands_without_a_human=True,
+            required_checks=tuple(job_names), landing_title_from_proposal=True,
+        ),
         declared_gates=["test", "lint"],
-        squash_merge_commit_title="PR_TITLE",
     )
 
     assert [f.check for f in profile.findings if f.check.startswith("unknown_check:")] == []
@@ -624,7 +621,7 @@ def test_a_landing_branch_that_is_not_the_default_is_wired_and_the_divergence_re
     # And the warning is true: the factory's gate reads `main` and still fails.
     profile = onboarding_profile(repo, github)
     assert not profile.passed
-    assert "merge_queue" in [check for check, _ in failed(profile)]
+    assert "gated_landing" in [check for check, _ in failed(profile)]
 
 
 # The CI half: "when the repo has no CI producing those checks"

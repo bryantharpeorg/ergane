@@ -225,7 +225,7 @@ def test_the_shared_judgment_judges_a_forge_that_never_spawns_gh(
 
     assert unready.passed is False
     assert {f.check for f in unready.findings if not f.passed} >= {
-        "visibility", "merge_queue", "squash_title",
+        "gated_landing", "autonomous_landing", "landing_title",
     }
 
     # The repository changes; nothing about the judgment does.

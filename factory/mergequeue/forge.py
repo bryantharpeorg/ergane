@@ -51,8 +51,9 @@ class RepositoryDescription:
     later call addresses. `visibility` is what it says about who can see the
     repository; `""` means *this forge has no such notion*. Reported, never
     judged: the rule that a repository must be public belongs to GitHub (D-007),
-    and US2 is where it moves into the GitHub implementation and stops being
-    asked of forges it cannot apply to.
+    and 049's US2 moved it into the GitHub implementation, where it arrives as
+    one of the `findings` below rather than as a question asked of forges it
+    cannot apply to.
 
     `findings` is how a forge answers about facts only it has, appended by the
     shared judgment without knowing what they mean — which is what lets a
@@ -85,6 +86,9 @@ class LandingPolicy:
     the proposal's title verbatim. `landing_title_source` is the forge's own
     spelling of the setting behind it: evidence for a remedy, never something to
     decide from; `None` means the forge would not say.
+
+    `landing_title_remedy` (049 US2, FR-007) is how a forge says to fix that —
+    one call only it knows. Empty means it offered none.
     """
 
     branch: str
@@ -93,6 +97,8 @@ class LandingPolicy:
     lands_without_a_human: bool = False
     landing_title_from_proposal: bool = False
     landing_title_source: str | None = None
+    #: How this forge says to make a landing take the proposal's title.
+    landing_title_remedy: str = ""
 
 
 class ForgeError(RuntimeError):

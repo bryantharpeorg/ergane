@@ -575,14 +575,10 @@ def onboard_target_repo(
 
     return evaluate_repo(
         repo=repository.address or target_repo,
-        default_branch=repository.default_branch,
-        visibility=repository.visibility,
-        queue_enabled=policy.gates_on_named_checks,
-        required_checks=policy.required_checks,
+        reading=repository,
+        policy=policy,
         declared_gates=declared_gates,
         factory_yaml_error=manifest_error,
-        squash_merge_commit_title=policy.landing_title_source,
-        forge_findings=repository.findings,
         init_facts=init_facts,
     )
 

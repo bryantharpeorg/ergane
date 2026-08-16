@@ -240,9 +240,10 @@ def test_a_scaffolded_registered_wired_repo_passes_every_finding(tmp_path: Path,
     assert profile.passed is True
     assert set(_checks(profile)) == {
         "visibility",
-        "merge_queue",
+        "gated_landing",
+        "autonomous_landing",
         "factory_yaml",
-        "squash_title",
+        "landing_title",
         "gate_check:test",
         "runtime_root_ignored",
         "registry_entry",

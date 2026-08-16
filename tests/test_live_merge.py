@@ -516,7 +516,7 @@ def test_onboarding_fails_a_queue_less_repo_with_actionable_findings(
     assert profile.passed is False
     # The failure is actionable: at least one finding names what to change.
     assert any(not f.passed and f.detail for f in profile.findings)
-    assert any(f.check == "merge_queue" for f in profile.findings)
+    assert any(f.check == "gated_landing" for f in profile.findings)
 
 
 # --- the passing result ------------------------------------------------------
