@@ -1915,9 +1915,17 @@ def test_the_verb_separates_a_branch_that_left_the_machine_from_one_that_did_not
     assert bare is not None
     # The fixture really did put one branch there and not the other, so the
     # verb is being asked a question with two different true answers.
+    # And a decoy the remote *does* hold, whose ref name ends with the local
+    # node's branch.  `git ls-remote` matches a pattern against the tail of a
+    # ref name, so a reader that asked for the short branch name would find
+    # this one and report `us3`'s work as safely off-machine when it is not —
+    # the worst answer this verb can give, and one no other test would catch.
+    local_branch = branch_name(EPIC_ID, TERMINATED_LOCAL)
+    git(repo, "push", "--quiet", "origin", f"main:refs/heads/nested/{local_branch}")
     remote_refs = git(bare, "for-each-ref", "--format=%(refname)")
     assert f"refs/heads/{branch_name(EPIC_ID, TERMINATED_PUSHED)}" in remote_refs
-    assert f"refs/heads/{branch_name(EPIC_ID, TERMINATED_LOCAL)}" not in remote_refs
+    assert f"refs/heads/{local_branch}" not in remote_refs
+    assert f"refs/heads/nested/{local_branch}" in remote_refs
 
     result = run("build", "salvage", str(graph_path))
 
