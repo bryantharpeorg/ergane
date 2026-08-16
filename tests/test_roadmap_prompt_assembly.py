@@ -102,24 +102,70 @@ to serve nothing, so the only voice is the assembly check), verbatim::
 And the whole suite, `uv run pytest -q`::
 
     2552 passed, 44 skipped, 5 warnings in 287.37s (0:04:47)
+
+----
+
+**US2-S4, rebuilt.** The first version of this file satisfied "the operator
+unparks it" by starting a second roadmap run, and a judge review refused it —
+rightly, and for a smaller reason than the mechanism gives. A park is written in
+one place (`RoadmapWorkflow._park`), removed in none, and carried across every
+continue-as-new by `RoadmapCarryOver`; both dispatch guards skip a parked spec
+*before* any check runs. So a fixed `tasks.md` was invisible forever, and the
+scenario's operator action did not exist. That is filed as
+`roadmap/a-parked-spec-can-never-be-unparked` (critical). This story builds the
+signal the scenario names — `unpark_spec`, mirroring `promote_spec` — and the
+`ergane roadmap unpark` verb that sends it, and asserts the durability that
+makes the signal the only exit.
+
+Red for the three new cases, `uv run pytest tests/test_roadmap_prompt_assembly.py
+-q --no-header`, verbatim::
+
+    E       assert [ParkedFindin...dispatched.")] == []
+    E         Left contains one more item: ParkedFinding(spec_dir='001-runtime-root', check='preflight:prompt-assembly', detail="tasks.md: node 'us1': tasks.md declares no phase naming user story US1, so this node has no task slice to work (FR-006). Nothing was dispatched.")
+    E       AssertionError: assert (2, '', 'usag..., promote)\\n') == (0, '', '')
+    E           AttributeError: module 'factory.cli.roadmap' has no attribute 'roadmap_unpark_command'
+    FAILED ...::test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it
+    FAILED ...::test_the_roadmap_unpark_verb_signals_the_running_roadmap
+    FAILED ...::test_the_unpark_verb_carries_the_spec_the_operator_named
+    3 failed, 5 passed in 1.12s
+
+The first of those is the shape of the defect itself: the signal was sent to a
+workflow that declares none, the roadmap ran to completion, and the spec was
+still parked with its `tasks.md` long since fixed.
+
+`test_a_park_survives_continue_as_new_when_no_one_unparks_it` passes red on
+purpose — it pins behaviour that already exists, and it is what stops the unpark
+test from being satisfiable by a roadmap that simply forgot its parks.
 """
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import socket
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Callable
 
 import pytest
+from temporalio.api.enums.v1 import EventType
 from temporalio.testing import WorkflowEnvironment
 
 from factory.roadmap.models import SpecState
+from factory.roadmap.workflow import RoadmapStatus
 from factory.usage.litellm_client import LiteLLMClient
 from factory.workgraph.derive import derive_workgraph
 from factory.workgraph.preflight import prompt_assembly_preflight
 
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
+from tests.roadmap_script import _SCRIPT
+from tests.test_roadmap_schedule_discovery import (  # noqa: F401  (fake_temporal)
+    BARE_ID,
+    SPECS_ROOT,
+    bare_floor,
+    fake_temporal,
+    invoke,
+)
 from tests.test_roadmap_scheduler import (  # noqa: F401  (env is a fixture)
     ChildStartRecord,
     RoadmapWorld,
@@ -314,43 +360,176 @@ def test_the_assembly_preflight_opens_no_client_and_no_socket(
     assert INCIDENT_REFUSAL in findings[0].detail
 
 
-# --- T012 / US2-S4: the fix is picked up ---------------------------------------
+# --- T012 / US2-S4: the operator unparks, and the next tick dispatches ---------
 
 
-async def test_a_fixed_tasks_md_dispatches_on_the_next_roadmap_run(
+async def _await_park(handle: Any, spec_dir: str) -> Any:
+    """Poll `roadmap_status` until `spec_dir` is parked, and hand back its finding."""
+
+    async def poll() -> Any:
+        while True:
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            for finding in status.parked:
+                if finding.spec_dir == spec_dir:
+                    return finding
+            await asyncio.sleep(0.01)
+
+    return await asyncio.wait_for(poll(), timeout=30)
+
+
+async def test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it(
     env: WorkflowEnvironment, tmp_path: Path
 ) -> None:
-    """A park is a refusal to dispatch *this* spec as written, not a verdict.
+    """US2-S4, literally: park, fix, **unpark the running roadmap**, dispatch.
 
-    The operator's recovery is an edit: the same four phases, each heading now
-    naming its story key. The park itself is run state — it survives
-    continue-as-new by design, and no signal clears it — so the operator's unpark
-    is the roadmap's next run, which is what this asserts: same corpus, same
-    workflow id, fixed `tasks.md`, and the spec that parked now dispatches and
-    lands.
+    The park is a refusal to dispatch this spec *as it was read*, and the roadmap
+    does not re-read it: both dispatch guards skip a parked spec before any check
+    runs, and the park rides the carry-over across every continue-as-new. So an
+    operator who fixes `tasks.md` and waits gets nothing — the fix is invisible
+    until they say the park is spent. `unpark_spec` is that sentence, and this
+    test sends it to the same running workflow rather than starting a new one:
+
+    1. `001-runtime-root` (the reconstructed 043 defect) parks; `002-bravo`
+       dispatches and is held open, which is what keeps this one run alive.
+    2. The operator fixes `tasks.md`.
+    3. The operator signals `unpark_spec("001-runtime-root")`.
+    4. `002-bravo` is released, the roadmap reaches its next pass, and the
+       unparked spec dispatches and lands — dispatched *after* bravo, in the
+       tick that followed the signal.
+
+    Nothing here re-checks assembly on the operator's behalf: the next pass runs
+    every pre-dispatch check again, so an unpark of a still-broken spec simply
+    parks again. The signal clears a verdict; it does not grant one.
     """
-    specs_root = tmp_path / "specs"
-    specs_root.mkdir()
+    specs_root = build_corpus(tmp_path, {"002-bravo": dict(state=SpecState.READY)})
     spec_dir = plant_ready(HEADING_DEFECT, specs_root / "001-runtime-root")
 
-    async with run_roadmap(env, RoadmapWorld(), str(specs_root)) as handle:
-        parked_status = await handle.result()
-    assert [finding.check for finding in parked_status.parked] == [
-        "preflight:prompt-assembly"
-    ]
-
-    # The operator fixes the document the finding named.
-    (spec_dir / "tasks.md").write_text(FIXED_TASKS, encoding="utf-8")
+    # Hold bravo's child open so the roadmap is still running — and still this
+    # run — when the edit and the signal land.
+    _SCRIPT.hold = {"002-bravo"}
 
     dispatched: list[str] = []
     async with run_roadmap(
         env, RoadmapWorld(), str(specs_root), on_dispatch=dispatched.append
     ) as handle:
+        parked = await _await_park(handle, "001-runtime-root")
+        assert parked.check == "preflight:prompt-assembly"
+        assert INCIDENT_REFUSAL in parked.detail
+
+        (spec_dir / "tasks.md").write_text(FIXED_TASKS, encoding="utf-8")
+        await handle.signal("unpark_spec", "001-runtime-root")
+
+        # Let the held child finish; the roadmap's next pass is what dispatches.
+        await env.client.get_workflow_handle("epic-002-bravo").signal("release")
         status = await handle.result()
 
     assert status.parked == []
-    assert dispatched == ["001-runtime-root"]
+    assert dispatched == ["002-bravo", "001-runtime-root"]
     assert _status_of(status, "001-runtime-root").landed is True
+
+
+async def test_a_park_survives_continue_as_new_when_no_one_unparks_it(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """The park is durable, which is what makes the unpark signal mean anything.
+
+    Identical to the test above in every respect but one: nobody signals. The
+    `tasks.md` is fixed just the same, the roadmap crosses a continue-as-new
+    boundary just the same (bravo's completion at quiescence forces one, and the
+    first run's history is asserted to carry the event), and the spec stays
+    parked and undispatched anyway.
+
+    Without this, the unpark test proves nothing: a roadmap that quietly dropped
+    its parks — or never parked at all — would pass it. With it, the pair is a
+    control and a treatment. It is also the mechanism of
+    `roadmap/a-parked-spec-can-never-be-unparked` (critical, 2026-08-16) pinned
+    as a test: before `unpark_spec` there was no exit from this state, because
+    nothing writes to `_parked` but `_park`, and nothing removed from it at all.
+    """
+    specs_root = build_corpus(tmp_path, {"002-bravo": dict(state=SpecState.READY)})
+    spec_dir = plant_ready(HEADING_DEFECT, specs_root / "001-runtime-root")
+
+    _SCRIPT.hold = {"002-bravo"}
+
+    dispatched: list[str] = []
+    async with run_roadmap(
+        env, RoadmapWorld(), str(specs_root), on_dispatch=dispatched.append
+    ) as handle:
+        await _await_park(handle, "001-runtime-root")
+
+        # The operator fixes the document — and does nothing else.
+        (spec_dir / "tasks.md").write_text(FIXED_TASKS, encoding="utf-8")
+
+        await env.client.get_workflow_handle("epic-002-bravo").signal("release")
+        status = await handle.result()
+
+        # The boundary was really crossed. The first run's last event is the
+        # continue-as-new itself, so the park reported below is one that rode
+        # the carry-over rather than one that never met a boundary. (The
+        # handle's own `fetch_history` follows the chain to the final run,
+        # which ends COMPLETED — the first run has to be asked for by id.)
+        first_run = env.client.get_workflow_handle(
+            handle.id, run_id=handle.first_execution_run_id
+        )
+        history = await first_run.fetch_history()
+        assert (
+            history.events[-1].event_type
+            == EventType.EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW
+        ), "the roadmap never continued-as-new, so nothing was carried over"
+
+    assert [finding.spec_dir for finding in status.parked] == ["001-runtime-root"]
+    assert dispatched == ["002-bravo"]
+    assert _status_of(status, "001-runtime-root").landed is False
+
+
+# --- T012 / US2-S4: the verb the operator actually types -----------------------
+
+
+def test_the_roadmap_unpark_verb_signals_the_running_roadmap(
+    fake_temporal: Callable[..., Any],
+) -> None:
+    """`ergane roadmap unpark <root> --spec <dir>` reaches the run, silently.
+
+    The same resolution, exit code and silence `promote` has — a signal verb
+    that printed something would be the odd one out on this noun.
+    """
+    client = bare_floor(fake_temporal)
+
+    result = invoke("roadmap", "unpark", SPECS_ROOT, "--spec", "011-agent-sandbox")
+
+    assert (result.code, result.stdout, result.stderr) == (0, "", "")
+    assert client.signals == [(BARE_ID, "unpark_spec")]
+
+
+async def test_the_unpark_verb_carries_the_spec_the_operator_named() -> None:
+    """The signal's argument, which the shared fake handle does not record.
+
+    A verb that sent `unpark_spec` with no spec dir would satisfy the test above
+    and unpark nothing, so the argument is asserted here against a handle that
+    keeps it.
+    """
+    from factory.cli import roadmap as roadmap_cli
+
+    sent: list[tuple[str, tuple[Any, ...]]] = []
+
+    class _Handle:
+        async def signal(self, name: str, *args: Any) -> None:
+            sent.append((name, args))
+
+    async def _handle(_args: Any) -> Any:
+        return _Handle()
+
+    original = roadmap_cli._get_handle
+    roadmap_cli._get_handle = _handle  # type: ignore[assignment]
+    try:
+        code = await roadmap_cli.roadmap_unpark_command(
+            SimpleNamespace(specs_root="specs", spec="001-runtime-root")
+        )
+    finally:
+        roadmap_cli._get_handle = original  # type: ignore[assignment]
+
+    assert code == 0
+    assert sent == [("unpark_spec", ("001-runtime-root",))]
 
 
 # --- T014 / FR-003: `ergane build start` refuses on the same check -------------
