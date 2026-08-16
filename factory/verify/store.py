@@ -60,6 +60,7 @@ from factory.env import (
     FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV,
     resolve_env_flag,
 )
+from factory.mergequeue.models import CheckFailure
 from factory.verify.models import (
     DiffFileSize,
     DiffSizeRefusal,
@@ -80,7 +81,13 @@ from factory.verify.models import (
 
 #: Bumping this means the DDL below changed shape and existing stores need a
 #: migration path. Recorded in the database so a reader can tell.
-SCHEMA_VERSION = 2
+#:
+#: 3 (041-US2): `escalations.check_evidence`. Every store in existence was
+#: written at 2, so `_migrate` below adds the column in place rather than
+#: assuming a fresh database — the first thing the factory does with a store is
+#: `SELECT` the escalation columns by name, and a deployment answering `no such
+#: column` would have lost the escalation channel outright.
+SCHEMA_VERSION = 3
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -152,6 +159,12 @@ CREATE TABLE IF NOT EXISTS escalations (
     resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')),
     resolved_at    TEXT,
     resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
+    -- 041-US2: the failing merge-queue checks the escalation was raised over
+    -- (JSON: list[CheckFailure]). Written since 025 and read since never: the
+    -- column did not exist, so every read-back handed the caller an empty
+    -- tuple. Last in the table because ALTER TABLE ADD COLUMN appends, and a
+    -- migrated store must have the same column order as a fresh one.
+    check_evidence TEXT NOT NULL DEFAULT '[]',
     CHECK ((resolution IS NULL) = (resolved_at IS NULL))
 );
 
@@ -241,14 +254,47 @@ def connect_readonly(path: str | Path) -> sqlite3.Connection:
 
 
 def _bootstrap_schema(conn: sqlite3.Connection) -> None:
-    """Apply the DDL and stamp the version — idempotent across reconnects."""
+    """Apply the DDL, migrate what already exists, and stamp the version.
+
+    Idempotent across reconnects, and — since a store that predates a column is
+    the normal case rather than the exotic one — idempotent across versions too.
+    """
     conn.executescript(_SCHEMA_DDL)
-    recorded = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-    if recorded == 0:
+    _migrate(conn)
+    recorded = conn.execute("SELECT version FROM schema_version").fetchone()
+    if recorded is None:
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
         )
+    elif int(recorded[0]) < SCHEMA_VERSION:
+        # The migrations above brought it up to date; say so, so a reader can
+        # tell. A store already at or beyond this version is left alone: an
+        # older ergane opening a newer store must not stamp it backwards.
+        conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring a store written by an older ergane up to `SCHEMA_VERSION`.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists, so
+    the DDL above never adds a column to a store that has one — which is every
+    store the factory has ever written. Each migration is therefore expressed as
+    "add it if it is missing", keyed off `PRAGMA table_info` rather than off the
+    recorded version, because a version number is a claim and the columns are
+    the fact.
+    """
+    escalation_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(escalations)")
+    }
+    if escalation_columns and "check_evidence" not in escalation_columns:
+        # 041-US2. NOT NULL with a default is what SQLite's ADD COLUMN accepts,
+        # and `[]` is the right reading of a row written before the column
+        # existed: nobody recorded evidence, not "evidence was empty".
+        conn.execute(
+            "ALTER TABLE escalations ADD COLUMN "
+            "check_evidence TEXT NOT NULL DEFAULT '[]'"
+        )
 
 
 # --- verification results ---------------------------------------------------
@@ -574,6 +620,7 @@ _ESCALATION_COLUMNS = (
     "resolution",
     "resolved_at",
     "resolved_via",
+    "check_evidence",
 )
 
 _INSERT_ESCALATION_SQL = (
@@ -618,6 +665,7 @@ def insert_escalation(conn: sqlite3.Connection, record: EscalationRecord) -> Non
             "resolution": resolution,
             "resolved_at": record.resolved_at,
             "resolved_via": _resolved_via(resolution),
+            "check_evidence": _check_evidence_json(record.check_evidence),
         },
     )
     conn.commit()
@@ -759,6 +807,48 @@ def _escalation_from_row(row: tuple[Any, ...]) -> EscalationRecord:
             else EscalationChoice(resolution)
         ),
         resolved_at=values["resolved_at"],
+        check_evidence=_check_evidence_from_json(values["check_evidence"]),
+    )
+
+
+def _check_evidence_json(evidence: tuple[CheckFailure, ...]) -> str:
+    """The failing checks as stored text — longhand, like the other codecs.
+
+    Written out rather than derived so a field added to `CheckFailure` has to be
+    added here too. The alternative is the defect this closes: a record that
+    round-trips *almost* everything, quietly.
+    """
+    return json.dumps(
+        [
+            {
+                "name": failure.name,
+                "url": failure.url,
+                "log_tail": failure.log_tail,
+                "note": failure.note,
+            }
+            for failure in evidence
+        ]
+    )
+
+
+def _check_evidence_from_json(stored: str | None) -> tuple[CheckFailure, ...]:
+    """Read the failing checks back. `None` is a row the column predates.
+
+    Rows written before 041-US2 have `'[]'` after the migration; a row read
+    through a connection that somehow has no such column reads `None`. Both mean
+    the same thing — nobody recorded evidence — which is the only honest reading
+    of a row from a run where none could be recorded.
+    """
+    if not stored:
+        return ()
+    return tuple(
+        CheckFailure(
+            name=item["name"],
+            url=item["url"],
+            log_tail=item["log_tail"],
+            note=item["note"],
+        )
+        for item in json.loads(stored)
     )
 
 

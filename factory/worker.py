@@ -74,6 +74,7 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
+from factory.escalation.workflow import EscalationWorkflow
 from factory.roadmap.workflow import (
     read_corpus_activity,
     read_spec_text_activity,
@@ -83,12 +84,15 @@ from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
 
 logger = logging.getLogger(__name__)
 
-#: The factory's two workflow types (D-002 for the epic; 009 adds the roadmap).
-#: `EpicWorkflow` is one epic over a `WorkGraph`; `RoadmapWorkflow` is the
-#: long-lived scheduler that dispatches dispatchable specs as child epics (US2,
-#: FR-004). Both run on the one `workgraph` task queue, so a single worker poll
-#: serves epics an operator started and epics the roadmap dispatched alike.
-WORKFLOWS = [EpicWorkflow, RoadmapWorkflow]
+#: The factory's three workflow types (D-002 for the epic; 009 adds the roadmap;
+#: 041-US2 adds the escalation). `EpicWorkflow` is one epic over a `WorkGraph`;
+#: `RoadmapWorkflow` is the long-lived scheduler that dispatches dispatchable
+#: specs as child epics (US2, FR-004); `EscalationWorkflow` is one human
+#: decision, started standalone by a caller with no epic or as a child by one
+#: that has. All three run on the one `workgraph` task queue, so a single worker
+#: poll serves epics an operator started, epics the roadmap dispatched, and the
+#: escalations either of them raised.
+WORKFLOWS = [EpicWorkflow, RoadmapWorkflow, EscalationWorkflow]
 
 #: Every activity the three components ship, grouped by the component that owns
 #: it. The interpreter's own surface is first because it is the one whose
@@ -121,6 +125,11 @@ ACTIVITIES = [
     # 002 — the human in the loop.
     notify_activities.send_escalation,
     notify_activities.expire_escalation,
+    # 041-US2 — the other terminal direction. `expire_escalation` closes an
+    # escalation nobody answered; this one closes an escalation somebody did,
+    # so the row settles because the workflow said so rather than because the
+    # channel that answered happened to write one (FR-013).
+    notify_activities.settle_escalation,
     # 009 — US4 roadmap failure reporting: count, throttle, and recover.
     notify_activities.record_roadmap_failure,
     notify_activities.reset_roadmap_failures,
