@@ -85,11 +85,11 @@ mirror, reply file to next prompt; expiry degrades to operator.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T008 [P] [US2] Write registry cases FIRST: `peers.yaml` parse with
+- [ ] T008 [P] [US3] Write registry cases FIRST: `peers.yaml` parse with
       named findings (personas-loader style); transport values closed
       (`mailbox` today); namespace collision with node ids refused at
       load; unregistered addressee refuses as undeliverable — must fail.
-- [ ] T009 [P] [US2] Write mailbox cases FIRST: one JSON file per message,
+- [ ] T009 [P] [US3] Write mailbox cases FIRST: one JSON file per message,
       atomic write, documented schema (id, sender, body, reply
       instructions); unwritable path refuses immediately to the asker;
       outbox reply reaches the asker by US1's paths; reply after expiry
@@ -99,7 +99,7 @@ mirror, reply file to next prompt; expiry degrades to operator.
 
 ### Implementation for User Story 3
 
-- [ ] T010 [US2] Implement `factory/notify/peers.py` and the mailbox
+- [ ] T010 [US3] Implement `factory/notify/peers.py` and the mailbox
       transport + mirror in `factory/activities/peer_activities.py`, wire
       the outbox sweep into the expiry beat, until T008, T009 pass.
 
@@ -115,7 +115,7 @@ a cross-epic round trip; absent sibling degrades; docs name the channel.
 
 ### Tests for User Story 4 (write FIRST, must fail)
 
-- [ ] T011 [P] [US3] Write cross-epic cases FIRST: an epic-addressed message
+- [ ] T011 [P] [US4] Write cross-epic cases FIRST: an epic-addressed message
       delivers as a signal to the sibling workflow, buffers incuriously,
       and reaches the target node by US1's rules; reply crosses back; a
       finished or absent sibling epic degrades to the operator (the client
@@ -124,10 +124,10 @@ a cross-epic round trip; absent sibling degrades; docs name the channel.
 
 ### Implementation for User Story 4
 
-- [ ] T012 [US3] Implement cross-epic routing in
+- [ ] T012 [US4] Implement cross-epic routing in
       `factory/activities/peer_activities.py` and the namespace completion
       until T011 passes.
-- [ ] T013 [US3] Final sweep + docs: claim the decision-log numbers in
+- [ ] T013 [US4] Final sweep + docs: claim the decision-log numbers in
       `docs/decisions.md` (transport decision; FR-012-amendment extension —
       "park and route"); extend `docs/architecture.md` with the peer
       channel and registry; cross-reference the mailbox schema where the
@@ -147,7 +147,7 @@ operator path or a refusal.
 
 ### Tests for User Story 5 (write FIRST, must fail)
 
-- [ ] T014 [P] [US4] Write consult-spawn cases FIRST with a scripted
+- [ ] T014 [P] [US5] Write consult-spawn cases FIRST with a scripted
       adapter: a persona-addressed message with no live attempt spawns
       exactly one consult with that persona's registry model and the
       assembled context (message, spec, plan, asker identity) in its
@@ -158,7 +158,7 @@ operator path or a refusal.
       configured bound refuse into the operator path; the consult's key is
       issued and torn down inside the spawn bracket and its spend lands in
       the ledger attributed to the asking node — must fail.
-- [ ] T015 [P] [US4] Write memory-layer cases FIRST: with a bank endpoint
+- [ ] T015 [P] [US5] Write memory-layer cases FIRST: with a bank endpoint
       configured, the consult's written MCP config names only the
       factory-owned bank (assert no other endpoint can appear — sweep
       style); with no endpoint configured, no MCP config is written and the
@@ -168,9 +168,9 @@ operator path or a refusal.
 
 ### Implementation for User Story 5
 
-- [ ] T016 [US4] Implement `factory/activities/consult_activities.py` and
+- [ ] T016 [US5] Implement `factory/activities/consult_activities.py` and
       the consult rung in routing until T014, T015 pass.
-- [ ] T017 [US4] Docs: record the consult decision and the two-layer memory
+- [ ] T017 [US5] Docs: record the consult decision and the two-layer memory
       split (§ Decision) alongside US3's claimed entries — coordinate the
       decision-log numbers with whichever of US3/US4 lands second — and add
       the consult runner to `docs/architecture.md`'s module table.

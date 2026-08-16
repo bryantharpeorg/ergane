@@ -2,7 +2,16 @@
 
 One story, one node. Work test-first and commit once per task.
 
-## Tests for User Story 1 (write FIRST, must fail)
+## Phase 1: User Story 1 - An unmeasured metric is recorded as unknown, not as zero
+
+One story, so one phase: everything below is `us1`'s slice. The heading has
+to name the story, and the groups below it have to sit *inside* it, because
+the assembler cuts a slice from the first heading naming a story to the next
+heading of the same depth. Three sibling `##` sections put the tests inside
+the slice and the implementation outside it — the node would have been
+dispatched with its tests and none of the code that makes them pass.
+
+### Tests (write FIRST, must fail)
 
 - [ ] T001 [P] [US1] Write the aggregate cases FIRST, in
       `tests/test_usage_aggregate.py`: an **empty** row set returns `None` for
@@ -26,7 +35,7 @@ One story, one node. Work test-first and commit once per task.
       silently drop it from the row count it reports (spec US1-S5, plan.md trap 4)
       — must fail.
 
-## Implementation
+### Implementation
 
 - [ ] T005 [US1] Widen `AggregatedUsage.prompt_tokens`, `.completion_tokens` and
       `.request_count` to `int | None` in `factory/usage/models.py`, and extend the
@@ -41,7 +50,7 @@ One story, one node. Work test-first and commit once per task.
       `factory/usage/cli.py`. `spend_usd` is untouched (FR-004, plan.md trap 1).
       No schema migration — the columns are already nullable.
 
-## Verification
+### Verification
 
 - [ ] T008 [US1] Run the full suite. Then read one row back with `sqlite3` against
       a scratch store and confirm the columns are `NULL` rather than `0` — the CLI
