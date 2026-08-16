@@ -1364,6 +1364,35 @@ def test_a_salvage_writes_a_per_attempt_ref_at_the_sha_it_returned(
     assert salvage_refs(repo) == {expected: sha}
 
 
+def test_the_ref_names_the_sha_it_was_handed_not_the_branch_tip(
+    repo: Path, factory_root: Path
+) -> None:
+    """FR-006: the ref names *that attempt's* salvage commit, whatever HEAD is.
+
+    The sha the workflow wrote down is the one the activity returned, so that is
+    the commit the record has to name. Reading the branch tip instead would
+    agree on the happy path and quietly disagree the moment anything else
+    committed in between — and the branch tip moving is the entire reason this
+    ref exists. Added after the mutation battery: writing the ref at
+    `_head(path)` passed every other test in this file, because they all record
+    immediately after salvaging, when the two are the same commit.
+    """
+    worktree, sha = _salvage_attempt_1(repo, factory_root)
+    (worktree / "later.py").write_text("VALUE = 3\n", encoding="utf-8")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "--quiet", "-m", "a later commit on the branch")
+    assert head(worktree) != sha
+
+    recorded = record_salvage_ref(
+        EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root
+    )
+
+    assert recorded.written is True
+    assert salvage_refs(repo) == {
+        f"refs/salvage/{EPIC}/{NODE}/attempt-1-{sha[:12]}": sha
+    }
+
+
 def test_the_recorded_sha_survives_the_amend_and_gc_that_orphaned_028s(
     repo: Path, factory_root: Path
 ) -> None:
