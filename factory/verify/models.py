@@ -239,6 +239,14 @@ class FactoryConfig:
     #: 300", or an untouched manifest grows a key it never asked for and FR-005's
     #: byte-identity claim stops holding.
     roadmap: "RoadmapDials | None" = None
+    #: 049 FR-014. The forge this repository is on. Resolved rather than
+    #: nullable — absent means `github`, which is what every repository that
+    #: exists is on, so a reader asking "which forge?" always gets an answer and
+    #: never has to know the default itself. The literal repeats
+    #: `factory.verify.factory_yaml.DEFAULT_FORGE_NAME` because importing it
+    #: here would close a cycle through `factory.verify.gates`; the two
+    #: spellings are pinned together by `tests/test_forge_manifest.py`.
+    forge: str = "github"
 
 
 @dataclass(frozen=True)

@@ -25,7 +25,7 @@ from temporalio.service import RPCError, RPCStatusCode
 from factory.activities.merge_activities import onboard_target_repo
 from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.controlplane.resolve import resolve_temporal_target
-from factory.mergequeue.forge import resolve_forge
+from factory.mergequeue.forge import resolve_forge_for_repo
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
 from factory.workgraph.delta import DeltaResult, derive_delta
@@ -60,8 +60,11 @@ EXIT_TRANSPORT = 2
 _STRUCTURAL_TIMEOUT_S = 1
 
 #: The seam US3's `onboard` command reaches the forge through — since 049's US1
-#: it resolves a forge rather than building a client. One factory, no second.
-_onboard_client_factory = lambda *, repo_path: resolve_forge(repo_path=repo_path)
+#: it resolves a forge rather than building a client, and since US5 the forge is
+#: the one the repository's own manifest declares. One factory, no second.
+_onboard_client_factory = lambda *, repo_path: resolve_forge_for_repo(
+    repo_path=repo_path
+)
 
 
 class _OperatorError(Exception):

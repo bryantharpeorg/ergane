@@ -33,8 +33,9 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 
-#: The forge every repository is on until one says otherwise. 049's US5 teaches
-#: the manifest to name it; until then this is the only answer.
+#: The forge every repository is on until its manifest says otherwise. US5
+#: taught the manifest the `forge:` key; absent, this is still the answer, and
+#: `resolve_forge_for_repo` below is where the two meet.
 DEFAULT_FORGE = "github"
 
 #: Forges that ship with the factory, and the module that registers each on
@@ -265,3 +266,56 @@ class Proposal:
 
     number: int
     url: str
+
+
+# --- the door a repository path goes through (049-US5) ------------------------
+
+
+def resolve_forge_for_repo(*, repo_path: str, **seams: Any) -> Forge:
+    """Build the forge the repository at `repo_path` declares (049 FR-014).
+
+    The door every caller holding a repository path goes through, so which forge
+    is used is decided by the repository rather than by whichever module got
+    there first. A manifest that declares nothing resolves `DEFAULT_FORGE`, which
+    is every repository that exists today — that path is unchanged.
+    """
+    return resolve_forge(_manifest_forge_name(repo_path), repo_path=repo_path, **seams)
+
+
+def _manifest_forge_name(repo_path: str) -> str:
+    """The forge name a repository's manifest declares, or the default.
+
+    One rule, and it is about *whose complaint it is*. Any way a manifest can be
+    unreadable other than its `forge` key belongs to the reader that owns it —
+    including there being no manifest at all, which is the state
+    `ergane init --check` exists to judge, and a `version` that is wrong, which
+    an operator should not first meet as a forge lookup exploding underneath
+    them. All of those resolve the default.
+
+    A manifest whose `forge` key is itself the defect is the one case re-raised.
+    Refusing an unknown forge is the entire point of the key, and swallowing it
+    here would reinstate at the door exactly the silent fallback the loader
+    refuses — a caller handed a GitHub forge for a manifest that said otherwise
+    has already lost, whatever the parser said.
+
+    There is deliberately no `path.is_file()` guard in front of the read: an
+    absent file leaves `load_factory_config` as `missing_manifest`, which this
+    already handles. The guard was written, and the mutation that should have
+    killed the test covering it came back green because removing it changed
+    nothing (evidence M9). A second path to the same answer is a branch no test
+    can hold.
+    """
+    from factory.verify.factory_yaml import (
+        DEFAULT_FORGE_NAME,
+        FactoryConfigError,
+        load_factory_config,
+        resolve_manifest_path,
+    )
+
+    path, _name = resolve_manifest_path(repo_path)
+    try:
+        return load_factory_config(path).forge
+    except FactoryConfigError as error:
+        if error.rule == "forge":
+            raise
+        return DEFAULT_FORGE_NAME

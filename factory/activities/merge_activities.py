@@ -31,8 +31,9 @@ structural guard greps for must never appear in its command surface.
 
 `_client_factory` is the seam in the same sense as `open_bot` and
 `judge_transport`: since 049's US1 it resolves the *forge* the target repository
-is on, and since US3 every landing activity speaks to that forge and nothing
-beneath it — none constructs a forge-native client or names one (FR-009). It
+is on — since US5, the one that repository's own manifest declares — and since
+US3 every landing activity speaks to that forge and nothing beneath it: none
+constructs a forge-native client or names one (FR-009). It
 keeps its name deliberately: twenty-one call sites in the landing suite bind it,
 and US3-S1 requires that suite to pass with no assertion changed, so a rename
 would rewrite the one file whose stillness is the evidence (trap 14).
@@ -49,7 +50,7 @@ from typing import Callable
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
-from factory.mergequeue.forge import Forge, ForgeError, resolve_forge
+from factory.mergequeue.forge import Forge, ForgeError, resolve_forge_for_repo
 from factory.mergequeue.messages import pr_title, render_pr_body
 from factory.mergequeue.models import CheckFailure, PrSnapshot, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts, evaluate_init_facts, evaluate_repo
@@ -277,9 +278,10 @@ class ValidateTargetRepoInput:
 
 
 #: The seam — a factory `(repo_path: str) -> Forge`. Production resolves the
-#: forge the repository is on; tests replace this with one over a scripted `gh`
-#: or a modelled repository. One factory for this boundary, and no second.
-_client_factory: Callable[..., Forge] = lambda *, repo_path: resolve_forge(
+#: forge the repository's own manifest declares (049-US5); tests replace this
+#: with one over a scripted `gh` or a modelled repository. One factory for this
+#: boundary, and no second.
+_client_factory: Callable[..., Forge] = lambda *, repo_path: resolve_forge_for_repo(
     repo_path=repo_path
 )
 

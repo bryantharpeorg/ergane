@@ -183,6 +183,7 @@ def answers_for(slug: str) -> list[str]:
         "",  # standards (omitted)
         "main",  # landing_branch
         "",  # roadmap dials (omitted; 034/US6)
+        "",  # forge (omitted; 049/US5 — absent means github)
         slug,
     ]
 
