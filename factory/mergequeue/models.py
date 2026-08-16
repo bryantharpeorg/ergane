@@ -242,13 +242,12 @@ class TargetRepoProfile:
     ) -> "TargetRepoProfile":
         """Build the report from a forge's two readings and a decided verdict.
 
-        The three descriptive fields above keep this record's own spelling: an
-        operator's `ergane repo onboard` output and every stored payload already
-        read that way. 049's US2 made the *judgment* neutral, so the mapping
-        onto those names belongs here, with the record that owns them, and not
-        in a judgment that may never spell them (FR-006). `reading` and `policy`
-        are taken structurally: `forge.py` imports `Finding` from here, so an
-        import back is a cycle.
+        The three descriptive fields above keep this record's own spelling — an
+        operator's report and every stored payload already read that way — so
+        the mapping onto them belongs here, with the record that owns them, and
+        not in a judgment that may never spell them (049 US2, FR-006). `reading`
+        and `policy` are taken structurally: `forge.py` imports `Finding` from
+        here, so an import back is a cycle.
         """
         return cls(
             repo=repo,

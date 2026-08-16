@@ -15,12 +15,11 @@ one forge's configuration, and `tests/test_forge_readiness.py` reads this file's
 source to keep it so (FR-006). The checks, each a `Finding`:
 
 - **`gated_landing`** (Q2) — the branch must refuse a landing until *named*
-  checks pass. The weight is on named: the contract is that the gates the
-  manifest declares are the gates the forge runs, checkable only by name.
+  checks pass: the contract is that the gates the manifest declares are the
+  gates the forge runs, checkable only by name.
 - **`autonomous_landing`** (Q3) — and then complete the merge on its own.
-  Separate from Q2 because they are separately actionable: a branch that gates
-  correctly and waits for a click is one this factory cannot land through
-  (D-024), and saying which of the two is missing is a report not a riddle.
+  Separate because they are separately actionable: a branch that gates and then
+  waits for a click is one this factory cannot land through (D-024).
 - **`factory_yaml`** — the repo must commit a valid, non-empty-gated
   `factory.yaml`. A missing or malformed manifest is a failing finding carrying
   the 002 loader's error, never a pass by default: a verifier that shrugged at

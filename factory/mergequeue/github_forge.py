@@ -17,11 +17,10 @@ protected" is an answer rather than a failure.
 A seam needing this repository re-provisioned would be a failed seam (FR-003),
 so a GitHub target sees the same commands in the same order as before the seam.
 
-049's US2 moved D-007 here, where it is true: "the repo must be public, because
-the merge queue is available on any plan only for public repos" is a GitHub
-billing constraint, not a readiness question. It now arrives as a finding on
-`RepositoryDescription` instead of being asked of forges with no notion of
-visibility (FR-007), as does `landing_title_remedy`.
+049's US2 moved D-007 here, where it is true: "the repo must be public" is a
+GitHub billing constraint, not a readiness question, so it arrives as a finding
+on `RepositoryDescription` instead of being asked of forges with no notion of
+visibility (FR-007) — as does `landing_title_remedy`.
 """
 
 from __future__ import annotations

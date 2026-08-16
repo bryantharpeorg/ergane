@@ -72,19 +72,29 @@ def _ready_model() -> RepositoryModel:
     return model
 
 
-# --- US2-S1 / SC-002: a forge with no notion of visibility passes -------------
+# --- US2-S1 / SC-002, with SC-003's control built in --------------------------
 
 
-def test_a_forge_that_reports_no_visibility_at_all_passes_readiness(
+def test_a_forge_reporting_no_visibility_passes_and_fails_when_gating_goes(
     tmp_path: Path,
 ) -> None:
-    """The story's whole claim: a repository that gates on named checks, lands
-    with no human, requires exactly the declared gates and titles the landing
-    from the proposal is ready — and it never said who can see it.
+    """The story's whole claim, and the control that keeps it from being free.
+
+    A repository that gates on named checks, lands with no human, requires
+    exactly the declared gates and titles the landing from the proposal is ready
+    — and it never said who can see it (US2-S1, SC-002). Then the *same model*
+    stops gating and readiness fails (SC-003), so one object, one difference and
+    two verdicts show the neutral question deciding an outcome rather than the
+    case having been impossible either way (trap 4).
 
     What edit would make this fail: put the visibility check back into the
-    shared judgment, and a model whose `visibility` is `''` fails a check it
-    cannot answer, as a target on another forge does today.
+    shared judgment, and the model fails a question it cannot answer, as a
+    target on another forge does today; or read Q2 from anything but the forge's
+    landing policy — a hardcoded `True` — and the ungated half passes too.
+
+    FR-008 rides along: manifest validity and gate↔check parity are properties
+    of a tree, so a forge contributing nothing is still asked them.
+    `tests/test_ergane_init_check.py:441` holds the authorship half.
     """
     repo = build_target_repo(tmp_path / "target")
     model = _ready_model()
@@ -95,37 +105,10 @@ def test_a_forge_that_reports_no_visibility_at_all_passes_readiness(
 
     assert profile.passed is True, [f for f in profile.findings if not f.passed]
     assert {f.check for f in profile.findings} == {
-        "gated_landing",
-        "autonomous_landing",
-        "factory_yaml",
-        "landing_title",
-        "gate_check:lint",
-        "gate_check:test",
-        "gate_check:typecheck",
+        "gated_landing", "autonomous_landing", "factory_yaml", "landing_title",
+        "gate_check:lint", "gate_check:test", "gate_check:typecheck",
     }
     assert sorted(profile.required_checks) == list(FIXTURE_GATES)
-    # FR-008's production half, in the same breath: manifest validity and
-    # gate↔check parity are properties of a tree, so they are still asked of a
-    # forge that contributes nothing. `tests/test_ergane_init_check.py:441`
-    # holds the authorship half — no module but `onboard.py` builds them.
-
-
-# --- US2-S1 / SC-003: the control, so the question is shown to decide ---------
-
-
-def test_the_same_model_with_its_gating_removed_fails_readiness(
-    tmp_path: Path,
-) -> None:
-    """SC-003's control, and trap 4's answer for the test above: one model, one
-    difference, two verdicts. Without it, "the neutral repository passes" is
-    consistent with a judgment that passes everything. What edit would make this
-    fail: read Q2 from anything but the forge's landing policy — a hardcoded
-    `True` — and the ungated model passes too.
-    """
-    repo = build_target_repo(tmp_path / "target")
-    model = _ready_model()
-
-    assert onboard_target_repo(FakeForge(model), str(repo)).passed is True
 
     model.branches.clear()  # the repository stops gating; nothing else changes.
 
