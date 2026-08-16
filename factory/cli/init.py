@@ -35,9 +35,9 @@ US6 adds the third act and the third seam. A full init now creates or reconciles
 the repo's roadmap schedule (`factory/roadmap/schedule.py`) before it wires
 GitHub, because a repo that is scaffolded, registered and wired but has no
 scheduler dispatches nothing when a spec is flipped to `ready` — silently. That
-step never raises: an unreachable control plane is a failed *step*, since the
-scaffold and registry entry are already the operator's. The schedule is
-*created* here; making its absence visible to `--check` is US7's half.
+step never raises: an unreachable control plane is a failed *step* (FR-017),
+since the scaffold and registry entry are already the operator's. US7 adds the
+matching finding: the schedule is read here and judged in `onboard.py`.
 """
 
 from __future__ import annotations
@@ -66,6 +66,7 @@ from factory.verify.factory_yaml import (
     parse_factory_config,
     resolve_manifest_path,
 )
+from factory.verify.models import FactoryConfig
 from factory.workgraph.worktree import DEFAULT_RUNTIME_ROOT, LEGACY_FACTORY_ROOT
 
 #: Runtime root created inside the target repo.
@@ -709,6 +710,54 @@ def _control_plane_facts() -> tuple[tuple[Finding, ...], str | None]:
     return tuple(findings), None
 
 
+def _schedule_facts(
+    repo_root: Path, slug: str | None, config: FactoryConfig | None
+) -> dict[str, Any]:
+    """This repo's schedule facts, as `InitFacts` keyword arguments.
+
+    Two things make the answer unknowable rather than negative.  Without a
+    registry entry there is no slug, and the slug is the whole identifier;
+    without a loadable manifest there is nothing to compare a live schedule
+    against.  Each already has its own failing finding, so this one names the
+    cause and points at it rather than repeating the remedy.
+    """
+    if slug is None:
+        return {
+            "schedule_error": (
+                "no entry in the engine registry names this repository, and the "
+                "slug is what identifies its schedule (see the registry_entry "
+                "finding)"
+            )
+        }
+
+    schedule_id = roadmap_schedule.schedule_id_for(slug)
+    if config is None:
+        return {
+            "schedule_id": schedule_id,
+            "schedule_error": (
+                "this repository's manifest did not load, so the schedule has "
+                "nothing to be judged against (see the factory_yaml finding)"
+            ),
+        }
+
+    desired = roadmap_schedule.desired_for_repo(
+        slug=slug, repo_root=repo_root, config=config
+    )
+    try:
+        live = roadmap_schedule.read_schedule(schedule_id)
+    except roadmap_schedule.ScheduleUnavailable as unavailable:
+        return {"schedule_id": schedule_id, "schedule_error": str(unavailable)}
+
+    if live is None:
+        return {"schedule_id": schedule_id}
+    return {
+        "schedule_id": schedule_id,
+        "schedule_present": True,
+        "schedule_paused": live.paused,
+        "schedule_drift": roadmap_schedule.disagreements(desired, live),
+    }
+
+
 def gather_init_facts(repo_root: Path) -> InitFacts:
     """Read the facts init created, so `evaluate_repo` can judge them (FR-010).
 
@@ -720,13 +769,15 @@ def gather_init_facts(repo_root: Path) -> InitFacts:
     registry_path, slug, registry_error = _registry_facts(repo_root)
 
     manifest_path, _manifest_name = resolve_manifest_path(repo_root)
+    config: FactoryConfig | None
     try:
-        landing_branch: str | None = load_factory_config(manifest_path).landing_branch
+        config = load_factory_config(manifest_path)
     except FactoryConfigError:
         # The manifest's own finding carries the loader's error; here the
         # consequence is that the landing branch cannot be judged, and an
         # unjudgeable check is reported rather than skipped.
-        landing_branch = None
+        config = None
+    landing_branch = config.landing_branch if config is not None else None
 
     control_plane, control_plane_error = _control_plane_facts()
 
@@ -745,6 +796,7 @@ def gather_init_facts(repo_root: Path) -> InitFacts:
         ),
         control_plane=control_plane,
         control_plane_error=control_plane_error,
+        **_schedule_facts(repo_root, slug, config),
     )
 
 

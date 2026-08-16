@@ -448,6 +448,35 @@ def register(
         )
 
 
+def forget(
+    slug: str,
+    *,
+    path: str | Path | None = None,
+    timeout_s: float = DEFAULT_LOCK_TIMEOUT_S,
+) -> RegistryEntry | None:
+    """Remove one entry, returning it, or `None` when no entry held that slug.
+
+    Only the entry: the manifest, the gitignore line and `.ergane/` belong to
+    the repository, and removing them is the operator's own git work (FR-011).
+    Held under the same exclusive lock every other mutation takes, so a forget
+    racing an init cannot interleave with it.
+    """
+    registry_path = Path(path) if path is not None else resolve_registry_path()
+    with exclusive_lock(registry_path, timeout_s=timeout_s):
+        document = _read_document(registry_path)
+        repos = document["repos"]
+        if slug not in repos:
+            return None
+        entries = _entries_of(document, registry_path)
+        removed = None
+        for entry in entries:
+            if entry.slug == slug:
+                removed = entry
+        del repos[slug]
+        _write_document(registry_path, document)
+        return removed
+
+
 def rebuild(
     seed_paths: Iterable[str | Path] = (),
     *,
@@ -541,6 +570,7 @@ __all__ = [
     "declared_memory_backend",
     "derive_memory_bank",
     "derive_scopes",
+    "forget",
     "is_valid_slug",
     "load_registry",
     "manifest_status",

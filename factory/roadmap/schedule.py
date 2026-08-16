@@ -294,6 +294,21 @@ async def update_schedule(client: Any, desired: RoadmapSchedule) -> None:
     await client.get_schedule_handle(desired.schedule_id).update(updater)
 
 
+async def delete_schedule(client: Any, schedule_id: str) -> bool:
+    """Delete the schedule; `False` when there was none to delete."""
+    _refuse_live_client(client, "delete")
+
+    from temporalio.service import RPCError, RPCStatusCode
+
+    try:
+        await client.get_schedule_handle(schedule_id).delete()
+    except RPCError as error:
+        if error.status is RPCStatusCode.NOT_FOUND:
+            return False
+        raise ScheduleUnavailable(f"cannot delete schedule {schedule_id}: {error}") from None
+    return True
+
+
 def apply_schedule(desired: RoadmapSchedule) -> ScheduleStep:
     """Create or reconcile the repo's schedule, and never raise (FR-017): an
     unreachable engine is a failed *step*, so the scaffold and registry entry the
@@ -326,6 +341,24 @@ async def _apply(desired: RoadmapSchedule) -> ScheduleStep:
     return ScheduleStep(
         UPDATED, desired.schedule_id, "reconciled to the manifest — " + "; ".join(moved)
     )
+
+
+def read_schedule(schedule_id: str) -> RoadmapSchedule | None:
+    """Read one schedule for `--check`; raises `ScheduleUnavailable`, writes nothing."""
+
+    async def read() -> RoadmapSchedule | None:
+        return await describe_schedule(await _schedule_client_factory(), schedule_id)
+
+    return asyncio.run(read())
+
+
+def remove_schedule(schedule_id: str) -> bool:
+    """Delete one schedule for `repo forget`; raises `ScheduleUnavailable`."""
+
+    async def remove() -> bool:
+        return await delete_schedule(await _schedule_client_factory(), schedule_id)
+
+    return asyncio.run(remove())
 
 
 def format_step(step: ScheduleStep) -> str:

@@ -317,6 +317,11 @@ def _init_facts(**overrides: object) -> InitFacts:
         landing_branch_exists=True,
         control_plane=(Finding("temporal", True, "namespace `factory` exists"),),
         control_plane_error=None,
+        schedule_id="ergane-roadmap-widgets",
+        schedule_present=True,
+        schedule_paused=False,
+        schedule_drift=(),
+        schedule_error=None,
     )
     facts.update(overrides)
     return InitFacts(**facts)  # type: ignore[arg-type]
@@ -427,6 +432,7 @@ def test_several_broken_preconditions_all_render_none_masked() -> None:
         registry_slug=None,
         landing_branch_exists=False,
         control_plane=(Finding("temporal", False, "not answering"),),
+        schedule_present=False,
     )
     failed = [f.check for f in profile.findings if not f.passed]
     assert failed == [
@@ -434,4 +440,5 @@ def test_several_broken_preconditions_all_render_none_masked() -> None:
         "registry_entry",
         "landing_branch",
         "control_plane",
+        "roadmap_schedule",
     ]

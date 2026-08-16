@@ -31,7 +31,7 @@ from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.roadmap import schedule as schedule_module
 
 from tests.fake_gh import FakeGh
-from tests.fake_schedules import FakeScheduleServer
+from tests.fake_schedules import FakeScheduleServer, desired_for, seed
 from tests.test_ergane_init import ScriptedPrompter, _git, _invoke
 
 OWNER_REPO = "acme/widgets"
@@ -152,6 +152,13 @@ def bind_offline_seams(
     gh = fake if fake is not None else conforming_gh()
 
     control_plane = schedules if schedules is not None else FakeScheduleServer()
+    if schedules is None:
+        # A healthy control plane by default, exactly as `conforming_gh()`
+        # describes a healthy GitHub: every repo already in this test's registry
+        # gets the schedule `ergane init` would have created for it.  A test
+        # that means to break the schedule passes its own server.
+        for entry in registry.load_registry().entries:
+            seed(control_plane, desired_for(entry.path, slug=entry.slug))
 
     async def open_schedule_client() -> FakeScheduleServer:
         return control_plane
@@ -240,6 +247,7 @@ def test_a_scaffolded_registered_wired_repo_passes_every_finding(tmp_path: Path,
         "registry_entry",
         "landing_branch",
         "control_plane",
+        "roadmap_schedule",
     }
 
     result = _invoke(["init", "--check", str(repo)])
@@ -302,7 +310,15 @@ def test_a_repo_with_no_registry_entry_fails_only_the_registry_finding(tmp_path:
     after = _checks(init_module.check_repo(repo))
 
     assert set(before) == set(after)
-    assert [check for check in after if not after[check]] == ["registry_entry"]
+    # Two findings, one break.  The slug lives only in the registry and it is
+    # what names the schedule, so dropping the entry does not merely fail the
+    # registry check — it makes the schedule check unanswerable, and an
+    # unanswerable check fails.  The same honest cascade `factory_yaml` already
+    # has over `landing_branch`; nothing is *masked*, which is the rule.
+    assert [check for check in after if not after[check]] == [
+        "registry_entry",
+        "roadmap_schedule",
+    ]
     detail = _detail(init_module.check_repo(repo), "registry_entry")
     assert str(repo.resolve()) in detail
     assert str(registry.resolve_registry_path()) in detail
@@ -424,6 +440,7 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
         "registry_entry",
         "landing_branch",
         "control_plane",
+        "roadmap_schedule",
     ]
     # The parity failures both doors care about are present and identical.
     assert ("gate_check:lint", False) in [(c, p) for c, p, _ in dispatch_findings]
@@ -436,6 +453,7 @@ GUARDED_SLUGS = {
     "registry_entry",
     "landing_branch",
     "control_plane",
+    "roadmap_schedule",
 }
 GUARDED_PREFIXES = ("gate_check:", "unknown_check:")
 
