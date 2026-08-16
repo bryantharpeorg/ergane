@@ -25,6 +25,24 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["factory"]
+# Build residue, not source: three `.py.base` files landed with 011/us1
+# (ed8f24c) that nothing in the tree reads. They were the wheel's *only*
+# non-Python payload before this change; the pattern stays so the next leaked
+# one does not ship either.
+exclude = ["**/*.py.base"]
+
+# The persona registry travels inside the package.
+#
+# Principle VII routes every node through `personas.yaml`, so an Ergane that
+# cannot read one cannot dispatch an attempt, cannot run the roadmap preflight,
+# and fails its own `ergane install` verification. The file is operator-editable
+# config and stays at the repo root where a checkout, the docs and the specs all
+# expect it; the wheel gets a copy at `factory/personas.yaml`, which is where
+# `factory.config` resolves it from as package data. Without this key the wheel
+# shipped no registry at all and the first thing a new install printed was
+# `cannot read persona registry .../site-packages/personas.yaml`.
+[tool.hatch.build.targets.wheel.force-include]
+"personas.yaml" = "factory/personas.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

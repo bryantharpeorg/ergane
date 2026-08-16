@@ -30,15 +30,44 @@ in as dead config.
 
 from __future__ import annotations
 
+import importlib.resources
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 import yaml
 
-#: The shipped registry, resolved relative to this package rather than the
-#: caller's working directory, so activities load the same file from anywhere.
-DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parents[1] / "personas.yaml"
+#: The registry's basename, identical in both layouts below.
+REGISTRY_FILENAME = "personas.yaml"
+
+
+def _resolve_default_registry_path() -> Path:
+    """Where the shipped registry lives, in an install and in a checkout.
+
+    Resolved as **package data** first. An installed wheel carries the registry
+    inside the package — `pyproject.toml` force-includes the repo-root file to
+    `factory/personas.yaml` at build time — so `importlib.resources` finds it
+    wherever the package was unpacked, with no repo above it and no assumption
+    about the caller's working directory.
+
+    The walk to `parents[1]` is the *development checkout* and only that: there
+    it is the repo root, holding the operator-editable file that the build
+    copies. In an installed wheel it is `site-packages/`, where nothing has ever
+    put a file — which is precisely the bug this ordering fixes. Every install
+    from a wheel failed its own `ergane install` verification with
+    `cannot read persona registry .../site-packages/personas.yaml`, because the
+    walk was the only mechanism and packaging shipped no registry to walk to.
+    """
+    packaged = importlib.resources.files("factory") / REGISTRY_FILENAME
+    if packaged.is_file():
+        return Path(str(packaged))
+    return Path(__file__).resolve().parents[1] / REGISTRY_FILENAME
+
+
+#: The shipped registry. A module-level constant because it is also the seam
+#: tests rebind (`monkeypatch.setattr(factory.config, "DEFAULT_REGISTRY_PATH", …)`)
+#: to point a whole activity at a fixture registry.
+DEFAULT_REGISTRY_PATH = _resolve_default_registry_path()
 
 #: Sentinel `agent` value marking a persona as deterministic (no LLM, no key).
 DETERMINISTIC_AGENT = "none"
