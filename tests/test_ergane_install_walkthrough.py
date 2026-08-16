@@ -411,9 +411,20 @@ def test_the_real_terminal_prompter_drives_the_interview(
     the way an operator's keystrokes do.
     """
     assert init_module._prompter_factory is None, "this test needs the production seam"
-    monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(_answers()) + "\n"))
+    # One answer is a pasted credential, refused and re-asked — the path that
+    # printed a live key to the terminal the first time this command was run by
+    # hand, because only the real prompter renders the error at all.
+    pasted = "sk-live-pasted-by-mistake"
+    answers = _answers()
+    answers.insert(2, pasted)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(answers) + "\n"))
 
     result = _invoke(["install"])
+
+    assert pasted not in result.stdout
+    assert pasted not in result.stderr
+    assert "secret_value_not_reference" in result.stderr
+    assert "<value withheld>" in result.stderr
 
     # The values could only reach the file through the real prompter.
     config = load_controlplane_config(str(config_path))
@@ -557,6 +568,12 @@ def test_a_plaintext_secret_is_refused_at_entry_with_the_parsers_rule(
     assert len(errors) == 1
     assert "secret_value_not_reference" in errors[0]
     assert "master_key_env" in errors[0]
+    # FR-003: the refusal names the field and the rule, and does NOT echo the
+    # credential back at the operator. The first terminal run of this
+    # walkthrough printed the pasted `sk-…` in full; that is what this asserts
+    # can no longer happen.
+    assert secret not in errors[0]
+    assert "<value withheld>" in errors[0]
 
     # The parser refuses the same value with the same rule — one rule table.
     with pytest.raises(ControlPlaneConfigError) as refusal:
@@ -593,6 +610,7 @@ def test_a_plaintext_secret_is_refused_at_entry_with_the_parsers_rule(
     assert secret not in written
     assert 'master_key_env = "ERGANE_LLM_MASTER_KEY"' in written
     assert secret not in result.stdout
+    assert secret not in result.stderr
 
 
 def test_managed_temporal_is_refused_at_entry_naming_042(

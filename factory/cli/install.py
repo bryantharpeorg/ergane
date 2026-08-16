@@ -37,6 +37,7 @@ from typing import Any, Callable
 from factory.cli import init as init_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.controlplane.config import (
+    RULE_SECRET_VALUE_NOT_REFERENCE,
     ControlPlaneConfigError,
     controlplane_document,
     load_controlplane_config,
@@ -416,9 +417,31 @@ def _ask(
                 render_controlplane_document(candidate), source=str(path)
             )
         except ControlPlaneConfigError as refusal:
-            error = str(refusal)
+            error = _redacted(refusal, value)
             continue
         return candidate
+
+
+#: Shown in place of a credential the operator pasted where a reference belongs.
+WITHHELD = "<value withheld>"
+
+
+def _redacted(refusal: ControlPlaneConfigError, value: Any) -> str:
+    """The parser's message, with a just-typed credential taken back out.
+
+    FR-002 wants the offending value repr-rendered and FR-003 forbids a secret
+    value reaching any log; for a value the operator typed one line ago those
+    pull in opposite directions, and FR-003 wins. Only the rule that fires *on*
+    a credential is redacted — a mistyped mode is still echoed, because seeing
+    it is how the operator fixes it.
+
+    Found by running the walkthrough rather than by reading it: the terminal
+    transcript of a pasted `sk-…` contained the key.
+    """
+    message = str(refusal)
+    if refusal.rule == RULE_SECRET_VALUE_NOT_REFERENCE and isinstance(value, str):
+        message = message.replace(repr(value), WITHHELD).replace(value, WITHHELD)
+    return message
 
 
 def _default_text(default: Any) -> str | None:
