@@ -90,6 +90,7 @@ from factory.notify.adapter import (
 from factory.notify.escalations import mint_correlation_id, start_escalation
 from factory.notify.service import SIGNAL_NAME
 from factory.notify.workflow import (
+    ESCALATION_STATUS_QUERY,
     OUTCOME_ANSWERED,
     OUTCOME_EXPIRED,
     EscalationRequest,
@@ -277,19 +278,42 @@ def seed_abandoned(db_path: Path) -> None:
         )
 
 
-async def wait_for_delivery(db_path: Path, escalation_id: str) -> None:
-    """Block until the send activity committed its row and marked it delivered.
+async def wait_until_waiting(client: Any, escalation_id: str) -> None:
+    """Block until the escalation has been delivered and is awaiting an answer.
 
-    Polled rather than slept on: the activity runs on the worker in this same
-    process, and a fixed sleep would make the out-of-band writes below race the
-    thing they are meant to arrive after.
+    Asked of the workflow itself rather than of the store, for two reasons. It
+    opens no second connection to a SQLite file the send activity is writing —
+    which is what the out-of-band writes below would otherwise be racing — and
+    `expires_at` is only set once the send activity has *returned*, so a test
+    that sees it knows the activity's own connection is closed.
     """
-    for _ in range(500):
-        record = row(db_path, escalation_id)
-        if record is not None and record.delivered:
+    for _ in range(1000):
+        status = await client.get_workflow_handle(escalation_id).query(
+            ESCALATION_STATUS_QUERY
+        )
+        if status["expires_at"]:
             return
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"escalation {escalation_id} was never delivered")
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"escalation {escalation_id} never reached its wait")
+
+
+async def wait_until_settled(client: Any, escalation_id: str) -> None:
+    """Block until the escalation has reached a terminal state.
+
+    Used before awaiting a result that should *not* need the clock moved.
+    Awaiting a workflow result is what unlocks time skipping, so a test that
+    awaited one while its escalation was still holding a one-hour timer would
+    be asking the server to choose between the answer in flight and the hour —
+    and the answer would lose about as often as the scheduler felt like it.
+    """
+    for _ in range(1000):
+        status = await client.get_workflow_handle(escalation_id).query(
+            ESCALATION_STATUS_QUERY
+        )
+        if status["resolution"] is not None:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"escalation {escalation_id} never settled")
 
 
 async def wait_for_child(parent: Any) -> str:
@@ -334,7 +358,7 @@ async def test_a_standalone_escalation_delivers_awaits_and_answers(
         handle = await start_escalation(
             env.client, a_request(), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, handle.id)
+        await wait_until_waiting(env.client, handle.id)
 
         # Trap 3: one id, 12 hex digits wide, and it is the workflow's own.
         assert len(handle.id) == 12
@@ -343,6 +367,7 @@ async def test_a_standalone_escalation_delivers_awaits_and_answers(
         assert HISTORY in adapter.delivered[0].message.text
 
         await handle.signal(SIGNAL_NAME, args=[handle.id, "RETRY", "@bryan"])
+        await wait_until_settled(env.client, handle.id)
         outcome = await handle.result()
 
     assert outcome.escalation_id == handle.id
@@ -440,10 +465,11 @@ async def test_a_test_parent_awaits_the_child_and_owns_no_lifecycle(
             task_queue=TASK_QUEUE,
         )
         answered_child = await wait_for_child(answered_parent)
-        await wait_for_delivery(db_path, answered_child)
+        await wait_until_waiting(env.client, answered_child)
         await env.client.get_workflow_handle(answered_child).signal(
             SIGNAL_NAME, args=[answered_child, "PAUSE_EPIC", "@bryan"]
         )
+        await wait_until_settled(env.client, answered_child)
         answered = await answered_parent.result()
 
         expired_parent = await env.client.start_workflow(
@@ -506,7 +532,7 @@ async def test_a_press_that_beat_the_timer_decides_the_escalation(
         handle = await start_escalation(
             env.client, a_request(), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, handle.id)
+        await wait_until_waiting(env.client, handle.id)
         with closing(store.connect(db_path)) as conn:
             assert store.resolve_escalation(
                 conn, handle.id, EscalationChoice.RETRY, resolved_at=PRESS_AT
@@ -541,10 +567,11 @@ async def test_an_answer_that_lost_to_the_hour_does_not_reopen_it(
         handle = await start_escalation(
             env.client, a_request(), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, handle.id)
+        await wait_until_waiting(env.client, handle.id)
         with closing(store.connect(db_path)) as conn:
             assert store.expire_escalation(conn, handle.id, resolved_at=TIMEOUT_AT)
         await handle.signal(SIGNAL_NAME, args=[handle.id, "RETRY", "@bryan"])
+        await wait_until_settled(env.client, handle.id)
         outcome = await handle.result()
 
     assert outcome.outcome == OUTCOME_EXPIRED
@@ -573,7 +600,7 @@ async def test_a_choice_nobody_offered_is_not_an_answer(
             a_request(choices=[EscalationChoice.RETRY, EscalationChoice.KILL]),
             task_queue=TASK_QUEUE,
         )
-        await wait_for_delivery(db_path, handle.id)
+        await wait_until_waiting(env.client, handle.id)
         await handle.signal(SIGNAL_NAME, args=[handle.id, "PAUSE_EPIC", "@x"])
         await handle.signal(SIGNAL_NAME, args=[handle.id, "BANANA", "@x"])
         outcome = await handle.result()
@@ -616,20 +643,22 @@ async def test_settlement_is_the_workflows_own_transition_on_every_channel(
         relayed = await start_escalation(
             env.client, a_request(), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, relayed.id)
+        await wait_until_waiting(env.client, relayed.id)
         await relayed.signal(SIGNAL_NAME, args=[relayed.id, "KILL", "@bryan"])
+        await wait_until_settled(env.client, relayed.id)
         relayed_outcome = await relayed.result()
 
         # 2. the button channel: the bridge settles the row, then signals.
         pressed = await start_escalation(
             env.client, a_request(), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, pressed.id)
+        await wait_until_waiting(env.client, pressed.id)
         with closing(store.connect(db_path)) as conn:
             assert store.resolve_escalation(
                 conn, pressed.id, EscalationChoice.KILL, resolved_at=PRESS_AT
             )
         await pressed.signal(SIGNAL_NAME, args=[pressed.id, "KILL", "@bryan"])
+        await wait_until_settled(env.client, pressed.id)
         pressed_outcome = await pressed.result()
 
         # 3. the clock.
@@ -686,13 +715,14 @@ async def test_every_lifecycle_replays(
         answered = await start_escalation(
             env.client, a_request(), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, answered.id)
+        await wait_until_waiting(env.client, answered.id)
         await answered.signal(SIGNAL_NAME, args=[answered.id, "RETRY", "@b"])
+        await wait_until_settled(env.client, answered.id)
         await answered.result()
 
         # The press wins at the store; the timer arrives second.
         raced = await start_escalation(env.client, a_request(), task_queue=TASK_QUEUE)
-        await wait_for_delivery(db_path, raced.id)
+        await wait_until_waiting(env.client, raced.id)
         with closing(store.connect(db_path)) as conn:
             assert store.resolve_escalation(
                 conn, raced.id, EscalationChoice.KILL, resolved_at=PRESS_AT
@@ -778,11 +808,20 @@ def test_the_outcome_vocabulary_is_the_stores() -> None:
 
 
 def test_the_workflow_reads_no_wall_clock() -> None:
-    """Constitution IV: the clock is `workflow.now()`, never `datetime.now()`.
+    """Constitution IV: no wall clock and no randomness in workflow code.
 
     A wall-clock read replays differently every time. It is the same class of
     defect as the env read above and is *not* covered by 039's guard, which
     looks only for the environment.
+
+    This asserts the absence of the banned calls and deliberately does not
+    assert the presence of `workflow.now()`. The escalation's timer is a
+    duration — the row's own window, anchored at the send — because the row's
+    `expires_at` is minted from the *worker host's* clock inside an activity
+    while `workflow.now()` is Temporal's. Waiting until a deadline one clock
+    produced, measured by another, expires escalations the instant they are
+    raised whenever the two disagree; it was reproduced exactly that way here
+    before this test file's implementation landed.
     """
     import factory.notify.workflow as escalation_workflow
 
@@ -794,7 +833,6 @@ def test_the_workflow_reads_no_wall_clock() -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     assert not (called & banned), f"workflow code reads a wall clock: {called & banned}"
-    assert "workflow.now()" in source
 
 
 # ============================================================================

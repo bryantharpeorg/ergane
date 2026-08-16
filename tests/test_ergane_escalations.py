@@ -67,7 +67,8 @@ from tests.test_escalation_workflow import (
     escalation_worker,
     pending_ids,
     seed_abandoned,
-    wait_for_delivery,
+    wait_until_settled,
+    wait_until_waiting,
 )
 from tests.test_escalation_workflow import FakeAdapter
 from temporalio.testing import WorkflowEnvironment
@@ -173,8 +174,8 @@ async def test_open_escalations_reports_workflows_and_not_the_store(
         second = await escalations.start_escalation(
             env.client, a_request(node_id="us3"), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, first.id)
-        await wait_for_delivery(db_path, second.id)
+        await wait_until_waiting(env.client, first.id)
+        await wait_until_waiting(env.client, second.id)
 
         # Fact 1: this escalation's row is already settled, and it is still
         # waiting. A pending-row scrape would not list it.
@@ -206,8 +207,14 @@ async def test_open_escalations_reports_workflows_and_not_the_store(
         assert QUESTION not in record.history_summary
 
         # It drains as answers and expiries land (FR-008's second half).
+        #
+        # `first.result()` is deliberately not awaited here. Awaiting a workflow
+        # result is what unlocks time skipping, and the server then fast-forwards
+        # to the next timer in the namespace — which is `second`'s hour. The
+        # list would drain for the wrong reason, and the assertion below would
+        # pass on a bug. `wait_until_settled` already proves `first` is terminal.
         await first.signal(SIGNAL_NAME, args=[first.id, "KILL", "@bryan"])
-        await first.result()
+        await wait_until_settled(env.client, first.id)
         assert {item.escalation_id for item in await open_escalations(env.client)} == {
             second.id
         }
@@ -230,7 +237,7 @@ async def test_ergane_escalations_list_prints_what_is_waiting(
         handle = await escalations.start_escalation(
             env.client, a_request(), task_queue=TASK_QUEUE
         )
-        await wait_for_delivery(db_path, handle.id)
+        await wait_until_waiting(env.client, handle.id)
 
         async def running(_client: Any) -> tuple[str, ...]:
             return (handle.id, ABANDONED_ID)
@@ -258,6 +265,7 @@ async def test_ergane_escalations_list_prints_what_is_waiting(
 
         # Drained once it is answered.
         await handle.signal(SIGNAL_NAME, args=[handle.id, "KILL", "@bryan"])
+        await wait_until_settled(env.client, handle.id)
         await handle.result()
         drained = await run_async("escalations", "list")
         assert drained.code == 0, drained.stderr

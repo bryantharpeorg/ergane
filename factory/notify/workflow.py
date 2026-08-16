@@ -38,14 +38,28 @@ Four decisions carry the weight:
   answer it takes whatever `settle_escalation` read back. Two arbiters is how a
   press that beat the timer starts losing sometimes.
 
-- **Nothing here reads the process environment or a wall clock (FR-012,
-  constitution IV).** 039's guard discovers workflow modules by scanning for the
-  `@workflow.defn` decorator, so this module was covered the moment it existed;
-  the defect it guards against — a workflow-scope `os.environ` read — silently
-  disabled the entire roadmap schedule for eleven hours on 2026-08-13. Store
-  paths are resolved in *activity* scope, where they are legitimate. The clock
-  is `workflow.now()`, so the deadline this workflow holds and the deadline the
-  row advertises are the same instant even after a replay.
+- **Nothing here reads the process environment, a wall clock, or a deadline
+  minted by another one (FR-012, constitution IV).** 039's guard discovers
+  workflow modules by scanning for the `@workflow.defn` decorator, so this
+  module was covered the moment it existed; the defect it guards against — a
+  workflow-scope `os.environ` read — silently disabled the entire roadmap
+  schedule for eleven hours on 2026-08-13. Store paths are resolved in
+  *activity* scope, where they are legitimate.
+
+  The expiry timer is the row's own *window* rather than a comparison against
+  the row's `expires_at`, and that distinction was measured rather than
+  assumed. `expires_at` is minted inside the send activity from the worker
+  host's clock; `workflow.now()` is Temporal's. A first draft waited until
+  `expires_at - workflow.now()` and expired escalations the instant they were
+  raised whenever the two clocks disagreed — trivially reproducible under a
+  time-skipping server, where the first skip moves one clock an hour and not
+  the other, and equally real in production under a worker whose clock has
+  drifted. A duration anchored at the send is what 008's park has always used,
+  and it needs exactly one clock.
+
+Everything the operator is *told* about the deadline still comes from the row:
+`expires_at` is what the message quotes and what the status query reports, so
+the bridge and the workflow answer "was that press in time" from one number.
 
 What an undelivered escalation does is inherited on purpose: it applies the
 fail-safe *now* rather than waiting out an hour for a message nobody received
@@ -57,7 +71,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -107,14 +121,6 @@ _FAST = {
     "start_to_close_timeout": timedelta(minutes=2),
     "retry_policy": _RETRIES,
 }
-
-#: The shortest wait this workflow will set a timer for. A deadline already in
-#: the past is still a wait of *some* length rather than none, because a zero
-#: timeout is not a thing `wait_condition` has a defined answer for — and an
-#: answer already buffered when the workflow gets here still wins, since the
-#: condition is evaluated before the timer starts.
-_MINIMUM_PATIENCE = timedelta(milliseconds=1)
-
 
 @dataclasses.dataclass(frozen=True)
 class EscalationRequest:
@@ -315,7 +321,7 @@ class EscalationWorkflow:
         try:
             await workflow.wait_condition(
                 lambda: self._answer() is not None,
-                timeout=self._patience(sent.expires_at, request.timeout_s),
+                timeout=timedelta(seconds=request.timeout_s),
             )
         except asyncio.TimeoutError:
             return await self._settle_unanswered(escalation_id, delivered=True)
@@ -439,23 +445,8 @@ class EscalationWorkflow:
                 return choice, identity
         return None
 
-    def _patience(self, expires_at: str, timeout_s: int) -> timedelta:
-        """How long is left, measured against the row's own deadline.
 
-        The row advertises `expires_at` and the operator's message quotes it, so
-        the timer runs to that instant rather than to `timeout_s` from whenever
-        the send activity happened to return. A workflow that restarted the
-        clock would let the bridge and the workflow disagree about whether a
-        press was still in time (plan trap 3).
-
-        `workflow.now()` and not `datetime.now()`: the clock is Temporal's, or
-        the second pass through disagrees with the first.
-        """
-        deadline = _parse_iso(expires_at)
-        if deadline is None:
-            return timedelta(seconds=timeout_s)
-        remaining = deadline - workflow.now()
-        return remaining if remaining > _MINIMUM_PATIENCE else _MINIMUM_PATIENCE
+# --- pure, and outside the class -------------------------------------------
 
 
 def _outcome_for(resolution: str) -> str:
@@ -476,22 +467,3 @@ def _question(request: EscalationRequest | None) -> str:
         return request.question
     offered = " / ".join(EscalationChoice(choice).value for choice in request.choices)
     return f"{request.epic_id}/{request.node_id}: {offered}?"
-
-
-def _parse_iso(moment: str) -> datetime | None:
-    """One ISO-8601 UTC timestamp, or `None` when it cannot be read.
-
-    Pure: parsing a string is not reading a clock. `None` rather than a raise
-    because a deadline this workflow cannot parse is a reason to fall back to
-    the configured window, not a reason to fail an escalation a human is
-    waiting on.
-    """
-    try:
-        parsed = datetime.fromisoformat(moment)
-    except ValueError:
-        return None
-    # A deadline with no zone cannot be compared with `workflow.now()`, which is
-    # always aware. The factory writes `...Z` everywhere (001 FR-012); anything
-    # else is a store from another tool, and the configured window is the safer
-    # reading of it than a `TypeError` inside a workflow task.
-    return parsed if parsed.tzinfo is not None else None
