@@ -205,7 +205,19 @@ def plant(tmp_path: Path, fixture: str, *, name: str | None = None) -> Path:
 
 @pytest.fixture
 def epic_dir(tmp_path: Path) -> Path:
-    return plant(tmp_path, VALID)
+    """The epic's authored trio on disk, where its compiled graph says it lives.
+
+    All three documents, not just `spec.md`: the scripted `load_prompt_sources`
+    below hands back `PLAN_TEXT` and `TASKS_TEXT` as this epic's plan and tasks,
+    and 044 US2 made `ergane build start` assemble every node's prompt before it
+    dispatches. Planting the two documents the script already claims are there
+    is what keeps this fixture a description of a real epic directory rather
+    than of a spec.md with two imagined neighbours.
+    """
+    spec_dir = plant(tmp_path, VALID)
+    (spec_dir / "plan.md").write_text(PLAN_TEXT, encoding="utf-8")
+    (spec_dir / "tasks.md").write_text(TASKS_TEXT, encoding="utf-8")
+    return spec_dir
 
 
 PLAN_TEXT = """# Implementation Plan: Short Links
@@ -615,7 +627,10 @@ def workgraph_json(epic_dir: Path) -> Path:
         spec_text,
         epic_id=EPIC_ID,
         feature=EPIC_ID,
-        specs_root="specs",
+        # The root the epic's trio actually sits under, so `specs_root/feature`
+        # resolves to `epic_dir` — what dispatch reads, and (044 US2) what the
+        # start-time preflight assembles the prompts from.
+        specs_root=str(epic_dir.parent),
         target_repo=TARGET_REPO,
     )
     graph_path = epic_dir / "workgraph.json"

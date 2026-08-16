@@ -53,7 +53,11 @@ from factory.mergequeue.models import TargetRepoProfile
 from factory.usage.litellm_client import LiteLLMClient
 from factory.workgraph.derive import DerivationError
 from factory.workgraph.models import WorkGraph
-from factory.workgraph.preflight import PreflightFinding, check_aliases
+from factory.workgraph.preflight import (
+    PreflightFinding,
+    check_aliases,
+    prompt_assembly_preflight,
+)
 from factory.workgraph.workflow import JUDGE_PERSONA
 from factory.workgraph.worktree import landing_branch
 
@@ -298,11 +302,24 @@ class PreflightInput:
     `proxy_url` is a url, never a credential — the master key is read from the
     environment inside the preflight client seam (FR-009). `spec_dir` names
     which spec this preflight is for, so a parked finding can say so.
+
+    044 US2 adds `specs_root`, and it is deliberately a *root* rather than the
+    three documents' text: `specs_root/spec_dir` is where the dispatch path's
+    own read (`load_prompt_sources`) will look, so the activity opens the same
+    files at the last moment before dispatch (044 FR-007). Carrying the texts
+    instead would mean checking bytes the workflow read on some earlier pass,
+    which is the hole this check exists to close. It carries a default only so
+    an activity task scheduled by a pre-044 worker deserializes into this shape
+    instead of failing the converter; every live caller passes it, and a task
+    that somehow arrives without one reads its trio relative to the worker's
+    working directory and parks naming the path it could not open — legible, and
+    never a silent pass.
     """
 
     graph: WorkGraph
     proxy_url: str
     spec_dir: str
+    specs_root: str = ""
 
 
 def _preflight_registry() -> dict[str, Persona]:
@@ -342,17 +359,36 @@ def _master_key_from_env() -> str:
 
 @activity.defn
 async def preflight_spec(request: PreflightInput) -> list[PreflightFinding]:
-    """Run the shared preflight against a live proxy before dispatch (FR-006).
+    """Run the shared preflight before dispatch: prompts, then the proxy (FR-006).
 
     The pure checks live in `factory/workgraph/preflight.py` and are shared
     with the CLI's `ergane build start`, so the two surfaces cannot drift. The
     activity owns the client (master key from the environment) and the
     registry (the worker host's `personas.yaml`); the preflight module owns
     the alias math and the wording. Returns `[]` when every check passes.
+
+    Prompt assembly runs **here, in the activity** (044 US2, FR-003). It is a
+    read of three files, and workflow code cannot read files — putting it in
+    `RoadmapWorkflow._dispatch` would make the roadmap non-deterministic, which
+    is the defect class that killed the schedule on 2026-08-13. The workflow
+    hands over the root it already holds; the activity opens the trio.
+
+    Assembly goes first, and both checks run. First because it is the cheaper
+    and more certain fact — no service is consulted, so it cannot be wrong about
+    a proxy that is merely slow — and the workflow parks on the first finding,
+    which makes it the one the operator is shown. Both, rather than returning
+    early, because an author fixing one refusal per run is the failure mode the
+    collected-findings discipline exists to avoid: a spec with a broken
+    `tasks.md` *and* an unserved alias needs one edit pass, not two roadmap
+    passes.
     """
-    return await check_aliases(
+    findings = prompt_assembly_preflight(
+        request.graph, Path(request.specs_root) / request.spec_dir
+    )
+    findings += await check_aliases(
         request.graph, _preflight_registry(), _preflight_client(request.proxy_url)
     )
+    return findings
 
 
 # --- onboarding: reuse 003's activity as it stands ----------------------------

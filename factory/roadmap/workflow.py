@@ -441,7 +441,7 @@ class RoadmapWorkflow:
     loop in continue-as-new at quiescence so no run's history grows with the
     number of epics (SC-003, FR-007), and exposes `pause_roadmap`,
     `resume_roadmap`, and `promote_spec` signals plus a `roadmap_status` query
-    (FR-008). The child-start contract — ABANDON on parent close, default id
+    (FR-008). 044 US2 adds `unpark_spec`, the only way a park is ever spent. The child-start contract — ABANDON on parent close, default id
     reuse — is decided here and verified in T011; ABANDON is also what makes
     terminating the roadmap safe for a mid-flight child (SC-004).
 
@@ -464,7 +464,10 @@ class RoadmapWorkflow:
         self._landed: dict[str, LandedStatus] = {}
         #: Specs parked this run, keyed by spec_dir. A parked spec does not
         #: re-dispatch — one bad spec must not stall the line, and the line does
-        #: not retry it forever (FR-006, plan § Edge Cases).
+        #: not retry it forever (FR-006, plan § Edge Cases). Written by `_park`
+        #: and spent only by the operator's `unpark_spec` signal (044 US2-S4):
+        #: the guards skip a parked spec before any check runs, so a fixed
+        #: document is invisible until the operator says the park is spent.
         self._parked: dict[str, ParkedFinding] = {}
         #: In-flight child handles, keyed by spec_dir. The scheduler waits on
         #: these — never polls — so a completion is the event that wakes it.
@@ -532,6 +535,31 @@ class RoadmapWorkflow:
         promoting a spec twice is one promotion.
         """
         self._promotions[spec_dir] = None
+
+    @workflow.signal
+    def unpark_spec(self, spec_dir: str) -> None:
+        """Spend a park so the next pass considers the spec again (044 US2-S4).
+
+        A park records why a spec was refused *as it was read on that pass*, and
+        nothing re-reads it: both dispatch guards skip a parked spec before any
+        pre-dispatch check runs, and the finding rides the carry-over across
+        every continue-as-new. That is deliberate — the line must not retry a bad
+        spec forever (FR-006) — but without a way to spend it, an operator who
+        fixed the document the finding named had no way to say so, and the spec
+        was parked for the life of the run chain.
+
+        This signal is that sentence and nothing more. It does not re-check
+        anything and it grants no verdict: the next pass runs clone, derivation,
+        preflight and onboarding again, so unparking a spec that is still broken
+        simply parks it again, with whatever refusal is true now. Idempotent, and
+        silent on a spec that is not parked — an operator who unparks twice, or
+        names a spec the roadmap already dispatched, has said something harmless.
+
+        The shape is `promote_spec`'s on purpose: one spec dir, applied on the
+        next pass, a history event that replays where the recorded run had it and
+        rides the carry-over.
+        """
+        self._parked.pop(spec_dir, None)
 
     @workflow.query
     def roadmap_status(self) -> RoadmapStatus:
@@ -1068,13 +1096,22 @@ class RoadmapWorkflow:
             self._park(spec_dir, "derive", _derivation_detail(exc))
             return
 
-        # 3. The 006 preflight (model aliases, key collisions) — shared with the
-        # CLI so the two surfaces cannot drift. Any finding parks the spec with
-        # the finding verbatim.
+        # 3. The 006 preflight (model aliases, key collisions) and 044's prompt
+        # assembly — shared with the CLI so the surfaces cannot drift. Any
+        # finding parks the spec with the finding verbatim.
+        #
+        # `specs_root` travels with the request because the assembly check reads
+        # the spec's trio, and workflow code cannot read files (constitution IV).
+        # The activity opens `specs_root/spec_dir` — the same three documents the
+        # dispatch path will read a moment later — so what is checked is what is
+        # dispatched (044 FR-007) and this method stays deterministic.
         findings: list[PreflightFinding] = await workflow.execute_activity(
             preflight_spec,
             PreflightInput(
-                graph=graph, proxy_url=request.proxy_url, spec_dir=spec_dir
+                graph=graph,
+                proxy_url=request.proxy_url,
+                spec_dir=spec_dir,
+                specs_root=request.specs_root,
             ),
             **_FAST,
         )

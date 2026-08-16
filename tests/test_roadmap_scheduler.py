@@ -145,11 +145,19 @@ def _write_spec(
     depends_on_landed: list[str] | None = None,
     has_work_graph: bool = True,
 ) -> None:
-    """Write a minimal valid spec the deriver compiles and the roadmap reads.
+    """Write a minimal valid spec trio the deriver compiles and the roadmap reads.
 
     Frontmatter carries the roadmap intent (`state`, `depends_on_landed`); the
     body carries one story and a Work Graph block so `derive_workgraph` succeeds
     — the scheduler dispatches a real (if tiny) `WorkGraph` to the child.
+
+    A *trio*, not a `spec.md`: a spec directory the roadmap can dispatch has all
+    three documents, because the dispatch path reads all three
+    (`load_prompt_sources`) to assemble each node's prompt. This corpus wrote
+    only `spec.md` while nothing before dispatch opened the other two; 044 US2
+    moved prompt assembly into the pre-epic preflight, so a corpus missing
+    `plan.md` and `tasks.md` is a corpus of specs that cannot be dispatched.
+    Completing the fixture is what keeps these tests about the scheduler.
     """
     spec_dir.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
@@ -193,6 +201,36 @@ def _write_spec(
             "",
         ]
     (spec_dir / "spec.md").write_text("\n".join(lines), encoding="utf-8")
+    (spec_dir / "plan.md").write_text(
+        "\n".join(
+            [
+                "# Plan: " + spec_dir.name,
+                "",
+                "## Summary",
+                "",
+                "One story, built once.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    # The phase heading names the story *key*, which is the grammar prompt
+    # assembly cuts a task slice on — the same grammar the 2026-08-15 kill
+    # violated (044).
+    (spec_dir / "tasks.md").write_text(
+        "\n".join(
+            [
+                "# Tasks: " + spec_dir.name,
+                "",
+                "## Phase 1: User Story 1 - Build it (Priority: P1)",
+                "",
+                "- [ ] T001 [US1] Write the failing test (spec US1-S1)",
+                "- [ ] T002 [US1] Build the thing until T001 passes",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def build_corpus(
