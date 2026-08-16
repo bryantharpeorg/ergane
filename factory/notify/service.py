@@ -132,10 +132,9 @@ _REPLY_EMPTY = "An empty reply carries no answer; nothing recorded."
 _REPLY_SIGNAL_FAILED = "Could not reach the orchestrator — nothing recorded, reply again."
 _REPLY_RESOLVED = "Answer recorded; the next attempt will carry it."
 
-#: What an identity the configured list does not carry is told (041-US4). The
-#: sender is named back to them rather than left guessing, because the ordinary
-#: cause is a spelling — `bryan` where the list says `@bryan` — and the operator
-#: reading the toast is the one who can fix it.
+#: What an identity the configured list does not carry is told (041-US4). Named
+#: back to them, because the ordinary cause is a spelling — `bryan` where the
+#: list says `@bryan` — and they are the one who can fix it.
 _UNAUTHORIZED = "{identity} is not an authorized responder; nothing was changed."
 
 
@@ -155,10 +154,8 @@ class BridgeOutcome(str, Enum):
     ALREADY_RESOLVED = "ALREADY_RESOLVED"
     SIGNAL_FAILED = "SIGNAL_FAILED"
     #: 041-US4: the sender is not on `escalation.authorized_responders`. Its own
-    #: value rather than a reused one, because it is its own operator situation
-    #: — an intruder, or the right person spelled wrong — and because a reply
-    #: that vanished into an existing outcome would be indistinguishable from a
-    #: message that was never delivered.
+    #: value rather than a reused one — a reply that vanished into an existing
+    #: outcome would be indistinguishable from one never delivered.
     UNAUTHORIZED = "UNAUTHORIZED"
 
 
@@ -330,20 +327,16 @@ register_adapter("telegram", _build_telegram)
 def configured_responders() -> tuple[str, ...]:
     """Who may answer, per the control-plane file. Empty means anyone (FR-011).
 
-    Read here rather than in the adapter or the workflow, and the placement is
-    the requirement rather than a convenience. An adapter that read it would be
-    deciding answer-or-not, which is the one decision the messenger seam exists
-    to keep out of the transport (FR-001). A workflow that read it would be
-    reading a file from workflow scope, which constitution IV forbids and 039's
-    guard fails — and the same read wedged the roadmap schedule for eleven hours
-    on 2026-08-13.
+    The placement is the requirement, not a convenience. An adapter reading it
+    would be deciding answer-or-not, the one decision the seam keeps out of the
+    transport (FR-001). A workflow reading it would be reading a file from
+    workflow scope, which constitution IV forbids and 039's guard fails — the
+    same read wedged the roadmap schedule for eleven hours on 2026-08-13.
 
-    Unrestricted is the answer for a deployment with no control-plane file and
-    for one whose file this process cannot parse, the same way
-    `configured_adapter_name` falls back to the reference transport: refusing
-    every operator reply because a config file is malformed would make the
-    parser the thing that silences the channel, and 033 already refuses a bad
-    file at every command that reads it deliberately.
+    Unrestricted with no control-plane file and with one this process cannot
+    parse, the way `configured_adapter_name` falls back to the reference
+    transport: refusing every reply over a malformed config would make the
+    parser the thing that silences the channel.
     """
     try:
         from factory.controlplane.config import (
@@ -372,9 +365,7 @@ class CallbackBridge:
 
     `authorized_responders` is the identity list an inbound reply must match to
     become an answer (041 FR-011), defaulting to the configured one for the same
-    reason `adapter` does. Empty is unrestricted, which is what every 008
-    deployment is — Telegram never had an identity problem, because a single
-    chat was the identity.
+    reason `adapter` does. Empty is unrestricted, which every 008 deployment is.
     """
 
     def __init__(
@@ -583,25 +574,18 @@ class CallbackBridge:
     ) -> BridgeOutcome | None:
         """`None` when this sender may answer; the refusal when they may not.
 
-        Applied to every adapter's relay rather than implemented per adapter
-        (FR-011): the seam reports *who* replied and never judges it, so the one
-        place that judges is here, once, for every transport there will ever be.
+        Applied to every adapter's relay rather than per adapter (FR-011): the
+        seam reports *who* replied and never judges it, so the one place that
+        judges is here. Called at both inbound entries — a press and a reply —
+        because they do not share a settling core, and a guard proven at one is
+        proven at one.
 
-        Called at both of this bridge's inbound entries — a press and a reply —
-        because they do not share a settling core, and a guard proven on one of
-        them is a guard proven on one of them.
-
-        The refusal is **recorded**, at WARNING, with both the identity and the
-        correlation id (FR-011, US4-S2). A reply that was dropped silently would
-        be indistinguishable from one that was never delivered, and the sender an
-        operator most often has to chase is themselves, spelled differently.
-        Nothing is written to the store: the scenario says the escalation's state
-        and its expiry clock are untouched, and a row is state.
-
-        An earlier reply being refused never counts against a later one — the
-        buffer this consults is the configured list and nothing else — so an
-        intruder cannot deny the operator the answer to the question they
-        touched (US4-S3).
+        The refusal is **recorded**, at WARNING, with the identity and the
+        correlation id (US4-S2): a reply dropped silently is indistinguishable
+        from one never delivered. Nothing is written to the store — the scenario
+        says state and the expiry clock are untouched, and a row is state. This
+        consults the configured list and nothing else, so an earlier refusal
+        never counts against a later reply (US4-S3).
         """
         if not self._responders or relay.sender_identity in self._responders:
             return None
@@ -618,19 +602,16 @@ class CallbackBridge:
     def _question_for(conn: Any, correlation_id: str) -> QuestionRecord | None:
         """The question a relay threads to, by the handle the transport carried.
 
-        Two handles, because two transports can carry different things back and
-        the seam's whole promise is that the factory resolves whatever they
-        managed. Telegram's is the quoted message id, which is the key the store
-        captured at send time (008 FR-008). A webhook mints no message handle at
-        all, so its relay carries the factory's own question id — the one that
-        went out in the delivery body and the one an operator types at
-        `ergane answer` (041-US4).
+        Two handles, because two transports carry different things back and the
+        seam's promise is that the factory resolves whatever they managed.
+        Telegram's is the quoted message id, the key the store captured at send
+        time (008 FR-008). A webhook mints none, so its relay carries the
+        factory's own question id — what went out in the delivery body and what
+        an operator types at `ergane answer` (041-US4).
 
         The message id is tried first, so Telegram's landed routing is unchanged
-        by a fallback it never reaches; a numeric correlation id that names no
-        message falls through to the id lookup rather than stopping there. A
-        correlation id that is neither names no question, and saying so is the
-        caller's job, not this one's.
+        by a fallback it never reaches. A correlation id that is neither names
+        no question, and saying so is the caller's job.
         """
         try:
             message_id = int(correlation_id)

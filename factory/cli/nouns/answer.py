@@ -1,30 +1,20 @@
 """The `answer` verb: the inbound half of a transport that cannot ferry replies.
 
-041-US4, FR-003. `webhook` delivers outbound and stops there — a factory that
-ran an inbound HTTP listener would put a socket on its own side of a boundary
-whose whole point is that the operator's side is theirs. So the reply comes back
-through the operator: `ergane answer <correlation-id> "ship it"`.
+041-US4, FR-003. `webhook` delivers outbound and stops there, so the reply comes
+back through the operator: `ergane answer <correlation-id> "ship it"`.
 
-Two things this verb deliberately is not.
+**Not a second settling core.** It builds the three terms an adapter relays and
+hands them to `CallbackBridge.handle_relay`, the same function a Telegram reply
+reaches. Exactly one place looks a question up, signals the workflow waiting on
+it and settles its row; a verb re-implementing any of that would be the third
+writer the store's channel asymmetry was made of
+(`interpreter/resolved-escalation-never-clears-in-the-store`). Nor does it
+decide whether the sender may answer — `CallbackBridge` checks the relay's
+identity against `escalation.authorized_responders` (FR-011).
 
-**It is not a second settling core.** It builds the three terms an adapter
-relays and hands them to `CallbackBridge.handle_relay` — the same function a
-Telegram reply reaches. There is exactly one place in this factory that looks a
-question up, signals the workflow waiting on it and settles its row, and a verb
-that re-implemented any of that would be the third writer the store's channel
-asymmetry was made of (`interpreter/resolved-escalation-never-clears-in-the-store`).
-
-**It is not the escalation verb.** An escalation carries a choice from a closed
-enum and `ergane build resolve` sends it; this one carries the free text a
-question is answered with, which is why 008 has two signals and two tables at
-all. Both names read the same to an operator and the difference is real, so the
-help text says which is which.
-
-The correlation id is the factory's own — the id the delivery body quoted —
-because a webhook mints no message handle for a reply to thread back to. Whether
-the sender may answer is not decided here either: the relay carries an identity
-and `CallbackBridge` checks it against `escalation.authorized_responders`, so
-one rule covers every channel (FR-011).
+**Not the escalation verb.** An escalation carries a choice from a closed enum
+and `ergane build resolve` sends it; this carries free text, which is why 008
+has two signals and two tables. The names read alike, so the help says which.
 """
 
 from __future__ import annotations
@@ -46,12 +36,10 @@ from factory.notify.adapter import UNKNOWN_SENDER, resolve_adapter
 from factory.notify.service import BridgeOutcome, CallbackBridge
 from factory.notify.webhook import WEBHOOK_ADAPTER
 
-#: What each outcome means to the operator standing at the terminal.
-#:
-#: The three cases an id with nothing waiting on it can be — answered, expired,
-#: or never asked — are told apart rather than collapsed into one failure,
-#: because they call for three different next moves and the settling core
-#: already distinguishes them. `None` is the exit code for "this worked".
+#: What each outcome means to the operator at the terminal. The three cases an
+#: id with nothing waiting can be — answered, expired, never asked — are told
+#: apart rather than collapsed: they call for three different next moves, and
+#: the settling core already distinguishes them. `None` means "this worked".
 _REPORT: dict[BridgeOutcome, tuple[int | None, str]] = {
     BridgeOutcome.RESOLVED: (
         None,
@@ -131,10 +119,10 @@ def add_parser(subparsers: Any) -> None:
         "answer",
         help="answer an operator question by its correlation id",
         description=(
-            "Answer a question the factory asked, over any transport. The "
+            "Answer a question the factory asked, over any transport; the "
             "correlation id is the one the delivery carried. To resolve an "
-            "escalation — a choice from a fixed set rather than free text — "
-            "use `ergane build resolve` instead."
+            "escalation — a fixed choice rather than free text — use "
+            "`ergane build resolve` instead."
         ),
     )
     parser.add_argument("correlation_id", help="the id the delivery quoted")

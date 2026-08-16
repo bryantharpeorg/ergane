@@ -1,39 +1,26 @@
 """The universal glue: an outbound POST, and a reply the operator hands back.
 
-041-US4. `telegram` is the reference transport; this is the extension point that
-makes the seam worth having. It knows one URL and one JSON body, so Signal,
-Slack, email or a wall display is a bridge the operator writes in a few lines
-rather than a messenger ergane has to grow support for.
+041-US4. `telegram` is the reference transport; this is the extension point
+that makes the seam worth having — one URL and one JSON body, so Signal, Slack,
+email or a wall display is a bridge the operator writes in a few lines. Three
+things it deliberately is not:
 
-Three things it deliberately is not:
+- **A decider.** Two operations, like every adapter (FR-001). Whether the
+  sender may *answer* is checked factory-side, in `CallbackBridge`, because an
+  adapter that filtered replies would make the one decision the seam keeps out
+  of the transport. There is no store, client or handle here to decide with.
+- **A listener.** An inbound HTTP server would put a socket on the factory's
+  side of a boundary whose purpose is that the operator's side is theirs.
+  Replies arrive through `ergane answer`, which is `relay`'s caller.
+- **Temporal-aware (FR-002).** No import, at module scope or in a function:
+  042's probe says the orchestrator is down, and that alert cannot be hosted by
+  the orchestrator.
 
-- **It is not a decider.** Two operations, like every adapter (FR-001): it puts
-  a rendered message somewhere and it translates an inbound reply into three
-  terms. Whether the sender may *answer* is checked factory-side, in
-  `factory.notify.service.CallbackBridge`, because an adapter that filtered
-  replies would be making the one decision the seam exists to keep out of the
-  transport. This module holds no store, no client and no workflow handle, so
-  there is nothing here to decide with.
-
-- **It is not a listener.** A webhook adapter that ran an inbound HTTP server
-  would put a socket on the factory's side of a boundary whose whole purpose is
-  that the operator's side is theirs. Replies come back through
-  `ergane answer <correlation-id> <text>`, which is `relay`'s caller — the
-  operator's bridge either invokes that verb or POSTs to something that does.
-
-- **It is not Temporal-aware (FR-002).** No import, not at module scope and not
-  inside a function. 042's supervision probe pages a human to say the
-  orchestrator is down, and an alert about a dead orchestrator cannot be hosted
-  by the orchestrator.
-
-`delivered=False` is the whole vocabulary for "nobody was paged" — an unset URL,
-a refused connection, a 500 — because the factory's move is identical for all
-three: apply its own default now rather than wait out a deadline of silence that
-means nothing (002 R11). Nothing here raises, for the same reason.
-
-There is no `message_id`: a webhook mints no handle the factory could route by,
-which is exactly why the correlation id travels in the body and why
-`ergane answer` names the factory's own id rather than a quoted message.
+`delivered=False` is the whole vocabulary for "nobody was paged" — an unset
+URL, a refused connection, a 500 — because the factory's move is identical for
+all three (002 R11), and nothing here raises for the same reason. There is no
+`message_id`: a webhook mints no handle a reply could quote, which is why the
+correlation id travels in the body.
 """
 
 from __future__ import annotations
@@ -53,20 +40,17 @@ from factory.notify.adapter import (
 
 logger = logging.getLogger(__name__)
 
-#: The name 033's config admits for this transport, and the name it is
-#: registered under. One spelling, so a config the parser accepted always
-#: resolves.
+#: The name 033's config admits and the name this is registered under — one
+#: spelling, so a config the parser accepted always resolves.
 WEBHOOK_ADAPTER = "webhook"
 
-#: Where the POST goes. Worker configuration rather than a credential, and read
-#: from the process environment the way the Telegram transport reads its chat
-#: id — legitimate here and in an activity, since this module defines no
-#: workflow.
+#: Where the POST goes. Worker configuration rather than a credential, read from
+#: the environment the way the Telegram transport reads its chat id — legitimate
+#: here and in an activity, since this module defines no workflow.
 WEBHOOK_URL_ENV = "ERGANE_WEBHOOK_URL"
 
-#: How long the factory waits on the operator's own endpoint. Short on purpose:
-#: a delivery that hangs delays the escalation's *start*, and the escalation's
-#: own timer — which is the authority on expiry — has not begun.
+#: Short on purpose: a delivery that hangs delays the escalation's *start*, and
+#: its own timer — the authority on expiry — has not begun.
 WEBHOOK_TIMEOUT_S = 10.0
 
 Poster = Callable[[str, dict[str, Any]], Awaitable[int]]
@@ -76,8 +60,7 @@ class WebhookAdapter:
     """A transport that is one URL. It delivers, and it translates.
 
     `post` is the seam a test substitutes for the socket, mirroring
-    `TelegramAdapter`'s `open_bot`: the caller's own process owns the handle,
-    and the adapter still has to find its endpoint in the worker environment.
+    `TelegramAdapter`'s `open_bot`.
     """
 
     def __init__(self, *, post: Poster | None = None) -> None:
@@ -88,11 +71,9 @@ class WebhookAdapter:
     ) -> DeliveryReceipt:
         """POST the rendered message and the correlation id. Never raises.
 
-        The body carries the message as the factory composed it and the actions
-        as `{label, payload}` pairs, so a bridge can render buttons if its
-        messenger has them and ignore them if it does not. The payload is the
-        same ≤64-byte token Telegram's `callback_data` carries (002 R11), which
-        is what lets one operator bridge two transports without translating.
+        Actions travel as `{label, payload}` pairs, so a bridge renders buttons
+        if its messenger has them and ignores them if it does not; the payload
+        is the same ≤64-byte token Telegram's `callback_data` carries (R11).
         """
         endpoint = os.environ.get(WEBHOOK_URL_ENV)
         if not endpoint:
@@ -132,15 +113,11 @@ class WebhookAdapter:
     def relay(self, event: Any) -> InboundRelay | None:
         """Translate one inbound reply into the factory's three terms.
 
-        The event is whatever the operator's bridge produced, in the one shape
-        this transport documents: a mapping carrying the correlation id the
-        delivery quoted, the reply text, and who sent it. `None` means "not one
-        of ours" — a body missing either of the two terms that make a reply a
-        reply — and what to *say* about that is the factory's call.
-
-        An absent sender becomes `UNKNOWN_SENDER` rather than an error, because
-        the authorized-responders check needs something a list can fail to
-        contain rather than something that never reaches it.
+        The one shape this transport documents: a mapping of the correlation id
+        the delivery quoted, the reply text, and who sent it. `None` is "not one
+        of ours", and what to *say* about that is the factory's call. An absent
+        sender becomes `UNKNOWN_SENDER` rather than an error, because the
+        authorized-responders check needs something a list can fail to contain.
         """
         if not isinstance(event, Mapping):
             return None
@@ -167,11 +144,8 @@ async def _post_json(endpoint: str, body: dict[str, Any]) -> int:
 
 
 def _build_webhook(**seams: Any) -> WebhookAdapter:
-    """Build the transport from whatever seams the caller owns.
-
-    The only one it recognises is `post`; a caller resolving a transport by name
-    cannot know which one it got, so the rest are ignored (see `resolve_adapter`).
-    """
+    """Build the transport. It recognises `post` and ignores the rest, because a
+    caller resolving by name cannot know which transport it got."""
     return WebhookAdapter(post=seams.get("post"))
 
 

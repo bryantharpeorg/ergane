@@ -154,17 +154,12 @@ FORBIDDEN_CONSTRUCTOR_HANDLES = frozenset(
 )
 
 #: Every shipped transport, read off the registry at collection time rather than
-#: written down (041-US4).
-#:
-#: It was written down until this story: `["telegram"]`, a hardcoded list of one,
-#: filed as `ci/the-adapter-conformance-suite-is-a-hardcoded-list-of-one` because
-#: a suite that enumerates its own subjects cannot notice the arrival of a
-#: subject that breaks the seam. US4 is the second adapter and therefore the
-#: first thing that list would have missed.
-#:
-#: Read at import so parametrisation sees it; the fake registered by
-#: `fake_adapter` is a *test* registration and is deliberately not here, since a
-#: conformance suite that graded its own fakes would grade nothing.
+#: written down (041-US4). It was written down until this story — `["telegram"]`,
+#: filed as `ci/the-adapter-conformance-suite-is-a-hardcoded-list-of-one`, because
+#: a suite that enumerates its own subjects cannot notice a new subject breaking
+#: the seam, and US4 is the second adapter. The fake `fake_adapter` registers is
+#: a *test* registration and deliberately not here: a conformance suite grading
+#: its own fakes grades nothing.
 CONFORMANCE_ADAPTERS = registered_adapters()
 
 
@@ -547,13 +542,11 @@ def test_a_relay_carries_a_correlation_id_reply_text_and_a_sender_identity() -> 
 def test_the_conformance_suite_covers_every_adapter_that_ships() -> None:
     """The guard on the three parametrised tests below — they have no other.
 
-    Parametrising over a registry rather than a literal is only an improvement
-    while the registry is populated: over an empty one, every conformance test
-    below passes by being skipped for want of a case, which is the same vacuum
-    the hardcoded list produced and harder to see. So the set is checked against
-    the closed set 033's parser admits, in both directions — a transport the
-    parser would refuse is not selectable, and a transport it admits with
-    nothing registered under it pages nobody.
+    A registry beats a literal only while the registry is populated: over an
+    empty one every conformance test below passes for want of a case, the same
+    vacuum and harder to see. Checked against 033's closed set both ways — a
+    transport the parser refuses is not selectable, and one it admits with
+    nothing registered pages nobody.
     """
     assert set(CONFORMANCE_ADAPTERS) == set(KNOWN_ESC_ADAPTERS)
     assert len(CONFORMANCE_ADAPTERS) > 1, (

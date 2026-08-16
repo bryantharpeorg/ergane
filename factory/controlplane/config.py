@@ -42,15 +42,12 @@ KNOWN_MEMORY_BACKENDS = ("hindsight", "none")
 #: refused until 042 lands.
 KNOWN_TEMPORAL_MODES = ("external", "managed")
 
-#: Adapters registered for escalation (FR-004).  Telegram is the reference
-#: transport from 008; `webhook` is 041-US4's universal glue — an outbound POST
-#: to a URL the operator owns, answered with `ergane answer` — so Signal, Slack,
-#: email or a wall display is a bridge the operator writes rather than a
-#: transport ergane has to know about.  Kept in step with
-#: `factory.notify.adapter`'s registry by
-#: `tests/test_messenger_adapter.py::test_the_conformance_suite_covers_every_adapter_that_ships`,
-#: in both directions: a name here with nothing registered under it pages
-#: nobody, and a registered name missing here is not selectable.
+#: Adapters registered for escalation (FR-004).  `telegram` is 008's reference
+#: transport; `webhook` is 041-US4's universal glue — an outbound POST to a URL
+#: the operator owns, answered with `ergane answer`.  Held in step with
+#: `factory.notify.adapter`'s registry by the conformance suite, in both
+#: directions: a name here with nothing registered pages nobody, and a
+#: registered name missing here is not selectable.
 KNOWN_ESC_ADAPTERS = ("telegram", "webhook")
 
 #: Default relative path under XDG_CONFIG_HOME / HOME (FR-001).
@@ -167,14 +164,13 @@ class ControlPlaneConfig:
         """Escalation transport block.
 
         ``authorized_responders`` is the identity list an inbound reply must
-        match to become an answer (041 FR-011).  Empty means unrestricted, which
-        is what every 008 deployment is: Telegram never had an identity problem
-        because a single chat *was* the identity, and a default that refused
-        every reply would take the operator channel down on the day the second
-        adapter shipped.  Declaring an empty list is refused rather than read as
-        unrestricted — an operator who typed one meant to restrict something.
+        match to become an answer (041 FR-011).  Empty is unrestricted, which is
+        what every 008 deployment is — Telegram's single chat *was* the identity
+        — so a default that refused every reply would take the operator channel
+        down the day the second adapter shipped.  Declaring an empty list is
+        refused instead: whoever typed one meant to restrict something.
 
-        The list is compared against, never resolved: the check is factory-side
+        Compared against, never resolved.  The check is factory-side
         (`factory.notify.service.CallbackBridge`), because an adapter deciding
         whether a sender may answer is the one decision the messenger seam
         exists to keep out of the transport.
@@ -502,13 +498,10 @@ def _read_escalation(
 def _read_responders(block: Mapping[str, Any], source: str) -> tuple[str, ...]:
     """``escalation.authorized_responders``, or ``()`` when it is not declared.
 
-    Absent is unrestricted; declared-and-empty is refused.  The distinction is
-    the whole point of the field, and coercing one into the other would silently
-    grant everyone the access an operator was in the middle of restricting.
-
-    Refused with ``field_type`` rather than a slug of its own, because that is
-    the slug every other wrong-shaped value in this file already carries and an
-    operator fixing a config should meet one refusal grammar.
+    Absent is unrestricted; declared-and-empty is refused.  Coercing one into
+    the other would silently grant everyone the access an operator was in the
+    middle of restricting.  ``field_type`` rather than a slug of its own,
+    because that is the slug every other wrong-shaped value here carries.
     """
     field = "escalation.authorized_responders"
     raw = block.get("authorized_responders")
@@ -527,8 +520,8 @@ def _read_responders(block: Mapping[str, Any], source: str) -> tuple[str, ...]:
             raise ControlPlaneConfigError(
                 RULE_FIELD_TYPE,
                 f"`{field}` lists {_kind(identity)}; every entry must be a "
-                "non-empty identity string, spelled the way the transport "
-                "reports it (`@username` or a numeric id, for Telegram)",
+                "non-empty identity, spelled the way the transport reports it "
+                "(`@username` or a numeric id, for Telegram)",
                 source=source,
                 field=field,
             )
@@ -616,11 +609,9 @@ def controlplane_document(config: ControlPlaneConfig) -> dict[str, Any]:
         telemetry["timeout_s"] = config.telemetry.timeout_s
 
     escalation: dict[str, Any] = {"adapter": config.escalation.adapter}
-    # Rendered as a list, and omitted when empty, so "unrestricted" stays the
-    # absence of a key rather than an empty list the parser refuses. A field that
-    # parses and is never written back is one `ergane install` re-run from gone —
-    # `EscalationRecord.check_evidence` reached the message and never the store
-    # for three weeks on exactly that asymmetry.
+    # Omitted when empty, so "unrestricted" stays the absence of a key rather
+    # than the empty list the parser refuses. A field that parses and is never
+    # written back is one `ergane install` re-run from gone.
     if config.escalation.authorized_responders:
         escalation["authorized_responders"] = list(
             config.escalation.authorized_responders
@@ -690,8 +681,7 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, float):
         return repr(value)
     if isinstance(value, (list, tuple)):
-        # `authorized_responders` is the only array the schema has; rendered
-        # inline because the renderer's contract is one key per line.
+        # Inline, because the renderer's contract is one key per line.
         return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     text = value if isinstance(value, str) else str(value)
     escaped = (
