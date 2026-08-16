@@ -47,7 +47,13 @@ from typing import Callable, Sequence
 from factory.mergequeue.models import CheckFailure, ObservedOutcome, QueueOutcome
 from factory.usage.models import Termination
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
-from factory.verify.models import GateStatus, VerificationResult
+from factory.verify.models import (
+    DiffSizeRefusal,
+    GateStatus,
+    HygieneViolation,
+    OutputCheck,
+    VerificationResult,
+)
 from factory.workgraph.models import WorkNode
 from factory.workgraph.worktree import branch_name
 
@@ -269,6 +275,61 @@ _ANSWER_PREAMBLE = (
 
 _NOTHING_FAILED_LOUDLY = (
     "No failing gate output and no judge feedback were recorded for this "
+    "attempt."
+)
+
+#: 045-US3: why an output-check failure comes with neither a failing gate nor
+#: judge feedback beside it. `judge_required` skips the judge the moment this
+#: check fails, by design — so an attempt shown only gates and judge feedback
+#: was shown nothing at all, which is what `_NOTHING_FAILED_LOUDLY` used to say
+#: to four consecutive attempts failing on a byte-identical `has_diff: false`.
+_OUTPUT_CHECK_PREAMBLE = (
+    "The output check refused this attempt before the judge was asked, which is "
+    "why no judge feedback follows. What it recorded is the whole reason the "
+    "attempt failed:"
+)
+
+#: FR-004's failure: the node produced nothing, and a green suite over an
+#: untouched worktree says so in no other way.
+_NO_DIFF_AGAINST_BASE = (
+    "There is no diff against the base ref: nothing was committed to the node "
+    "branch and nothing was left uncommitted in the worktree. Whatever this "
+    "attempt did, none of it is in the tree the factory reads."
+)
+
+#: The read scope's failure (R7): its proof of work is a declared artifact.
+_ARTIFACTS_MISSING = (
+    "The declared artifacts are missing or empty. Every path this node was "
+    "expected to produce:"
+)
+
+#: 045 FR-001's failure, rendered as the list of what to remove. The rule beside
+#: each path is the actionable half: "which rule refused this?" is the question
+#: the next attempt has to answer before it can shrink its diff.
+_HYGIENE_REFUSED = (
+    "The diff carries paths it may not carry, so it was refused rather than "
+    "judged. Every offending path, with the rule that refused it — take these "
+    "out of the diff:"
+)
+
+#: 045 FR-003's failure. Named files rather than a bare total, because "your
+#: diff is 2.1 MB" starts a hunt that "`.ergane/homes/chat.json` is 1.4 MB"
+#: ends. The wording stays clear of this component's forbidden vocabulary
+#: (`tests/test_final_sweep.py`, D-021): a diff too large for one prompt is a
+#: judgeability limit, and nothing here is a spending control.
+_SIZE_REFUSED = (
+    "The diff is larger than the judge may be shown, so it was refused unread "
+    "rather than judged on an abridged copy. Its total, the limit it ran past, "
+    "and the files that account for most of it, biggest first:"
+)
+
+#: The reachable residue: `decide_passed` refuses a write scope the persona
+#: registry never defined, and records nothing else about it. Silence there
+#: would be this story's own defect one branch further in.
+_OUTPUT_CHECK_UNEXPLAINED = (
+    "The check recorded no reason of a shape this prompt knows how to quote, "
+    "which usually means the node ran under a write scope the persona registry "
+    "does not define. The record itself is in the verification store for this "
     "attempt."
 )
 
@@ -638,6 +699,11 @@ def _attempt_block(position: int, evidence: AttemptEvidence) -> str:
             f"{exited}:\n\n{_quote(gate.output_tail)}"
         )
 
+    # Between the gates and the judge, because that is the order verification
+    # produced it in (`workflow.py`: gates → check_output → judge_required).
+    if not result.output_check.passed:
+        parts.append(_output_check_block(result.output_check))
+
     judge = result.judge
     if judge is not None and judge.feedback.strip():
         parts.append(f"Judge — {judge.outcome.value}:\n\n{_quote(judge.feedback)}")
@@ -645,6 +711,81 @@ def _attempt_block(position: int, evidence: AttemptEvidence) -> str:
     if len(parts) == 1:
         parts.append(_NOTHING_FAILED_LOUDLY)
     return "\n\n".join(parts)
+
+
+def _output_check_block(check: OutputCheck) -> str:
+    """What the output check refused, quoted rather than described (045 FR-005).
+
+    The check is the only decider whenever it fails — `judge_required` skips the
+    judge, correctly, so there is no second opinion to render — and before this
+    block existed that made a failed check the one verdict the next attempt was
+    never told. `033-ergane-install/us2` failed four times on a byte-identical
+    `has_diff: false` and read "No failing gate output and no judge feedback
+    were recorded" each time.
+
+    Every recorded shape renders, and each renders its own evidence: an empty
+    diff, missing artifacts, US1's offending paths with the rules that refused
+    them, US2's total-limit-and-files. They compose rather than exclude, because
+    `check_output` can record more than one of them for the same attempt and a
+    block that stopped at the first would send the next attempt back for the
+    second.
+
+    Values come out of the record, never out of this module's constants — the
+    limit especially. A refusal stored under a cap that has since moved has to
+    be read under the cap it was refused by, which is why `DiffSizeRefusal`
+    carries one at all.
+    """
+    reasons: list[str] = []
+
+    if not check.has_diff:
+        reasons.append(_NO_DIFF_AGAINST_BASE)
+
+    if check.artifacts_present is False:
+        declared = "\n".join(check.expected_artifacts) or "(none declared)"
+        reasons.append(f"{_ARTIFACTS_MISSING}\n\n{_quote(declared)}")
+
+    if check.hygiene_violations:
+        reasons.append(
+            f"{_HYGIENE_REFUSED}\n\n{_quote(_hygiene_listing(check.hygiene_violations))}"
+        )
+
+    if check.size_refusal is not None:
+        reasons.append(
+            f"{_SIZE_REFUSED}\n\n{_quote(_size_listing(check.size_refusal))}"
+        )
+
+    if not reasons:
+        reasons.append(_OUTPUT_CHECK_UNEXPLAINED)
+
+    head = f"Output check — FAILED, write scope `{check.write_scope}`:"
+    return "\n\n".join([head, _OUTPUT_CHECK_PREAMBLE, *reasons])
+
+
+def _hygiene_listing(violations: Sequence[HygieneViolation]) -> str:
+    """One line per refused path, in the order the check recorded them."""
+    return "\n".join(
+        f"{violation.path} — {violation.rule}" for violation in violations
+    )
+
+
+def _size_listing(refusal: DiffSizeRefusal) -> str:
+    """The refusal's own numbers: how far over, and what spent it.
+
+    Bytes, the unit the cap is in — a file of forty very long lines can cost
+    more of the budget than one of four hundred short ones, and a figure in the
+    wrong unit sends the next attempt after the wrong file.
+    """
+    lines = [
+        f"total: {refusal.total_bytes} bytes",
+        f"limit: {refusal.limit_bytes} bytes",
+    ]
+    if refusal.largest_files:
+        lines.append("largest files:")
+        lines.extend(
+            f"  {entry.path}: {entry.size_bytes} bytes"
+            for entry in refusal.largest_files
+        )
+    return "\n".join(lines)
 
 
 def _quote(text: str) -> str:
