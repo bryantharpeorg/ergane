@@ -257,9 +257,12 @@ def test_the_shared_judgment_names_no_forges_own_configuration() -> None:
         assert landmark in judgment, f"{JUDGMENT} is not the module this expects"
 
     assert _forge_owned_words_in(JUDGMENT) == []
-    assert _forge_owned_words_in(GITHUB_IMPLEMENTATION) == sorted(
-        FORGE_OWNED_VOCABULARY
-    )
+    # The control. Every word here is *structural* in the implementation — a
+    # rule type, a setting, a field — so reprose cannot break it, but a scan
+    # reading nothing or a matcher that stopped matching fails right here.
+    assert set(_forge_owned_words_in(GITHUB_IMPLEMENTATION)) >= {
+        "merge_queue", "pr_title", "squash", "visibility",
+    }
 
     # And D-007 is decided on exactly one side of the seam. Its *text* is
     # asserted where text belongs — off the finding, in the test above; a source
