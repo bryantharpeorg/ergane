@@ -64,6 +64,7 @@ from factory.verify.models import (
     EscalationRecord,
     GateResult,
     GateStatus,
+    HygieneViolation,
     JudgeOutcome,
     JudgeScenarioFinding,
     JudgeVerdict,
@@ -397,6 +398,10 @@ def _output_check_to_dict(check: OutputCheck) -> dict[str, Any]:
         "expected_artifacts": list(check.expected_artifacts),
         "artifacts_present": check.artifacts_present,
         "passed": check.passed,
+        "hygiene_violations": [
+            {"path": violation.path, "rule": violation.rule}
+            for violation in check.hygiene_violations
+        ],
     }
 
 
@@ -407,6 +412,13 @@ def _output_check_from_dict(data: dict[str, Any]) -> OutputCheck:
         expected_artifacts=data["expected_artifacts"],
         artifacts_present=data["artifacts_present"],
         passed=data["passed"],
+        # Rows written before 045 FR-001 have no hygiene record; absent means
+        # nothing was refused, which is the only honest reading of a row from a
+        # run where nothing could be.
+        hygiene_violations=[
+            HygieneViolation(path=item["path"], rule=item["rule"])
+            for item in data.get("hygiene_violations", ())
+        ],
     )
 
 

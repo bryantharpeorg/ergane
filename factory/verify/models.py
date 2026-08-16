@@ -238,6 +238,22 @@ class GateResult:
 
 
 @dataclass(frozen=True)
+class HygieneViolation:
+    """One changed path a diff may not carry, and the rule that refused it.
+
+    `rule` is quotable evidence rather than a category, because the next attempt
+    is shown it verbatim and "which rule refused this?" is the question it has to
+    answer before it can shrink its diff. Two shapes occur: git's own
+    `<source>:<line>:<pattern>` when the target repository's ignore rules matched
+    the path, and `runtime root: <name>/` when the path sits under a directory
+    that belongs to the factory rather than to the node.
+    """
+
+    path: str
+    rule: str
+
+
+@dataclass(frozen=True)
 class OutputCheck:
     """The anti-rubber-stamp check: did the node actually produce something?
 
@@ -246,6 +262,13 @@ class OutputCheck:
     diff is precisely the failure this exists to catch. Read scopes have nothing
     to diff, so they are judged on `expected_artifacts` existing and being
     non-empty instead; `artifacts_present` is None when artifacts do not apply.
+
+    `hygiene_violations` is the second way a write-scope node fails here (045
+    FR-001): a diff can be present and still be unjudgeable, because it carries
+    paths that are nobody's work — a session home under the runtime root, or
+    anything the target repository's own ignore rules already refuse. It is a
+    list of evidence rather than a flag so the refusal can name what to remove,
+    and it defaults to empty so every row written before 045 loads unchanged.
     """
 
     write_scope: str
@@ -253,6 +276,7 @@ class OutputCheck:
     expected_artifacts: list[str]
     artifacts_present: bool | None
     passed: bool
+    hygiene_violations: list[HygieneViolation] = field(default_factory=list)
 
 
 # Judge entities -------------------------------------------------------------
