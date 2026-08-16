@@ -66,6 +66,7 @@ from factory.workgraph.worktree import (
     DIFF_CLIP_NOTICE,
     MirrorOutcome,
     PreparedWorktree,
+    SalvageRef,
     SyncResult,
     WorktreeError,
     _read_record,
@@ -75,6 +76,7 @@ from factory.workgraph.worktree import (
     landing_branch,
     mirror_node_branch,
     push_branch,
+    record_salvage_ref,
     remove,
     salvage,
     sync_with_target,
@@ -1249,6 +1251,391 @@ def test_the_mirror_never_forces_over_what_the_remote_already_holds(
     assert outcome.pushed is False
     assert head(bare, f"refs/heads/{BRANCH}") == mirrored
     assert head(worktree) != mirrored
+
+
+# --- record_salvage_ref (047 US2: the recorded sha stays resolvable) ----------
+#
+# A salvage commit is reachable from exactly one place — the node branch's tip,
+# at the moment it is made. The next attempt commits on top and the chain holds,
+# but a rewrite does not: `factory/028-epic-relaunch-reset/us3`'s reflog carries
+# four `commit (amend)` entries and left two salvage commits reachable from
+# nothing, and once `git gc` runs the sha the workflow recorded resolves to
+# nothing at all. So salvage writes its own ref, and these tests are built
+# around the one control that can prove it matters.
+#
+# Two mechanics of that control, both measured against real git (2.43.0) while
+# writing these tests, because getting either wrong yields a test that cannot
+# fail:
+#
+#   1. The control must run in a clone with **no remote**. US1's mirror pushes
+#      the node branch, and `git push` writes `refs/remotes/origin/<branch>` in
+#      the local clone — which pins the salvage commit through any `gc`, so a
+#      control run against `origin_repo` would measure the tracking ref rather
+#      than the salvage ref and pass for the wrong reason. Pushing
+#      `refs/salvage/*` writes no such tracking ref (no fetch refspec matches
+#      it), which is why the mirrored-refs test below can still use a remote.
+#
+#   2. The probe is `git cat-file -e`, never `rev-parse --verify`. A full
+#      40-character sha is a syntactically valid object name, so `rev-parse
+#      --verify` echoes it back even when the object is gone — verbatim, from
+#      the control arm of this story's probe, after the object had been
+#      collected:
+#
+#        cat-file -e 00812eafb852 -> GONE
+#        cat-file -t          -> fatal: git cat-file: could not get object info
+#        rev-parse --verify   -> 00812eafb8528999198a91daab81a0c043931d65
+#        rev-parse ^{commit}  ->
+#
+#      The file's own `ref_exists` helper is `rev-parse --verify --quiet`, so
+#      reaching for it here would have written a check that passes on a pruned
+#      object. It is right for "does this ref exist" and wrong for "does this
+#      object still exist".
+
+
+def object_exists(repo: Path, sha: str) -> bool:
+    """Does `sha` still name an object in `repo`'s database?
+
+    `git cat-file -e`, which reads the object database — see mechanic 2 above
+    for why `rev-parse --verify` cannot answer this question.
+    """
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", sha],
+        capture_output=True,
+        text=True,
+        env=git_env(),
+    )
+    return completed.returncode == 0
+
+
+def salvage_refs(repo: Path) -> dict[str, str]:
+    """Every `refs/salvage/**` ref in `repo`, mapped to the sha it names."""
+    out = git(repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/salvage")
+    return dict(line.split(" ", 1) for line in out.splitlines() if line)
+
+
+def expire_every_reflog_and_gc(repo: Path) -> None:
+    """The sequence that actually collects an orphan.
+
+    `git gc` alone does not: `gc.pruneExpire` defaults to two weeks, and the
+    reflog holds a rewritten commit besides. This pair is what 028/us3's
+    orphans would have met eventually, and what they are being met with here.
+    """
+    git(repo, "reflog", "expire", "--expire=now", "--all")
+    git(repo, "gc", "--prune=now", "--quiet")
+
+
+def _salvage_attempt_1(repo: Path, factory_root: Path) -> tuple[Path, str]:
+    """A node worktree with an agent's work in it, salvaged as attempt 1."""
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.KILLED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    return worktree, sha
+
+
+def test_a_salvage_writes_a_per_attempt_ref_at_the_sha_it_returned(
+    repo: Path, factory_root: Path
+) -> None:
+    """US2-S1 / FR-006: epic, node and attempt, at exactly the sha salvage gave.
+
+    The expected name is spelled out here rather than asked of the code under
+    test: an expectation the implementation computes moves with the
+    implementation, and this ref name is a convention an operator (and US3's
+    reader) has to be able to rely on.
+    """
+    _, sha = _salvage_attempt_1(repo, factory_root)
+
+    recorded = record_salvage_ref(
+        EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root
+    )
+
+    expected = f"refs/salvage/{EPIC}/{NODE}/attempt-1-{sha[:12]}"
+    assert isinstance(recorded, SalvageRef)
+    assert recorded.written is True
+    assert recorded.ref == expected
+    assert recorded.sha == sha
+    # Exactly one ref, named exactly that, resolving to exactly that commit.
+    assert salvage_refs(repo) == {expected: sha}
+
+
+def test_the_recorded_sha_survives_the_amend_and_gc_that_orphaned_028s(
+    repo: Path, factory_root: Path
+) -> None:
+    """US2-S2 / SC-002's treatment arm: the ref is what `git gc` reads.
+
+    The sequence is 028/us3's, reconstructed: salvage, `git commit --amend`,
+    then every reflog expired and `git gc --prune=now`. The clone has no
+    remote, so nothing but the per-attempt ref can be holding the commit — see
+    mechanic 1 above, and the control immediately below.
+    """
+    worktree, sha = _salvage_attempt_1(repo, factory_root)
+    record_salvage_ref(EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root)
+
+    # Nothing else pins it: no remote, therefore no `refs/remotes/<branch>`.
+    assert git(repo, "remote").strip() == ""
+    assert git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes").strip() == ""
+
+    git(worktree, "commit", "--quiet", "--amend", "--allow-empty", "-m", "an agent amends")
+    # The rewrite really did orphan it: off the branch, not merely behind it.
+    assert head(worktree) != sha
+    assert sha not in git(repo, "rev-list", BRANCH).split()
+
+    expire_every_reflog_and_gc(repo)
+
+    assert object_exists(repo, sha)
+
+
+def test_without_the_per_attempt_ref_the_amend_and_gc_prune_the_sha(
+    repo: Path, factory_root: Path
+) -> None:
+    """US2-S3 / SC-002's control: the identical sequence, the ref seam off.
+
+    This is the live defect, reproduced. Without it the treatment above would be
+    asserting that a `gc` which never collects anything did not collect
+    anything — the shape this repository has lost more tests to than any other.
+    """
+    worktree, sha = _salvage_attempt_1(repo, factory_root)
+
+    recorded = record_salvage_ref(
+        EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root, enabled=False
+    )
+
+    assert recorded.written is False
+    assert salvage_refs(repo) == {}
+    assert git(repo, "remote").strip() == ""
+    assert git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes").strip() == ""
+
+    git(worktree, "commit", "--quiet", "--amend", "--allow-empty", "-m", "an agent amends")
+    assert head(worktree) != sha
+    assert sha not in git(repo, "rev-list", BRANCH).split()
+
+    expire_every_reflog_and_gc(repo)
+
+    assert not object_exists(repo, sha)
+
+
+def test_a_clean_re_salvage_leaves_exactly_one_ref_unmoved(
+    repo: Path, factory_root: Path
+) -> None:
+    """US2-S4: the activity-retry path records the same ref at the same sha.
+
+    Naming the ref after the commit it points at makes this idempotent by
+    construction — the same salvage writes the same name at the same value, so
+    a re-run is a no-op rather than a move. A per-attempt ref a later write
+    could move would not be a record.
+    """
+    worktree, sha = _salvage_attempt_1(repo, factory_root)
+    first = record_salvage_ref(
+        EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root
+    )
+    after_first = commit_count(worktree)
+
+    # The short-circuit path: this attempt's marker already heads a clean tree.
+    again = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.KILLED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    second = record_salvage_ref(
+        EPIC, NODE, attempt=1, sha=again, factory_root=factory_root
+    )
+
+    assert again == sha
+    assert commit_count(worktree) == after_first
+    assert second.ref == first.ref
+    assert salvage_refs(repo) == {first.ref: sha}
+
+
+def test_a_dirty_re_salvage_leaves_both_commits_named(
+    repo: Path, factory_root: Path
+) -> None:
+    """US2-S5 / FR-007: one attempt, two salvage commits, two refs.
+
+    `salvage` deliberately commits a dirty tree even when this attempt's marker
+    is already there — "the same attempt gaining a second commit is a cosmetic
+    defect, losing the work is not". FR-007 says neither commit may end up
+    reachable from zero refs, so the branch is rewound off both of them and
+    `git gc` is asked the question directly.
+    """
+    worktree, first_sha = _salvage_attempt_1(repo, factory_root)
+    before_salvages = git(repo, "rev-parse", f"{BRANCH}~1").strip()
+    record_salvage_ref(EPIC, NODE, attempt=1, sha=first_sha, factory_root=factory_root)
+
+    (worktree / "second_pass.py").write_text("VALUE = 2\n", encoding="utf-8")
+    second_sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.KILLED,
+        attempt=1,
+        factory_root=factory_root,
+    )
+    record_salvage_ref(EPIC, NODE, attempt=1, sha=second_sha, factory_root=factory_root)
+
+    assert second_sha != first_sha
+    assert salvage_refs(repo) == {
+        f"refs/salvage/{EPIC}/{NODE}/attempt-1-{first_sha[:12]}": first_sha,
+        f"refs/salvage/{EPIC}/{NODE}/attempt-1-{second_sha[:12]}": second_sha,
+    }
+
+    # Rewind the branch off both, so only the refs can be holding them.
+    git(worktree, "reset", "--quiet", "--hard", before_salvages)
+    expire_every_reflog_and_gc(repo)
+
+    assert object_exists(repo, first_sha)
+    assert object_exists(repo, second_sha)
+
+
+def test_an_empty_salvage_gets_a_per_attempt_ref_like_any_other(
+    repo: Path, factory_root: Path
+) -> None:
+    """US2-S8 / FR-011: an attempt that produced nothing still ended.
+
+    `--allow-empty` is deliberate — an empty salvage is the case where the ref
+    is the *only* record that the attempt happened at all, so a ref writer that
+    short-circuited on "nothing changed" would delete exactly that record.
+    """
+    prepared = ensure(repo, EPIC, NODE, factory_root=factory_root)
+    worktree = Path(prepared.path)
+
+    sha = salvage(
+        EPIC,
+        NODE,
+        termination=Termination.AGENT_ERROR,
+        attempt=3,
+        factory_root=factory_root,
+    )
+    recorded = record_salvage_ref(
+        EPIC, NODE, attempt=3, sha=sha, factory_root=factory_root
+    )
+
+    # The commit really is empty: this is the `--allow-empty` path, not a diff.
+    assert changed_files(worktree) == []
+    assert recorded.written is True
+    assert salvage_refs(repo) == {
+        f"refs/salvage/{EPIC}/{NODE}/attempt-3-{sha[:12]}": sha
+    }
+
+
+def test_a_ref_that_cannot_be_written_is_reported_rather_than_raised(
+    repo: Path, factory_root: Path, tmp_path: Path
+) -> None:
+    """Constitution VI: nothing on the salvage path may raise.
+
+    `_git` raises `WorktreeError` on any non-zero exit and `salvage_worktree`
+    converts that into a failed terminal activity. A ref write that could not
+    happen must therefore come back as data — the commit is already made, and
+    failing the activity over the record would discard the thing the record was
+    about.
+    """
+    _, sha = _salvage_attempt_1(repo, factory_root)
+
+    recorded = record_salvage_ref(
+        EPIC, NODE, attempt=1, sha=sha, factory_root=tmp_path / "no-such-root"
+    )
+
+    assert recorded.written is False
+    assert recorded.detail  # git's own words, not a paraphrase
+    assert salvage_refs(repo) == {}
+
+
+def test_the_per_attempt_refs_travel_to_the_targets_remote(
+    origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US2-S6 / FR-008: the refs ride the mirror US1 built.
+
+    The `origin_repo` fixture pushes `main` and nothing else, so a ref under
+    `refs/salvage` on the bare remote can only have got there through the
+    mirror.
+    """
+    repo, bare = origin_repo
+    _, sha = _salvage_attempt_1(repo, factory_root)
+    record_salvage_ref(EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root)
+
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert outcome.refs_pushed is True
+    assert salvage_refs(bare) == {
+        f"refs/salvage/{EPIC}/{NODE}/attempt-1-{sha[:12]}": sha
+    }
+
+
+@pytest.fixture
+def refusing_origin_repo(repo: Path, tmp_path: Path) -> tuple[Path, Path]:
+    """A bare origin that takes branches and refuses `refs/salvage/*`.
+
+    An `update` hook, so the refusal is per-ref: the branch mirror still
+    succeeds and only the ref namespace is rejected, which is the shape a
+    hosting provider with a ref-namespace policy would present. A filesystem
+    path inside `tmp_path` — no test in this spec touches a real remote (plan
+    trap 3).
+    """
+    bare = tmp_path / "refusing.git"
+    git(repo, "init", "--bare", str(bare))
+    hook = bare / "hooks" / "update"
+    hook.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  refs/salvage/*) echo 'this remote refuses refs/salvage/*' >&2; exit 1 ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    return repo, bare
+
+
+def test_a_remote_that_refuses_the_namespace_is_reported_not_raised(
+    refusing_origin_repo: tuple[Path, Path], factory_root: Path
+) -> None:
+    """US2-S7 / FR-002 and FR-008: degrade, never fail the salvage.
+
+    The remote's own refusal text has to survive into the report: an operator
+    re-driven on a paraphrase debugs the paraphrase. `this remote refuses
+    refs/salvage/*` is written by the fixture's hook and by nothing in the
+    factory, so its presence proves git's stderr was carried rather than
+    summarised.
+    """
+    repo, bare = refusing_origin_repo
+    _, sha = _salvage_attempt_1(repo, factory_root)
+    recorded = record_salvage_ref(
+        EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root
+    )
+
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    # The salvage commit is made, and the local record of it is written.
+    assert head(repo, BRANCH) == sha
+    assert recorded.written is True
+    assert salvage_refs(repo) == {recorded.ref: sha}
+    # The branch still left the machine; only the refs were refused.
+    assert outcome.pushed is True
+    assert outcome.refs_pushed is False
+    assert "this remote refuses refs/salvage/*" in outcome.refs_detail
+    assert salvage_refs(bare) == {}
+
+
+def test_a_target_with_no_remote_reports_the_refs_as_unmirrored(
+    repo: Path, factory_root: Path
+) -> None:
+    """FR-008 with FR-002: no remote is a normal target, for refs as for branches."""
+    _, sha = _salvage_attempt_1(repo, factory_root)
+    record_salvage_ref(EPIC, NODE, attempt=1, sha=sha, factory_root=factory_root)
+
+    outcome = mirror_node_branch(EPIC, NODE, factory_root=factory_root)
+
+    assert outcome.pushed is False
+    assert outcome.refs_pushed is False
+    assert "nothing to mirror to" in outcome.refs_detail
 
 
 # --- sync_with_target (US2 recovery, plan.md § US2) ---------------------------
