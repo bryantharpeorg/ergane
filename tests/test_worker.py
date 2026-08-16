@@ -51,6 +51,8 @@ from temporalio import activity, workflow as workflow_api
 from temporalio.testing import WorkflowEnvironment
 
 import factory.worker as worker_module
+from factory.notify import workflow as escalation_workflow_module
+from factory.notify.workflow import EscalationWorkflow
 from factory.roadmap import workflow as roadmap_workflow_module
 from factory.workgraph import workflow as workflow_module
 from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
@@ -62,7 +64,14 @@ from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
 #: unchecked. Every module that invokes `workflow.execute_activity` is in this
 #: list, so a workflow registered in `WORKFLOWS` whose activity a worker
 #: forgot to serve fails here rather than hanging in production.
-_WORKFLOW_MODULES = (workflow_module, roadmap_workflow_module)
+#: 041-US2 adds the escalation workflow, whose three activities the worker has
+#: to serve for the same reason as the other two modules': an escalation that
+#: reached an unregistered activity would hang with a human waiting on it.
+_WORKFLOW_MODULES = (
+    workflow_module,
+    roadmap_workflow_module,
+    escalation_workflow_module,
+)
 
 #: The call sites that put an activity on a task queue. `start_activity` is in
 #: here because the agent attempt uses it — it is the cancellable form (the kill
@@ -238,6 +247,12 @@ def test_the_interpreter_workflow_is_registered() -> None:
     )
     names = {workflow_api._Definition.must_from_class(cls).name for cls in workflows}
     assert "EpicWorkflow" in names
+
+    # 041-US2: an escalation is a workflow type of its own, and the name is what
+    # crosses the wire — `ergane escalations list` filters visibility on it, and
+    # a worker that did not serve it would leave every escalation unstarted.
+    assert EscalationWorkflow in workflows
+    assert "EscalationWorkflow" in names
 
 
 def test_the_worker_polls_the_queue_the_cli_starts_on() -> None:

@@ -186,6 +186,36 @@ class ExpireEscalationInput:
 
 
 @dataclass(frozen=True)
+class SettleEscalationInput:
+    """One operator decision, on its way to the row (041-US2, FR-013).
+
+    `choice` is a value from the closed enum the escalations table's CHECK
+    constraints admit. Validating that it was *offered* is the workflow's, in
+    workflow scope where it is pure; by the time it reaches here it has been
+    checked, which is what keeps this activity from being the thing that fails a
+    workflow over a forged button.
+    """
+
+    escalation_id: str
+    choice: str
+
+
+@dataclass(frozen=True)
+class SettledEscalation:
+    """What the escalation settled on, and whether this call is what settled it.
+
+    `final_state` is the row's terminal resolution — the operator's choice when
+    this call won, whatever got there first when it lost, and `None` for an id
+    the store has never heard of. `settled_here` is False when the guarded
+    UPDATE matched nothing, which is how the caller learns it lost rather than
+    by comparing timestamps.
+    """
+
+    final_state: str | None
+    settled_here: bool
+
+
+@dataclass(frozen=True)
 class ExpiredEscalation:
     """What the escalation settled on — or `None` when there is nothing to report.
 
@@ -362,6 +392,55 @@ async def expire_escalation(request: ExpireEscalationInput) -> ExpiredEscalation
     if record is None or record.resolution is None:
         return ExpiredEscalation(final_state=None)
     return ExpiredEscalation(final_state=_value(record.resolution))
+
+
+@activity.defn
+async def settle_escalation(request: SettleEscalationInput) -> SettledEscalation:
+    """Record the operator's decision on the row — the workflow's own transition.
+
+    The mirror of `expire_escalation` for the other terminal direction, and it
+    exists for one reason: until 041-US2 the *channel* decided whether a row
+    settled. A Telegram press went through `CallbackBridge`, which writes the
+    row; `ergane build resolve` signalled the workflow and walked away, writing
+    nothing. So a resolution meant a settled row or an abandoned one depending
+    on where the operator happened to be sitting
+    (`interpreter/resolved-escalation-never-clears-in-the-store`, recurred).
+    With the lifecycle in a workflow, settlement is the workflow's transition
+    and every channel becomes equal because no channel writes.
+
+    No arbitration is added beside the store's guarded UPDATE (plan trap 2): this
+    *is* that UPDATE. When it matches nothing — an operator's press already got
+    there, or the hour already expired — the row is read back and its decision
+    is what comes home, so a second writer can never overwrite a first.
+
+    Never raises on an unknown id or an unreadable store, for the reason
+    `expire_escalation` does not: the caller's terminal transition must not be
+    blocked by the same failure that lost the row.
+    """
+    try:
+        with closing(store.connect(_store_path())) as conn:
+            if store.resolve_escalation(
+                conn, request.escalation_id, request.choice, resolved_at=_now_iso()
+            ):
+                return SettledEscalation(
+                    final_state=request.choice, settled_here=True
+                )
+
+            # The guard matched nothing: something already settled this. Only
+            # the row itself can say what.
+            record = store.get_escalation(conn, request.escalation_id)
+    except (sqlite3.Error, OSError):
+        logger.warning(
+            "escalation %s: store unreadable; the decision was not recorded",
+            request.escalation_id,
+        )
+        return SettledEscalation(final_state=None, settled_here=False)
+
+    if record is None or record.resolution is None:
+        return SettledEscalation(final_state=None, settled_here=False)
+    return SettledEscalation(
+        final_state=_value(record.resolution), settled_here=False
+    )
 
 
 # --- the row ----------------------------------------------------------------

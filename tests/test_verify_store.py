@@ -122,6 +122,11 @@ EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
     ("resolution", "TEXT", 0, 0),
     ("resolved_at", "TEXT", 0, 0),
     ("resolved_via", "TEXT", 0, 0),
+    # 041-US2 (schema 3): the failing checks the escalation was raised over.
+    # Last, because a store written before this version gets the column by
+    # ALTER TABLE ADD COLUMN and that appends — a migrated store and a fresh
+    # one have to agree column for column, order included.
+    ("check_evidence", "TEXT", 1, 0),
 ]
 
 EXPECTED_INDEXES = {
@@ -385,7 +390,11 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    assert SCHEMA_VERSION == 2
+    # 3 since 041-US2 added `escalations.check_evidence`. The literal is here on
+    # purpose: a bump is a claim that every existing store has a migration path,
+    # and `tests/test_escalation_record.py` is where that claim is checked
+    # against a store built in the previous shape.
+    assert SCHEMA_VERSION == 3
     assert versions == [SCHEMA_VERSION]
 
 

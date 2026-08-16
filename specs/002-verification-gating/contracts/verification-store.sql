@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS escalations (
     resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')),
     resolved_at    TEXT,
     resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
+    -- 041-US2 (schema 3): the failing merge-queue checks the escalation was
+    -- raised over (JSON: list[CheckFailure]). Last in the table because stores
+    -- written before this version get it via ALTER TABLE ADD COLUMN, which
+    -- appends; a migrated store and a fresh one must agree column for column.
+    check_evidence TEXT NOT NULL DEFAULT '[]',
     CHECK ((resolution IS NULL) = (resolved_at IS NULL))
 );
 

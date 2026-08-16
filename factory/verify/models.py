@@ -43,6 +43,16 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Sequence
 
+# Imported for real, not named in a string. `EscalationRecord.check_evidence`
+# used to annotate `tuple["factory.mergequeue.models.CheckFailure", ...]` in a
+# module that imported no `factory` name at all: `from __future__ import
+# annotations` deferred the lookup, so the mistake was invisible until something
+# called `typing.get_type_hints(EscalationRecord)` and got `NameError` (041
+# FR-014, `verify/escalation-record-annotation-cannot-resolve`). The import is
+# safe in both directions — `factory.mergequeue.models` imports nothing from
+# `factory` — and an annotation that resolves is the only kind worth writing.
+from factory.mergequeue.models import CheckFailure
+
 
 class RequirementKind(StrEnum):
     """What a parsed requirement is (D-023).
@@ -566,8 +576,11 @@ class EscalationRecord:
     delivered: bool = False
     resolution: EscalationChoice | str | None = None
     resolved_at: str | None = None
-    #: US2: the failing check evidence rendered into the escalation message.
-    check_evidence: tuple["factory.mergequeue.models.CheckFailure", ...] = ()
+    #: 025-US2: the failing check evidence rendered into the escalation message,
+    #: and — since 041-US2 — persisted with the row rather than lost on read.
+    #: A workflow that writes this row at every terminal transition (041 FR-013)
+    #: must not be writing rows that lose fields (FR-014).
+    check_evidence: tuple[CheckFailure, ...] = ()
 
 
 @dataclass(frozen=True)
