@@ -97,6 +97,7 @@ def landed_facts(
     spec_dir: str,
     *,
     default_branch: str,
+    fetch: bool = True,
 ) -> dict[str, LandedFact]:
     """Per-story landed facts for one spec, newest attributed landing wins.
 
@@ -105,12 +106,20 @@ def landed_facts(
     fallback and is applied per story: any story with no reachable attributed
     commit, in a spec whose frontmatter is attested `state: landed`, baselines at
     the commit that introduced the attestation with `kind=ATTESTED`.
+
+    `fetch` is the read-only caller's opt-out (046 FR-002). Derivation and drift
+    detection decide what an epic builds, so they must not read a stale baseline
+    and they keep the default. A *reporting* caller must not touch the network
+    or write a remote-tracking ref to answer a question, so `ergane status`
+    passes `fetch=False` and says on its own output that the answer was read
+    without fetching — the staleness is then the operator's to see rather than
+    the command's to hide.
     """
     repo_path = Path(repo)
     epic_id = spec_dir
 
     # Ensure we read the freshest reachable default-branch head.
-    head = _resolve_default_head(repo_path, default_branch)
+    head = _resolve_default_head(repo_path, default_branch, fetch=fetch)
 
     # One batch scan over the default branch's history, newest first.
     # Two grammars are matched in the same pass: the queue's attribution subject
@@ -168,24 +177,37 @@ def landed_facts(
     return observed
 
 
-def _resolve_default_head(repo: Path, default_branch: str) -> str:
+def _resolve_default_head(repo: Path, default_branch: str, *, fetch: bool = True) -> str:
     """The current default-branch head, fetched if a remote exists.
 
     Mirrors `capture_base_ref`: a clone's own HEAD is stale exactly when a
     landing just happened, so resolve against `origin/<default_branch>` after a
     fetch, falling back to local HEAD only for remote-less repos.
+
+    With `fetch=False` the remote-tracking ref is still preferred — it is the
+    closest thing to the landing branch a clone holds — but it is read as it
+    stands, and a clone that has never fetched it falls back to the local
+    branch rather than refusing. See `landed_facts` for who is entitled to that
+    and why.
     """
+    candidates: list[str] = []
     if _has_remote(repo, "origin"):
-        _git(repo, "fetch", "--quiet", "origin")
-        ref = f"origin/{default_branch}"
+        if fetch:
+            _git(repo, "fetch", "--quiet", "origin")
+        candidates.append(f"origin/{default_branch}")
+        if not fetch:
+            candidates.append(default_branch)
     else:
-        ref = default_branch
-    try:
-        return _git(repo, "rev-parse", ref).strip()
-    except WorktreeError as exc:
-        raise WorktreeError(
-            f"cannot resolve default branch '{default_branch}' in {repo}: {exc}"
-        ) from exc
+        candidates.append(default_branch)
+    last: WorktreeError | None = None
+    for ref in candidates:
+        try:
+            return _git(repo, "rev-parse", ref).strip()
+        except WorktreeError as exc:
+            last = exc
+    raise WorktreeError(
+        f"cannot resolve default branch '{default_branch}' in {repo}: {last}"
+    ) from last
 
 
 def _git_log_subjects(repo: Path, head: str) -> list[tuple[str, str]]:

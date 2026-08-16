@@ -51,6 +51,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -226,6 +227,19 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(path: str | Path) -> sqlite3.Connection:
+    """Open an existing evidence store for reading, and only for reading.
+
+    `connect` above is the writer's door: it creates the parent directory, the
+    file, and the schema. A reporting caller must not do any of that (046
+    FR-002), so this one opens the same file through SQLite's `mode=ro` URI,
+    where a write is refused by the driver rather than by the caller's care.
+    Nothing here bootstraps the schema: a store that has never been written has
+    no rows to report and the caller is expected to check the file exists first.
+    """
+    return sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True)
+
+
 def _bootstrap_schema(conn: sqlite3.Connection) -> None:
     """Apply the DDL and stamp the version — idempotent across reconnects."""
     conn.executescript(_SCHEMA_DDL)
@@ -314,6 +328,54 @@ def node_history(
     ).fetchall()
 
     return [_result_from_row(row) for row in rows]
+
+
+@dataclass(frozen=True)
+class AttemptTiming:
+    """One recorded verification, reduced to what a pace report needs.
+
+    `started_at`/`finished_at` bracket *one verification*, not one story: the
+    dispatch-to-verification-start interval and merge-queue time are not in this
+    table at all. A caller reporting these as anything other than the wall-time
+    of an attempt's verification is reporting something the store cannot support
+    (046 plan trap 5).
+    """
+
+    node_id: str
+    attempt: int
+    form: str
+    verdict: str
+    started_at: str
+    finished_at: str
+
+
+_SELECT_TIMING_SQL = (
+    "SELECT node_id, attempt, form, verdict, started_at, finished_at "
+    "FROM verification_results WHERE epic_id = ? "
+    "ORDER BY node_id, attempt, form"
+)
+
+
+def attempt_timings(conn: sqlite3.Connection, epic_id: str) -> list[AttemptTiming]:
+    """Every recorded verification of one epic, in a stable reporting order.
+
+    The narrow sibling of `node_history`: that one rebuilds the whole evidence
+    bundle for a single node because a retry prompt quotes it; this one spans an
+    epic and reads six columns, because a status report has no use for a gate's
+    output tail and should not pay to decode one.
+    """
+    rows = conn.execute(_SELECT_TIMING_SQL, (epic_id,)).fetchall()
+    return [
+        AttemptTiming(
+            node_id=row[0],
+            attempt=int(row[1]),
+            form=str(row[2]),
+            verdict=str(row[3]),
+            started_at=str(row[4]),
+            finished_at=str(row[5]),
+        )
+        for row in rows
+    ]
 
 
 def _result_values(result: VerificationResult) -> dict[str, Any]:
