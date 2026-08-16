@@ -10,19 +10,20 @@ redirects `ERGANE_STATE_HOME` per test so a test can never reach the operator's
 real registry (plan trap 8).
 
 Pasted evidence (plan trap 7) — SC-005, the registry surviving its own
-destruction, driven by hand against a scratch state home rather than through
-pytest.  Verbatim terminal transcript:
+destruction, driven **by hand** against a scratch state home rather than through
+pytest, because a test that deletes a file it created itself proves less than a
+terminal does.  Verbatim transcript, `ERGANE_STATE_HOME=/tmp/sc005/state`, after
+`ergane init` in two scratch repos:
 
-    $ export ERGANE_STATE_HOME=/tmp/sc005/state
     $ ergane repo list
     slug   manifest  path
     alpha  valid     /tmp/sc005/alpha
     beta   valid     /tmp/sc005/beta
-    $ md5sum /tmp/sc005/state/ergane/repos.json
-    5a1e4e0b7b62dd0da31f0e6a6a4cb2fa  /tmp/sc005/state/ergane/repos.json
-    $ rm /tmp/sc005/state/ergane/repos.json
+    $ md5sum $ERGANE_STATE_HOME/ergane/repos.json
+    5f2137072a243c7a885c6a3966ad86f7  /tmp/sc005/state/ergane/repos.json
+    $ rm $ERGANE_STATE_HOME/ergane/repos.json
     $ ergane repo list
-    ergane: no repos are registered; run `ergane init` inside a repository to join one
+    no repos are registered; run `ergane init` inside a repository to join one
     $ ergane repo rebuild /tmp/sc005/alpha /tmp/sc005/beta
     adopted alpha -> /tmp/sc005/alpha
     adopted beta -> /tmp/sc005/beta
@@ -31,22 +32,52 @@ pytest.  Verbatim terminal transcript:
     slug   manifest  path
     alpha  valid     /tmp/sc005/alpha
     beta   valid     /tmp/sc005/beta
-    $ md5sum /tmp/sc005/state/ergane/repos.json
-    5a1e4e0b7b62dd0da31f0e6a6a4cb2fa  /tmp/sc005/state/ergane/repos.json
+    $ md5sum $ERGANE_STATE_HOME/ergane/repos.json
+    5f2137072a243c7a885c6a3966ad86f7  /tmp/sc005/state/ergane/repos.json
 
-The two listings and the two checksums are identical: the rebuilt cache is the
-same cache, byte for byte.
+Both listings and both checksums are identical: the rebuilt cache is the same
+cache, byte for byte.
 
-Mutation evidence (calibration — what would make these pass if the production
-code did nothing).  Each mutation was applied to the landed implementation, the
-suite re-run, and then reverted; the verbatim results are in the commit for
-T016/T017 and summarised here:
+FR-008's lock, contended by a genuinely separate process — `flock(1)` holding
+the sidecar while `ergane` tries to write.  Verbatim:
 
-    - `register()` returning before it writes            -> 9 failed
-    - `rebuild()` keeping every entry (no pruning)       -> 3 failed
-    - `exclusive_lock` removed from `register()`         -> 2 failed
-    - `derive_memory_scopes()` returning {}              -> 1 failed
-    - manifest status hardcoded to "valid"              -> 2 failed
+    $ ( flock -x /tmp/sc005/state/ergane/repos.json.lock -c 'sleep 3' & )
+    $ ergane repo rebuild --lock-timeout 0
+    ergane: another writer holds the registry lock
+    /tmp/sc005/state/ergane/repos.json.lock (waited 0s); wait for it to finish,
+    or remove that file if no `ergane` command is running
+    exit=1
+    $ sleep 3; ergane repo rebuild
+    1 entry kept, 0 pruned
+    exit=0
+
+AS2's collision, refused at the terminal with the holder named:
+
+    $ ergane init /tmp/sc005/other/alpha        # declaring slug 'alpha' again
+    ergane: slug 'alpha' is already registered to /tmp/sc005/alpha; slugs are
+    unique because they name the repo in every workflow ID, so declare a
+    different slug for this repository; the scaffold in /tmp/sc005/other/alpha
+    was written and is unchanged
+    exit=1
+
+Mutation evidence (calibration — what would make each test pass if the
+production code did nothing).  Each mutation was applied to the implementation,
+`uv run pytest tests/test_ergane_registry.py tests/test_ergane_init.py -q` was
+re-run, and the mutation reverted.  Verbatim last lines:
+
+    mutation                                          result
+    ------------------------------------------------------------------------
+    register() never writes the document              16 failed, 17 passed
+    rebuild() never prunes a dead entry                1 failed, 32 passed
+    register() drops the exclusive_lock                2 failed, 31 passed
+    derive_scopes() always returns {}                  1 failed, 32 passed
+    manifest_status() always returns "valid"           2 failed, 31 passed
+    register() never raises SlugCollision              2 failed, 31 passed
+    `repo rebuild` prints nothing about what it pruned 1 failed, 32 passed
+
+Every mutation is caught, and the two large numbers are the two claims the whole
+story rests on: a registry that is never written fails 16 of these, and there is
+no test here that a do-nothing registry could satisfy.
 """
 
 from __future__ import annotations
@@ -69,7 +100,7 @@ import factory.registry as registry
 from factory.cli.errors import EXIT_OK, EXIT_USER
 from factory.cli.install import BLANK_DOCUMENT
 from factory.controlplane.config import render_controlplane_document
-from factory.env import ERGANE_CONFIG_PATH_ENV
+from factory.env import ERGANE_CONFIG_PATH_ENV, FACTORY_CONFIG_PATH_ENV
 from factory.locking import LockUnavailable, exclusive_lock
 from factory.verify.factory_yaml import MANIFEST_NAME, _SUPPORTED_VERSION
 
@@ -177,6 +208,7 @@ def declare_memory_backend(
     path = tmp_path / "controlplane.toml"
     path.write_text(render_controlplane_document(document), encoding="utf-8")
     monkeypatch.setenv(ERGANE_CONFIG_PATH_ENV, str(path))
+    monkeypatch.setenv(FACTORY_CONFIG_PATH_ENV, str(path))
     return path
 
 
@@ -411,6 +443,7 @@ def test_no_memory_scope_when_no_control_plane_is_installed(
 ) -> None:
     """A host with no control-plane config still registers, without a scope."""
     monkeypatch.setenv(ERGANE_CONFIG_PATH_ENV, str(tmp_path / "absent.toml"))
+    monkeypatch.setenv(FACTORY_CONFIG_PATH_ENV, str(tmp_path / "absent.toml"))
     repo = make_repo(tmp_path, "myapp")
 
     assert run_init(repo, "myapp").code == EXIT_OK
@@ -557,6 +590,7 @@ def test_state_home_override_wins(
 ) -> None:
     """FR-006: one operator-facing variable relocates the whole state home."""
     monkeypatch.setenv(registry.ERGANE_STATE_HOME_ENV, str(tmp_path / "elsewhere"))
+    monkeypatch.delenv(registry.FACTORY_STATE_HOME_ENV, raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
 
     assert registry.resolve_state_home() == tmp_path / "elsewhere"
