@@ -35,10 +35,32 @@ gh pr list --repo bryantharpeorg/ergane --state open \
   --jq '.[] | "#\(.number) \(.mergeStateStatus) auto=\(.autoMergeRequest!=null)"'
 ```
 
-Check `auto=` on every row. `gh pr merge --auto` reports success and the arm
-drops silently minutes later — it happened four times on 2026-08-16. A PR sitting
-`CLEAN auto=false` is work stalled on the operator, not on the queue. Re-enqueue
-with a bare `gh pr merge <n>`.
+`auto=false` on its own means nothing, and reading it as a dropped arm will
+send you re-arming PRs that are already merging. **A PR's `autoMergeRequest`
+goes null the moment it enters the merge queue**, so the armed-and-progressing
+state and the arm-dropped state look identical in that column. You have to ask
+the queue:
+
+```bash
+gh api graphql -f query='{repository(owner:"bryantharpeorg",name:"ergane"){
+  mergeQueue(branch:"ergane-buildout"){entries(first:10){nodes{
+    position state pullRequest{number}}}}}}' \
+  --jq '.data.repository.mergeQueue.entries.nodes[]? | "q\(.position) #\(.pullRequest.number) \(.state)"'
+```
+
+Read the two together:
+
+| `auto=` | in the queue | meaning |
+| --- | --- | --- |
+| `true` | no | armed, waiting on checks — fine |
+| `false` | **yes** | in the queue — fine, this is the normal post-entry state |
+| `false` | **no** | **the arm dropped.** Work stalled on you, not on the queue |
+| `true` | yes | transient, mid-entry |
+
+Only the third row needs action: re-enqueue with a bare `gh pr merge <n>`.
+The drop is real and it happened repeatedly on 2026-08-16 — but so did the
+false alarm, which cost a `gh pr merge` against a PR already at queue position
+one. Check both before you touch anything.
 
 **Backlog per spec** — `landed` reads git, `state:` reads frontmatter, and they
 disagree whenever nobody has attested a completed epic:
