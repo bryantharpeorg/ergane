@@ -332,6 +332,36 @@ one your base already contains — do not guess a number from this plan, and do
 not renumber an existing entry. Entries are immutable by construction; supersede,
 never edit.
 
+> **This already happened, on 2026-08-16, and "the next free number" was not
+> enough.** US1 and an unrelated operator PR both appended **D-046** within the
+> hour, because US1's base predated that merge and neither could see the other.
+> Git caught it only because the two entries landed on adjacent lines; in
+> different regions there would have been no conflict and two live D-046 entries.
+> US1's was renumbered to **D-047** at merge, and its in-code reference in
+> `resolve.py` updated to match. The log also already contains **D-036 and D-037
+> twice each** and is ordered newest-first at the top and newest-last at the
+> bottom, so the tail does not tell you the highest number. Filed as
+> `docs/the-decision-log-has-duplicate-numbers-and-two-orderings`. **US2: after
+> rebasing, grep the whole file for your chosen number before you commit it, and
+> expect the operator to renumber you at merge if a sibling lands first.**
+
+**Trap 12b — three things US1 found and deliberately left for you.** Each was
+verified against the tree; none is speculation.
+
+- **`factory/cli/main.py:154`** still reads
+  `os.environ.get(PROXY_URL_ENV) or "not configured"`, so `ergane --version` now
+  reports "not configured" on a host whose config declares a gateway. **US4 owns
+  it**: US4 already edits the adjacent Temporal lines at `:152-153`, so it is one
+  hunk there and a separate story anywhere else.
+- **`factory/cli/env.py:33-34`** labels both override variables `required`, which
+  US1 made false. **US3 owns it** under FR-017, and US3's byte-parity assertion is
+  what keeps the correction from turning into a rewrite of the report.
+- **`temporal.address` is required when `temporal.mode = "external"`.** US1 reads
+  nothing from `[temporal]`, but any fixture config a later story writes must
+  carry it or the parser refuses the file — which will present as US1's own
+  "broken config" refusal (FR-005) and send you hunting in the wrong module.
+  **This is the cheapest of the three to trip over and the most confusing.**
+
 **Trap 13 — `verify.py` reads Temporal config-first, and that is the bug, not
 the model.** `verify.py:118-119` and `:308-309` do
 `config.address or os.environ.get(...)`. It is tempting to read that as the
