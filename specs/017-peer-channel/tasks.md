@@ -75,7 +75,7 @@ question/reply round trip with no Telegram send and no ladder cost.
 
 ---
 
-## Phase 3: User Story 2 — A message reaches a named external agent (Priority: P2)
+## Phase 3: User Story 3 — A message reaches a named external agent (Priority: P2)
 
 **Goal**: operator-owned peer registry; mailbox transport; Telegram mirror;
 outbox sweep on the existing expiry beat.
@@ -83,7 +83,7 @@ outbox sweep on the existing expiry beat.
 **Independent Test**: registry-named mailbox peer round trip — inbox file,
 mirror, reply file to next prompt; expiry degrades to operator.
 
-### Tests for User Story 2 (write FIRST, must fail)
+### Tests for User Story 3 (write FIRST, must fail)
 
 - [ ] T008 [P] [US2] Write registry cases FIRST: `peers.yaml` parse with
       named findings (personas-loader style); transport values closed
@@ -97,7 +97,7 @@ mirror, reply file to next prompt; expiry degrades to operator.
       external send mirrors one Telegram notification with no reply key;
       sweep asserts mailbox files carry no credential values — must fail.
 
-### Implementation for User Story 2
+### Implementation for User Story 3
 
 - [ ] T010 [US2] Implement `factory/notify/peers.py` and the mailbox
       transport + mirror in `factory/activities/peer_activities.py`, wire
@@ -105,7 +105,7 @@ mirror, reply file to next prompt; expiry degrades to operator.
 
 ---
 
-## Phase 4: User Story 3 — A message crosses epics, and the channel is documented (Priority: P3)
+## Phase 4: User Story 4 — A message crosses epics, and the channel is documented (Priority: P3)
 
 **Goal**: cross-epic delivery by external workflow signal; one addressee
 namespace across nodes, registry names, and epics; decision log and docs.
@@ -113,7 +113,7 @@ namespace across nodes, registry names, and epics; decision log and docs.
 **Independent Test**: two workflow instances with scripted children complete
 a cross-epic round trip; absent sibling degrades; docs name the channel.
 
-### Tests for User Story 3 (write FIRST, must fail)
+### Tests for User Story 4 (write FIRST, must fail)
 
 - [ ] T011 [P] [US3] Write cross-epic cases FIRST: an epic-addressed message
       delivers as a signal to the sibling workflow, buffers incuriously,
@@ -122,7 +122,7 @@ a cross-epic round trip; absent sibling degrades; docs name the channel.
       signal's failure caught in the activity, never the workflow) — must
       fail.
 
-### Implementation for User Story 3
+### Implementation for User Story 4
 
 - [ ] T012 [US3] Implement cross-epic routing in
       `factory/activities/peer_activities.py` and the namespace completion
@@ -136,7 +136,7 @@ a cross-epic round trip; absent sibling degrades; docs name the channel.
 
 ---
 
-## Phase 5: User Story 4 — A message with no live recipient spawns its answerer (Priority: P2)
+## Phase 5: User Story 5 — A message with no live recipient spawns its answerer (Priority: P2)
 
 **Goal**: the consult rung — ephemeral persona spawn, reply-or-degrade,
 spend attributed, bounded; the two-layer memory split wired and optional.
@@ -145,7 +145,7 @@ spend attributed, bounded; the two-layer memory split wired and optional.
 attribution; failure, decline, recursion, and bound cases all end at the
 operator path or a refusal.
 
-### Tests for User Story 4 (write FIRST, must fail)
+### Tests for User Story 5 (write FIRST, must fail)
 
 - [ ] T014 [P] [US4] Write consult-spawn cases FIRST with a scripted
       adapter: a persona-addressed message with no live attempt spawns
@@ -166,7 +166,7 @@ operator path or a refusal.
       file; consult behavior is identical under both except for the tool's
       presence — must fail.
 
-### Implementation for User Story 4
+### Implementation for User Story 5
 
 - [ ] T016 [US4] Implement `factory/activities/consult_activities.py` and
       the consult rung in routing until T014, T015 pass.
@@ -176,6 +176,29 @@ operator path or a refusal.
       the consult runner to `docs/architecture.md`'s module table.
 
 ---
+
+## Known gap: the already-running-attempt story has no phase yet
+
+**017 must not be dispatched until this is written.** There is deliberately no
+phase heading naming it, because a missing phase is what `ergane spec validate`
+refuses on — and a refusal is the only thing that mechanically stops a dispatch.
+A phase heading carrying a note instead would assemble cleanly and hand the
+agent a paragraph where its task list should be.
+
+The phases above were numbered against the story list from *before* the
+already-running-attempt story was inserted into the spec, so every phase below
+Phase 2 carried the wrong story's number: the second node would have been handed
+the third story's tasks, the third node the fourth story's, the fourth node the
+fifth story's, and the fifth node would have found no phase at all. Three of
+those four are silent — assembly succeeds and the agent works the wrong slice,
+which is worse than a refusal because nothing reports it. The numbers are now
+corrected, which turns the silent half into one honest refusal.
+
+Writing the missing task list is spec work, not a rename, and it belongs with
+the refinement pass that resolves why 017 is held at draft at all: a peer park
+that reuses 008's operator park pauses the scheduler and deadlocks the answering
+peer, FR-016 forbids it, and the proof has to be a watched run rather than a
+judge verdict.
 
 ## Dependencies & Execution Order
 
