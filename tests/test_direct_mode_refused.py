@@ -55,7 +55,7 @@ from factory.controlplane.config import (
     parse_controlplane_config,
 )
 
-# Imported for their side effect of being fixtures in this module's namespace.
+# The 033 harness. Two are fixtures, and importing them registers them here.
 from tests.test_ergane_install_walkthrough import (  # noqa: F401
     GATEWAY_ANSWERS,
     Run,
@@ -364,3 +364,161 @@ def test_no_module_constructs_renders_or_probes_a_direct_block() -> None:
 # ===========================================================================
 # Runtime evidence (constitution VIII / D-037): pasted, not described.
 # ===========================================================================
+#
+# --- The red run, before the refusal existed -------------------------------
+#
+# Committed first, on a tree carrying only `RULE_LLM_DIRECT_NOT_SUPPORTED` as a
+# constant nothing read — so each test fails on its own assertion rather than on
+# an import, which a collection error could not have shown.
+#
+#   $ uv run pytest -q tests/test_direct_mode_refused.py --tb=line
+#   FFFFFF                                                          [100%]
+#   E   Failed: DID NOT RAISE ControlPlaneConfigError                    (:135)
+#   E   Failed: DID NOT RAISE ControlPlaneConfigError                    (:156)
+#   E   AssertionError: assert 1 == 2                                    (:192)
+#       +  where 1 = len(['llm mode (gateway|direct)'])
+#   E   AssertionError: assert ['llm mode (gateway|direct)'] == []       (:233)
+#   E   assert '[PASS]' not in '[FAIL] llm:...escalation\n'              (:263)
+#       [PASS] memory: skipped by declaration: memory.backend is `none`
+#       [PASS] telemetry: skipped by declaration: telemetry has no otlp_endpoint
+#   E   AssertionError: assert ['config.py: ...ersonas', ...] == []      (:356)
+#       Left contains 7 more items, first extra item: 'config.py: LLMDirectPersona'
+#   6 failed in 0.12s
+#
+# The fifth line is this story's reason to exist, in the old tree's own output:
+# a config declaring a mode that cannot mint an attempt key verified two checks
+# green.
+#
+#
+# --- Mutation testing, one mutation per behaviour --------------------------
+#
+# A green suite proves nothing about a test that cannot fail, so each behaviour
+# was broken on purpose in the production tree and these files re-run. Every
+# mutation was reverted with `git checkout --`, and `git status` was clean
+# afterwards, so the tree these transcripts describe is the tree in this diff.
+#
+#   $ uv run pytest -q tests/test_direct_mode_refused.py \
+#       tests/test_controlplane_config.py \
+#       tests/test_ergane_install_walkthrough.py --tb=no    # once per mutation
+#
+# M1  the refusal never fires: `direct` parses again
+#     [the raise becomes `return ControlPlaneConfig.LLM(mode="direct")`]
+#     7 failed, 30 passed in 2.32s — every test in this file, plus
+#     test_controlplane_config.py::test_direct_llm_mode_refused
+#
+# M2  the token is deleted from KNOWN_LL_MODES, the refusal kept
+#     6 failed, 31 passed in 2.35s
+#     This is plan trap 8 as a measurement: the refusal still fires, under
+#     `unknown_llm_mode`, and five tests plus the config file's own case reject
+#     it. Only the AST test survives, correctly — nothing structural moved.
+#
+# M3  the refusal declines without naming the reason or the route
+#     ["`llm.mode` is not supported", same slug]
+#     3 failed, 34 passed in 2.29s
+#       test_direct_mode_is_refused_naming_the_virtual_key_and_the_gateway_route
+#       test_the_interview_re_asks_carrying_the_parsers_own_refusal
+#       test_controlplane_config.py::test_direct_llm_mode_refused
+#
+# M4  the interview offers `direct` again [the question text reverts]
+#     2 failed, 35 passed in 2.32s
+#       test_the_interview_re_asks_carrying_the_parsers_own_refusal
+#       test_ergane_install_walkthrough.py::test_the_real_terminal_prompter_…
+#
+# M5  a seed for the removed mode comes back to install.py
+#     1 failed, 36 passed in 2.32s — test_no_module_constructs_renders_or_…
+#
+# M6  `_apply_llm_mode` seeds a direct block again
+#     1 failed, 36 passed in 2.30s — test_no_module_constructs_renders_or_…
+#
+# M7  the verify probe grows a direct branch again
+#     1 failed, 36 passed in 2.35s — test_no_module_constructs_renders_or_…
+#
+#     M5, M6 and M7 are the three shapes the apparatus could return in — a dead
+#     seed, a live construction, a live probe — one per module. Only the AST
+#     test catches any of them, which is what it is for: none changes an
+#     observable behaviour, and all three are a mode that can be switched back
+#     on by accident.
+#
+# M8  `_ask_memory` stops honouring the chosen backend
+#     [the `backend == "none"` early return is removed]
+#     1 failed, 13 passed in 2.25s
+#       test_ergane_install_walkthrough.py::test_walkthrough_asks_only_the_…
+#     Run because that test was *flipped* by this story — its two-mode
+#     demonstration moved from `llm` to `memory` — and a flipped test that
+#     cannot fail is worse than the one it replaced.
+#
+#
+# --- The commands, run by hand ---------------------------------------------
+#
+# Because a green suite has shipped a command that could not start. Paths elided
+# to `$SB`, a scratch directory; `ERGANE_CONFIG_PATH` was bound to it throughout,
+# so nothing below touched the operator's own config.
+#
+# (a) The interview, answering `direct` — and `managed` further down, so the two
+#     refusals can be read side by side. This is US2-S2 as an operator meets it.
+#
+#   $ printf 'direct\ngateway\nhttp://127.0.0.1:1/v1\nERGANE_LLM_MASTER_KEY\n
+#             none\nmanaged\nexternal\n127.0.0.1:4\nergane\n\n\n
+#             http://127.0.0.1:3\n\n\n\n' | ergane install
+#   llm mode (gateway) [gateway]:   $SB/config.toml: [llm_direct_not_supported]
+#   `llm.mode = "direct"` cannot be dispatched against: every attempt runs on its
+#   own model-constrained, TTL'd virtual key minted at the LiteLLM proxy, and a
+#   per-persona provider endpoint has no such key to mint, revoke or attribute.
+#   Put a LiteLLM-shaped gateway in front of the provider and declare
+#   `llm.mode = "gateway"`
+#   llm mode (gateway) [gateway]: llm gateway base_url [http://127.0.0.1:4000]:
+#   llm gateway master key env-var name [ERGANE_LLM_MASTER_KEY]: memory backend
+#   (hindsight|none) [none]: temporal mode (external|managed) [external]:
+#     $SB/config.toml: [temporal_managed_not_implemented] `temporal.mode =
+#   "managed"` is not implemented; it arrives with epic 042 (managed Temporal +
+#   worker units)
+#   temporal mode (external|managed) [external]: temporal address …
+#   wrote $SB/config.toml
+#
+#   verifying the control plane...
+#   [FAIL] llm: ERGANE_LLM_MASTER_KEY is not set; no credential to complete a round trip
+#   [FAIL] temporal: Temporal at 127.0.0.1:4 did not answer: RuntimeError: …
+#   [PASS] memory: skipped by declaration: memory.backend is `none`
+#   [FAIL] telemetry: could not export to OTLP endpoint http://127.0.0.1:3: …
+#   [FAIL] escalation: TELEGRAM_CHAT_ID is not set; cannot deliver a test escalation
+#   EXIT=1
+#
+# (b) US2-S4, against a config file already on disk declaring `direct` — the
+#     operator who installed before this change. No probe runs and no finding is
+#     printed at all, green or otherwise.
+#
+#   $ ERGANE_CONFIG_PATH=$SB/legacy.toml ergane install --verify
+#   ergane: $SB/legacy.toml: [llm_direct_not_supported] `llm.mode = "direct"`
+#   cannot be dispatched against: every attempt runs on its own
+#   model-constrained, TTL'd virtual key minted at the LiteLLM proxy, and a
+#   per-persona provider endpoint has no such key to mint, revoke or attribute.
+#   Put a LiteLLM-shaped gateway in front of the provider and declare
+#   `llm.mode = "gateway"`
+#   EXIT=1
+#
+# (c) US2-S3, the same file, re-running the interview over it.
+#
+#   $ ERGANE_CONFIG_PATH=$SB/legacy.toml ergane install
+#   ergane: $SB/legacy.toml: [llm_direct_not_supported] `llm.mode = "direct"`
+#   cannot be dispatched against: … declare `llm.mode = "gateway"`; fix or
+#   remove that file, then re-run `ergane install`
+#   EXIT=1
+#   file unchanged: yes
+#
+#   The last line is `md5sum` before and after: the operator's file was not
+#   silently rewritten, and no question was asked before the refusal.
+#
+#
+# --- The full suite, on the tree in this diff -------------------------------
+#
+#   $ uv run pytest -q
+#   2778 passed, 44 skipped, 5 warnings in 292.49s (0:04:52)
+#
+# One thing worth recording rather than hiding, because it cost this session an
+# hour and is a hazard for the next node: the first mutation battery run here
+# measured nothing. Its `git checkout --` revert restored each production file
+# to HEAD, and HEAD was still the *red* commit, so mutations M2 onward ran
+# against a tree with no implementation at all and every one of them reported
+# the same failures. The implementation was re-applied, committed, and the
+# battery re-run against it — the numbers above are from that second run.
+# Commit before you mutate.
