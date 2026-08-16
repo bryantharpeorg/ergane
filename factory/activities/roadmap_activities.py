@@ -351,10 +351,17 @@ def _master_key_from_env() -> str:
     Lives only in this process's environment; never enters an activity input,
     a finding, or a status payload. Read here — inside the seam — so the
     workflow never sees it.
-    """
-    import os
 
-    return os.environ["LITELLM_MASTER_KEY"]
+    *Which* variable holds it is the control plane's answer, not this module's
+    (048 FR-006): `LITELLM_MASTER_KEY` when the host exports it, otherwise the
+    variable the operator declared at install. Routed through the one resolver
+    so the roadmap and a hand-started epic cannot disagree about which host
+    they are on. Only the credential is resolved here — the seam above is
+    handed its `proxy_url` as an argument.
+    """
+    from factory.controlplane.resolve import resolve_master_key_env
+
+    return resolve_master_key_env().read()
 
 
 @activity.defn

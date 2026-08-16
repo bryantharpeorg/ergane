@@ -4,7 +4,9 @@ Every proxy call in the factory goes through here, which is what makes the
 component's credential and enforcement invariants checkable in one file:
 
 - **The master key stops at this boundary.** It is read from the worker-host
-  environment (`from_env`), lives only in this client's request headers, and is
+  environment (`from_env`), out of whichever variable
+  `factory.controlplane.resolve` names, lives only in this client's request
+  headers, and is
   redacted out of anything a caller can observe — a failed call raises
   `LiteLLMError` carrying an HTTP status and a scrubbed proxy message, never the
   credential that authenticated it (FR-009, SC-004).
@@ -26,7 +28,6 @@ workflow's retry policy (R4), so nothing here loops on failure.
 from __future__ import annotations
 
 import hashlib
-import os
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
 from typing import Any, Iterable, Mapping
@@ -138,20 +139,43 @@ class LiteLLMClient:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> LiteLLMClient:
-        """Build a client from the worker host's environment.
+        """Build a client from what the host declared, environment first.
 
-        Raises `LiteLLMError` naming the missing variable — the name only; an
-        environment value never enters an error message (FR-009).
+        The name is now slightly inaccurate and stays anyway: `from_env` has
+        five production callers, renaming it would cost edits at each plus
+        their tests for no behavioural gain, and diff size is a real constraint
+        (048 plan, route choices).
+
+        The precedence lives in `factory.controlplane.resolve`, not here. This
+        module's contract is that it is the *proxy* seam; teaching it to read
+        TOML out of `~` would make it two things, and would force
+        `factory.usage` to import `factory.controlplane` — the wrong direction,
+        since `controlplane/verify.py` already imports this way.
+
+        Raises `LiteLLMError` naming the missing variable and the config path —
+        names only; an environment value never enters an error message
+        (FR-009, 048 FR-003). The error *type* is load-bearing:
+        `issue_attempt_key` catches `LiteLLMError` and marks the failure
+        permanent, so a new exception type escaping here would turn a
+        misconfigured host into ten minutes of retries.
         """
-        base_url = os.environ.get(PROXY_URL_ENV)
-        if not base_url:
-            raise LiteLLMError(f"{PROXY_URL_ENV} is not set in the worker environment")
-        if not os.environ.get(MASTER_KEY_ENV):
-            raise LiteLLMError(f"{MASTER_KEY_ENV} is not set in the worker environment")
+        # Imported inside the method on purpose: `factory.controlplane.resolve`
+        # imports this module at module scope, and a module-scope import here
+        # would close that loop (048 plan, trap 11).
+        from factory.controlplane.resolve import (
+            ControlPlaneResolutionError,
+            resolve_llm_gateway,
+        )
+
+        try:
+            resolution = resolve_llm_gateway()
+            master_key = resolution.credential.read()
+        except ControlPlaneResolutionError as error:
+            raise LiteLLMError(str(error)) from None
 
         return cls(
-            base_url=base_url,
-            master_key=os.environ[MASTER_KEY_ENV],
+            base_url=resolution.base_url,
+            master_key=master_key,
             transport=transport,
             timeout=timeout,
         )
