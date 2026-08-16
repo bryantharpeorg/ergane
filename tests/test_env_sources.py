@@ -492,14 +492,206 @@ def test_the_two_literals_above_differ_on_exactly_the_two_override_lines() -> No
 #
 # --- Mutation testing, one mutation per behaviour --------------------------
 #
-# (pasted after the implementation lands)
+# The defect pattern that has cost this repository more than any other is a
+# test that cannot fail. So each behaviour below was broken on purpose in
+# `factory/cli/env.py` and this file re-run. Every mutation was reverted before
+# the evidence was written — the clean run at the end of the battery is pasted
+# too — so the tree these transcripts describe is the tree in this diff.
+#
+#   $ uv run pytest -q --no-header tests/test_env_sources.py   # per mutation
+#
+# M1  the report always names the environment variable as the source
+#     [`if source == override_env` → `if True`]
+#     1 failed, 8 passed
+#       test_sources_names_the_config_when_the_declaration_wins
+#
+# M2  the report always names the config as the source
+#     [`if source == override_env` → `if False`]
+#     1 failed, 8 passed
+#       test_sources_names_the_environment_when_the_override_wins
+#
+# M3  the credential row prints the value instead of the variable name
+#     [`_credential` returns `os.environ.get(ref.env_name, "")`]
+#     5 failed, 4 passed
+#       test_sources_names_the_config_when_the_declaration_wins
+#       test_sources_names_the_environment_when_the_override_wins
+#       test_sources_does_not_open_the_config_when_the_override_wins
+#       test_the_planted_credential_appears_nowhere_in_the_report[declaration]
+#       test_the_planted_credential_appears_nowhere_in_the_report[override]
+#     This is the leak the sentinel exists for, and both parametrised cases
+#     die on it: the report was rendering a real credential.
+#
+# M4  an unresolved value prints the word and no reason
+#     [drop the `f"  {refusal}"` line]
+#     2 failed, 7 passed
+#       test_nothing_resolved_names_both_routes_and_still_exits_zero
+#       test_a_broken_config_is_reported_as_the_parsers_own_refusal
+#
+# M5  the two override variables are labelled `required` again
+#     [`_OVERRIDE_SOURCE = "required"`]
+#     1 failed, 8 passed
+#       test_bare_env_renders_byte_identically_except_the_two_false_labels
+#
+# M6  the bare listing's separator narrows by one space
+#     [`{default_note}  [` → `{default_note} [`]
+#     1 failed, 8 passed
+#       test_bare_env_renders_byte_identically_except_the_two_false_labels
+#     The one that matters most. A byte-parity pin has to stay green under
+#     every correct change, so the only way to know it is not decoration is to
+#     move a byte no test names and watch it die. M5 kills it through the two
+#     lines that were *meant* to change; M6 kills it through the five that
+#     were not.
+#
+# M7  the report opens the config even when the override won
+#     [`load_controlplane_config(config_label)` before rendering]
+#     3 failed, 6 passed
+#       test_sources_does_not_open_the_config_when_the_override_wins
+#       test_nothing_resolved_names_both_routes_and_still_exits_zero
+#       test_a_broken_config_is_reported_as_the_parsers_own_refusal
+#
+# M8  the report gates: a value it cannot resolve exits non-zero
+#     2 failed, 7 passed
+#       test_nothing_resolved_names_both_routes_and_still_exits_zero
+#       test_a_broken_config_is_reported_as_the_parsers_own_refusal
+#
+# M9  `--sources` prints nothing at all
+#     7 failed, 2 passed
+#       every test above that reads the report, including both sentinel cases
+#     Which is the answer to "would the sentinel assertions pass against empty
+#     output?" — they would not, because each is paired with an assertion that
+#     the credential's variable *name* was printed.
+#
+# M10 bare `ergane env` also prints the sources report
+#     1 failed, 8 passed
+#       test_bare_env_renders_byte_identically_except_the_two_false_labels
+#     `--sources` is a mode, not an addition (FR-017).
+#
+# M11 the `AFTER` literal in this file gains a third changed line
+#     [`TELEGRAM_BOT_TOKEN=  [not set, required]` → `[not set, needed by the
+#      notifier]`, in the test file rather than in production code]
+#     2 failed, 7 passed
+#       test_bare_env_renders_byte_identically_except_the_two_false_labels
+#       test_the_two_literals_above_differ_on_exactly_the_two_override_lines
+#     Recorded because the fixture guard is the one test in this file no
+#     production mutation can kill, by construction — it compares two
+#     literals. This is the edit it exists to catch.
+#
+#   after the battery, reverted:  9 passed in 0.13s
+#
+# Every test in this file is killed by at least one mutation above, and each
+# of the eight behavioural ones by a mutation of production code.
+#
+#
+# --- Bare `ergane env`: byte-parity against the base tree's own renderer ----
+#
+# Not asserted from memory. `git show 2a40d1d:factory/cli/env.py` was loaded
+# as a second module beside this diff's, both were handed the same environment,
+# and their output was diffed — in all three shapes an operator's shell can be
+# in.
+#
+#   $ python parity.py     # base renderer vs this diff's, same os.environ
+#   --- unified diff
+#   --- 2a40d1d
+#   +++ HEAD
+#   @@ -3,2 +3,2 @@
+#   -LITELLM_PROXY_URL=  [set, required]
+#   -LITELLM_MASTER_KEY=[REDACTED]  [set, required]
+#   +LITELLM_PROXY_URL=  [set, override of the control-plane config]
+#   +LITELLM_MASTER_KEY=[REDACTED]  [set, override of the control-plane config]
+#   --- lines: 7 before, 7 after; byte-identical lines: 5; changed: [2, 3]
+#
+#        nothing set: 7 lines, byte-identical 5, changed lines [2, 3]
+#     everything set: 7 lines, byte-identical 5, changed lines [2, 3]
+#              mixed: 7 lines, byte-identical 5, changed lines [2, 3]
+#
+# Seven entries, five byte-identical, two changed, and the two are the ones
+# US1 made untrue. No separator, no order, no state word moved.
 #
 #
 # --- The report on a host where the two sources disagree -------------------
 #
-# (pasted after the implementation lands)
+# `ergane env --sources` for real, from the installed console script, under a
+# scratch HOME with `ERGANE_CONFIG_PATH` bound. Paths elided to `$SB`; nothing
+# below touched the operator's config or runtime root. The planted credential
+# was `sk-sentinel-must-never-be-rendered` in every case and appears nowhere.
+#
+#   (a) no LITELLM_* set at all; the config declares the gateway
+#   exit: 0
+#   LLM gateway endpoint: http://declared.gateway.test/v1
+#     source: the control-plane config at $SB/config.toml
+#     other route: LITELLM_PROXY_URL (environment override, not set)
+#   LLM gateway credential variable: MY_DECLARED_KEY
+#     source: the control-plane config at $SB/config.toml
+#     other route: LITELLM_MASTER_KEY (environment override, not set)
+#
+#   This is the host the finding describes, and the line that used to read
+#   `LITELLM_PROXY_URL=  [not set, required]`.
+#
+#   (b) both overrides exported; the config declares different values
+#   exit: 0
+#   LLM gateway endpoint: http://override.gateway.test/v1
+#     source: LITELLM_PROXY_URL (environment override)
+#     other route: the control-plane config at $SB/config.toml (not consulted:
+#                  the override won)
+#   LLM gateway credential variable: LITELLM_MASTER_KEY
+#     source: LITELLM_MASTER_KEY (environment override)
+#     other route: the control-plane config at $SB/config.toml (not consulted:
+#                  the override won)
+#
+#   This is this development host. The declared endpoint does not appear,
+#   because the file was not opened (FR-002).
+#
+#   (c) they disagree *per value*: the config declares the endpoint, the
+#       environment holds the credential
+#   exit: 0
+#   LLM gateway endpoint: http://declared.gateway.test/v1
+#     source: the control-plane config at $SB/config.toml
+#     other route: LITELLM_PROXY_URL (environment override, not set)
+#   LLM gateway credential variable: LITELLM_MASTER_KEY
+#     source: LITELLM_MASTER_KEY (environment override)
+#     other route: the control-plane config at $SB/config.toml (not consulted:
+#                  the override won)
+#
+#   Different winners in one report. This is why the two values are resolved
+#   separately rather than as a pair, and it is the shape a half-provisioned
+#   second machine is actually in.
+#
+#   (d) no override, no file
+#   exit: 0
+#   LLM gateway endpoint: unresolved
+#     no LLM gateway endpoint is available: set LITELLM_PROXY_URL in the
+#     environment, or declare the gateway in $SB/absent.toml (`ergane install`
+#     writes it)
+#   LLM gateway credential variable: unresolved
+#     no LLM gateway credential is available: set LITELLM_MASTER_KEY in the
+#     environment, or declare the gateway in $SB/absent.toml (`ergane install`
+#     writes it)
+#
+#   (e) the file is there and the parser refuses it
+#   exit: 0
+#   LLM gateway endpoint: unresolved
+#     the control-plane config cannot be used: $SB/broken.toml:
+#     [malformed_toml] is not parseable TOML: Expected ']' at the end of a
+#     table declaration (at line 2, column 5)
+#   LLM gateway credential variable: unresolved
+#     [the same refusal]
+#
+#   (d) and (e) are the pair trap 3 draws: an absent config degrades to the
+#   both-routes refusal, a broken one surfaces the parser's own reason and the
+#   file. Both exit zero, because `ergane env` reports and does not gate.
 #
 #
 # --- The full suite, on the tree in this diff ------------------------------
 #
-# (pasted after the implementation lands)
+#   $ uv run pytest -q
+#   2780 passed, 44 skipped, 5 warnings in 293.26s (0:04:53)
+#
+# Run twice, on this tree and on the same tree before this comment block was
+# written: 2780 passed both times, 301.91s and 293.26s. The only difference
+# between the tree that was measured and the tree in this diff is the text you
+# are reading, which is a comment — said out loud because pasting a suite line
+# into the file the suite ran over is unavoidably circular, and the honest
+# thing is to name the circle rather than hide it.
+#
+# 2771 passed on the base at 2a40d1d (US1's recorded figure); the nine added
+# here are this file.
