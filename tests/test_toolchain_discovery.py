@@ -29,23 +29,24 @@ refusal tests replace the spawn with a detonator, so "before it forks" is
 measured rather than assumed.
 
 **Mutation ledger.** "What would make this pass if the production code did
-nothing?" was answered by breaking the production code seven ways and running
-this file against each. Verbatim summary lines:
+nothing?" was answered by breaking the production code eight ways and running
+this file against each. Verbatim failure lists:
 
     M1  the adapter's literal bind list and literal container PATH restored
-        3 failed, 11 passed
+        3 failed, 12 passed
           test_the_agent_sandbox_binds_the_discovered_toolchain
           test_the_agent_sandbox_mounts_no_toolchain_from_another_home
           test_the_agent_sandbox_follows_a_repointed_runner_symlink
 
     M2  the gate's literal bind list and literal container PATH restored
-        3 failed, 11 passed
+        4 failed, 11 passed
+          test_the_installation_is_found_with_no_launcher_on_the_path
           test_the_gate_sandbox_binds_the_discovered_toolchain
           test_the_gate_reproduces_the_runners_layout_rather_than_flattening_it
           test_the_gates_optional_tools_still_degrade_quietly
 
     M3  require_tool guesses `~/.local/bin/<name>` instead of refusing
-        3 failed, 11 passed
+        3 failed, 12 passed
           test_a_missing_tool_is_absent_rather_than_guessed
           test_a_missing_runner_refuses_by_name_before_anything_forks
           test_a_gate_on_a_host_without_uv_refuses_by_name_before_it_forks
@@ -53,31 +54,40 @@ this file against each. Verbatim summary lines:
           unresolvable toolchain`, which is the detonator doing its job.
 
     M4  nvm version directories sorted as text rather than numerically
-        1 failed, 13 passed
+        1 failed, 14 passed
           test_node_is_found_under_nvm_when_path_alone_does_not_have_it
         — picked v9.11.2 over v22.22.2, which is the whole reason for the two
           planted versions.
 
     M5  install_root returns the literal `/home/admin/.local/share/claude`
-        2 failed, 12 passed
+        2 failed, 13 passed
           test_install_root_is_read_from_the_layout_not_assumed
           test_the_gate_reproduces_the_runners_layout_rather_than_flattening_it
 
     M6  find_tool declares `~/.local/bin/<name>` and never consults PATH
-        13 failed, 1 passed
+        14 failed, 1 passed
         — the survivor is
           test_a_missing_runner_refuses_by_name_before_anything_forks, which
           still fires because the declared path does not resolve.
 
     M7  a symlinked tool binds the link at its own path, not its target
-        2 failed, 12 passed
+        2 failed, 13 passed
           test_a_symlinked_tool_binds_its_target_at_the_links_own_path
           test_the_agent_sandbox_follows_a_repointed_runner_symlink
 
+    M8  find_install_root loses its no-launcher route
+        1 failed, 14 passed
+          test_the_installation_is_found_with_no_launcher_on_the_path
+        — and, run outside this file, reproduces the nested failure that made
+          the route necessary: the full-suite gate's
+          test_a_gate_can_launch_the_agent_runner_inside_the_boundary goes red
+          in 0.06s with `ls: cannot access
+          '/home/admin/.local/share/claude/versions': No such file or directory`.
+
 Every test in this file dies under at least one mutation — M1/M2 cover the two
 sandboxes, M3 the refusals, M4 the version ordering, M5 the install layout, M6
-discovery itself and M7 symlink resolution. None of them can pass on a factory
-that only pretends to discover its toolchain.
+discovery itself, M7 symlink resolution and M8 the launcher-independent route.
+None of them can pass on a factory that only pretends to discover its toolchain.
 """
 
 from __future__ import annotations
