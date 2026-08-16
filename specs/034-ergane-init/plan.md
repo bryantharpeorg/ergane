@@ -268,6 +268,26 @@ Every other story in this spec extends something. US6 does not. Verified on
 
 - `factory/cli/roadmap.py` registers exactly five verbs — `start`, `pause`,
   `resume`, `status`, `promote`. None creates a schedule.
+
+> **Both bullets have decayed since 2026-08-13 — re-verified 2026-08-16 at
+> `2a40d1d`.** There are now **six** verbs: `044-prompt-assembly-preflight/us2`
+> landed `unpark` earlier the same day (`factory/cli/roadmap.py:150`). Still none
+> creates a schedule, so the trap's conclusion holds — but do not use "five" as a
+> fact about the tree.
+>
+> **"No seam to reuse" is also overstated.** `046-operator-status-cli` landed
+> schedule *reads*: `factory/roadmap/discovery.py`, plus `pause`/`unpause`
+> handling. US6 should interoperate with it deliberately rather than build
+> beside it — in particular the created schedule's action workflow id must stay
+> what `discovery` matches on, or `ergane roadmap status` will not find the
+> schedule US6 just made. The implementing session found this and did exactly
+> that; it is recorded here so the next reader does not rediscover it.
+>
+> A note on how this correction was made: the first check of the verb count was
+> a single-line `grep` for `add_parser("<name>"` and it reported five, because
+> `unpark`'s call is wrapped across two lines. The implementer's count was right
+> and the operator's grep was wrong. Cheap reminder that a verification tool can
+> be the thing that is broken.
 - `grep -rn "create_schedule\|ScheduleSpec" --include=*.py factory/` returns
   **nothing**.
 - The one live schedule, `ergane-roadmap`, was created by hand with the
