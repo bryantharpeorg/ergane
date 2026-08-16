@@ -1,5 +1,26 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/034-ergane-init --default-branch ergane-buildout` observed all seven
+# stories in git: US1 7055ea56, US2 f2439a66, US3 4ce493d5, US4 a3676032,
+# US5 aacc7fce, US6 35828883, US7 2fac7ce5. Every story passed the real bwrap
+# boundary gate and an LLM judge on a diff that fit whole; US5's judge run
+# recorded truncated_input=False explicitly.
+#
+# US6 was split into US6+US7 mid-epic on 2026-08-16 because it was two stories
+# wearing one number. The split moved T042/T043/T044/T046 into a new Phase 5b —
+# a tag change alone would not have worked, because `slice_coverage` decides a
+# task's story by which phase section it sits in, not by its tag.
+#
+# The `**Status**: Draft` line that sat under **Created** has been deleted
+# rather than corrected. It contradicted this frontmatter for the whole epic and
+# an implementer spent attention reporting it as a possible defect
+# (`process/a-spec-body-status-line-contradicts-its-frontmatter-state`).
+# `factory/roadmap/models.py:12` already documents those prose lines as "dead
+# text the reader never consults" and names one a plan trap because it "*looks*
+# like state and is not". Frontmatter is the single source; a second channel
+# that can disagree with it is worth less than no channel.
+#
 # Drafted 2026-08-11 in the same operator planning session as 033-ergane-install.
 # The pair divides the provisioning model: 033 is once-per-host (the control
 # plane), this is once-per-repo (membership). Decisions assumed, made in that
@@ -20,8 +41,6 @@ depends_on_landed: [003-merge-queue, 019-operator-cli, 040-manifest-rename, 043-
 **Feature Branch**: `034-ergane-init`
 
 **Created**: 2026-08-11
-
-**Status**: Draft
 
 **Input**: Operator direction: "when a new repo comes, ergane is available on
 system as a CLI and the user runs `ergane init .` to register the repo as
