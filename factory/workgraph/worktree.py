@@ -456,6 +456,110 @@ def push_branch(
 
 
 @dataclass(frozen=True)
+class MirrorOutcome:
+    """What the salvage mirror did with the node branch — data, never an exception.
+
+    `pushed` is the only field a caller routes on. `detail` is for whoever reads
+    the record afterwards, and on a failure it carries git's own words rather
+    than a paraphrase of them (047 FR-002): an operator re-driven on a summary
+    debugs the summary.
+    """
+
+    branch: str
+    remote: str
+    pushed: bool
+    detail: str
+
+
+#: Reported when the mirror is switched off at its seam. Explicitly a parameter
+#: rather than an environment read: the control that proves the mirror changed
+#: an outcome (047 SC-004) has to be a committed test, and a test that reached
+#: for an env var would be measuring the process it runs in.
+MIRROR_DISABLED = "mirror disabled by its caller"
+
+
+def mirror_node_branch(
+    epic_id: str,
+    node_id: str,
+    *,
+    factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+    remote: str = "origin",
+    enabled: bool = True,
+) -> MirrorOutcome:
+    """Copy the node's branch to the target's remote; report the outcome, never raise.
+
+    Salvage already makes the durable artifact. What it did not do until 047 was
+    put a copy anywhere else: the only push in the tree belonged to the landing
+    path, which is precisely the path a killed, timed-out or failed node never
+    takes, so four terminated nodes' work existed on exactly one disk — the same
+    disk an agent has already run `rm -rf` at once.
+
+    **Nothing here may raise.** Constitution VI is unconditional: salvage happens
+    on every termination path, so a target with no remote, an unreachable remote
+    and a remote that refuses must each leave the salvage commit made and the
+    caller none the wiser except for what this returns. `_git` raises
+    `WorktreeError` on any non-zero exit and `salvage_worktree` converts that
+    into a failed terminal activity; a mirror failure that reached that
+    conversion would turn a successful salvage into a failed one, which is the
+    exact inversion of the principle this exists to defend.
+
+    It runs *after* salvage rather than inside it, and unconditionally: the
+    per-attempt idempotency short-circuit returns before the commit, and that is
+    the activity-retry path — which is exactly the path a retry after a failed
+    push takes. A mirror reachable only through the commit branch would never
+    run again for the attempt that most needs it.
+
+    The push itself is `push_branch`, unchanged and uncopied: its landing-branch
+    guard is the rule, and restating that rule in a second place is how two
+    places start disagreeing. That also means the mirror inherits the landing
+    push's whole credential story — `scrubbed_env()` plus `HOME` — and adds no
+    new credential surface (constitution V).
+    """
+    branch = branch_name(epic_id, node_id)
+    path = worktree_path(factory_root, epic_id, node_id)
+
+    if not enabled:
+        return MirrorOutcome(branch, remote, False, MIRROR_DISABLED)
+
+    try:
+        repo = _main_worktree(path)
+        if not _has_remote(repo, remote):
+            # A target that declares no remote is a normal target, not a broken
+            # one — the posture `_remote_head` already takes when it pins a base
+            # ref in a clone with no origin. The factory mirrors to what the
+            # target says; it never invents a destination.
+            return MirrorOutcome(
+                branch,
+                remote,
+                False,
+                f"no '{remote}' remote is configured in {repo}: nothing to mirror to",
+            )
+        sha = push_branch(
+            repo, epic_id, node_id, factory_root=factory_root, remote=remote
+        )
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return MirrorOutcome(branch, remote, False, str(exc))
+
+    return MirrorOutcome(branch, remote, True, f"pushed {branch} to {remote} at {sha}")
+
+
+def _main_worktree(path: Path) -> Path:
+    """The target clone a linked worktree belongs to; git lists it first.
+
+    A linked worktree shares the repository's config, object database and ref
+    store, so the mirror needs no `target_repo` handed down from the workflow —
+    which is why `SalvageWorktreeInput` gains no field and the workflow schedules
+    no new activity (047 FR-005). What it does need is the main worktree's
+    directory, because the landing-branch guard reads the manifest committed
+    there.
+    """
+    for line in _git(path, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            return Path(line.split(" ", 1)[1])
+    raise WorktreeError(f"git named no main worktree for {path}")
+
+
+@dataclass(frozen=True)
 class SyncResult:
     """The outcome of a sync-with-target, as data the workflow can route.
 

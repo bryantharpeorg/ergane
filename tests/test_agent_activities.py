@@ -1111,6 +1111,122 @@ async def test_salvage_worktree_commits_the_attempt_and_re_running_adds_nothing(
     assert git(worktree, "status", "--porcelain", "--untracked-files=all") == ""
 
 
+@pytest.fixture
+def origin_repo(repo: Path, tmp_path: Path) -> tuple[Path, Path]:
+    """A target clone with a bare `origin` inside `tmp_path` (047 plan trap 3).
+
+    A filesystem path, so nothing here needs a network or a credential — and no
+    test in this suite can reach a real remote by accident.
+    """
+    bare = tmp_path / "origin.git"
+    git(repo, "init", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    return repo, bare
+
+
+async def test_salvage_worktree_mirrors_the_branch_to_the_targets_remote(
+    env: ActivityEnvironment, origin_repo: tuple[Path, Path]
+) -> None:
+    """047 US1-S1 and US1-S7 in one run: the branch leaves the machine, and the
+    activity's payload is still a plain `str`.
+
+    Until 047 the only push in the tree belonged to `open_landing_pr`, so a node
+    that never reached a PR left its salvage on one disk. The activity is where
+    the mirror is composed with the commit, which is why the wiring is asserted
+    here and not only against the helper.
+    """
+    repo, bare = origin_repo
+    prepared = await prepare(env, repo)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+
+    sha = await env.run(
+        salvage_worktree,
+        SalvageWorktreeInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            termination=Termination.KILLED,
+            attempt=ATTEMPT,
+        ),
+    )
+
+    # FR-005: the workflow's payload contract is untouched — not a dataclass,
+    # not a str subclass, the same plain string three call sites already ignore.
+    assert type(sha) is str
+    assert sha == head(worktree)
+    assert ref_exists(bare, f"refs/heads/{BRANCH}")
+    assert head(bare, f"refs/heads/{BRANCH}") == sha
+
+
+async def test_salvage_worktree_mirrors_on_the_retry_after_a_mirror_that_failed(
+    env: ActivityEnvironment, repo: Path, tmp_path: Path
+) -> None:
+    """047 US1-S4 / plan trap 5: the short-circuit must not skip the mirror.
+
+    `salvage` returns early when this attempt's marker already heads a clean
+    tree — the activity-retry path, and the very path a retry after a failed
+    push takes. So the first run here has nowhere to mirror to, and the second
+    is the retry that must still get the work off the machine. A mirror reached
+    only through `salvage`'s commit branch never runs on this path.
+    """
+    prepared = await prepare(env, repo)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    request = SalvageWorktreeInput(
+        epic_id=EPIC, node_id=NODE, termination=Termination.KILLED, attempt=ATTEMPT
+    )
+    assert git(repo, "remote").strip() == "", "the first salvage must have nowhere to go"
+
+    sha = await env.run(salvage_worktree, request)
+    after_first = commit_count(worktree)
+
+    bare = tmp_path / "origin.git"
+    git(repo, "init", "--bare", str(bare))
+    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+
+    again = await env.run(salvage_worktree, request)
+
+    # The salvage itself short-circuited: same sha, no second marker.
+    assert again == sha
+    assert commit_count(worktree) == after_first
+    # And the mirror ran anyway.
+    assert ref_exists(bare, f"refs/heads/{BRANCH}")
+    assert head(bare, f"refs/heads/{BRANCH}") == sha
+
+
+async def test_salvage_worktree_survives_a_remote_it_cannot_reach(
+    env: ActivityEnvironment, repo: Path, tmp_path: Path
+) -> None:
+    """047 US1-S3 / FR-002, plan trap 8: a mirror failure is reported, not raised.
+
+    `_git` raises `WorktreeError` on any non-zero exit and this activity turns
+    that into `ApplicationError(WORKTREE_FAILED)`. If the mirror's failure
+    reached that conversion, an unreachable remote would turn a successful
+    salvage into a failed terminal activity — the exact inversion of
+    constitution VI, which says salvage happens on every termination path.
+    """
+    prepared = await prepare(env, repo)
+    worktree = Path(prepared.path)
+    dirty(worktree)
+    git(repo, "remote", "add", "origin", str(tmp_path / "gone.git"))
+
+    sha = await env.run(
+        salvage_worktree,
+        SalvageWorktreeInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            termination=Termination.KILLED,
+            attempt=ATTEMPT,
+        ),
+    )
+
+    assert sha == head(worktree)
+    assert head(repo, BRANCH) == sha
+    assert subject(worktree) == f"salvage({EPIC}/{NODE}): killed attempt {ATTEMPT}"
+
+
 async def test_remove_worktree_is_idempotent_and_leaves_the_salvaged_branch(
     env: ActivityEnvironment, repo: Path
 ) -> None:

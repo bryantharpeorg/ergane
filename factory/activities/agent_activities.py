@@ -60,6 +60,7 @@ sit in the same worker environment and have no path into any of these calls
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -108,6 +109,11 @@ from factory.workgraph.worktree import (
     PreparedWorktree,
     WorktreeError,
 )
+
+#: Where the salvage mirror's outcome goes. A mirror failure is reported rather
+#: than raised (047 FR-002), so this log line is the only place an operator
+#: learns that a terminated node's work is still on one disk.
+logger = logging.getLogger(__name__)
 
 #: The activity error type for a graph that must not dispatch (FR-002): an
 #: unknown persona, a persona resolving no timeout, a dangling dependency, a
@@ -559,15 +565,29 @@ class SalvageWorktreeInput:
 
 @activity.defn
 async def salvage_worktree(request: SalvageWorktreeInput) -> str:
-    """Commit whatever the attempt left to the node's branch; return the sha.
+    """Commit whatever the attempt left to the node's branch, mirror it, return the sha.
 
     Runs on every termination path before any cleanup (constitution VI), and
     commits an empty tree as readily as a dirty one so every terminal attempt is
     observable from the ref alone (SC-004). Idempotent per attempt: a re-run
     after an unrecorded success lands on the same commit.
+
+    The commit is the durable artifact; the mirror is what gets it off this
+    machine (047 US1). It runs after the commit and outside the conversion
+    below, unconditionally — including on the retry path where `salvage`
+    short-circuits, because a retry after a failed push is exactly when a mirror
+    is worth running. Its failures are returned as data and logged, never
+    raised: an unreachable remote that failed this activity would turn a
+    successful salvage into a failed one.
+
+    The return value stays a plain `str` (047 FR-005). Three call sites in
+    `EpicWorkflow` already schedule this activity and discard what it answers;
+    widening the payload or adding a fourth command would be a replay hazard for
+    every in-flight epic, and nothing here needs one — a linked worktree already
+    knows its own remote.
     """
     try:
-        return await asyncio.to_thread(
+        sha = await asyncio.to_thread(
             worktrees.salvage,
             request.epic_id,
             request.node_id,
@@ -577,6 +597,22 @@ async def salvage_worktree(request: SalvageWorktreeInput) -> str:
         )
     except WorktreeError as exc:
         raise ApplicationError(str(exc), type=WORKTREE_FAILED) from exc
+
+    outcome = await asyncio.to_thread(
+        worktrees.mirror_node_branch,
+        request.epic_id,
+        request.node_id,
+        factory_root=factory_root(),
+    )
+    logger.info(
+        "salvage mirror for %s/%s attempt %s: pushed=%s %s",
+        request.epic_id,
+        request.node_id,
+        request.attempt,
+        outcome.pushed,
+        outcome.detail,
+    )
+    return sha
 
 
 @dataclass(frozen=True)
