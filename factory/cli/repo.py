@@ -66,6 +66,10 @@ from factory.workgraph.worktree import (
     resolve_factory_root,
 )
 
+#: STUB (red run only).
+RUNTIME_ROOT_TEST_ISOLATION_FINDING = "hardening/test-suite-empties-a-live-runtime-root"
+
+
 async def _open_client() -> Client:
     """Connect to the operator's Temporal for the capacity read."""
     address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
@@ -171,6 +175,10 @@ def add_repo_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
         ),
     )
     forget_parser.add_argument("slug", help="the slug the repository is registered under")
+    # STUB (red run only): the flags exist so argparse admits them and the tests
+    # fail on behaviour rather than on exit code 2.
+    forget_parser.add_argument("--clean-runtime", dest="clean_runtime", action="store_true")
+    forget_parser.add_argument("--export", dest="export", metavar="DIR", default=None)
     forget_parser.add_argument(
         "--lock-timeout",
         type=float,
