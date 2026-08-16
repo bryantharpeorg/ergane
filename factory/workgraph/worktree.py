@@ -31,6 +31,15 @@ Three decisions here are load-bearing:
   will not do is skip a *dirty* tree because the marker is already there — the
   cheap duplicate commit is the better error than the discarded work.
 
+- **Every salvage also writes its own ref, and the branch is not that ref.** The
+  branch tip is a moving target: an agent's `git commit --amend`, or a hand
+  `git branch -D` before a relaunch, orphans whatever salvage commit sat on the
+  rewritten line, and `git gc` collects it on its own schedule — which is how a
+  sha the workflow wrote down stops resolving. So each attempt's commit is also
+  named by an immutable `refs/salvage/<epic>/<node>/attempt-<n>-<sha12>`
+  (`record_salvage_ref`). A ref is what `gc` reads; a commit a ref names is not
+  collectable, whatever the branch does afterwards.
+
 - **Removal takes the directory and the base-ref sidecar; the branch survives.**
   `git worktree remove` is cleanup; the branch and its salvage commits survive,
   because once `.factory/` is swept they are the only thing left of the attempt.
@@ -455,6 +464,100 @@ def push_branch(
     return _head(path)
 
 
+#: Where a salvage records itself. One ref per attempt, immutable, in the target
+#: repository's shared ref store:
+#:
+#:     refs/salvage/<epic_id>/<node_id>/attempt-<n>-<sha12>
+#:
+#: The commit's own short sha is in the name deliberately (047 FR-006/FR-007).
+#: A bare `attempt-<n>` would have to either move on a second write — and a
+#: per-attempt ref a later write can move is not a record — or refuse to move,
+#: which means raising on the one path constitution VI says always succeeds.
+#: Naming the ref after what it points at makes the write idempotent by
+#: construction and gives the dirty re-salvage two names instead of a conflict.
+#: Note the shape: `attempt-1-<sha>` and not `attempt-1/<sha>`, because git
+#: cannot hold both `refs/x/attempt-1` and `refs/x/attempt-1/…`.
+SALVAGE_REF_ROOT = "refs/salvage"
+
+
+def salvage_ref_namespace(epic_id: str, node_id: str) -> str:
+    """Every per-attempt ref one node ever wrote lives under this prefix."""
+    return f"{SALVAGE_REF_ROOT}/{epic_id}/{node_id}"
+
+
+def salvage_ref_name(epic_id: str, node_id: str, *, attempt: int, sha: str) -> str:
+    """The immutable ref one attempt's salvage commit is recorded under."""
+    return f"{salvage_ref_namespace(epic_id, node_id)}/attempt-{attempt}-{sha[:12]}"
+
+
+@dataclass(frozen=True)
+class SalvageRef:
+    """The per-attempt ref a salvage left behind — data, never an exception.
+
+    `written` is what a caller routes on; `detail` carries git's own words when
+    the write did not happen, for the same reason `MirrorOutcome.detail` does.
+    """
+
+    ref: str
+    sha: str
+    written: bool
+    detail: str
+
+
+#: Reported when the per-attempt ref is switched off at its seam. A parameter
+#: rather than an environment read, for the same reason `MIRROR_DISABLED` is:
+#: the control proving the ref is what keeps a superseded sha resolvable (047
+#: SC-002) is a committed test, and a test that reached for an env var would be
+#: measuring the process it runs in.
+SALVAGE_REF_DISABLED = "per-attempt ref disabled by its caller"
+
+
+def record_salvage_ref(
+    epic_id: str,
+    node_id: str,
+    *,
+    attempt: int,
+    sha: str,
+    factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+    enabled: bool = True,
+) -> SalvageRef:
+    """Name this attempt's salvage commit with its own ref; report, never raise.
+
+    The commit `salvage` returns is reachable from exactly one place — the node
+    branch's tip, at that instant. The next attempt commits on top and the chain
+    holds, but a rewrite does not: `factory/028-epic-relaunch-reset/us3`'s reflog
+    carries four `commit (amend)` entries and left two salvage commits reachable
+    from nothing, and `81905eb1f8bb…` — a sha the factory recorded for
+    `027-gate-suite-fake-time/us2` — resolves to nothing anywhere on this host
+    today. The workflow writes these shas down; without a ref they stop meaning
+    anything, and a lost attempt becomes indistinguishable from a superseded one.
+
+    A ref is what `git gc` reads. That is the whole mechanism: a commit a ref
+    names is not collectable, whatever the branch does afterwards.
+
+    `git update-ref` is run from inside the node's worktree, which shares the
+    target repository's object database and ref store — so this needs no
+    `target_repo` handed down, `SalvageWorktreeInput` gains no field and the
+    workflow schedules no new activity (047 FR-005).
+
+    **Nothing here may raise.** The commit is already made by the time this runs;
+    turning a failed record into a failed terminal activity would discard exactly
+    the work the record was about, which is the inversion of the principle this
+    exists to defend.
+    """
+    ref = salvage_ref_name(epic_id, node_id, attempt=attempt, sha=sha)
+    if not enabled:
+        return SalvageRef(ref, sha, False, SALVAGE_REF_DISABLED)
+
+    path = worktree_path(factory_root, epic_id, node_id)
+    try:
+        _git(path, "update-ref", ref, sha)
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return SalvageRef(ref, sha, False, str(exc))
+
+    return SalvageRef(ref, sha, True, f"recorded {sha[:12]} at {ref}")
+
+
 @dataclass(frozen=True)
 class MirrorOutcome:
     """What the salvage mirror did with the node branch — data, never an exception.
@@ -463,12 +566,20 @@ class MirrorOutcome:
     the record afterwards, and on a failure it carries git's own words rather
     than a paraphrase of them (047 FR-002): an operator re-driven on a summary
     debugs the summary.
+
+    The `refs_*` pair says the same about the per-attempt salvage refs, reported
+    separately because they succeed and fail separately: a remote may take the
+    branch and refuse the namespace, and a branch push refused as a
+    non-fast-forward is precisely the case where the refs are the only thing
+    still naming that attempt's commit.
     """
 
     branch: str
     remote: str
     pushed: bool
     detail: str
+    refs_pushed: bool
+    refs_detail: str
 
 
 #: Reported when the mirror is switched off at its seam. Explicitly a parameter
@@ -519,7 +630,9 @@ def mirror_node_branch(
     path = worktree_path(factory_root, epic_id, node_id)
 
     if not enabled:
-        return MirrorOutcome(branch, remote, False, MIRROR_DISABLED)
+        return MirrorOutcome(
+            branch, remote, False, MIRROR_DISABLED, False, MIRROR_DISABLED
+        )
 
     try:
         repo = _main_worktree(path)
@@ -528,19 +641,51 @@ def mirror_node_branch(
             # one — the posture `_remote_head` already takes when it pins a base
             # ref in a clone with no origin. The factory mirrors to what the
             # target says; it never invents a destination.
-            return MirrorOutcome(
-                branch,
-                remote,
-                False,
-                f"no '{remote}' remote is configured in {repo}: nothing to mirror to",
+            absent = (
+                f"no '{remote}' remote is configured in {repo}: nothing to mirror to"
             )
+            return MirrorOutcome(branch, remote, False, absent, False, absent)
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return MirrorOutcome(branch, remote, False, str(exc), False, str(exc))
+
+    try:
         sha = push_branch(
             repo, epic_id, node_id, factory_root=factory_root, remote=remote
         )
     except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
-        return MirrorOutcome(branch, remote, False, str(exc))
+        pushed, detail = False, str(exc)
+    else:
+        pushed, detail = True, f"pushed {branch} to {remote} at {sha}"
 
-    return MirrorOutcome(branch, remote, True, f"pushed {branch} to {remote} at {sha}")
+    refs_pushed, refs_detail = _mirror_salvage_refs(
+        repo, epic_id, node_id, remote=remote
+    )
+    return MirrorOutcome(branch, remote, pushed, detail, refs_pushed, refs_detail)
+
+
+def _mirror_salvage_refs(
+    repo: Path, epic_id: str, node_id: str, *, remote: str
+) -> tuple[bool, str]:
+    """Carry the node's per-attempt salvage refs to `remote`; never raise (FR-008).
+
+    Attempted whether or not the branch push succeeded, because the two are
+    independent: a branch refused as a non-fast-forward, or refused outright as
+    the target's landing branch, is exactly when the per-attempt refs are the
+    only thing still naming those commits.
+
+    One wildcard refspec covers every attempt the node ever salvaged, so a push
+    that failed on an earlier attempt is repaired by the next one's. The names
+    are immutable and sha-suffixed, so this can never be anything but a
+    fast-forward-equivalent create — no `--force`, ever (FR-004). A namespace
+    holding nothing yet is not an error: git answers a refspec that matches
+    nothing with exit 0.
+    """
+    namespace = salvage_ref_namespace(epic_id, node_id)
+    try:
+        _git(repo, "push", "--quiet", remote, f"{namespace}/*:{namespace}/*")
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    return True, f"mirrored {namespace}/* to {remote}"
 
 
 def _main_worktree(path: Path) -> Path:
