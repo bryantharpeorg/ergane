@@ -41,7 +41,7 @@ this file against each. Verbatim summary lines:
     M2  the gate's literal bind list and literal container PATH restored
         3 failed, 11 passed
           test_the_gate_sandbox_binds_the_discovered_toolchain
-          test_the_gate_binds_the_runners_install_directory_it_discovered
+          test_the_gate_reproduces_the_runners_layout_rather_than_flattening_it
           test_the_gates_optional_tools_still_degrade_quietly
 
     M3  require_tool guesses `~/.local/bin/<name>` instead of refusing
@@ -61,21 +61,23 @@ this file against each. Verbatim summary lines:
     M5  install_root returns the literal `/home/admin/.local/share/claude`
         2 failed, 12 passed
           test_install_root_is_read_from_the_layout_not_assumed
-          test_the_gate_binds_the_runners_install_directory_it_discovered
+          test_the_gate_reproduces_the_runners_layout_rather_than_flattening_it
 
     M6  find_tool declares `~/.local/bin/<name>` and never consults PATH
         13 failed, 1 passed
-        — the survivor is the missing-runner refusal, which still fires because
-          the declared path does not resolve.
+        — the survivor is
+          test_a_missing_runner_refuses_by_name_before_anything_forks, which
+          still fires because the declared path does not resolve.
 
     M7  a symlinked tool binds the link at its own path, not its target
-        3 failed, 11 passed
+        2 failed, 12 passed
           test_a_symlinked_tool_binds_its_target_at_the_links_own_path
           test_the_agent_sandbox_follows_a_repointed_runner_symlink
-          test_the_gate_binds_the_runners_install_directory_it_discovered
 
-Every test in this file dies under at least one mutation. None of them can pass
-on a factory that only pretends to discover its toolchain.
+Every test in this file dies under at least one mutation — M1/M2 cover the two
+sandboxes, M3 the refusals, M4 the version ordering, M5 the install layout, M6
+discovery itself and M7 symlink resolution. None of them can pass on a factory
+that only pretends to discover its toolchain.
 """
 
 from __future__ import annotations
