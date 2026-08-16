@@ -609,8 +609,14 @@ def _profile_from_forge_failure(
     # own finding if the manifest also failed.
     from factory.mergequeue.models import Finding
 
-    # Wording verbatim from before the seam (SC-001); US2 neutralises the prose.
-    detail = f"could not read the repo via gh ({error.kind}): {error.detail or str(error)}"
+    # US3 left this naming `gh` and called it US2's; US2 left it too, and no
+    # per-module check either story wrote was pointed here. US6's package-wide
+    # sweep is what found it. `error.kind` already carries the forge's own
+    # taxonomy term, so the operator loses nothing.
+    detail = (
+        f"could not read the repo via its forge ({error.kind}): "
+        f"{error.detail or str(error)}"
+    )
     findings = [Finding("repo_read", False, detail)]
     if manifest_error is not None:
         findings.append(
