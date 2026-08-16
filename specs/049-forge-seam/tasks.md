@@ -183,7 +183,7 @@ exists to prevent.
       then passes it — the assertion is the judged state, never the call log
       (spec US4-S1, FR-012; the pattern is
       `tests/test_ergane_init_wiring.py:348`, `:367-396`) — must fail.
-- [ ] T031 [P] [US4] Write the idempotence case: a second run reports every act
+- [x] T031 [P] [US4] Write the idempotence case: a second run reports every act
       already satisfied and mutates nothing, asserted against the **repository
       model's** mutation list (spec US4-S2) — must fail. It may not be routed
       through `tests/fake_gh.py`: an idempotence claim tested there is

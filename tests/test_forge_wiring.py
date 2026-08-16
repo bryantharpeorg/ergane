@@ -125,3 +125,65 @@ def test_a_forge_that_never_heard_of_github_is_wired_and_judged_the_same_way(
     assert sorted(profile.required_checks) == sorted(FIXTURE_GATES)
     assert [step.status for step in steps] == [APPLIED]
     assert model.mutations == ["landing policy on main"]
+
+
+# --- US4-S2: a second run reports every act satisfied and mutates nothing ------
+
+
+def test_a_second_wiring_run_reports_every_act_satisfied_and_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    """US4-S2, asserted against the *repository model's* mutation list.
+
+    It could not be asserted through `tests/fake_gh.py`, and the reason is the
+    story: that fake scans its expectations from index 0 on every call and
+    consumes none, so the first match answers a command forever, a second
+    identical command is unreachable, and an idempotence claim made through it
+    is unfalsifiable by construction
+    (`ci/the-scripted-gh-fake-never-consumes-an-expectation`). `FakeGitHub` is a
+    repository as state, so a second write is reachable — and would show up here
+    three ways: a mutating call, a changed snapshot, an `applied` step.
+
+    What edit would make this fail: drop `_ruleset_satisfies`'s comparison, or
+    PATCH the squash title without reading it first — either re-writes a setting
+    that already said what it was asked to say.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = FakeGitHub(owner_repo="acme/app", default_branch="main")
+
+    github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
+    assert model.mutations(), "the first run must actually have wired something"
+
+    before = model.snapshot()
+    model.calls.clear()
+
+    steps = github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert [step.status for step in steps] == [ALREADY_SATISFIED, ALREADY_SATISFIED]
+    assert model.mutations() == []
+    assert model.snapshot() == before
+
+    # And the repository the second run left behind is still one the factory
+    # will dispatch against — "changed nothing" must not mean "unwired it".
+    assert onboard_target_repo(github_forge_over(model, repo), str(repo)).passed
+
+
+def test_the_neutral_forges_second_run_records_no_change_either(
+    tmp_path: Path,
+) -> None:
+    """The same claim one layer up, where the mutation list is the model's own
+    and not derived from argv: idempotence is a property of the *operation*, so
+    a forge whose acts are not `gh` calls answers it the same way.
+
+    What edit would make this fail: have `RepositoryModel.wire` write before it
+    compares, and the second run appends a second entry.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = RepositoryModel(address="acme/app", default_branch="main")
+
+    FakeForge(model).apply_landing_policy("main", FIXTURE_GATES)
+    steps = FakeForge(model).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert [step.status for step in steps] == [ALREADY_SATISFIED]
+    assert model.mutations == ["landing policy on main"]
+    assert onboard_target_repo(FakeForge(model), str(repo)).passed
