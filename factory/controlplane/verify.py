@@ -228,7 +228,7 @@ class LLMProbe:
                 persona=persona,
                 model=model,
                 completed=False,
-                detail=f"timed out after {min(timeout, 30)}s waiting for LLM completion at {base_url}",
+                detail=f"timed out after {timeout}s waiting for LLM completion at {base_url}",
             )
         except Exception as exc:
             # A refused or unreachable host should still name the endpoint so the
