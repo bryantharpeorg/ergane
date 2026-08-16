@@ -325,3 +325,54 @@ This is an operator decision, not a patch. Making `validate` read the committed
 artifact would change what FR-001 means by "every node of the derived graph" —
 a contract change that deserves a spec rather than a quiet amendment. Recorded
 here, open, for that decision.
+
+---
+
+# Close-out, 2026-08-15
+
+Every entry above is discharged except one, and the exception is a question
+rather than a defect.
+
+| entry | state |
+| --- | --- |
+| 045-judge-diff-hygiene / US1 | **discharged** — PASS, 5 of 5 |
+| 046-operator-status-cli / US2 | **discharged** — PASS |
+| 046-operator-status-cli / US3 | **discharged** — PASS, 3 of 3 |
+| 033-ergane-install / US2 | **discharged** — two defects found, fixed in `ffdf11e` (#91), re-judged PASS on all five scenarios |
+| 044-prompt-assembly-preflight / US1 | **open** — US1-S2 describes behaviour the current contract cannot produce |
+
+## The one that stays open, and why it is not a bug report
+
+US1-S2 asks `ergane spec validate` to report a node whose story the spec does
+not declare. It cannot: `parse_spec`'s heading grammar is strictly narrower than
+the assembler's, and the deriver cross-validates every `implements` key against
+the spec, so a *freshly derived* graph cannot contain a story whose section the
+assembler is unable to find. The spec.md half of assembly only fires against a
+**committed** `workgraph.json` that has drifted from the spec beside it — which
+is exactly what `ergane build start` dispatches, and exactly what `validate` does
+not read.
+
+The implementer disclosed this in its own report and drove the scenario at the
+function instead. The judge, reading only the diff and the criteria, called the
+same gap unsatisfied. Both are right, which is the tell: the defect is in the
+scenario.
+
+Two honest resolutions, and the choice is an operator's:
+
+1. **Widen what validate reads** — have it check a committed `workgraph.json`
+   when one exists, alongside the derived graph. This is the behaviour an
+   operator would probably want, because the committed artifact is what gets
+   dispatched. It changes what FR-001 means by "every node of the derived
+   graph", so it is a contract change and deserves its own story.
+2. **Narrow the scenario** to what the current contract can produce, and record
+   the drifted-artifact case as the separate concern it is.
+
+Either way this file has done its job: the question reached an operator as a
+written question rather than as an agent's silent shrug six weeks from now.
+
+## What the register is for, restated
+
+Five stories, two failures, and **both failures were named in advance** in these
+entries' own "what a judge would have checked and did not" sections. The section
+is not a disclaimer. It is the work queue, and on this night it had a hit rate
+of two for four.
