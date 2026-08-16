@@ -52,7 +52,7 @@
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us2"
+        "us1"
       ],
       "timeout_override_s": null
     },
@@ -68,7 +68,7 @@
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us3"
+        "us2"
       ],
       "timeout_override_s": null
     },
@@ -84,7 +84,7 @@
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us4"
+        "us1"
       ],
       "timeout_override_s": null
     },
@@ -100,6 +100,9 @@
       ],
       "depends_on": [],
       "depends_on_merged": [
+        "us2",
+        "us3",
+        "us4",
         "us5"
       ],
       "timeout_override_s": null
