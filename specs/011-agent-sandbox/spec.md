@@ -1,6 +1,15 @@
 ---
-state: ready
+state: landed
 depends_on_landed: [043-runtime-root-integrity]
+# Attested landed 2026-08-15. US1 ed8f24c5a3b1 (#74), US2 8b768e606222 (#75),
+# US3 678291be5117 (#76), US4 0daa9761ec6d (#77), US5 48daae1a80c7 (#78) — all
+# observed on ergane-buildout. Four operator follow-ups landed after the epic
+# closed, each fixing something the five green stories could not see: the
+# sandbox was never applied to a real dispatch (#79), the boundary made the
+# worktree read-only (#80), it could not run the repo's toolchain (#81), and it
+# could not run the repo's own suite (#82). That gap between "epic complete"
+# and "mechanism works in production" is the reason 011 is worth re-reading
+# before trusting any future isolation claim.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane (the old ergane-011-target scratch repo
 #   never existed on this host; the boundary code lands in factory/, so the
