@@ -22,6 +22,7 @@ than get a scripted answer back.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Sequence
 
 from factory.mergequeue.forge import (
     ForgeError,
@@ -30,6 +31,17 @@ from factory.mergequeue.forge import (
     RepositoryDescription,
 )
 from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
+from factory.mergequeue.wiring import (
+    ALREADY_SATISFIED,
+    APPLIED,
+    WiringRefused,
+    WiringStep,
+)
+
+#: What this forge calls "the landing takes the proposal's title" — its own
+#: spelling, deliberately not GitHub's, so a judgment deciding from the spelling
+#: rather than from the answer fails here.
+WIRED_TITLE_SOURCE = "proposal-title"
 
 
 @dataclass
@@ -59,6 +71,14 @@ class RepositoryModel:
     visibility: str = ""
     findings: tuple[Finding, ...] = ()
     unreachable: str = ""
+    #: US4: why this forge's credentials cannot change this repository. Non-empty
+    #: is a forge that refuses every write, before making any of them.
+    refuse_writes: str = ""
+    #: US4: every change actually made to this repository, in order — the list an
+    #: idempotence claim is asserted against. "The wiring ran twice" is a fact
+    #: about the caller; "the repository changed twice" is a fact about the
+    #: world, and only the second one can fail.
+    mutations: list[str] = field(default_factory=list)
     branches: dict[str, BranchPolicy] = field(default_factory=dict)
     #: US3: the proposals offered to this repository. The factory is deferred
     #: through a lambda so `LandingModel` can live at the module's end, where a
@@ -85,6 +105,35 @@ class RepositoryModel:
     def policy_for(self, branch: str) -> BranchPolicy:
         """The branch's policy, or the unconfigured default — never a mutation."""
         return self.branches.get(branch) or BranchPolicy()
+
+    def wire(self, branch: str, checks: tuple[str, ...]) -> tuple[WiringStep, ...]:
+        """US4: the repository's own wiring act — read the state, then write.
+
+        Nothing is written when nothing would change, which is what makes an
+        idempotence claim falsifiable here: a caller that wrote unconditionally
+        would leave a second entry in `mutations` even though the repository
+        already said what it was asked to say.
+        """
+        desired = BranchPolicy(
+            gates_on_named_checks=True,
+            required_checks=tuple(checks),
+            lands_without_a_human=True,
+            landing_title_from_proposal=True,
+            landing_title_source=WIRED_TITLE_SOURCE,
+        )
+        named = ", ".join(checks) or "(nothing declared)"
+        if self.branches.get(branch) == desired:
+            return (WiringStep(
+                "landing policy", ALREADY_SATISFIED,
+                f"'{branch}' already gates on exactly: {named}",
+            ),)
+        self.branches[branch] = desired
+        self.mutations.append(f"landing policy on {branch}")
+        return (WiringStep(
+            "landing policy", APPLIED,
+            f"'{branch}' now gates on exactly: {named}, lands with no human, and "
+            "titles a landing from the proposal",
+        ),)
 
 
 class FakeForge:
@@ -116,6 +165,33 @@ class FakeForge:
             landing_title_from_proposal=policy.landing_title_from_proposal,
             landing_title_source=policy.landing_title_source,
         )
+
+    # --- the wiring half (049-US4) ------------------------------------------
+
+    def apply_landing_policy(
+        self, branch: str, required_checks: Sequence[str]
+    ) -> tuple[WiringStep, ...]:
+        """Make `branch` gate on exactly `required_checks` — or refuse, whole.
+
+        A forge that cannot write refuses before its first act and carries the
+        by-hand steps (FR-013), so this repository is never left gating on half
+        of what it was asked to gate on.
+        """
+        if self.model.refuse_writes:
+            raise WiringRefused(
+                f"this forge cannot change {self.model.address}: "
+                f"{self.model.refuse_writes}",
+                remedies=(
+                    "use an account this forge lets change repository settings",
+                ),
+                manual=(
+                    f"1. make '{branch}' refuse a landing until these pass: "
+                    f"{', '.join(required_checks)}",
+                    f"2. make '{branch}' complete the landing itself once they do",
+                    "3. make a landing commit take the proposal's title",
+                ),
+            )
+        return self.model.wire(branch, tuple(required_checks))
 
     # --- the landing half (049-US3) -----------------------------------------
     #

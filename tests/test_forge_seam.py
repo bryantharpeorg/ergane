@@ -52,7 +52,11 @@ LANDING_OPERATIONS = {
     "find_proposal", "open_proposal", "request_landing",
     "observe_proposal", "withdraw_landing", "failing_check_evidence",
 }
-SEAM_OPERATIONS = READING_OPERATIONS | LANDING_OPERATIONS
+
+#: The wiring half (049-US4, FR-012): one operation, the write side of
+#: `landing_policy`, and the only one on this seam that changes a repository.
+WIRING_OPERATIONS = {"apply_landing_policy"}
+SEAM_OPERATIONS = READING_OPERATIONS | LANDING_OPERATIONS | WIRING_OPERATIONS
 
 #: Verbs that would mean a forge had started deciding. Classifying, settling and
 #: judging stay factory-side (FR-001), as `factory/notify/adapter.py` requires.

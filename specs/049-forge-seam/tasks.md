@@ -178,7 +178,7 @@ exists to prevent.
 
 ### Tests for this story (write FIRST, must fail)
 
-- [ ] T030 [US4] Write the wire-then-judge round trip FIRST against the fake
+- [x] T030 [US4] Write the wire-then-judge round trip FIRST against the fake
       repository model: wiring mutates it, and the factory's own `evaluate_repo`
       then passes it — the assertion is the judged state, never the call log
       (spec US4-S1, FR-012; the pattern is
