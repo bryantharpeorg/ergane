@@ -44,6 +44,7 @@ import yaml
 from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.locking import LockUnavailable, lock_path_for
+from factory.mergequeue import wiring
 from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
 from factory.verify.factory_yaml import (
@@ -63,15 +64,19 @@ RUNTIME_ROOT = Path(".ergane")
 #: Module-level seam so tests can inject a scripted prompter.
 _prompter_factory: Callable[[], Any] | None = None
 
-
 def _default_gh_client(*, repo_path: str) -> Any:
-    """Build the real `gh` client; imported late so the scaffold stays offline."""
+    """Build the real `gh` client; imported late so the scaffold stays offline.
+
+    `repo_path` becomes the client's `cwd` — how `gh` resolves owner/repo from
+    the checkout's `origin` remote (FR-001).
+    """
     from factory.mergequeue.gh import GhClient
 
     return GhClient(repo=repo_path)
 
 
-#: Seam: how `--check` reaches GitHub.  Rebound in tests to a scripted runner.
+#: Seam: how *both* `--check` (US4) and `--wire` (US3) reach GitHub. One name,
+#: one signature — rebound in tests to a scripted runner.
 _gh_client_factory: Callable[..., Any] = _default_gh_client
 
 
@@ -196,6 +201,15 @@ def add_init_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
         "--check",
         action="store_true",
         help="judge this repository's readiness and exit; writes nothing",
+    )
+    parser.add_argument(
+        "--wire",
+        action="store_true",
+        help=(
+            "also wire the repo's GitHub side to match the declarations: enable "
+            "the merge queue on the declared landing branch, require one check "
+            "per declared gate, and scaffold the workflow that produces them"
+        ),
     )
     parser.set_defaults(run=init_command)
     return parser
@@ -389,14 +403,22 @@ def init_command(args: argparse.Namespace) -> int:
 
     registration = _register(slug, repo_root)
 
+    # Wiring runs last, after the repo-local half is complete and recorded, so a
+    # refusal from GitHub's side never costs the operator the scaffold.
+    wiring_lines = _wire(
+        repo_root, manifest_values, requested=bool(getattr(args, "wire", False))
+    )
+
     print(f"joined {repo_root.resolve()} as slug '{slug}'")
     print("written:")
     print(f"  {repo_root / MANIFEST_NAME}")
     print(f"  {repo_root / '.gitignore'}")
     print(f"  {repo_root / RUNTIME_ROOT}")
     print(_registration_line(registration))
+    for line in wiring_lines:
+        print(line)
     print("next, run:")
-    print(f"  git -C {repo_root.resolve()} add ergane.yaml .gitignore .ergane")
+    print(f"  git -C {repo_root.resolve()} add {_paths_to_commit(repo_root)}")
     print(f"  git -C {repo_root.resolve()} commit -m \"join ergane\"")
 
     # FR-010: a full init ends by executing the check, so readiness is judged at
@@ -409,6 +431,64 @@ def init_command(args: argparse.Namespace) -> int:
     run_check(repo_root)
 
     return EXIT_OK
+
+
+def _paths_to_commit(repo_root: Path) -> str:
+    """The paths the operator is told to stage — the workflow only if it exists."""
+    paths = ["ergane.yaml", ".gitignore", str(RUNTIME_ROOT)]
+    if (repo_root / wiring.WORKFLOW_PATH).is_file():
+        paths.append(str(wiring.WORKFLOW_PATH))
+    return " ".join(paths)
+
+
+def _wire(
+    repo_root: Path, manifest_values: dict[str, Any], *, requested: bool
+) -> list[str]:
+    """The GitHub half of init: opt-in, idempotent, and reported line by line.
+
+    A flag rather than a further interview question, so a repo whose GitHub side
+    is already governed — or which is not on GitHub at all — is never asked;
+    plain `ergane init` names the flag instead.
+
+    The CI half is written before any `gh` call, because it needs no network: an
+    operator refused at the GitHub boundary still leaves with the file the manual
+    steps tell them to commit.
+    """
+    if not requested:
+        return [
+            "github wiring: not attempted — re-run with `ergane init --wire` to",
+            "  queue the landing branch and require one check per declared gate",
+        ]
+
+    gates = dict(manifest_values.get("gates") or {})
+    landing_branch = str(manifest_values.get("landing_branch") or "")
+
+    lines = ["wiring:"]
+    lines.extend(wiring.format_step(wiring.scaffold_gates_workflow(repo_root, gates)))
+
+    try:
+        steps = wiring.wire_repo(
+            _gh_client_factory(repo_path=str(repo_root)),
+            landing_branch=landing_branch,
+            gates=list(gates),
+        )
+    except wiring.WiringRefused as refusal:
+        raise OperatorError(
+            "\n".join(
+                [
+                    str(refusal),
+                    "",
+                    "the repo-local half of init is complete and unchanged in "
+                    f"{repo_root.resolve()}:",
+                    *lines[1:],
+                ]
+            ),
+            code=EXIT_USER,
+        ) from None
+
+    for step in steps:
+        lines.extend(wiring.format_step(step))
+    return lines
 
 
 def _ask_for_slug(repo_root: Path, *, prompter: Any) -> str:
