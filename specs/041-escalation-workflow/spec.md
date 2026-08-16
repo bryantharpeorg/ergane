@@ -227,10 +227,20 @@ is answered, and resumes the epic exactly as before.
 
 **Acceptance Scenarios**:
 
-1. **Given** the landed 008 behavior suite, **When** the epic park is
-   re-expressed as parent-awaits-child, **Then** the suite passes and the diff
-   shows no assertion in it changed — a suite edited to accommodate a refactor
-   has stopped being a guard.
+1. **Given** the landed 008 behavior suite — `tests/test_notify.py`,
+   `tests/test_notify_activities.py`, `tests/test_operator_question.py`,
+   `tests/test_question_delivery.py`, `tests/test_question_reply.py` — **When**
+   the epic park is re-expressed as parent-awaits-child, **Then** the suite
+   passes and the diff shows those five files unchanged — a suite edited to
+   accommodate a refactor has stopped being a guard.
+   <!-- The five filenames were added on 2026-08-16, after the judge failed this
+   scenario for an assertion changed in `tests/test_interpreter.py`. The plan
+   enumerates the suite exhaustively and that file is not in it — it is the
+   002/005/006 interpreter suite — but the criterion named no files, and the
+   judge sees the diff and the criteria and nothing else (D-037). A criterion
+   that requires reading `plan.md` to be checkable is not checkable by the
+   audience it was written for. The judge's reading was the only one available
+   to it. -->
 2. **Given** the epic workflow after migration, **When** the diff is inspected,
    **Then** it holds no escalation expiry timer and no escalation signal
    handler of its own; both belong to the child.
@@ -341,8 +351,30 @@ subsequent authorized answer does.
   rather than from a store scrape.
 - **FR-009**: The epic workflow's existing park MUST be re-expressed as
   parent-awaits-child with observable behavior unchanged — same messages, same
-  expiry, same answers, same store rows — and the landed 008 behavior suite
-  MUST pass with no assertion edited.
+  expiry, same answers, and the same store rows in every field but one:
+  `workflow_id` now names the `EscalationWorkflow`/`QuestionWorkflow` that is
+  waiting rather than the epic. The landed 008 behavior suite (the five files
+  named in US3-S1) MUST pass with no assertion edited.
+  <!-- The `workflow_id` exception was added on 2026-08-16, after US3 was built
+  and this requirement's "same store rows" proved unkeepable. Recording why,
+  because amending a criterion to fit an implementation is exactly what this
+  spec forbids elsewhere and the reasoning has to survive the commit.
+  The alternative was proved impossible, not merely inconvenient. `CallbackBridge`
+  routes on `record.workflow_id` verbatim (`factory/notify/service.py:529`,
+  `:569`), and four assertions inside the protected five pin that it does —
+  `tests/test_notify.py:603` and `tests/test_question_reply.py:360`, `:489`,
+  `:520` — using a fixture whose `escalation_id` and `workflow_id` are
+  deliberately different values. So routing on the correlation id instead, which
+  would have left the column untouched, requires editing assertions in the very
+  files this story may not edit. The 008 suite does not merely permit the row's
+  `workflow_id` to be the routing pointer; it mandates it.
+  The moved column is the one field the same suite proves is never observable:
+  `tests/test_notify.py:354` asserts it never reaches `callback_data`,
+  `factory/notify/messages.py` never mentions it, and the `resolve`/`answer`
+  listings print the correlation id, node and deadline instead. Every other
+  column is byte-identical. So "same messages, same expiry, same answers" hold
+  exactly, and "same store rows" fails only for the pointer that says who is
+  waiting — which had to move because the thing waiting moved. -->
 - **FR-010**: After migration the epic workflow MUST hold no escalation expiry
   timer and no escalation signal handler of its own, and awaiting an escalation
   child MUST NOT pause the epic's scheduler (the 017 hazard).
