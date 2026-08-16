@@ -233,34 +233,46 @@ that one.
 - [ ] T041 [US6] Write the idempotence case FIRST (spec US6-S3): an unchanged
       re-run reports already-satisfied and mutates nothing.
 
-- [ ] T042 [US6] Write the forget case FIRST (spec US6-S4, FR-016): forget
-      deletes the schedule. Assert deletion, not "forget succeeded" — an
-      orphaned schedule keeps firing at a specs root that may not exist.
-
-- [ ] T043 [US6] Write the check-finding cases FIRST (spec US6-S5, FR-016):
-      absent, paused, and argument-drifted schedules each flip exactly their
-      own finding with a remedy named. Follow US4's one-break-one-finding
-      discipline — no masking.
-
-- [ ] T044 [US6] Write the unreachable-control-plane case FIRST (spec US6-S6,
-      FR-017): scaffold and registry complete; the schedule step reports
-      failed with its reason; nothing repo-local is rolled back.
-
 ### Implementation for User Story 6
 
 - [ ] T045 [US6] Implement create/reconcile/delete behind one seam, with the
       slug-scoped identifier and the manifest-declared cadence and dials.
       Extend the manifest's typed shape rather than reading raw config.
 
-- [ ] T046 [US6] Add the schedule findings to the existing `evaluate_repo`
-      set — the same extension US4 made, never a second judgment — and wire
-      creation as a reported step of a full init run.
-
 - [ ] T047 [US6] Full suite green: `uv run pytest -q`. Paste the SC-007
       evidence verbatim into a comment block: a spec flipped to `ready`
       dispatching with no hand-run command and no hand-created schedule. If
       you cannot run a control plane in your environment, say so plainly in
       the commit rather than asserting it.
+
+## Phase 5b: User Story 7 — A repo without a scheduler does not read as ready (Priority: P2)
+
+Split out of US6 on 2026-08-16: US6 was built whole and measured 82,173 bytes
+against the 61,440-byte judge refusal, which is deterministic and pre-judge, so
+the work could not land at all. The seam is the one the implementing session
+named — creation and reconciliation stay in US6; this phase takes the readiness
+finding and forget, and imports `factory/roadmap/schedule.py` unchanged.
+
+### Tests for User Story 7 (write FIRST, must fail)
+
+- [ ] T042 [US7] Write the forget case FIRST (spec US7-S1, FR-016): forget
+      deletes the schedule. Assert deletion, not "forget succeeded" — an
+      orphaned schedule keeps firing at a specs root that may not exist.
+
+- [ ] T043 [US7] Write the check-finding cases FIRST (spec US7-S2, FR-016):
+      absent, paused, and argument-drifted schedules each flip exactly their
+      own finding with a remedy named. Follow US4's one-break-one-finding
+      discipline — no masking.
+
+- [ ] T044 [US7] Write the unreachable-control-plane case FIRST (spec US7-S3,
+      FR-017): scaffold and registry complete; the schedule step reports
+      failed with its reason; nothing repo-local is rolled back.
+
+### Implementation for User Story 7
+
+- [ ] T046 [US7] Add the schedule findings to the existing `evaluate_repo`
+      set — the same extension US4 made, never a second judgment — and wire
+      creation as a reported step of a full init run.
 
 ## Phase 6: User Story 5 — A repo can leave (Priority: P3)
 
