@@ -4,6 +4,16 @@
 long-running `RoadmapWorkflow`. `pause`, `resume`, and `promote` send signals;
 `status` queries `roadmap_status`. All traffic uses the notify bridge's
 environment contract for Temporal.
+
+The four verbs that act on a *running* roadmap reach it through
+`factory.roadmap.discovery`, because `roadmap-<root>` is only where a roadmap
+lives when an operator started it by hand: a schedule's runs are
+`roadmap-<root>-<timestamp>`, so the bare id resolves to nothing and the verbs
+used to refuse a roadmap Temporal could plainly see (finding
+`cli/roadmap-verbs-cannot-see-schedule-driven-runs`, 2026-08-15). `pause` and
+`resume` then act on whatever owns *dispatch* — the schedule, when a schedule
+owns it, since pausing one of its runs stops nothing: the next tick starts
+another.
 """
 
 from __future__ import annotations
@@ -19,7 +29,7 @@ from typing import Any
 
 from temporalio.client import Client
 from temporalio.exceptions import WorkflowAlreadyStartedError
-from temporalio.service import RPCError, RPCStatusCode
+from temporalio.service import RPCError
 
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
 from factory.mergequeue.models import LandingConfig
@@ -28,6 +38,11 @@ from factory.notify.service import (
     DEFAULT_TEMPORAL_NAMESPACE,
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
+)
+from factory.roadmap.discovery import (
+    RoadmapLocation,
+    RoadmapOwner,
+    resolve_roadmap,
 )
 from factory.roadmap.workflow import (
     TASK_QUEUE,
@@ -205,35 +220,93 @@ async def roadmap_start_command(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-async def _get_handle(args: argparse.Namespace) -> Any:
+async def _locate(args: argparse.Namespace) -> tuple[Client, RoadmapLocation]:
+    """Connect and resolve the roadmap, or refuse by naming every rung tried.
+
+    The refusal is the location's own (FR-007): with the full ladder in force it
+    names the bare workflow id, the schedule and the run prefix, in the order
+    they were tried, so the operator's next move is on the line.
+    """
     client = await _connect()
-    workflow_id = _workflow_id(args)
-    handle = client.get_workflow_handle(workflow_id)
     try:
-        await handle.describe()
+        location = await resolve_roadmap(client, args.specs_root)
     except RPCError as error:
-        if error.status is RPCStatusCode.NOT_FOUND:
-            raise OperatorError(
-                f"no roadmap '{Path(args.specs_root).name}' is running here "
-                f"(looked for workflow id {workflow_id})"
-            ) from error
         raise OperatorError(
             f"cannot reach roadmap '{Path(args.specs_root).name}': {error}",
             EXIT_TRANSPORT,
         ) from error
-    return handle
+    if not location.found:
+        raise OperatorError(location.refusal)
+    return client, location
+
+
+async def _get_handle(args: argparse.Namespace) -> Any:
+    """The workflow handle for a roadmap's current run — bare or timestamped."""
+    client, location = await _locate(args)
+    return _handle_for(client, location)
+
+
+def _handle_for(client: Client, location: RoadmapLocation) -> Any:
+    """The run to signal or query, or a refusal naming why there is none."""
+    if location.workflow_id is None:
+        raise OperatorError(
+            f"schedule {location.schedule_id} owns roadmap "
+            f"'{location.root_name}' but has started no run yet "
+            f"(looked for {location.run_prefix}*)"
+        )
+    return client.get_workflow_handle(location.workflow_id)
 
 
 async def roadmap_pause_command(args: argparse.Namespace) -> int:
-    handle = await _get_handle(args)
+    """Stop dispatch at whatever owns it.
+
+    A schedule-owned roadmap pauses at the schedule: signalling the run it
+    happens to be on would report success while the next tick started a fresh
+    one and dispatch continued — worse than refusing, because it lies. A run
+    with no schedule this client can name is signalled, and the operator is told
+    what could not be established, on stderr, because it is a caveat and not the
+    output they asked for.
+    """
+    client, location = await _locate(args)
+    if location.owner is RoadmapOwner.SCHEDULE:
+        await client.get_schedule_handle(location.schedule_id).pause()
+        print(
+            f"paused schedule {location.schedule_id}: the schedule owns "
+            "dispatch, so no further run will start"
+        )
+        return EXIT_OK
+    handle = _handle_for(client, location)
     await handle.signal("pause_roadmap")
+    _warn_unowned(location, "paused")
     return EXIT_OK
 
 
 async def roadmap_resume_command(args: argparse.Namespace) -> int:
-    handle = await _get_handle(args)
+    """Release dispatch at whatever owns it — the symmetric half of `pause`."""
+    client, location = await _locate(args)
+    if location.owner is RoadmapOwner.SCHEDULE:
+        await client.get_schedule_handle(location.schedule_id).unpause()
+        print(
+            f"resumed schedule {location.schedule_id}: the schedule owns "
+            "dispatch, so the next tick will start a run"
+        )
+        return EXIT_OK
+    handle = _handle_for(client, location)
     await handle.signal("resume_roadmap")
+    _warn_unowned(location, "resumed")
     return EXIT_OK
+
+
+def _warn_unowned(location: RoadmapLocation, verb: str) -> None:
+    """Say so when only a run could be acted on and no schedule could be named."""
+    if location.owner is not RoadmapOwner.RUN:
+        return
+    print(
+        f"ergane: warning: no owning schedule was found for "
+        f"{location.bare_workflow_id}, so only run {location.workflow_id} was "
+        f"{verb}; a schedule tick would start a fresh run",
+        file=sys.stderr,
+    )
 
 
 async def roadmap_promote_command(args: argparse.Namespace) -> int:
@@ -243,7 +316,14 @@ async def roadmap_promote_command(args: argparse.Namespace) -> int:
 
 
 async def roadmap_status_command(args: argparse.Namespace) -> int:
-    handle = await _get_handle(args)
+    client, location = await _locate(args)
+    if location.workflow_id is None:
+        # A schedule that owns dispatch but has not ticked: the disposition is
+        # the whole answer, because there is no run to query.
+        print(_render_disposition(location) + "no run has started yet")
+        return EXIT_OK
+
+    handle = client.get_workflow_handle(location.workflow_id)
     try:
         status = await handle.query("roadmap_status", result_type=RoadmapStatus)
     except RPCError as error:
@@ -253,10 +333,35 @@ async def roadmap_status_command(args: argparse.Namespace) -> int:
         ) from error
 
     if args.as_json:
+        # Still the query result verbatim, which is what `--json` promises and
+        # what a bare roadmap has always printed. The joined document — the
+        # disposition beside the status — is `ergane status --json` (US1).
         print(json.dumps(asdict(status), indent=2))
     else:
-        print(_render_status(status))
+        print(_render_disposition(location) + _render_status(status))
     return EXIT_OK
+
+
+def _render_disposition(location: RoadmapLocation) -> str:
+    """The lines that say what owns dispatch, above the status document.
+
+    A bare workflow renders none of them: it *is* the roadmap, there is no
+    schedule to name, and its output stays byte-identical to the pre-046 verb.
+    """
+    lines: list[str] = []
+    if location.schedule_id is not None:
+        state = "paused" if location.schedule_paused else "running"
+        lines.append(f"schedule: {location.schedule_id} ({state})")
+    if location.owner is RoadmapOwner.RUN:
+        lines.append(
+            f"schedule: none found (no schedule starts "
+            f"{location.bare_workflow_id}*)"
+        )
+    if location.owner is not RoadmapOwner.WORKFLOW and location.workflow_id:
+        lines.append(f"run: {location.workflow_id}")
+    if location.next_action_at is not None:
+        lines.append(f"next tick: {location.next_action_at}")
+    return "".join(f"{line}\n" for line in lines)
 
 
 def _render_status(status: RoadmapStatus) -> str:

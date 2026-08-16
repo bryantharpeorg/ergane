@@ -43,7 +43,7 @@ floor (stdout, captured by test_status_reports_the_newest_run_and_names_both):
 
     schedule: ergane-roadmap (running)
     run: roadmap-specs-2026-08-15T15:00:00Z
-    next tick: 2026-08-15T16:00:00Z
+    next tick: 2026-08-15T16:00:00+00:00
     roadmap: running
     concurrency: 1 epic(s), 1 node(s)
     running: 011-agent-sandbox
@@ -63,6 +63,11 @@ Nothing at all on the floor -- the refusal names every rung, in the order tried
 (stderr):
 
     ergane: no roadmap 'specs' is running here (looked for workflow id roadmap-specs, then a schedule starting workflows named roadmap-specs*, then runs named roadmap-specs-*)
+
+`uv run pytest -q` in this worktree, with this file and the discovery it drives
+in place:
+
+    2398 passed, 44 skipped, 4 warnings in 259.78s (0:04:19)
 ------------------------------------------------------------------------------
 """
 
@@ -108,6 +113,8 @@ def _status_document() -> RoadmapStatus:
                 state=SpecState.READY,
                 dispatchable=True,
                 blockers=[],
+                landed=False,
+                unlanded=[],
             )
         ],
         running=["011-agent-sandbox"],
@@ -340,7 +347,7 @@ def test_status_reports_the_newest_run_and_names_both(
 
         schedule: ergane-roadmap (running)
         run: roadmap-specs-2026-08-15T15:00:00Z
-        next tick: 2026-08-15T16:00:00Z
+        next tick: 2026-08-15T16:00:00+00:00
         roadmap: running
         concurrency: 1 epic(s), 1 node(s)
         running: 011-agent-sandbox
@@ -633,7 +640,17 @@ def test_status_falls_through_to_the_newest_run_when_schedules_cannot_be_listed(
 
     The spec's Assumptions: "If the Temporal server predates schedule listing,
     the verbs degrade per FR-007." Degrading means falling through to the run,
-    not aborting — the run is real and the operator can read it.
+    not aborting — the run is real and the operator can read it — and saying
+    which half could not be established. Verbatim stdout:
+
+        schedule: none found (no schedule starts roadmap-specs*)
+        run: roadmap-specs-2026-08-15T15:00:00Z
+        roadmap: running
+        concurrency: 1 epic(s), 1 node(s)
+        running: 011-agent-sandbox
+        parked: 0
+        specs:
+          [*] 011-agent-sandbox: ready (landed=False, promoted=False)
     """
     client = scheduled_floor(fake_temporal, schedules_unimplemented=True)
 
@@ -641,6 +658,7 @@ def test_status_falls_through_to_the_newest_run_when_schedules_cannot_be_listed(
 
     assert result.code == 0, result.stderr
     assert f"run: {NEWEST_RUN}" in result.stdout
+    assert "schedule: none found (no schedule starts roadmap-specs*)" in result.stdout
     assert client.queried == [(NEWEST_RUN, "roadmap_status")]
 
 
