@@ -36,13 +36,22 @@ Three decisions carry the weight:
 `open_bot` is a seam in the same sense as component 1's `open_client` and the
 judge's `judge_transport`: tests replace it to keep a socket from opening, and
 the token still has to come out of the environment for the activity to get that
-far.
+far. Since 041-US1 it is re-exported from `factory/notify/service.py`, where the
+Telegram transport now lives, and handed to whichever adapter this worker is
+configured with — patching it here still reaches every send, because the name is
+looked up in this module at call time.
+
+What changed in 041-US1 and what did not: these activities no longer know they
+are talking to Telegram. They render a message (`factory/notify/messages.py`),
+hand it to the configured `MessengerAdapter` with the escalation's or question's
+own id as the correlation id, and read a `DeliveryReceipt`. The row-first
+ordering, the fail-safe reading of a failed send, and the raise on a store that
+will not take the row are all unchanged — they were never transport concerns.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import secrets
 import sqlite3
 from contextlib import closing
@@ -61,22 +70,27 @@ from factory.activities.verify_activities import (
     FACTORY_VERIFICATION_DB_PATH_ENV,
     VERIFICATION_DB_PATH_ENV,
 )
+from factory.notify.adapter import RenderedMessage, resolve_adapter
 from factory.notify.messages import (
-    escalation_keyboard,
+    escalation_actions,
     escalation_message,
     question_message,
     roadmap_failure_notice,
     roadmap_recovery_notice,
 )
+from factory.notify.service import open_bot
 from factory.mergequeue.models import CheckFailure
 from factory.verify import store
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 
 logger = logging.getLogger(__name__)
 
-#: Read inside these activities only, and never placed in an input, a result, a
-#: row or a log line. The bridge service names the same variable
-#: (`factory.notify.service.BOT_TOKEN_ENV`) for the same process-local reason.
+#: Read out of the worker environment by the Telegram transport
+#: (`factory.notify.service.BOT_TOKEN_ENV`, the same variable under the module
+#: that now owns the send) and never placed in an input, a result, a row or a
+#: log line. Named here because these activities are where a caller configuring
+#: a worker looks for it, and because the credential sweep asserts that this
+#: pair is spelled in exactly the two modules entitled to the value.
 TELEGRAM_BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 
 #: Where escalations are sent. Not a credential, but worker configuration all the
@@ -114,16 +128,15 @@ QUESTION_NOT_RECORDED = "QUESTION_NOT_RECORDED"
 QUESTION_TIMEOUT_S = 28800
 
 
-def open_bot(token: str) -> Any:
-    """The Telegram client the escalation goes out over — a seam, not a factory.
+def _deliver(message: RenderedMessage, correlation_id: str) -> Any:
+    """Hand one rendered message to whichever transport this worker pages over.
 
-    Returned rather than constructed inline so a test can substitute a bot that
-    never opens a socket while the activity still has to find a real token in the
-    worker environment to reach this call.
+    Resolved per call, not per process: `open_bot` is looked up in this module's
+    namespace at the moment of the send, which is what keeps the seam the 008
+    suite patches — `monkeypatch.setattr(notify_activities, "open_bot", …)` —
+    reaching the adapter that actually opens the socket.
     """
-    from telegram import Bot
-
-    return Bot(token)
+    return resolve_adapter(open_bot=open_bot).deliver(message, correlation_id)
 
 
 @dataclass(frozen=True)
@@ -425,40 +438,20 @@ async def _send(record: EscalationRecord) -> bool:
     The reasons are deliberately not distinguished in the return value: an absent
     token, an unreachable API and a refused message all leave the workflow with
     the same move — apply the default now rather than wait out an hour of silence
-    that means nothing.
+    that means nothing. The transport says *why* against the correlation id; this
+    line says which escalation it was, because both ids are 12 hex digits and a
+    log that named neither kind would be unreadable a week later.
     """
-    token = os.environ.get(TELEGRAM_BOT_TOKEN_ENV)
-    chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV)
-    if not token or not chat_id:
-        # Named, never valued: which variable is unset is the whole diagnosis,
-        # and the token's value is exactly what may not be written down.
-        logger.warning(
-            "escalation %s: not sent — %s is not set on this worker",
-            record.escalation_id,
-            TELEGRAM_BOT_TOKEN_ENV if not token else TELEGRAM_CHAT_ID_ENV,
-        )
-        return False
-
-    try:
-        async with open_bot(token) as bot:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=escalation_message(record),
-                reply_markup=escalation_keyboard(record),
-            )
-    except Exception as exc:
-        # Broad on purpose: whatever went wrong between here and Telegram, the
-        # safe move is identical. The exception's class is logged and its message
-        # is not — an unauthorized Bot API error quotes the token back at us,
-        # since the token is in the URL it failed on.
-        logger.warning(
-            "escalation %s: not delivered (%s)",
-            record.escalation_id,
-            type(exc).__name__,
-        )
-        return False
-
-    return True
+    receipt = await _deliver(
+        RenderedMessage(
+            text=escalation_message(record),
+            actions=escalation_actions(record),
+        ),
+        record.escalation_id,
+    )
+    if not receipt.delivered:
+        logger.warning("escalation %s: not delivered", record.escalation_id)
+    return receipt.delivered
 
 
 # --- roadmap failure count (US4) --------------------------------------------
@@ -588,36 +581,17 @@ async def record_roadmap_failure(request: RecordRoadmapFailureInput) -> RecordRo
 async def send_roadmap_notice(request: SendRoadmapNoticeInput) -> SentRoadmapNotice:
     """Page the operator with a roadmap notice (US2).
 
-    A notice is a fact, not a choice: the message sends with no `reply_markup`,
-    and a failed delivery is data (`delivered=False`) rather than a raise. The
-    durable fact lives in `roadmap_failures`, written before this activity is
-    invoked.
+    A notice is a fact, not a choice: it carries no actions, so no transport
+    renders a keyboard for it, and a failed delivery is data
+    (`delivered=False`) rather than a raise. The durable fact lives in
+    `roadmap_failures`, written before this activity is invoked.
     """
-    token = os.environ.get(TELEGRAM_BOT_TOKEN_ENV)
-    chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV)
-    if not token or not chat_id:
-        logger.warning(
-            "roadmap notice for %s: not sent — %s is not set on this worker",
-            request.roadmap_id,
-            TELEGRAM_BOT_TOKEN_ENV if not token else TELEGRAM_CHAT_ID_ENV,
-        )
-        return SentRoadmapNotice(delivered=False)
-
-    try:
-        async with open_bot(token) as bot:
-            await bot.send_message(chat_id=chat_id, text=request.message)
-    except Exception as exc:
-        # Broad on purpose, and the message is not logged: an unauthorized Bot
-        # API error quotes the token back at us (it is in the URL it failed on),
-        # and nothing the factory keeps may repeat it (FR-007).
-        logger.warning(
-            "roadmap notice for %s: not delivered (%s)",
-            request.roadmap_id,
-            type(exc).__name__,
-        )
-        return SentRoadmapNotice(delivered=False)
-
-    return SentRoadmapNotice(delivered=True)
+    receipt = await _deliver(
+        RenderedMessage(text=request.message), request.roadmap_id
+    )
+    if not receipt.delivered:
+        logger.warning("roadmap notice for %s: not delivered", request.roadmap_id)
+    return SentRoadmapNotice(delivered=receipt.delivered)
 
 
 @activity.defn
@@ -925,33 +899,14 @@ def _capture_message_id(
 async def _send_question(record: QuestionRecord) -> int | None:
     """Page the operator. None means they were not paged, for any reason.
 
-    No keyboard: a question is not a choice the operator picks from a list, so
-    the message sends with no `reply_markup` (FR-008). The message id the bot
-    returns is the reply-routing key, captured into the row by the caller.
+    No actions: a question is not a choice the operator picks from a list, so
+    nothing renders a keyboard for it and Telegram sends with no `reply_markup`
+    (FR-008). The message handle the transport returns is the reply-routing
+    key, captured into the row by the caller.
     """
-    token = os.environ.get(TELEGRAM_BOT_TOKEN_ENV)
-    chat_id = os.environ.get(TELEGRAM_CHAT_ID_ENV)
-    if not token or not chat_id:
-        logger.warning(
-            "question %s: not sent — %s is not set on this worker",
-            record.question_id,
-            TELEGRAM_BOT_TOKEN_ENV if not token else TELEGRAM_CHAT_ID_ENV,
-        )
-        return None
-
-    try:
-        async with open_bot(token) as bot:
-            message = await bot.send_message(
-                chat_id=chat_id,
-                text=question_message(record),
-            )
-    except Exception as exc:
-        # Broad on purpose, and the message is not logged: an unauthorized Bot
-        # API error quotes the token back at us (it is in the URL it failed on),
-        # and nothing the factory keeps may repeat it (FR-007).
-        logger.warning(
-            "question %s: not delivered (%s)", record.question_id, type(exc).__name__
-        )
-        return None
-
-    return message.message_id
+    receipt = await _deliver(
+        RenderedMessage(text=question_message(record)), record.question_id
+    )
+    if not receipt.delivered:
+        logger.warning("question %s: not delivered", record.question_id)
+    return receipt.message_id

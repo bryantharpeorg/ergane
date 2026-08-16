@@ -419,6 +419,14 @@ def public_methods(cls: type) -> set[str]:
     }
 
 
+def _import_roots(node: ast.AST) -> set[str]:
+    if isinstance(node, ast.Import):
+        return {alias.name.split(".")[0] for alias in node.names}
+    if isinstance(node, ast.ImportFrom) and node.module:
+        return {node.module.split(".")[0]}
+    return set()
+
+
 def imported_roots(path: Path) -> set[str]:
     """Every top-level package the module imports, however it spells the import.
 
@@ -428,11 +436,32 @@ def imported_roots(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     roots: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            roots.add(node.module.split(".")[0])
+        roots |= _import_roots(node)
     return roots
+
+
+def import_sites(path: Path, root: str) -> set[str]:
+    """Where `root` is imported: the enclosing function's name, or ``"<module>"``.
+
+    Coarser than a scope analysis and deliberately so — the question this
+    answers is "which callable can drag it in", which is exactly what FR-002
+    turns on.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    sites: set[str] = set()
+
+    def walk(node: ast.AST, enclosing: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if root in _import_roots(child):
+                sites.add(enclosing)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, child.name)
+            else:
+                walk(child, enclosing)
+
+    walk(tree, "<module>")
+    return sites
 
 
 def escalation_record(**overrides: Any) -> EscalationRecord:
@@ -597,14 +626,27 @@ def test_the_actions_the_adapter_transports_are_the_buttons_telegram_renders() -
 
 
 @pytest.mark.parametrize(
-    "module",
-    ["factory/notify/adapter.py", "factory/notify/service.py", "factory/notify/messages.py"],
+    "module", ["factory/notify/adapter.py", "factory/notify/messages.py"]
 )
-def test_no_module_on_the_adapter_side_of_the_seam_imports_temporalio(
-    module: str,
-) -> None:
+def test_the_seam_itself_never_imports_temporalio(module: str) -> None:
     """FR-002 as a property of the import graph, lazy imports included."""
     assert "temporalio" not in imported_roots(REPO_ROOT / module)
+
+
+def test_only_the_bridge_process_entry_point_may_reach_for_temporalio() -> None:
+    """FR-002 for the module the Telegram transport shares with the bridge.
+
+    `factory/notify/service.py` holds `TelegramAdapter`, `CallbackBridge` and
+    `main` — the runnable bridge, which by definition has an orchestrator to
+    signal and connects a client to it. That one function is allowed the
+    import; nothing else in the module is, and module scope least of all,
+    because an import there would be paid by every caller including 042's
+    probe. An `import temporalio` inside the adapter, or at the top of the
+    file, fails here.
+    """
+    assert import_sites(REPO_ROOT / "factory/notify/service.py", "temporalio") == {
+        "main"
+    }
 
 
 #: Delivered by the subprocess below; asserted on stdout so a script that died
@@ -824,16 +866,17 @@ class RoundTrip:
     """
 
     rendered_text: str
-    correlation_id_is_question_id: bool
     outcome: BridgeOutcome
     signals: list[tuple[str, str]]
     row: tuple[tuple[str, Any], ...]
 
 
-#: Columns whose values are minted fresh per run — comparing them would compare
-#: `secrets.token_hex` with itself. Everything else, including the routing key
-#: and the answer text, is compared.
-_PER_RUN_COLUMNS = frozenset({"question_id", "sent_at", "expires_at"})
+#: Columns whose values are minted fresh per run — a `secrets.token_hex` id, and
+#: two timestamps taken off whatever instant the run happened at. Comparing them
+#: would compare the clock with itself, and would go red on nothing worse than
+#: two runs straddling a second. Everything else, including the routing key, the
+#: resolution and the answer text, is compared.
+_PER_RUN_COLUMNS = ("question_id", "sent_at", "expires_at")
 
 
 def _observable_row(path: Path) -> tuple[tuple[str, Any], ...]:
@@ -845,6 +888,23 @@ def _observable_row(path: Path) -> tuple[tuple[str, Any], ...]:
             if column not in _PER_RUN_COLUMNS
         )
     )
+
+
+def _observable_text(text: str, path: Path) -> str:
+    """The rendered message with this run's own timestamps masked.
+
+    The question's footer quotes its deadline, which is `sent_at + the window`
+    and therefore different in two runs a second apart. Masking it keeps the
+    comparison about *what the transport was handed* rather than about when the
+    test ran — and the values masked come from the row, so a message quoting a
+    deadline the row does not hold would survive masking and fail the compare.
+    """
+    row = question_row(path)
+    for column in _PER_RUN_COLUMNS:
+        value = row[column]
+        if isinstance(value, str) and value:
+            text = text.replace(value, f"<{column}>")
+    return text
 
 
 async def _ask(env: ActivityEnvironment) -> Any:
@@ -877,10 +937,14 @@ async def test_the_question_round_trip_over_a_fake_adapter_matches_telegram(
 
     assert over_fake == over_telegram
 
-    # …and the run is not vacuously equal: it really did resolve a question.
+    # A comparison alone would be blind to any break the two runs share — the
+    # settling core is one function, so a mutation that stops it signalling
+    # stops both and they agree about nothing happening. Measured: mutation 5
+    # below left `over_fake == over_telegram` green and was caught here.
     assert over_telegram.outcome is BridgeOutcome.RESOLVED
     assert over_telegram.signals == [(QUESTION_SIGNAL_NAME, ANSWER_TEXT)]
     assert dict(over_telegram.row)["answer_text"] == ANSWER_TEXT
+    assert dict(over_telegram.row)["resolution"] == store.ANSWERED
     assert dict(over_telegram.row)["message_id"] == FIRST_MESSAGE_ID
 
 
@@ -907,8 +971,7 @@ async def _round_trip_over_telegram(
         )
 
         return RoundTrip(
-            rendered_text=fake_bot.sent[0].text,
-            correlation_id_is_question_id=True,
+            rendered_text=_observable_text(fake_bot.sent[0].text, db),
             outcome=outcome,
             signals=[(signal.name, signal.args[1]) for signal in client.signals],
             row=_observable_row(db),
@@ -944,11 +1007,12 @@ async def _round_trip_over_fake(
             outcome = await bridge.handle_relay(relay)
 
             delivered = adapter.delivered[0]
+            # The transport is handed the factory's own id to correlate by; a
+            # Telegram bot never sees one, so this half of the parity is
+            # asserted here rather than compared.
+            assert delivered.correlation_id == sent.question_id
             return RoundTrip(
-                rendered_text=delivered.message.text,
-                correlation_id_is_question_id=(
-                    delivered.correlation_id == sent.question_id
-                ),
+                rendered_text=_observable_text(delivered.message.text, db),
                 outcome=outcome,
                 signals=[(signal.name, signal.args[1]) for signal in client.signals],
                 row=_observable_row(db),
@@ -1001,10 +1065,165 @@ async def test_a_relay_for_a_question_nobody_asked_settles_nothing(
 
 
 # ============================================================================
+# US1-S1 — the existing operator-channel suite, unmodified (T006)
+# ============================================================================
+#
+# The five files are the guard, and this story does not touch one of them. That
+# they are unedited is readable off the diff; that they still pass is not, so
+# the transcripts are here.
+#
+#     $ git status --porcelain tests/test_notify.py tests/test_notify_activities.py \
+#           tests/test_operator_question.py tests/test_question_delivery.py \
+#           tests/test_question_reply.py
+#     (no output — all five unchanged)
+#
+#     $ uv run pytest -q tests/test_notify.py tests/test_notify_activities.py \
+#           tests/test_operator_question.py tests/test_question_delivery.py \
+#           tests/test_question_reply.py
+#     ........................................................................ [ 56%]
+#     .......................................................                  [100%]
+#     127 passed in 5.06s
+#
+# The same five files, on the base commit before any of this story's production
+# changes, ran to the same total:
+#
+#     ........................................................................ [ 56%]
+#     .......................................................                  [100%]
+#     127 passed in 4.85s
+#
+# BYTE-COMPATIBILITY WITH THE LIVE CHANNEL IS NOT OBSERVED HERE (plan trap 7).
+# `tests/test_live_notify.py` auto-skips without credentials, and this worktree
+# has neither:
+#
+#     $ uv run pytest -q tests/test_live_notify.py
+#     sssssssss                                                                [100%]
+#     9 skipped in 0.08s
+#
+# So what is proven is that the send path builds the same `text` and the same
+# `reply_markup` it built before — the 008 suite asserts both against a fake
+# `telegram.Bot`, and `test_the_actions_the_adapter_transports_are_the_buttons_
+# telegram_renders` pins the keyboard to the neutral actions. What is *not*
+# proven is that the real Bot API accepted them, and nobody should read this
+# file as claiming it was.
+#
+#
+# ============================================================================
 # Mutation evidence (constitution VIII: pasted, not described)
 # ============================================================================
 #
-# Every test above was run against a deliberate break of the production code it
-# is supposed to guard, and the break was reverted. Transcripts follow verbatim.
+# Each guard here was run against a deliberate break of the production code it
+# is supposed to catch, and every break was reverted before the commit. `uv run
+# pytest -q tests/test_messenger_adapter.py` under each mutation, verbatim.
 #
-# (filled in below once the implementation lands)
+# ---------------------------------------------------------------------------
+# MUTATION 1 — a third operation on the transport.
+# `factory/notify/service.py`, added to `TelegramAdapter`:
+#
+#     def acknowledge(self, event: Any) -> None:
+#         """MUTATION 1: a third operation on the transport."""
+#         return None
+#
+#     >       assert public_methods(type(adapter)) == {"deliver", "relay"}
+#     E       AssertionError: assert {'acknowledge...ver', 'relay'} == {'deliver', 'relay'}
+#     E
+#     E         Extra items in the left set:
+#     E         'acknowledge'
+#     E         Use -v to get more diff
+#
+#     tests/test_messenger_adapter.py:542: AssertionError
+#     =========================== short test summary info ============================
+#     FAILED tests/test_messenger_adapter.py::test_every_registered_adapter_exposes_exactly_those_two_operations[telegram]
+#     1 failed, 25 passed in 0.70s
+#
+# ---------------------------------------------------------------------------
+# MUTATION 2 — the transport settles its own delivery.
+# `factory/notify/service.py`, inserted at the end of `TelegramAdapter.deliver`:
+#
+#     with connect("/tmp/mutation.db") as conn:
+#         resolve_escalation(conn, correlation_id, EscalationChoice.KILL, resolved_at="")
+#
+#     E       AssertionError: the telegram adapter names ['resolve_escalation']; acknowledging, answering and expiring are the factory's, whatever channel the answer came in on (FR-001)
+#     E       assert not ['resolve_escalation']
+#
+#     tests/test_messenger_adapter.py:556: AssertionError
+#     =========================== short test summary info ============================
+#     FAILED tests/test_messenger_adapter.py::test_no_adapter_code_path_can_acknowledge_answer_or_expire[telegram]
+#     1 failed, 25 passed in 0.58s
+#
+# ---------------------------------------------------------------------------
+# MUTATION 3 — Temporal on the adapter's own delivery path.
+# `factory/notify/service.py`, first line of `TelegramAdapter.deliver`:
+#
+#     from temporalio.client import Client  # MUTATION 3
+#
+# The subprocess really does refuse the import, so this is the runtime half of
+# FR-002 and not an inspection of it:
+#
+#     E           File "…/factory/notify/service.py", line 202, in deliver
+#     E             from temporalio.client import Client  # MUTATION 3
+#     E             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#     E           File "/tmp/pytest-of-admin/pytest-670/test_the_adapter_delivers_from0/no_temporal_delivery.py", line 18, in find_spec
+#     E             raise ImportError(
+#     E                 f"{fullname} is not available to a process with no orchestrator"
+#     E             )
+#     E         ImportError: temporalio is not available to a process with no orchestrator
+#     E
+#     E       assert 1 == 0
+#
+#     =========================== short test summary info ============================
+#     FAILED tests/test_messenger_adapter.py::test_only_the_bridge_process_entry_point_may_reach_for_temporalio
+#     FAILED tests/test_messenger_adapter.py::test_the_adapter_delivers_from_a_process_with_no_temporal
+#     2 failed, 24 passed in 0.54s
+#
+# ---------------------------------------------------------------------------
+# MUTATION 4 — the send path stops honouring the configured transport.
+# `factory/activities/notify_activities.py`, in `_deliver`:
+#
+#     return resolve_adapter("telegram", open_bot=open_bot).deliver(message, correlation_id)
+#
+#     >       assert len(delivered) == 1
+#     E       assert 0 == 1
+#     E        +  where 0 = len([])
+#
+#     tests/test_messenger_adapter.py:1014: AssertionError
+#     ------------------------------ Captured log call -------------------------------
+#     WARNING  factory.notify.service:service.py:208 0d6c0f883db9: not sent — TELEGRAM_BOT_TOKEN is not set on this worker
+#     WARNING  factory.activities.notify_activities:notify_activities.py:912 question 0d6c0f883db9: not delivered
+#     =========================== short test summary info ============================
+#     FAILED tests/test_messenger_adapter.py::test_the_question_round_trip_over_a_fake_adapter_matches_telegram
+#     FAILED tests/test_messenger_adapter.py::test_the_message_the_adapter_transports_is_the_one_the_factory_rendered
+#     2 failed, 24 passed in 0.52s
+#
+# ---------------------------------------------------------------------------
+# MUTATION 5 — the inbound path settles the row without telling the workflow.
+# `factory/notify/service.py`, in `_settle_question`:
+#
+#     if False and not await self._answer_signal(record, relay.reply_text):
+#
+# This is the one that earned its keep twice. The parity comparison stayed
+# GREEN — `_settle_question` is one function, so both transports stopped
+# signalling together and agreed about it — and the non-vacuity assertions
+# caught it:
+#
+#     >       assert over_telegram.signals == [(QUESTION_SIGNAL_NAME, ANSWER_TEXT)]
+#     E       AssertionError: assert [] == [('question_a...e. Ship it.')]
+#     E
+#     E         Right contains one more item: ('question_answered', 'Username when there is one, numeric id otherwise. Ship it.')
+#
+#     tests/test_messenger_adapter.py:942: AssertionError
+#     =========================== short test summary info ============================
+#     FAILED tests/test_messenger_adapter.py::test_the_question_round_trip_over_a_fake_adapter_matches_telegram
+#     1 failed in 0.33s
+#
+# Its first run also failed on `rendered_text` rather than on `signals`, because
+# the compared message quoted a deadline minted per run — a flake this file
+# would have carried into the tree if the mutation had not been run. Both runs'
+# timestamps are masked from the row now, so the comparison is about what the
+# transport was handed and not about which second the test started in.
+#
+# ---------------------------------------------------------------------------
+# NOT MUTATION-PROVEN, and worth saying so: `handle_reply` reading its routing
+# key from the adapter rather than from `reply_to_message.message_id` directly
+# is not observable in behaviour, because for a Telegram update the two are the
+# same value by construction. The load-bearing seam is `handle_relay`, which
+# has no other way to get the key — that is what mutation 5 was aimed at.

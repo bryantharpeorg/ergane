@@ -32,6 +32,14 @@ The bridge deliberately does not own the clock. A row past `expires_at` but stil
 pending is honored, because the workflow's timer is the authority on expiry — a
 bridge with a skewed clock second-guessing that would silently drop presses the
 workflow is still waiting for.
+
+041-US1 splits this module along the seam it always had implicitly.
+`TelegramAdapter` is the transport: it delivers an already-rendered message and
+translates an inbound update into `(correlation id, reply text, sender
+identity)`, and it can do nothing else. `CallbackBridge` is the factory side:
+it looks the row up, decides, signals and settles. The four numbered decisions
+above are the bridge's and stay exactly where they were — which is why the
+existing operator-channel suite passes unmodified.
 """
 
 from __future__ import annotations
@@ -42,9 +50,22 @@ import os
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
-from factory.notify.messages import parse_callback_data, resolution_notice
+from factory.notify.adapter import (
+    UNKNOWN_SENDER,
+    DeliveryReceipt,
+    InboundRelay,
+    MessengerAdapter,
+    RenderedMessage,
+    register_adapter,
+    resolve_adapter,
+)
+from factory.notify.messages import (
+    actions_keyboard,
+    parse_callback_data,
+    resolution_notice,
+)
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 from factory.verify.store import (
     ANSWERED,
@@ -75,6 +96,11 @@ QUESTION_SIGNAL_NAME = "question_answered"
 #: Read inside this process only, never placed in a payload or a log line — the
 #: master-key discipline of 001 FR-009, extended to the bot token.
 BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
+
+#: Where messages are sent. Not a credential, but worker configuration all the
+#: same: an escalation addressed by the dispatch could be redirected by anything
+#: that could write one.
+CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 
 TEMPORAL_ADDRESS_ENV = "TEMPORAL_ADDRESS"
 TEMPORAL_NAMESPACE_ENV = "TEMPORAL_NAMESPACE"
@@ -123,13 +149,180 @@ class BridgeOutcome(str, Enum):
     SIGNAL_FAILED = "SIGNAL_FAILED"
 
 
+# --- the transport (041-US1) -------------------------------------------------
+
+
+def open_bot(token: str) -> Any:
+    """The Telegram client a message goes out over — a seam, not a factory.
+
+    Returned rather than constructed inline so a test can substitute a bot that
+    never opens a socket while the caller still has to find a real token in its
+    own environment to reach this call. `factory.activities.notify_activities`
+    re-exports this name and hands it to the adapter, which is why patching it
+    there still reaches every send.
+    """
+    from telegram import Bot
+
+    return Bot(token)
+
+
+class TelegramAdapter:
+    """Telegram behind the seam: it delivers, and it translates. Nothing else.
+
+    008's reference transport, moved behind `MessengerAdapter` with no change to
+    a single byte an operator receives — the message text and the inline
+    keyboard are still built by `factory/notify/messages.py`, and this only
+    hands them to the Bot API.
+
+    A plain library (041 FR-002): no Temporal import, no client, no workflow
+    context, and no store. 042's supervision probe constructs one of these in a
+    process with none of those and pages a human to say the orchestrator is
+    down.
+
+    What it deliberately cannot do is acknowledge, answer or expire (FR-001).
+    There is nothing here to do it with: no connection, no workflow handle, and
+    a `relay` that returns a value rather than acting on one. The toast that
+    tells an operator their press was ignored is `CallbackBridge`'s, because
+    *why* it was ignored is a fact about a row.
+    """
+
+    def __init__(self, *, open_bot: Callable[[str], Any] = open_bot) -> None:
+        self._open_bot = open_bot
+
+    async def deliver(
+        self, message: RenderedMessage, correlation_id: str
+    ) -> DeliveryReceipt:
+        """Page the operator. `delivered=False` means they were not, for any reason.
+
+        The reasons are deliberately not distinguished: an absent credential, an
+        unreachable API and a refused message all leave the factory with the
+        same move — apply the default now rather than wait out a deadline of
+        silence that means nothing (R11).
+        """
+        token = os.environ.get(BOT_TOKEN_ENV)
+        chat_id = os.environ.get(CHAT_ID_ENV)
+        if not token or not chat_id:
+            # Named, never valued: which variable is unset is the whole
+            # diagnosis, and the token's value is exactly what may not be
+            # written down.
+            logger.warning(
+                "%s: not sent — %s is not set on this worker",
+                correlation_id,
+                BOT_TOKEN_ENV if not token else CHAT_ID_ENV,
+            )
+            return DeliveryReceipt(delivered=False)
+
+        try:
+            async with self._open_bot(token) as bot:
+                sent = await bot.send_message(
+                    chat_id=chat_id,
+                    text=message.text,
+                    reply_markup=actions_keyboard(message.actions),
+                )
+        except Exception as exc:
+            # Broad on purpose: whatever went wrong between here and Telegram,
+            # the safe move is identical. The exception's class is logged and
+            # its message is not — an unauthorized Bot API error quotes the
+            # token back at us, since the token is in the URL it failed on.
+            logger.warning(
+                "%s: not delivered (%s)", correlation_id, type(exc).__name__
+            )
+            return DeliveryReceipt(delivered=False)
+
+        return DeliveryReceipt(
+            delivered=True, message_id=getattr(sent, "message_id", None)
+        )
+
+    def relay(self, event: Any) -> InboundRelay | None:
+        """Translate one Telegram update into the factory's three inbound terms.
+
+        Pure translation. It reads no row, sends no notice, and returns a value
+        instead of acting on one — `None` for anything that is not one of ours,
+        which the factory then decides what to say about.
+
+        The correlation id is the handle Telegram can actually carry back. A
+        press carries the escalation id the factory minted into its
+        `callback_data` (R11). A free-text reply cannot carry anything the
+        factory minted, so it carries what Telegram minted — the message id of
+        the question it quotes, which is the key the store captured at send
+        time and routes by (008 FR-008).
+        """
+        query = getattr(event, "callback_query", None)
+        if query is not None:
+            press = parse_callback_data(getattr(query, "data", None))
+            if press is None:
+                return None
+            return InboundRelay(
+                correlation_id=press.escalation_id,
+                reply_text=press.choice,
+                sender_identity=_identity(getattr(query, "from_user", None)),
+            )
+
+        message = getattr(event, "message", None)
+        if message is None:
+            return None
+
+        quoted = getattr(
+            getattr(message, "reply_to_message", None), "message_id", None
+        )
+        text = getattr(message, "text", None)
+        if quoted is None or not text:
+            # A message quoting nothing is not an answer to anything, and a
+            # sticker carries no text the next attempt could repeat verbatim.
+            return None
+
+        return InboundRelay(
+            correlation_id=str(quoted),
+            reply_text=text,
+            sender_identity=_identity(getattr(message, "from_user", None)),
+        )
+
+
+def _identity(user: Any) -> str:
+    """Who replied, in the spelling an authorized-responders list would carry.
+
+    `@username` when Telegram has one, the numeric id otherwise, and
+    `UNKNOWN_SENDER` when the update names no sender at all. Nothing here
+    decides whether that identity may answer: US4's check is factory-side,
+    because answer-or-not is a decision and the seam keeps decisions out of the
+    transport (FR-001).
+    """
+    if user is None:
+        return UNKNOWN_SENDER
+
+    username = getattr(user, "username", None)
+    if username:
+        return f"@{username}"
+
+    user_id = getattr(user, "id", None)
+    return UNKNOWN_SENDER if user_id is None else str(user_id)
+
+
+def _build_telegram(**seams: Any) -> TelegramAdapter:
+    """Build the reference transport from whatever seams the caller owns.
+
+    The only seam it recognises is `open_bot`: the send activity keeps its own
+    patchable copy of that name so a test can stop a socket from opening while
+    the credential still has to come out of the worker environment.
+    """
+    return TelegramAdapter(open_bot=seams.get("open_bot") or open_bot)
+
+
+register_adapter("telegram", _build_telegram)
+
+
+# --- the factory side --------------------------------------------------------
+
+
 class CallbackBridge:
-    """Turns one Telegram callback query into at most one Temporal signal.
+    """Turns one inbound reply into at most one Temporal signal.
 
     `client` is anything with `get_workflow_handle(workflow_id)` — the real
     `temporalio.client.Client` in the service, a recorder in tests. `now` is
     injectable for the same reason the store takes `resolved_at` as an argument:
-    the timestamp is evidence, and evidence has to be assertable.
+    the timestamp is evidence, and evidence has to be assertable. `adapter` is
+    the transport whose updates this bridge translates; it defaults to the
+    configured one, so a deployment that switched messengers switched this too.
     """
 
     def __init__(
@@ -138,32 +331,42 @@ class CallbackBridge:
         db_path: str | Path,
         client: Any,
         now: Callable[[], str] | None = None,
+        adapter: MessengerAdapter | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self._client = client
         self._now = now or _now_iso
+        self._adapter = adapter if adapter is not None else resolve_adapter()
 
     async def handle(self, update: Any) -> BridgeOutcome:
-        """Resolve one button press. Never raises on operator-visible input."""
+        """Resolve one button press. Never raises on operator-visible input.
+
+        The press is read through the adapter (041-US1): which escalation it
+        names and which choice it carries are the transport's to translate, and
+        everything after that — the lookup, the offered-choice check, the
+        signal, the guarded UPDATE and the toast — is this bridge's, unchanged.
+        """
         query = getattr(update, "callback_query", None)
         if query is None:
             # Not a callback at all — nothing to answer, nothing to do.
             return BridgeOutcome.MALFORMED
 
-        press = parse_callback_data(getattr(query, "data", None))
+        press = self._adapter.relay(update)
         if press is None:
             await query.answer(_ANSWER_NOT_OURS)
             return BridgeOutcome.MALFORMED
 
+        escalation_id = press.correlation_id
+        pressed = press.reply_text
         conn = connect(self.db_path)
         try:
-            record = get_escalation(conn, press.escalation_id)
+            record = get_escalation(conn, escalation_id)
             if record is None:
                 await query.answer(_ANSWER_UNKNOWN)
                 return BridgeOutcome.UNKNOWN
 
             offered = {EscalationChoice(choice).value for choice in record.choices}
-            if press.choice not in offered:
+            if pressed not in offered:
                 # Forged, or a button from before the offer narrowed. Signalling
                 # it would hand the workflow a decision it never asked for.
                 await query.answer(_ANSWER_NOT_OFFERED)
@@ -172,17 +375,17 @@ class CallbackBridge:
             if record.resolution is not None:
                 return await self._answer_settled(query, record.resolution)
 
-            if not await self._signal(record, press.choice):
+            if not await self._signal(record, pressed):
                 await query.answer(_ANSWER_SIGNAL_FAILED)
                 return BridgeOutcome.SIGNAL_FAILED
 
-            choice = EscalationChoice(press.choice)
+            choice = EscalationChoice(pressed)
             if not resolve_escalation(
-                conn, press.escalation_id, choice, resolved_at=self._now()
+                conn, escalation_id, choice, resolved_at=self._now()
             ):
                 # The read above went stale while the signal was in flight: the
                 # hour expired, or another press won. The row's decision stands.
-                settled = get_escalation(conn, press.escalation_id)
+                settled = get_escalation(conn, escalation_id)
                 return await self._answer_settled(
                     query, settled.resolution if settled else None
                 )
@@ -236,45 +439,89 @@ class CallbackBridge:
             await message.reply_text(_REPLY_EMPTY)
             return BridgeOutcome.MALFORMED
 
-        quoted_id = getattr(reply_to, "message_id", None)
+        # The two checks above pick which notice a rejected reply gets, which is
+        # a fact about Telegram's update shapes; the routing key and the text
+        # come from the adapter (041-US1).
+        relay = self._adapter.relay(update)
+        if relay is None:
+            await message.reply_text(_REPLY_UNKNOWN)
+            return BridgeOutcome.UNKNOWN
+
+        return await self._settle_question(relay, message.reply_text)
+
+    async def handle_relay(self, relay: InboundRelay) -> BridgeOutcome:
+        """Settle one inbound relay, whatever transport produced it (041-US1).
+
+        The transport-neutral half of `handle_reply`: the same lookup, the same
+        signal-before-resolve ordering, and the same guarded UPDATE, with no
+        notice sent back — a relay is three terms, not a chat message, and a
+        transport with somewhere to reply says so itself.
+
+        The relay's correlation id is resolved as the message handle the
+        transport carried back, which is what Telegram can do and therefore
+        what US1 builds. US4 adds the case where the transport carries the
+        factory's own id, because a webhook can.
+        """
+        return await self._settle_question(relay, _no_notice)
+
+    async def _settle_question(
+        self,
+        relay: InboundRelay,
+        notify: Callable[[str], Awaitable[None]],
+    ) -> BridgeOutcome:
+        """One answer, from parse to settled row — the part no transport owns."""
         conn = connect(self.db_path)
         try:
-            record = (
-                None
-                if quoted_id is None
-                else get_question_by_message_id(conn, quoted_id)
-            )
+            record = self._question_for(conn, relay.correlation_id)
             if record is None:
                 # A reply to a human, or to a message from another deployment —
                 # not ours. Answered with a notice, never a crashed poll loop.
-                await message.reply_text(_REPLY_UNKNOWN)
+                await notify(_REPLY_UNKNOWN)
                 return BridgeOutcome.UNKNOWN
 
             if record.resolution is not None:
                 # A double reply, a redelivery, or a late answer. The first
                 # resolution stands and the workflow hears about it exactly
                 # once. Answered-as-settled, the way a second press is.
-                return await self._reply_settled(message, record.resolution)
+                return await self._reply_settled(notify, record.resolution)
 
-            if not await self._answer_signal(record, answer):
-                await message.reply_text(_REPLY_SIGNAL_FAILED)
+            if not await self._answer_signal(record, relay.reply_text):
+                await notify(_REPLY_SIGNAL_FAILED)
                 return BridgeOutcome.SIGNAL_FAILED
 
             if not resolve_question(
-                conn, record.question_id, answer_text=answer, resolved_at=self._now()
+                conn,
+                record.question_id,
+                answer_text=relay.reply_text,
+                resolved_at=self._now(),
             ):
                 # The read above went stale while the signal was in flight: the
                 # question expired, or another reply won. The row's decision
                 # stands.
-                settled = get_question_by_message_id(conn, quoted_id)
+                settled = self._question_for(conn, relay.correlation_id)
                 return await self._reply_settled(
-                    message, settled.resolution if settled else None
+                    notify, settled.resolution if settled else None
                 )
 
-            await message.reply_text(_REPLY_RESOLVED)
+            await notify(_REPLY_RESOLVED)
             return BridgeOutcome.RESOLVED
         finally:
             conn.close()
+
+    @staticmethod
+    def _question_for(conn: Any, correlation_id: str) -> QuestionRecord | None:
+        """The question a relay threads to, by the handle the transport carried.
+
+        Telegram's handle is the quoted message id, which is exactly the key the
+        store captured at send time (008 FR-008). A correlation id that is not
+        one of those names no question here — and saying so is the caller's job,
+        not this one's.
+        """
+        try:
+            message_id = int(correlation_id)
+        except (TypeError, ValueError):
+            return None
+        return get_question_by_message_id(conn, message_id)
 
     async def _answer_signal(self, record: QuestionRecord, answer: str) -> bool:
         """Tell the workflow. False means it was not told, and nothing is recorded."""
@@ -295,7 +542,9 @@ class CallbackBridge:
         return True
 
     async def _reply_settled(
-        self, message: Any, resolution: str | None
+        self,
+        notify: Callable[[str], Awaitable[None]],
+        resolution: str | None,
     ) -> BridgeOutcome:
         """Answer a reply to a question that is already terminal.
 
@@ -304,14 +553,14 @@ class CallbackBridge:
         them errors. The row's decision stands and the workflow hears nothing.
         """
         if resolution is None:
-            await message.reply_text(_REPLY_UNKNOWN)
+            await notify(_REPLY_UNKNOWN)
             return BridgeOutcome.UNKNOWN
 
         if resolution == EXPIRED:
-            await message.reply_text(_REPLY_EXPIRED)
+            await notify(_REPLY_EXPIRED)
             return BridgeOutcome.EXPIRED
 
-        await message.reply_text(_REPLY_ALREADY)
+        await notify(_REPLY_ALREADY)
         return BridgeOutcome.ALREADY_RESOLVED
 
     async def _signal(self, record: EscalationRecord, choice: str) -> bool:
@@ -350,6 +599,16 @@ class CallbackBridge:
 
         await query.answer(_ANSWER_ALREADY.format(resolution=value))
         return BridgeOutcome.ALREADY_RESOLVED
+
+
+async def _no_notice(text: str) -> None:
+    """Say nothing back. A relay is three terms and has nobody to toast at.
+
+    The transport-neutral inbound path (`handle_relay`) reports its outcome to
+    its caller instead — `ergane answer` prints it, and a webhook bridge has
+    already returned to whoever POSTed.
+    """
+    return None
 
 
 def _now_iso() -> str:
