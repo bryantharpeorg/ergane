@@ -3,7 +3,7 @@
 Measured on this story rebased onto US3, not beside it.
 
     $ uv run pytest -q
-    2946 passed, 44 skipped, 5 warnings in 307.52s (0:05:07)
+    2946 passed, 44 skipped, 5 warnings in 307.43s (0:05:07)
 
 US2-S5 — the sole-author guard in `tests/test_ergane_init_check.py`, untouched
 by this diff, still passes: `gate_check:`, `unknown_check:` and 034's local
