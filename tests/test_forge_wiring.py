@@ -32,13 +32,17 @@ from typing import Any
 
 import pytest
 
+import factory.cli.init as init_module
 from factory.activities.merge_activities import onboard_target_repo
+from factory.cli.errors import EXIT_OK
 from factory.mergequeue.wiring import ALREADY_SATISFIED, APPLIED, WiringRefused
 from factory.mergequeue.gh import GhClient
 from factory.mergequeue.github_forge import GithubForge
 from tests.fake_forge import FakeForge, RepositoryModel
 from tests.target_repo import build_target_repo
-from tests.test_ergane_init_wiring import FakeGitHub
+from tests.test_ergane_init import ScriptedPrompter, _invoke, make_bare_repo
+from tests.test_ergane_init_check import bind_offline_seams
+from tests.test_ergane_init_wiring import FakeGitHub, answers, wiring_report
 
 #: The gates `tests/fixtures/target_repo/` declares — so gate↔check parity (Q4)
 #: is asked of exactly what wiring required.
@@ -260,3 +264,50 @@ def test_a_forge_with_no_usable_credentials_refuses_before_reading_anything(
     assert model.branches == {}
     assert forge_refusal.value.manual, "a refusal with no by-hand steps is a dead end"
     assert onboard_target_repo(FakeForge(model), str(repo)).passed is False
+
+
+# --- US4-S4: `--wire` drives the forge it resolved, not that forge's client ----
+
+
+def test_init_wire_drives_the_forge_it_resolved_rather_than_a_forge_native_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """US4-S4. `ergane init --wire` already *resolved* a forge before this story
+    — and then reached past it for GitHub's client, which made the seam
+    decorative at the one call that writes. Here the CLI is given a forge that
+    has no client to reach for: a `FakeForge` exposes the protocol and nothing
+    else, so a `--wire` still speaking `.client` cannot even run.
+
+    And the assertion is the judged state rather than the CLI's exit code, which
+    `ergane init` returns as `EXIT_OK` whatever the check says: the repository
+    the operator's `--wire` left behind passes the gate that guards every epic
+    start, wired for the gates their own interview declared.
+
+    What edit would make this fail: return `_forge_factory(...).client` to
+    `_wire`, and this dies on the missing attribute — the mutation that proves
+    the seam is what the CLI now speaks.
+    """
+    repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
+    model = RepositoryModel(address="acme/app", default_branch="main")
+
+    # Every other outward seam bound first (schedules, control-plane probes);
+    # the forge is then rebound to the one this test is about, so nothing here
+    # reaches a real GitHub, a real Temporal or the operator's own control plane.
+    bind_offline_seams(monkeypatch)
+    monkeypatch.setattr(init_module, "_prompter_factory", lambda: ScriptedPrompter(answers()))
+    monkeypatch.setattr(init_module, "_forge_factory", lambda *, repo_path: FakeForge(model))
+
+    result = _invoke(["init", "--wire", str(repo)])
+
+    assert result.code == EXIT_OK, result.stderr
+
+    profile = onboard_target_repo(FakeForge(model), str(repo))
+    assert profile.passed is True, [f for f in profile.findings if not f.passed]
+    # The interview declared `test` and `lint`; those are the checks the forge
+    # was asked to gate on, so gate↔check parity holds by the operator's own
+    # declaration rather than by a constant in this test.
+    assert sorted(profile.required_checks) == ["lint", "test"]
+    assert model.mutations == ["landing policy on main"]
+
+    # The forge's own acts are what the operator read, in the wiring report.
+    assert APPLIED in wiring_report(result.stdout)

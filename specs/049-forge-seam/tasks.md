@@ -191,7 +191,7 @@ exists to prevent.
 - [x] T032 [P] [US4] Write the refusal case: a forge whose credentials cannot
       change settings refuses before any write, carrying the by-hand steps, and
       nothing was mutated (spec US4-S3, FR-013) — must fail.
-- [ ] T033 [P] [US4] Write the CLI case: `--wire` resolves a forge by name rather
+- [x] T033 [P] [US4] Write the CLI case: `--wire` resolves a forge by name rather
       than constructing a client, and the existing `--wire` suite passes with no
       assertion changed (spec US4-S4) — must fail.
 
