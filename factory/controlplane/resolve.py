@@ -210,8 +210,7 @@ def resolve_master_key_env(
 
 #: The label a value carries when neither the environment nor the declaration
 #: supplied it. Temporal differs from the gateway in having a third source at
-#: all: `localhost:7233` / `factory` are real answers, so "nothing declared" is
-#: not a refusal here the way it is above.
+#: all, so "nothing declared" is not a refusal here the way it is above.
 DEFAULT_SOURCE = "built-in default"
 
 
@@ -309,14 +308,12 @@ def _one_of(
 def _temporal_env_names() -> tuple[str, str]:
     """The two variable names, imported from where they are defined.
 
-    Function-local on purpose. `factory/notify/service.py` pulls in the Telegram
-    client and the verification store — 250 modules, measured — and this module
-    is reached from `LiteLLMClient.from_env`, which sits on every CLI path and
-    every activity. A module-scope import would put that weight behind all of
-    them and would run `factory.notify.adapter`'s own control-plane import
-    during `factory.controlplane`'s initialisation — the neighbourhood plan
-    trap 11 warns about. `factory/roadmap/schedule.py` does the same, for the
-    same reason.
+    Function-local on purpose: `factory/notify/service.py` costs 250 modules
+    (measured), and this module is reached from `LiteLLMClient.from_env` on
+    every CLI path and every activity. A module-scope import would also run
+    `factory.notify.adapter`'s control-plane import during
+    `factory.controlplane`'s initialisation — plan trap 11's neighbourhood.
+    `factory/roadmap/schedule.py` does the same, for the same reason.
     """
     from factory.notify.service import TEMPORAL_ADDRESS_ENV, TEMPORAL_NAMESPACE_ENV
 

@@ -58,12 +58,7 @@ DECLARED_BASE_URL = "http://declared.gateway.test/v1"
 DECLARED_KEY_VAR = "DECLARED_KEY_VAR"
 
 
-def _write_config(
-    tmp_path: Path,
-    *,
-    address: str = DECLARED_ADDRESS,
-    namespace: str = DECLARED_NAMESPACE,
-) -> Path:
+def _write_config(tmp_path: Path) -> Path:
     """A complete, parseable config at a bound path.
 
     All five blocks, because the parser requires all five — and `address` and
@@ -86,8 +81,8 @@ backend = "none"
 
 [temporal]
 mode = "external"
-address = "{address}"
-namespace = "{namespace}"
+address = "{DECLARED_ADDRESS}"
+namespace = "{DECLARED_NAMESPACE}"
 
 [telemetry]
 
@@ -387,32 +382,9 @@ def _non_docstring_strings(tree: ast.AST) -> list[str]:
     ]
 
 
-def test_no_connect_site_spells_the_temporal_contract_for_itself() -> None:
-    """US4-S4: the constants are named, never restated.
-
-    Four sites carried hardcoded `"TEMPORAL_ADDRESS"` / `"localhost:7233"`.
-    They agreed with the constants by luck, not design: the day
-    `DEFAULT_TEMPORAL_ADDRESS` changes, the copies keep dialing the old one.
-    """
-    factory_root = Path(__file__).resolve().parent.parent / "factory"
-    offenders: list[str] = []
-
-    for relative in _CONNECT_SITES:
-        path = factory_root / relative
-        assert path.is_file(), f"{relative} moved; this test is pinned to a stale path"
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for text in _non_docstring_strings(tree):
-            for forbidden in _FORBIDDEN_LITERALS:
-                if forbidden in text:
-                    offenders.append(f"{relative}: {text!r}")
-
-    assert offenders == []
-
-
-#: A site importing any of these reaches `os.environ` without spelling a
-#: forbidden literal: `os.environ.get(TEMPORAL_ADDRESS_ENV)` names no banned
-#: string at all. Closing only the literal route leaves a test that looks strict
-#: and is not.
+#: Importing any of these reaches `os.environ` without spelling a forbidden
+#: literal — `os.environ.get(TEMPORAL_ADDRESS_ENV)` names no banned string at
+#: all. Closing only the literal route leaves a test that looks strict and is not.
 _CONTRACT_NAMES = (
     "TEMPORAL_ADDRESS_ENV",
     "TEMPORAL_NAMESPACE_ENV",
@@ -425,21 +397,36 @@ _CONTRACT_NAMES = (
 #: rule, since `resolve_temporal_target` is written in terms of the other.
 _RESOLVER_ENTRY_POINTS = ("resolve_temporal_target", "temporal_target_for")
 
+#: `notify/service.py` *defines* the constants, so the two rules above cannot
+#: hold it — but it dials Temporal like everything else and must resolve like
+#: everything else.
+_RESOLVER_SITES = _CONNECT_SITES + ("notify/service.py",)
 
-def test_no_connect_site_reads_the_temporal_variables_for_itself() -> None:
-    """The second route to `os.environ`, closed alongside the first."""
+
+def test_no_connect_site_keeps_its_own_copy_of_the_temporal_contract() -> None:
+    """US4-S4: the constants are named, never restated — by either route.
+
+    Four sites carried hardcoded `"TEMPORAL_ADDRESS"` / `"localhost:7233"` and
+    agreed with the constants by luck: the day `DEFAULT_TEMPORAL_ADDRESS`
+    changes, the copies keep dialing the old one. Both routes are checked
+    together because closing one alone leaves the other wide open.
+    """
     factory_root = Path(__file__).resolve().parent.parent / "factory"
     offenders: list[str] = []
 
     for relative in _CONNECT_SITES:
         path = factory_root / relative
+        assert path.is_file(), f"{relative} moved; this test is pinned to a stale path"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for text in _non_docstring_strings(tree):
+            for forbidden in _FORBIDDEN_LITERALS:
+                if forbidden in text:
+                    offenders.append(f"{relative}: literal {text!r}")
         for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            for alias in node.names:
-                if alias.name in _CONTRACT_NAMES:
-                    offenders.append(f"{relative}: imports {alias.name}")
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name in _CONTRACT_NAMES:
+                        offenders.append(f"{relative}: imports {alias.name}")
 
     assert offenders == []
 
@@ -448,14 +435,15 @@ def test_every_connect_site_reaches_the_one_resolver() -> None:
     """FR-015: "at every operational connect site", asserted rather than claimed.
 
     Walks the AST for the imported name, so a comment claiming a site moved
-    cannot satisfy it. `factory/notify/service.py` is checked separately below.
+    cannot satisfy it.
     """
     factory_root = Path(__file__).resolve().parent.parent / "factory"
     unmoved: list[str] = []
 
-    for relative in _CONNECT_SITES:
-        source = (factory_root / relative).read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=relative)
+    for relative in _RESOLVER_SITES:
+        tree = ast.parse(
+            (factory_root / relative).read_text(encoding="utf-8"), filename=relative
+        )
         reaches = any(
             isinstance(node, ast.ImportFrom)
             and (node.module or "") == "factory.controlplane.resolve"
@@ -466,27 +454,6 @@ def test_every_connect_site_reaches_the_one_resolver() -> None:
             unmoved.append(relative)
 
     assert unmoved == []
-
-
-def test_the_escalation_bridge_also_reaches_the_resolver() -> None:
-    """The tenth site: `factory/notify/service.py`'s own `main()`.
-
-    It defines the constants, so the no-literals rule above cannot hold it — but
-    it dials Temporal like everything else and must resolve like everything else.
-    """
-    service = (
-        Path(__file__).resolve().parent.parent
-        / "factory"
-        / "notify"
-        / "service.py"
-    )
-    tree = ast.parse(service.read_text(encoding="utf-8"), filename=str(service))
-    assert any(
-        isinstance(node, ast.ImportFrom)
-        and (node.module or "") == "factory.controlplane.resolve"
-        and any(alias.name == "resolve_temporal_target" for alias in node.names)
-        for node in ast.walk(tree)
-    )
 
 
 # --- T037 / US4-S5 — `ergane env --sources` reports Temporal too
