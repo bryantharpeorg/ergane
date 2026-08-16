@@ -71,6 +71,28 @@ Both new tests, run against the probe before the fix (red):
     FAILED tests/test_controlplane_verify.py::test_verify_temporal_bounds_a_blackholed_address
     2 failed, 8 passed in 27.80s
 
+After the fix, the same two reproductions, unchanged except for the probe they
+run against — the namespace that was reported missing is now found, and the
+black-holed address returns inside its declared bound instead of never:
+
+.. code-block:: text
+
+    namespace registered on the server: ergane-verify
+    [PASS] temporal: Temporal at 127.0.0.1:33215 has namespace `ergane-verify`
+
+    blackhole at 127.0.0.1:37549 | declared timeout_s = 2
+    gather returned after 2.04s
+    [FAIL] temporal: timed out after 2s waiting for Temporal at 127.0.0.1:37549
+
+.. code-block:: text
+
+    $ uv run pytest tests/test_controlplane_verify.py -q
+    ..........                                                               [100%]
+    10 passed in 17.72s
+
+    $ uv run pytest -q
+    2448 passed, 44 skipped, 4 warnings in 269.32s (0:04:29)
+
 """
 
 from __future__ import annotations
