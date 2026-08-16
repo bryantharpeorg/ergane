@@ -500,8 +500,27 @@ implementation and confirm the sweep fails; remove it and confirm it passes.
 ## Success Criteria
 
 - **SC-001**: This repository's own epic start — `EpicWorkflow._onboard_target`
-  against `bryantharpeorg/ergane` — produces the same `TargetRepoProfile` after
-  this spec as before it, finding for finding.
+  against `bryantharpeorg/ergane` — reaches the same **verdict** after this spec
+  as before it, asking every question it asked before, in the same reading
+  order, with no question dropped and no new failure. Two renames and one split
+  are expected and are not regressions: `merge_queue` → `gated_landing`,
+  `squash_title` → `landing_title`, and Q2's "gates a landing" separated from
+  Q3's "lands without a human" (US2-S4, FR-006). Measured:
+
+  ```
+  before: visibility, merge_queue, factory_yaml, squash_title, gate_check:test
+  after:  visibility, gated_landing, autonomous_landing, factory_yaml,
+          landing_title, gate_check:test
+  ```
+
+  This criterion previously read "finding for finding", which US2-S4 could not
+  satisfy and no correct implementation could: US2-S4 mandates a finding that
+  "finding for finding" forbids. Repaired 2026-08-16 before US6 was dispatched,
+  because acceptance criteria snapshot into an attempt prompt at dispatch and a
+  self-contradicting criterion is an argument an implementer cannot win. What
+  SC-001 was defending — that a refactor must not silently change what this
+  repository's own onboarding decides — is unchanged and is what the wording
+  above now states.
 - **SC-002**: A repository model with no concept of visibility, no merge queue
   and no squash-title setting, but which gates landing on named checks matching
   its declared gates and lands without a human, passes readiness.
