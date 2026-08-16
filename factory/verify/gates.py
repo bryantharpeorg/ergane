@@ -54,6 +54,17 @@ from factory.verify.factory_yaml import (
     load_factory_config,
 )
 from factory.verify.models import GateResult, GateStatus, VerificationConfig
+from factory.verify.toolchain import (
+    DEFAULT_AGENT_RUNNER,
+    GIT,
+    NODE,
+    UV,
+    ResolvedTool,
+    ToolchainError,
+    container_path,
+    install_root,
+    resolve_toolchain,
+)
 
 #: Deadline for a gate the manifest gives no `timeouts` entry. Sourced from
 #: `VerificationConfig` rather than restated: that field is the knob an operator
@@ -503,7 +514,22 @@ class BwrapGateExecutor:
                 timed_out=False,
             )
 
-        argv = self._build_argv(invocation)
+        # Discovery happens while the argv is assembled, so a host missing a
+        # tool is refused by name here — before the fork — instead of reaching
+        # the operator as bwrap's own `Can't find source path` from a process
+        # that has already started. Same shape as the missing-binary refusal
+        # above: a 127 outcome carrying the reason, not an exception the gate
+        # runner has no place to put.
+        try:
+            argv = self._build_argv(invocation)
+        except ToolchainError as error:
+            return ExecutionOutcome(
+                exit_code=127,
+                output=str(error),
+                duration_s=time.monotonic() - started,
+                timed_out=False,
+            )
+
         process = subprocess.Popen(
             argv,
             cwd=str(invocation.cwd),
@@ -595,8 +621,11 @@ class BwrapGateExecutor:
 
         # Read-only toolchain leaves (trap 13), collected with the rest so a
         # leaf inside the worktree could not be overlaid by it either, plus the
-        # interpreter the worktree's venv points at.
-        for source, dest in self._toolchain_binds():
+        # interpreter the worktree's venv points at. The toolchain is resolved
+        # once and used twice — for these binds and for the container `PATH`
+        # below — so the two cannot name different directories.
+        tools = self._toolchain()
+        for source, dest in self._toolchain_binds(tools):
             binds.append(("--ro-bind", source, dest))
         for source, dest in self._interpreter_binds(worktree):
             binds.append(("--ro-bind", source, dest))
@@ -618,8 +647,9 @@ class BwrapGateExecutor:
         for _, dest in cache_binds:
             argv.extend(["--setenv", "UV_CACHE_DIR", dest])
 
-        # PATH must name the bind points inside the container.
-        argv.extend(["--setenv", "PATH", self._container_path()])
+        # PATH must name the bind points inside the container — derived from
+        # the same resolutions the binds came from, never from a literal.
+        argv.extend(["--setenv", "PATH", container_path(tools)])
 
         # A commit identity, so a gate that commits is not asked who it is.
         for name, value in self._identity_env().items():
@@ -632,31 +662,62 @@ class BwrapGateExecutor:
         argv.extend(["--", "bash", "-c", invocation.command])
         return argv
 
-    def _toolchain_binds(self) -> list[tuple[str, str]]:
-        """Read-only leaf binds for the toolchain the gate may invoke.
+    def _toolchain(self) -> list[ResolvedTool]:
+        """Discover the toolchain the gate may invoke, in `PATH` order.
+
+        `uv` and `git` are required — every gate command in this factory runs
+        through one and the verification store reads the other — so a host
+        without them is refused by name rather than handed to bwrap, which
+        would fail on the source path after the fork.
+
+        `node` and the agent runner are optional, and were already guarded
+        before discovery replaced the literals: a repository whose gates need
+        neither still has gates that run, and degrading quietly is the
+        behaviour this boundary shipped with.
+
+        The order is load-bearing: `container_path` derives the container's
+        `PATH` from it, and the resulting string must keep naming the package
+        manager's directory ahead of the system one.
+        """
+        return resolve_toolchain(
+            (UV, NODE, GIT, DEFAULT_AGENT_RUNNER),
+            purpose="the gate boundary",
+            optional=(NODE, DEFAULT_AGENT_RUNNER),
+        )
+
+    def _toolchain_binds(
+        self, tools: Sequence[ResolvedTool] | None = None
+    ) -> list[tuple[str, str]]:
+        """Read-only binds for the toolchain the gate may invoke.
 
         "May invoke" includes the agent runner: a repository whose suite
         exercises its own dispatch path launches the agent *inside* the gate,
-        and that inner launch binds the runner's install directory by source
-        path. Without it here the inner boundary refuses to start at all —
+        and that inner launch binds the runner by source path. Without it here
+        the inner boundary refuses to start at all —
         ``bwrap: Can't find source path .../share/claude/versions/2.1.223`` —
-        which surfaces as an `agent_error` termination in a test that is
+        which surfaced as an `agent_error` termination in a test that was
         actually asking a question about signals or deadlines. The whole
-        install directory is bound rather than the version the runner is
-        currently pinned to, because the installer keeps several versions and
-        prunes them on its own schedule; a version literal here would rot into
-        the same refusal with a different number in it.
+        install directory is bound rather than the version the outer launch
+        happened to resolve, because the installer keeps several versions and
+        prunes them on its own schedule; the inner launch may resolve a
+        different one than this one did. The runner's `PATH` entry is bound
+        beside it so the inner launch's own discovery finds it where the
+        container's `PATH` says it is.
+
+        Every path here comes from `_toolchain`, never from a literal: the
+        version numbers that used to sit in this method rotted out from under
+        it on the operator's own machine.
         """
-        binds: list[tuple[str, str]] = [
-            ("/home/admin/.local/bin/uv", "/home/admin/.local/bin/uv"),
-            ("/usr/bin/git", "/usr/bin/git"),
-        ]
-        node = "/home/admin/.nvm/versions/node/v22.22.2/bin/node"
-        if Path(node).is_file():
-            binds.append((node, node))
-        agent_runner = "/home/admin/.local/share/claude"
-        if Path(agent_runner).is_dir():
-            binds.append((agent_runner, agent_runner))
+        resolved = self._toolchain() if tools is None else tools
+        binds: list[tuple[str, str]] = []
+        for tool in resolved:
+            if tool.name == DEFAULT_AGENT_RUNNER:
+                root = install_root(tool)
+                binds.append((str(root), str(root)))
+                if str(tool.found_at) != str(root):
+                    binds.append(tool.bind)
+                continue
+            binds.append(tool.bind)
         return binds
 
     def _identity_env(self) -> dict[str, str]:
@@ -772,13 +833,13 @@ class BwrapGateExecutor:
         return binds
 
     def _container_path(self) -> str:
-        return ":".join(
-            [
-                "/home/admin/.local/bin",
-                "/home/admin/.nvm/versions/node/v22.22.2/bin",
-                "/usr/bin",
-            ]
-        )
+        """The container's `PATH`, derived from the discovered toolchain.
+
+        Kept as a method because it is the one line of `_build_argv` a reader
+        looks for; the derivation itself belongs beside the discovery, in
+        `factory.verify.toolchain`, so the agent boundary shares it.
+        """
+        return container_path(self._toolchain())
 
 
 def _resolve_target_git_dir(worktree: Path) -> Path | None:
