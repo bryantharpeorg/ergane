@@ -1,4 +1,4 @@
-"""034/US3: making true what `onboard.py` decides — GitHub's half of it.
+"""034/US3: making true what `onboard.py` judges — GitHub's half of it.
 
 049's US4 put wiring on the forge seam, and this became the `github` forge's
 implementation of `apply_landing_policy` (FR-012): unchanged, not reverted and
@@ -7,7 +7,6 @@ not rewritten, reached only through `GithubForge`. What crossed the seam is the
 `factory/mergequeue/forge.py`, because every forge reports its acts in them and
 a neutral forge cannot import GitHub's module to say so. They are imported back
 here, so `wiring.WiringRefused` still names the one class it always did.
-
 
 `evaluate_repo` (beside this file) decides whether a repo is dispatchable, and
 `EpicWorkflow._onboard_target` runs that decision at *every* epic start. Until
