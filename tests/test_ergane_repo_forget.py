@@ -30,6 +30,7 @@ Pasted evidence (constitution VIII / D-037) is at the bottom.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -187,6 +188,23 @@ def seed_stores(root: Path, *, tag: str, secret: str = "") -> None:
     )
     escalations.commit()
     escalations.close()
+
+
+def add_findings(root: Path, *keys: str) -> None:
+    """Extra findings, written in the order given so it can differ from key order."""
+    conn = doctor_store.connect(root / "doctor.db")
+    for key in keys:
+        conn.execute(
+            "INSERT INTO findings (key, category, severity, status, summary, refs,"
+            " source, occurrences, first_seen, last_seen)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                key, key.split("/")[0], "info", "open", f"summary for {key}",
+                "[]", "operator", 1, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+            ),
+        )
+    conn.commit()
+    conn.close()
 
 
 def tree_state(repo: Path) -> tuple[str, str, tuple[tuple[str, str], ...]]:
@@ -472,9 +490,17 @@ def test_forget_without_the_flag_writes_no_export(
 
 
 def test_export_refuses_a_destination_inside_the_runtime_root(
-    tmp_path: Path, floor: FakeScheduleServer
+    tmp_path: Path, floor: FakeScheduleServer, no_epics: None
 ) -> None:
-    """FR-013: outside `.ergane/`, which `--clean-runtime` may empty in the same act."""
+    """FR-013: outside `.ergane/`, which `--clean-runtime` may empty in the same act.
+
+    `no_epics` is load-bearing, and the assertion names the export refusal rather
+    than a substring both refusals share.  Written first without either, this
+    test passed under the mutation that deletes the check it exists for: the
+    capacity read reached the operator's real Temporal, found a real running
+    epic, and refused for that reason instead — exit 1, and the words "runtime
+    root" in a message about something else entirely.
+    """
     repo = registered(tmp_path)
     seed(floor, desired_for(repo))
     seed_stores(repo / ".ergane", tag="widgets")
@@ -485,9 +511,56 @@ def test_export_refuses_a_destination_inside_the_runtime_root(
     )
 
     assert result.code == EXIT_USER
-    assert "runtime root" in result.stderr
+    assert "refusing to export into" in result.stderr
     assert not inside.exists()
     assert registry.load_registry().get(SLUG) is not None, "a refusal changes nothing"
+    assert (repo / ".ergane" / "doctor.db").exists(), "and nothing was emptied"
+
+
+def test_records_come_out_in_a_declared_order_not_an_accidental_one(
+    tmp_path: Path, floor: FakeScheduleServer
+) -> None:
+    """The `ORDER BY` behind the byte-identity claim, tested where it is visible.
+
+    Byte-identity alone cannot see this: SQLite hands back rows in rowid order on
+    a store nothing has deleted from, so two exports of an unordered `SELECT`
+    agree with each other and are still wrong — an engine that had rewritten a
+    row would reorder the file under the operator with no other change.  The keys
+    are therefore seeded in an order that is not their sorted order.
+    """
+    repo = registered(tmp_path)
+    seed(floor, desired_for(repo))
+    root = repo / ".ergane"
+    seed_stores(root, tag="widgets")
+    add_findings(root, "zeta/last", "alpha/first")
+    out = tmp_path / "out"
+
+    assert _invoke(["repo", "forget", SLUG, "--export", str(out)]).code == EXIT_OK
+
+    keys = [json.loads(line)["key"] for line in lines(out / "findings.jsonl")]
+    assert keys == ["alpha/first", "widgets/the-gate-never-ran", "zeta/last"]
+
+
+def test_a_repo_that_never_migrated_keeps_its_records(
+    tmp_path: Path, floor: FakeScheduleServer
+) -> None:
+    """The split state trap 12 names, and the one the operator's own checkout was in.
+
+    A repo joined before the rename has an empty `.ergane/` and a populated
+    `.factory/`.  Resolving the root and stopping there hands the operator three
+    empty files and calls it their history, so each store follows the data — the
+    same rule `factory/doctor/cli.py::_resolve_store_path` already applies.
+    """
+    repo = registered(tmp_path)
+    seed(floor, desired_for(repo))
+    seed_stores(repo / ".factory", tag="widgets")
+    assert (repo / ".ergane").is_dir() and list((repo / ".ergane").iterdir()) == []
+    out = tmp_path / "out"
+
+    assert _invoke(["repo", "forget", SLUG, "--export", str(out)]).code == EXIT_OK
+
+    assert len(lines(out / "findings.jsonl")) == 1
+    assert "widgets/the-gate-never-ran" in every_byte(out)
 
 
 def test_no_credential_shaped_value_reaches_an_exported_file(
