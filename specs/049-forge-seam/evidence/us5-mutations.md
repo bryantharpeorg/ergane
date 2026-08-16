@@ -1,13 +1,14 @@
 # 049-US5 evidence
 
     $ uv run pytest -q
-    2961 passed, 44 skipped, 6 warnings in 307.21s (0:05:07)
+    2975 passed, 44 skipped, 6 warnings in 307.10s (0:05:07)
 
 44 skips is the baseline (live tiers without credentials); this story adds none.
 Six warnings, all pre-existing — see *The `.pyc` cache* below for why that number
 moves between runs and why it is not this diff.
 
-Re-run whole after rebasing onto `6ca7211` (049-US3). One production edit at a
+Re-run whole after rebasing onto `fb9f25a`, over 049-US3 (`6ca7211`) and
+048-US4 (`c00c998`); the counts below are identical across both bases. One edit at a
 time, applied to a green *committed* HEAD, run over
 `tests/test_forge_manifest.py tests/test_factory_yaml.py tests/test_forge_seam.py
 tests/test_ergane_init.py` (156 tests), reverted with `git checkout HEAD --`, the
