@@ -1,7 +1,11 @@
 # Tasks: 049-forge-seam
 
-Six stories in a straight chain: US1 → US2 → US3 → US4 → US5 → US6. Work
-test-first and commit once per task. Read plan.md before the first commit — trap
+Six stories, **not** a straight chain. The spec's Work Graph is the
+authority and it reads: US1 first; then US2, US3 and US5 all off US1 and
+independent of each other; US4 off US2; US6 off all four. Depth four, not six —
+the phases below are still numbered in reading order, so a higher phase number
+does not mean your story waits on the one before it. Work test-first and commit
+once per task. Read plan.md before the first commit — trap
 1 (renaming is not seaming), trap 3 (a recording fake makes every test vacuous)
 and trap 5 (the shipped package cannot spell `enforcement`) are the three that
 cost a rejected attempt each if met late.
