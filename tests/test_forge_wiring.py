@@ -30,8 +30,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from factory.activities.merge_activities import onboard_target_repo
-from factory.mergequeue.wiring import ALREADY_SATISFIED, APPLIED
+from factory.mergequeue.wiring import ALREADY_SATISFIED, APPLIED, WiringRefused
 from factory.mergequeue.gh import GhClient
 from factory.mergequeue.github_forge import GithubForge
 from tests.fake_forge import FakeForge, RepositoryModel
@@ -187,3 +189,74 @@ def test_the_neutral_forges_second_run_records_no_change_either(
     assert [step.status for step in steps] == [ALREADY_SATISFIED]
     assert model.mutations == ["landing policy on main"]
     assert onboard_target_repo(FakeForge(model), str(repo)).passed
+
+
+# --- US4-S3 / FR-013: a forge that cannot apply the policy refuses, whole ------
+
+
+def test_credentials_that_cannot_change_settings_refuse_and_leave_no_half_wiring(
+    tmp_path: Path,
+) -> None:
+    """US4-S3 against GitHub, and precisely: GitHub does not say a token lacks
+    admin until one is used, so the refusal lands at the *first* act and the
+    second never runs. What FR-013 buys is stated in the assertions — the
+    repository is byte-identical to what it was, and no ruleset exists, so
+    nothing was left gating on half of what it was asked to gate on.
+
+    A repository still failing readiness afterwards is the point: an operator
+    who could not wire must not be told they are ready.
+
+    What edit would make this fail: catch the refusal inside the wiring and carry
+    on to the queue act, and the ruleset assertion goes red; drop the manual
+    steps from `WiringRefused` and an operator blocked on credentials is left
+    with nothing to do today.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    model = FakeGitHub(owner_repo="acme/app", default_branch="main", admin=False)
+    before = model.snapshot()
+
+    with pytest.raises(WiringRefused) as raised:
+        github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
+
+    refusal = raised.value
+    assert model.snapshot() == before
+    assert model.rulesets == {}, "the second act ran after the first was refused"
+    assert "403" in str(refusal)
+    assert refusal.manual, "a refusal with no by-hand steps is a dead end"
+    assert any("squash_merge_commit_title=PR_TITLE" in step for step in refusal.manual)
+
+    assert onboard_target_repo(github_forge_over(model, repo), str(repo)).passed is False
+
+
+def test_a_forge_with_no_usable_credentials_refuses_before_reading_anything(
+    tmp_path: Path,
+) -> None:
+    """The other half of "before any write", and the literal one: when the forge
+    can say up front that it cannot write, nothing at all is issued.
+
+    Two forges say it two ways — GitHub through `gh auth status`, the neutral
+    model by knowing its own credentials — so the property belongs to the seam
+    rather than to one implementation.
+
+    What edit would make this fail: move the prerequisite probe after the first
+    read, and the `repo view` assertion goes red; or have the neutral forge write
+    first and refuse afterwards, and its mutation list is no longer empty.
+    """
+    repo = build_target_repo(tmp_path / "target")
+
+    unauthenticated = FakeGitHub(logged_in=False)
+    with pytest.raises(WiringRefused) as gh_refusal:
+        github_forge_over(unauthenticated, repo).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert unauthenticated.mutations() == []
+    assert [c for c in unauthenticated.calls if c[:2] == ("repo", "view")] == []
+    assert "gh auth login" in str(gh_refusal.value)
+
+    model = RepositoryModel(refuse_writes="this account may not change settings")
+    with pytest.raises(WiringRefused) as forge_refusal:
+        FakeForge(model).apply_landing_policy("main", FIXTURE_GATES)
+
+    assert model.mutations == []
+    assert model.branches == {}
+    assert forge_refusal.value.manual, "a refusal with no by-hand steps is a dead end"
+    assert onboard_target_repo(FakeForge(model), str(repo)).passed is False

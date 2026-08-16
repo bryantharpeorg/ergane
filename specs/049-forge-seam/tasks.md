@@ -188,7 +188,7 @@ exists to prevent.
       model's** mutation list (spec US4-S2) — must fail. It may not be routed
       through `tests/fake_gh.py`: an idempotence claim tested there is
       unfalsifiable by construction (plan trap 3).
-- [ ] T032 [P] [US4] Write the refusal case: a forge whose credentials cannot
+- [x] T032 [P] [US4] Write the refusal case: a forge whose credentials cannot
       change settings refuses before any write, carrying the by-hand steps, and
       nothing was mutated (spec US4-S3, FR-013) — must fail.
 - [ ] T033 [P] [US4] Write the CLI case: `--wire` resolves a forge by name rather
