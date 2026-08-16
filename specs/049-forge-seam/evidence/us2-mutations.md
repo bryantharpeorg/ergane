@@ -1,7 +1,9 @@
 # 049-US2 evidence
 
+Measured on this story rebased onto US3, not beside it.
+
     $ uv run pytest -q
-    2869 passed, 44 skipped, 5 warnings in 296.21s (0:04:56)
+    2946 passed, 44 skipped, 5 warnings in 307.52s (0:05:07)
 
 US2-S5 — the sole-author guard in `tests/test_ergane_init_check.py`, untouched
 by this diff, still passes: `gate_check:`, `unknown_check:` and 034's local
@@ -10,11 +12,9 @@ facts are built only by `factory/mergequeue/onboard.py` (FR-008).
     $ uv run pytest -q tests/test_ergane_init_check.py -k "sole_author or judgment"
     1 passed, 13 deselected in 0.23s
 
-One production edit at a time on a green *committed* HEAD (tree clean before
-and after), reverted with `git checkout HEAD --`, over the six suites this story
-touches. Each edit is the one its test's docstring names.
-
-    85 passed in 1.76s          # the same six suites, unmutated
+One production edit at a time on a green *committed* HEAD (tree clean before and
+after), reverted with `git checkout HEAD --`, over the six suites this story
+touches — 85 passed unmutated. Each edit is the one its test's docstring names.
 
 | edit | tests red |
 |---|---|
@@ -28,6 +28,6 @@ touches. Each edit is the one its test's docstring names.
 | M8 the title remedy stops reaching it | 2 · landing_title, squash-title |
 | M9 **control** — the source scan reads a missing file | 1 · source scan |
 
-No mutation came back green. M9 is the anti-vacuity control: a scan proving the
-judgment names no forge's configuration must fail when it reads nothing. M4 is
-what "the same remedy" (US2-S2) means — one word, red.
+No mutation came back green, before the rebase or after it — the counts above
+are the post-rebase run. M9 is the anti-vacuity control: a scan proving the
+judgment names no forge's configuration must fail when it reads nothing.

@@ -2,14 +2,13 @@
 
 US1 moved *where* the facts come from; this is where the questions themselves
 stop being one forge's. GitHub's rule that a repo must be public (D-007) is now
-GitHub's own answer, contributed as a finding the judgment appends without
-knowing what it means. The neutral judgment's table is `tests/test_onboard.py`.
+GitHub's own answer, a finding the judgment appends without knowing what it
+means. The neutral judgment's own table is `tests/test_onboard.py`.
 
-Every test answers "what edit would make this fail?" in its docstring, because
-the defect that has cost this repository most is a test that cannot fail; the
-transcripts are at `specs/049-forge-seam/evidence/us2-mutations.md`. Neither
-fake here is a call recorder (FR-004, trap 3) — both are repositories as state,
-so a changed field changes what the forge over it answers.
+Every test answers "what edit would make this fail?" in its docstring, because a
+test that cannot fail is the defect that has cost this repository most;
+transcripts in `specs/049-forge-seam/evidence/us2-mutations.md`. Neither fake
+here is a call recorder (FR-004, trap 3) — both are repositories as state.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ FIXTURE_GATES = ("lint", "test", "typecheck")
 #: A title source spelled the way a forge that is not GitHub would spell it.
 NEUTRAL_TITLE_SOURCE = "proposal-title"
 
-#: Verbatim from `onboard.py` before this story moved it — a literal, because
+#: Verbatim from `onboard.py` before this story moved it; a literal, because
 #: "the same remedy an operator reads today" is the criterion (US2-S2).
 D007_REMEDY = (
     "repo is 'PRIVATE'; the merge queue is available on any plan only for "
@@ -46,12 +45,9 @@ D007_REMEDY = (
 
 
 def _finding(profile: Any, check: str) -> Finding:
-    for finding in profile.findings:
-        if finding.check == check:
-            return finding
-    raise AssertionError(
-        f"no finding for {check!r}; got {[f.check for f in profile.findings]}"
-    )
+    found = [f for f in profile.findings if f.check == check]
+    assert found, f"no finding for {check!r}; got {[f.check for f in profile.findings]}"
+    return found[0]
 
 
 def _failing(profile: Any) -> set[str]:
@@ -60,7 +56,7 @@ def _failing(profile: Any) -> set[str]:
 
 def _ready_model() -> RepositoryModel:
     """Answers every neutral question well, and says nothing about who can see
-    it, because its forge has no such notion."""
+    it — its forge has no such notion."""
     model = RepositoryModel(address="acme/app", default_branch="main")
     model.gate_on("main", FIXTURE_GATES, title_source=NEUTRAL_TITLE_SOURCE)
     return model
@@ -78,15 +74,13 @@ def test_a_forge_reporting_no_visibility_passes_and_fails_when_gating_goes(
     exactly the declared gates and titles the landing from the proposal is ready
     — and it never said who can see it (US2-S1, SC-002). Then the *same model*
     stops gating and fails (SC-003): one object, one difference, two verdicts,
-    so the neutral question is shown deciding rather than the case having been
-    impossible either way (trap 4). FR-008 rides along — manifest validity and
-    gate↔check parity are properties of a tree, so a forge contributing nothing
-    is still asked them.
+    so the question is shown deciding rather than the case having been
+    impossible either way (trap 4). FR-008 rides along: a forge contributing
+    nothing is still asked manifest validity and gate↔check parity.
 
-    What edit would make this fail: put the visibility check back into the
-    judgment and the model fails a question it cannot answer, as a target on
-    another forge does today; or read Q2 from a hardcoded `True` and the ungated
-    half passes too.
+    What edit would make this fail: return the visibility check to the judgment
+    and the model fails a question it cannot answer; or read Q2 from a hardcoded
+    `True` and the ungated half passes too.
     """
     repo = build_target_repo(tmp_path / "target")
     model = _ready_model()
@@ -155,8 +149,7 @@ class GithubRepositoryModel:
 
     A model, not a script of expected calls: change `visibility` and the reads
     change, which is what makes the assertions below about the repository rather
-    than about traffic (`ci/the-scripted-gh-fake-never-consumes-an-expectation`
-    is why `tests/fake_gh.py` cannot support that claim).
+    than about traffic (`ci/the-scripted-gh-fake-never-consumes-an-expectation`).
     """
 
     visibility: str = "PUBLIC"
@@ -174,12 +167,11 @@ class GithubRepositoryModel:
         return {"squash_merge_commit_title": self.squash_merge_commit_title}
 
     def rules_for_branch(self, owner_repo: str, branch: str) -> list[dict[str, Any]]:
+        checks = [{"context": c} for c in self.required_checks]
         return [
             {"type": "merge_queue", "parameters": {}},
-            {"type": "required_status_checks", "parameters": {
-                "required_status_checks": [
-                    {"context": c} for c in self.required_checks
-                ]}},
+            {"type": "required_status_checks",
+             "parameters": {"required_status_checks": checks}},
         ]
 
     def classic_branch_protection(self, owner_repo: str, branch: str) -> dict[str, Any]:
@@ -192,8 +184,7 @@ def test_the_github_forge_authors_the_d007_finding_for_a_private_repository(
     """FR-007: the rule that a repo must be public did not soften and did not
     become advice — it moved to the implementation where it is true, with
     today's remedy character for character. What edit would make this fail: stop
-    contributing the finding, or reword it. The public case below is the
-    control: one field changed, two verdicts.
+    contributing the finding, or reword it. The public case below is the control.
     """
     repo = build_target_repo(tmp_path / "target")
     private = GithubForge(GithubRepositoryModel(visibility="PRIVATE"))
@@ -227,9 +218,8 @@ FORGE_OWNED_VOCABULARY = (
     "visibility",
 )
 
-#: Tokens proving the scan read the judgment and not an empty string. Trap 4:
-#: `tests/test_final_sweep.py:644` is here because a sweep over nothing passes
-#: forever.
+#: Tokens proving the scan read the judgment and not an empty string — trap 4,
+#: after `tests/test_final_sweep.py:644`.
 JUDGMENT_LANDMARKS = ("def evaluate_repo(", "gate_check:", "unknown_check:")
 
 
@@ -244,8 +234,7 @@ def test_the_shared_judgment_names_no_forges_own_configuration() -> None:
     one back: a finding slug is a string, and a string reintroduced in six
     months would pass every behavioural test in this file. Its anti-vacuity
     control is the second assertion — the *same* scanner over `github_forge.py`
-    must find every word, so a scan that read nothing, a ban list that emptied
-    or a matcher that stopped matching fails there first.
+    must find every word, so an emptied ban list fails there first.
 
     What edit would make this fail: name a finding `merge_queue` again, or quote
     `squash_merge_commit_title` in a remedy the shared judgment writes.
@@ -259,7 +248,7 @@ def test_the_shared_judgment_names_no_forges_own_configuration() -> None:
     assert _forge_owned_words_in(JUDGMENT) == []
     # The control. Every word here is *structural* in the implementation — a
     # rule type, a setting, a field — so reprose cannot break it, but a scan
-    # reading nothing or a matcher that stopped matching fails right here.
+    # that read nothing fails right here.
     assert set(_forge_owned_words_in(GITHUB_IMPLEMENTATION)) >= {
         "merge_queue", "pr_title", "squash", "visibility",
     }
