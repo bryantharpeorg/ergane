@@ -522,7 +522,13 @@ def test_an_adapter_that_raises_is_logged_and_nothing_propagates(
     outcome = send_alert(DEGRADED)
 
     assert outcome.delivered is False
-    assert "RuntimeError" in (outcome.failure or "")
+    # Named precisely, because `send_alert` has a catch-all of its own and a
+    # looser assertion cannot tell the two apart: with the transport's own
+    # handler removed, this still reports "the alert could not be run
+    # (RuntimeError)" and a test asserting only "RuntimeError" passes over a
+    # module that no longer handles a failing send at all. The battery's M07
+    # survived exactly that until this line.
+    assert outcome.failure == f"{FAKE_ADAPTER_NAME} raised RuntimeError"
     errors = [
         record for record in caplog.records if record.levelno >= logging.ERROR
     ]
@@ -531,6 +537,24 @@ def test_an_adapter_that_raises_is_logged_and_nothing_propagates(
     # The undelivered text is in the log, because the log is now the only place
     # the alert exists at all.
     assert DEGRADED.service in errors[0].getMessage()
+
+
+async def test_the_await_side_door_swallows_a_raising_transport_too(
+    messenger: RecordingAdapter,
+) -> None:
+    """The same guarantee one door in, where `send_alert` cannot provide it.
+
+    US2's probe reaches this module through `send_alert`, whose catch-all
+    would mask a `deliver_alert` that handled nothing — so the awaited door is
+    exercised directly. `pytest.raises` is not used: the assertion is that
+    control arrives at the next line at all.
+    """
+    messenger.raises = RuntimeError("the transport exploded")
+
+    outcome = await deliver_alert(DEGRADED)
+
+    assert outcome.delivered is False
+    assert outcome.failure == f"{FAKE_ADAPTER_NAME} raised RuntimeError"
 
 
 def test_a_failing_send_never_quotes_the_exceptions_own_message(
