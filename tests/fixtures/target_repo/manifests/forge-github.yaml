@@ -1,0 +1,14 @@
+# Variant `forge-github`: the repo names the forge it is on (049-US1 FR-014).
+#
+# `github` is also the default, so this fixture's job is not the value — it is
+# that a manifest which *declares* the key is accepted rather than rejected as an
+# unknown top-level key, which is what it was before this key existed.
+version: 1
+runtime: bwrap
+gates:
+  lint: "bash gates/lint.sh"
+  test: "bash gates/test.sh"
+  typecheck: "bash gates/typecheck.sh"
+timeouts:
+  lint: 30
+forge: github
