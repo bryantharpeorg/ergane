@@ -208,11 +208,28 @@ def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
     return defaults
 
 
+#: `safe_dump` closes a document whose root is a *scalar* with an explicit
+#: end-of-document marker — `1\n...\n`, `main\n...\n`. Collections do not get
+#: one. Left in, it reached the terminal as part of the offered default and the
+#: first questions of `ergane init` read `schema version [1\n...]:` and
+#: `landing branch [main\n...]:`.
+_YAML_DOCUMENT_END = "\n..."
+
+
 def _yaml_repr(value: Any) -> str:
-    """Render a value back to YAML for use as a default string."""
+    """Render a value back to YAML for use as a default string.
+
+    The result is round-tripped: pressing Enter feeds this text back through
+    `yaml.safe_load`, so dropping the marker has to leave a document that still
+    loads to the same value. It does — `...` closes a document that is already
+    complete, and `safe_load("1")` and `safe_load("1\\n...")` are both `1`.
+    """
     if value is None:
         return ""
-    return yaml.safe_dump(value, default_flow_style=False).strip()
+    text = yaml.safe_dump(value, default_flow_style=False).strip()
+    if text.endswith(_YAML_DOCUMENT_END):
+        text = text[: -len(_YAML_DOCUMENT_END)].rstrip()
+    return text
 
 
 def _build_defaults(repo_root: Path) -> dict[str, Any]:

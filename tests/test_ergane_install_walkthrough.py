@@ -1022,3 +1022,37 @@ def test_walkthrough_and_verify_never_write_a_credential(
     # Non-trivial: the fields *are* written — as references, by name.
     for name in credentials:
         assert name in config_text
+
+
+def test_verify_with_no_config_reads_as_a_skipped_step_not_a_broken_tool(
+    config_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`ergane install --verify` before `ergane install` names the missing step.
+
+    Found by walking the installed package as a new user would. The parser's
+    refusal was already the right sentence — it names the file and says to run
+    `ergane install` — but nothing caught `ControlPlaneConfigError` at the noun,
+    so it fell through to `run_cli`'s defensive boundary and was wrapped as
+    `ergane: unexpected error (…); re-run with --debug for the traceback`. A
+    first run that has not been configured yet is an expected condition; the
+    only thing a traceback offer adds is the impression that Ergane is broken.
+    (Finding `interpreter/missing-config-presents-as-an-unexpected-error`.)
+
+    The exit code was already 1 and stays 1 — what changes is what the operator
+    is told to do about it.
+    """
+    assert config_path.exists() is False
+
+    result = _invoke(["install", "--verify"])
+
+    with capsys.disabled():
+        print("\n" + result.stderr.strip())
+
+    assert result.code == EXIT_USER
+    assert "unexpected error" not in result.stderr
+    assert "--debug" not in result.stderr
+    assert "run `ergane install` to create the control-plane config" in result.stderr
+    assert str(config_path) in result.stderr
+    # The refusal reaches the operator instead of anything reaching stdout.
+    assert result.stdout == ""
