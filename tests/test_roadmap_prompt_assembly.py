@@ -98,6 +98,10 @@ to serve nothing, so the only voice is the assembly check), verbatim::
 ...and over `903-well-formed`, the same activity, same stubs::
 
     findings=0 nodes=2
+
+And the whole suite, `uv run pytest -q`::
+
+    2552 passed, 44 skipped, 5 warnings in 287.37s (0:04:47)
 """
 
 from __future__ import annotations
