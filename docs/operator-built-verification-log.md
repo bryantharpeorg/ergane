@@ -239,3 +239,89 @@ checked:
   renders a bare `output check: FAILED` for a hygiene failure, because rendering
   the evidence belongs to US3. Until US3 lands, the escalation message is the one
   place a hygiene failure reaches a human without its reason.
+
+---
+
+# Verdicts, 2026-08-15
+
+The debt above was discharged the same night it was incurred. An OpenRouter key
+arrived around 21:20 CT, which made a judge reachable again — not the house
+judge (`ollama-cloud/glm-5.2`, still behind the weekly cap) but
+`deepseek/deepseek-v4-pro-0813`, a third model family, distinct from both the
+implementer that wrote most of this work and the Claude models that finished it.
+
+Nothing here re-implements judging. `run_judge` takes its endpoint, key and model
+as arguments precisely so a caller can point it elsewhere, so these are the
+factory's own prompt, parser and verdict grammar, aimed at a different host. The
+verdicts are the real article, not an approximation of one.
+
+| story | verdict |
+| --- | --- |
+| 045-judge-diff-hygiene / US1 | **PASS** — 5 of 5 scenarios |
+| 046-operator-status-cli / US2 | **PASS** |
+| 046-operator-status-cli / US3 | **PASS** — 3 of 3 |
+| 044-prompt-assembly-preflight / US1 | **RETRY** — US1-S2 not satisfied |
+| 033-ergane-install / US2 | **RETRY** — US1-S1 and US1-S4 not satisfied |
+
+## What this exercise proved about self-reading
+
+Two of the five came back with failures, and **both had been named in advance**
+in this file's "what a judge would have checked and did not" sections. That is
+the result worth keeping: the operator's read found every scenario *represented*
+and the judge found two of them *unsatisfied*. Representation is not
+satisfaction, and the reader who lands the code is not positioned to tell the
+difference — which is the whole argument for an independent verdict, restated
+with evidence rather than asserted.
+
+The practical consequence: when a story lands unjudged, the "what a judge would
+have checked" section is not documentation. It is the work queue.
+
+## 033-ergane-install / US2 — two real defects, fix in flight
+
+**US2-S1.** `TemporalProbe` never checks the namespace. It calls
+`get_workflow_handle("ergane-install-verify")`, calls `describe()`, and maps
+`RPCStatusCode.NOT_FOUND` to "the namespace is not registered" — but NOT_FOUND
+there means the *workflow* is absent. Measured on the host the factory runs on:
+
+```
+$ temporal operator namespace describe -n factory
+  NamespaceInfo.Name    factory
+  NamespaceInfo.Id      d3e55ab2-5a0b-4735-9283-a66d4431ee5d
+
+$ temporal workflow describe --workflow-id ergane-install-verify
+  Error: failed describing workflow: workflow not found for ID
+```
+
+So `ergane install --verify`, on this machine, reports a namespace that
+demonstrably exists as missing and tells the operator to create it. The landed
+test passes only because it **seeds that workflow first** — a test that
+manufactures its own passing condition, which is worse than no test at all.
+
+**US2-S4.** No `asyncio.wait_for` around `Client.connect` or `describe()`. The
+`elapsed >= timeout` branch is reached only *after* an exception surfaces, so an
+address that accepts and never answers hangs past the declared bound. The
+scenario's own words: "hanging is a defect, not patience."
+
+Filed as `verify/operator-read-missed-what-the-judge-caught`. Fix in progress.
+
+## 044-prompt-assembly-preflight / US1 — a spec question, not a code defect
+
+The judge failed US1-S2 for the reason the implementer had already disclosed in
+its own report: the committed test drives `check_prompt_assembly` directly
+rather than running `ergane spec validate`, because a *freshly derived* graph
+cannot contain a story whose section the assembler cannot find — `parse_spec`'s
+heading grammar is strictly narrower than the assembler's, and the deriver
+cross-validates every `implements` key against the spec. The spec.md half of
+assembly only fires against a **committed** `workgraph.json` that has drifted
+from the spec beside it, which is exactly what `ergane build start` dispatches
+and exactly what `validate` does not read.
+
+So implementer and judge agree on the facts and disagree on the conclusion: one
+called the scenario unreachable, the other called it unsatisfied. Both are
+right, which means the defect is in the scenario rather than in either of them.
+US1-S2 as written describes behaviour the current contract cannot produce.
+
+This is an operator decision, not a patch. Making `validate` read the committed
+artifact would change what FR-001 means by "every node of the derived graph" —
+a contract change that deserves a spec rather than a quiet amendment. Recorded
+here, open, for that decision.
