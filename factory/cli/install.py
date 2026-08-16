@@ -322,7 +322,7 @@ def _ask_temporal(
         path,
         default="true" if document["temporal"].get("tls_enabled") else "false",
         apply=lambda doc, value: _set(
-            doc, ("temporal", "tls_enabled"), _as_bool(value)
+            doc, ("temporal", "tls_enabled"), _as_optional_bool(value)
         ),
     )
 
@@ -439,6 +439,19 @@ def _as_bool(value: Any) -> Any:
     if text in ("false", "no", "n", "0"):
         return False
     return value
+
+
+def _as_optional_bool(value: Any) -> Any:
+    """As `_as_bool`, but a false answer *removes* the key.
+
+    The canonical rendering omits a flag sitting at its default, so writing
+    `tls_enabled = false` here would make the interview's output differ from
+    `render_controlplane_config` — and would add a line to `[temporal]` the
+    first time a hand-written config was re-run, breaking US3-S2's promise that
+    changing the OTLP endpoint touches only `[telemetry]`.
+    """
+    resolved = _as_bool(value)
+    return None if resolved is False else resolved
 
 
 def _set(document: dict[str, Any], route: tuple[Any, ...], value: Any) -> dict[str, Any]:

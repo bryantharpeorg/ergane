@@ -94,7 +94,7 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -103,9 +103,8 @@ import pytest
 import factory.cli.init as init_module
 import factory.cli.main as main_module
 import factory.controlplane.verify as verify_module
-from factory.cli.errors import EXIT_OK, EXIT_USER
+from factory.cli.errors import EXIT_USER
 from factory.controlplane.config import (
-    ControlPlaneConfig,
     ControlPlaneConfigError,
     load_controlplane_config,
     parse_controlplane_config,
@@ -337,6 +336,10 @@ def test_walkthrough_on_a_blank_host_writes_a_parsing_config_and_ends_with_findi
     assert config.telemetry.otlp_endpoint == TELEMETRY_ADDRESS
     assert config.escalation.adapter == "telegram"
 
+    # The file install writes is exactly the canonical rendering of what it
+    # parses to — the interview and `render_controlplane_config` cannot drift.
+    assert config_path.read_text(encoding="utf-8") == render_controlplane_config(config)
+
     # The verification ran, against this file: every finding rendered, and the
     # details name the addresses the operator typed.
     assert "[FAIL] llm:" in result.stdout
@@ -394,6 +397,33 @@ def test_walkthrough_asks_only_the_fields_the_chosen_mode_needs(
     assert config.llm.mode == "direct"
     assert [p.name for p in config.llm.personas] == ["implementer"]
     assert config.llm.personas[0].model == "ollama-cloud/kimi-k2.7-code"
+
+
+def test_the_real_terminal_prompter_drives_the_interview(
+    config_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plan trap 9: the *default* prompter is executed, not only the scripted seam.
+
+    Every other test in this file rebinds `_prompter_factory`, which is exactly
+    the arrangement that let `ergane repo migrate-runtime-root` ship a function
+    no test ever entered.  Here `_prompter_factory` is left alone: the real
+    `_TerminalPrompter` runs, `input()` runs, and the answers arrive on stdin
+    the way an operator's keystrokes do.
+    """
+    assert init_module._prompter_factory is None, "this test needs the production seam"
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(_answers()) + "\n"))
+
+    result = _invoke(["install"])
+
+    # The values could only reach the file through the real prompter.
+    config = load_controlplane_config(str(config_path))
+    assert config.llm.gateway is not None
+    assert config.llm.gateway.base_url == LLM_ADDRESS
+    assert config.temporal.address == TEMPORAL_ADDRESS
+    assert config.telemetry.otlp_endpoint == TELEMETRY_ADDRESS
+    # The questions were echoed to the terminal, defaults shown in brackets.
+    assert "llm mode (gateway|direct) [gateway]" in result.stdout
+    assert "[FAIL] temporal:" in result.stdout
 
 
 # ---------------------------------------------------------------------------
