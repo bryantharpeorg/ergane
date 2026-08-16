@@ -197,7 +197,7 @@ exists to prevent.
 
 ### Implementation for this story
 
-- [ ] T034 [US4] Add the wiring operation to the protocol and implement it on the
+- [x] T034 [US4] Add the wiring operation to the protocol and implement it on the
       `github` forge by moving `wire_repo` (`factory/mergequeue/wiring.py:258`)
       behind it — not reverting it, not rewriting it (FR-012). Keep
       `merge_queue_ruleset.json`'s role as the data file that spells what the

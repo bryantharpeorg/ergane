@@ -25,18 +25,16 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 from factory.mergequeue.forge import (
+    ALREADY_SATISFIED,
+    APPLIED,
     ForgeError,
     LandingPolicy,
     Proposal,
     RepositoryDescription,
-)
-from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
-from factory.mergequeue.wiring import (
-    ALREADY_SATISFIED,
-    APPLIED,
     WiringRefused,
     WiringStep,
 )
+from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 
 #: What this forge calls "the landing takes the proposal's title" — its own
 #: spelling, deliberately not GitHub's, so a judgment deciding from the spelling

@@ -2,9 +2,9 @@
 
 D-046 decided that the forge is an adapter and GitHub is the reference
 implementation, because GitHub is not a dependency of this factory — it is an
-*assumption*, load-bearing at every epic start. This module is the **reading**
-half of that seam: two operations, a name → builder registry, and records
-written in terms no forge owns. US3 adds the landing half, US4 the wiring one.
+*assumption*, load-bearing at every epic start. This module is that seam: the
+reading half (US1), the landing half (US3) and the wiring one (US4), a name →
+builder registry, and records written in terms no forge owns.
 
 **Renaming is not seaming.** A protocol whose operations were
 `merge_queue_enabled()` and `squash_merge_commit_title()` would have moved
@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
 from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 
@@ -102,6 +102,63 @@ class LandingPolicy:
     landing_title_remedy: str = ""
 
 
+#: What one wiring act came to, and the exact words an operator reads (049-US4).
+#: They live on the seam rather than in the GitHub implementation because the
+#: record crosses it: every forge reports its acts in these three terms.
+APPLIED = "applied"
+ALREADY_SATISFIED = "already satisfied"
+ATTENTION = "attention"
+
+
+@dataclass(frozen=True)
+class WiringStep:
+    """One wiring act: what it was, what happened, and what the operator should know."""
+
+    name: str
+    status: str
+    detail: str
+
+
+class WiringRefused(Exception):
+    """A prerequisite the operator must fix, with its remedies and a manual path.
+
+    Raised at the point of refusal — before the act it would have been — so a
+    repository is never left gating on half of what it was asked to gate on, and
+    always carrying the by-hand steps (FR-013), because an operator blocked on a
+    credential still needs the repository wired today.
+    """
+
+    def __init__(
+        self,
+        headline: str,
+        *,
+        remedies: Sequence[str],
+        manual: Sequence[str],
+    ) -> None:
+        self.headline = headline
+        self.remedies = tuple(remedies)
+        self.manual = tuple(manual)
+        super().__init__(self.render())
+
+    def render(self) -> str:
+        lines = [self.headline, ""]
+        for remedy in self.remedies:
+            lines.append(f"  {remedy}")
+        lines.append("")
+        lines.append("or do the manual wiring steps yourself:")
+        for step in self.manual:
+            lines.append(f"  {step}")
+        return "\n".join(lines)
+
+
+def format_step(step: WiringStep) -> list[str]:
+    """A status line, and the detail indented under it."""
+    lines = [f"  {step.name}: {step.status}"]
+    for line in step.detail.splitlines():
+        lines.append(f"    {line}")
+    return lines
+
+
 class ForgeError(RuntimeError):
     """A forge that could not answer — data an activity returns, not a crash.
 
@@ -119,7 +176,7 @@ class ForgeError(RuntimeError):
 
 @runtime_checkable
 class Forge(Protocol):
-    """The seam: two reading operations, six landing ones, and no ninth."""
+    """The seam: two reading operations, six landing ones, one wiring one, no tenth."""
 
     def describe_repository(self) -> RepositoryDescription:
         """Name this repository and report what only this forge can report.
@@ -189,6 +246,29 @@ class Forge(Protocol):
         Evidence, never a conclusion: a forge that cannot produce a log states the
         absence in the record's `note` and returns anyway, one record per
         requested name, so the recovery cycle is not lost to its own evidence."""
+        ...
+
+    # --- the wiring half (049-US4, FR-012/FR-013) ----------------------------
+
+    def apply_landing_policy(
+        self, branch: str, required_checks: Sequence[str]
+    ) -> tuple[WiringStep, ...]:
+        """Make `branch` gate on exactly `required_checks`, land with no human in
+        the loop, and title a landing from the proposal — the write side of
+        `landing_policy`, and the only operation here that changes a repository.
+
+        Those three properties are fixed rather than arguments because the
+        factory never wants any of them otherwise: an ungated branch, a landing
+        it must click, or a landing commit it cannot read a story out of are all
+        repositories it refuses to dispatch against. Only *which* branch and
+        *which* checks vary, which is why they are the only parameters.
+
+        Reports one `WiringStep` per act, `ALREADY_SATISFIED` for an act already
+        true, so a second run changes nothing. A forge that cannot apply the
+        policy raises `WiringRefused` carrying the by-hand steps rather than
+        applying part of it (FR-013) — a repository gating on half its checks
+        looks wired, which is worse than one gating on none.
+        """
         ...
 
 

@@ -35,7 +35,7 @@ import pytest
 import factory.cli.init as init_module
 from factory.activities.merge_activities import onboard_target_repo
 from factory.cli.errors import EXIT_OK
-from factory.mergequeue.wiring import ALREADY_SATISFIED, APPLIED, WiringRefused
+from factory.mergequeue.forge import ALREADY_SATISFIED, APPLIED, WiringRefused
 from factory.mergequeue.gh import GhClient
 from factory.mergequeue.github_forge import GithubForge
 from tests.fake_forge import FakeForge, RepositoryModel
