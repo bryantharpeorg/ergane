@@ -4,10 +4,9 @@ Every proxy call in the factory goes through here, which is what makes the
 component's credential and enforcement invariants checkable in one file:
 
 - **The master key stops at this boundary.** It is read from the worker-host
-  environment (`from_env`) — out of `LITELLM_MASTER_KEY`, or out of whichever
-  variable the control-plane config declared, which
-  `factory.controlplane.resolve` decides and this module does not — lives only
-  in this client's request headers, and is
+  environment (`from_env`), out of whichever variable
+  `factory.controlplane.resolve` names, lives only in this client's request
+  headers, and is
   redacted out of anything a caller can observe — a failed call raises
   `LiteLLMError` carrying an HTTP status and a scrubbed proxy message, never the
   credential that authenticated it (FR-009, SC-004).
@@ -147,15 +146,15 @@ class LiteLLMClient:
         their tests for no behavioural gain, and diff size is a real constraint
         (048 plan, route choices).
 
-        The precedence itself lives in `factory.controlplane.resolve` and not
-        here. This module's contract is that it is the *proxy* seam; teaching
-        it to read TOML out of `~` would make it two things, and it would force
-        `factory.usage` to import `factory.controlplane`, which is the wrong
-        direction — `controlplane/verify.py` already imports this way.
+        The precedence lives in `factory.controlplane.resolve`, not here. This
+        module's contract is that it is the *proxy* seam; teaching it to read
+        TOML out of `~` would make it two things, and would force
+        `factory.usage` to import `factory.controlplane` — the wrong direction,
+        since `controlplane/verify.py` already imports this way.
 
         Raises `LiteLLMError` naming the missing variable and the config path —
         names only; an environment value never enters an error message
-        (FR-009, 048 FR-003). The error *type* is load-bearing beyond tidiness:
+        (FR-009, 048 FR-003). The error *type* is load-bearing:
         `issue_attempt_key` catches `LiteLLMError` and marks the failure
         permanent, so a new exception type escaping here would turn a
         misconfigured host into ten minutes of retries.

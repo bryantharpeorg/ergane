@@ -29,16 +29,15 @@ consequence:
   belief 048 exists to end (FR-004, FR-005).
 
 Resolution runs at a CLI entry point or inside an activity, never at workflow
-scope: `tests/test_workflow_env_guard.py` catches a workflow-scope `os.environ`
-read but does not yet catch a *file* read, so nothing here would be caught by
-it (constitution IV, FR-007).
+scope: the guard 039 added catches a workflow-scope `os.environ` read and would
+*not* catch a file read (constitution IV, FR-007).
 
-Import direction: `factory.usage.litellm_client` reaches this module through a
-function-local import inside `from_env`, so this module may import it at module
-scope without closing a cycle. `factory/controlplane/__init__.py` is 0 bytes
-and must stay that way — a convenience re-export there would make
-`litellm_client` → `controlplane` → `verify` → `litellm_client` a cycle at
-worker start, surfacing as an unrelated `ImportError`.
+`factory.usage.litellm_client` reaches this module through a function-local
+import inside `from_env`, so this module may import it at module scope without
+closing a cycle. `factory/controlplane/__init__.py` is 0 bytes and must stay
+that way: a re-export there makes `litellm_client` → `controlplane` → `verify`
+→ `litellm_client` a cycle at worker start, surfacing as an unrelated
+`ImportError`.
 """
 
 from __future__ import annotations
@@ -72,9 +71,8 @@ class CredentialRef:
     """The name of the variable holding a credential, and who said so.
 
     Deliberately not the credential. `read` is the only way to obtain the
-    value, it takes the environment as its argument, and it keeps nothing —
-    so an instance rendered into a traceback frame or a log line spills a
-    variable name at worst (FR-003).
+    value and it keeps nothing, so an instance rendered into a traceback frame
+    or a log line spills a variable name at worst (FR-003).
     """
 
     #: The environment variable that holds the credential.
@@ -87,9 +85,8 @@ class CredentialRef:
 
         Raises `ControlPlaneResolutionError` naming the variable and the source
         that declared it — and nothing else. Offering `LITELLM_MASTER_KEY` as a
-        consolation here would answer a question the operator did not ask: they
-        declared a variable, so the answer is about the variable they declared
-        (US1-S6).
+        consolation would answer a question the operator did not ask: they
+        declared a variable, so the answer is about that variable (US1-S6).
         """
         env = os.environ if environ is None else environ
         value = env.get(self.env_name)
@@ -173,9 +170,9 @@ def resolve_proxy_url(
     The three epic/roadmap start commands need this and not the credential:
     the endpoint is a workflow *input* they thread into `EpicInput.proxy_url`,
     while the credential is read on the worker host by the activity that mints
-    the key. Demanding both here would refuse to start an epic on a host that
-    is perfectly able to run it — a regression this story's first full-suite
-    run caught, in seven tests that export a proxy url and no master key.
+    the key. Demanding both here refuses to start an epic on a host well able
+    to run it — a regression this story's first full-suite run caught, in seven
+    tests that export a proxy url and no master key.
     """
     env = os.environ if environ is None else environ
     declared, label = _declared_gateway(
@@ -192,10 +189,9 @@ def resolve_master_key_env(
 ) -> CredentialRef:
     """Resolve only the credential's variable name, under the same precedence.
 
-    The roadmap's preflight seam is handed its `proxy_url` as an argument
-    (`factory/activities/roadmap_activities.py:335-345`), so demanding an
-    endpoint here would make it refuse on a host that had already told it where
-    the proxy is. Same precedence, same source labels, one value.
+    The roadmap's preflight seam is handed its `proxy_url` as an argument, so
+    demanding an endpoint here would make it refuse on a host that had already
+    told it where the proxy is. Same precedence, same labels, one value.
     """
     env = os.environ if environ is None else environ
     declared, label = _declared_gateway(

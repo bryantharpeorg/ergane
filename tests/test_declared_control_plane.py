@@ -15,9 +15,8 @@ The fixture config and the fixture environment disagree on every value they
 both carry (plan trap 5). If they agreed, no test below could tell which source
 the resolver actually consulted.
 
-The runtime evidence this story rests on — the red run, and one mutation per
-behaviour — is pasted verbatim at the bottom of this file (constitution VIII /
-D-037: the judge sees this diff and nothing else).
+The runtime evidence — the red run, and one mutation per behaviour — is pasted
+verbatim at the bottom of this file (constitution VIII / D-037).
 """
 
 from __future__ import annotations
@@ -53,23 +52,20 @@ SENTINEL_CREDENTIAL = "sk-sentinel-048-us1-must-never-be-rendered"
 EPIC_ID = "048-fixture-epic"
 
 
-def _config_text(
-    *,
-    base_url: str = DECLARED_BASE_URL,
-    master_key_env: str = DECLARED_KEY_VAR,
-) -> str:
-    """A complete, parseable config declaring a gateway.
+def _write_config(tmp_path: Path) -> Path:
+    """A complete, parseable config declaring a gateway, at a bound path.
 
     All five blocks, because the parser requires all five; only `[llm]` is what
     this story reads.
     """
-    return f"""\
+    path = tmp_path / "config.toml"
+    path.write_text(f"""\
 version = 1
 
 [llm]
 mode = "gateway"
-base_url = "{base_url}"
-master_key_env = "{master_key_env}"
+base_url = "{DECLARED_BASE_URL}"
+master_key_env = "{DECLARED_KEY_VAR}"
 
 [memory]
 backend = "none"
@@ -85,12 +81,7 @@ namespace = "declared"
 adapter = "telegram"
 chat_id_env = "DECLARED_CHAT_ID"
 bot_token_env = "DECLARED_BOT_TOKEN"
-"""
-
-
-def _write_config(tmp_path: Path, text: str | None = None) -> Path:
-    path = tmp_path / "config.toml"
-    path.write_text(_config_text() if text is None else text, encoding="utf-8")
+""", encoding="utf-8")
     return path
 
 
@@ -187,9 +178,8 @@ def test_overrides_set_means_the_config_file_is_never_opened(
     """US1-S3, FR-002: bound to unparseable TOML, resolution still succeeds.
 
     A resolver that opened this file could not have passed: the parser refuses
-    it. That is the anti-vacuity — the assertion is about a file read that did
-    not happen, and the only way to observe a read that did not happen is to
-    make the read fatal.
+    it. That is the anti-vacuity — the only way to observe a read that did not
+    happen is to make the read fatal.
     """
     broken = tmp_path / "config.toml"
     broken.write_text('version = 1\n[llm\nmode = "gateway"\n', encoding="utf-8")
@@ -210,8 +200,7 @@ def test_overrides_set_means_the_config_file_is_never_opened(
 def _write_graph(tmp_path: Path) -> Path:
     """A minimal compiled graph `ergane build start` will accept.
 
-    `build._persona_registry` synthesises the registry from the graph itself,
-    so no `personas.yaml` is involved.
+    `build._persona_registry` synthesises the registry from the graph itself.
     """
     graph_path = tmp_path / "workgraph.json"
     graph_path.write_text(
@@ -274,13 +263,12 @@ def test_epic_start_with_nothing_declared_names_both_routes(
 def test_a_config_the_parser_refuses_surfaces_the_parsers_own_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """US1-S5, FR-005, plan trap 3: refuse for a broken config, degrade only for a missing one.
+    """US1-S5, FR-005, plan trap 3: refuse for a broken config, degrade for a missing one.
 
-    `factory/registry.py` and `factory/notify/adapter.py` swallow
-    `ControlPlaneConfigError` wholesale because their callers must work
-    unprovisioned. Copying that reflex here would tell an operator who typo'd
-    their config to export a variable — which is the belief this spec exists to
-    end.
+    `registry.py` and `notify/adapter.py` swallow `ControlPlaneConfigError`
+    wholesale because their callers must work unprovisioned. Copying that
+    reflex here would tell an operator who typo'd their config to export a
+    variable — the belief this spec exists to end.
     """
     broken = tmp_path / "config.toml"
     broken.write_text('version = 1\n[llm\nmode = "gateway"\n', encoding="utf-8")
@@ -323,10 +311,9 @@ def test_an_unset_declared_variable_names_only_itself_and_the_config_path(
 ) -> None:
     """US1-S6, FR-003: the error names `DECLARED_KEY_VAR` and the file, nothing else.
 
-    Preserves the discipline `from_env` already keeps: an error names a
-    variable, never a value (`factory/usage/litellm_client.py:148-150`). And it
-    does not offer `LITELLM_MASTER_KEY` as a consolation — the operator declared
-    a variable and the answer is about the variable they declared.
+    Preserves the discipline `from_env` already kept: an error names a
+    variable, never a value. And it does not offer `LITELLM_MASTER_KEY` as a
+    consolation — the operator declared a variable, so the answer is about it.
     """
     config_path = _write_config(tmp_path)
     _no_overrides(monkeypatch)
@@ -355,8 +342,8 @@ def test_the_resolution_never_carries_the_credential_value(
     """US1-S7, FR-003, SC-005: a planted sentinel appears nowhere in the repr.
 
     True by construction rather than by discipline — the object holds a
-    variable name and a URL — which is the whole reason for choosing this shape
-    over returning a `(url, key)` pair.
+    variable name and a URL — which is why this shape was chosen over returning
+    a `(url, key)` pair.
     """
     config_path = _write_config(tmp_path)
     _no_overrides(monkeypatch)
@@ -407,24 +394,16 @@ class _RecordingClient:
         return object()
 
 
-def test_epic_input_is_byte_identical_under_the_overrides(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """US1-S8, SC-001: with both overrides exported and no config, nothing moves.
+def _start_and_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Drive `ergane build start` to the brink and return the `EpicInput` it built.
 
-    Compared against the construction the tree performs today, through the same
-    payload converter Temporal would use — so a resolver that returned a source
-    label, a normalised URL or a different default fails here.
+    No Temporal and no proxy: the seams the CLI already exposes — the
+    package-level client factory and the preflight — are replaced, so what is
+    measured is the input construction and nothing around it.
     """
     import factory.cli.nouns as nouns_package
     from factory.cli.nouns import build as build_module
-    from factory.workgraph.workflow import EpicInput
 
-    monkeypatch.setenv(PROXY_URL_ENV, OVERRIDE_BASE_URL)
-    monkeypatch.setenv(MASTER_KEY_ENV, SENTINEL_CREDENTIAL)
-    _bind_config_path(monkeypatch, tmp_path / "absent" / "config.toml")
-
-    graph_path = _write_graph(tmp_path)
     recorder = _RecordingClient()
 
     async def _open_client() -> Any:
@@ -436,14 +415,32 @@ def test_epic_input_is_byte_identical_under_the_overrides(
     monkeypatch.setattr(nouns_package, "_open_client", _open_client)
     monkeypatch.setattr(build_module, "_run_preflight", _no_findings)
 
+    graph_path = _write_graph(tmp_path)
     assert build_module.start_command(
         Namespace(graph=str(graph_path), max_concurrent_nodes=1)
     ) == 0
+    return recorder.started[0][0][1]
 
-    (args, _kwargs) = recorder.started[0]
-    built = args[1]
+
+def test_epic_input_is_byte_identical_under_the_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US1-S8, SC-001: with both overrides exported and no config, nothing moves.
+
+    Compared against the construction the tree performs today, through the same
+    payload converter Temporal would use — so a resolver that returned a source
+    label, a normalised URL or a different default fails here.
+    """
+    from factory.cli.nouns import build as build_module
+    from factory.workgraph.workflow import EpicInput
+
+    monkeypatch.setenv(PROXY_URL_ENV, OVERRIDE_BASE_URL)
+    monkeypatch.setenv(MASTER_KEY_ENV, SENTINEL_CREDENTIAL)
+    _bind_config_path(monkeypatch, tmp_path / "absent" / "config.toml")
+
+    built = _start_and_capture(tmp_path, monkeypatch)
     expected = EpicInput(
-        graph=build_module.load_workgraph(graph_path),
+        graph=build_module.load_workgraph(tmp_path / "workgraph.json"),
         proxy_url=OVERRIDE_BASE_URL,
         max_concurrent_nodes=1,
     )
@@ -470,9 +467,8 @@ def test_control_with_the_config_branch_disabled_the_tree_refuses_as_before(
 
     The seam is a keyword argument, never an environment read — a control
     implemented as "unset a variable" is not a control, it is the same code
-    path (plan, route choices). With the config branch off, this fixture is
-    indistinguishable from the pre-048 tree: nothing in the environment, so
-    `LITELLM_PROXY_URL is not set`.
+    path. With the branch off, this fixture is indistinguishable from the
+    pre-048 tree: nothing in the environment, so nothing resolves.
     """
     config_path = _write_config(tmp_path)
     _no_overrides(monkeypatch)
@@ -505,34 +501,15 @@ def test_epic_start_needs_the_endpoint_and_not_the_credential(
     """A host exporting a proxy url and no master key still starts epics.
 
     The endpoint is a workflow *input* threaded from the CLI; the credential is
-    read on the worker host by the activity that mints the attempt's key. This
-    story's first full-suite run refused seven tests that export exactly that
-    combination, because the first cut of the CLI seam resolved the whole
-    gateway. Pinned here so the two halves cannot be re-fused.
+    read on the worker host by the activity that mints the key. This story's
+    first full-suite run refused seven tests exporting exactly that combination,
+    because the first cut of the CLI seam resolved the whole gateway.
     """
-    import factory.cli.nouns as nouns_package
-    from factory.cli.nouns import build as build_module
-
     monkeypatch.setenv(PROXY_URL_ENV, OVERRIDE_BASE_URL)
     monkeypatch.delenv(MASTER_KEY_ENV, raising=False)
     _bind_config_path(monkeypatch, tmp_path / "absent" / "config.toml")
 
-    graph_path = _write_graph(tmp_path)
-    recorder = _RecordingClient()
-
-    async def _open_client() -> Any:
-        return recorder
-
-    async def _no_findings(graph: Any) -> list[Any]:
-        return []
-
-    monkeypatch.setattr(nouns_package, "_open_client", _open_client)
-    monkeypatch.setattr(build_module, "_run_preflight", _no_findings)
-
-    assert build_module.start_command(
-        Namespace(graph=str(graph_path), max_concurrent_nodes=1)
-    ) == 0
-    assert recorder.started[0][0][1].proxy_url == OVERRIDE_BASE_URL
+    assert _start_and_capture(tmp_path, monkeypatch).proxy_url == OVERRIDE_BASE_URL
 
 
 def test_the_endpoint_resolver_stands_alone_from_the_credential(
@@ -600,8 +577,7 @@ def test_from_env_refusal_still_names_only_variables_never_values(
     """FR-003: `from_env` keeps raising `LiteLLMError`, credential-free.
 
     The error type matters beyond tidiness: `issue_attempt_key` catches
-    `LiteLLMError` and marks the failure permanent
-    (`factory/activities/usage_activities.py:198-200`). A new exception type
+    `LiteLLMError` and marks the failure permanent, so a new exception type
     escaping `from_env` would turn a misconfigured host into ten minutes of
     retries.
     """
@@ -630,8 +606,7 @@ def test_no_workflow_module_imports_the_resolver() -> None:
     `tests/test_workflow_env_guard.py` catches `os.environ` at workflow scope
     and would *not* catch a config-file read, so this asserts the narrower
     property directly: no module carrying a `@workflow.defn` names the resolver
-    at all. Walks the AST rather than grepping, so a comment mentioning the
-    module cannot fail it and an aliased import cannot hide from it.
+    at all. Walks the AST, so a comment cannot fail it and an alias cannot hide.
     """
     import ast
 
@@ -669,11 +644,10 @@ def test_no_workflow_module_imports_the_resolver() -> None:
 def test_the_controlplane_package_init_stays_empty() -> None:
     """Plan trap 11: an import here closes a cycle at worker start.
 
-    `factory/controlplane/verify.py` imports `factory.usage.litellm_client`.
-    Once `litellm_client` reaches back into `factory.controlplane.resolve`, any
-    convenience re-export placed in this `__init__` makes the three a cycle,
-    and the failure surfaces as an unrelated `ImportError` at the top of a
-    traceback nobody connects to a package `__init__`.
+    `verify.py` imports `litellm_client`, which now reaches back into
+    `factory.controlplane.resolve`. Any re-export placed in this `__init__`
+    makes the three a cycle, and it surfaces as an unrelated `ImportError` at
+    the top of a traceback nobody connects to a package `__init__`.
     """
     init = (
         Path(__file__).resolve().parent.parent
@@ -691,24 +665,122 @@ def test_the_controlplane_package_init_stays_empty() -> None:
 # --- The red run, before any production code existed -----------------------
 #
 #   $ uv run pytest -q tests/test_declared_control_plane.py
-#   ==================================== ERRORS ====================================
 #   ____________ ERROR collecting tests/test_declared_control_plane.py _____________
-#   ImportError while importing test module '.../tests/test_declared_control_plane.py'.
-#   Hint: make sure your test modules/packages have valid Python names.
-#   Traceback:
-#   .../importlib/__init__.py:88: in import_module
-#       return _bootstrap._gcd_import(name[level:], package, level)
-#              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 #   tests/test_declared_control_plane.py:33: in <module>
 #       from factory.controlplane.resolve import (
 #   E   ModuleNotFoundError: No module named 'factory.controlplane.resolve'
-#   =========================== short test summary info ============================
-#   ERROR tests/test_declared_control_plane.py
 #   !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
 #   1 error in 0.07s
 #
 # A collection error is weak evidence on its own — it says the module is
 # absent, not that any single assertion bites. The per-behaviour mutation
 # transcripts below are the real answer to "what would make this pass if the
-# production code did nothing?", and they are pasted after the implementation
-# landed.
+# production code did nothing?".
+#
+#
+# --- Mutation testing, one mutation per behaviour --------------------------
+#
+# The defect pattern that has cost this repository more than any other is a
+# test that cannot fail — five instances in two days, one of which seeded the
+# state it then checked for, and one whose only green condition was deleting
+# production data. So each behaviour below was broken on purpose in the
+# production code and this file re-run. Every mutation was reverted before the
+# evidence was written: `git status` was clean, so the tree these transcripts
+# describe is the tree in this diff.
+#
+#   $ uv run pytest -q tests/test_declared_control_plane.py   # once per mutation
+#
+# M1  precedence inverted — the declaration beats the environment.
+#     [resolve.py: drop the override short-circuit in _declared_gateway and
+#     swap the branches in _resolve_endpoint and _resolve_credential]
+#     3 failed, 16 passed in 0.29s
+#       test_the_environment_overrides_the_declaration
+#       test_overrides_set_means_the_config_file_is_never_opened
+#       test_the_override_resolution_carries_the_variable_name_not_its_value
+#
+# M2  the declaration branch never runs — the pre-048 tree.
+#     [_declared_gateway returns (None, label) unconditionally]
+#     9 failed, 10 passed in 0.28s
+#       test_the_declaration_supplies_both_values_when_nothing_overrides
+#       test_the_declared_credential_is_read_from_the_declared_variable
+#       test_a_config_the_parser_refuses_surfaces_the_parsers_own_reason
+#       test_an_unset_declared_variable_names_only_itself_and_the_config_path
+#       test_the_resolution_never_carries_the_credential_value
+#       test_control_with_the_config_branch_disabled_the_tree_refuses_as_before
+#       test_the_endpoint_resolver_stands_alone_from_the_credential
+#       test_the_credential_resolver_stands_alone_from_the_endpoint
+#       test_from_env_and_the_roadmap_seam_agree_about_the_host
+#
+# M3  sources always name the legacy variable, never the config path.
+#     [the declared branches return PROXY_URL_ENV / MASTER_KEY_ENV as source]
+#     4 failed, 15 passed in 0.23s
+#       test_the_declaration_supplies_both_values_when_nothing_overrides
+#       test_an_unset_declared_variable_names_only_itself_and_the_config_path
+#       test_the_endpoint_resolver_stands_alone_from_the_credential
+#       test_the_credential_resolver_stands_alone_from_the_endpoint
+#
+# M4  CredentialRef carries the credential value as well as its name.
+#     [add a `value` field, populated from the environment]
+#     1 failed, 18 passed in 0.22s
+#       test_the_credential_resolver_stands_alone_from_the_endpoint
+#
+# M4b GatewayResolution carries the credential value alongside the name.
+#     [add `master_key_value`, populated in resolve_llm_gateway]
+#     2 failed, 17 passed in 0.22s
+#       test_the_resolution_never_carries_the_credential_value
+#       test_the_override_resolution_carries_the_variable_name_not_its_value
+#     Needed as a separate mutation, and the reason is worth recording: under
+#     M4 alone both sentinel assertions on `resolution` still passed, because
+#     GatewayResolution is built from the CredentialRef's two *name* fields and
+#     drops everything else. That is a real structural guarantee, and it is
+#     also what made M4 insufficient evidence for US1-S7.
+#
+# M5  a config the parser refuses is swallowed (the registry.py reflex).
+#     [_declared_gateway returns (None, label) on ControlPlaneConfigError]
+#     1 failed, 18 passed in 0.22s
+#       test_a_config_the_parser_refuses_surfaces_the_parsers_own_reason
+#
+# M6  the refusal names one route instead of both.
+#     [_both_routes returns "<VAR> is not set in the worker environment"]
+#     3 failed, 16 passed in 0.21s
+#       test_epic_start_with_nothing_declared_names_both_routes
+#       test_a_missing_config_is_not_reported_as_a_broken_one
+#       test_from_env_refusal_still_names_only_variables_never_values
+#
+# M7  the config file is read even when both overrides are set.
+#     [drop only the `needed` short-circuit in _declared_gateway]
+#     1 failed, 18 passed in 0.22s
+#       test_overrides_set_means_the_config_file_is_never_opened
+#
+# M8  epic start threads the resolved *source* instead of the resolved url.
+#     [build.py: resolve_proxy_url().source]
+#     2 failed, 17 passed in 0.21s
+#       test_epic_input_is_byte_identical_under_the_overrides
+#       test_epic_start_needs_the_endpoint_and_not_the_credential
+#
+# M9  epic start re-fuses the two halves and demands the credential too.
+#     [build.py: resolve_llm_gateway().base_url]
+#     1 failed, 18 passed in 0.24s
+#       test_epic_start_needs_the_endpoint_and_not_the_credential
+#
+# M10 a workflow module imports the resolver.
+#     [workflow.py: import factory.controlplane.resolve]
+#     1 failed, 18 passed in 0.21s
+#       test_no_workflow_module_imports_the_resolver
+#
+# M11 factory/controlplane/__init__.py stops being empty.
+#     [one comment line written into it]
+#     1 failed, 18 passed in 0.21s
+#       test_the_controlplane_package_init_stays_empty
+#
+# Every one of the nineteen tests in this file is killed by at least one
+# mutation above. The one deliberately hard to kill is
+# test_epic_input_is_byte_identical_under_the_overrides: it is a parity pin
+# (US1-S8 / SC-001), so a correct change must leave it green — M8 is the proof
+# that it is nonetheless able to fail.
+#
+#
+# --- The full suite, on the tree in this diff -------------------------------
+#
+#   $ uv run pytest -q
+#   2772 passed, 44 skipped, 5 warnings in 290.75s (0:04:50)

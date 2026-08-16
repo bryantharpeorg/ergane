@@ -1027,27 +1027,26 @@ join is this entry.
    decision entry superseding this one, and its own answer for hosts that export both.
    It is not a refactor, and it is not a knob.
 
-4. **A resolution carries a variable name, never a credential.** `ControlPlaneConfig.
-   LLMGateway.master_key_env` holds the *name* of the variable holding the key
-   (principle V, enforced by the parser's `_reject_secret_shape`), and the resolver
-   preserves that shape end to end: `GatewayResolution` and `CredentialRef` hold names
-   and a URL, and the value is fetched at the last moment by whoever needs it. FR-003
-   and SC-005 are therefore true by construction rather than by care at each call site.
+4. **A resolution carries a variable name, never a credential.** The config already
+   held the *name* of the variable holding the key (principle V, enforced by the
+   parser's `_reject_secret_shape`), and the resolver preserves that shape end to end:
+   its value objects hold names and a URL, and the credential is fetched at the last
+   moment by whoever needs it. FR-003 and SC-005 are therefore true by construction
+   rather than by care at each call site.
 
 5. **A *missing* config degrades; a *broken* one refuses.** `factory/registry.py` and
    `factory/notify/adapter.py` swallow `ControlPlaneConfigError` wholesale because a
    repo registration must work on an unprovisioned host. The dispatch path must not:
-   an operator who typo'd their config and is told `LITELLM_PROXY_URL is not set` will
-   export a variable instead of fixing the file, and will conclude the config does
-   nothing — which is the belief 048 exists to end. Where nothing resolves at all, the
-   refusal names *both* routes, so the operator is told the two ways to satisfy it.
+   an operator told `LITELLM_PROXY_URL is not set` when the real problem is a typo in
+   their config will export a variable, and conclude the config does nothing — the
+   belief 048 exists to end. Where nothing resolves, the refusal names *both* routes.
 
 6. **Resolution happens at a CLI boundary or in an activity, never at workflow scope.**
    The endpoint was already a declared workflow input (`EpicInput.proxy_url`), which is
-   what made this story cheap and what keeps constitution IV intact. The workflow-scope
-   guard added by 039 catches an `os.environ` read and would *not* catch a config-file
+   what made this story cheap and what keeps constitution IV intact. The guard 039 added
+   catches an `os.environ` read at workflow scope and would *not* catch a config-file
    read, so this is a rule the diff keeps rather than one a guard enforces.
 
-The finding this closes is `install/the-config-install-writes-reaches-nothing-that-builds`,
-first consequence; the second — `llm.mode = "direct"` verifying green while being
-unable to dispatch — is US2's, with its own entry.
+This closes the first consequence of
+`install/the-config-install-writes-reaches-nothing-that-builds`; the second — `direct`
+mode verifying green while unable to dispatch — is US2's, with its own entry.

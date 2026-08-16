@@ -208,8 +208,6 @@ def _resolved_proxy_url() -> str:
     Resolved here rather than at parser-construction time: an argparse default
     is evaluated on every `ergane roadmap --help`, and reading the operator's
     config file to render help text would be a file read nobody asked for.
-    `--proxy-url` still wins, because an operator naming an endpoint on the
-    command line is the most explicit source there is.
     """
     from factory.controlplane.resolve import (
         ControlPlaneResolutionError,

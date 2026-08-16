@@ -458,11 +458,8 @@ def start_command(args: argparse.Namespace) -> int:
 
     # The same resolution `factory/cli/nouns/build.py` performs, through the
     # same resolver rather than a second copy of the precedence (048 FR-006).
-    # This handler is still imported by `factory/cli/repo.py` and
-    # `factory/cli/nouns/spec.py` and still driven by two test modules;
-    # consolidating the two copies of the surrounding handler is deliberately
-    # a separate cleanup, but they may not disagree about which host they are
-    # on in the meantime.
+    # Consolidating this duplicate handler with that one is a separate cleanup;
+    # in the meantime the two may not disagree about which host they are on.
     from factory.controlplane.resolve import (
         ControlPlaneResolutionError,
         resolve_proxy_url,
