@@ -317,16 +317,16 @@ Both seeded facts fire, in opposite directions.
 
 $ uv run pytest tests/test_ergane_escalations.py -q --tb=line
 .FF                                                                      [100%]
-E   AssertionError: assert {'8efb9caab13...abab12345678'} == {'8efb9caab13...aa20d9ec315f'}
+E   AssertionError: assert {'4afd69f7b07...abab12345678'} == {'4afd69f7b07...8b6d0238d7e9'}
       Extra items in the left set:
       'abab12345678'
       Extra items in the right set:
-      'aa20d9ec315f'
+      '8b6d0238d7e9'
 .../tests/test_ergane_escalations.py:197: AssertionError
 
 E   AssertionError: assert 'us2 has exhausted its ladder - retry, kill, or pause the epic?' in
     'abab12345678  027-gate-suite-fake-time/us2  expires 2026-08-06T15:55:00Z  a node that finished over a week ago\\n
-     49ea5...-workflow/us2   expires 2026-08-16T15:28:31Z  attempt 1 FAIL (gates)\\nattempt 2 FAIL (judge)\\nattempt 3 FAIL (gates)\\n'
+     2eab1...-workflow/us2   expires 2026-08-16T15:37:19Z  attempt 1 FAIL (gates)\\nattempt 2 FAIL (judge)\\nattempt 3 FAIL (gates)\\n'
 .../tests/test_ergane_escalations.py:254: AssertionError
 FAILED tests/test_ergane_escalations.py::test_open_escalations_reports_workflows_and_not_the_store
 FAILED tests/test_ergane_escalations.py::test_ergane_escalations_list_prints_what_is_waiting
@@ -337,4 +337,10 @@ is being shown `abab12345678  027-gate-suite-fake-time/us2  expires
 2026-08-06T15:55:00Z`, an escalation for a node that finished over a week ago,
 and the escalation that is genuinely waiting has lost its question to a wall of
 attempt history. That is the live store's `idx_esc_pending`, printed.
+"""
+
+
+FINAL_SUITE = """
+$ uv run pytest -q
+2673 passed, 44 skipped, 4 warnings in 290.23s (0:04:50)
 """

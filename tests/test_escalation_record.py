@@ -305,3 +305,9 @@ Note which tests survive mutation 2 and which does not: everything that builds
 its store from scratch passes. A suite without the pre-041 fixture would have
 been green on a change that breaks the running deployment.
 """
+
+
+FINAL_SUITE = """
+$ uv run pytest -q
+2673 passed, 44 skipped, 4 warnings in 290.23s (0:04:50)
+"""

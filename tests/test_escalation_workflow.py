@@ -961,7 +961,7 @@ FAILED tests/test_escalation_workflow.py::test_the_workflow_reads_no_wall_clock
 $ uv run pytest tests/test_workflow_env_guard.py -q --tb=line
 F.                                                                       [100%]
 E   AssertionError: workflow-scoped environment read(s) found:
-    .../factory/escalation/workflow.py:294: run() reads process environment: os.environ
+    .../factory/escalation/workflow.py:295: run() reads process environment: os.environ
 .../tests/test_workflow_env_guard.py:212: AssertionError
 FAILED tests/test_workflow_env_guard.py::test_guard_discovers_workflow_modules_and_forbids_env_reads
 1 failed, 1 passed in 0.10s
@@ -974,8 +974,14 @@ $ uv run pytest tests/test_escalation_workflow.py -q --tb=line
 ........F...                                                             [100%]
 E   temporalio.workflow._exceptions.NondeterminismError: Workflow activation completion failed:
     "[TMPRL1100] Nondeterminism error: Child workflow id of scheduled event
-    'a6d7cb2564c8' does not match child workflow id of command 'ce68a49a81b9'"
+    'f81e74af9ad4' does not match child workflow id of command '621a3b61a5e8'"
     force_cause: NonDeterministicError
 FAILED tests/test_escalation_workflow.py::test_every_lifecycle_replays
 1 failed, 11 passed in 3.02s
+"""
+
+
+FINAL_SUITE = """
+$ uv run pytest -q
+2673 passed, 44 skipped, 4 warnings in 290.23s (0:04:50)
 """
