@@ -1,7 +1,7 @@
 # 049-US2 evidence
 
     $ uv run pytest -q
-    2870 passed, 44 skipped, 5 warnings in 296.07s (0:04:56)
+    2869 passed, 44 skipped, 5 warnings in 296.21s (0:04:56)
 
 US2-S5 — the sole-author guard in `tests/test_ergane_init_check.py`, untouched
 by this diff, still passes: `gate_check:`, `unknown_check:` and 034's local
