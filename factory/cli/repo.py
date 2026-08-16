@@ -54,12 +54,7 @@ from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
 from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue.gh import GhClient
 from factory.roadmap import schedule as roadmap_schedule
-from factory.notify.service import (
-    DEFAULT_TEMPORAL_ADDRESS,
-    DEFAULT_TEMPORAL_NAMESPACE,
-    TEMPORAL_ADDRESS_ENV,
-    TEMPORAL_NAMESPACE_ENV,
-)
+from factory.controlplane.resolve import resolve_temporal_target
 from factory.workgraph.cli import (
     EXIT_OK as EPIC_EXIT_OK,
     EXIT_USER as EPIC_EXIT_USER,
@@ -83,8 +78,8 @@ RUNTIME_ROOT_TEST_ISOLATION_FINDING = "hardening/test-suite-empties-a-live-runti
 
 async def _open_client() -> Client:
     """Connect to the operator's Temporal for the capacity read."""
-    address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
-    namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
+    target = resolve_temporal_target()
+    address, namespace = target.address, target.namespace
     try:
         return await Client.connect(address, namespace=namespace)
     except Exception as error:

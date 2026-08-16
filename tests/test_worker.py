@@ -328,10 +328,18 @@ def test_importing_the_worker_connects_to_nothing() -> None:
         if isinstance(statement, ast.ImportFrom)
         for alias in statement.names
     }
-    # The notify bridge's environment contract, dialed by the CLI too, so the
-    # factory has one deployment story rather than one per process (R12).
-    assert ("factory.notify.service", "TEMPORAL_ADDRESS_ENV") in imported
-    assert ("factory.notify.service", "TEMPORAL_NAMESPACE_ENV") in imported
+    # One deployment story rather than one per process (R12), now stated as the
+    # resolver rather than two variable names. 048-US4 moved every connect site
+    # behind `resolve_temporal_target`, which still reads those variables first,
+    # so this host's worker polls what it polled before. Asserting the old
+    # imports would pin the *narrower* property: that the worker reads the
+    # environment and nothing else.
+    assert ("factory.controlplane.resolve", "resolve_temporal_target") in imported
+    assert not any(
+        module == "factory.notify.service"
+        and name in ("TEMPORAL_ADDRESS_ENV", "TEMPORAL_NAMESPACE_ENV")
+        for module, name in imported
+    )
 
 
 # --- and Temporal's own opinion of it -----------------------------------------

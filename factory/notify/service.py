@@ -775,10 +775,13 @@ async def main() -> None:
     if not token:
         raise SystemExit(f"{BOT_TOKEN_ENV} is not set; the bridge cannot poll Telegram")
 
-    client = await Client.connect(
-        os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS,
-        namespace=os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE,
-    )
+    # Imported here rather than at module scope: this module *defines* the two
+    # constants the resolver reads, so a module-scope import would be circular
+    # (048-US4).
+    from factory.controlplane.resolve import resolve_temporal_target
+
+    target = resolve_temporal_target()
+    client = await Client.connect(target.address, namespace=target.namespace)
     db_path = os.environ.get(VERIFICATION_DB_PATH_ENV) or DEFAULT_VERIFICATION_DB_PATH
 
     await run_bridge(CallbackBridge(db_path=db_path, client=client), token)

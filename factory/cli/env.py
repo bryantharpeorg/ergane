@@ -51,9 +51,11 @@ from typing import Callable
 from factory.cli.errors import EXIT_OK
 from factory.controlplane.config import resolve_config_path
 from factory.controlplane.resolve import (
+    DEFAULT_SOURCE,
     ControlPlaneResolutionError,
     resolve_master_key_env,
     resolve_proxy_url,
+    resolve_temporal_target,
 )
 from factory.env import (
     ERGANE_LEDGER_PATH_ENV,
@@ -146,6 +148,20 @@ def _sources_command() -> int:
         override_env=MASTER_KEY_ENV,
         config_label=config_label,
     )
+    # 048-US4: the same two questions about the second subsystem. FR-011 says
+    # "every value this spec resolves"; until now that was two of four.
+    lines += _describe_value(
+        "Temporal address",
+        _temporal_address,
+        override_env=TEMPORAL_ADDRESS_ENV,
+        config_label=config_label,
+    )
+    lines += _describe_value(
+        "Temporal namespace",
+        _temporal_namespace,
+        override_env=TEMPORAL_NAMESPACE_ENV,
+        config_label=config_label,
+    )
     for line in lines:
         print(line)
     # A report is not a gate: an unresolved value is news, not a failure
@@ -169,6 +185,22 @@ def _credential() -> tuple[str, str]:
     return resolved.env_name, resolved.source
 
 
+def _temporal_address() -> tuple[str, str]:
+    """The resolved Temporal address and the source that supplied it."""
+    target = resolve_temporal_target()
+    return target.address, target.address_source
+
+
+def _temporal_namespace() -> tuple[str, str]:
+    """The resolved Temporal namespace and the source that supplied it.
+
+    Resolved separately from the address: a host exporting `TEMPORAL_ADDRESS`
+    and declaring its namespace is the host this report exists for.
+    """
+    target = resolve_temporal_target()
+    return target.namespace, target.namespace_source
+
+
 def _describe_value(
     title: str,
     resolve: Callable[[], tuple[str, str]],
@@ -189,7 +221,16 @@ def _describe_value(
         # names the two routes, the other names the file and the rule it broke.
         return [f"{title}: unresolved", f"  {refusal}"]
 
-    if source == override_env:
+    if source == DEFAULT_SOURCE:
+        # Only Temporal reaches here: it has a built-in default, so "nothing
+        # declared it" is a working host rather than a refusal (048-US4). Both
+        # routes are still named — the operator is deciding which to use.
+        won = "the built-in default"
+        other = (
+            f"{override_env} (environment override, not set), or declare it in "
+            f"the control-plane config at {config_label}"
+        )
+    elif source == override_env:
         won = f"{override_env} (environment override)"
         # Deliberately does not say whether the config declares one: FR-002
         # forbids reading it for a value the environment supplied, and US1-S3
