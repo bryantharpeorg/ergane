@@ -621,6 +621,10 @@ class BwrapGateExecutor:
         # PATH must name the bind points inside the container.
         argv.extend(["--setenv", "PATH", self._container_path()])
 
+        # A commit identity, so a gate that commits is not asked who it is.
+        for name, value in self._identity_env().items():
+            argv.extend(["--setenv", name, value])
+
         # Process/signal boundary (trap 2).
         argv.extend(["--unshare-pid", "--die-with-parent"])
 
@@ -629,7 +633,20 @@ class BwrapGateExecutor:
         return argv
 
     def _toolchain_binds(self) -> list[tuple[str, str]]:
-        """Read-only leaf binds for the toolchain the gate may invoke."""
+        """Read-only leaf binds for the toolchain the gate may invoke.
+
+        "May invoke" includes the agent runner: a repository whose suite
+        exercises its own dispatch path launches the agent *inside* the gate,
+        and that inner launch binds the runner's install directory by source
+        path. Without it here the inner boundary refuses to start at all —
+        ``bwrap: Can't find source path .../share/claude/versions/2.1.223`` —
+        which surfaces as an `agent_error` termination in a test that is
+        actually asking a question about signals or deadlines. The whole
+        install directory is bound rather than the version the runner is
+        currently pinned to, because the installer keeps several versions and
+        prunes them on its own schedule; a version literal here would rot into
+        the same refusal with a different number in it.
+        """
         binds: list[tuple[str, str]] = [
             ("/home/admin/.local/bin/uv", "/home/admin/.local/bin/uv"),
             ("/usr/bin/git", "/usr/bin/git"),
@@ -637,7 +654,35 @@ class BwrapGateExecutor:
         node = "/home/admin/.nvm/versions/node/v22.22.2/bin/node"
         if Path(node).is_file():
             binds.append((node, node))
+        agent_runner = "/home/admin/.local/share/claude"
+        if Path(agent_runner).is_dir():
+            binds.append((agent_runner, agent_runner))
         return binds
+
+    def _identity_env(self) -> dict[str, str]:
+        """A commit identity for the gate, owned by the factory.
+
+        `HOME` inside the boundary is a tmpfs, so git finds no global config
+        and refuses to commit: ``unable to auto-detect email address``. Tests
+        that build a throwaway repository and commit to it fail on that alone,
+        with a message about identity rather than about what they were
+        checking.
+
+        The operator's `~/.gitconfig` is deliberately *not* bound in to supply
+        it. On this host that file carries GitHub credential helpers, and
+        mounting it would hand every gate run the operator's push credentials
+        — the precise authority a verification boundary exists to withhold.
+        Naming the identity in the environment costs one mount less and leaks
+        nothing.
+        """
+        name = "Ergane Gate"
+        email = "gate@ergane.local"
+        return {
+            "GIT_AUTHOR_NAME": name,
+            "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": name,
+            "GIT_COMMITTER_EMAIL": email,
+        }
 
     def _resolver_binds(self) -> list[tuple[str, str]]:
         """Name resolution and trust roots, so a gate's network works at all.
