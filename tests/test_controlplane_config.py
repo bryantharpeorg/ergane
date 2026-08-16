@@ -22,6 +22,7 @@ from factory.controlplane.config import (
     KNOWN_LL_MODES,
     KNOWN_MEMORY_BACKENDS,
     load_controlplane_config,
+    render_controlplane_config,
     resolve_config_path,
 )
 from factory.controlplane.config import ControlPlaneConfig as Cfg
@@ -249,6 +250,89 @@ def test_unknown_escalation_adapter_refused(tmp_path: Path) -> None:
     assert "signal" in err.problem
     for adapter in KNOWN_ESC_ADAPTERS:
         assert adapter in err.problem
+
+
+# ---------------------------------------------------------------------------
+# T027a [041-US4 / FR-011] `escalation.authorized_responders`
+# ---------------------------------------------------------------------------
+#
+# The field 033 was assumed to have landed and did not: a repo-wide grep on
+# 2026-08-16 found the name only in 041's own spec, plan and tasks. It is added
+# here with the parser's existing conventions rather than new ones — a wrong
+# type is `field_type`, the same slug `timeout_s` and every block name already
+# use, because an operator fixing a config should meet one refusal grammar.
+
+
+def test_authorized_responders_defaults_to_unrestricted(tmp_path: Path) -> None:
+    """No list is not an empty list, and the difference is the operator channel.
+
+    Every 008 deployment declares none, and the single Telegram chat was the
+    identity. A default that refused every reply would take the channel down on
+    the day 041 lands.
+    """
+    path = tmp_path / "config.toml"
+    path.write_text(_happy_toml(), encoding="utf-8")
+
+    assert load_controlplane_config(path).escalation.authorized_responders == ()
+
+
+def test_authorized_responders_parses_to_a_tuple_of_identities(tmp_path: Path) -> None:
+    """FR-011's list, in the spelling both transports report identities in."""
+    path = tmp_path / "config.toml"
+    path.write_text(
+        _happy_toml() + 'authorized_responders = ["@bryan", "4242"]\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_controlplane_config(path)
+
+    assert cfg.escalation.authorized_responders == ("@bryan", "4242")
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ['"@bryan"', "[]", '["@bryan", 42]', '["@bryan", ""]'],
+    ids=["a-bare-string", "an-empty-list", "a-non-string", "an-empty-string"],
+)
+def test_a_malformed_responder_list_is_refused(declared: str, tmp_path: Path) -> None:
+    """A list that cannot be an identity list is refused, never coerced.
+
+    `[]` is refused rather than read as unrestricted: an operator who typed an
+    empty list meant to restrict something, and silently granting everyone is
+    the one interpretation they cannot have meant. Omitting the key is how you
+    say unrestricted, and it is a different keystroke.
+    """
+    path = tmp_path / "config.toml"
+    path.write_text(
+        _happy_toml() + f"authorized_responders = {declared}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    assert exc_info.value.rule == "field_type"
+    assert exc_info.value.field == "escalation.authorized_responders"
+
+
+def test_a_responder_list_survives_the_render_round_trip(tmp_path: Path) -> None:
+    """A field that parses and is dropped on write is worse than no field.
+
+    That is not hypothetical: `EscalationRecord.check_evidence` reached the
+    outgoing message and never the store for three weeks, because the column was
+    added on one side of a round trip. `ergane install` re-renders the whole
+    config from the typed shape, so an unrendered list is one re-run from gone.
+    """
+    path = tmp_path / "config.toml"
+    path.write_text(
+        _happy_toml() + 'authorized_responders = ["@bryan", "4242"]\n',
+        encoding="utf-8",
+    )
+    parsed = load_controlplane_config(path)
+
+    rendered = tmp_path / "rendered.toml"
+    rendered.write_text(render_controlplane_config(parsed), encoding="utf-8")
+
+    assert load_controlplane_config(rendered).escalation == parsed.escalation
 
 
 # ---------------------------------------------------------------------------
