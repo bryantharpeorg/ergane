@@ -212,7 +212,7 @@ class LLMProbe:
                 http_client = httpx.AsyncClient(
                     base_url=base_url.rstrip("/"),
                     headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=min(timeout, 30),
+                    timeout=timeout,
                 )
                 client = http_client
                 response = await http_client.post("/chat/completions", json={
