@@ -317,8 +317,11 @@ def test_the_shared_judgment_names_no_forges_own_configuration() -> None:
         FORGE_OWNED_VOCABULARY
     )
 
-    # And D-007's remedy is authored on exactly one side of the seam.
-    assert D007_REMEDY in GITHUB_IMPLEMENTATION.read_text(encoding="utf-8")
+    # And D-007 is decided on exactly one side of the seam. Its *text* is
+    # asserted where text belongs — off the finding, in the test above; a source
+    # scan only has to say which module authors it, since the string is built
+    # from an f-string no `in` check can match verbatim.
+    assert "(D-007)" in GITHUB_IMPLEMENTATION.read_text(encoding="utf-8")
     assert "D-007" not in judgment
 
 

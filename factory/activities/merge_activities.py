@@ -575,14 +575,10 @@ def onboard_target_repo(
 
     return evaluate_repo(
         repo=repository.address or target_repo,
-        default_branch=repository.default_branch,
-        visibility=repository.visibility,
-        queue_enabled=policy.gates_on_named_checks,
-        required_checks=policy.required_checks,
+        reading=repository,
+        policy=policy,
         declared_gates=declared_gates,
         factory_yaml_error=manifest_error,
-        squash_merge_commit_title=policy.landing_title_source,
-        forge_findings=repository.findings,
         init_facts=init_facts,
     )
 
@@ -611,8 +607,12 @@ def _profile_from_forge_failure(
     # own finding if the manifest also failed.
     from factory.mergequeue.models import Finding
 
-    # Wording verbatim from before the seam (SC-001); US2 neutralises the prose.
-    detail = f"could not read the repo via gh ({error.kind}): {error.detail or str(error)}"
+    # Q1's failing answer, in nobody's vocabulary: the forge's own taxonomy term
+    # rides in `kind`, so an operator still reads what their forge said.
+    detail = (
+        f"could not read the repo from its forge ({error.kind}): "
+        f"{error.detail or str(error)}"
+    )
     findings = [Finding("repo_read", False, detail)]
     if manifest_error is not None:
         findings.append(

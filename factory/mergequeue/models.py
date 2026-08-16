@@ -229,6 +229,44 @@ class TargetRepoProfile:
     findings: tuple["Finding", ...]
     passed: bool
 
+    @classmethod
+    def from_readiness(
+        cls,
+        *,
+        repo: str,
+        reading: Any,
+        policy: Any,
+        declared_gates: tuple[str, ...],
+        findings: tuple["Finding", ...],
+        passed: bool,
+    ) -> "TargetRepoProfile":
+        """Build the report from a forge's two readings and a settled judgment.
+
+        The three descriptive fields above are this record's spelling, kept
+        because an operator's `ergane repo onboard` output and every stored
+        payload already read that way. 049's US2 made the *judgment* neutral —
+        it asks whether a branch gates on named checks, not whether a queue is
+        enabled — so the mapping from what a forge reported onto those names
+        belongs here, with the record that owns them, rather than in the
+        judgment that must never spell them (FR-006).
+
+        `reading` and `policy` are a `RepositoryDescription` and a
+        `LandingPolicy`; they are taken structurally rather than imported,
+        because `factory/mergequeue/forge.py` imports `Finding` from this module
+        and an import back would be a cycle. `passed` is handed in: the
+        conjunction is the judgment's call, not this record's.
+        """
+        return cls(
+            repo=repo,
+            default_branch=reading.default_branch,
+            visibility=reading.visibility,
+            queue_enabled=policy.gates_on_named_checks,
+            required_checks=tuple(policy.required_checks),
+            declared_gates=declared_gates,
+            findings=findings,
+            passed=passed,
+        )
+
 
 @dataclass(frozen=True)
 class Finding:
