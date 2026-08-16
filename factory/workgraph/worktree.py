@@ -704,6 +704,164 @@ def _main_worktree(path: Path) -> Path:
     raise WorktreeError(f"git named no main worktree for {path}")
 
 
+class OffMachine(StrEnum):
+    """Whether a node's branch exists anywhere but this disk (047 FR-009).
+
+    Three answers, not two, and `UNKNOWN` is the one that earns its place. A
+    target clone with no remote is a normal target rather than a broken one —
+    the posture `_remote_head` already takes — and a remote that cannot be
+    reached leaves the question genuinely open. Collapsing either into `ABSENT`
+    would answer "not on the remote" for a repository that has no remote, which
+    is the one wrong answer an operator would act on: they would go looking for
+    a copy that was never supposed to exist, or stop looking for one that does.
+    """
+
+    PRESENT = "on the remote"
+    ABSENT = "not on the remote"
+    UNKNOWN = "unanswered"
+
+
+@dataclass(frozen=True)
+class SalvageAttempt:
+    """One per-attempt salvage ref, resolved to what it names."""
+
+    ref: str
+    sha: str
+    subject: str
+
+
+@dataclass(frozen=True)
+class NodeSalvage:
+    """What one node left behind in the target repository.
+
+    `tip` and `tip_subject` are empty strings when the node's branch is not in
+    this clone — a node that never dispatched, and equally a node whose branch
+    an operator deleted before a relaunch. The second case is why the branch and
+    the per-attempt refs are reported separately rather than as one answer: the
+    refs are precisely what survives that deletion (047 FR-006), so a report
+    that folded them into the branch would go silent at the moment it matters.
+    """
+
+    node_id: str
+    branch: str
+    tip: str
+    tip_subject: str
+    attempts: tuple[SalvageAttempt, ...]
+    off_machine: OffMachine
+    off_machine_detail: str
+
+
+#: Field separator for the one `for-each-ref` read below. A tab cannot appear in
+#: a ref name, and splitting on whitespace would lose a commit subject's first
+#: word to the sha field.
+_REF_FIELD_SEP = "\t"
+
+
+def read_node_salvage(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    remote: str = "origin",
+) -> NodeSalvage:
+    """What a terminated node left behind, read out of git and nothing else.
+
+    The question this answers — "the node was killed, is its work anywhere?" —
+    was four plumbing commands against a clone whose path the operator had to
+    know, plus a ref convention documented only in this module's docstring.
+    `ergane status` cannot answer it, because it reads the live floor and a
+    terminated epic's workflow is exactly what is gone when the question gets
+    asked; `ergane spec landed` cannot either, and must not, because 020-US2's
+    negative test requires salvage subjects to be refused as landings.
+
+    **Read-only, structurally.** Every command here is plumbing that reports:
+    `rev-parse --verify`, `for-each-ref`, `log -1`, `ls-remote`. None of them
+    creates, moves, fetches, prunes or collects. `git fetch` is the specific
+    forbidden one — it writes `refs/remotes/<remote>/*`, so answering the
+    off-machine question by fetching would make the verb an operator reaches
+    for *because* they are worried about a repository into the thing that
+    changed it. `ls-remote` asks the remote the same question over the wire and
+    writes nothing down, which is why the off-machine answer is about the remote
+    now rather than about the last fetch.
+
+    Nothing here raises for an answer that is merely absent: a missing branch,
+    an empty namespace, a remote that is not configured and a remote that
+    cannot be reached are all answers. Only a `target_repo` that is not a
+    readable repository is the caller's problem, and that is the caller's check
+    to make — see `salvage_command`, which refuses rather than reporting a
+    mistyped path as three nodes that left nothing.
+    """
+    repo = Path(target_repo)
+    branch = branch_name(epic_id, node_id)
+
+    tip = _rev_parse(repo, f"refs/heads/{branch}") if _branch_exists(repo, branch) else ""
+    off_machine, detail = _off_machine(repo, branch, remote=remote)
+    return NodeSalvage(
+        node_id=node_id,
+        branch=branch,
+        tip=tip,
+        tip_subject=_subject(repo, tip) if tip else "",
+        attempts=_read_salvage_refs(repo, epic_id, node_id),
+        off_machine=off_machine,
+        off_machine_detail=detail,
+    )
+
+
+def _read_salvage_refs(
+    repo: Path, epic_id: str, node_id: str
+) -> tuple[SalvageAttempt, ...]:
+    """Every per-attempt ref this node ever wrote, in git's own refname order.
+
+    One `for-each-ref` rather than a resolve-per-ref loop, so the sha and the
+    subject come from the same read as the name and cannot disagree with it.
+    """
+    namespace = salvage_ref_namespace(epic_id, node_id)
+    fields = _REF_FIELD_SEP.join(
+        ("%(refname)", "%(objectname)", "%(contents:subject)")
+    )
+    try:
+        listing = _git(repo, "for-each-ref", f"--format={fields}", namespace)
+    except (WorktreeError, OSError, subprocess.SubprocessError):
+        return ()
+
+    found = []
+    for line in listing.splitlines():
+        parts = line.split(_REF_FIELD_SEP)
+        if len(parts) == 3:
+            found.append(SalvageAttempt(*parts))
+    return tuple(found)
+
+
+def _off_machine(
+    repo: Path, branch: str, *, remote: str
+) -> tuple[OffMachine, str]:
+    """Ask `remote` whether it holds this branch, without writing anything down.
+
+    The pattern is the full `refs/heads/<branch>`, not the short branch name:
+    `ls-remote` matches a pattern against the *tail* of a ref name, so the short
+    form also matches `refs/heads/anything/<branch>` and would report a branch
+    as off-machine on the strength of a different branch entirely.
+    """
+    ref = f"refs/heads/{branch}"
+    if not _has_remote(repo, remote):
+        return OffMachine.UNKNOWN, f"no '{remote}' remote is configured in {repo}"
+    try:
+        listing = _git(repo, "ls-remote", "--heads", remote, ref)
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return OffMachine.UNKNOWN, str(exc)
+    if listing.strip():
+        return OffMachine.PRESENT, f"{remote} holds {ref}"
+    return OffMachine.ABSENT, f"{remote} does not hold {ref}"
+
+
+def _subject(repo: Path, ref: str) -> str:
+    """One commit's subject, or an empty string if it cannot be read."""
+    try:
+        return _git(repo, "log", "-1", "--format=%s", ref).strip()
+    except (WorktreeError, OSError, subprocess.SubprocessError):
+        return ""
+
+
 @dataclass(frozen=True)
 class SyncResult:
     """The outcome of a sync-with-target, as data the workflow can route.

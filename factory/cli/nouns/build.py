@@ -74,7 +74,11 @@ from factory.workgraph.preflight import (
     prompt_assembly_preflight,
 )
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
-from factory.workgraph.worktree import reset as reset_worktree
+from factory.workgraph.worktree import (
+    NodeSalvage,
+    read_node_salvage,
+    reset as reset_worktree,
+)
 
 #: Compiled artifact naming convention, shared with `spec derive`.
 ARTIFACT_NAME = "workgraph.json"
@@ -682,6 +686,68 @@ async def _reset_epic(graph: WorkGraph) -> int:
     return EXIT_OK
 
 
+def salvage_command(args: argparse.Namespace) -> int:
+    """Report what every node of a compiled graph left behind. Reads, never writes.
+
+    Shaped like `reset_command` — a compiled graph in, one block per node out —
+    and deliberately unlike it in the one respect that matters: no Temporal
+    client. `reset` reads the workflow because it is about to *change* the
+    repository and must not do that under a running epic. This verb changes
+    nothing, and the moment it is most needed is the moment a terminated epic's
+    workflow has already aged out of Temporal (047 FR-010, SC-005). A read that
+    required the server would be unavailable exactly when the question is asked.
+
+    Every answer is exit 0. A node that never dispatched, a target with no
+    remote and a remote that cannot be reached are all normal answers to "is my
+    work anywhere?", not errors — the only refusal is a target repository that
+    is not on this machine, because reporting a mistyped path as a graph's
+    worth of nodes that left nothing is the one wrong answer this verb could
+    give that an operator would believe.
+    """
+    try:
+        graph = load_workgraph(args.graph)
+    except WorkGraphError as error:
+        raise OperatorError(str(error)) from error
+
+    repo = Path(graph.target_repo)
+    if not repo.is_dir():
+        raise OperatorError(
+            f"the graph's target repository is not on this machine: {repo} "
+            f"(the graph is {args.graph})"
+        )
+
+    for node in graph.nodes:
+        print(_salvage_block(read_node_salvage(repo, graph.epic_id, node.id)))
+    return EXIT_OK
+
+
+def _salvage_block(report: NodeSalvage) -> str:
+    """One node's answer, as the operator reads it.
+
+    The per-attempt refs are printed under their full names rather than as an
+    attempt number, which is the second thing this verb is for: the convention
+    `refs/salvage/<epic>/<node>/attempt-<n>-<sha12>` was documented only in
+    `worktree.py`'s module docstring, and an operator who has seen the ref
+    printed once can go back to plain git without reading the source.
+    """
+    lines = [f"{report.node_id}  {report.branch}"]
+    if report.tip:
+        lines.append(f"  tip          {report.tip}  {report.tip_subject}")
+    else:
+        lines.append("  tip          none: this node's branch is not in this clone")
+    lines.append(
+        f"  off-machine  {report.off_machine.value} ({report.off_machine_detail})"
+    )
+    if report.attempts:
+        lines += [
+            f"  {attempt.ref}  {attempt.sha}  {attempt.subject}"
+            for attempt in report.attempts
+        ]
+    else:
+        lines.append("  salvage refs none")
+    return "\n".join(lines)
+
+
 async def _resolve(
     epic_id: str, escalation_id: str | None, choice: str | None
 ) -> int:
@@ -862,6 +928,21 @@ def add_parser(subparsers: Any) -> None:
     )
     reset.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
     reset.set_defaults(run=reset_command)
+
+    salvage = commands.add_parser(
+        "salvage",
+        help="what each of an epic's nodes left behind in the target repo",
+        description=(
+            "Read-only. For every node of a compiled graph, report the node's "
+            "branch and tip, every per-attempt salvage ref "
+            "(refs/salvage/<epic>/<node>/attempt-<n>-<sha12>), and whether the "
+            "branch exists off this machine. Needs no Temporal server, which is "
+            "the point: a terminated epic's workflow is usually gone by the time "
+            "anyone asks."
+        ),
+    )
+    salvage.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
+    salvage.set_defaults(run=salvage_command)
 
 
 NOUN = Noun(

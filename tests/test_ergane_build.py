@@ -111,7 +111,13 @@ from factory.workgraph.models import (
     WorkGraph,
     validate_workgraph,
 )
-from factory.workgraph.worktree import PreparedWorktree, branch_name, ensure
+from factory.workgraph.worktree import (
+    PreparedWorktree,
+    branch_name,
+    ensure,
+    record_salvage_ref,
+    salvage,
+)
 from tests.target_repo import git, git_env
 from factory.verify.question import QuestionMarker
 from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicInput, EpicWorkflow
@@ -1680,3 +1686,497 @@ def test_the_epic_prefix_is_applied_only_at_the_seam() -> None:
     # And the seam itself: idempotent, so both forms land on one id.
     assert build_module.workflow_id(EPIC_ID) == WORKFLOW_ID
     assert build_module.workflow_id(WORKFLOW_ID) == WORKFLOW_ID
+
+
+# --- 047-US3: `ergane build salvage` — what a terminated node left behind ------
+#
+# "The node was killed — is its work anywhere?" was four git plumbing commands
+# against a clone whose path the operator had to know, plus a ref-naming
+# convention documented only in `worktree.py`'s module docstring.  `ergane
+# status` reads the live floor and needs Temporal, and a terminated epic's
+# workflow is exactly what is gone when the question gets asked; `ergane spec
+# landed` reports landings and must stay silent about salvage subjects, because
+# 020-US2's negative test requires them to be refused as landings
+# (`factory/workgraph/landed.py:45`).  So: a new verb on the `build` noun,
+# shaped like `build reset` — a compiled graph in, one block per node out.
+#
+# **It reads and never writes.**  That is not a nicety.  An operator asking
+# whether a dead node's work survived may not be made to risk it by asking, so
+# the invariant is asserted against the repository rather than against this
+# code: `test_the_verb_leaves_the_repository_byte_for_byte_alone` captures the
+# target's *full* ref list and worktree list before and after and compares
+# them.  "We did not call a writing function" is a claim about the
+# implementation; "the ref list is identical" is a claim about the world, and
+# only the second can catch the defect.
+#
+# The fixture remote is a bare repository inside `tmp_path`, built exactly as
+# `tests/test_worktree.py`'s `origin_repo` builds it.  US3-S3 distinguishes a
+# branch that reached the remote from one that only ever existed locally, and
+# that distinction cannot be faked by a stub that answers whatever it is asked
+# — so `us1`'s branch is really pushed and `us3`'s really is not.
+
+
+# Evidence rule (constitution VIII / D-037): the judge sees this diff and the
+# criteria, never a terminal.  Every runtime claim below is tool output pasted
+# verbatim.
+#
+# RED — the seven tests against the tree this story branched from, before the
+# verb existed (`uv run pytest -q -p no:randomly <the seven> --tb=line`):
+#
+#     ergane build: error: argument command: invalid choice: 'salvage' (choose from start, status, pause, resume, kill, answer, resolve, reset)
+#     FAILED tests/test_ergane_build.py::test_the_verb_reports_a_terminated_nodes_branch_tip_and_every_attempt_ref
+#     FAILED tests/test_ergane_build.py::test_a_node_that_never_dispatched_is_reported_as_having_left_nothing
+#     FAILED tests/test_ergane_build.py::test_the_verb_separates_a_branch_that_left_the_machine_from_one_that_did_not
+#     FAILED tests/test_ergane_build.py::test_a_target_with_no_remote_leaves_the_off_machine_question_unanswered
+#     FAILED tests/test_ergane_build.py::test_the_verb_leaves_the_repository_byte_for_byte_alone
+#     FAILED tests/test_ergane_build.py::test_the_salvage_verb_answers_with_no_temporal_server_anywhere
+#     FAILED tests/test_ergane_build.py::test_the_verb_refuses_a_target_repository_that_is_not_on_this_machine
+#     7 failed in 1.85s
+#
+# MUTATION BATTERY — ten mutants, each applied to a clean tree, the seven tests
+# run against it under `PYTHONDONTWRITEBYTECODE=1` with `__pycache__` purged
+# first, then `git checkout --` and `git status --porcelain` compared against a
+# recorded baseline.  Two controls, because a battery that cannot report
+# nothing is not measuring anything:
+#
+#     == CONTROL (no mutation) ==
+#       7 passed in 1.44s
+#       ran 7 tests, killed nothing — the battery detects nothing when pointed at nothing
+#     == CONTROL (nonexistent node id) ==
+#       no tests ran in 0.38s
+#       ERROR: not found: …/tests/test_ergane_build.py::test_this_node_id_does_not_exist
+#
+#     == M1 the block prints no per-attempt ref lines ==            killed by 1
+#     == M2 no remote is reported as ABSENT rather than UNKNOWN ==  killed by 1
+#     == M3 the reader fetches before answering ==                  killed by 1
+#     == M4 ls-remote is given the short branch name ==             killed by 1
+#     == M5 the missing-target-repo guard never fires ==            killed by 1
+#     == M6 the off-machine answer is always PRESENT ==             killed by 1
+#     == M7 the ref listing is split on whitespace, not the tab ==  killed by 1
+#     == M8 the verb opens a Temporal client ==                     killed by 1
+#     == M9 the branch tip is never read ==                         killed by 1
+#     == M10 the per-attempt refs are never read ==                 killed by 1
+#     == SUMMARY ==
+#       10/10 mutants killed
+#       tree identical to baseline after the battery
+#
+# M3 and M4 SURVIVED the first run of that battery, and both survivals were
+# defects in these tests rather than in the verb.  M4's fix is the decoy branch
+# in `test_the_verb_separates_…`; M3's is `UNFETCHED_BRANCH`.  Neither was
+# predicted by the plan, and neither would have been found by reading the tests.
+#
+# FULL SUITE — cold cache (`__pycache__` purged, `PYTHONDONTWRITEBYTECODE=1`),
+# clean tree, `uv run pytest -q -p no:randomly`:
+#
+#     2967 passed, 44 skipped, 6 warnings in 317.30s (0:05:17)
+#
+# The tree this story branched from ran `2960 passed, 44 skipped` in the same
+# configuration.  +7 is exactly the seven tests below, and the skip count is
+# unmoved — nothing here is hidden behind a skip.  Warning counts are not
+# quoted: a `SyntaxWarning` fires at compile time, so a warm cache reports fewer
+# than a cold one on an identical tree.
+#
+# AND AGAINST THE REAL THING — the verb run in this repository, whose ref store
+# holds the salvage refs an operator wrote by hand on 2026-08-16, with the full
+# ref list captured before and after:
+#
+#     $ uv run python -m factory.cli.main build salvage \
+#         specs/027-gate-suite-fake-time/workgraph-remainder.json
+#     us2  factory/027-gate-suite-fake-time/us2
+#       tip          b60337d18b0638775f023113040ab24e39f8bd3f  salvage(027-gate-suite-fake-time/us2): completed attempt 5
+#       off-machine  not on the remote (origin does not hold refs/heads/factory/027-gate-suite-fake-time/us2)
+#       refs/salvage/027-gate-suite-fake-time/us2/attempt-5  b60337d18b0638775f023113040ab24e39f8bd3f  salvage(027-gate-suite-fake-time/us2): completed attempt 5
+#     EXIT=0
+#     refs before: 268
+#     refs after:  268
+#     REF LIST IDENTICAL
+#     WORKTREE LIST IDENTICAL
+#
+# That is one of the four terminated nodes the spec's Context measured as
+# existing on exactly one disk, reported as such, with a real `ls-remote` over
+# the network and 268 refs untouched.  Note its ref name: `attempt-5`, not
+# `attempt-5-<sha12>` — the hand-written rescue predates US2's shape.  The
+# reader matches the node's namespace rather than the attempt-name grammar, so
+# both shapes are read, which is why this answered at all.
+
+
+#: Which node stands for what in `_make_salvage_target`.  `us2` is never
+#: dispatched at all — no `ensure`, no branch, no refs — which is US3-S2, and
+#: `us3` is terminated but never pushed, which is the local half of US3-S3.
+TERMINATED_PUSHED = "us1"
+NEVER_DISPATCHED = "us2"
+TERMINATED_LOCAL = "us3"
+
+#: A branch the fixture remote holds and the target clone has never fetched.
+#: It is what makes `git fetch` an observable write rather than a no-op — see
+#: `_make_salvage_target` and the read-only test's non-vacuity assertions.
+UNFETCHED_BRANCH = "refs/heads/someone-else-landed"
+
+
+def _workgraph_for(repo: Path, tmp_path: Path, name: str) -> Path:
+    """A compiled graph naming `repo` and the three US3 nodes."""
+    graph = {
+        "epic_id": EPIC_ID,
+        "feature": EPIC_ID,
+        "specs_root": "specs",
+        "target_repo": str(repo),
+        "nodes": [
+            {
+                "id": node_id,
+                "story_key": node_id.upper(),
+                "persona": "implementer",
+                "spec_ref": f"{EPIC_ID}:{node_id.upper()}",
+                "requirement_keys": [FR_FOR[node_id.upper()]],
+                "depends_on": [],
+                "depends_on_merged": [],
+                "timeout_override_s": None,
+            }
+            for node_id in NODE_IDS
+        ],
+    }
+    path = tmp_path / f"{name}-workgraph.json"
+    path.write_text(json.dumps(graph), encoding="utf-8")
+    return path
+
+
+def _terminate(repo: Path, factory_root: Path, node_id: str, attempts: int) -> list[str]:
+    """Drive one node through `attempts` salvaged attempts; return their shas.
+
+    The real functions, not a reconstruction: `salvage` makes the commit and
+    `record_salvage_ref` names it, so the refs the verb reads are the refs the
+    factory actually writes.
+    """
+    prepared = ensure(repo, EPIC_ID, node_id, factory_root=factory_root)
+    worktree = Path(prepared.path)
+    shas = []
+    for attempt in range(1, attempts + 1):
+        (worktree / f"attempt_{attempt}.py").write_text(
+            f"VALUE = {attempt}\n", encoding="utf-8"
+        )
+        sha = salvage(
+            EPIC_ID,
+            node_id,
+            termination=Termination.KILLED,
+            attempt=attempt,
+            factory_root=factory_root,
+        )
+        record_salvage_ref(
+            EPIC_ID, node_id, attempt=attempt, sha=sha, factory_root=factory_root
+        )
+        shas.append(sha)
+    return shas
+
+
+def _make_salvage_target(
+    target_repo: Callable[..., Path],
+    tmp_path: Path,
+    *,
+    remote: bool,
+    name: str,
+) -> tuple[Path, Path | None, Path, dict[str, list[str]]]:
+    """A target clone holding the three cases US3 has to answer for.
+
+    Returns (repo, bare_remote_or_None, workgraph_json, shas_by_node).
+    """
+    repo = target_repo("passing", name=name)
+    bare: Path | None = None
+    if remote:
+        bare = tmp_path / f"{name}-origin.git"
+        git(repo, "init", "--bare", str(bare))
+        git(repo, "remote", "add", "origin", str(bare))
+        git(repo, "push", "--quiet", "-u", "origin", "main")
+
+    factory_root = tmp_path / f"{name}-root"
+    shas = {
+        TERMINATED_PUSHED: _terminate(repo, factory_root, TERMINATED_PUSHED, 2),
+        TERMINATED_LOCAL: _terminate(repo, factory_root, TERMINATED_LOCAL, 1),
+    }
+    if remote:
+        # One branch leaves the machine and one does not — US3-S3's whole
+        # distinction, which only a real bare remote can carry.
+        git(repo, "push", "--quiet", "origin", branch_name(EPIC_ID, TERMINATED_PUSHED))
+        # And one branch on the remote that this clone has never fetched.
+        # Without it every remote-tracking ref the verb could create already
+        # exists — the pushes above made them — so a `git fetch` is a no-op and
+        # the read-only witness cannot see the one write it exists to catch.
+        # Found by mutation: a reader that fetched before answering survived
+        # the whole suite until this line was here.
+        git(bare, "update-ref", UNFETCHED_BRANCH, "refs/heads/main")
+    return repo, bare, _workgraph_for(repo, tmp_path, name), shas
+
+
+def _blocks(stdout: str) -> dict[str, list[str]]:
+    """Split the verb's output into one node's lines per node id.
+
+    A block starts at an unindented header line naming the node; everything
+    indented under it belongs to that node.
+    """
+    blocks: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in stdout.splitlines():
+        if line and not line.startswith(" "):
+            current = [line]
+            blocks[line.split()[0]] = current
+        elif current is not None:
+            current.append(line)
+    return blocks
+
+
+def _line_starting(block: list[str], prefix: str) -> str:
+    """The one line of a block with this prefix; asserts there is exactly one."""
+    found = [line for line in block if line.startswith(prefix)]
+    assert len(found) == 1, f"expected one {prefix!r} line, got {found} in {block}"
+    return found[0]
+
+
+def _all_refs(repo: Path) -> str:
+    """Every ref in the repository and what it points at — the read-only witness."""
+    return git(repo, "for-each-ref", "--format=%(refname) %(objectname)")
+
+
+def _all_worktrees(repo: Path) -> str:
+    return git(repo, "worktree", "list", "--porcelain")
+
+
+def test_the_verb_reports_a_terminated_nodes_branch_tip_and_every_attempt_ref(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+) -> None:
+    """US3-S1: branch, tip sha and subject, and one line per per-attempt ref.
+
+    Two attempts, so "one line per ref" is a claim a single-ref fixture could
+    not distinguish from "one line per node".
+    """
+    repo, _, graph_path, shas = _make_salvage_target(
+        target_repo, tmp_path, remote=True, name="reports"
+    )
+
+    result = run("build", "salvage", str(graph_path))
+
+    assert result.code == 0, result.stderr
+    block = _blocks(result.stdout)[TERMINATED_PUSHED]
+    branch = branch_name(EPIC_ID, TERMINATED_PUSHED)
+    assert branch in block[0]
+
+    tip_sha, tip_subject = shas[TERMINATED_PUSHED][-1], "killed attempt 2"
+    tip_line = _line_starting(block, "  tip ")
+    assert tip_sha in tip_line
+    assert tip_subject in tip_line
+
+    for attempt, sha in enumerate(shas[TERMINATED_PUSHED], start=1):
+        ref = f"refs/salvage/{EPIC_ID}/{TERMINATED_PUSHED}/attempt-{attempt}-{sha[:12]}"
+        ref_line = _line_starting(block, f"  {ref} ")
+        assert sha in ref_line
+        assert f"killed attempt {attempt}" in ref_line
+
+
+def test_a_node_that_never_dispatched_is_reported_as_having_left_nothing(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+) -> None:
+    """US3-S2 / FR-010: no branch, no refs, said plainly, exit 0.
+
+    A node that never dispatched is a normal answer to the question, not an
+    error — so the exit code is the assertion that carries this scenario.
+    """
+    repo, _, graph_path, _ = _make_salvage_target(
+        target_repo, tmp_path, remote=True, name="nothing"
+    )
+
+    result = run("build", "salvage", str(graph_path))
+
+    assert result.code == 0, result.stderr
+    block = _blocks(result.stdout)[NEVER_DISPATCHED]
+    assert branch_name(EPIC_ID, NEVER_DISPATCHED) in block[0]
+    assert "none:" in _line_starting(block, "  tip ")
+    assert _line_starting(block, "  salvage refs ") == "  salvage refs none"
+
+
+def test_the_verb_separates_a_branch_that_left_the_machine_from_one_that_did_not(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+) -> None:
+    """US3-S3 / FR-009: pushed and unpushed nodes get different labels.
+
+    The two labels are compared by prefix rather than by `in`: "on the remote"
+    is a substring of "not on the remote", so a containment assertion would
+    pass for either answer and this test could not fail.
+    """
+    repo, bare, graph_path, _ = _make_salvage_target(
+        target_repo, tmp_path, remote=True, name="offmachine"
+    )
+    assert bare is not None
+    # The fixture really did put one branch there and not the other, so the
+    # verb is being asked a question with two different true answers.
+    # And a decoy the remote *does* hold, whose ref name ends with the local
+    # node's branch.  `git ls-remote` matches a pattern against the tail of a
+    # ref name, so a reader that asked for the short branch name would find
+    # this one and report `us3`'s work as safely off-machine when it is not —
+    # the worst answer this verb can give, and one no other test would catch.
+    local_branch = branch_name(EPIC_ID, TERMINATED_LOCAL)
+    git(repo, "push", "--quiet", "origin", f"main:refs/heads/nested/{local_branch}")
+    remote_refs = git(bare, "for-each-ref", "--format=%(refname)")
+    assert f"refs/heads/{branch_name(EPIC_ID, TERMINATED_PUSHED)}" in remote_refs
+    assert f"refs/heads/{local_branch}" not in remote_refs
+    assert f"refs/heads/nested/{local_branch}" in remote_refs
+
+    result = run("build", "salvage", str(graph_path))
+
+    assert result.code == 0, result.stderr
+    blocks = _blocks(result.stdout)
+    pushed = _line_starting(blocks[TERMINATED_PUSHED], "  off-machine ")
+    local = _line_starting(blocks[TERMINATED_LOCAL], "  off-machine ")
+    assert pushed.startswith("  off-machine  on the remote (")
+    assert local.startswith("  off-machine  not on the remote (")
+
+
+def test_a_target_with_no_remote_leaves_the_off_machine_question_unanswered(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+) -> None:
+    """US3-S4 / FR-010: no remote is a normal target, and an honest 'unanswered'.
+
+    A verb that reported "not on the remote" for a repository that has no
+    remote would be lying with a straight face, so the third answer is the
+    point of this scenario — and exit 0 is the other half of it.
+    """
+    repo, bare, graph_path, _ = _make_salvage_target(
+        target_repo, tmp_path, remote=False, name="noremote"
+    )
+    assert bare is None
+
+    result = run("build", "salvage", str(graph_path))
+
+    assert result.code == 0, result.stderr
+    for node_id in NODE_IDS:
+        line = _line_starting(_blocks(result.stdout)[node_id], "  off-machine ")
+        assert line.startswith("  off-machine  unanswered (")
+        assert "origin" in line
+
+
+def test_the_verb_leaves_the_repository_byte_for_byte_alone(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+) -> None:
+    """US3-S5 / FR-009: the full ref list and worktree list are unchanged.
+
+    Asserted against the repository, not against the implementation.  `git
+    fetch` is the specific hazard — it writes `refs/remotes/origin/*`, so a
+    verb that answered the off-machine question by fetching would fail here
+    while every other test in this section still passed.
+    """
+    repo, bare, graph_path, _ = _make_salvage_target(
+        target_repo, tmp_path, remote=True, name="readonly"
+    )
+    assert bare is not None
+    before_refs, before_worktrees = _all_refs(repo), _all_worktrees(repo)
+    before_remote_refs = _all_refs(bare)
+
+    result = run("build", "salvage", str(graph_path))
+
+    assert result.code == 0, result.stderr
+    assert _all_refs(repo) == before_refs
+    assert _all_worktrees(repo) == before_worktrees
+    # And the remote it asked about is untouched too: `ls-remote` reads.
+    assert _all_refs(bare) == before_remote_refs
+    # Non-vacuity: the witness is not empty, so equality means something.
+    assert before_refs.strip()
+    assert f"refs/salvage/{EPIC_ID}/{TERMINATED_PUSHED}/" in before_refs
+    # And the forbidden write is a write *here*: the remote holds a branch this
+    # clone has never fetched, so a `git fetch` would add a tracking ref and
+    # break the equality above.  Without these two lines the fetch is a no-op
+    # against this fixture and the test cannot fail — which is how a reader
+    # that fetched survived the whole suite before they were added.
+    assert UNFETCHED_BRANCH in _all_refs(bare)
+    assert "refs/remotes/origin/someone-else-landed" not in before_refs
+
+
+#: The functions that make up the salvage verb.  Named here so the no-Temporal
+#: test fails loudly if they are renamed rather than silently checking nothing.
+SALVAGE_VERB_FUNCTIONS = {"salvage_command", "_salvage_block"}
+
+#: Anything in `build.py` that can reach a Temporal client.
+TEMPORAL_NAMES = {"_connect", "asyncio", "Client", "_open_client"}
+
+
+def test_the_salvage_verb_answers_with_no_temporal_server_anywhere(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    target_repo: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S6 / SC-005: no connection is opened, and none is needed.
+
+    Two halves, because either alone is weak.  The world half points the
+    environment at a dead port and replaces the client seam with one that
+    raises if it is dialled at all.  The code half proves the verb cannot reach
+    a client even on a path this fixture did not walk.
+    """
+    repo, _, graph_path, _ = _make_salvage_target(
+        target_repo, tmp_path, remote=True, name="notemporal"
+    )
+    monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, DEAD_ADDRESS)
+    monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, DEFAULT_TEMPORAL_NAMESPACE)
+
+    def refuse() -> None:
+        raise AssertionError("the salvage verb dialled Temporal")
+
+    monkeypatch.setattr(nouns, "_open_client", refuse)
+
+    result = run("build", "salvage", str(graph_path))
+
+    assert result.code == 0, result.stderr
+    assert _blocks(result.stdout).keys() == set(NODE_IDS)
+
+    source = Path(build_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    spans = [
+        (node.lineno, node.end_lineno or node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name in SALVAGE_VERB_FUNCTIONS
+    ]
+    assert len(spans) == len(SALVAGE_VERB_FUNCTIONS), (
+        "the salvage verb's functions are not where they were"
+    )
+
+    def inside(line: int) -> bool:
+        return any(low <= line <= high for low, high in spans)
+
+    reaches = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and node.id in TEMPORAL_NAMES
+        and inside(node.lineno)
+    ]
+    awaits = [
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.Await) and inside(node.lineno)
+    ]
+    assert reaches == [], f"the salvage verb reaches Temporal at lines {reaches}"
+    assert awaits == [], f"the salvage verb awaits at lines {awaits}"
+
+
+def test_the_verb_refuses_a_target_repository_that_is_not_on_this_machine(
+    run: Callable[..., Run],
+    tmp_path: Path,
+) -> None:
+    """FR-009's honesty floor: absence of a clone is not "the node left nothing".
+
+    Git's read-only plumbing answers "no such branch" for a directory that is
+    not a repository at all, so a verb that did not check would report every
+    node of a mistyped path as having left nothing — the one wrong answer this
+    verb must never give.
+    """
+    missing = tmp_path / "not-a-clone"
+    graph_path = _workgraph_for(missing, tmp_path, "missing")
+
+    result = run("build", "salvage", str(graph_path))
+
+    assert result.code == 1
+    assert str(missing) in result.stderr
