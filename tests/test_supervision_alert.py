@@ -53,6 +53,11 @@ Red first. Run against the tree with these tests written and
     !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
     1 error in 0.07s
 
+That traceback names line 76, which is where the import sat when the run
+happened; pasting these lines into the docstring moved it down. Nothing else
+in the paste is edited — a line number that drifts is the honest cost of
+committing the evidence into the file the evidence is about.
+
 The mutation transcript that shows each of these can fail is pasted at the
 bottom of this file, verbatim.
 """
