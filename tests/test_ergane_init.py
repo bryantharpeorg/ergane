@@ -171,9 +171,11 @@ def make_bare_repo(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
     return repo
 
 
-# Default answers for a six-question interview over the schema keys plus slug.
-# Order follows `_TOP_LEVEL_KEYS`: version, runtime, gates, timeouts, standards,
-# landing_branch, then slug.
+# Default answers for the interview over the schema keys plus slug. Order
+# follows `_TOP_LEVEL_KEYS`: version, runtime, gates, timeouts, standards,
+# landing_branch, roadmap, then slug.  A key added to the parser adds a question
+# here, which is the point of deriving the interview from the parser (034/US6
+# added `roadmap`).
 DEFAULT_ANSWERS: list[str] = [
     str(_SUPPORTED_VERSION),  # version
     "bwrap",  # runtime
@@ -181,6 +183,7 @@ DEFAULT_ANSWERS: list[str] = [
     "",  # timeouts (empty -> omitted)
     "",  # standards (empty -> omitted)
     "main",  # landing_branch
+    "",  # roadmap (empty -> omitted)
     "myapp",  # slug
 ]
 
@@ -298,6 +301,7 @@ def test_init_proposal_is_confirmed_and_leaves_no_trace(
         "",
         "",
         "main",
+        "",
         "myapp",
     ]
     result = scripted("init", answers=answers)
