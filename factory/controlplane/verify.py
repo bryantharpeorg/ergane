@@ -195,26 +195,13 @@ class LLMProbe:
                 detail=f"{api_key_env} is not set; no credential to complete a round trip",
             )
 
-        client: httpx.AsyncClient | Any | None = None
-        try:
-            client = _llm_client_factory(config.llm)
-            if hasattr(client, "chat_completion"):
-                response_data = await client.chat_completion(
-                    {
-                        "model": model,
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 1,
-                    }
-                )
-                completed = bool(response_data.get("choices"))
-            else:
-                # Real LiteLLM proxy: use httpx directly with the gateway endpoint.
-                http_client = httpx.AsyncClient(
-                    base_url=base_url.rstrip("/"),
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    timeout=timeout,
-                )
-                client = http_client
+        async def _do_completion() -> bool:
+            """POST a 1-token completion to the configured endpoint and return whether choices arrived."""
+            async with httpx.AsyncClient(
+                base_url=base_url.rstrip("/"),
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=timeout,
+            ) as http_client:
                 response = await http_client.post("/chat/completions", json={
                     "model": model,
                     "messages": [{"role": "user", "content": "ping"}],
@@ -222,7 +209,25 @@ class LLMProbe:
                 })
                 response.raise_for_status()
                 data = response.json()
-                completed = bool(data.get("choices"))
+                return bool(data.get("choices"))
+
+        try:
+            if config.llm.mode == "gateway":
+                client = _llm_client_factory(config.llm)
+                if hasattr(client, "chat_completion"):
+                    response_data = await client.chat_completion(
+                        {
+                            "model": model,
+                            "messages": [{"role": "user", "content": "ping"}],
+                            "max_tokens": 1,
+                        }
+                    )
+                    completed = bool(response_data.get("choices"))
+                    await client.aclose()
+                else:
+                    completed = await _do_completion()
+            else:
+                completed = await _do_completion()
         except httpx.TimeoutException:
             return LLMSnapshot(
                 persona=persona,
@@ -240,10 +245,6 @@ class LLMProbe:
                 completed=False,
                 detail=detail,
             )
-        finally:
-            if client is not None and hasattr(client, "aclose"):
-                await client.aclose()
-
         return LLMSnapshot(
             persona=persona,
             model=model,
