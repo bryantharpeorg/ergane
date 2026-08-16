@@ -52,6 +52,15 @@ from factory.workgraph.models import WorkNode
 from factory.workgraph.worktree import branch_name
 
 
+#: The three authored documents a prompt is assembled from, under
+#: `<specs_root>/<feature>/`. Named here because the assembler's refusals name
+#: them: a caller that catches one is told which file to send the operator to
+#: without re-deriving it from the message text (044 FR-001).
+SPEC_DOCUMENT = "spec.md"
+PLAN_DOCUMENT = "plan.md"
+TASKS_DOCUMENT = "tasks.md"
+
+
 class PromptAssemblyError(ValueError):
     """An input the assembler refuses to work around, and which one it was.
 
@@ -59,7 +68,17 @@ class PromptAssemblyError(ValueError):
     have been told to implement a story it was never shown. The message names
     the node and the missing requirement or story, because the fix is an edit to
     one line of one authored document.
+
+    `document` names that document. It is structured rather than left implicit
+    in the prose because a caller that reports this refusal early — 044's
+    offline validate layer, and the roadmap preflight behind it — must send the
+    operator to a file, and sniffing the file out of the sentence would be a
+    second grammar to keep in step with this one.
     """
+
+    def __init__(self, message: str, *, document: str) -> None:
+        super().__init__(message)
+        self.document = document
 
 
 @dataclass(frozen=True)
@@ -377,7 +396,8 @@ def _requirement_text(
             raise PromptAssemblyError(
                 f"node '{node.id}': the specification declares no section for "
                 f"user story {key}; an attempt cannot be told to implement a "
-                "story it is not shown"
+                "story it is not shown",
+                document=SPEC_DOCUMENT,
             )
         return text
 
@@ -386,13 +406,15 @@ def _requirement_text(
         if text is None:
             raise PromptAssemblyError(
                 f"node '{node.id}': the specification declares no requirement "
-                f"{key}, which this node was dispatched to implement"
+                f"{key}, which this node was dispatched to implement",
+                document=SPEC_DOCUMENT,
             )
         return text
 
     raise PromptAssemblyError(
         f"node '{node.id}': requirement key {key!r} is neither a user story "
-        "(US<n>) nor a functional requirement (FR-<n>)"
+        "(US<n>) nor a functional requirement (FR-<n>)",
+        document=SPEC_DOCUMENT,
     )
 
 
@@ -465,7 +487,8 @@ def _task_slice(node: WorkNode, tasks_text: str) -> str:
     if story is None:
         raise PromptAssemblyError(
             f"node '{node.id}': story key {node.story_key!r} is not a user story "
-            "key (US<n>), so no task slice can be found for it"
+            "key (US<n>), so no task slice can be found for it",
+            document=TASKS_DOCUMENT,
         )
 
     lines = tasks_text.splitlines()
@@ -473,7 +496,8 @@ def _task_slice(node: WorkNode, tasks_text: str) -> str:
     if text is None:
         raise PromptAssemblyError(
             f"node '{node.id}': tasks.md declares no phase naming user story "
-            f"{node.story_key}, so this node has no task slice to work (FR-006)"
+            f"{node.story_key}, so this node has no task slice to work (FR-006)",
+            document=TASKS_DOCUMENT,
         )
     return text
 
