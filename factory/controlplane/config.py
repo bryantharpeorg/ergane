@@ -42,9 +42,16 @@ KNOWN_MEMORY_BACKENDS = ("hindsight", "none")
 #: refused until 042 lands.
 KNOWN_TEMPORAL_MODES = ("external", "managed")
 
-#: Adapters registered for escalation at the time of this epic (FR-004).
-#: Telegram is the reference transport from 008; 041 will add the adapter seam.
-KNOWN_ESC_ADAPTERS = ("telegram",)
+#: Adapters registered for escalation (FR-004).  Telegram is the reference
+#: transport from 008; `webhook` is 041-US4's universal glue — an outbound POST
+#: to a URL the operator owns, answered with `ergane answer` — so Signal, Slack,
+#: email or a wall display is a bridge the operator writes rather than a
+#: transport ergane has to know about.  Kept in step with
+#: `factory.notify.adapter`'s registry by
+#: `tests/test_messenger_adapter.py::test_the_conformance_suite_covers_every_adapter_that_ships`,
+#: in both directions: a name here with nothing registered under it pages
+#: nobody, and a registered name missing here is not selectable.
+KNOWN_ESC_ADAPTERS = ("telegram", "webhook")
 
 #: Default relative path under XDG_CONFIG_HOME / HOME (FR-001).
 DEFAULT_CONFIG_REL = Path("ergane") / "config.toml"
@@ -157,12 +164,27 @@ class ControlPlaneConfig:
 
     @dataclasses.dataclass(frozen=True)
     class Escalation:
-        """Escalation transport block."""
+        """Escalation transport block.
+
+        ``authorized_responders`` is the identity list an inbound reply must
+        match to become an answer (041 FR-011).  Empty means unrestricted, which
+        is what every 008 deployment is: Telegram never had an identity problem
+        because a single chat *was* the identity, and a default that refused
+        every reply would take the operator channel down on the day the second
+        adapter shipped.  Declaring an empty list is refused rather than read as
+        unrestricted — an operator who typed one meant to restrict something.
+
+        The list is compared against, never resolved: the check is factory-side
+        (`factory.notify.service.CallbackBridge`), because an adapter deciding
+        whether a sender may answer is the one decision the messenger seam
+        exists to keep out of the transport.
+        """
 
         adapter: str
         chat_id_env: str | None = None
         bot_token_env: str | None = None
         timeout_s: int = 30
+        authorized_responders: tuple[str, ...] = ()
 
 
 def resolve_config_path() -> Path:
@@ -473,7 +495,44 @@ def _read_escalation(
         chat_id_env=chat_id_env,
         bot_token_env=bot_token_env,
         timeout_s=int(timeout_s),
+        authorized_responders=_read_responders(block, source),
     )
+
+
+def _read_responders(block: Mapping[str, Any], source: str) -> tuple[str, ...]:
+    """``escalation.authorized_responders``, or ``()`` when it is not declared.
+
+    Absent is unrestricted; declared-and-empty is refused.  The distinction is
+    the whole point of the field, and coercing one into the other would silently
+    grant everyone the access an operator was in the middle of restricting.
+
+    Refused with ``field_type`` rather than a slug of its own, because that is
+    the slug every other wrong-shaped value in this file already carries and an
+    operator fixing a config should meet one refusal grammar.
+    """
+    field = "escalation.authorized_responders"
+    raw = block.get("authorized_responders")
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ControlPlaneConfigError(
+            RULE_FIELD_TYPE,
+            f"`{field}` must be a non-empty list of identities, not {_kind(raw)}; "
+            "omit the key entirely to let anyone answer",
+            source=source,
+            field=field,
+        )
+    for identity in raw:
+        if not isinstance(identity, str) or not identity:
+            raise ControlPlaneConfigError(
+                RULE_FIELD_TYPE,
+                f"`{field}` lists {_kind(identity)}; every entry must be a "
+                "non-empty identity string, spelled the way the transport "
+                "reports it (`@username` or a numeric id, for Telegram)",
+                source=source,
+                field=field,
+            )
+    return tuple(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +567,16 @@ _RENDER_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("mode", "address", "namespace", "api_key_env", "tls_enabled", "timeout_s"),
     ),
     ("telemetry", ("otlp_endpoint", "timeout_s")),
-    ("escalation", ("adapter", "bot_token_env", "chat_id_env", "timeout_s")),
+    (
+        "escalation",
+        (
+            "adapter",
+            "authorized_responders",
+            "bot_token_env",
+            "chat_id_env",
+            "timeout_s",
+        ),
+    ),
 )
 
 
@@ -548,6 +616,15 @@ def controlplane_document(config: ControlPlaneConfig) -> dict[str, Any]:
         telemetry["timeout_s"] = config.telemetry.timeout_s
 
     escalation: dict[str, Any] = {"adapter": config.escalation.adapter}
+    # Rendered as a list, and omitted when empty, so "unrestricted" stays the
+    # absence of a key rather than an empty list the parser refuses. A field that
+    # parses and is never written back is one `ergane install` re-run from gone —
+    # `EscalationRecord.check_evidence` reached the message and never the store
+    # for three weeks on exactly that asymmetry.
+    if config.escalation.authorized_responders:
+        escalation["authorized_responders"] = list(
+            config.escalation.authorized_responders
+        )
     _set_if(escalation, "bot_token_env", config.escalation.bot_token_env)
     _set_if(escalation, "chat_id_env", config.escalation.chat_id_env)
     if config.escalation.timeout_s != 30:
@@ -601,13 +678,21 @@ def _set_if(block: dict[str, Any], key: str, value: Any) -> None:
 
 
 def _toml_value(value: Any) -> str:
-    """Render one scalar as TOML. Non-scalars are quoted so the parser refuses them."""
+    """Render one scalar or array as TOML.
+
+    Anything else is quoted, so a shape the schema does not model reaches the
+    parser as a string it can refuse rather than as TOML nobody validated.
+    """
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
         return repr(value)
+    if isinstance(value, (list, tuple)):
+        # `authorized_responders` is the only array the schema has; rendered
+        # inline because the renderer's contract is one key per line.
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     text = value if isinstance(value, str) else str(value)
     escaped = (
         text.replace("\\", "\\\\")

@@ -389,7 +389,7 @@ async def test_ergane_answer_resumes_the_waiting_workflow_with_that_text(
 @pytest.mark.parametrize(
     ("outcome", "phrase"),
     [
-        (BridgeOutcome.UNKNOWN, "never asked"),
+        (BridgeOutcome.UNKNOWN, "no question this factory ever asked"),
         (BridgeOutcome.ALREADY_RESOLVED, "already answered"),
         (BridgeOutcome.EXPIRED, "expired"),
     ],

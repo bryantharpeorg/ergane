@@ -65,7 +65,15 @@ UNKNOWN_SENDER = "unknown"
 #: Adapters that ship with the factory, and the module that registers each on
 #: import. Imported lazily at resolve time so this module stays free of the
 #: transports' own dependencies.
-_BUILTIN_ADAPTER_MODULES = {DEFAULT_ADAPTER: "factory.notify.service"}
+#:
+#: Keyed by the same names 033's `KNOWN_ESC_ADAPTERS` admits, and held to it by
+#: `tests/test_messenger_adapter.py::test_the_conformance_suite_covers_every_adapter_that_ships`:
+#: a name the parser accepts with nothing registered under it pages nobody, and
+#: a name registered here that the parser refuses is not selectable.
+_BUILTIN_ADAPTER_MODULES = {
+    DEFAULT_ADAPTER: "factory.notify.service",
+    "webhook": "factory.notify.webhook",
+}
 
 
 @dataclasses.dataclass(frozen=True)

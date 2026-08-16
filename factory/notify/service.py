@@ -50,7 +50,7 @@ import os
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from factory.notify.adapter import (
     UNKNOWN_SENDER,
@@ -72,6 +72,7 @@ from factory.verify.store import (
     EXPIRED,
     connect,
     get_escalation,
+    get_question,
     get_question_by_message_id,
     resolve_escalation,
     resolve_question,
@@ -131,6 +132,12 @@ _REPLY_EMPTY = "An empty reply carries no answer; nothing recorded."
 _REPLY_SIGNAL_FAILED = "Could not reach the orchestrator — nothing recorded, reply again."
 _REPLY_RESOLVED = "Answer recorded; the next attempt will carry it."
 
+#: What an identity the configured list does not carry is told (041-US4). The
+#: sender is named back to them rather than left guessing, because the ordinary
+#: cause is a spelling — `bryan` where the list says `@bryan` — and the operator
+#: reading the toast is the one who can fix it.
+_UNAUTHORIZED = "{identity} is not an authorized responder; nothing was changed."
+
 
 class BridgeOutcome(str, Enum):
     """What one press did — the return value of `handle`, and what tests assert.
@@ -147,6 +154,12 @@ class BridgeOutcome(str, Enum):
     EXPIRED = "EXPIRED"
     ALREADY_RESOLVED = "ALREADY_RESOLVED"
     SIGNAL_FAILED = "SIGNAL_FAILED"
+    #: 041-US4: the sender is not on `escalation.authorized_responders`. Its own
+    #: value rather than a reused one, because it is its own operator situation
+    #: — an intruder, or the right person spelled wrong — and because a reply
+    #: that vanished into an existing outcome would be indistinguishable from a
+    #: message that was never delivered.
+    UNAUTHORIZED = "UNAUTHORIZED"
 
 
 # --- the transport (041-US1) -------------------------------------------------
@@ -314,6 +327,39 @@ register_adapter("telegram", _build_telegram)
 # --- the factory side --------------------------------------------------------
 
 
+def configured_responders() -> tuple[str, ...]:
+    """Who may answer, per the control-plane file. Empty means anyone (FR-011).
+
+    Read here rather than in the adapter or the workflow, and the placement is
+    the requirement rather than a convenience. An adapter that read it would be
+    deciding answer-or-not, which is the one decision the messenger seam exists
+    to keep out of the transport (FR-001). A workflow that read it would be
+    reading a file from workflow scope, which constitution IV forbids and 039's
+    guard fails — and the same read wedged the roadmap schedule for eleven hours
+    on 2026-08-13.
+
+    Unrestricted is the answer for a deployment with no control-plane file and
+    for one whose file this process cannot parse, the same way
+    `configured_adapter_name` falls back to the reference transport: refusing
+    every operator reply because a config file is malformed would make the
+    parser the thing that silences the channel, and 033 already refuses a bad
+    file at every command that reads it deliberately.
+    """
+    try:
+        from factory.controlplane.config import (
+            ControlPlaneConfigError,
+            load_controlplane_config,
+        )
+    except ImportError:  # pragma: no cover - the control plane is always shipped
+        return ()
+
+    try:
+        return tuple(load_controlplane_config().escalation.authorized_responders)
+    except (ControlPlaneConfigError, OSError) as exc:
+        logger.debug("no configured responders (%s)", type(exc).__name__)
+        return ()
+
+
 class CallbackBridge:
     """Turns one inbound reply into at most one Temporal signal.
 
@@ -323,6 +369,12 @@ class CallbackBridge:
     the timestamp is evidence, and evidence has to be assertable. `adapter` is
     the transport whose updates this bridge translates; it defaults to the
     configured one, so a deployment that switched messengers switched this too.
+
+    `authorized_responders` is the identity list an inbound reply must match to
+    become an answer (041 FR-011), defaulting to the configured one for the same
+    reason `adapter` does. Empty is unrestricted, which is what every 008
+    deployment is — Telegram never had an identity problem, because a single
+    chat was the identity.
     """
 
     def __init__(
@@ -332,11 +384,17 @@ class CallbackBridge:
         client: Any,
         now: Callable[[], str] | None = None,
         adapter: MessengerAdapter | None = None,
+        authorized_responders: Sequence[str] | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self._client = client
         self._now = now or _now_iso
         self._adapter = adapter if adapter is not None else resolve_adapter()
+        self._responders = (
+            configured_responders()
+            if authorized_responders is None
+            else tuple(authorized_responders)
+        )
 
     async def handle(self, update: Any) -> BridgeOutcome:
         """Resolve one button press. Never raises on operator-visible input.
@@ -355,6 +413,12 @@ class CallbackBridge:
         if press is None:
             await query.answer(_ANSWER_NOT_OURS)
             return BridgeOutcome.MALFORMED
+
+        # Before the lookup, and long before the signal: an unauthorized press
+        # touches neither the row nor the clock (FR-011).
+        refused = await self._refuse_unauthorized(press, query.answer)
+        if refused is not None:
+            return refused
 
         escalation_id = press.correlation_id
         pressed = press.reply_text
@@ -470,6 +534,10 @@ class CallbackBridge:
         notify: Callable[[str], Awaitable[None]],
     ) -> BridgeOutcome:
         """One answer, from parse to settled row — the part no transport owns."""
+        refused = await self._refuse_unauthorized(relay, notify)
+        if refused is not None:
+            return refused
+
         conn = connect(self.db_path)
         try:
             record = self._question_for(conn, relay.correlation_id)
@@ -508,20 +576,73 @@ class CallbackBridge:
         finally:
             conn.close()
 
+    async def _refuse_unauthorized(
+        self,
+        relay: InboundRelay,
+        notify: Callable[..., Awaitable[Any]],
+    ) -> BridgeOutcome | None:
+        """`None` when this sender may answer; the refusal when they may not.
+
+        Applied to every adapter's relay rather than implemented per adapter
+        (FR-011): the seam reports *who* replied and never judges it, so the one
+        place that judges is here, once, for every transport there will ever be.
+
+        Called at both of this bridge's inbound entries — a press and a reply —
+        because they do not share a settling core, and a guard proven on one of
+        them is a guard proven on one of them.
+
+        The refusal is **recorded**, at WARNING, with both the identity and the
+        correlation id (FR-011, US4-S2). A reply that was dropped silently would
+        be indistinguishable from one that was never delivered, and the sender an
+        operator most often has to chase is themselves, spelled differently.
+        Nothing is written to the store: the scenario says the escalation's state
+        and its expiry clock are untouched, and a row is state.
+
+        An earlier reply being refused never counts against a later one — the
+        buffer this consults is the configured list and nothing else — so an
+        intruder cannot deny the operator the answer to the question they
+        touched (US4-S3).
+        """
+        if not self._responders or relay.sender_identity in self._responders:
+            return None
+
+        logger.warning(
+            "%s: reply from %s ignored — not in escalation.authorized_responders",
+            relay.correlation_id,
+            relay.sender_identity,
+        )
+        await notify(_UNAUTHORIZED.format(identity=relay.sender_identity))
+        return BridgeOutcome.UNAUTHORIZED
+
     @staticmethod
     def _question_for(conn: Any, correlation_id: str) -> QuestionRecord | None:
         """The question a relay threads to, by the handle the transport carried.
 
-        Telegram's handle is the quoted message id, which is exactly the key the
-        store captured at send time (008 FR-008). A correlation id that is not
-        one of those names no question here — and saying so is the caller's job,
-        not this one's.
+        Two handles, because two transports can carry different things back and
+        the seam's whole promise is that the factory resolves whatever they
+        managed. Telegram's is the quoted message id, which is the key the store
+        captured at send time (008 FR-008). A webhook mints no message handle at
+        all, so its relay carries the factory's own question id — the one that
+        went out in the delivery body and the one an operator types at
+        `ergane answer` (041-US4).
+
+        The message id is tried first, so Telegram's landed routing is unchanged
+        by a fallback it never reaches; a numeric correlation id that names no
+        message falls through to the id lookup rather than stopping there. A
+        correlation id that is neither names no question, and saying so is the
+        caller's job, not this one's.
         """
         try:
             message_id = int(correlation_id)
         except (TypeError, ValueError):
-            return None
-        return get_question_by_message_id(conn, message_id)
+            message_id = None
+
+        if message_id is not None:
+            threaded = get_question_by_message_id(conn, message_id)
+            if threaded is not None:
+                return threaded
+
+        return get_question(conn, correlation_id)
 
     async def _answer_signal(self, record: QuestionRecord, answer: str) -> bool:
         """Tell the workflow. False means it was not told, and nothing is recorded."""
