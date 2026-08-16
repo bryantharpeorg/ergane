@@ -143,11 +143,11 @@ def export_records(
 def _locate(file_name: str, *, runtime_root: Path, repo: Path) -> Path | None:
     """The store's file for this repo, following the data across the rename.
 
-    The same rule `factory/doctor/cli.py::_resolve_store_path` already applies:
-    if the resolved root has no such store while the legacy directory does, the
-    data is what to follow.  A repo that has never been migrated keeps its
-    records under `.factory/`, and an export that only looked at the modern name
-    would hand the operator three empty files and call it their history.
+    The rule `factory/doctor/cli.py::_resolve_store_path` already applies: if the
+    resolved root has no such store while the legacy directory does, follow the
+    data.  An unmigrated repo keeps its records under `.factory/`, and an export
+    that looked only at the modern name would hand the operator three empty files
+    and call it their history.
     """
     for candidate in (runtime_root / file_name, repo / ".factory" / file_name):
         if candidate.is_file():

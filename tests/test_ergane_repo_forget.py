@@ -119,17 +119,10 @@ def seed_stores(root: Path, *, tag: str, secret: str = "") -> None:
         " notes, source, occurrences, first_seen, last_seen)"
         " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            f"{tag}/the-gate-never-ran",
-            tag,
-            "critical",
-            "open",
+            f"{tag}/the-gate-never-ran", tag, "critical", "open",
             f"{tag}: the gate never ran {secret}".strip(),
-            '["factory/verify/gates.py:12"]',
-            f"seen twice {secret}".strip(),
-            "operator",
-            2,
-            "2026-01-01T00:00:00Z",
-            "2026-01-09T00:00:00Z",
+            '["factory/verify/gates.py:12"]', f"seen twice {secret}".strip(),
+            "operator", 2, "2026-01-01T00:00:00Z", "2026-01-09T00:00:00Z",
         ),
     )
     findings.execute(
@@ -143,27 +136,13 @@ def seed_stores(root: Path, *, tag: str, secret: str = "") -> None:
     usage = usage_ledger.connect(root / "ledger.db")
     usage.execute(
         "INSERT INTO usage_records (epic_id, node_id, attempt, persona, spec_ref,"
-        " key_alias, prompt_tokens, completion_tokens, cache_read_tokens,"
-        " cache_write_tokens, request_count, spend_usd, final_usage_confirmed,"
-        " termination, issued_at, torn_down_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " key_alias, prompt_tokens, completion_tokens, spend_usd,"
+        " final_usage_confirmed, termination, issued_at, torn_down_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            f"epic-{tag}",
-            "us1",
-            1,
-            "coder",
-            f"specs/{tag}",
-            f"epic-{tag}:us1:1:coder",
-            100,
-            200,
-            None,
-            None,
-            3,
-            0.25,
-            1,
-            "completed",
-            "2026-01-01T00:00:00Z",
-            "2026-01-01T01:00:00Z",
+            f"epic-{tag}", "us1", 1, "coder", f"specs/{tag}",
+            f"epic-{tag}:us1:1:coder", 100, 200, 0.25, 1, "completed",
+            "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z",
         ),
     )
     usage.commit()
@@ -172,18 +151,12 @@ def seed_stores(root: Path, *, tag: str, secret: str = "") -> None:
     escalations = verify_store.connect(root / "verification.db")
     escalations.execute(
         "INSERT INTO escalations (escalation_id, workflow_id, epic_id, node_id,"
-        " choices, history_summary, delivered, sent_at, expires_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " choices, history_summary, sent_at, expires_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            f"{tag}0badc0de"[:12],
-            f"epic-{tag}",
-            f"epic-{tag}",
-            "us1",
-            '["RETRY", "KILL"]',
-            f"attempt 1 failed the gate {secret}".strip(),
-            1,
-            "2026-01-02T00:00:00Z",
-            "2026-01-02T01:00:00Z",
+            f"{tag}0badc0de"[:12], f"epic-{tag}", f"epic-{tag}", "us1",
+            '["RETRY", "KILL"]', f"attempt 1 failed the gate {secret}".strip(),
+            "2026-01-02T00:00:00Z", "2026-01-02T01:00:00Z",
         ),
     )
     escalations.commit()
@@ -246,9 +219,8 @@ def test_forget_leaves_the_tree_untouched_and_the_slug_reusable(
 ) -> None:
     """SC-006: registered, forgotten, re-registered — byte-identical in-tree.
 
-    The whole portability claim in one run: the engine lets go of the repo, the
-    repo does not notice, and a fresh `ergane init .` can take the same slug
-    back.
+    The portability claim in one run: the engine lets go, the repo does not
+    notice, and a fresh `ergane init .` takes the same slug back.
     """
     repo = make_repo(tmp_path)
 
@@ -442,9 +414,9 @@ def test_two_exports_of_an_untouched_engine_are_byte_identical(
     """US5's independent test, and the one most likely to be quietly false.
 
     Byte-identity is trivially true of two empty directories, so the file set and
-    the row counts are asserted first and the comparison runs over files known to
-    hold rows.  Anything derived from a clock, from a dict whose order is an
-    accident, or from an unordered `SELECT` breaks this and nothing else.
+    row counts are asserted first and the comparison runs over files known to
+    hold rows.  A clock, or a dict whose order is an accident, breaks this and
+    nothing else.
     """
     repo = registered(tmp_path)
     seed(floor, desired_for(repo))
@@ -542,12 +514,11 @@ def test_records_come_out_in_a_declared_order_not_an_accidental_one(
 def test_a_repo_that_never_migrated_keeps_its_records(
     tmp_path: Path, floor: FakeScheduleServer
 ) -> None:
-    """The split state trap 12 names, and the one the operator's own checkout was in.
+    """The split state trap 12 names, and the one the operator's checkout was in.
 
     A repo joined before the rename has an empty `.ergane/` and a populated
     `.factory/`.  Resolving the root and stopping there hands the operator three
-    empty files and calls it their history, so each store follows the data — the
-    same rule `factory/doctor/cli.py::_resolve_store_path` already applies.
+    empty files and calls it their history, so each store follows the data.
     """
     repo = registered(tmp_path)
     seed(floor, desired_for(repo))
@@ -608,9 +579,9 @@ def test_a_repo_that_never_ran_an_epic_exports_empty_files_and_creates_no_store(
 def test_the_export_never_opens_a_store_for_writing(tmp_path: Path) -> None:
     """The reader's door is `mode=ro`, so a write is refused by the driver.
 
-    Asserted against the connection the export actually uses rather than against
-    the export's observable behaviour: "no file appeared" is also true of a
-    reader that opened a store read-write and happened not to write.
+    Asserted against the connection the export uses rather than against its
+    observable behaviour: "no file appeared" is also true of a reader that opened
+    a store read-write and happened not to write.
     """
     root = tmp_path / "root"
     seed_stores(root, tag="widgets")
@@ -681,22 +652,21 @@ def test_the_export_never_opens_a_store_for_writing(tmp_path: Path) -> None:
 #   M11 a legacy .factory/ store is ignored       CAUGHT  1 failed, 15 passed
 #   M12 visit_Assign's empty-scope guard removed  CAUGHT  2 failed, 14 passed
 #
-# Three of those were NOT caught on the first run, and each named a real hole:
+# Three were NOT caught on the first run, and each named a real hole:
 #
 # - M2 and M11 were behaviours with no test at all — declared ordering, and the
 #   legacy-store fallback.  Both were written, both claimed in a docstring, and
-#   neither was ever executed against a case that could tell the difference.
+#   neither was ever run against a case that could tell the difference.
 # - M8 is the one worth reading twice.  `test_export_refuses_a_destination_
-#   inside_the_runtime_root` passed with the check deleted, because the test also
+#   inside_the_runtime_root` passed with the check deleted, because it also
 #   passed `--clean-runtime` without binding the capacity read: the CLI reached
 #   the operator's *real* Temporal, found a genuinely running epic, and refused
-#   for that reason instead.  Exit 1 either way, and the phrase the assertion
-#   looked for — "runtime root" — appears in both messages.  A test that consults
-#   a production control plane is also a test whose verdict depends on what the
-#   floor happens to be doing; `no_epics` and a refusal-specific assertion are
-#   the fix, and `factory/cli/repo.py::_open_client` having no pytest refusal of
-#   its own — unlike `factory/roadmap/schedule.py`, which has one — is reported
-#   as a finding rather than changed here.
+#   for that instead.  Exit 1 either way, and the phrase the assertion looked for
+#   — "runtime root" — appears in both messages.  A test that consults a
+#   production control plane is also one whose verdict depends on what the floor
+#   is doing; `no_epics` and a refusal-specific assertion are the fix, and
+#   `_open_client` having no pytest refusal of its own — unlike
+#   `factory/roadmap/schedule.py` — is reported as a finding, not changed here.
 #
 # The gate, run the way the factory runs it — the declared `test` gate inside the
 # real bwrap boundary over this worktree:
@@ -708,9 +678,12 @@ def test_the_export_never_opens_a_store_for_writing(tmp_path: Path) -> None:
 # existing parametrized sweeps that now also cover `factory/cli/repo_export.py`.
 # The only edit made after that run was these six comment lines.)
 #
-# And the same verb driven for real, outside pytest, against a scratch repo and
-# an isolated state home — because a green suite has shipped a command that could
-# not start, and because the guard above is inert in production by design:
+# And the same verb driven for real, outside pytest, against a scratch repo under
+# an isolated `ERGANE_STATE_HOME` — because a green suite has shipped a command
+# that could not start, and because two claims here are only true in production:
+# the removal guard is inert without `PYTEST_CURRENT_TEST`, so no test can watch
+# the deletion it protects, and the redactor's worth is a real key not reaching a
+# real file.
 #
 #   $ ergane repo forget smokeapp --export .../records --clean-runtime
 #   ergane: refusing to empty the runtime root of 'smokeapp' while epic(s) are
@@ -720,20 +693,13 @@ def test_the_export_never_opens_a_store_for_writing(tmp_path: Path) -> None:
 #   $ ergane repo forget smokeapp --export .../records
 #   no roadmap schedule ergane-roadmap-smokeapp existed
 #   wrote 1 findings record(s) to .../records/findings.jsonl
-#   wrote 1 usage record(s) to .../records/usage.jsonl
-#   wrote 0 escalations record(s) to .../records/escalations.jsonl
-#   wrote .../records/digest.md
+#   [... usage 1, escalations 0, then digest.md ...]
 #   forgot smokeapp (.../smoke/app); the repository itself is untouched
 #   EXIT=0
-#   $ grep -c 'sk-REALLOOKINGKEY123456' records/*   -> no match in any file
-#   $ ls -A app/.ergane                             -> all three stores still there
+#   $ grep -c 'sk-REALLOOKINGKEY123456' records/*  -> no match in any file
+#   $ ls -A app/.ergane                            -> all three stores still there
 #
-# and the deletion itself, with `PYTEST_CURRENT_TEST` absent so the guard is not
-# the thing being measured:
-#
-#   before: doctor.db, doctor.db-shm, doctor.db-wal, homes, ledger.db, ...
-#   emptied entries: 10
-#   after: []
-#   dir still exists: True
+#   # then the deletion, guard inert:
+#   emptied entries: 10   after: []   dir still exists: True
 #   repo files intact: ['.ergane', '.git', 'README.md']
 # -----------------------------------------------------------------------------
