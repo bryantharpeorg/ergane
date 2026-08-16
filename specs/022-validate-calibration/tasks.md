@@ -3,7 +3,16 @@
 One story, one file. Work test-first and commit once per task. Read `plan.md`'s
 traps before the first edit; trap 1 and trap 2 are the two ways this goes wrong.
 
-## Tests first
+## Phase 1: User Story 1 - A coverage advisory that reports without refusing
+
+One story, so one phase: everything below is `us1`'s slice. The heading has
+to name the story because that is how a node's prompt finds its tasks — a
+phase list that never says "User Story 1" assembles to nothing, and the
+agent arrives with no work. The three groups below are deliberately `###`
+rather than `##`: a second `##` naming the same story would end this slice
+early and silently drop the tasks after it.
+
+### Tests first
 
 - [ ] **T001** [US1-S1] In `tests/test_ergane_spec.py`, change
   `test_validate_reports_uncovered_scenario_ids` (currently at `:445`) to
@@ -30,7 +39,7 @@ traps before the first edit; trap 1 and trap 2 are the two ways this goes wrong.
   severity for each finding, that `spec_dir`, `checked` and the `layer` and
   `message` keys are unchanged, and that finding order is preserved. See trap 4.
 
-## Implementation
+### Implementation
 
 - [ ] **T006** [US1-S1] Give `_ValidateFinding` (`factory/cli/nouns/spec.py:216`)
   a severity attribute with a default that keeps all eight existing
@@ -54,7 +63,7 @@ traps before the first edit; trap 1 and trap 2 are the two ways this goes wrong.
 - [ ] **T010** [US1-S2] Add the severity to each finding dict at
   `spec.py:271-274`, changing nothing else about the document. Satisfies FR-007.
 
-## Verification
+### Verification
 
 - [ ] **T011** [US1-S6] Run the corpus proof from `plan.md` over every
   directory in `specs/`. Every spec whose only findings are uncovered scenarios
