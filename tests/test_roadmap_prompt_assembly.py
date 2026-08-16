@@ -136,6 +136,37 @@ still parked with its `tasks.md` long since fixed.
 `test_a_park_survives_continue_as_new_when_no_one_unparks_it` passes red on
 purpose — it pins behaviour that already exists, and it is what stops the unpark
 test from being satisfiable by a roadmap that simply forgot its parks.
+
+Green after::
+
+    8 passed in 1.16s
+
+Three more mutations, each red in exactly one place — and the first two are the
+control/treatment pair that makes this story mean something::
+
+    # unpark_spec accepts the signal and does nothing
+    FAILED ...::test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it
+    1 failed, 7 passed in 1.15s
+
+    # the carry-over drops the parks at the continue-as-new boundary
+    E       AssertionError: assert [] == ['001-runtime-root']
+    FAILED ...::test_a_park_survives_continue_as_new_when_no_one_unparks_it
+    1 failed, 7 passed in 1.26s
+
+    # the verb signals `unpark_spec` without the spec dir
+    E       AssertionError: assert [('unpark_spec', ())] == [('unpark_spe...time-root',))]
+    FAILED ...::test_the_unpark_verb_carries_the_spec_the_operator_named
+    1 failed, 7 passed in 1.14s
+
+The verb as an operator meets it, `uv run python -m factory.cli.main roadmap
+--help` and `... roadmap unpark --help`, verbatim::
+
+    usage: ergane roadmap [-h] {start,pause,resume,status,promote,unpark} ...
+        promote             promote a draft spec to ready
+        unpark              clear a parked spec so the next pass tries it again
+
+    usage: ergane roadmap unpark [-h] --spec SPEC specs_root
+      --spec SPEC  spec directory name to unpark
 """
 
 from __future__ import annotations
