@@ -43,6 +43,46 @@ bound at the symlink's path, or the symlink dangles inside the namespace. The
 gate boundary needs the whole install directory instead — see `install_root` —
 because a gate may launch an inner agent whose own version pin it cannot know.
 Both are derived from the one resolution, so neither can rot.
+
+Evidence that the host these literals described is unchanged. Discovery run in
+the worker's own environment — `PATH=/home/admin/.local/bin:/home/admin/
+.temporalio/bin:/usr/local/bin:/usr/bin:/bin`, read from `/proc/<worker>/environ`
+— returns exactly the four paths the literals named:
+
+    uv      found_at=/home/admin/.local/bin/uv
+    node    found_at=/home/admin/.nvm/versions/node/v22.22.2/bin/node
+    git     found_at=/usr/bin/git
+    claude  found_at=/home/admin/.local/bin/claude
+            real=/home/admin/.local/share/claude/versions/2.1.223
+
+node is the one that proves the widened search path is load-bearing rather than
+decorative: it is on no entry of that PATH, and a `shutil.which` over `PATH`
+alone would have refused every dispatch on the machine this was written to keep
+running.
+
+Dumping both sandboxes' assembled argv before and after the change, in that same
+environment, the agent boundary comes out byte-for-byte identical and the gate
+boundary differs by exactly one entry — the runner's `PATH` name, which the gate
+did not carry before because nothing inside it used to look the runner up:
+
+    --- before.json
+    +++ after.json
+    @@ -46,6 +46,9 @@
+       "--ro-bind",
+       "/home/admin/.local/share/claude",
+       "/home/admin/.local/share/claude",
+    +  "--symlink",
+    +  "/home/admin/.local/share/claude/versions/2.1.223",
+    +  "/home/admin/.local/bin/claude",
+       "--ro-bind",
+       "/home/admin/.local/share/uv/python",
+       "/home/admin/.local/share/uv/python",
+
+That is the only change to either mount set, and it is a symlink rather than a
+mount: the file it points at was already inside the boundary via the
+install-directory bind on the line above, so nothing new crosses. What changed is
+that the name the container's own `PATH` already advertised now resolves. Why a
+symlink and not a bind is `BwrapGateExecutor._toolchain_binds`'s subject.
 """
 
 from __future__ import annotations

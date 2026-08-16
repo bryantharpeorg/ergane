@@ -19,15 +19,63 @@ contains `/home/admin/.local/bin/uv`" passes whether or not anything was fixed �
 the defect pattern that has cost this repository more than any other. So each
 test builds a toolchain in `tmp_path`, points `PATH` and `HOME` at it, and
 asserts the sandbox bound *those* paths. No planted path can coincide with a
-host path, so no test here can pass on a code path that ignores discovery. The
-mutation transcripts proving that are in the module's git history and in the
-report that accompanied it; the short version is that reverting either
-`_toolchain_binds` to its literal list turns every positive test below red.
+host path, so no test here can pass on a code path that ignores discovery.
 
 The negative direction is asserted too, and separately: a tool that cannot be
 found must refuse *by name*, before bwrap forks. The old comment above the
 literal list promised exactly that ("a named refusal rather than silently
-widening the mount set") and delivered bwrap's own mount error instead.
+widening the mount set") and delivered bwrap's own mount error instead. Both
+refusal tests replace the spawn with a detonator, so "before it forks" is
+measured rather than assumed.
+
+**Mutation ledger.** "What would make this pass if the production code did
+nothing?" was answered by breaking the production code seven ways and running
+this file against each. Verbatim summary lines:
+
+    M1  the adapter's literal bind list and literal container PATH restored
+        3 failed, 11 passed
+          test_the_agent_sandbox_binds_the_discovered_toolchain
+          test_the_agent_sandbox_mounts_no_toolchain_from_another_home
+          test_the_agent_sandbox_follows_a_repointed_runner_symlink
+
+    M2  the gate's literal bind list and literal container PATH restored
+        3 failed, 11 passed
+          test_the_gate_sandbox_binds_the_discovered_toolchain
+          test_the_gate_binds_the_runners_install_directory_it_discovered
+          test_the_gates_optional_tools_still_degrade_quietly
+
+    M3  require_tool guesses `~/.local/bin/<name>` instead of refusing
+        3 failed, 11 passed
+          test_a_missing_tool_is_absent_rather_than_guessed
+          test_a_missing_runner_refuses_by_name_before_anything_forks
+          test_a_gate_on_a_host_without_uv_refuses_by_name_before_it_forks
+        — the gate case failed as `AssertionError: a gate forked despite an
+          unresolvable toolchain`, which is the detonator doing its job.
+
+    M4  nvm version directories sorted as text rather than numerically
+        1 failed, 13 passed
+          test_node_is_found_under_nvm_when_path_alone_does_not_have_it
+        — picked v9.11.2 over v22.22.2, which is the whole reason for the two
+          planted versions.
+
+    M5  install_root returns the literal `/home/admin/.local/share/claude`
+        2 failed, 12 passed
+          test_install_root_is_read_from_the_layout_not_assumed
+          test_the_gate_binds_the_runners_install_directory_it_discovered
+
+    M6  find_tool declares `~/.local/bin/<name>` and never consults PATH
+        13 failed, 1 passed
+        — the survivor is the missing-runner refusal, which still fires because
+          the declared path does not resolve.
+
+    M7  a symlinked tool binds the link at its own path, not its target
+        3 failed, 11 passed
+          test_a_symlinked_tool_binds_its_target_at_the_links_own_path
+          test_the_agent_sandbox_follows_a_repointed_runner_symlink
+          test_the_gate_binds_the_runners_install_directory_it_discovered
+
+Every test in this file dies under at least one mutation. None of them can pass
+on a factory that only pretends to discover its toolchain.
 """
 
 from __future__ import annotations
@@ -133,6 +181,15 @@ def _binds(argv: list[str]) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for index, token in enumerate(argv):
         if token in ("--ro-bind", "--bind"):
+            pairs.append((argv[index + 1], argv[index + 2]))
+    return pairs
+
+
+def _symlinks(argv: list[str]) -> list[tuple[str, str]]:
+    """Every `(target, link)` pair the assembled argv creates inside the namespace."""
+    pairs: list[tuple[str, str]] = []
+    for index, token in enumerate(argv):
+        if token == "--symlink":
             pairs.append((argv[index + 1], argv[index + 2]))
     return pairs
 
@@ -414,7 +471,7 @@ def test_the_gate_sandbox_binds_the_discovered_toolchain(planted: PlantedHost) -
     )
 
 
-def test_the_gate_binds_the_runners_install_directory_it_discovered(
+def test_the_gate_reproduces_the_runners_layout_rather_than_flattening_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A gate that launches an inner agent needs the whole install, discovered.
@@ -422,9 +479,23 @@ def test_the_gate_binds_the_runners_install_directory_it_discovered(
     This repository's own suite exercises its dispatch path inside a gate, and
     the inner launch resolves the runner for itself — possibly a different
     version, because the installer can prune between the two. So the gate binds
-    the install directory *and* the runner's `PATH` entry, both derived from one
-    resolution. A version literal here rotted into
-    `bwrap: Can't find source path .../versions/2.1.223` once already.
+    the install directory, discovered rather than named: a version literal here
+    rotted into `bwrap: Can't find source path .../versions/2.1.223` once
+    already.
+
+    The runner's `PATH` entry is recreated as a *symlink* and not bound, which
+    is the half that only a nested run reveals. Binding it would put a regular
+    file at `~/.local/bin/claude` inside the namespace, with its
+    `<install>/versions/<version>` ancestry erased — and the next boundary in
+    would resolve that file to itself and bind a lone binary where the install
+    directory belongs. That is not theory: it is what the full suite did when
+    run inside its own gate, failing with
+
+        ls: cannot access '/home/admin/.local/share/claude/versions':
+        No such file or directory
+
+    The symlink keeps the layout intact, so discovery gives the same answer at
+    every depth.
     """
     host = PlantedHost(tmp_path)
     for name in ("uv", "node", "git"):
@@ -432,19 +503,22 @@ def test_the_gate_binds_the_runners_install_directory_it_discovered(
     install, link = host.plant_versioned_runner(FAKE_RUNNER_VERSION)
     host.activate(monkeypatch, host.bin_dir, link.parent)
 
-    binds = _binds(
-        BwrapGateExecutor()._build_argv(
-            GateInvocation(
-                name="test", command="true", cwd=host.worktree, timeout_s=30, env={}
-            )
+    argv = BwrapGateExecutor()._build_argv(
+        GateInvocation(
+            name="test", command="true", cwd=host.worktree, timeout_s=30, env={}
         )
     )
+    version_file = install / "versions" / FAKE_RUNNER_VERSION
 
-    assert (str(install), str(install)) in binds, (
-        f"the whole discovered install directory must be bound: {binds}"
+    assert (str(install), str(install)) in _binds(argv), (
+        f"the whole discovered install directory must be bound: {_binds(argv)}"
     )
-    assert (str(install / "versions" / FAKE_RUNNER_VERSION), str(link)) in binds, (
-        f"the runner's PATH entry must be bound beside it: {binds}"
+    assert (str(version_file), str(link)) in _symlinks(argv), (
+        f"the runner's PATH entry must be recreated as a symlink: {_symlinks(argv)}"
+    )
+    assert (str(version_file), str(link)) not in _binds(argv), (
+        "binding the runner over its own PATH entry flattens the layout the "
+        "next boundary in has to read"
     )
 
 
@@ -468,8 +542,8 @@ def test_the_gates_optional_tools_still_degrade_quietly(
     binds = BwrapGateExecutor()._toolchain_binds()
 
     assert binds == [
-        (str(host.bin_dir / "uv"), str(host.bin_dir / "uv")),
-        (str(host.bin_dir / "git"), str(host.bin_dir / "git")),
+        ("--ro-bind", str(host.bin_dir / "uv"), str(host.bin_dir / "uv")),
+        ("--ro-bind", str(host.bin_dir / "git"), str(host.bin_dir / "git")),
     ], f"absent optional tools must be skipped, not invented: {binds}"
 
 

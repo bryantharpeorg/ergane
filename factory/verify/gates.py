@@ -625,8 +625,7 @@ class BwrapGateExecutor:
         # once and used twice — for these binds and for the container `PATH`
         # below — so the two cannot name different directories.
         tools = self._toolchain()
-        for source, dest in self._toolchain_binds(tools):
-            binds.append(("--ro-bind", source, dest))
+        binds.extend(self._toolchain_binds(tools))
         for source, dest in self._interpreter_binds(worktree):
             binds.append(("--ro-bind", source, dest))
         for source, dest in self._resolver_binds():
@@ -687,8 +686,8 @@ class BwrapGateExecutor:
 
     def _toolchain_binds(
         self, tools: Sequence[ResolvedTool] | None = None
-    ) -> list[tuple[str, str]]:
-        """Read-only binds for the toolchain the gate may invoke.
+    ) -> list[tuple[str, str, str]]:
+        """Mounts for the toolchain the gate may invoke, as (flag, source, dest).
 
         "May invoke" includes the agent runner: a repository whose suite
         exercises its own dispatch path launches the agent *inside* the gate,
@@ -700,24 +699,36 @@ class BwrapGateExecutor:
         install directory is bound rather than the version the outer launch
         happened to resolve, because the installer keeps several versions and
         prunes them on its own schedule; the inner launch may resolve a
-        different one than this one did. The runner's `PATH` entry is bound
-        beside it so the inner launch's own discovery finds it where the
-        container's `PATH` says it is.
+        different one than this one did.
+
+        The runner's `PATH` entry is *recreated as a symlink* rather than bound,
+        and that is not decoration. A bind would flatten it: inside the
+        namespace `~/.local/bin/claude` would be a regular file, its
+        `<install>/versions/<version>` ancestry gone, and the next boundary in
+        (this repository's suite runs its own gates, so there is always a next
+        one) would resolve it to itself and bind a lone binary instead of the
+        install directory. Measured, before the symlink went in: the full suite
+        run inside its own gate failed with ``ls: cannot access
+        '/home/admin/.local/share/claude/versions': No such file or directory``.
+        Reproducing the layout instead of the file makes discovery give the same
+        answer at every depth.
 
         Every path here comes from `_toolchain`, never from a literal: the
         version numbers that used to sit in this method rotted out from under
         it on the operator's own machine.
         """
         resolved = self._toolchain() if tools is None else tools
-        binds: list[tuple[str, str]] = []
+        binds: list[tuple[str, str, str]] = []
         for tool in resolved:
             if tool.name == DEFAULT_AGENT_RUNNER:
                 root = install_root(tool)
-                binds.append((str(root), str(root)))
-                if str(tool.found_at) != str(root):
-                    binds.append(tool.bind)
+                binds.append(("--ro-bind", str(root), str(root)))
+                if tool.found_at != tool.real_path:
+                    binds.append(("--symlink", str(tool.real_path), str(tool.found_at)))
+                elif tool.found_at != root:
+                    binds.append(("--ro-bind", *tool.bind))
                 continue
-            binds.append(tool.bind)
+            binds.append(("--ro-bind", *tool.bind))
         return binds
 
     def _identity_env(self) -> dict[str, str]:
