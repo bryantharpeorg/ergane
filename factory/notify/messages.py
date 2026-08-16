@@ -43,6 +43,7 @@ from typing import Any, Sequence
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from factory.mergequeue.models import CheckFailure, Landing, ObservedOutcome, QueueOutcome
+from factory.notify.adapter import MessageAction
 from factory.verify.models import (
     EscalationChoice,
     EscalationRecord,
@@ -157,23 +158,57 @@ def parse_callback_data(data: str | None) -> CallbackPress | None:
     return CallbackPress(escalation_id, choice)
 
 
+def escalation_actions(record: EscalationRecord) -> tuple[MessageAction, ...]:
+    """One offered choice per action, in the order the workflow offered them.
+
+    The transport-neutral half of `escalation_keyboard` (041 FR-001): a face
+    the operator reads and the payload a press carries back. Rendering stays
+    here rather than moving into an adapter, because an adapter that composed
+    the button faces would make what the operator is asked a property of the
+    transport — swap the messenger and the question quietly changes.
+
+    Actions map 1:1 onto `record.choices` (FR-008): a button the workflow would
+    refuse to honor is a button that should never have been rendered.
+    """
+    return tuple(
+        MessageAction(
+            label=_CHOICE_LABELS.get(EscalationChoice(choice), _value(choice)),
+            payload=callback_data(record.escalation_id, choice),
+        )
+        for choice in record.choices
+    )
+
+
+def actions_keyboard(
+    actions: Sequence[MessageAction],
+) -> InlineKeyboardMarkup | None:
+    """Telegram's view of `actions` — and ``None`` when there are none.
+
+    ``None`` rather than an empty markup, because a question sends with no
+    `reply_markup` at all (008 FR-008) and an empty `InlineKeyboardMarkup` is a
+    different payload on the wire from no keyboard.
+    """
+    if not actions:
+        return None
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(action.label, callback_data=action.payload)]
+            for action in actions
+        ]
+    )
+
+
 def escalation_keyboard(record: EscalationRecord) -> InlineKeyboardMarkup:
     """One button per offered choice, in the order the workflow offered them.
 
     Buttons map 1:1 onto `record.choices` (FR-008): a button the workflow would
     refuse to honor is a button that should never have been rendered.
+
+    Kept as the Telegram spelling of `escalation_actions` so the two cannot
+    drift: the adapter transports the actions, and this renders the same list.
     """
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    _CHOICE_LABELS.get(EscalationChoice(choice), _value(choice)),
-                    callback_data=callback_data(record.escalation_id, choice),
-                )
-            ]
-            for choice in record.choices
-        ]
-    )
+    return actions_keyboard(escalation_actions(record)) or InlineKeyboardMarkup([])
 
 
 def render_history(results: Sequence[VerificationResult]) -> str:
