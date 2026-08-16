@@ -27,7 +27,11 @@ from factory.env import (
     resolve_env_path,
 )
 
-#: Allowed values for llm.mode (FR-004).
+#: Allowed values for llm.mode (FR-004).  "direct" is recognized as a token but
+#: refused: dispatch has exactly one credential primitive, a LiteLLM virtual key
+#: minted per attempt, and a per-persona provider endpoint has none (048-US2,
+#: D-048).  It stays listed so the refusal can be specific rather than "unknown
+#: mode" — the same shape as "managed" below.
 KNOWN_LL_MODES = ("gateway", "direct")
 
 #: Allowed built-in memory backends (FR-004).  Custom adapters are admitted by
@@ -49,6 +53,7 @@ DEFAULT_CONFIG_REL = Path("ergane") / "config.toml"
 RULE_VERSION = "version"
 RULE_UNKNOWN_KEY = "unknown_key"
 RULE_UNKNOWN_LLM_MODE = "unknown_llm_mode"
+RULE_LLM_DIRECT_NOT_SUPPORTED = "llm_direct_not_supported"
 RULE_UNKNOWN_MEMORY_BACKEND = "unknown_memory_backend"
 RULE_UNKNOWN_TEMPORAL_MODE = "unknown_temporal_mode"
 RULE_TEMPORAL_MANAGED_NOT_IMPLEMENTED = "temporal_managed_not_implemented"
@@ -107,16 +112,6 @@ class ControlPlaneConfig:
     escalation: "ControlPlaneConfig.Escalation"
 
     @dataclasses.dataclass(frozen=True)
-    class LLMDirectPersona:
-        """One per-persona endpoint in ``direct`` mode."""
-
-        name: str
-        base_url: str
-        model: str
-        api_key_env: str
-        timeout_s: int = 300
-
-    @dataclasses.dataclass(frozen=True)
     class LLMGateway:
         """``gateway`` mode: a LiteLLM-shaped proxy."""
 
@@ -126,10 +121,9 @@ class ControlPlaneConfig:
 
     @dataclasses.dataclass(frozen=True)
     class LLM:
-        """Mode-discriminated LLM block."""
+        """Mode-discriminated LLM block: one mode reaches this shape, `gateway`."""
 
         mode: str
-        personas: tuple["ControlPlaneConfig.LLMDirectPersona", ...] = ()
         gateway: "ControlPlaneConfig.LLMGateway | None" = None
         timeout_s: int = 300
 
@@ -326,8 +320,16 @@ def _read_llm(document: Mapping[str, Any], source: str) -> ControlPlaneConfig.LL
         )
 
     if mode == "direct":
-        personas = _read_direct_personas(block, source)
-        return ControlPlaneConfig.LLM(mode="direct", personas=personas)
+        raise ControlPlaneConfigError(
+            RULE_LLM_DIRECT_NOT_SUPPORTED,
+            '`llm.mode = "direct"` cannot be dispatched against: every attempt '
+            "runs on its own model-constrained, TTL'd virtual key minted at the "
+            "LiteLLM proxy, and a per-persona provider endpoint has no such key "
+            "to mint, revoke or attribute. Put a LiteLLM-shaped gateway in front "
+            'of the provider and declare `llm.mode = "gateway"`',
+            source=source,
+            field="llm.mode",
+        )
 
     # gateway mode
     base_url = _require_string(block, "llm.base_url", source)
@@ -339,60 +341,6 @@ def _read_llm(document: Mapping[str, Any], source: str) -> ControlPlaneConfig.LL
             master_key_env=master_key_env,
         ),
     )
-
-
-def _read_direct_personas(
-    block: Mapping[str, Any], source: str
-) -> tuple[ControlPlaneConfig.LLMDirectPersona, ...]:
-    raw_personas = block.get("persona")
-    if raw_personas is None:
-        raise ControlPlaneConfigError(
-            RULE_MISSING_REQUIRED,
-            "`llm.mode = \"direct\"` requires at least one `[[llm.persona]]` block",
-            source=source,
-            field="llm.persona",
-        )
-    if not isinstance(raw_personas, list):
-        raise ControlPlaneConfigError(
-            RULE_FIELD_TYPE,
-            f"`llm.persona` must be a list of tables, not {_kind(raw_personas)}",
-            source=source,
-            field="llm.persona",
-        )
-    if not raw_personas:
-        raise ControlPlaneConfigError(
-            RULE_MISSING_REQUIRED,
-            "`llm.mode = \"direct\"` requires at least one `[[llm.persona]]` block",
-            source=source,
-            field="llm.persona",
-        )
-
-    result: list[ControlPlaneConfig.LLMDirectPersona] = []
-    for index, raw in enumerate(raw_personas):
-        if not isinstance(raw, Mapping):
-            raise ControlPlaneConfigError(
-                RULE_FIELD_TYPE,
-                f"`llm.persona[{index}]` must be a table, not {_kind(raw)}",
-                source=source,
-                field=f"llm.persona[{index}]",
-            )
-        field = f"llm.persona[{index}]"
-        name = _require_string(raw, f"{field}.name", source)
-        base_url = _require_string(raw, f"{field}.base_url", source)
-        model = _require_string(raw, f"{field}.model", source)
-        api_key_env = _require_secret_ref(raw, "api_key_env", source, prefix=field)
-        timeout_s = raw.get("timeout_s", 300)
-        _expect_int(timeout_s, f"{field}.timeout_s", source)
-        result.append(
-            ControlPlaneConfig.LLMDirectPersona(
-                name=name,
-                base_url=base_url,
-                model=model,
-                api_key_env=api_key_env,
-                timeout_s=int(timeout_s),
-            )
-        )
-    return tuple(result)
 
 
 def _read_memory(
@@ -563,9 +511,6 @@ _RENDER_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("escalation", ("adapter", "bot_token_env", "chat_id_env", "timeout_s")),
 )
 
-#: Key order inside each `[[llm.persona]]` table.
-_PERSONA_ORDER: tuple[str, ...] = ("name", "base_url", "model", "api_key_env", "timeout_s")
-
 
 def controlplane_document(config: ControlPlaneConfig) -> dict[str, Any]:
     """Return the plain-data document for ``config``: what the renderer writes.
@@ -573,28 +518,14 @@ def controlplane_document(config: ControlPlaneConfig) -> dict[str, Any]:
     Optionals at their documented default are omitted, so two configs that parse
     equal render equal.
     """
-    # `llm.timeout_s` is deliberately not rendered: the parser does not read it
-    # (only `[[llm.persona]].timeout_s` is), and writing a key that changes
-    # nothing is a trap for whoever reads the file next.
+    # `llm.timeout_s` is deliberately not rendered: no reader consults it, and
+    # writing a key that changes nothing is a trap for whoever reads the file
+    # next. (Before 048-US2 the parser read it on a per-persona table; that mode
+    # is refused now, so the key has no reader at all.)
     llm: dict[str, Any] = {"mode": config.llm.mode}
     if config.llm.mode == "gateway" and config.llm.gateway is not None:
         llm["base_url"] = config.llm.gateway.base_url
         llm["master_key_env"] = config.llm.gateway.master_key_env
-    if config.llm.mode == "direct":
-        llm["persona"] = [
-            _drop_default(
-                {
-                    "name": persona.name,
-                    "base_url": persona.base_url,
-                    "model": persona.model,
-                    "api_key_env": persona.api_key_env,
-                    "timeout_s": persona.timeout_s,
-                },
-                "timeout_s",
-                300,
-            )
-            for persona in config.llm.personas
-        ]
 
     memory: dict[str, Any] = {"backend": config.memory.backend}
     _set_if(memory, "url", config.memory.url)
@@ -652,22 +583,9 @@ def render_controlplane_document(document: Mapping[str, Any]) -> str:
                 lines.append(f"{key} = {_toml_value(block[key])}")
         # Anything the schema does not know is still rendered, so a value the
         # operator typed is never silently dropped before the parser sees it.
-        for key in sorted(set(block) - set(key_order) - {"persona"}):
+        for key in sorted(set(block) - set(key_order)):
             if block[key] is not None:
                 lines.append(f"{key} = {_toml_value(block[key])}")
-        if block_name == "llm":
-            for persona in block.get("persona") or []:
-                lines.append("")
-                lines.append("[[llm.persona]]")
-                if not isinstance(persona, Mapping):
-                    lines.append(f"# invalid persona entry: {persona!r}")
-                    continue
-                for key in _PERSONA_ORDER:
-                    if key in persona and persona[key] is not None:
-                        lines.append(f"{key} = {_toml_value(persona[key])}")
-                for key in sorted(set(persona) - set(_PERSONA_ORDER)):
-                    if persona[key] is not None:
-                        lines.append(f"{key} = {_toml_value(persona[key])}")
 
     return "\n".join(lines) + "\n"
 
@@ -680,12 +598,6 @@ def render_controlplane_config(config: ControlPlaneConfig) -> str:
 def _set_if(block: dict[str, Any], key: str, value: Any) -> None:
     if value is not None:
         block[key] = value
-
-
-def _drop_default(values: dict[str, Any], key: str, default: Any) -> dict[str, Any]:
-    if values.get(key) == default:
-        values.pop(key)
-    return values
 
 
 def _toml_value(value: Any) -> str:

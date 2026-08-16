@@ -32,12 +32,11 @@ from factory.env import (
 )
 
 
-def _happy_toml() -> str:
-    """The canonical full config from US1-S1."""
-    return """
-version = 1
-
-[llm]
+#: The `[llm]` block this file's canonical config used to carry. Kept verbatim
+#: rather than deleted: 048-US2 changed the verdict on this text, not the text,
+#: and `test_direct_llm_mode_refused` below is the same input with the opposite
+#: expectation.
+_DIRECT_LLM_BLOCK = """\
 mode = "direct"
 
 [[llm.persona]]
@@ -45,7 +44,22 @@ name = "implementer"
 base_url = "http://llm.local/v1"
 model = "openai/gpt-4o"
 api_key_env = "ERGANE_LLM_IMPLEMENTER_KEY"
+"""
 
+_GATEWAY_LLM_BLOCK = """\
+mode = "gateway"
+base_url = "http://llm.local/v1"
+master_key_env = "ERGANE_LLM_MASTER_KEY"
+"""
+
+
+def _happy_toml() -> str:
+    """The canonical full config from US1-S1, in the one mode that dispatches."""
+    return f"""
+version = 1
+
+[llm]
+{_GATEWAY_LLM_BLOCK}
 [memory]
 backend = "hindsight"
 url = "http://hindsight.local:8888"
@@ -116,16 +130,11 @@ def test_happy_parse(tmp_path: Path) -> None:
 
     assert isinstance(cfg, Cfg)
     assert cfg.version == 1
-    assert cfg.llm.mode == "direct"
-    assert cfg.llm.personas == (
-        Cfg.LLMDirectPersona(
-            name="implementer",
-            base_url="http://llm.local/v1",
-            model="openai/gpt-4o",
-            api_key_env="ERGANE_LLM_IMPLEMENTER_KEY",
-        ),
+    assert cfg.llm.mode == "gateway"
+    assert cfg.llm.gateway == Cfg.LLMGateway(
+        base_url="http://llm.local/v1",
+        master_key_env="ERGANE_LLM_MASTER_KEY",
     )
-    assert cfg.llm.gateway is None
 
     assert cfg.memory.backend == "hindsight"
     assert cfg.memory.url == "http://hindsight.local:8888"
@@ -183,7 +192,7 @@ def test_temporal_namespace_list_refused(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("field", "bad_value"),
     [
-        ("llm.persona.api_key_env", "sk-this-is-a-key-value"),
+        ("llm.master_key_env", "sk-this-is-a-key-value"),
         ("escalation.bot_token_env", "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"),
     ],
 )
@@ -191,10 +200,10 @@ def test_secret_shaped_value_refused(field: str, bad_value: str, tmp_path: Path)
     """US1-S3: any secret field carrying a credential shape is refused."""
     path = tmp_path / "config.toml"
     text = _happy_toml()
-    if field == "llm.persona.api_key_env":
+    if field == "llm.master_key_env":
         text = text.replace(
-            'api_key_env = "ERGANE_LLM_IMPLEMENTER_KEY"',
-            f'api_key_env = "{bad_value}"',
+            'master_key_env = "ERGANE_LLM_MASTER_KEY"',
+            f'master_key_env = "{bad_value}"',
         )
     elif field == "escalation.bot_token_env":
         text = text.replace(
@@ -208,7 +217,7 @@ def test_secret_shaped_value_refused(field: str, bad_value: str, tmp_path: Path)
 
     err = exc_info.value
     assert err.rule == "secret_value_not_reference"
-    assert err.field in (field, "llm.persona[0].api_key_env")
+    assert err.field in (field, "master_key_env")
 
 
 def test_identifier_value_accepted(tmp_path: Path) -> None:
@@ -216,7 +225,8 @@ def test_identifier_value_accepted(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(_happy_toml(), encoding="utf-8")
     cfg = load_controlplane_config(path)
-    assert cfg.llm.personas[0].api_key_env == "ERGANE_LLM_IMPLEMENTER_KEY"
+    assert cfg.llm.gateway is not None
+    assert cfg.llm.gateway.master_key_env == "ERGANE_LLM_MASTER_KEY"
     assert cfg.escalation.bot_token_env == "ERGANE_TELEGRAM_BOT_TOKEN"
 
 
@@ -292,13 +302,39 @@ def test_temporal_managed_mode_refused(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 048-US2 — direct mode refused, the same shape one subsystem over
+# ---------------------------------------------------------------------------
+
+
+def test_direct_llm_mode_refused(tmp_path: Path) -> None:
+    """048-US2 / FR-008: the config this file's fixture used to be is now refused.
+
+    The text is unchanged — a complete `[[llm.persona]]` block that parsed to a
+    `direct` LLM block until this story, which is what makes the refusal the new
+    rule firing rather than an incidental "persona block missing". What moved is
+    the verdict.
+    """
+    path = tmp_path / "config.toml"
+    text = _happy_toml().replace(_GATEWAY_LLM_BLOCK, _DIRECT_LLM_BLOCK)
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ControlPlaneConfigError) as exc_info:
+        load_controlplane_config(path)
+
+    err = exc_info.value
+    assert err.rule == "llm_direct_not_supported"
+    assert "virtual key" in err.problem
+    assert "gateway" in err.problem
+
+
+# ---------------------------------------------------------------------------
 # Additional closed-set refusals
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mode", ["proxy", "local"])
 def test_unknown_llm_mode_refused(mode: str, tmp_path: Path) -> None:
-    text = _happy_toml().replace('mode = "direct"', f'mode = "{mode}"')
+    text = _happy_toml().replace('mode = "gateway"', f'mode = "{mode}"')
     path = tmp_path / "config.toml"
     path.write_text(text, encoding="utf-8")
 
