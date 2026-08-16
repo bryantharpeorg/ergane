@@ -945,3 +945,54 @@ tree while `PYTEST_CURRENT_TEST` is present.
 5. **No new dependency, activity, or schema change.** The guard uses `tempfile`, `os`,
    and the existing `PYTEST_CURRENT_TEST` sentinel; the store's contract and callers are
    unchanged. The finding key is `hardening/test-suite-writes-to-the-live-evidence-store`.
+
+## D-046 · The forge is an adapter, and GitHub is the reference implementation (decided)
+
+Decided 2026-08-16 by the operator, on the observation that clients will run Ergane
+against Azure DevOps and other forges, not only GitHub. This entry records the
+direction; the spec that implements it is `049-forge-seam`.
+
+Today GitHub is not a dependency, it is an assumption. `EpicWorkflow._onboard_target`
+is a structural gate at every epic start, and the judgment behind it,
+`mergequeue/onboard.py::evaluate_repo`, is written in GitHub's own vocabulary: the
+repository must be **public**, a **merge queue** must be enabled on the default
+branch, `squash_merge_commit_title` must be `PR_TITLE`, and every declared gate must
+appear as a **required status check**. A target repository on a forge that has no
+merge queue, no repository visibility in that sense, and no such setting cannot pass
+a gate whose questions do not apply to it — not because it is unready, but because
+the questions are the wrong ones.
+
+The coupling is concentrated rather than diffuse, which is what makes this tractable:
+ten non-test modules touch a GitHub concept, and three of them carry most of it —
+`mergequeue/gh.py`, `mergequeue/wiring.py`, and `activities/merge_activities.py`.
+`mergequeue/onboard.py` holds the judgment. The remaining six touch it two to four
+times each.
+
+1. **The shape is 041's, deliberately.** `041-escalation-workflow` US1 landed a
+   transport adapter with Telegram as its reference implementation: two operations, a
+   registry keyed by name, and settling kept on the factory's side of the seam. The
+   forge seam is the same move against a different boundary, and reusing the shape is
+   cheaper than inventing a second one — the registry, the config key, and the
+   "reference implementation, not the only one" framing are all already precedented.
+
+2. **The workflow already depends on an abstraction; the activities do not.**
+   `EpicWorkflow` consumes `TargetRepoProfile.passed` and its findings, never a
+   GitHub fact, so no workflow change is implied. The leak is at activity and CLI
+   level — `gh pr create`, `gh pr merge --auto`, `gh pr view`, the rulesets API — and
+   that is where the seam belongs.
+
+3. **`evaluate_repo`'s questions must become forge-neutral, and this is the hard
+   part.** "Is the merge queue enabled" is a GitHub question; "does the forge gate
+   merges on named checks, and are the declared gates among them" is the question
+   underneath it. Renaming without re-asking would move the coupling rather than
+   remove it.
+
+4. **GitHub stays the reference implementation and keeps working unchanged.** A
+   seam that requires re-provisioning this repository — whose own landing path is
+   `gh pr merge --auto` onto a real merge queue — is a failed seam. Byte-identical
+   behaviour for a GitHub target is an acceptance condition, not an aspiration.
+
+5. **Nothing landed is reverted.** `034-ergane-init` US3 landed `--wire` against
+   GitHub's rulesets API on this same day. It becomes the GitHub implementation of a
+   wiring operation rather than a mistake — the seam is drawn around it, not through
+   it.
