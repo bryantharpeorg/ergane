@@ -429,10 +429,10 @@ def test_rerun_offers_the_existing_file_as_defaults_and_touches_only_telemetry(
     # The existing file was loaded as defaults: the prompter was offered them.
     assert prompter.defaults_for("temporal namespace") == ["ergane-odd-namespace"]
     assert prompter.defaults_for("temporal address") == ["127.0.0.1:24733"]
-    assert prompter.defaults_for("escalation bot token env-var name") == [
+    assert prompter.defaults_for("escalation bot token env-var name (optional)") == [
         "ODD_BOT_TOKEN_NAME"
     ]
-    assert prompter.defaults_for("telemetry OTLP endpoint") == [TELEMETRY_ADDRESS]
+    assert prompter.defaults_for("telemetry OTLP endpoint (optional)") == [TELEMETRY_ADDRESS]
 
     # Exactly one block moved.
     blocks_before, blocks_after = _blocks(before), _blocks(after)
