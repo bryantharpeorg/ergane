@@ -67,14 +67,23 @@ def epic_dir(tmp_path: Path, fixture: str, *, name: str | None = None) -> Path:
     dest = tmp_path / (name or fixture)
     dest.mkdir(parents=True)
     (dest / "spec.md").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    # valid_epic has five scenarios; give them task references so validate passes.
+    # valid_epic has five scenarios; give them task references so validate
+    # passes. 044 added a fifth layer that assembles each node's attempt prompt,
+    # so a sound spec now needs a sound *trio*: a plan.md, and phases whose
+    # headings name the story each task slice belongs to.
     if fixture == "valid_epic":
+        (dest / "plan.md").write_text(
+            "# Plan\n\nCarried into every node's prompt whole.\n", encoding="utf-8"
+        )
         (dest / "tasks.md").write_text(
             "# Tasks\n\n"
+            "## Phase 1: User Story 1 - Save a link\n\n"
             "- [ ] T001 [US1-S1] first\n"
-            "- [ ] T002 [US1-S2] second\n"
+            "- [ ] T002 [US1-S2] second\n\n"
+            "## Phase 2: User Story 2 - Follow a short link\n\n"
             "- [ ] T003 [US2-S1] third\n"
-            "- [ ] T004 [US2-S2] fourth\n"
+            "- [ ] T004 [US2-S2] fourth\n\n"
+            "## Phase 3: User Story 3 - List my links\n\n"
             "- [ ] T005 [US3-S1] fifth\n",
             encoding="utf-8",
         )
@@ -486,7 +495,12 @@ def test_validate_scenario_coverage_passes_when_all_referenced(
         scenarios={"US1": ["it works", "it also works"]},
     )
     (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    # A sound trio, not a sound spec.md: 044's assembly layer needs a plan.md
+    # and a phase heading naming the story whose slice these tasks are.
+    (specs_dir / "plan.md").write_text("# Plan\n\nOne store.\n", encoding="utf-8")
     (specs_dir / "tasks.md").write_text(
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
         "- [ ] T001 [US1-S1] write the first test\n"
         "- [ ] T002 [US1-S2] write the second test\n",
         encoding="utf-8",

@@ -39,6 +39,7 @@ from factory.workgraph.cli import (
 )
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkGraphError, WorkNode, validate_workgraph
+from factory.workgraph.preflight import check_prompt_assembly
 from factory.workgraph.worktree import landing_branch
 
 #: The id grammar the criteria parser mints for acceptance scenarios.
@@ -265,9 +266,38 @@ def _validate_command(args: argparse.Namespace) -> int:
         "persona_registry",
         "scenario_coverage",
     ]
+    skipped: list[dict[str, str]] = []
+
+    # 5. Every node's attempt prompt, assembled offline (044 FR-001).
+    #
+    # The layer that would have caught the 2026-08-15 kill: a `tasks.md` whose
+    # phase headings name no story leaves every node without a task slice, and
+    # until now the first thing to notice was the dispatch tick that killed the
+    # epic. It runs last because it is the only layer that needs both a compiled
+    # graph and the other two authored documents.
+    if graph is not None:
+        for assembly in check_prompt_assembly(graph, spec_dir, spec_text=spec_text):
+            findings.append(_ValidateFinding("prompt_assembly", str(assembly)))
+        checked.append("prompt_assembly")
+    else:
+        # Honesty over coverage: assembly is per node, derivation failed, and
+        # there are no nodes. Reporting it as checked would grow the `checked`
+        # list by a layer nobody ran — the way a preflight comes to be trusted
+        # for something it never did.
+        skipped.append(
+            {
+                "layer": "prompt_assembly",
+                "reason": (
+                    "the work graph did not compile, so there are no nodes to "
+                    "assemble a prompt for"
+                ),
+            }
+        )
+
     report = {
         "spec_dir": str(spec_dir),
         "checked": checked,
+        "skipped": skipped,
         "findings": [
             {"layer": finding.layer, "message": finding.message}
             for finding in findings
@@ -279,10 +309,18 @@ def _validate_command(args: argparse.Namespace) -> int:
     elif findings:
         for finding in findings:
             print(f"ergane spec validate: [{finding.layer}] {finding.message}", file=sys.stderr)
+        # Deliberately not the finding prefix: a layer that did not run is not a
+        # refusal, and a reader counting refusals must not count this line.
+        for entry in skipped:
+            print(
+                f"ergane spec validate — layer '{entry['layer']}' not checked: "
+                f"{entry['reason']}",
+                file=sys.stderr,
+            )
     else:
         print(
-            f"{spec_path}: frontmatter, work-graph derivation, persona registry and "
-            "scenario coverage all pass"
+            f"{spec_path}: frontmatter, work-graph derivation, persona registry, "
+            "scenario coverage and prompt assembly all pass"
         )
 
     return EXIT_USER if findings else EXIT_OK

@@ -44,6 +44,37 @@ The two that passed red are the control (SC-004), and they had to: they run
 *only* the four pre-existing layers, and the claim this story rests on is that
 those four see nothing wrong with either fixture. A control that failed red
 would mean the fixtures were already being caught by a check that existed.
+
+Green after, same command::
+
+    11 passed in 0.14s
+
+And the whole suite, `uv run pytest -q`::
+
+    2389 passed, 44 skipped, 4 warnings in 262.16s (0:04:22)
+
+Run the thing, not the tests about it. `uv run python -m factory.cli.main spec
+validate tests/fixtures/prompt_assembly/901-heading-defect`, verbatim::
+
+    ergane spec validate: [prompt_assembly] tasks.md: node 'us1': tasks.md declares no phase naming user story US1, so this node has no task slice to work (FR-006)
+    ergane spec validate: [prompt_assembly] tasks.md: node 'us2': tasks.md declares no phase naming user story US2, so this node has no task slice to work (FR-006)
+    ergane spec validate: [prompt_assembly] tasks.md: node 'us3': tasks.md declares no phase naming user story US3, so this node has no task slice to work (FR-006)
+    ergane spec validate: [prompt_assembly] tasks.md: node 'us4': tasks.md declares no phase naming user story US4, so this node has no task slice to work (FR-006)
+    exit=1
+
+...and on the control trio::
+
+    tests/fixtures/prompt_assembly/903-well-formed/spec.md: frontmatter, work-graph derivation, persona registry, scenario coverage and prompt assembly all pass
+    exit=0
+
+The layer was then run across every trio under `specs/` in this tree. It is not
+theatre: two live specs are already carrying the defect, neither of them
+dispatched yet, and neither reported by any other layer::
+
+    === specs/017-peer-channel/ (exit 1)
+    ergane spec validate: [prompt_assembly] tasks.md: node 'us5': tasks.md declares no phase naming user story US5, so this node has no task slice to work (FR-006)
+    === specs/022-validate-calibration/ (exit 1)
+    ergane spec validate: [prompt_assembly] tasks.md: node 'us1': tasks.md declares no phase naming user story US1, so this node has no task slice to work (FR-006)
 """
 
 from __future__ import annotations
