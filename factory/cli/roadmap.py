@@ -1,11 +1,16 @@
 """Implementation of `ergane roadmap`.
 
 `start` compiles a `RoadmapInput` from the operator's flags and starts the
-long-running `RoadmapWorkflow`. `pause`, `resume`, and `promote` send signals;
-`status` queries `roadmap_status`. All traffic uses the notify bridge's
+long-running `RoadmapWorkflow`. `pause`, `resume`, `promote` and `unpark` send
+signals; `status` queries `roadmap_status`. All traffic uses the notify bridge's
 environment contract for Temporal.
 
-The four verbs that act on a *running* roadmap reach it through
+`unpark` is the reply to what `status` reports: a spec the roadmap refused
+before dispatch stays parked for the life of the run chain, because the guards
+skip it before any check runs, so the operator who fixed the named document says
+so with this verb (044 US2-S4).
+
+The verbs that act on a *running* roadmap reach it through
 `factory.roadmap.discovery`, because `roadmap-<root>` is only where a roadmap
 lives when an operator started it by hand: a schedule's runs are
 `roadmap-<root>-<timestamp>`, so the bare id resolves to nothing and the verbs
@@ -134,6 +139,17 @@ def add_roadmap_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
         help="spec directory name to promote",
     )
     promote.set_defaults(run=_run_async(roadmap_promote_command))
+
+    unpark = verbs.add_parser(
+        "unpark", help="clear a parked spec so the next pass tries it again"
+    )
+    unpark.add_argument("specs_root", help="path to the specs corpus")
+    unpark.add_argument(
+        "--spec",
+        required=True,
+        help="spec directory name to unpark",
+    )
+    unpark.set_defaults(run=_run_async(roadmap_unpark_command))
 
     return parser
 
@@ -312,6 +328,23 @@ def _warn_unowned(location: RoadmapLocation, verb: str) -> None:
 async def roadmap_promote_command(args: argparse.Namespace) -> int:
     handle = await _get_handle(args)
     await handle.signal("promote_spec", args.spec)
+    return EXIT_OK
+
+
+async def roadmap_unpark_command(args: argparse.Namespace) -> int:
+    """Spend one spec's park, so the roadmap's next pass tries it again.
+
+    The other half of a pre-dispatch refusal. `ergane roadmap status` names the
+    parked spec and quotes the finding; the operator fixes what it named and
+    runs this, and the next pass re-runs every check against the document as it
+    now stands. Nothing is re-checked here — a spec that is still broken parks
+    again — so this is safe to type at anything the status listed.
+
+    Silent and exit 0 like the other signal verbs: the operator's evidence that
+    it worked is the next `status`, not a sentence from the sender.
+    """
+    handle = await _get_handle(args)
+    await handle.signal("unpark_spec", args.spec)
     return EXIT_OK
 
 
