@@ -451,7 +451,7 @@ def _refuse_while_epics_run(slug: str) -> None:
     if not open_epics:
         return
     raise OperatorError(
-        f"refusing to empty {slug!r}'s runtime root while epic(s) are running: "
+        f"refusing to empty the runtime root of {slug!r} while epic(s) are running: "
         f"{', '.join(sorted(open_epics))}. A running epic's runtime root is "
         "evidence in use. Workflow ids carry no repo token, so this refuses on "
         "any open epic rather than guessing which repository one belongs to; "

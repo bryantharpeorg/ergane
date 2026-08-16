@@ -701,10 +701,39 @@ def test_the_export_never_opens_a_store_for_writing(tmp_path: Path) -> None:
 # The gate, run the way the factory runs it — the declared `test` gate inside the
 # real bwrap boundary over this worktree:
 #
-#   test: PASS exit=0 259.8s
-#   2848 passed, 44 skipped, 5 warnings in 259.01s (0:04:19)
+#   test: PASS exit=0 259.4s
+#   2848 passed, 44 skipped, 5 warnings in 258.49s (0:04:18)
 #
 # (2828 before this story: 16 tests here and in `test_repo_ast.py`, plus four
 # existing parametrized sweeps that now also cover `factory/cli/repo_export.py`.
-# The only edit made after that run was these five comment lines.)
+# The only edit made after that run was these six comment lines.)
+#
+# And the same verb driven for real, outside pytest, against a scratch repo and
+# an isolated state home — because a green suite has shipped a command that could
+# not start, and because the guard above is inert in production by design:
+#
+#   $ ergane repo forget smokeapp --export .../records --clean-runtime
+#   ergane: refusing to empty the runtime root of 'smokeapp' while epic(s) are
+#   running: epic-capacity-can-5d08add3, epic-capacity-can-de7caf85. [...]
+#   EXIT=1                       <- two genuinely open epics on the live floor
+#
+#   $ ergane repo forget smokeapp --export .../records
+#   no roadmap schedule ergane-roadmap-smokeapp existed
+#   wrote 1 findings record(s) to .../records/findings.jsonl
+#   wrote 1 usage record(s) to .../records/usage.jsonl
+#   wrote 0 escalations record(s) to .../records/escalations.jsonl
+#   wrote .../records/digest.md
+#   forgot smokeapp (.../smoke/app); the repository itself is untouched
+#   EXIT=0
+#   $ grep -c 'sk-REALLOOKINGKEY123456' records/*   -> no match in any file
+#   $ ls -A app/.ergane                             -> all three stores still there
+#
+# and the deletion itself, with `PYTEST_CURRENT_TEST` absent so the guard is not
+# the thing being measured:
+#
+#   before: doctor.db, doctor.db-shm, doctor.db-wal, homes, ledger.db, ...
+#   emptied entries: 10
+#   after: []
+#   dir still exists: True
+#   repo files intact: ['.ergane', '.git', 'README.md']
 # -----------------------------------------------------------------------------
