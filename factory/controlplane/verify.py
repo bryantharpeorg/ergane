@@ -102,13 +102,11 @@ class EscalationSnapshot:
 def _llm_client_factory(config: ControlPlaneConfig.LLM) -> LiteLLMClient:
     """Build the real LiteLLM admin client from the environment.
 
-    For `gateway` mode this is the proxy admin client.  `direct` mode is not
-    directly verifiable by an admin client in this story.
+    `gateway` is the only mode that reaches here: the parser refuses every other
+    value before a probe is constructed (048-US2, D-048).
     """
-    if config.mode == "gateway":
-        assert config.gateway is not None
-        return LiteLLMClient.from_env()
-    raise ServiceNotAnswering("llm", reason=f"direct mode LLM probe not implemented in this story")
+    assert config.gateway is not None
+    return LiteLLMClient.from_env()
 
 
 async def _temporal_client_factory(config: ControlPlaneConfig.Temporal) -> Any:
@@ -179,33 +177,17 @@ class LLMProbe:
     async def gather(self, config: ControlPlaneConfig) -> LLMSnapshot:
         from factory.config import load_personas
 
-        if config.llm.mode == "direct":
-            personas = config.llm.personas
-            if not personas:
-                return LLMSnapshot(
-                    persona="implementer",
-                    model=None,
-                    completed=False,
-                    detail="direct mode has no personas configured; cannot verify a round trip",
-                )
-            persona_cfg = personas[0]
-            persona = persona_cfg.name
-            model = persona_cfg.model
-            api_key_env = persona_cfg.api_key_env
-            base_url = persona_cfg.base_url
-            timeout = persona_cfg.timeout_s
-            api_key = os.environ.get(api_key_env)
-        else:
-            persona = "implementer"
-            registry = load_personas()
-            p = registry.get(persona)
-            model = p.model if p else None
-            gateway = config.llm.gateway
-            assert gateway is not None
-            base_url = gateway.base_url
-            api_key_env = gateway.master_key_env
-            api_key = os.environ.get(api_key_env)
-            timeout = config.llm.timeout_s
+        # `gateway` is the only mode a parsed config can carry (048-US2).
+        persona = "implementer"
+        registry = load_personas()
+        p = registry.get(persona)
+        model = p.model if p else None
+        gateway = config.llm.gateway
+        assert gateway is not None
+        base_url = gateway.base_url
+        api_key_env = gateway.master_key_env
+        api_key = os.environ.get(api_key_env)
+        timeout = config.llm.timeout_s
 
         if not api_key:
             return LLMSnapshot(
@@ -232,20 +214,17 @@ class LLMProbe:
                 return bool(data.get("choices"))
 
         try:
-            if config.llm.mode == "gateway":
-                client = _llm_client_factory(config.llm)
-                if hasattr(client, "chat_completion"):
-                    response_data = await client.chat_completion(
-                        {
-                            "model": model,
-                            "messages": [{"role": "user", "content": "ping"}],
-                            "max_tokens": 1,
-                        }
-                    )
-                    completed = bool(response_data.get("choices"))
-                    await client.aclose()
-                else:
-                    completed = await _do_completion()
+            client = _llm_client_factory(config.llm)
+            if hasattr(client, "chat_completion"):
+                response_data = await client.chat_completion(
+                    {
+                        "model": model,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                    }
+                )
+                completed = bool(response_data.get("choices"))
+                await client.aclose()
             else:
                 completed = await _do_completion()
         except httpx.TimeoutException:

@@ -1050,3 +1050,66 @@ join is this entry.
 This closes the first consequence of
 `install/the-config-install-writes-reaches-nothing-that-builds`; the second — `direct`
 mode verifying green while unable to dispatch — is US2's, with its own entry.
+
+---
+
+## D-048 · `direct` LLM mode is refused at the parser, not made to dispatch (decided)
+
+Decided 2026-08-16, claimed at landing of spec `048-declared-control-plane` US2.
+`ergane install` offered `llm.mode = "direct"` — per-persona `base_url`, `model`
+and `api_key_env` — and `ergane install --verify` passed it more cleanly than it
+passed `gateway`: the direct probe performed a real round trip using only declared
+values and reported PASS on a host with no `LITELLM_*` variable set at all. It was
+also the one mode that could not run a single attempt. The parser now refuses it
+where it is declared, under the rule slug `llm_direct_not_supported`.
+
+1. **Why it cannot dispatch, and why that is not a bug to fix.** Every LLM-consuming
+   node runs on its own model-constrained, TTL'd virtual key, issued at dispatch and
+   revoked at teardown — constitution principle V, and the primitive that ties every
+   token to a node, persona and epic without agent cooperation. `issue_attempt_key`
+   mints that key through the LiteLLM admin API, and there is no second route to an
+   attempt's credential. A per-persona provider endpoint has nothing to mint, nothing
+   to revoke and nothing to attribute.
+
+2. **The alternative considered: make `direct` reach dispatch.** Rejected. It means
+   building a second per-attempt attribution mechanism beside the virtual key — an
+   epic in its own right, and one that amends a NON-NEGOTIABLE principle rather than
+   extending it. A bugfix spec is not where that decision gets made. Resurrecting the
+   mode is a future epic with its own superseding entry, not a knob.
+
+3. **Refused where it is declared, not discovered at the first attempt.** Refusing at
+   install costs one message. Discovering it at dispatch costs an epic, a failed key
+   mint and an operator's afternoon — and today it did not even fail loudly, because
+   the probe passed.
+
+4. **The token stays in `KNOWN_LL_MODES`.** Deleting it would make the refusal read
+   "supported modes are 'gateway'", which tells an operator they made a typo when they
+   made a reasonable choice. This follows `temporal.mode = "managed"` exactly
+   (`RULE_TEMPORAL_MANAGED_NOT_IMPLEMENTED`): recognized by name so the refusal can
+   name the reason and the route, refused because the thing behind it does not exist
+   yet. Two subsystems, one shape.
+
+5. **What a user who wanted `direct` is told**, at the moment they ask for it:
+
+       `llm.mode = "direct"` cannot be dispatched against: every attempt runs on its
+       own model-constrained, TTL'd virtual key minted at the LiteLLM proxy, and a
+       per-persona provider endpoint has no such key to mint, revoke or attribute.
+       Put a LiteLLM-shaped gateway in front of the provider and declare
+       `llm.mode = "gateway"`
+
+   That is strictly better than a green verification they cannot build against.
+
+6. **The apparatus is removed, not left unreachable.** `LLMDirectPersona`, the
+   persona reader, the persona renderer, the interview's persona questions and seed,
+   and the verify probe's direct branch are gone. Dead code that no branch reaches is
+   a mode that can be switched back on by accident; a committed test walks the AST of
+   the three modules and fails if any of it returns.
+
+7. **The interview needed no rule of its own.** `_ask` renders the candidate document
+   and validates it with `parse_controlplane_config`, so the parser's refusal is the
+   interview's refusal on the same day. What install had to give up was the *offer*:
+   the question now reads `llm mode (gateway)`.
+
+This closes the second consequence of
+`install/the-config-install-writes-reaches-nothing-that-builds`; the first — the
+declared endpoint reaching no build — is D-047's.

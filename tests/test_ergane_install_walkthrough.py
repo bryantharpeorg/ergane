@@ -123,6 +123,12 @@ and a `managed` Temporal mode, both of which must be refused at entry.  The
 config path is redirected to a scratch file; `~/.config/ergane` below is that
 path, elided.
 
+This transcript is from the 033 tree.  One line of it has since gone stale: the
+first question reads `llm mode (gateway)` as of 048-US2, which refused `direct`
+at the parser and stopped the interview offering it.  A run of the same command
+against the current tree — answering `direct` and reading what it says — is
+pasted in `tests/test_direct_mode_refused.py`; everything else below still holds.
+
 .. code-block:: text
 
     $ printf 'gateway\nhttp://127.0.0.1:1/v1\nsk-live-pasted-by-mistake\nERGANE_LLM_MASTER_KEY\nnone\nmanaged\nexternal\n127.0.0.1:4\nergane\n\n\nhttp://127.0.0.1:3\n\n\n\n' \
@@ -489,35 +495,36 @@ def test_walkthrough_asks_only_the_fields_the_chosen_mode_needs(
 ) -> None:
     """US3-S1: mode first, then only that mode's fields.
 
-    Two runs that differ only in the first answer must ask different questions —
+    Two runs that differ only in one mode answer must ask different questions —
     a walkthrough with a fixed question list cannot pass this.
+
+    Until 048-US2 this property was demonstrated on the *llm* block, whose two
+    modes were `gateway` and `direct`. `direct` is now refused at the parser,
+    so the demonstration moves to `memory`, which still has two shapes; the llm
+    half became `test_the_interview_re_asks_carrying_the_parsers_own_refusal`
+    in `tests/test_direct_mode_refused.py`, where it asserts the refusal rather
+    than the persona questions.
     """
-    _, gateway = walkthrough(_answers())
-    gateway_prompts = gateway.prompts
+    _, hindsight = walkthrough(_answers())
+    hindsight_prompts = hindsight.prompts
 
-    direct_answers = [
-        "direct",  # llm mode
-        "implementer",  # persona name
-        LLM_ADDRESS,  # persona base_url
-        "ollama-cloud/kimi-k2.7-code",  # persona model
-        "ERGANE_LLM_MASTER_KEY",  # persona api key env-var name
-        "n",  # add another persona?
-        *GATEWAY_ANSWERS[3:],
-    ]
-    _, direct = walkthrough(direct_answers)
-    direct_prompts = direct.prompts
+    none_answers = _answers(memory_backend="none")
+    # `none` needs neither a url nor an api key, so those two answers go unused.
+    del none_answers[4:6]
+    _, without = walkthrough(none_answers)
+    none_prompts = without.prompts
 
-    assert any("gateway base_url" in prompt for prompt in gateway_prompts)
-    assert not any("persona" in prompt for prompt in gateway_prompts)
+    assert any("memory url" in prompt for prompt in hindsight_prompts)
+    assert any("memory api key" in prompt for prompt in hindsight_prompts)
 
-    assert any("persona model" in prompt for prompt in direct_prompts)
-    assert not any("gateway base_url" in prompt for prompt in direct_prompts)
+    assert not any("memory url" in prompt for prompt in none_prompts)
+    assert not any("memory api key" in prompt for prompt in none_prompts)
+    assert without.answers == []
 
-    # And the direct-mode file really carries the persona block.
+    # And the file really carries the backend that was chosen.
     config = load_controlplane_config()
-    assert config.llm.mode == "direct"
-    assert [p.name for p in config.llm.personas] == ["implementer"]
-    assert config.llm.personas[0].model == "ollama-cloud/kimi-k2.7-code"
+    assert config.memory.backend == "none"
+    assert config.memory.url is None
 
 
 def test_the_real_terminal_prompter_drives_the_interview(
@@ -554,7 +561,7 @@ def test_the_real_terminal_prompter_drives_the_interview(
     assert config.temporal.address == TEMPORAL_ADDRESS
     assert config.telemetry.otlp_endpoint == TELEMETRY_ADDRESS
     # The questions were echoed to the terminal, defaults shown in brackets.
-    assert "llm mode (gateway|direct) [gateway]" in result.stdout
+    assert "llm mode (gateway) [gateway]" in result.stdout
     assert "[FAIL] temporal:" in result.stdout
 
 

@@ -80,12 +80,6 @@ BLANK_DOCUMENT: dict[str, Any] = {
 
 #: Seeds used when an operator switches a block to a mode it was not in.
 _GATEWAY_SEED: dict[str, Any] = dict(BLANK_DOCUMENT["llm"])
-_PERSONA_SEED: dict[str, Any] = {
-    "name": "implementer",
-    "base_url": "http://127.0.0.1:4000",
-    "model": "CHANGEME",
-    "api_key_env": "ERGANE_LLM_API_KEY",
-}
 _HINDSIGHT_SEED: dict[str, Any] = {
     "backend": "hindsight",
     "url": "http://127.0.0.1:8888",
@@ -181,17 +175,18 @@ def _starting_document(path: Path) -> dict[str, Any]:
 
 
 def _ask_llm(prompter: Any, document: dict[str, Any], path: Path) -> dict[str, Any]:
+    # One mode is offered because one mode can dispatch. `direct` is still a
+    # token the parser recognizes, so an operator who types it is told why it
+    # cannot be served and what to declare instead — see `_ask`, which validates
+    # every answer through `parse_controlplane_config` (048-US2, D-048).
     document = _ask(
         prompter,
-        "llm mode (gateway|direct)",
+        "llm mode (gateway)",
         document,
         path,
         default=document["llm"].get("mode"),
         apply=_apply_llm_mode,
     )
-
-    if document["llm"].get("mode") == "direct":
-        return _ask_personas(prompter, document, path)
 
     document = _ask(
         prompter,
@@ -209,44 +204,6 @@ def _ask_llm(prompter: Any, document: dict[str, Any], path: Path) -> dict[str, A
         default=document["llm"].get("master_key_env"),
         apply=lambda doc, value: _set(doc, ("llm", "master_key_env"), value),
     )
-
-
-def _ask_personas(
-    prompter: Any, document: dict[str, Any], path: Path
-) -> dict[str, Any]:
-    """Ask for `direct` mode's per-persona endpoints, one persona at a time."""
-    existing = list(document["llm"].get("persona") or [])
-    collected: list[dict[str, Any]] = []
-    index = 0
-
-    while True:
-        seed = existing[index] if index < len(existing) else dict(_PERSONA_SEED)
-        document["llm"]["persona"] = collected + [dict(seed)]
-        for key, prompt in (
-            ("name", "llm persona name"),
-            ("base_url", "llm persona base_url"),
-            ("model", "llm persona model"),
-            ("api_key_env", "llm persona api key env-var name"),
-        ):
-            document = _ask(
-                prompter,
-                prompt,
-                document,
-                path,
-                default=document["llm"]["persona"][index].get(key),
-                apply=lambda doc, value, key=key, index=index: _set(
-                    doc, ("llm", "persona", index, key), value
-                ),
-            )
-        collected = list(document["llm"]["persona"])
-        index += 1
-
-        another = prompter.ask("add another llm persona? (y/N)", default="n")
-        if another.strip().lower() not in ("y", "yes"):
-            break
-
-    document["llm"]["persona"] = collected
-    return document
 
 
 def _ask_memory(prompter: Any, document: dict[str, Any], path: Path) -> dict[str, Any]:
@@ -498,10 +455,9 @@ def _apply_llm_mode(document: dict[str, Any], mode: Any) -> dict[str, Any]:
         return document
     if mode == "gateway":
         document["llm"] = dict(_GATEWAY_SEED)
-    elif mode == "direct":
-        document["llm"] = {"mode": "direct", "persona": [dict(_PERSONA_SEED)]}
     else:
-        # Unknown: keep the answer so the parser refuses it by name.
+        # Unrecognized, or recognized and refused: keep the answer so the parser
+        # refuses it by name and the operator reads the parser's own reason.
         document["llm"] = {**current, "mode": mode}
     return document
 
