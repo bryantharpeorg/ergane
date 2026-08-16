@@ -647,3 +647,8 @@ MUTATIONS = """
    replaces — `@pytest.mark.parametrize("name", ["telegram"])` — this mutation
    is invisible: there is no `[webhook]` case to run.
 """
+
+FINAL_SUITE = """
+$ uv run pytest -q
+2843 passed, 44 skipped, 5 warnings in 296.86s (0:04:56)
+"""
