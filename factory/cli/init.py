@@ -347,8 +347,8 @@ def _ask_for_slug(repo_root: Path, *, prompter: Any) -> str:
     """
     try:
         known = registry.load_registry().for_path(repo_root)
-    except registry.RegistryError as error:
-        raise OperatorError(str(error), code=EXIT_USER) from None
+    except registry.RegistryError as problem:
+        raise OperatorError(str(problem), code=EXIT_USER) from None
     default = known.slug if known is not None else registry.normalize_slug(repo_root.name)
     error: str | None = None
 

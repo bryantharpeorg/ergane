@@ -74,6 +74,8 @@ re-run, and the mutation reverted.  Verbatim last lines:
     manifest_status() always returns "valid"           2 failed, 31 passed
     register() never raises SlugCollision              2 failed, 31 passed
     `repo rebuild` prints nothing about what it pruned 1 failed, 32 passed
+    the slug is neither normalized nor validated        2 failed, 25 passed
+                                                        (registry file only)
 
 Every mutation is caught, and the two large numbers are the two claims the whole
 story rests on: a registry that is never written fails 16 of these, and there is
@@ -302,6 +304,46 @@ def test_reregistering_the_same_repo_under_the_same_slug_is_a_no_op(
     after = registry.resolve_registry_path().read_bytes()
 
     assert before == after
+
+
+def test_an_awkward_directory_name_yields_a_proposed_slug_the_operator_accepts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Edge case: the directory name is normalized as a *proposal* (D-009).
+
+    The operator presses Enter; the accepted proposal is what is registered, and
+    it is a token that can be woven into a workflow ID.
+    """
+    repo = make_repo(tmp_path, "My App")
+    answers = answers_for("")
+    answers[-1] = ""  # press Enter at the slug question
+
+    prompter = ScriptedPrompter(answers)
+    monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
+    result = _invoke(["init", str(repo)])
+
+    assert result.code == EXIT_OK, result.stderr
+    slugs = {entry.slug for entry in registry.load_registry().entries}
+    assert slugs == {"my-app"}
+    assert registry.is_valid_slug("my-app")
+
+
+def test_an_unusable_slug_is_re_asked_rather_than_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-007: nothing that cannot name a workflow reaches the registry."""
+    repo = make_repo(tmp_path, "app")
+    answers = answers_for("My App")
+    answers.append("myapp")  # the corrected answer, after the re-ask
+
+    prompter = ScriptedPrompter(answers)
+    monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
+    result = _invoke(["init", str(repo)])
+
+    assert result.code == EXIT_OK, result.stderr
+    assert prompter.answers == [], "the re-ask never happened"
+    slugs = {entry.slug for entry in registry.load_registry().entries}
+    assert slugs == {"myapp"}
 
 
 # -----------------------------------------------------------------------------
