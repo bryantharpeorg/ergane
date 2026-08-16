@@ -340,15 +340,53 @@ comment block in the test file.
 3. **Given** an existing schedule for the slug, **When** init re-runs
    unchanged, **Then** it reports the schedule already-satisfied and changes
    nothing — same idempotence contract as every other act in this spec.
-4. **Given** a registered repo with a schedule, **When** `ergane repo
+<!-- Scenarios 4-6 moved to US7 on 2026-08-16 by the operator session. US6 was
+built whole and came in at 82,173 bytes against the 61,440-byte judge refusal
+(`factory/verify/diffbounds.py:38`), which is a deterministic pre-judge refusal,
+so the work could not land at all. The implementing session got it from 103 KB to
+82 KB and reported the remainder as a fact about the story rather than the
+writing: US6 as written implemented four functional requirements and added a
+subsystem, a manifest key, a CLI verb and a readiness finding, where the sibling
+stories that landed near 60 KB each extended one existing surface. The split
+follows the seam the session named — creation and reconciliation on one side,
+the readiness finding and forget on the other, with the second importing
+`factory/roadmap/schedule.py` unchanged. -->
+
+---
+
+### User Story 7 - A repo without a scheduler does not read as ready, and forgetting a repo stops its schedule (Priority: P2)
+
+As an operator, the readiness check tells me when a joined repo's scheduler is
+missing, paused or pointed somewhere else, and forgetting a repo takes its
+schedule with it. US6 makes the schedule exist; this story makes its absence
+visible and its removal complete.
+
+**Why this priority**: P2 rather than US6's P1 because a repo whose schedule was
+created correctly dispatches without either half of this. What this story
+prevents is the quiet cases — a schedule an operator paused months ago and
+forgot, and a schedule still firing at a repo the engine no longer knows, against
+a specs root that may no longer exist.
+
+**Independent Test**: breaking the schedule one way at a time — deleting it,
+pausing it, repointing its specs root — flips exactly that finding and no other;
+`ergane repo forget` leaves no schedule behind; and an unreachable control plane
+loses neither the scaffold nor the registry entry.
+
+**Evidence rule**: as US6 — live behaviour is met by tool output pasted verbatim,
+and the transcript must name the namespace it ran against so a reader can see it
+was not production.
+
+**Acceptance Scenarios**:
+
+1. **Given** a registered repo with a schedule, **When** `ergane repo
    forget` runs, **Then** the schedule is deleted. A schedule that keeps
    firing at a repo the engine has forgotten dispatches work nobody is
    watching, against a specs root that may no longer exist.
-5. **Given** a repo whose schedule is missing, paused, or pointed at a
+2. **Given** a repo whose schedule is missing, paused, or pointed at a
    different specs root, **When** `ergane init --check` runs, **Then** a
    finding reports it and names the remedy — a joined repo with no
    scheduler must not read as ready.
-6. **Given** a control plane that cannot be reached, **When** init runs,
+3. **Given** a control plane that cannot be reached, **When** init runs,
    **Then** the scaffold and registry still complete and the schedule step
    reports as failed with the reason — the repo-local work must not be lost
    to an unreachable engine.
@@ -546,10 +584,14 @@ US4:
 US6:
   depends_on: []
   depends_on_merged: [US4]
-  implements: [FR-014, FR-015, FR-016, FR-017]
-US5:
+  implements: [FR-014, FR-015]
+US7:
   depends_on: []
   depends_on_merged: [US6]
+  implements: [FR-016, FR-017]
+US5:
+  depends_on: []
+  depends_on_merged: [US7]
   implements: [FR-013]
 ```
 
