@@ -9,6 +9,14 @@ lives under `repo` because the runtime root is a repository-local state tree,
 and putting it here keeps it visible rather than burying it inside an unrelated
 verb.
 
+`forget` (034 US6, FR-016) is registration's inverse: it deletes the repo's
+roadmap schedule and then removes the registry entry, in that order.  The order
+is the contract — a control plane that will not answer refuses the whole verb
+rather than leaving a schedule firing at a repo the engine has forgotten, which
+would dispatch work nobody is watching against a specs root that may no longer
+exist.  Nothing in the repository itself is touched: the manifest, the gitignore
+line and `.ergane/` belong to it.
+
 `list` and `rebuild` (034 US2) are the registry's two faces.  `list` renders
 every entry *with its manifest status*, so a repo whose manifest was deleted
 after registration shows as drifted rather than disappearing — the cache reports
@@ -36,6 +44,7 @@ from factory.activities import roadmap_activities
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
 from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue.gh import GhClient
+from factory.roadmap import schedule as roadmap_schedule
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
     DEFAULT_TEMPORAL_NAMESPACE,
@@ -151,6 +160,29 @@ def add_repo_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
     )
     rebuild_parser.set_defaults(run=repo_rebuild_command)
 
+    forget_parser = verbs.add_parser(
+        "forget",
+        help="remove a repository's registry entry and its roadmap schedule",
+        description=(
+            "Delete the repository's roadmap schedule from the control plane "
+            "and remove its registry entry.  The repository's own files - the "
+            "manifest, the .gitignore line and .ergane/ - are left exactly as "
+            "they are; removing them is the operator's git work."
+        ),
+    )
+    forget_parser.add_argument("slug", help="the slug the repository is registered under")
+    forget_parser.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=registry.DEFAULT_LOCK_TIMEOUT_S,
+        metavar="SECONDS",
+        help=(
+            "how long to wait for another writer to release the registry lock "
+            f"before refusing (default: {registry.DEFAULT_LOCK_TIMEOUT_S:g})"
+        ),
+    )
+    forget_parser.set_defaults(run=repo_forget_command)
+
     return parser
 
 
@@ -239,6 +271,55 @@ def repo_rebuild_command(args: argparse.Namespace) -> int:
         print(f"pruned {slug} ({path} is gone)")
     kept = len(result.kept)
     print(f"{kept} {'entry' if kept == 1 else 'entries'} kept, {len(result.pruned)} pruned")
+    return EXIT_OK
+
+
+def repo_forget_command(args: argparse.Namespace) -> int:
+    """Delete the repo's schedule, then its registry entry - in that order.
+
+    The schedule goes first because the failure this verb exists to prevent is
+    an orphan: a schedule still ticking at a specs root no entry explains.  So a
+    control plane that cannot be reached refuses the whole verb and says the
+    entry is unchanged, rather than removing the entry and leaving the schedule
+    to dispatch unwatched work.
+    """
+    slug = str(args.slug)
+    try:
+        entry = registry.load_registry().get(slug)
+    except registry.RegistryError as error:
+        raise OperatorError(str(error), code=EXIT_USER) from None
+
+    if entry is None:
+        raise OperatorError(
+            f"no repository is registered as {slug!r}; "
+            "`ergane repo list` names the ones that are",
+            code=EXIT_USER,
+        )
+
+    schedule_id = roadmap_schedule.schedule_id_for(slug)
+    try:
+        deleted = roadmap_schedule.remove_schedule(schedule_id)
+    except roadmap_schedule.ScheduleUnavailable as unavailable:
+        raise OperatorError(
+            f"{unavailable}; refusing to forget {slug!r} while its roadmap "
+            f"schedule {schedule_id} may still be firing - a schedule with no "
+            "registry entry dispatches work nobody is watching.  The entry is "
+            "unchanged; re-run this once the control plane answers",
+            code=EXIT_USER,
+        ) from None
+
+    try:
+        registry.forget(slug, timeout_s=float(args.lock_timeout))
+    except registry.RegistryError as error:
+        raise OperatorError(str(error), code=EXIT_USER) from None
+    except LockUnavailable as error:
+        raise OperatorError(_lock_refusal(error), code=EXIT_USER) from None
+
+    if deleted:
+        print(f"deleted roadmap schedule {schedule_id}")
+    else:
+        print(f"no roadmap schedule {schedule_id} existed")
+    print(f"forgot {slug} ({entry.path}); the repository itself is untouched")
     return EXIT_OK
 
 

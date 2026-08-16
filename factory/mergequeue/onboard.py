@@ -51,6 +51,12 @@ commits its own transcripts onto a landing branch), `runtime_root_migration`
 `landing_branch`, and one `control_plane` summary over 033's probes — a summary
 because the control plane is a property of the host rather than of this repo,
 and `ergane install --verify` renders its checks individually.
+
+**034 US6 adds one more**: `roadmap_schedule`, failing when the repo has no
+Temporal schedule, when the one it has is paused, and when that schedule's
+arguments disagree with the committed manifest. Here rather than in a second
+judgment for the reason the rest of this module exists — "ready" is decided in
+exactly one place, and a joined repo with no scheduler is not ready.
 """
 
 from __future__ import annotations
@@ -90,6 +96,18 @@ class InitFacts:
     #: 033's probe findings, carried through rather than re-derived.
     control_plane: tuple[Finding, ...] = field(default_factory=tuple)
     control_plane_error: str | None = None
+    #: 034 US6.  The schedule this repo's slug names, and what is wrong with it.
+    #: The defaults fail closed on purpose: a caller that gathered nothing has
+    #: not established that a scheduler exists, and a repo with no scheduler is
+    #: one whose `ready` specs dispatch nothing.
+    schedule_id: str = ""
+    schedule_present: bool = False
+    schedule_paused: bool = False
+    #: One line per declared field the live schedule states differently.
+    schedule_drift: tuple[str, ...] = field(default_factory=tuple)
+    #: Why the schedule could not be read at all — unreachable engine, or no
+    #: registry entry naming the slug that would identify it.
+    schedule_error: str | None = None
 
 
 def evaluate_repo(
@@ -304,6 +322,7 @@ def evaluate_init_facts(init_facts: "InitFacts | None") -> tuple[Finding, ...]:
     _registry_finding(findings, init_facts)
     _landing_branch_finding(findings, init_facts)
     _control_plane_finding(findings, init_facts)
+    _roadmap_schedule_finding(findings, init_facts)
     return tuple(findings)
 
 
@@ -469,5 +488,68 @@ def _control_plane_finding(findings: list[Finding], facts: "InitFacts") -> None:
             False,
             f"{len(failed)} of {len(facts.control_plane)} control-plane probes "
             f"failed — {'; '.join(reasons)}",
+        )
+    )
+
+
+def _roadmap_schedule_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """The repo must have a scheduler, running, pointed here (034 FR-016).
+
+    One finding whose detail names *every* problem found rather than the first:
+    a schedule both paused and drifted has two things wrong with it, and naming
+    only one would be the masking this judgment forbids.  Each failure ends in
+    the command that fixes it — the operator reading it is at a terminal.
+    """
+    if facts.schedule_error is not None:
+        findings.append(
+            Finding(
+                "roadmap_schedule",
+                False,
+                "this repository's roadmap schedule could not be judged: "
+                f"{facts.schedule_error}",
+            )
+        )
+        return
+
+    if not facts.schedule_present:
+        findings.append(
+            Finding(
+                "roadmap_schedule",
+                False,
+                f"no roadmap schedule '{facts.schedule_id}' exists on the control "
+                f"plane, so no tick will ever dispatch {facts.repo_root}'s specs — "
+                f"run `ergane init {facts.repo_root}` to create it; flipping a spec "
+                "to `ready` without one does nothing, with no error",
+            )
+        )
+        return
+
+    problems: list[str] = []
+    if facts.schedule_paused:
+        problems.append(
+            "it is paused, so no tick will start a run — resume it with "
+            "`ergane roadmap resume <specs root>` when you mean dispatch to run"
+        )
+    for line in facts.schedule_drift:
+        problems.append(line)
+
+    if not problems:
+        findings.append(
+            Finding(
+                "roadmap_schedule",
+                True,
+                f"roadmap schedule '{facts.schedule_id}' is running and matches "
+                "the manifest",
+            )
+        )
+        return
+
+    remedy = f" — re-run `ergane init {facts.repo_root}`" if facts.schedule_drift else ""
+    findings.append(
+        Finding(
+            "roadmap_schedule",
+            False,
+            f"roadmap schedule '{facts.schedule_id}' disagrees with this "
+            f"repository: {'; '.join(problems)}{remedy}",
         )
     )
