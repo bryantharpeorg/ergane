@@ -120,15 +120,13 @@ from factory.mergequeue.models import Finding
 def _no_ambient_temporal(monkeypatch: pytest.MonkeyPatch) -> None:
     """Bind the Temporal environment for every test in this file (048-US4).
 
-    Until US4 `verify.py` read the config first, and since the parser *requires*
-    `temporal.address` the environment half never ran — so every test below could
+    Until US4 `verify.py` read the config first, so every test below could
     inherit the operator's exports and not care. Under the one precedence the
     environment wins, and that is not only a red suite: with
-    `scripts/ergane-env.sh` loaded, `test_verify_all_subsystems_pass` would point
-    the probe at the operator's *live* Temporal instead of the ephemeral double
-    it started. `tests/conftest.py`'s session isolation does not cover these two
-    variables. Autouse, so the next Temporal test added here inherits the
-    protection rather than having to remember it.
+    `scripts/ergane-env.sh` loaded, `test_verify_all_subsystems_pass` would
+    point the probe at the operator's *live* Temporal instead of the ephemeral
+    double it started, and `tests/conftest.py` does not cover these two
+    variables. Autouse, so the next Temporal test here inherits the protection.
     """
     monkeypatch.delenv("TEMPORAL_ADDRESS", raising=False)
     monkeypatch.delenv("TEMPORAL_NAMESPACE", raising=False)

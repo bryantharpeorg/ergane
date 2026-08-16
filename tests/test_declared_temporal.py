@@ -1,26 +1,22 @@
 """048-US4: Temporal connects to what was declared.
 
 US1 built the precedence and pointed it at the LLM gateway. This story points
-the *same* precedence at `temporal.address` and `temporal.namespace`, so one
-rule holds everywhere: the environment overrides the declaration, and the
-declaration is consulted only where the environment is silent.
+the *same* precedence at `temporal.address` and `temporal.namespace`: the
+environment overrides the declaration, and the declaration is consulted only
+where the environment is silent. Three properties shape the tests below.
 
-Three properties of the tests below decide their shape:
-
-- **The fixture config and the fixture environment disagree on every value they
-  both carry** (plan traps 5 and 8) — four distinct strings. If they agreed, no
-  test here could tell which source was consulted.
-- **Every test binds the config path explicitly**, so none resolves the
-  operator's real `~/.config/ergane/config.toml` (FR-012, plan trap 4):
-  `resolve_config_path()` falls back to `$XDG_CONFIG_HOME` then `Path.home()`,
-  a file that exists on this host and not on the grader's.
+- **The fixture config and environment disagree on every value they both
+  carry** (plan traps 5 and 8) — four distinct strings. If they agreed, no test
+  here could tell which source was consulted.
+- **Every test binds the config path explicitly**, so none reads the operator's
+  real `~/.config/ergane/config.toml` (FR-012, plan trap 4) — a file that exists
+  on this host and not on the grader's.
 - **Every test deletes both `TEMPORAL_*` variables before asserting anything
-  about the declared route.** `scripts/ergane-env.sh` exports them here, so a
-  test that inherited them would measure the shell.
+  about the declared route**, since `scripts/ergane-env.sh` exports them here
+  and a test inheriting them would measure the shell.
 
-Unlike the gateway, Temporal has a third source — a built-in default — so
-resolution refuses only for a config the parser rejects (US1's FR-005 shape,
-one subsystem over).
+Temporal also has a third source, a built-in default, so resolution refuses
+only for a config the parser rejects (US1's FR-005 shape).
 
 Runtime evidence is pasted verbatim at the bottom (constitution VIII / D-037).
 """
@@ -61,10 +57,10 @@ DECLARED_KEY_VAR = "DECLARED_KEY_VAR"
 def _write_config(tmp_path: Path) -> Path:
     """A complete, parseable config at a bound path.
 
-    All five blocks, because the parser requires all five — and `address` and
-    `namespace` are both required when `temporal.mode = "external"`. A fixture
-    omitting either is refused, and that refusal presents as US1's broken-config
-    error rather than as anything about Temporal (plan trap 12b).
+    All five blocks, since the parser requires all five — and `address` and
+    `namespace` are both required under `temporal.mode = "external"`. A fixture
+    omitting either is refused as US1's broken-config error, which sends you
+    hunting in the wrong module (plan trap 12b).
     """
     path = tmp_path / "config.toml"
     path.write_text(
@@ -117,8 +113,8 @@ def test_the_environment_overrides_the_declaration_for_both_values(
     """US4-S2, FR-015: a host exporting both variables resolves exactly as today.
 
     Written first, and the acceptance condition rather than a nicety (plan
-    trap 1): the worker here reads both variables from `scripts/ergane-env.sh`
-    with no config file behind them, and a change requiring this machine to be
+    trap 1): the worker here reads both from `scripts/ergane-env.sh` with no
+    config file behind them, and a change requiring this machine to be
     re-provisioned to keep polling would be a failed change.
     """
     config_path = _write_config(tmp_path)
@@ -165,7 +161,7 @@ def test_each_value_resolves_on_its_own_rather_than_as_a_block(
 ) -> None:
     """A host that exports one variable and declares the other reports both truthfully.
 
-    The precedence is per *value*, not per subsystem. A resolver that took the
+    The precedence is per *value*, not per subsystem: a resolver taking the
     environment's whole answer the moment any one variable was set would pass
     every other test in this file and fail only here.
     """
@@ -189,9 +185,8 @@ def test_neither_source_falls_back_to_the_built_in_defaults(
 ) -> None:
     """US4-S4: an unprovisioned host with no config keeps the pre-048 behaviour.
 
-    The expected values are imported from `factory/notify/service.py` rather
-    than restated: a test spelling `"localhost:7233"` out would still pass if a
-    site grew its own copy, which is what US4-S4's second half forbids.
+    The expected values are imported rather than restated: a test spelling
+    `"localhost:7233"` out would still pass if a site grew its own copy.
     """
     _no_overrides(monkeypatch)
     missing = tmp_path / "config.toml"
@@ -235,8 +230,8 @@ def test_a_config_the_parser_refuses_surfaces_the_parsers_own_reason(
     """FR-005 one subsystem over: refuse for a broken config, degrade for a missing one.
 
     Falling back to `localhost:7233` because the file would not parse is the
-    worse half of this defect: a worker polling a server the operator never
-    named, silently (plan trap 3).
+    worse half of this defect: a worker silently polling a server the operator
+    never named (plan trap 3).
     """
     broken = tmp_path / "config.toml"
     broken.write_text('version = 1\n[temporal\nmode = "external"\n', encoding="utf-8")
@@ -282,16 +277,14 @@ async def test_the_verify_probe_dials_the_address_the_worker_would_use(
     """US4-S3, FR-016, SC-006: the story's reason to exist.
 
     `verify.py` read the config *first* — the opposite precedence from the rest
-    of the tree, and the only two such sites in it (plan trap 13). Where the two
-    disagreed, `ergane install --verify` probed one server while the worker
-    connected to another: a green check about a machine nothing runs on, and
-    worse than the parent defect because the parent fails loudly at the first
-    build and this one never fails at all.
+    of the tree (plan trap 13). Where the two disagreed, `ergane install
+    --verify` probed one server while the worker connected to another: a green
+    check about a machine nothing runs on, and worse than the parent defect,
+    which at least fails loudly at the first build.
 
-    Asserted against the fixture *literal*, never a second call to the
-    resolver: comparing the probe's address to `resolve_temporal_target()`
-    would compare the production code with itself and survive a mutation that
-    moved both.
+    Asserted against the fixture *literal*, never a second call to the resolver,
+    which would compare the production code with itself and survive a mutation
+    moving both.
     """
     from factory.controlplane.config import load_controlplane_config
     from factory.controlplane import verify as verify_module
@@ -315,8 +308,7 @@ async def test_the_probe_snapshot_names_the_server_it_actually_dialed(
     """SC-006: gather resolves once, so its report and its dial cannot disagree.
 
     `gather` resolved the target and `_temporal_client_factory` resolved it
-    again, independently. Two copies of one rule agree only by luck; this pins
-    that the address the finding names is the address the connect was given.
+    again, independently — two copies of one rule agree only by luck.
     """
     from factory.controlplane.config import load_controlplane_config
     from factory.controlplane import verify as verify_module
@@ -409,7 +401,7 @@ def test_no_connect_site_keeps_its_own_copy_of_the_temporal_contract() -> None:
     Four sites carried hardcoded `"TEMPORAL_ADDRESS"` / `"localhost:7233"` and
     agreed with the constants by luck: the day `DEFAULT_TEMPORAL_ADDRESS`
     changes, the copies keep dialing the old one. Both routes are checked
-    together because closing one alone leaves the other wide open.
+    together because closing one leaves the other wide open.
     """
     factory_root = Path(__file__).resolve().parent.parent / "factory"
     offenders: list[str] = []
@@ -520,10 +512,9 @@ def test_the_version_banner_reports_the_declared_control_plane(
 ) -> None:
     """Plan trap 12b: US1 left `cli/main.py:154` reading `os.environ` directly.
 
-    So `ergane --version` answered "not configured" about a gateway just
-    declared, and named `localhost:7233` on a host whose config said otherwise.
-    A banner that reads a different source than the dispatch path is a
-    diagnostic that lies — the class 048 exists to close.
+    So `ergane --version` said "not configured" about a gateway just declared,
+    and named `localhost:7233` on a host whose config said otherwise. A banner
+    reading a different source than the dispatch path is a diagnostic that lies.
     """
     from factory.cli.main import _version_text
 
@@ -561,3 +552,61 @@ def test_the_version_banner_still_says_not_configured_with_nothing_declared(
     assert "not configured" in banner
     assert DEFAULT_TEMPORAL_ADDRESS in banner
     assert DEFAULT_TEMPORAL_NAMESPACE in banner
+
+
+# === Runtime evidence (constitution VIII / D-037): pasted, not described. ===
+#
+# --- Red, before the resolver knew what Temporal was ------------------------
+#
+#   $ uv run pytest -q tests/test_declared_temporal.py
+#   E   ImportError: cannot import name 'resolve_temporal_target' from
+#       'factory.controlplane.resolve'
+#   1 error in 0.08s
+#
+# A collection error only says a module is absent; with the resolver added and
+# no site yet moved the split was sharper: `8 failed, 7 passed in 0.20s`.
+#
+# --- Mutation testing, one per behaviour ------------------------------------
+#
+# Both ran against the COMMITTED implementation, so `git checkout --` reverted
+# to a green tree rather than an unimplemented one; both ended `tree after
+# battery: clean`. Counts are tests killed in this file.
+#
+#   $ uv run pytest -q tests/test_declared_temporal.py [+ the file mutated]
+#
+#   M1  precedence inverted             3 | M10  --sources drops Temporal  6
+#   M2  declaration never runs           5 | M11  banner back to os.environ 2
+#   M3  declared source mislabelled      3 | M12  broken config swallowed   2
+#   M4b either var takes the block       1 | M13  config read though set    2
+#   M5  defaults hardcoded again         2 | M13b M13 + precedence inverted 6
+#   M6  verify.py back to config-first   3 | M14  a site drops the resolver 1
+#   M7  gather resolves apart from dial  2 | M15  the bridge drops it       1
+#   M8  a site keeps reading os.environ  1 | M9   a site spells literals    1
+#
+# All fourteen tests here are killed by at least one mutation. Two results kept
+# rather than tidied away: the first M4 SURVIVED, because it made the *address*
+# fall back to the namespace variable while the test that would notice leaves
+# the namespace unset — wrong mutation, not a weak test. And override-wins
+# needed M13b, not a plain inversion: with both variables set the config is
+# never *opened*, so reordering branches changes nothing. FR-002 working.
+#
+# --- The probe and the worker, on one host (SC-006) -------------------------
+#
+# Under `env -i` with a scratch HOME; the config declares 127.0.0.1:2, and
+# nothing below touched the operator's config or runtime root.
+#
+#   $ ... TEMPORAL_ADDRESS=127.0.0.1:3 ergane install --verify
+#   [FAIL] temporal: Temporal at 127.0.0.1:3 did not answer: ... ConnectError
+#   ("tcp connect error", 127.0.0.1:3, ... kind: ConnectionRefused ...)
+#
+#   $ ... ergane install --verify          # same config, no override
+#   [FAIL] temporal: Temporal at 127.0.0.1:2 did not answer: ... 127.0.0.1:2 ...
+#
+# The refused connection is the evidence: the probe did not merely name that
+# address, it dialed it. Both runs dialed 127.0.0.1:2 before this story —
+# `temporal.address` is parser-required, so config-first never fell back.
+#
+# --- The full suite, on the tree in this diff -------------------------------
+#
+#   $ uv run pytest -q
+#   2842 passed, 44 skipped, 5 warnings in 297.31s (0:04:57)

@@ -329,11 +329,11 @@ def test_importing_the_worker_connects_to_nothing() -> None:
         for alias in statement.names
     }
     # One deployment story rather than one per process (R12), now stated as the
-    # resolver rather than as two variable names. 048-US4 moved every connect
-    # site behind `resolve_temporal_target`, which still reads those variables
-    # first, so this host's worker polls exactly what it polled before.
-    # Asserting the old imports would pin the *narrower* property: that the
-    # worker reads the environment and nothing else.
+    # resolver rather than two variable names. 048-US4 moved every connect site
+    # behind `resolve_temporal_target`, which still reads those variables first,
+    # so this host's worker polls what it polled before. Asserting the old
+    # imports would pin the *narrower* property: that the worker reads the
+    # environment and nothing else.
     assert ("factory.controlplane.resolve", "resolve_temporal_target") in imported
     assert not any(
         module == "factory.notify.service"

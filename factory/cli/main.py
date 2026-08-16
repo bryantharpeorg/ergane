@@ -146,15 +146,11 @@ def _version_text() -> str:
     except Exception:
         revision = "unknown"
 
-    # 048-US4, plan trap 12b. All three lines read `os.environ` directly, so on
-    # a host that had completed `ergane install` the banner named
-    # `localhost:7233` and called the gateway "not configured" — about a control
-    # plane the operator had just declared. A banner that reads a different
-    # source than the dispatch path is a diagnostic that lies.
-    #
-    # A broken config must not stop `--version` answering: this is the command
-    # an operator runs to find out what they have. The refusal is rendered in
-    # place of the values instead.
+    # 048-US4, plan trap 12b. All three lines read `os.environ`, so on a host
+    # that had completed `ergane install` the banner named `localhost:7233` and
+    # called the gateway "not configured" — about a control plane just declared.
+    # A broken config must not stop `--version` answering, though: it is the
+    # command run to find out what you have, so the refusal replaces the values.
     try:
         target = resolve_temporal_target()
         temporal_address, temporal_namespace = target.address, target.namespace

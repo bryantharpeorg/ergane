@@ -194,10 +194,8 @@ def _temporal_address() -> tuple[str, str]:
 def _temporal_namespace() -> tuple[str, str]:
     """The resolved Temporal namespace and the source that supplied it.
 
-    Resolved separately from the address: a host that exports `TEMPORAL_ADDRESS`
-    and declares its namespace is exactly the host this report exists for, and
-    reporting the pair together would pick one winner for two values that
-    resolved independently.
+    Resolved separately from the address: a host exporting `TEMPORAL_ADDRESS`
+    and declaring its namespace is the host this report exists for.
     """
     target = resolve_temporal_target()
     return target.namespace, target.namespace_source

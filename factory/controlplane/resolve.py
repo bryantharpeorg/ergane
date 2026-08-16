@@ -209,8 +209,8 @@ def resolve_master_key_env(
 # --- Temporal: the same precedence, a second pair of values (048-US4) ---------
 
 #: The label a value carries when neither the environment nor the declaration
-#: supplied it. Temporal differs from the gateway in having a third source at
-#: all, so "nothing declared" is not a refusal here the way it is above.
+#: supplied it. Temporal has a third source at all, so "nothing declared" is not
+#: a refusal here the way it is above.
 DEFAULT_SOURCE = "built-in default"
 
 
@@ -218,9 +218,9 @@ DEFAULT_SOURCE = "built-in default"
 class TemporalTarget:
     """Where Temporal is, and which source won for each half.
 
-    Address and namespace resolve *independently*: a resolver that took the
-    environment's whole answer the moment either variable was set would report
-    a namespace nobody chose.
+    Address and namespace resolve *independently*: a resolver taking the
+    environment's whole answer the moment either variable was set would report a
+    namespace nobody chose.
     """
 
     address: str
@@ -239,7 +239,7 @@ def resolve_temporal_target(
 
     Same direction as the gateway above. Eleven operational sites read
     `os.environ` directly before this existed, so an operator who declared an
-    address still had to export `TEMPORAL_ADDRESS` before anything connected.
+    address still had to export `TEMPORAL_ADDRESS` for anything to connect.
     """
     env = os.environ if environ is None else environ
     address_env, namespace_env = _temporal_env_names()
@@ -257,14 +257,12 @@ def temporal_target_for(
 ) -> TemporalTarget:
     """Apply the precedence to a declaration the caller already parsed.
 
-    For `factory/controlplane/verify.py`, which `ergane install --verify`
-    points at one specific file that it has already loaded — re-reading
-    `resolve_config_path()` there would verify a *different* config than the
-    one named on the command line.
-
+    For `factory/controlplane/verify.py`, pointed at one specific file it has
+    already loaded: re-reading `resolve_config_path()` there would verify a
+    *different* config than the one named on the command line.
     `resolve_temporal_target` is written in terms of this, so it is the same
-    function the operational path runs rather than a second copy of the rule.
-    That is what makes FR-016 structural: one function decides both.
+    function the operational path runs rather than a second copy of the rule —
+    which is what makes FR-016 structural: one function decides both.
     """
     env = os.environ if environ is None else environ
     address_env, namespace_env = _temporal_env_names()
@@ -309,10 +307,10 @@ def _temporal_env_names() -> tuple[str, str]:
     """The two variable names, imported from where they are defined.
 
     Function-local on purpose: `factory/notify/service.py` costs 250 modules
-    (measured), and this module is reached from `LiteLLMClient.from_env` on
-    every CLI path and every activity. A module-scope import would also run
+    (measured) and this module is reached from `LiteLLMClient.from_env` on every
+    CLI path and activity, and a module-scope import would also run
     `factory.notify.adapter`'s control-plane import during
-    `factory.controlplane`'s initialisation — plan trap 11's neighbourhood.
+    `factory.controlplane`'s own — plan trap 11's neighbourhood.
     `factory/roadmap/schedule.py` does the same, for the same reason.
     """
     from factory.notify.service import TEMPORAL_ADDRESS_ENV, TEMPORAL_NAMESPACE_ENV

@@ -29,8 +29,8 @@ from factory.controlplane.resolve import temporal_target_for
 from factory.mergequeue.models import Finding
 from factory.usage.litellm_client import LiteLLMClient
 
-#: What a Temporal value's source is called when this module resolved it.
-#: Nothing renders it — findings report the address, never where it came from.
+#: What a Temporal value's source is called here. Nothing renders it: findings
+#: report the address, never where it came from.
 _DECLARED_SOURCE = "the control-plane config"
 
 
@@ -119,13 +119,12 @@ async def _temporal_client_factory(config: ControlPlaneConfig.Temporal) -> Any:
 
     This read `config.address or os.environ.get("TEMPORAL_ADDRESS", ...)` — the
     config *first*, one of only two such sites in the tree. Since the parser
-    requires `temporal.address` the fallback never fired, so the probe always
-    dialed the declared address and ignored `TEMPORAL_ADDRESS` outright: on a
-    host where the two disagreed, `ergane install --verify` reported on one
-    server while the worker connected to another (FR-016, SC-006).
-
-    `temporal_target_for` rather than `resolve_temporal_target` because the
-    caller was pointed at one specific file and has already parsed it.
+    requires `temporal.address` the fallback never fired, so the probe dialed
+    the declared address and ignored `TEMPORAL_ADDRESS` outright: where the two
+    disagreed, `ergane install --verify` reported on one server while the worker
+    connected to another (FR-016, SC-006). `temporal_target_for` rather than
+    `resolve_temporal_target` because the caller was pointed at one specific
+    file and has already parsed it.
     """
     from temporalio.client import Client
 
@@ -300,8 +299,7 @@ class TemporalProbe:
         from temporalio.service import RPCError, RPCStatusCode
 
         # Resolved once, and the same resolution the connect below is built
-        # from, so the address this finding names and the address it dialed
-        # cannot differ (048-US4, SC-006).
+        # from, so the address this finding names is the one it dialed (SC-006).
         target = temporal_target_for(config.temporal, source=_DECLARED_SOURCE)
         address, namespace = target.address, target.namespace
         timeout = config.temporal.timeout_s

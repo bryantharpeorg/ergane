@@ -46,8 +46,8 @@ from factory.env import ERGANE_CONFIG_PATH_ENV, FACTORY_CONFIG_PATH_ENV
 from factory.notify.service import TEMPORAL_ADDRESS_ENV, TEMPORAL_NAMESPACE_ENV
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 
-#: What the fixture config's `[temporal]` block declares. 048-US4 added these
-#: two to the report, so tests counting resolved values count four, not two.
+#: What the fixture `[temporal]` block declares. 048-US4 added these two to the
+#: report, so tests counting resolved values count four, not two.
 DECLARED_TEMPORAL_ADDRESS = "declared.temporal.test:7233"
 DECLARED_TEMPORAL_NAMESPACE = "declared"
 
@@ -152,8 +152,8 @@ def _no_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove every override variable this repository's own shell exports.
 
     All four since 048-US4: `scripts/ergane-env.sh` exports both `TEMPORAL_*`
-    names too, and now that they can win a value, a test leaving them set would
-    report on the shell rather than on the fixture config (plan trap 4).
+    names too, and a test leaving them set would report on the shell rather
+    than on its own fixture config (plan trap 4).
     """
     monkeypatch.delenv(PROXY_URL_ENV, raising=False)
     monkeypatch.delenv(MASTER_KEY_ENV, raising=False)
@@ -184,8 +184,7 @@ def test_sources_names_the_config_when_the_declaration_wins(
     assert result.code == 0
     assert f"LLM gateway endpoint: {DECLARED_BASE_URL}" in result.stdout
     assert f"LLM gateway credential variable: {DECLARED_KEY_VAR}" in result.stdout
-    # 048-US4 added Temporal's two values, so a declared host now has four
-    # values sourced to its config rather than two.
+    # 048-US4 added Temporal's two values: four sourced to the config, not two.
     assert f"Temporal address: {DECLARED_TEMPORAL_ADDRESS}" in result.stdout
     assert f"Temporal namespace: {DECLARED_TEMPORAL_NAMESPACE}" in result.stdout
     # The config path is named as the winning source once per value.
@@ -217,10 +216,9 @@ def test_sources_names_the_environment_when_the_override_wins(
     monkeypatch.setenv(PROXY_URL_ENV, OVERRIDE_BASE_URL)
     monkeypatch.setenv(MASTER_KEY_ENV, SENTINEL_CREDENTIAL)
     monkeypatch.setenv(DECLARED_KEY_VAR, LOSING_CREDENTIAL)
-    # All four since 048-US4, set rather than inherited: the count at the end is
-    # of *values whose override won*, and leaving Temporal to the shell made it
-    # two on a bare host and four with `scripts/ergane-env.sh` loaded — a test
-    # whose answer depended on who ran it (plan trap 4).
+    # All four since 048-US4, set rather than inherited: the count below is of
+    # *values whose override won*, and leaving Temporal to the shell made it two
+    # on a bare host and four with `scripts/ergane-env.sh` loaded.
     monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, OVERRIDE_TEMPORAL_ADDRESS)
     monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, OVERRIDE_TEMPORAL_NAMESPACE)
 
@@ -265,10 +263,9 @@ def test_sources_does_not_open_the_config_when_the_override_wins(
     _bind_config(monkeypatch, broken)
     monkeypatch.setenv(PROXY_URL_ENV, OVERRIDE_BASE_URL)
     monkeypatch.setenv(MASTER_KEY_ENV, SENTINEL_CREDENTIAL)
-    # 048-US4: the claim is "the file was not opened", and it is opened per
-    # *value*. Overriding only the LLM pair would leave two values still
-    # reaching for the config, failing the assertions below against a resolver
-    # behaving exactly as FR-002 requires.
+    # 048-US4: the file is opened per *value*, so overriding only the LLM pair
+    # would leave two values still reaching for it — and fail the assertions
+    # below against a resolver behaving exactly as FR-002 requires.
     monkeypatch.setenv(TEMPORAL_ADDRESS_ENV, OVERRIDE_TEMPORAL_ADDRESS)
     monkeypatch.setenv(TEMPORAL_NAMESPACE_ENV, OVERRIDE_TEMPORAL_NAMESPACE)
 
@@ -367,9 +364,9 @@ def test_a_broken_config_is_reported_as_the_parsers_own_refusal(
 
     assert result.code == 0
     assert "LLM gateway endpoint: unresolved" in result.stdout
-    # Four values now, and a broken config refuses for each: a Temporal value
-    # quietly falling back to `localhost:7233` because the file would not parse
-    # is the worse half of this defect, not the forgiving one (048-US4).
+    # Four values now, and a broken config refuses for each: falling back to
+    # `localhost:7233` because the file would not parse is the worse half of
+    # this defect, not the forgiving one (048-US4).
     assert "Temporal address: unresolved" in result.stdout
     assert result.stdout.count("the control-plane config cannot be used") == 4
     assert str(broken) in result.stdout
