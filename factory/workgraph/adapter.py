@@ -57,11 +57,20 @@ import shutil
 import signal
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import FactoryConfigError, MANIFEST_NAME, load_factory_config, resolve_manifest_path
 from factory.verify.gates import BwrapGateExecutor, ordered_binds
+from factory.verify.toolchain import (
+    GIT,
+    NODE,
+    UV,
+    ResolvedTool,
+    ToolchainError,
+    container_path,
+    resolve_toolchain,
+)
 from factory.workgraph.detector import compare_and_report, capture_start
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
@@ -318,12 +327,17 @@ class BwrapBackend:
     parent repo's whole `.git` directory writable is therefore the chosen route;
     the working tree remains outside the boundary (trap 1).
 
-    The toolchain is bound read-only at the exact paths the agent needs:
-    `claude` is mounted by binding its symlink target at the symlink path so it is
-    not dangling inside the container; `uv`, `node` and `git` are bound as leaf
-    binaries. `PATH` inside the container names these bind points. No operator
-    home directory is exposed (trap 13); the factory-owned per-node home is the
-    only writable location beyond the worktree (trap 3).
+    The toolchain is *discovered*, not declared: `uv`, `node`, `git` and the
+    agent runner are resolved on the host at dispatch time and bound read-only
+    at the paths discovery returned, with `claude`'s symlink target mounted at
+    the symlink's own path so it is not dangling inside the container. `PATH`
+    inside the container is derived from those same resolutions, so it can only
+    name directories the mount set actually put there. The literals this used to
+    carry named one operator's home and two toolchain version numbers; both
+    failed as `bwrap: Can't find source path` after the fork, reaching the
+    operator as a diffless `agent_error`. See `factory.verify.toolchain`. No
+    operator home directory is exposed (trap 13); the factory-owned per-node
+    home is the only writable location beyond the worktree (trap 3).
 
     The process gets its own PID namespace (`--unshare-pid`) and bwrap dies with
     its parent (`--die-with-parent`) so the existing process-group kill reaches
@@ -342,22 +356,45 @@ class BwrapBackend:
     def _platform(self) -> str:
         return "linux"
 
-    def _toolchain_binds(self) -> list[tuple[str, str, str]]:
-        """Return read-only leaf binds for the agent's toolchain (trap 13).
+    def _toolchain(self) -> list[ResolvedTool]:
+        """Discover the agent's toolchain on this host, refusing by name on a miss.
 
-        Each tuple is (bwrap flag, host source, container destination). The
-        claude binary is a symlink in the operator's home; binding its target at
-        the symlink path keeps it usable inside the boundary.
+        All four are required: the previous version of this method bound all
+        four unguarded, so a host missing one already could not launch — the
+        difference is that it failed as ``bwrap: Can't find source path`` from a
+        forked process, reaching the operator as a diffless `agent_error`
+        instead of as the name of the tool that is not installed.
+
+        Nothing here is a literal. What used to sit in this method was one
+        operator's home and two version numbers, and both rotted: the agent
+        runner's store held `2.1.222`, `2.1.223` and `2.1.224` while this list
+        pinned the middle one, so the installer's next prune would have turned
+        every dispatch into that same mount error.
+
+        The order is load-bearing twice: it is the order the binds are listed
+        in, and `container_path` derives the container's `PATH` from it. It
+        matches the literal list this replaced, so on the host that ran the
+        literals the assembled argv is unchanged — proven by diffing the two.
         """
-        # These are the concrete paths that work on this host. A version bump
-        # that moves one will fail the corresponding launch with a named refusal
-        # rather than silently widening the mount set.
-        return [
-            ("--ro-bind", "/home/admin/.local/share/claude/versions/2.1.223", "/home/admin/.local/bin/claude"),
-            ("--ro-bind", "/home/admin/.local/bin/uv", "/home/admin/.local/bin/uv"),
-            ("--ro-bind", "/home/admin/.nvm/versions/node/v22.22.2/bin/node", "/home/admin/.nvm/versions/node/v22.22.2/bin/node"),
-            ("--ro-bind", "/usr/bin/git", "/usr/bin/git"),
-        ]
+        return resolve_toolchain(
+            (self.executable, UV, NODE, GIT),
+            purpose="the agent sandbox",
+        )
+
+    def _toolchain_binds(
+        self, tools: Sequence[ResolvedTool] | None = None
+    ) -> list[tuple[str, str, str]]:
+        """Read-only leaf binds for the agent's toolchain (trap 13).
+
+        Each tuple is (bwrap flag, host source, container destination). Source
+        and destination differ where the tool is a symlink: the agent runner is
+        a link in the operator's home pointing into a versioned install, and
+        binding the *resolved* file at the *link's* path is what keeps it from
+        dangling inside the boundary while the container's `PATH` still finds
+        it where it expects to.
+        """
+        resolved = self._toolchain() if tools is None else tools
+        return [("--ro-bind", source, dest) for source, dest in (tool.bind for tool in resolved)]
 
     def _build_argv(self, invocation: AgentInvocation) -> list[str]:
         """Assemble the bwrap command from the proven mount set."""
@@ -430,7 +467,11 @@ class BwrapBackend:
         # died with `Temporary failure in name resolution` before a single test
         # ran. The gate executor owns the definitions; reusing them is what
         # keeps the two mount sets from drifting apart again.
-        binds.extend(self._toolchain_binds())
+        # Resolved once and used twice — for these binds and for the container
+        # `PATH` below — so the mount set and the search path cannot name
+        # different directories.
+        tools = self._toolchain()
+        binds.extend(self._toolchain_binds(tools))
         gate_boundary = BwrapGateExecutor()
         for source, dest in gate_boundary._interpreter_binds(worktree):
             binds.append(("--ro-bind", source, dest))
@@ -454,15 +495,11 @@ class BwrapBackend:
             argv.extend(["--setenv", "UV_CACHE_DIR", dest])
 
         # PATH must name the bind points inside the container; inherited PATH
-        # points at host paths that may not be mounted.
-        container_path = ":".join(
-            [
-                "/home/admin/.local/bin",
-                "/home/admin/.nvm/versions/node/v22.22.2/bin",
-                "/usr/bin",
-            ]
-        )
-        argv.extend(["--setenv", "PATH", container_path])
+        # points at host paths that may not be mounted. Derived from the same
+        # resolutions the toolchain binds came from — a second list of literals
+        # here was the other half of the defect, because it could name a
+        # directory nothing had mounted.
+        argv.extend(["--setenv", "PATH", container_path(tools)])
 
         # Pass through the remaining allowlisted env vars from the invocation.
         for name in PASSTHROUGH_ENV:
@@ -548,7 +585,15 @@ class BwrapBackend:
                 f"{self._platform()}"
             )
 
-        argv = self._build_argv(invocation)
+        # Toolchain discovery happens inside `_build_argv`, so a host missing a
+        # tool refuses here — by name, before anything forks. `AdapterError` is
+        # the right class for it: infrastructure the operator has to fix, never
+        # a verdict, and never an attempt the ladder should spend.
+        try:
+            argv = self._build_argv(invocation)
+        except ToolchainError as error:
+            raise AdapterError(str(error)) from error
+
         try:
             return await asyncio.create_subprocess_exec(
                 *argv,
