@@ -57,7 +57,9 @@ from factory.activities.verify_activities import (
 )
 from factory.env import (
     ERGANE_CONFIG_PATH_ENV,
+    ERGANE_STATE_HOME_ENV,
     FACTORY_CONFIG_PATH_ENV,
+    FACTORY_STATE_HOME_ENV,
 )
 from tests.target_repo import add_worktree, build_target_repo
 
@@ -547,6 +549,13 @@ def _isolated_test_store(
     config = str(base / "session-ergane-config.toml")
     patch.setenv(ERGANE_CONFIG_PATH_ENV, config)
     patch.setenv(FACTORY_CONFIG_PATH_ENV, config)
+    # 034/US2: the repo registry lives under the engine's state home, which is
+    # outside every repo and therefore outside everything the other redirects
+    # cover.  Without this a test that registers a repo writes a pointer into
+    # the operator's real registry (034 plan, trap 8).
+    state_home = str(base / "session-state-home")
+    patch.setenv(ERGANE_STATE_HOME_ENV, state_home)
+    patch.setenv(FACTORY_STATE_HOME_ENV, state_home)
     patch.delenv(TELEGRAM_BOT_TOKEN_ENV, raising=False)
     patch.delenv(TELEGRAM_CHAT_ID_ENV, raising=False)
 
@@ -554,6 +563,32 @@ def _isolated_test_store(
         yield
     finally:
         patch.undo()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_registry(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Give every test its own repo registry, on top of the session redirect.
+
+    The session fixture keeps tests out of the operator's registry; this one
+    keeps them out of *each other's*.  Slugs are unique across a registry
+    (034 FR-007), so two tests registering `myapp` against two different
+    `tmp_path` repos would collide through a shared cache and fail for a reason
+    that has nothing to do with either test.
+
+    The slot is a path, not a directory: nothing is created unless a test
+    actually writes a registry, so this costs an env var per test and no I/O.
+    """
+    slot = (
+        tmp_path_factory.getbasetemp()
+        / "registries"
+        / hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:16]
+    )
+    monkeypatch.setenv(ERGANE_STATE_HOME_ENV, str(slot))
+    monkeypatch.setenv(FACTORY_STATE_HOME_ENV, str(slot))
 
 
 @pytest.fixture(scope="session")

@@ -21,6 +21,12 @@ ERGANE_EVIDENCE_STORE_ALLOW_REAL_ENV = "ERGANE_EVIDENCE_STORE_ALLOW_REAL"
 #: 033: the control-plane config file may be relocated by the operator.
 ERGANE_CONFIG_PATH_ENV = "ERGANE_CONFIG_PATH"
 
+#: 034: the engine's own state home — the repo registry and anything else the
+#: engine keeps *about* repos rather than *inside* them.  One variable relocates
+#: the whole tree; without it a test run would write the operator's real
+#: registry (034 plan, trap 8).
+ERGANE_STATE_HOME_ENV = "ERGANE_STATE_HOME"
+
 #: Legacy names still honored during the rename.
 FACTORY_ROOT_ENV = "FACTORY_ROOT"
 FACTORY_VERIFICATION_DB_PATH_ENV = "FACTORY_VERIFICATION_DB_PATH"
@@ -29,6 +35,10 @@ FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV = "FACTORY_EVIDENCE_STORE_ALLOW_REAL"
 
 #: 033 legacy alias for the control-plane config path.
 FACTORY_CONFIG_PATH_ENV = "FACTORY_CONFIG_PATH"
+
+#: 034 legacy alias for the engine state home.  It has never shipped under this
+#: name; it exists so the pair follows one convention rather than two.
+FACTORY_STATE_HOME_ENV = "FACTORY_STATE_HOME"
 
 #: Keys already warned about this process.  One deprecation per variable pair.
 _WARNED: set[tuple[str, str]] = set()
