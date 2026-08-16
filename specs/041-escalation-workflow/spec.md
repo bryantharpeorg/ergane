@@ -190,6 +190,24 @@ timer or signal handling of its own.
 
 ### User Story 3 - The epic park becomes parent-awaits-child (Priority: P2)
 
+**Three questions US2 left open, answered by the operator session on 2026-08-16
+so this story does not re-litigate them:**
+
+- **The package is `factory/escalation/`.** Not a preference — 002's own sweep
+  forbids a workflow module under `factory/notify/`, and it failed US2's first
+  full run, so the move was forced and the name is accurate. US3 and US4 import
+  from there. This gets more expensive to change with every story that lands.
+- **`EscalationOutcome.late` stays returned, not persisted.** US2-S3 says "the
+  store records the loser as late evidence"; US2 read that as the store
+  recording the *winner* — the guarded UPDATE untouched by the loser — with the
+  losing proposal carried home on the outcome. That reading is accepted. The
+  stricter one needs a column and a migration and no scenario demands it. The
+  ambiguity is resolved here rather than left for the next agent to guess.
+- **The row's `workflow_id` pointing at the escalation workflow is the intended
+  migration path.** It is precisely what lets the existing `CallbackBridge`
+  signal the child unchanged, which makes this story's migration the cheapest
+  correct one. Build on it rather than re-pointing it.
+
 As the epic workflow, I stop owning escalation lifecycle: my park becomes
 starting an EscalationWorkflow child and awaiting its result. Observable
 behavior does not change — same messages, same expiry, same answers, same
