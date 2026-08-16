@@ -2,9 +2,10 @@
 
 Everything GitHub-shaped about reading a target repository lives here: the
 rulesets payload, the classic branch-protection fallback, the repo-level merge
-settings, and `nameWithOwner`. `factory/mergequeue/gh.py` stays exactly what it
-was — the one place this component spawns `gh` — and this module sits *above* it
-rather than through it, which is why nothing in `gh.py` had to move.
+settings, and `nameWithOwner` — and, since US3, the landing half beside it.
+`factory/mergequeue/gh.py` stays exactly what it was — the one place this
+component spawns `gh` — and this module sits *above* it rather than through it,
+which is why nothing in `gh.py` had to move.
 
 Two payload parsers came here verbatim from
 `factory/activities/merge_activities.py`, where they were GitHub implementation
@@ -26,10 +27,19 @@ from factory.mergequeue.forge import (
     DEFAULT_FORGE,
     ForgeError,
     LandingPolicy,
+    Proposal,
     RepositoryDescription,
     register_forge,
 )
-from factory.mergequeue.gh import GH_NOT_FOUND, GhClient, GhError
+from factory.mergequeue.gh import (
+    GH_NOT_FOUND,
+    GhClient,
+    GhError,
+    _FAILED_LOG_TOTAL_LIMIT,
+    _parse_run_id,
+    _tail,
+)
+from factory.mergequeue.models import CheckFailure, PrSnapshot
 
 #: What GitHub calls "title this landing from the proposal" (D-041), spelled
 #: once, here, where it is true.
@@ -110,6 +120,103 @@ class GithubForge:
             landing_title_from_proposal=title_source == _TITLE_FROM_PROPOSAL,
             landing_title_source=title_source,
         )
+
+    # --- the landing half (049-US3, FR-009) ----------------------------------
+    #
+    # One `GhClient` call each, plus a translation into a neutral record: this
+    # class is all that stands between `gh.py` and the activities.
+
+    def find_proposal(self, head: str) -> Proposal | None:
+        """`gh pr list --head <head> --state open`, as a proposal or nothing."""
+        try:
+            found = self.client.find_existing_pr(head)
+        except GhError as error:
+            raise _refused(error) from error
+        return None if found is None else Proposal(found.number, found.url)
+
+    def open_proposal(
+        self, *, base: str, head: str, title: str, body_file: str
+    ) -> Proposal:
+        """`gh pr create` — ready, never `--draft`: a draft never enters the queue."""
+        try:
+            made = self.client.create_pr(
+                base=base, head=head, title=title, body_file=body_file
+            )
+        except GhError as error:
+            raise _refused(error) from error
+        return Proposal(made.number, made.url)
+
+    def request_landing(self, proposal: int, *, declared_method: str = "") -> None:
+        """`gh pr merge <n> --auto` — the factory's only merge invocation.
+        `declared_method` crosses the seam and stops here, proved live
+        2026-08-07: a branch governed by a merge-queue ruleset owns its merge
+        method and `gh` refuses the flag outright ("The merge strategy for
+        <branch> is set by the merge queue"), so the operator's declared intent
+        is something their configuration must agree with, not a flag sent."""
+        try:
+            self.client.enqueue_pr(proposal, merge_method=declared_method)
+        except GhError as error:
+            raise _refused(error) from error
+
+    def observe_proposal(self, proposal: int) -> PrSnapshot:
+        """One `gh pr view`. `from_gh_json` is GitHub's own payload reader and the
+        record's constructor is where `mergeStateStatus` becomes the neutral
+        conflict fact (FR-010), so this is a call and a translation."""
+        try:
+            return self.client.poll_pr(proposal)
+        except GhError as error:
+            raise _refused(error) from error
+
+    def withdraw_landing(self, proposal: int) -> None:
+        """`gh pr merge <n> --disable-auto` — the kill path's half of FR-008."""
+        try:
+            self.client.disable_auto_merge(proposal)
+        except GhError as error:
+            raise _refused(error) from error
+
+    def failing_check_evidence(
+        self, proposal: int, check_names: tuple[str, ...]
+    ) -> tuple[CheckFailure, ...]:
+        """`gh pr checks` plus one `gh run view --log-failed` per named check.
+        Came here whole from `merge_activities.py`, where the run-id parsing and
+        log bounds were GitHub detail in an activity module. Every `gh` failure
+        returns degraded evidence stating the absence, never a raise."""
+        try:
+            entries = {entry.name: entry for entry in self.client.pr_checks(proposal)}
+        except GhError as error:
+            note = f"log unavailable: could not list checks ({error.kind})"
+            return tuple(CheckFailure(name, "", "", note) for name in check_names)
+
+        results: list[CheckFailure] = []
+        spent = 0
+        for name in check_names:
+            entry = entries.get(name)
+            if entry is None:
+                results.append(CheckFailure(
+                    name, "", "",
+                    "log unavailable: check not present in gh pr checks",
+                ))
+                continue
+            run_id = _parse_run_id(entry.link)
+            if run_id is None:
+                results.append(CheckFailure(
+                    name, entry.link, "",
+                    "log unavailable: could not resolve run id from check link",
+                ))
+                continue
+            try:
+                log = self.client.run_failed_log(run_id)
+            except GhError as error:
+                results.append(CheckFailure(
+                    name, entry.link, "",
+                    f"log unavailable: could not fetch run log ({error.kind})",
+                ))
+                continue
+            if spent + len(log.encode("utf-8")) > _FAILED_LOG_TOTAL_LIMIT:
+                log = _tail(log, max(_FAILED_LOG_TOTAL_LIMIT - spent, 0))
+            spent += len(log.encode("utf-8"))
+            results.append(CheckFailure(name, entry.link, log, ""))
+        return tuple(results)
 
 
 def _refused(error: GhError) -> ForgeError:

@@ -46,6 +46,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: US4 the wiring one; both extend this set rather than replacing it.
 READING_OPERATIONS = {"describe_repository", "landing_policy"}
 
+#: The landing half (049-US3, FR-009), extending the line above exactly as it
+#: promised. US4's wiring operation joins `SEAM_OPERATIONS` the same way.
+LANDING_OPERATIONS = {
+    "find_proposal", "open_proposal", "request_landing",
+    "observe_proposal", "withdraw_landing", "failing_check_evidence",
+}
+SEAM_OPERATIONS = READING_OPERATIONS | LANDING_OPERATIONS
+
 #: Verbs that would mean a forge had started deciding. Classifying, settling and
 #: judging stay factory-side (FR-001), as `factory/notify/adapter.py` requires.
 DECIDING_VERBS = ("classify", "verdict", "settle", "escalat", "judge", "retry")
@@ -91,11 +99,11 @@ def declared_names() -> list[str]:
 # --- US1-S1 / FR-001: the interface declares the reading half, and no verdict --
 
 
-def test_the_forge_protocol_declares_exactly_the_reading_operations() -> None:
-    """A third operation, a renamed one, or one returning a forge's own payload
+def test_the_forge_protocol_declares_exactly_the_seam_operations() -> None:
+    """An extra operation, a renamed one, or one returning a forge's own payload
     fails here: an operation answering with raw JSON would have moved the
     coupling one call deeper instead of removing it."""
-    assert public_methods(Forge) == READING_OPERATIONS
+    assert public_methods(Forge) == SEAM_OPERATIONS
 
     returns = [
         inspect.get_annotations(op, eval_str=True)["return"]
@@ -159,14 +167,14 @@ def test_the_registry_imports_the_shipped_forge_itself(
 
 
 @pytest.mark.parametrize("name", FORGE_NAMES)
-def test_every_registered_forge_exposes_exactly_the_reading_operations(
+def test_every_registered_forge_exposes_exactly_the_seam_operations(
     name: str,
 ) -> None:
     """Registration is enrolment: a forge added later is checked without an edit."""
     forge = resolve_forge(name, repo_path="/srv/target")
 
     assert isinstance(forge, Forge)
-    assert public_methods(type(forge)) == READING_OPERATIONS
+    assert public_methods(type(forge)) == SEAM_OPERATIONS
 
 
 @pytest.mark.parametrize("name", FORGE_NAMES)

@@ -34,6 +34,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping
 
+#: 049-US3: GitHub's spelling of "the target moved under this proposal". It is
+#: spelled once, here, at the boundary where a stored record is rebuilt — never
+#: in the classifier, which is the whole of FR-010.
+_LEGACY_CONFLICT = "DIRTY"
+
 
 # US2: one failing check's evidence as the recovery prompt and escalation page
 # receive it. Lives here rather than in gh.py so the model's own dataclasses can
@@ -155,6 +160,27 @@ class PrSnapshot:
     closed_at: str | None
     failing_required_checks: tuple[str, ...]
     observed_at: str
+    #: 049-US3: the conflict fact in the *factory's* vocabulary — the target has
+    #: moved under this proposal and it no longer applies as it stands.
+    #: `merge_state_status` stays as GitHub's spelling of the same observation,
+    #: kept as evidence an operator can read; nothing decides from it any more
+    #: (FR-010). Defaulted so a pre-spec history deserializes — `__post_init__`.
+    in_conflict: bool = False
+
+    def __post_init__(self) -> None:
+        """Carry a pre-049 history's conflict across, once, at the boundary.
+
+        A record written before this spec recorded the conflict in the only
+        spelling there was, and histories holding one are replayed: a replay
+        reaching "keep polling" where the original run reached `CONFLICT` would
+        diverge from its own history — the defect class 032, 038 and 039 each
+        shipped. So the legacy spelling is read here, in the constructor, which
+        is also where `from_gh_json` lands every GitHub observation. The
+        classifier never sees it, and a forge that never heard of `DIRTY` is
+        unaffected.
+        """
+        if not self.in_conflict and self.merge_state_status == _LEGACY_CONFLICT:
+            object.__setattr__(self, "in_conflict", True)
 
     @classmethod
     def from_gh_json(cls, payload: Mapping[str, Any], *, observed_at: str) -> "PrSnapshot":
