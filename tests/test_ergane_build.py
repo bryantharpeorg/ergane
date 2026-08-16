@@ -1723,6 +1723,11 @@ TERMINATED_PUSHED = "us1"
 NEVER_DISPATCHED = "us2"
 TERMINATED_LOCAL = "us3"
 
+#: A branch the fixture remote holds and the target clone has never fetched.
+#: It is what makes `git fetch` an observable write rather than a no-op — see
+#: `_make_salvage_target` and the read-only test's non-vacuity assertions.
+UNFETCHED_BRANCH = "refs/heads/someone-else-landed"
+
 
 def _workgraph_for(repo: Path, tmp_path: Path, name: str) -> Path:
     """A compiled graph naming `repo` and the three US3 nodes."""
@@ -1806,6 +1811,13 @@ def _make_salvage_target(
         # One branch leaves the machine and one does not — US3-S3's whole
         # distinction, which only a real bare remote can carry.
         git(repo, "push", "--quiet", "origin", branch_name(EPIC_ID, TERMINATED_PUSHED))
+        # And one branch on the remote that this clone has never fetched.
+        # Without it every remote-tracking ref the verb could create already
+        # exists — the pushes above made them — so a `git fetch` is a no-op and
+        # the read-only witness cannot see the one write it exists to catch.
+        # Found by mutation: a reader that fetched before answering survived
+        # the whole suite until this line was here.
+        git(bare, "update-ref", UNFETCHED_BRANCH, "refs/heads/main")
     return repo, bare, _workgraph_for(repo, tmp_path, name), shas
 
 
@@ -1991,6 +2003,13 @@ def test_the_verb_leaves_the_repository_byte_for_byte_alone(
     # Non-vacuity: the witness is not empty, so equality means something.
     assert before_refs.strip()
     assert f"refs/salvage/{EPIC_ID}/{TERMINATED_PUSHED}/" in before_refs
+    # And the forbidden write is a write *here*: the remote holds a branch this
+    # clone has never fetched, so a `git fetch` would add a tracking ref and
+    # break the equality above.  Without these two lines the fetch is a no-op
+    # against this fixture and the test cannot fail — which is how a reader
+    # that fetched survived the whole suite before they were added.
+    assert UNFETCHED_BRANCH in _all_refs(bare)
+    assert "refs/remotes/origin/someone-else-landed" not in before_refs
 
 
 #: The functions that make up the salvage verb.  Named here so the no-Temporal
