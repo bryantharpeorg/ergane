@@ -203,7 +203,7 @@ exists to prevent.
       `merge_queue_ruleset.json`'s role as the data file that spells what the
       shipped package may not (plan trap 5), and keep `WiringRefused` (`:78`) as
       the refusal shape (FR-013).
-- [ ] T035 [US4] Rewire `factory/cli/init.py:471` and `:706` to resolve a forge,
+- [x] T035 [US4] Rewire `factory/cli/init.py:471` and `:706` to resolve a forge,
       leaving the report format and the manual steps (`wiring.py:117`) as they
       read today.
 
