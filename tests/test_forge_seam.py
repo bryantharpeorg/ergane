@@ -29,7 +29,6 @@ from factory.mergequeue.forge import (
     DEFAULT_FORGE,
     Forge,
     LandingPolicy,
-    Proposal,
     RepositoryDescription,
     UnknownForgeError,
     register_forge,
@@ -92,7 +91,7 @@ def public_methods(cls: type) -> set[str]:
 def declared_names() -> list[str]:
     """Every name the seam declares: its operations and its records' fields."""
     names = sorted(public_methods(Forge))
-    for record in (RepositoryDescription, LandingPolicy, Proposal):
+    for record in (RepositoryDescription, LandingPolicy):
         names.extend(f.name for f in dataclasses.fields(record))
     return names
 

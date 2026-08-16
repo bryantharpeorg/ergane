@@ -1,10 +1,10 @@
 """049-US3: the landing path proposes, lands and observes through the forge.
 
-Every test says what edit would make it fail; the mutation transcript proving
-each answer is at `specs/049-forge-seam/evidence/us3-mutations.md`. Scope fence:
-US2 owns `onboard.py` and US5 the manifest parser, and the prose in
-`onboard_target_repo` still naming `gh` is US2's by assignment — which is why
-the sweep below is scoped to the landing activities.
+Every test says what edit would make it fail; the transcript proving each answer
+is at `specs/049-forge-seam/evidence/us3-mutations.md`. Scope fence: US2 owns
+`onboard.py` and US5 the manifest parser, and the prose in `onboard_target_repo`
+still naming `gh` is US2's — which is why the sweep below is scoped to the five
+landing activities.
 """
 
 from __future__ import annotations
@@ -70,11 +70,8 @@ def test_a_landing_runs_its_whole_life_through_the_forge() -> None:
     merged, observe rejected, fetch evidence, withdraw, and a refusal. Every
     assertion is on what `classify` says about the *model*, never on which calls
     were made — which keeps this out of the shape filed as
-    `ci/the-scripted-gh-fake-never-consumes-an-expectation`.
-
-    What edit would make this fail? Any operation returning something the
-    classifier cannot read — a dropped `merged_at`, a `find_proposal` answering
-    before anything was offered, evidence that raised instead of degrading.
+    `ci/the-scripted-gh-fake-never-consumes-an-expectation`. What edit would make
+    it fail? Any operation returning something the classifier cannot read.
     """
     model = RepositoryModel(address="acme/app", default_branch="main")
     forge = FakeForge(model)
@@ -260,9 +257,8 @@ def test_a_forge_reporting_a_conflict_yields_conflict_from_a_neutral_fact() -> N
     `merge_state_status` is the empty string — it has never heard of `DIRTY` —
     and `CONFLICT` still comes out, where a classifier that had merely been
     renamed would answer `None`. Then `classify.py`'s source, docstrings swept
-    too, since a table row documenting the old comparison is a lie. What edit
-    would make this fail? Reverting `classify` to read `merge_state_status`.
-    """
+    too. What edit would make it fail? Reverting `classify` to read
+    `merge_state_status`."""
     model = RepositoryModel()
     forge, proposal = _open_one(model)
     model.landings.target_moved(proposal.number)
@@ -308,11 +304,10 @@ def test_a_pre_spec_snapshot_deserializes_and_classifies_unchanged() -> None:
     JSON predating this story — through Temporal's own converter, which is why
     this uses that and not `dataclasses`. 032, 038 and 039 were each a workflow
     reaching a different decision on the same history, and a pre-spec conflict
-    recorded in GitHub's spelling still has to reach `CONFLICT`.
-
-    What edit would make this fail? Giving `in_conflict` no default (the
-    converter raises on the missing key), or dropping the constructor's legacy
-    reading — the outcome becomes "keep polling" and the node stalls.
+    recorded in GitHub's spelling still has to reach `CONFLICT`. What edit would
+    make it fail? Giving `in_conflict` no default (the converter raises on the
+    missing key), or dropping the constructor's legacy reading — the outcome
+    becomes "keep polling" and the node stalls.
     """
     converter = DataConverter.default.payload_converter
     payload = converter.to_payloads([PRE_SPEC_SNAPSHOT])[0]
@@ -381,9 +376,9 @@ def test_the_epic_workflow_imports_and_calls_exactly_what_it_did() -> None:
     shape. Every replay defect this repository has shipped came from a workflow
     edit. Equality against non-empty literals rather than a subset check, so a
     *removed* import fails too; `classify` is still called positionally with
-    three records and one keyword clock, since a signature change would force
-    the workflow edit FR-011 forbids. What edit would make this fail? Importing
-    the forge there, renaming a landing activity, or changing that signature.
+    three records and one keyword clock, since a signature change would force the
+    workflow edit FR-011 forbids. What edit would make it fail? Importing the
+    forge there, renaming a landing activity, or changing that signature.
     """
     path = REPO_ROOT / "factory" / "workgraph" / "workflow.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -424,10 +419,9 @@ def test_the_three_structural_guards_still_hold_over_the_moved_code() -> None:
     proved they reached the moved code *by construction* —
     `tests/test_mergequeue_sweep.py` sweeps `factory/mergequeue/**`, so the forge
     is covered because of where FR-017 put it, not because this story widened a
-    list; the set is imported from the sweep, so a narrowed sweep fails too.
-
-    What edit would make this fail? Moving a forge module out of that directory,
-    or spelling `--delete-branch`, a forced push, or a `pr merge` without
+    list; the set is imported from the sweep, so a narrowed sweep fails too. What
+    edit would make it fail? Moving a forge module out of that directory, or
+    spelling `--delete-branch`, a forced push, or a `pr merge` without
     `--auto`/`--disable-auto` in the merge surface.
     """
     assert COMMAND_MODULES, "the merge-surface sweep matched no module"
