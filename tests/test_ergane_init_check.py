@@ -28,8 +28,10 @@ from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER
 from factory.mergequeue.gh import GhClient
 from factory.mergequeue.models import Finding, TargetRepoProfile
+from factory.roadmap import schedule as schedule_module
 
 from tests.fake_gh import FakeGh
+from tests.fake_schedules import FakeScheduleServer
 from tests.test_ergane_init import ScriptedPrompter, _git, _invoke
 
 OWNER_REPO = "acme/widgets"
@@ -132,14 +134,31 @@ def bind_offline_seams(
     *,
     probes: list[Finding] | None = None,
     probe_error: Exception | None = None,
+    schedules: FakeScheduleServer | None = None,
 ) -> FakeGh:
-    """Bind both outward seams so no test can reach GitHub or a control plane.
+    """Bind every outward seam so no test can reach GitHub or a control plane.
 
     A function rather than only a fixture because every test that completes a
     full `ergane init` needs it: init's last act is the check (FR-010), and an
     unbound seam would spawn the real `gh` and deliver a real Telegram probe.
+
+    034/US6 added the third seam.  It is bound here rather than per-test for the
+    same reason as the other two, with one extra: the operator's Temporal holds
+    the live `ergane-roadmap` schedule, and `ergane init` now *writes* a
+    schedule.  `factory.roadmap.schedule` refuses to connect under pytest at
+    all, so a forgotten binding fails loudly; this makes the bound case the
+    default anyway.
     """
     gh = fake if fake is not None else conforming_gh()
+
+    control_plane = schedules if schedules is not None else FakeScheduleServer()
+
+    async def open_schedule_client() -> FakeScheduleServer:
+        return control_plane
+
+    monkeypatch.setattr(
+        schedule_module, "_schedule_client_factory", open_schedule_client
+    )
     monkeypatch.setattr(
         init_module,
         "_gh_client_factory",
@@ -171,9 +190,14 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> Wire:
         *,
         probes: list[Finding] | None = None,
         probe_error: Exception | None = None,
+        schedules: FakeScheduleServer | None = None,
     ) -> FakeGh:
         return bind_offline_seams(
-            monkeypatch, fake, probes=probes, probe_error=probe_error
+            monkeypatch,
+            fake,
+            probes=probes,
+            probe_error=probe_error,
+            schedules=schedules,
         )
 
     return bind
@@ -557,7 +581,9 @@ def test_a_full_init_ends_by_running_the_check(
     _git(repo, "commit", "--quiet", "-m", "initial commit")
 
     wired(probes=[Finding("temporal", False, "Temporal at localhost:7233 did not answer")])
-    prompter = ScriptedPrompter(["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "widgets"])
+    prompter = ScriptedPrompter(
+        ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "widgets"]
+    )
     monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
 
     result = _invoke(["init", str(repo)])

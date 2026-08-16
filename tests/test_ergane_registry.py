@@ -174,7 +174,7 @@ def make_repo(parent: Path, name: str) -> Path:
 
 
 def answers_for(slug: str) -> list[str]:
-    """The six manifest answers plus the slug, in interview order."""
+    """The manifest answers plus the slug, in interview order."""
     return [
         str(_SUPPORTED_VERSION),  # version
         "bwrap",  # runtime
@@ -182,6 +182,7 @@ def answers_for(slug: str) -> list[str]:
         "",  # timeouts (omitted)
         "",  # standards (omitted)
         "main",  # landing_branch
+        "",  # roadmap dials (omitted; 034/US6)
         slug,
     ]
 

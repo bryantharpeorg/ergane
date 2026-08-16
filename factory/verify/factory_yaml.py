@@ -53,7 +53,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from factory.verify.models import FactoryConfig, GateResult, GateStatus
+from factory.verify.models import FactoryConfig, GateResult, GateStatus, RoadmapDials
 
 #: The manifest's committed filename; callers compose `<worktree>/ergane.yaml`.
 MANIFEST_NAME = "ergane.yaml"
@@ -83,7 +83,18 @@ KNOWN_GATES = ("test", "lint", "typecheck")
 #: a container image reference to a backend name; only these names are accepted.
 SUPPORTED_BACKENDS = ("bwrap",)
 
-_TOP_LEVEL_KEYS = ("version", "runtime", "gates", "timeouts", "standards", "landing_branch")
+_TOP_LEVEL_KEYS = (
+    "version",
+    "runtime",
+    "gates",
+    "timeouts",
+    "standards",
+    "landing_branch",
+    "roadmap",
+)
+
+#: The keys a `roadmap:` block may declare, and the dial each one sets.
+_ROADMAP_KEYS = ("cadence_s", "max_concurrent_epics", "max_concurrent_nodes")
 
 _SUPPORTED_VERSION = 1
 
@@ -126,6 +137,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     timeouts = _read_timeouts(document, gates, source)
     standards = _read_standards(document, source)
     landing_branch = _read_landing_branch(document, source)
+    roadmap = _read_roadmap(document, source)
 
     return FactoryConfig(
         version=version,
@@ -134,6 +146,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         timeouts=timeouts,
         standards=standards,
         landing_branch=landing_branch,
+        roadmap=roadmap,
     )
 
 
@@ -341,6 +354,64 @@ def _read_landing_branch(document: Mapping[Any, Any], source: str) -> str:
             source=source,
         )
     return landing_branch
+
+
+def _read_roadmap(document: Mapping[Any, Any], source: str) -> RoadmapDials | None:
+    """The repo's scheduler dials, or `None` when it declares no `roadmap:` block.
+
+    Optional and additive, so the schema stays `version: 1` — the reasoning
+    `standards` was added under.  Absent is `None` rather than a defaulted block:
+    the init interview offers the existing manifest back as its defaults, and a
+    parser that invented `roadmap: {cadence_s: 300}` for every repo would make an
+    unchanged re-run rewrite a key nobody declared.
+
+    Declared means declared, so every near-miss is refused with the value
+    rendered: `cadence_s: "300"` is a string, `max_concurrent_epics: true` is a
+    bool that `== 1`, `cadence: 300` is a typo for the key above it.  Each would
+    otherwise be a dial silently set to something the operator did not choose,
+    on a schedule that dispatches real work.
+    """
+    if "roadmap" not in document:
+        return None
+    block = document["roadmap"]
+    if not isinstance(block, Mapping) or not block:
+        raise FactoryConfigError(
+            "roadmap",
+            f"declares `roadmap: {block!r}`; when declared it must be a non-empty "
+            f"mapping drawn from {_names(_ROADMAP_KEYS)}, e.g. "
+            "`roadmap: {cadence_s: 300}`",
+            source=source,
+        )
+
+    unknown = [key for key in block if key not in _ROADMAP_KEYS]
+    if unknown:
+        raise FactoryConfigError(
+            "roadmap",
+            f"declares {_names(unknown)} under `roadmap`; the dials are "
+            f"{_names(_ROADMAP_KEYS)}",
+            source=source,
+        )
+
+    for key in _ROADMAP_KEYS:
+        if key not in block:
+            continue
+        value = block[key]
+        # `isinstance(True, int)` is True, so the bool is excluded by identity —
+        # `max_concurrent_epics: true` would otherwise pass as a bound of 1.
+        if type(value) is not int or value <= 0:
+            raise FactoryConfigError(
+                "roadmap",
+                f"gives `roadmap.{key}` the value {value!r}; every dial is a "
+                "positive whole number",
+                source=source,
+            )
+
+    defaults = RoadmapDials()
+    return RoadmapDials(
+        cadence_s=int(block.get("cadence_s", defaults.cadence_s)),
+        max_concurrent_epics=int(block.get("max_concurrent_epics", defaults.max_concurrent_epics)),
+        max_concurrent_nodes=int(block.get("max_concurrent_nodes", defaults.max_concurrent_nodes)),
+    )
 
 
 # Resolution ------------------------------------------------------------------

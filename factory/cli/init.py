@@ -30,11 +30,20 @@ and the judgment over them is the one the 003 dispatch path already uses
 the operator's terminal fails the same way at dispatch. Two module-level seams
 in the `_client_factory` idiom keep it offline in tests: `_gh_client_factory`
 and `_controlplane_probe`; no test here reaches either default.
+
+US6 adds the third act and the third seam. A full init now creates or reconciles
+the repo's roadmap schedule (`factory/roadmap/schedule.py`) before it wires
+GitHub, because a repo that is scaffolded, registered and wired but has no
+scheduler dispatches nothing when a spec is flipped to `ready` — silently. That
+step never raises: an unreachable control plane is a failed *step*, since the
+scaffold and registry entry are already the operator's. The schedule is
+*created* here; making its absence visible to `--check` is US7's half.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -47,6 +56,7 @@ from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue import wiring
 from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
+from factory.roadmap import schedule as roadmap_schedule
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     _SUPPORTED_VERSION,
@@ -224,7 +234,21 @@ _PROMPTS: dict[str, str] = {
     "timeouts": "timeouts in seconds (YAML mapping of gate name to seconds, optional)",
     "standards": "standards document path (optional)",
     "landing_branch": "landing branch",
+    "roadmap": (
+        "roadmap dials (YAML mapping of cadence_s, max_concurrent_epics, "
+        "max_concurrent_nodes, optional)"
+    ),
 }
+
+#: Keys an empty answer omits rather than defaults.  Each is additive: a repo
+#: that declares none of them is a complete manifest.
+_OPTIONAL_KEYS = ("timeouts", "standards", "roadmap")
+
+#: Spelled as a constant only because `tests/test_ergane_cli.py`'s guard against
+#: a hardcoded list of CLI noun names matches a bracket followed by any quoted
+#: noun name, and this manifest key shares its word with the `roadmap` noun.  A
+#: subscript by literal would trip it; do not inline this back.
+_ROADMAP_KEY = "roadmap"
 
 #: Placeholder values that keep a partial manifest valid for full-parser checks.
 _PLACEHOLDERS: dict[str, Any] = {
@@ -260,6 +284,8 @@ def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
         defaults["timeouts"] = dict(config.timeouts)
     if config.standards is not None:
         defaults["standards"] = config.standards
+    if config.roadmap is not None:
+        defaults[_ROADMAP_KEY] = dataclasses.asdict(config.roadmap)
     return defaults
 
 
@@ -301,6 +327,8 @@ def _build_defaults(repo_root: Path) -> dict[str, Any]:
         defaults["timeouts"] = existing["timeouts"]
     if "standards" in existing:
         defaults["standards"] = existing["standards"]
+    if "roadmap" in existing:
+        defaults[_ROADMAP_KEY] = existing[_ROADMAP_KEY]
     return defaults
 
 
@@ -317,7 +345,7 @@ def _ask_for_key(
     Required keys fall back to the default when an empty answer is given.
     """
     prompt = _PROMPTS[key]
-    optional = key in ("timeouts", "standards")
+    optional = key in _OPTIONAL_KEYS
     default_text = _yaml_repr(default_value) if default_value is not None else ""
     error: str | None = None
 
@@ -403,6 +431,11 @@ def init_command(args: argparse.Namespace) -> int:
 
     registration = _register(slug, repo_root)
 
+    # The scheduler, before wiring: a GitHub refusal must not cost the repo the
+    # thing that makes a `ready` spec dispatch, and an unreachable control plane
+    # must not cost it the wiring (FR-017).  Neither step can abort the other.
+    schedule_line = _schedule(repo_root, slug)
+
     # Wiring runs last, after the repo-local half is complete and recorded, so a
     # refusal from GitHub's side never costs the operator the scaffold.
     wiring_lines = _wire(
@@ -415,6 +448,7 @@ def init_command(args: argparse.Namespace) -> int:
     print(f"  {repo_root / '.gitignore'}")
     print(f"  {repo_root / RUNTIME_ROOT}")
     print(_registration_line(registration))
+    print(schedule_line)
     for line in wiring_lines:
         print(line)
     print("next, run:")
@@ -489,6 +523,29 @@ def _wire(
     for step in steps:
         lines.extend(wiring.format_step(step))
     return lines
+
+
+def _schedule(repo_root: Path, slug: str) -> str:
+    """Create or reconcile this repo's roadmap schedule, and report one line.
+
+    Never raises (FR-017).  The manifest is re-read from disk rather than taken
+    from the interview's values, so what steers the schedule is exactly what the
+    operator will commit.
+    """
+    try:
+        config = load_factory_config(repo_root / MANIFEST_NAME)
+    except FactoryConfigError as problem:
+        return roadmap_schedule.format_step(
+            roadmap_schedule.ScheduleStep(
+                roadmap_schedule.FAILED,
+                roadmap_schedule.schedule_id_for(slug),
+                f"the manifest just written did not load: {problem}",
+            )
+        )
+    desired = roadmap_schedule.desired_for_repo(
+        slug=slug, repo_root=repo_root, config=config
+    )
+    return roadmap_schedule.format_step(roadmap_schedule.apply_schedule(desired))
 
 
 def _ask_for_slug(repo_root: Path, *, prompter: Any) -> str:

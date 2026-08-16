@@ -191,6 +191,25 @@ class CriteriaSet:
 
 
 @dataclass(frozen=True)
+class RoadmapDials:
+    """What the repo declares about its own scheduler (034 FR-015).
+
+    These are the values `ergane init` writes onto the repo's Temporal schedule
+    and reconciles on every re-run. They live in the committed manifest because
+    the alternative is where they lived before: inside a base64-encoded workflow
+    payload on the schedule, changeable only by hand-editing it — which is why
+    `max_concurrent_epics` on the one hand-made roadmap was never changed.
+
+    `cadence_s` is how often a tick starts a roadmap run; the two concurrency
+    bounds pass through to `RoadmapInput` unaltered.
+    """
+
+    cadence_s: int = 300
+    max_concurrent_epics: int = 1
+    max_concurrent_nodes: int = 1
+
+
+@dataclass(frozen=True)
 class FactoryConfig:
     """The target repo's committed `factory.yaml`, schema v1.
 
@@ -214,6 +233,12 @@ class FactoryConfig:
     timeouts: dict[str, int] = field(default_factory=dict)
     standards: str | None = None
     landing_branch: str = "main"
+    #: 034 FR-015. `None` means the repo declared no `roadmap:` block, which is
+    #: not the same as declaring the defaults: `ergane init` re-runs must be
+    #: able to tell "the operator left this alone" from "the operator chose
+    #: 300", or an untouched manifest grows a key it never asked for and FR-005's
+    #: byte-identity claim stops holding.
+    roadmap: "RoadmapDials | None" = None
 
 
 @dataclass(frozen=True)
