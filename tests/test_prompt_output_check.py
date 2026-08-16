@@ -36,6 +36,51 @@ are asserted against that:
 The corpus is `tests/test_prompt.py`'s — the same fixture spec, plan, tasks and
 prior attempts — so the parity assertion is against the assembly the rest of the
 suite already pins, not against a second one written for this story.
+
+## Proved by mutation, not by assertion count
+
+The failure this repository pays most for is a test that cannot fail, and a
+prompt-rendering test is the shape most prone to it. So each property above was
+checked by breaking the production code five ways and watching which tests
+noticed. Verbatim, run against `05ffc3f`, reverting `factory/workgraph/prompt.py`
+between each:
+
+    === M1: the block ignores the record and always says 'no diff' ===
+    FAILED tests/test_prompt_output_check.py::test_a_failed_check_does_not_borrow_another_shape_s_words
+    FAILED tests/test_prompt_output_check.py::test_every_offending_path_and_its_rule_are_listed_verbatim
+    FAILED tests/test_prompt_output_check.py::test_each_attempt_renders_its_own_output_check_and_no_other_s
+    FAILED tests/test_prompt_output_check.py::test_a_size_refusal_names_the_total_the_limit_and_the_files
+    FAILED tests/test_prompt_output_check.py::test_the_limit_rendered_is_the_one_the_record_carries
+    FAILED tests/test_prompt_output_check.py::test_hygiene_and_size_render_together_when_both_were_recorded
+    FAILED tests/test_prompt_output_check.py::test_missing_artifacts_are_named - ...
+    FAILED tests/test_prompt_output_check.py::test_a_failure_with_no_rendered_reason_still_says_the_check_refused_it
+    8 failed, 4 passed in 0.05s
+
+    === M2: the module's constant is rendered instead of the record's limit ===
+    FAILED tests/test_prompt_output_check.py::test_a_size_refusal_names_the_total_the_limit_and_the_files
+    FAILED tests/test_prompt_output_check.py::test_the_limit_rendered_is_the_one_the_record_carries
+    2 failed, 10 passed in 0.04s
+
+    === M3: the block is emitted unconditionally ===
+    FAILED tests/test_prompt_output_check.py::test_a_passing_output_check_renders_byte_identically_to_today
+    1 failed, 39 passed in 0.05s
+
+    === M4: the hygiene branch is dropped ===
+    FAILED tests/test_prompt_output_check.py::test_every_offending_path_and_its_rule_are_listed_verbatim
+    FAILED tests/test_prompt_output_check.py::test_each_attempt_renders_its_own_output_check_and_no_other_s
+    FAILED tests/test_prompt_output_check.py::test_hygiene_and_size_render_together_when_both_were_recorded
+    3 failed, 9 passed in 0.04s
+
+    === M5: the block is appended after the judge instead of before it ===
+    FAILED tests/test_prompt_output_check.py::test_the_output_check_evidence_sits_between_the_gates_and_the_judge
+    1 failed, 11 passed in 0.03s
+
+M1 is the important one. It is the renderer this story could most plausibly have
+shipped — one honest-looking sentence for every failed check — and it satisfies
+"the prompt says something about the output check" completely. Eight tests
+refuse it, because a sentence is not evidence: the paths, the rules and the byte
+counts an attempt needs are in the record or they are nowhere. M3 is the parity
+half: the golden is what notices a block that renders over a check that passed.
 """
 
 from __future__ import annotations
