@@ -1068,13 +1068,22 @@ class RoadmapWorkflow:
             self._park(spec_dir, "derive", _derivation_detail(exc))
             return
 
-        # 3. The 006 preflight (model aliases, key collisions) — shared with the
-        # CLI so the two surfaces cannot drift. Any finding parks the spec with
-        # the finding verbatim.
+        # 3. The 006 preflight (model aliases, key collisions) and 044's prompt
+        # assembly — shared with the CLI so the surfaces cannot drift. Any
+        # finding parks the spec with the finding verbatim.
+        #
+        # `specs_root` travels with the request because the assembly check reads
+        # the spec's trio, and workflow code cannot read files (constitution IV).
+        # The activity opens `specs_root/spec_dir` — the same three documents the
+        # dispatch path will read a moment later — so what is checked is what is
+        # dispatched (044 FR-007) and this method stays deterministic.
         findings: list[PreflightFinding] = await workflow.execute_activity(
             preflight_spec,
             PreflightInput(
-                graph=graph, proxy_url=request.proxy_url, spec_dir=spec_dir
+                graph=graph,
+                proxy_url=request.proxy_url,
+                spec_dir=spec_dir,
+                specs_root=request.specs_root,
             ),
             **_FAST,
         )

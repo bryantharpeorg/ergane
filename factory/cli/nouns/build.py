@@ -69,7 +69,11 @@ from factory.workgraph.models import (
     WorkNode,
     validate_workgraph,
 )
-from factory.workgraph.preflight import PreflightFinding, check_aliases
+from factory.workgraph.preflight import (
+    PreflightFinding,
+    check_aliases,
+    prompt_assembly_preflight,
+)
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
 from factory.workgraph.worktree import reset as reset_worktree
 
@@ -215,8 +219,22 @@ def _preflight_registry() -> dict[str, Persona]:
 
 
 async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
-    """Check what the proxy serves before anything dispatches."""
-    return await check_aliases(graph, _preflight_registry(), _open_preflight_client())
+    """Check that every prompt assembles, then what the proxy serves.
+
+    The same two checks the roadmap's pre-dispatch activity runs, in the same
+    order and from the same module (044 FR-004): an epic started by hand dies of
+    an unassemblable `tasks.md` exactly the way a scheduled one does, so it is
+    refused here rather than one tick after `ergane build start` printed a
+    workflow id. Assembly reads `specs_root/feature` — where the graph itself
+    says its authored trio lives, and where dispatch will read it.
+    """
+    findings = prompt_assembly_preflight(
+        graph, Path(graph.specs_root) / graph.feature
+    )
+    findings += await check_aliases(
+        graph, _preflight_registry(), _open_preflight_client()
+    )
+    return findings
 
 
 async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:

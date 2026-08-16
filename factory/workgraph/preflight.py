@@ -16,6 +16,15 @@ one tick later every node was dead, killed before any agent ran, and the price
 of learning it was an epic. `check_prompt_assembly` is that lesson moved to
 `ergane spec validate`, where it costs one command.
 
+044 US2 gives it the second surface the alias checks already have, for the
+reason validation alone was never enough: a `tasks.md` edited after a clean
+`spec validate` still arrives broken, because dispatch reads the trio live.
+`prompt_assembly_preflight` is the same check in the preflight's own
+vocabulary, run before any node of an epic starts — by the roadmap (inside the
+pre-dispatch activity, never in workflow code: the workflow cannot read files)
+and by `ergane build start`. A spec whose prompts cannot assemble parks exactly
+the way one whose aliases are unserved does, with nothing dispatched.
+
 It is deliberately *not* a second reader of the authored markdown. It calls
 `build_attempt_prompt` — the public assembler the dispatch path itself calls —
 once per node and reports what it refuses. A check with its own copy of the
@@ -238,6 +247,46 @@ def check_prompt_assembly(
         plan_text=texts[PLAN_DOCUMENT],
         tasks_text=texts[TASKS_DOCUMENT],
     )
+
+
+#: The preflight check name the roadmap parks under and the CLI prints, in the
+#: `model-aliases-served` house style: a hyphenated fact about the epic, stable
+#: enough for an operator to grep a park history for. The offline validate layer
+#: names the same check `prompt_assembly`, because a validate *layer* is named
+#: the way the other four layers are; one check, two surfaces, and the wording
+#: an operator acts on — the assembler's own refusal — is identical in both.
+PROMPT_ASSEMBLY_CHECK = "prompt-assembly"
+
+
+def prompt_assembly_preflight(
+    graph: WorkGraph, feature_dir: str | Path
+) -> list[PreflightFinding]:
+    """Every node's prompt, assembled before dispatch, as preflight findings (FR-003).
+
+    The same `check_prompt_assembly` the offline validate layer calls, in the
+    vocabulary the roadmap and `ergane build start` already refuse in. Nothing is
+    re-read and nothing is re-worded: this maps the assembler's refusal onto
+    `PreflightFinding` and adds the one fact a park needs that a validate finding
+    does not — that the refusal happened *instead of* dispatch.
+
+    `passed=False` only, because a preflight finding is a refusal here: the
+    alias checks emit nothing when they pass, and an empty list is what a caller
+    reads as "every node can be handed a prompt".
+
+    `transport` stays `False` for the same reason it is a discriminator at all
+    (FR-005): it means the proxy would not answer. This check never asks it. A
+    trio it cannot read is a fact about the spec directory the operator edits,
+    not about a service the operator restarts, and `check_prompt_assembly`
+    already reports that as a finding naming the path.
+    """
+    return [
+        PreflightFinding(
+            check=PROMPT_ASSEMBLY_CHECK,
+            passed=False,
+            detail=f"{finding.document}: {finding.detail}. Nothing was dispatched.",
+        )
+        for finding in check_prompt_assembly(graph, feature_dir)
+    ]
 
 
 # --- slice coverage: the tasks that reach no agent (044 US3) ------------------
