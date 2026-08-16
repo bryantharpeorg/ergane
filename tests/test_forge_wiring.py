@@ -34,6 +34,7 @@ import pytest
 
 import factory.cli.init as init_module
 from factory.activities.merge_activities import onboard_target_repo
+from factory.mergequeue import wiring
 from factory.cli.errors import EXIT_OK
 from factory.mergequeue.forge import ALREADY_SATISFIED, APPLIED, WiringRefused
 from factory.mergequeue.gh import GhClient
@@ -264,6 +265,22 @@ def test_a_forge_with_no_usable_credentials_refuses_before_reading_anything(
     assert model.branches == {}
     assert forge_refusal.value.manual, "a refusal with no by-hand steps is a dead end"
     assert onboard_target_repo(FakeForge(model), str(repo)).passed is False
+
+
+def test_the_refusal_a_forge_raises_is_the_one_its_callers_catch() -> None:
+    """One class, not two that share a name — the shape of the defect that killed
+    nine tests on 2026-08-16, where nothing conflicted and the merge kept both.
+
+    `WiringRefused` moved onto the seam so a forge that never heard of GitHub can
+    refuse; `factory/mergequeue/wiring.py` imports it straight back, and a later
+    edit that gave that module its own class again would leave every `except` in
+    the CLI catching the other one — silently, since both would read correctly.
+
+    What edit would make this fail: define `class WiringRefused` in `wiring.py`
+    again.
+    """
+    assert wiring.WiringRefused is WiringRefused
+    assert (wiring.APPLIED, wiring.ALREADY_SATISFIED) == (APPLIED, ALREADY_SATISFIED)
 
 
 # --- US4-S4: `--wire` drives the forge it resolved, not that forge's client ----
