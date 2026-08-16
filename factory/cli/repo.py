@@ -17,6 +17,13 @@ would dispatch work nobody is watching against a specs root that may no longer
 exist.  Nothing in the repository itself is touched: the manifest, the gitignore
 line and `.ergane/` belong to it.
 
+034 US5 adds the two flags that make leaving complete without making it the
+default.  `--clean-runtime` empties the repo's own runtime root once no epic is
+running; `--export <dir>` writes the engine's records for the repo into open
+formats outside that root, delegating to `factory/cli/repo_export.py`.  Both are
+opt-in, because the portability principle is that a repo can leave cleanly, not
+that leaving takes its history with it whether the operator asked or not.
+
 `list` and `rebuild` (034 US2) are the registry's two faces.  `list` renders
 every entry *with its manifest status*, so a repo whose manifest was deleted
 after registration shows as drifted rather than disappearing — the cache reports
@@ -32,6 +39,7 @@ import argparse
 import asyncio
 import os
 import shutil
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -41,6 +49,7 @@ from temporalio.testing import ActivityEnvironment
 
 from factory import registry
 from factory.activities import roadmap_activities
+from factory.cli import repo_export
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
 from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue.gh import GhClient
@@ -65,6 +74,12 @@ from factory.workgraph.worktree import (
     RuntimeRootChoice,
     resolve_factory_root,
 )
+
+#: Finding key the removal guard names when it refuses a runtime root that a test
+#: has no business emptying.  Same grammar as the store guard D-045 put at
+#: `factory/verify/store.py::connect()`, for the same class of accident.
+RUNTIME_ROOT_TEST_ISOLATION_FINDING = "hardening/test-suite-empties-a-live-runtime-root"
+
 
 async def _open_client() -> Client:
     """Connect to the operator's Temporal for the capacity read."""
@@ -171,6 +186,26 @@ def add_repo_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
         ),
     )
     forget_parser.add_argument("slug", help="the slug the repository is registered under")
+    forget_parser.add_argument(
+        "--clean-runtime",
+        dest="clean_runtime",
+        action="store_true",
+        help=(
+            "also empty the repository's runtime root, once no epic is running; "
+            "the directory itself stays, because the repo still ignores it"
+        ),
+    )
+    forget_parser.add_argument(
+        "--export",
+        dest="export",
+        metavar="DIR",
+        default=None,
+        help=(
+            "first write this repository's engine-side records - findings, "
+            "usage, escalations - into DIR as one JSONL file per store plus a "
+            "markdown digest; DIR must lie outside the runtime root"
+        ),
+    )
     forget_parser.add_argument(
         "--lock-timeout",
         type=float,
@@ -282,6 +317,14 @@ def repo_forget_command(args: argparse.Namespace) -> int:
     control plane that cannot be reached refuses the whole verb and says the
     entry is unchanged, rather than removing the entry and leaving the schedule
     to dispatch unwatched work.
+
+    US5 adds two optional acts around that spine, and their order is the contract
+    (FR-011, FR-013): every refusal is taken before any act, because a departure
+    that half-happened is worse than one that was refused - the operator cannot
+    tell which half ran by looking; `--export` runs before `--clean-runtime`,
+    because the records it reads live in the root that flag empties; and
+    `--clean-runtime` runs last, so state is deleted only once nothing points at
+    it.
     """
     slug = str(args.slug)
     try:
@@ -296,6 +339,16 @@ def repo_forget_command(args: argparse.Namespace) -> int:
             code=EXIT_USER,
         )
 
+    runtime_root = runtime_root_for(entry.path)
+    clean_runtime = bool(getattr(args, "clean_runtime", False))
+    export_dir = getattr(args, "export", None)
+    destination = Path(export_dir).resolve() if export_dir is not None else None
+
+    if destination is not None:
+        _refuse_export_inside_runtime_root(destination, runtime_root)
+    if clean_runtime:
+        _refuse_while_epics_run(slug)
+
     schedule_id = roadmap_schedule.schedule_id_for(slug)
     try:
         deleted = roadmap_schedule.remove_schedule(schedule_id)
@@ -308,6 +361,15 @@ def repo_forget_command(args: argparse.Namespace) -> int:
             code=EXIT_USER,
         ) from None
 
+    exported = None
+    if destination is not None:
+        exported = repo_export.export_records(
+            slug=slug,
+            repo=entry.path,
+            runtime_root=runtime_root,
+            destination=destination,
+        )
+
     try:
         registry.forget(slug, timeout_s=float(args.lock_timeout))
     except registry.RegistryError as error:
@@ -319,8 +381,134 @@ def repo_forget_command(args: argparse.Namespace) -> int:
         print(f"deleted roadmap schedule {schedule_id}")
     else:
         print(f"no roadmap schedule {schedule_id} existed")
-    print(f"forgot {slug} ({entry.path}); the repository itself is untouched")
+
+    if exported is not None:
+        for store in exported.stores:
+            print(f"wrote {store.rows} {store.name} record(s) to {store.file}")
+        print(f"wrote {exported.digest}")
+
+    if clean_runtime:
+        emptied = _empty_runtime_root(runtime_root)
+        print(f"emptied {runtime_root} ({emptied} entr{'y' if emptied == 1 else 'ies'})")
+        legacy = entry.path / LEGACY_FACTORY_ROOT
+        if runtime_root.name != str(LEGACY_FACTORY_ROOT) and legacy.is_dir():
+            print(
+                f"left {legacy} alone; it is a second runtime root this repo "
+                "never migrated, and only the resolved one is emptied"
+            )
+        print(f"forgot {slug} ({entry.path}); its own files are untouched")
+    else:
+        print(f"forgot {slug} ({entry.path}); the repository itself is untouched")
     return EXIT_OK
+
+
+def runtime_root_for(repo: Path) -> Path:
+    """The runtime root *of this repository*, decided by directory name alone.
+
+    `resolve_factory_root()` answers a different question - which root the
+    current process should use - from the working directory and from
+    `ERGANE_ROOT`/`FACTORY_ROOT`.  Neither is a fact about the repository a slug
+    names, and `--clean-runtime` deletes what this returns.  On 2026-08-14 this
+    repository lost its whole runtime root to a process acting on a root it had
+    been handed rather than one it had derived; the environment is not consulted
+    here for that reason, and the result is a child of `repo` by construction
+    rather than by check.
+
+    Precedence is the resolver's own (034 plan, trap 12): `.ergane/` wins,
+    `.factory/` is honoured while it is the only one, neither gets the modern name.
+    """
+    modern = repo / DEFAULT_RUNTIME_ROOT
+    if modern.is_dir():
+        return modern
+    legacy = repo / LEGACY_FACTORY_ROOT
+    if legacy.is_dir():
+        return legacy
+    return modern
+
+
+def _refuse_export_inside_runtime_root(destination: Path, runtime_root: Path) -> None:
+    """FR-013: the export lands outside the root `--clean-runtime` may empty."""
+    root = runtime_root.resolve()
+    if destination == root or root in destination.parents:
+        raise OperatorError(
+            f"refusing to export into {destination}: it is inside the runtime "
+            f"root {runtime_root}, which --clean-runtime empties in this same "
+            "command; name a directory outside it",
+            code=EXIT_USER,
+        )
+
+
+def _refuse_while_epics_run(slug: str) -> None:
+    """Refuse `--clean-runtime` while any epic is open (FR-011, plan trap 6).
+
+    Any epic, not this repo's.  A workflow id is `epic-{epic_id}` and carries no
+    repo token, so "is an epic running against *this* repo" has no answer yet; a
+    filter over ids that cannot be filtered would match nothing, pass every test
+    anyone thought to write, and delete a live epic's evidence the first time it
+    mattered.  The blunt refusal is the honest one, and it says so.
+    """
+    open_epics = asyncio.run(_running_epic_ids())
+    if not open_epics:
+        return
+    raise OperatorError(
+        f"refusing to empty the runtime root of {slug!r} while epic(s) are running: "
+        f"{', '.join(sorted(open_epics))}. A running epic's runtime root is "
+        "evidence in use. Workflow ids carry no repo token, so this refuses on "
+        "any open epic rather than guessing which repository one belongs to; "
+        "nothing was changed",
+        code=EXIT_USER,
+    )
+
+
+def _refuse_unsafe_removal(root: Path) -> None:
+    """Refuse to empty a runtime root outside the tmp tree while a test runs.
+
+    The enforcement D-045 put at `factory/verify/store.py::connect()`, at the one
+    choke point every deletion in this verb goes through, and for the same
+    reason: on 2026-08-14 this repository's live runtime root was emptied by a
+    process satisfying a test, and the convention meant to prevent that had
+    already decayed three times.  A convention is not a boundary for an act that
+    deletes.
+
+    Unlike D-045 there is no acknowledgment variable.  D-045 has one because a
+    sanctioned live smoke must open a real store; nothing needs to empty a real
+    runtime root from inside a test, and a door with no user is only a way in.
+    Production never sets `PYTEST_CURRENT_TEST`, so an operator's own
+    `--clean-runtime` is byte-identical to the pre-guard behaviour, and the
+    refusal fires before any filesystem side effect.
+    """
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    try:
+        root.resolve().relative_to(tmp_root)
+    except ValueError:
+        raise RuntimeError(
+            f"refusing to empty the runtime root at {root}: a test-time deletion "
+            f"must stay under the tmp tree ({RUNTIME_ROOT_TEST_ISOLATION_FINDING})"
+        ) from None
+
+
+def _empty_runtime_root(root: Path) -> int:
+    """Delete everything inside `root`, keeping `root` itself, and count it.
+
+    The directory survives its own emptying because the repository's `.gitignore`
+    names it, and an operator who cleaned the state has not stopped ignoring the
+    directory.  Written as a plain loop: `tests/test_repo_ast.py` walks this
+    module for names used without a binding it can see, and its scope checker
+    does not model comprehension scopes.
+    """
+    _refuse_unsafe_removal(root)
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for child in sorted(root.iterdir()):
+        removed += 1
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    return removed
 
 
 def _lock_refusal(error: LockUnavailable) -> str:

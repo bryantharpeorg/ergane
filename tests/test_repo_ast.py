@@ -148,6 +148,15 @@ class _ScopeChecker(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
+        # Guarded like `visit_AnnAssign` below, and for the same reason: module
+        # scope is not on the stack, so a plain assignment at module level has
+        # nothing to bind into.  Those names are already supplied from the
+        # outside by `_module_global_bindings`.  Unguarded, the first
+        # module-level constant added to `factory/cli/repo.py` turned this guard
+        # into an `IndexError` — a checker that can neither pass nor fail is not
+        # a checker (034 US5).
+        if not self._scopes:
+            return
         for target in node.targets:
             self._bind(_local_bindings(target))
 
@@ -231,3 +240,20 @@ def test_repo_cli_module_references_only_imported_or_defined_names() -> None:
     unbound = checker.unbound - allowed
 
     assert not unbound, f"factory/cli/repo.py references unbound global names: {sorted(unbound)}"
+
+
+def test_the_checker_survives_a_module_level_plain_assignment() -> None:
+    """The checker must report on a module with a constant in it, not crash.
+
+    `visit_AnnAssign` was guarded against an empty scope stack from the start and
+    `visit_Assign` was not, so the checker above raised `IndexError` the moment
+    `factory/cli/repo.py` gained its first plain module-level constant — passing
+    for every module that happened not to have one.  This is the case that was
+    never exercised: a constant, and a genuine unbound name after it, which must
+    still be found.
+    """
+    tree = ast.parse("SOME_CONSTANT = 'x'\n\ndef f():\n    return missing_name\n")
+    checker = _ScopeChecker(_module_global_bindings(tree))
+    checker.visit(tree)
+
+    assert checker.unbound == {"missing_name"}
