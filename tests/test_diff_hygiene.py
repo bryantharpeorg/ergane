@@ -45,6 +45,7 @@ fake agrees with itself.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -69,9 +70,11 @@ from factory.verify.models import (
     RequirementKind,
     Scenario,
     VerificationForm,
+    VerificationResult,
     compose_result,
     judge_required,
 )
+from factory.verify.store import connect, node_history, upsert_result
 from factory.workgraph.worktree import DEFAULT_RUNTIME_ROOT, LEGACY_FACTORY_ROOT
 from tests.target_repo import GATE_ORDER_LOG, add_worktree, git, git_env
 
@@ -567,3 +570,102 @@ def test_a_read_scope_node_survives_unreadable_ignore_rules(
 
     assert result.artifacts_present is True
     assert result.passed is True
+
+
+# --- trap 5: rows written before 045 are still rows --------------------------
+
+
+def stored_result(output_check: OutputCheck) -> VerificationResult:
+    """The smallest complete evidence bundle carrying one output check."""
+    return compose_result(
+        epic_id="epic-7",
+        node_id="node-3",
+        attempt=1,
+        form=VerificationForm.PHASE,
+        gate_results=[
+            GateResult(
+                name="test",
+                command="uv run pytest -q",
+                status=GateStatus.PASS,
+                exit_code=0,
+                duration_s=1.0,
+                output_tail="1 passed\n",
+            )
+        ],
+        output_check=output_check,
+        judge=None,
+        criteria_sha256="a" * 64,
+        spec_ref="045-judge-diff-hygiene/US1",
+        started_at="2026-08-15T10:00:00Z",
+        finished_at="2026-08-15T10:03:00Z",
+    )
+
+
+def test_an_output_check_written_before_045_still_loads(tmp_path: Path) -> None:
+    """Trap 5. `verification.db` is full of rows whose JSON predates this field.
+
+    The row is rewritten to the exact five-key payload the store wrote before
+    this story, so the assertion is about a real historical shape rather than
+    about a shape this test invented.
+    """
+    conn = connect(tmp_path / "verification.db")
+    passing = OutputCheck(
+        write_scope=WriteScope.WORKTREE.value,
+        has_diff=True,
+        expected_artifacts=[],
+        artifacts_present=None,
+        passed=True,
+    )
+    row_id = upsert_result(conn, stored_result(passing))
+    conn.execute(
+        "UPDATE verification_results SET output_check = ? WHERE id = ?",
+        (
+            json.dumps(
+                {
+                    "write_scope": "worktree",
+                    "has_diff": True,
+                    "expected_artifacts": [],
+                    "artifacts_present": None,
+                    "passed": True,
+                }
+            ),
+            row_id,
+        ),
+    )
+    conn.commit()
+
+    [loaded] = node_history(conn, "epic-7", "node-3")
+
+    assert loaded.output_check == passing
+
+
+def test_a_hygiene_failure_round_trips_through_the_evidence_store(
+    tmp_path: Path,
+) -> None:
+    """The record has to survive, or the reason for the FAIL dies with the run.
+
+    The retry prompt and the escalation summary are both built from the stored
+    evidence, so a violation that did not round-trip would be a FAIL nobody
+    could explain a day later.
+    """
+    conn = connect(tmp_path / "verification.db")
+    refused = OutputCheck(
+        write_scope=WriteScope.WORKTREE.value,
+        has_diff=True,
+        expected_artifacts=[],
+        artifacts_present=None,
+        passed=False,
+        hygiene_violations=[
+            HygieneViolation(
+                path=f"{INCIDENT_HOME}/.claude.json",
+                rule=f"runtime root: {DEFAULT_RUNTIME_ROOT.name}/",
+            ),
+            HygieneViolation(path=GATE_ORDER_LOG, rule=".gitignore:4:.factory-gate-order.log"),
+        ],
+    )
+    upsert_result(conn, stored_result(refused))
+
+    [loaded] = node_history(conn, "epic-7", "node-3")
+
+    assert loaded.output_check == refused
+    assert loaded.verdict == OverallVerdict.FAIL
