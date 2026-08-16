@@ -65,7 +65,12 @@ UNKNOWN_SENDER = "unknown"
 #: Adapters that ship with the factory, and the module that registers each on
 #: import. Imported lazily at resolve time so this module stays free of the
 #: transports' own dependencies.
-_BUILTIN_ADAPTER_MODULES = {DEFAULT_ADAPTER: "factory.notify.service"}
+#: Keyed by the names 033's `KNOWN_ESC_ADAPTERS` admits, and held to that set
+#: by the conformance suite in both directions.
+_BUILTIN_ADAPTER_MODULES = {
+    DEFAULT_ADAPTER: "factory.notify.service",
+    "webhook": "factory.notify.webhook",
+}
 
 
 @dataclasses.dataclass(frozen=True)

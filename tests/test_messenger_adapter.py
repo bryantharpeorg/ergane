@@ -65,6 +65,7 @@ from factory.activities.verify_activities import (
     ERGANE_VERIFICATION_DB_PATH_ENV,
     VERIFICATION_DB_PATH_ENV,
 )
+from factory.controlplane.config import KNOWN_ESC_ADAPTERS
 from factory.notify.adapter import (
     ESCALATION_ADAPTER_ENV,
     UNKNOWN_SENDER,
@@ -151,6 +152,15 @@ SETTLING_VERBS = (
 FORBIDDEN_CONSTRUCTOR_HANDLES = frozenset(
     {"db_path", "conn", "connection", "store", "client", "workflow", "handle"}
 )
+
+#: Every shipped transport, read off the registry at collection time rather than
+#: written down (041-US4). It was written down until this story — `["telegram"]`,
+#: filed as `ci/the-adapter-conformance-suite-is-a-hardcoded-list-of-one`, because
+#: a suite that enumerates its own subjects cannot notice a new subject breaking
+#: the seam, and US4 is the second adapter. The fake `fake_adapter` registers is
+#: a *test* registration and deliberately not here: a conformance suite grading
+#: its own fakes grades nothing.
+CONFORMANCE_ADAPTERS = registered_adapters()
 
 
 # --- fakes ------------------------------------------------------------------
@@ -529,7 +539,23 @@ def test_a_relay_carries_a_correlation_id_reply_text_and_a_sender_identity() -> 
     assert names == ["correlation_id", "reply_text", "sender_identity"]
 
 
-@pytest.mark.parametrize("name", ["telegram"])
+def test_the_conformance_suite_covers_every_adapter_that_ships() -> None:
+    """The guard on the three parametrised tests below — they have no other.
+
+    A registry beats a literal only while the registry is populated: over an
+    empty one every conformance test below passes for want of a case, the same
+    vacuum and harder to see. Checked against 033's closed set both ways — a
+    transport the parser refuses is not selectable, and one it admits with
+    nothing registered pages nobody.
+    """
+    assert set(CONFORMANCE_ADAPTERS) == set(KNOWN_ESC_ADAPTERS)
+    assert len(CONFORMANCE_ADAPTERS) > 1, (
+        "the conformance suite is a list of one again; the second adapter is "
+        "what proved the first list could not fail"
+    )
+
+
+@pytest.mark.parametrize("name", CONFORMANCE_ADAPTERS)
 def test_every_registered_adapter_exposes_exactly_those_two_operations(
     name: str,
 ) -> None:
@@ -542,7 +568,7 @@ def test_every_registered_adapter_exposes_exactly_those_two_operations(
     assert public_methods(type(adapter)) == {"deliver", "relay"}
 
 
-@pytest.mark.parametrize("name", ["telegram"])
+@pytest.mark.parametrize("name", CONFORMANCE_ADAPTERS)
 def test_no_adapter_code_path_can_acknowledge_answer_or_expire(name: str) -> None:
     """FR-001, read off the adapter class's own source.
 
@@ -560,7 +586,7 @@ def test_no_adapter_code_path_can_acknowledge_answer_or_expire(name: str) -> Non
     )
 
 
-@pytest.mark.parametrize("name", ["telegram"])
+@pytest.mark.parametrize("name", CONFORMANCE_ADAPTERS)
 def test_an_adapter_is_handed_no_store_and_no_client(name: str) -> None:
     """The structural half of the same rule: nothing to settle *with*."""
     parameters = set(inspect.signature(type(resolve_adapter(name))).parameters)
@@ -626,7 +652,12 @@ def test_the_actions_the_adapter_transports_are_the_buttons_telegram_renders() -
 
 
 @pytest.mark.parametrize(
-    "module", ["factory/notify/adapter.py", "factory/notify/messages.py"]
+    "module",
+    [
+        "factory/notify/adapter.py",
+        "factory/notify/messages.py",
+        "factory/notify/webhook.py",
+    ],
 )
 def test_the_seam_itself_never_imports_temporalio(module: str) -> None:
     """FR-002 as a property of the import graph, lazy imports included."""
