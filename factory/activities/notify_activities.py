@@ -250,6 +250,10 @@ class SendQuestionInput:
     attempt: int
     question_text: str
     timeout_s: int = QUESTION_TIMEOUT_S
+    #: 041-US3: the id the caller already holds, mirroring the seam
+    #: `SendEscalationInput.escalation_id` carries — a `QuestionWorkflow`'s own
+    #: id, or a ferried question's, which is an adoption and not a second send.
+    question_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -297,6 +301,27 @@ class FindFerriedQuestion:
     """
 
     question_id: str | None
+
+
+@dataclass(frozen=True)
+class SettleQuestionInput:
+    """One operator answer, on its way to the row (041-US3, FR-013).
+
+    The mirror of `SettleEscalationInput`; `answer_text` is free text rather
+    than a closed-enum value, which is why `questions` is a sibling table rather
+    than a column (plan trap 5).
+    """
+
+    question_id: str
+    answer_text: str
+
+
+@dataclass(frozen=True)
+class SettledQuestion:
+    """What the question settled on, and whether this call is what settled it."""
+
+    final_state: str | None
+    settled_here: bool
 
 
 @dataclass(frozen=True)
@@ -751,8 +776,35 @@ async def send_question(request: SendQuestionInput) -> SentQuestion:
     is data, not an error: `message_id=None` is the signal that the workflow
     should proceed with no reply-routing key, the way `delivered=False` is the
     signal an escalation applies the fail-safe default immediately.
+
+    041-US3: a `question_id` naming a row that exists is an *adoption* — the
+    ferry paged it already, so all that is left is to point its reply-routing
+    column at the workflow now waiting (008-US3's dedup). An id naming no row is
+    a fresh send with its id already chosen.
     """
+    if request.question_id is not None:
+        adopted = _adopt_question(request)
+        if adopted is not None:
+            return adopted
     return await _deliver_question(request)
+
+
+def _adopt_question(request: SendQuestionInput) -> SentQuestion | None:
+    """Re-point an existing pending question row, or `None` if there is none."""
+    assert request.question_id is not None
+    with closing(_connect_question()) as conn:
+        existing = store.get_question(conn, request.question_id)
+        if existing is None or existing.resolution is not None:
+            return None
+        store.adopt_question(
+            conn, request.question_id, workflow_id=request.workflow_id
+        )
+    return SentQuestion(
+        question_id=existing.question_id,
+        message_id=existing.message_id,
+        sent_at=existing.sent_at,
+        expires_at=existing.expires_at,
+    )
 
 
 async def _deliver_question(request: SendQuestionInput) -> SentQuestion:
@@ -814,6 +866,40 @@ async def expire_question(request: ExpireQuestionInput) -> ExpiredQuestion:
     if record is None or record.resolution is None:
         return ExpiredQuestion(final_state=None)
     return ExpiredQuestion(final_state=record.resolution)
+
+
+@activity.defn
+async def settle_question(request: SettleQuestionInput) -> SettledQuestion:
+    """Record the operator's answer on the row — the workflow's own transition.
+
+    The mirror of `settle_escalation`, for its reason (041-US3, FR-013): until
+    the lifecycle was a workflow, whether an answered question's row settled
+    depended on the channel — the bridge writes, `ergane build answer` signalled
+    and left — so no question in the live store had ever been marked ANSWERED.
+    No arbitration beside the store's guarded UPDATE (plan trap 2): this *is*
+    that UPDATE, and losing it means the bridge or the window got there first.
+    Never raises, for the reason `expire_question` does not.
+    """
+    try:
+        with closing(store.connect(_store_path())) as conn:
+            if store.resolve_question(
+                conn,
+                request.question_id,
+                answer_text=request.answer_text,
+                resolved_at=_now_iso(),
+            ):
+                return SettledQuestion(final_state=store.ANSWERED, settled_here=True)
+            record = store.get_question(conn, request.question_id)
+    except (sqlite3.Error, OSError):
+        logger.warning(
+            "question %s: store unreadable; the answer was not recorded",
+            request.question_id,
+        )
+        return SettledQuestion(final_state=None, settled_here=False)
+
+    if record is None or record.resolution is None:
+        return SettledQuestion(final_state=None, settled_here=False)
+    return SettledQuestion(final_state=record.resolution, settled_here=False)
 
 
 # --- the in-attempt ferry (008-US3) -------------------------------------------
@@ -925,7 +1011,8 @@ def _pending_question(request: SendQuestionInput) -> QuestionRecord:
     sent = datetime.now(timezone.utc).replace(microsecond=0)
 
     return QuestionRecord(
-        question_id=secrets.token_hex(6),
+        # 041-US3: the caller's id when it has one, a fresh 12-hex id otherwise.
+        question_id=request.question_id or secrets.token_hex(6),
         workflow_id=request.workflow_id,
         epic_id=request.epic_id,
         node_id=request.node_id,

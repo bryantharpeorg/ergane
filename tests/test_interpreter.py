@@ -159,6 +159,7 @@ from factory.mergequeue.models import (
     QueueOutcome,
     TargetRepoProfile,
 )
+from factory.activities import notify_activities
 from factory.activities.notify_activities import (
     ExpiredEscalation,
     ExpiredQuestion,
@@ -223,6 +224,8 @@ from factory.workgraph.models import (
 )
 from factory.workgraph import workflow as workflow_module
 from factory.workgraph.worktree import PreparedWorktree, branch_name
+from factory.escalation.question import QuestionWorkflow
+from factory.escalation.workflow import EscalationWorkflow
 from factory.workgraph.workflow import EpicInput, EpicWorkflow
 
 EPIC_ID = "demo-loans"
@@ -765,6 +768,9 @@ class SendQuestionInput:
     node_id: str
     attempt: int
     question_text: str
+    # 041-US3: this local copy silently wins over the import above, so it has
+    # to be kept in step with the real input. Reported as a finding.
+    question_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1614,7 +1620,11 @@ class ScriptedWorld:
             script._log("send_escalation", request.node_id)
             script.escalation_requests.append(request)
 
-            escalation_id = f"{len(script.escalation_requests):012x}"
+            # 041-US3: honour the caller's id, as the real activity does — it
+            # is the waiting `EscalationWorkflow`'s own.
+            escalation_id = (
+                request.escalation_id or f"{len(script.escalation_requests):012x}"
+            )
             script.escalation_ids.append(escalation_id)
 
             if script._delivered and script._press is not None:
@@ -1671,7 +1681,10 @@ class ScriptedWorld:
             # US2). The question ships once, attributed to its epic/node/attempt.
             script._log("send_question", request.node_id)
             script.question_requests.append(request)
-            question_id = f"{len(script.question_requests):012x}"
+            # 041-US3: as above, the waiting workflow's id wins.
+            question_id = (
+                request.question_id or f"{len(script.question_requests):012x}"
+            )
             message_id = 1000 + len(script.question_requests)
             script.question_message_ids.append(message_id)
             # US2: the operator's reply lands while the send is in flight, the
@@ -1750,6 +1763,12 @@ class ScriptedWorld:
             validate_target_repo,
             send_escalation,
             expire_escalation,
+            # 041-US3: the children's terminal row-writes, real rather than
+            # scripted — pure store writes against the session's tmp store, and
+            # a row the scripted send never inserted loses the guarded UPDATE
+            # and reports the caller's own choice back.
+            notify_activities.settle_escalation,
+            notify_activities.settle_question,
             detect_operator_question_activity,
             send_question,
             expire_question,
@@ -1811,7 +1830,8 @@ async def start_epic(
     async with Worker(
         env.client,
         task_queue=TASK_QUEUE,
-        workflows=[EpicWorkflow],
+        # 041-US3: a child runs on its parent's queue.
+        workflows=[EpicWorkflow, EscalationWorkflow, QuestionWorkflow],
         activities=script.activities(),
         workflow_runner=UnsandboxedWorkflowRunner(),
         # 006-US4: mirror the production heartbeat-throttle cap so tests that
@@ -2174,7 +2194,12 @@ async def test_the_ladder_exhausts_into_an_escalation_the_operator_kills(
     [escalation] = script.escalation_requests
     assert escalation.epic_id == EPIC_ID
     assert escalation.node_id == "us1"
-    assert escalation.workflow_id == WORKFLOW_ID
+    # 041-US3: the row's routing column names the `EscalationWorkflow` waiting,
+    # not the epic — which is what lets `CallbackBridge` and
+    # `ergane build resolve` reach the child unchanged. Correlation id and
+    # workflow are one id (FR-004), so neither can drift.
+    assert escalation.workflow_id == escalation.escalation_id
+    assert escalation.workflow_id != WORKFLOW_ID
     for attempt in (1, 2, 3, 4):
         assert GATE_TAIL[attempt] in escalation.history_summary
     assert {str(choice) for choice in escalation.choices} == {
@@ -2909,7 +2934,8 @@ async def test_sdk_eviction_during_attempt_emits_no_teardown_or_unraisable(
     async with Worker(
         env.client,
         task_queue=TASK_QUEUE,
-        workflows=[EpicWorkflow],
+        # 041-US3: a child runs on its parent's queue.
+        workflows=[EpicWorkflow, EscalationWorkflow, QuestionWorkflow],
         activities=script.activities(),
         workflow_runner=UnsandboxedWorkflowRunner(),
     ):

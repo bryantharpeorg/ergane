@@ -601,7 +601,11 @@ async def _answer(epic_id: str, question_id: str | None, text: str | None) -> in
             )
 
         client = await _connect()
-        handle = client.get_workflow_handle(workflow_id(epic_id))
+        # 041-US3: the row's `workflow_id` names whatever is waiting — a
+        # `QuestionWorkflow` since the park migrated. Read rather than derived,
+        # exactly as `CallbackBridge` has always done, so the verb cannot drift
+        # from the button.
+        handle = client.get_workflow_handle(record.workflow_id)
         try:
             await handle.signal(QUESTION_SIGNAL_NAME, args=[question_id, text])
         except RPCError as error:
@@ -738,7 +742,8 @@ async def _resolve(
             )
 
         client = await _connect()
-        handle = client.get_workflow_handle(workflow_id(epic_id))
+        # Through the row's routing column, for the reason `_answer` records.
+        handle = client.get_workflow_handle(record.workflow_id)
         try:
             await handle.signal(SIGNAL_NAME, args=[escalation_id, choice])
         except RPCError as error:
