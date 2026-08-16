@@ -1065,6 +1065,25 @@ async def test_a_relay_for_a_question_nobody_asked_settles_nothing(
 
 
 # ============================================================================
+# T007 — the whole suite, after the refactor
+# ============================================================================
+#
+#     $ uv run pytest -q
+#     2581 passed, 44 skipped, 4 warnings in 289.81s (0:04:49)
+#
+# Run twice, and the second time is the one above. The first, immediately after
+# the production change landed:
+#
+#     2581 passed, 44 skipped, 5 warnings in 287.17s (0:04:47)
+#
+# Both are post-refactor; the base-commit total is not quoted here because I did
+# not run the whole suite on the base commit, only the five 008 files below.
+# The 26 tests this story adds are all in this file, and nothing is newly
+# skipped: 44 both times, which is the Telegram, proxy, epic, merge and capacity
+# live tiers auto-skipping for want of credentials.
+#
+#
+# ============================================================================
 # US1-S1 — the existing operator-channel suite, unmodified (T006)
 # ============================================================================
 #
