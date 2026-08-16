@@ -21,6 +21,15 @@ registry (`factory/registry.py`) under the declared slug. That record lives
 under the engine's state home, never inside any repo, and it is the only place
 the slug exists — the manifest declares what the repo *is*, the registry
 records what the engine *calls* it.
+
+US4 adds `--check`, and a full init now ends by running it (FR-010). The check
+**gathers and renders; it never writes**: every step is a read — `git
+check-ignore`, `git show-ref`, a registry load, a manifest parse, 033's probes —
+and the judgment over them is the one the 003 dispatch path already uses
+(`onboard.evaluate_repo`), extended rather than forked, so a repo that fails at
+the operator's terminal fails the same way at dispatch. Two module-level seams
+in the `_client_factory` idiom keep it offline in tests: `_gh_client_factory`
+and `_controlplane_probe`; no test here reaches either default.
 """
 
 from __future__ import annotations
@@ -35,19 +44,46 @@ import yaml
 from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.locking import LockUnavailable, lock_path_for
+from factory.mergequeue.models import Finding, TargetRepoProfile
+from factory.mergequeue.onboard import InitFacts
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     _SUPPORTED_VERSION,
     _TOP_LEVEL_KEYS,
+    FactoryConfigError,
     load_factory_config,
     parse_factory_config,
+    resolve_manifest_path,
 )
+from factory.workgraph.worktree import DEFAULT_RUNTIME_ROOT, LEGACY_FACTORY_ROOT
 
 #: Runtime root created inside the target repo.
 RUNTIME_ROOT = Path(".ergane")
 
 #: Module-level seam so tests can inject a scripted prompter.
 _prompter_factory: Callable[[], Any] | None = None
+
+
+def _default_gh_client(*, repo_path: str) -> Any:
+    """Build the real `gh` client; imported late so the scaffold stays offline."""
+    from factory.mergequeue.gh import GhClient
+
+    return GhClient(repo=repo_path)
+
+
+#: Seam: how `--check` reaches GitHub.  Rebound in tests to a scripted runner.
+_gh_client_factory: Callable[..., Any] = _default_gh_client
+
+
+def _default_controlplane_probe() -> tuple[list[Finding], int]:
+    """Run 033's probes unmodified: this check owns the summary, 033 the probing."""
+    from factory.controlplane.verify import verify_controlplane
+
+    return verify_controlplane()
+
+
+#: Seam: how `--check` reaches the control plane.  Rebound in tests.
+_controlplane_probe: Callable[[], tuple[list[Finding], int]] = _default_controlplane_probe
 
 
 def _prompter() -> Any:
@@ -155,6 +191,11 @@ def add_init_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
         nargs="?",
         default=".",
         help="path inside the repository to initialise (default: current directory)",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="judge this repository's readiness and exit; writes nothing",
     )
     parser.set_defaults(run=init_command)
     return parser
@@ -302,8 +343,16 @@ def _render_manifest(values: dict[str, Any]) -> str:
 
 
 def init_command(args: argparse.Namespace) -> int:
-    """Run the interview and write the scaffold."""
+    """Run the interview and write the scaffold — or, with `--check`, only judge.
+
+    `--check` short-circuits before any question is asked and before any file is
+    touched: it is the judging half of init, and its exit code is the contract
+    (0 when every finding passes, non-zero when any fails).
+    """
     repo_root = resolve_repo_root(args.path)
+
+    if getattr(args, "check", False):
+        return run_check(repo_root)
 
     defaults = _build_defaults(repo_root)
 
@@ -349,6 +398,15 @@ def init_command(args: argparse.Namespace) -> int:
     print("next, run:")
     print(f"  git -C {repo_root.resolve()} add ergane.yaml .gitignore .ergane")
     print(f"  git -C {repo_root.resolve()} commit -m \"join ergane\"")
+
+    # FR-010: a full init ends by executing the check, so readiness is judged at
+    # the operator's terminal rather than discovered by the factory's first
+    # dispatch.  Its verdict is *reported*, not returned: the scaffold and the
+    # registry entry succeeded, and a merge queue nobody has wired yet (US3) or
+    # an unreachable control plane (FR-017) must not read as init having failed.
+    # `ergane init --check` is the door whose exit code is the verdict.
+    print()
+    run_check(repo_root)
 
     return EXIT_OK
 
@@ -431,3 +489,169 @@ def _write_scaffold(repo_root: Path, manifest_text: str) -> None:
 
     runtime_root = repo_root / RUNTIME_ROOT
     runtime_root.mkdir(exist_ok=True)
+
+
+# --- US4: readiness is judged, not assumed ------------------------------------
+
+
+def _git_read(repo_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """One *read-only* git query; a non-zero status is an answer, not an error.
+
+    Nothing reached from here may create a ref, a file or an index entry:
+    `--check` reports on a repository, it does not repair one.
+    """
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def resolve_repo_runtime_root(repo_root: Path) -> tuple[str, bool]:
+    """Which runtime root *this repository* has, and whether it is the legacy one.
+
+    Deliberately not `worktree.resolve_factory_root()`: that resolver **creates**
+    `.ergane/` when neither name exists — the one thing a check must never do —
+    and it resolves against the *process's* cwd and the worker's `ERGANE_ROOT`
+    override, so from anywhere but the repo it answers about the wrong tree.
+    The policy and the constants here are still its: `.ergane/` wins, a lone
+    `.factory/` is honoured (trap 12), neither means the name init would write.
+    """
+    if (repo_root / DEFAULT_RUNTIME_ROOT).is_dir():
+        return str(DEFAULT_RUNTIME_ROOT), False
+    if (repo_root / LEGACY_FACTORY_ROOT).is_dir():
+        return str(LEGACY_FACTORY_ROOT), True
+    return str(DEFAULT_RUNTIME_ROOT), False
+
+
+def _git_ignores(repo_root: Path, path: str) -> bool:
+    """Whether git's ignore *rules* exclude `path` — asked, not text-searched.
+
+    `--no-index` asks about the rules rather than what is already tracked, which
+    is what a remedy naming a `.gitignore` line can act on.
+    """
+    completed = _git_read(repo_root, "check-ignore", "--quiet", "--no-index", "--", path)
+    return completed.returncode == 0
+
+
+def _git_has_branch(repo_root: Path, branch: str) -> bool:
+    """Whether `refs/heads/<branch>` exists.  Reads a ref; never creates one."""
+    completed = _git_read(
+        repo_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"
+    )
+    return completed.returncode == 0
+
+
+def _registry_facts(repo_root: Path) -> tuple[Path, str | None, str | None]:
+    """The registry path, the slug pointing here, and why it could not be read.
+
+    An unparseable registry is a fact, not a crash: one failing finding is what
+    lets every other finding still render.
+    """
+    registry_path = registry.resolve_registry_path()
+    try:
+        entry = registry.load_registry().for_path(repo_root)
+    except registry.RegistryError as problem:
+        return registry_path, None, str(getattr(problem, "problem", problem))
+    return registry_path, (entry.slug if entry is not None else None), None
+
+
+def _control_plane_facts() -> tuple[tuple[Finding, ...], str | None]:
+    """033's probe findings, or the reason there are none.
+
+    Every exception is caught, including the ones 033's registry does not catch
+    for itself — an unreadable control-plane config raises before the first probe
+    runs.  An escape here would abort the render: exactly what "no failure
+    masking another" forbids.
+    """
+    try:
+        findings, _exit_code = _controlplane_probe()
+    except Exception as error:  # noqa: BLE001 - a probe must never abort the report
+        return (), f"{type(error).__name__}: {error}"
+    return tuple(findings), None
+
+
+def gather_init_facts(repo_root: Path) -> InitFacts:
+    """Read the facts init created, so `evaluate_repo` can judge them (FR-010).
+
+    Gathering only: the judgment lives in `factory/mergequeue/onboard.py` beside
+    the 003 checks, because a second place deciding what "ready" means is a
+    second place that can drift.
+    """
+    root_name, is_legacy = resolve_repo_runtime_root(repo_root)
+    registry_path, slug, registry_error = _registry_facts(repo_root)
+
+    manifest_path, _manifest_name = resolve_manifest_path(repo_root)
+    try:
+        landing_branch: str | None = load_factory_config(manifest_path).landing_branch
+    except FactoryConfigError:
+        # The manifest's own finding carries the loader's error; here the
+        # consequence is that the landing branch cannot be judged, and an
+        # unjudgeable check is reported rather than skipped.
+        landing_branch = None
+
+    control_plane, control_plane_error = _control_plane_facts()
+
+    return InitFacts(
+        repo_root=str(repo_root),
+        runtime_root=root_name,
+        runtime_root_is_legacy=is_legacy,
+        runtime_root_ignored=_git_ignores(repo_root, f"{root_name}/"),
+        gitignore=str(repo_root / ".gitignore"),
+        registry_path=str(registry_path),
+        registry_slug=slug,
+        registry_error=registry_error,
+        landing_branch=landing_branch,
+        landing_branch_exists=(
+            landing_branch is not None and _git_has_branch(repo_root, landing_branch)
+        ),
+        control_plane=control_plane,
+        control_plane_error=control_plane_error,
+    )
+
+
+def check_repo(repo_root: str | Path) -> TargetRepoProfile:
+    """Judge one repository's readiness through the shared judgment (FR-010).
+
+    `onboard_target_repo` is the seam both doors already share, so the 003 facts
+    are gathered by the code that already knows how and init's ride beside them.
+    The `@activity.defn` wrapper is deliberately not what is called: it cannot
+    run outside a worker (plan trap 2).
+    """
+    from factory.activities.merge_activities import onboard_target_repo
+
+    root = Path(repo_root).resolve()
+    facts = gather_init_facts(root)
+    client = _gh_client_factory(repo_path=str(root))
+    return onboard_target_repo(client, str(root), init_facts=facts)
+
+
+def render_check(profile: TargetRepoProfile, repo_root: Path, manifest_name: str) -> str:
+    """One line per finding, pass and fail alike.
+
+    Passing findings print too: "checked" and "passed" are different claims, and
+    a failures-only report cannot make the first.
+    """
+    lines = [f"ergane readiness for {repo_root} ({manifest_name})"]
+    failed = 0
+    for finding in profile.findings:
+        mark = "PASS" if finding.passed else "FAIL"
+        if not finding.passed:
+            failed += 1
+        lines.append(f"  [{mark}] {finding.check}: {finding.detail}")
+
+    total = len(profile.findings)
+    if failed:
+        lines.append(f"{failed} of {total} checks failed")
+    else:
+        lines.append(f"all {total} checks passed")
+    return "\n".join(lines)
+
+
+def run_check(repo_root: Path) -> int:
+    """Render the report; non-zero on any failing finding, 0 when all pass."""
+    profile = check_repo(repo_root)
+    _manifest_path, manifest_name = resolve_manifest_path(repo_root)
+    print(render_check(profile, repo_root, manifest_name))
+    return EXIT_OK if profile.passed else EXIT_USER

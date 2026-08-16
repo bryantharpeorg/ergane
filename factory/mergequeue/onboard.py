@@ -37,13 +37,59 @@ check is rejected for dispatch with instructions for the operator (spec US3 AS2)
 `evaluate_repo` is deliberately handed already-loaded facts (the activity owns
 the `gh` calls and the `factory.yaml` read) so the judgment here can be proven
 in isolation.
+
+**034 US4 extends this judgment; it does not fork it.** `ergane init --check`
+gathers four more facts and passes them as `init_facts`; the 003 dispatch path
+passes nothing and sees exactly the checks it always saw, so a check added here
+can never start refusing a dispatch it used to allow. Both doors share this
+function, so the gate↔check parity an operator reads at their terminal is the
+same `Finding`, detail and all, the interpreter reads at dispatch (FR-010). The
+added checks are `runtime_root_ignored` (whose detail names the exact
+`.gitignore` line, because a runtime root reaching git history is how a node
+commits its own transcripts onto a landing branch), `runtime_root_migration`
+(only for a repo still on legacy `.factory/`, trap 12), `registry_entry`,
+`landing_branch`, and one `control_plane` summary over 033's probes — a summary
+because the control plane is a property of the host rather than of this repo,
+and `ergane install --verify` renders its checks individually.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from factory.mergequeue.models import Finding, TargetRepoProfile
+
+
+@dataclass(frozen=True)
+class InitFacts:
+    """What `ergane init --check` gathered, for this module to judge (034 FR-010).
+
+    Facts only — every field is something the CLI read from git, the registry or
+    033's probes — so the judgment over them stays pure and table-testable. The
+    `None` fields are "could not be determined", and each renders a *failing*
+    finding: `control_plane=()` with no error fails, because unknown readiness is
+    not readiness.
+    """
+
+    #: Absolute path of the repository judged; quoted in every remedy.
+    repo_root: str
+    #: The root this repo has — `.ergane`, or `.factory` when unmigrated.
+    runtime_root: str = ".ergane"
+    runtime_root_is_legacy: bool = False
+    runtime_root_ignored: bool = True
+    #: The `.gitignore` a remedy would edit, so the fix is copy-pasteable.
+    gitignore: str = ""
+    registry_path: str = ""
+    #: The slug whose entry points here, or None when no entry does.
+    registry_slug: str | None = None
+    registry_error: str | None = None
+    #: The manifest's landing branch, or None when the manifest did not load.
+    landing_branch: str | None = None
+    landing_branch_exists: bool = False
+    #: 033's probe findings, carried through rather than re-derived.
+    control_plane: tuple[Finding, ...] = field(default_factory=tuple)
+    control_plane_error: str | None = None
 
 
 def evaluate_repo(
@@ -56,6 +102,7 @@ def evaluate_repo(
     declared_gates: Sequence[str],
     factory_yaml_error: str | None = None,
     squash_merge_commit_title: str | None = None,
+    init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
     """Judge a target repo's facts against the factory's assumptions.
 
@@ -103,6 +150,11 @@ def evaluate_repo(
         _gate_check_finding(findings, gate, gate in required)
     for check in sorted(required - declared):
         _unknown_check_finding(findings, check)
+
+    # Init's own checks, when the caller gathered them (034 FR-010). Appended
+    # rather than interleaved so the 003 report an operator already knows how to
+    # read does not change shape underneath them.
+    findings.extend(evaluate_init_facts(init_facts))
 
     return TargetRepoProfile(
         repo=repo,
@@ -225,5 +277,197 @@ def _unknown_check_finding(findings: list[Finding], check: str) -> None:
             f"required check '{check}' is not a declared gate in factory.yaml — "
             "deterministic gates only (FR-003): a required check must map to a "
             "declared gate, so the LLM judge can never be a CI check",
+        )
+    )
+
+
+# --- 034 US4: the checks init's own facts answer -------------------------------
+
+
+def evaluate_init_facts(init_facts: "InitFacts | None") -> tuple[Finding, ...]:
+    """Judge the facts `ergane init --check` gathered — or nothing, when it did not.
+
+    Split out of `evaluate_repo` for one reason: `onboard_target_repo` short
+    circuits into `_profile_from_gh_failure` when `gh` cannot read the repo, and
+    a repo with no GitHub remote is exactly the repo whose *local* findings
+    matter most. Both paths call this, so a `gh` refusal never masks the
+    gitignore check ("no failure masking another").
+
+    Every check renders unconditionally: no early return, no exception skipping
+    the rest. An unknown answer is a failing finding, never an absent one.
+    """
+    if init_facts is None:
+        return ()
+
+    findings: list[Finding] = []
+    _runtime_root_findings(findings, init_facts)
+    _registry_finding(findings, init_facts)
+    _landing_branch_finding(findings, init_facts)
+    _control_plane_finding(findings, init_facts)
+    return tuple(findings)
+
+
+def _runtime_root_findings(findings: list[Finding], facts: "InitFacts") -> None:
+    """The runtime root must be ignored by git — the root this repo *has*.
+
+    Trap 12: a repo that never ran `ergane repo migrate-runtime-root` keeps its
+    state in `.factory/`. Demanding `.ergane/` there reports a failure the
+    operator cannot act on while missing the directory actually holding their
+    evidence, so the resolved root is judged and the legacy name earns a second
+    finding naming its remedy.
+    """
+    root = facts.runtime_root
+    if facts.runtime_root_ignored:
+        findings.append(
+            Finding("runtime_root_ignored", True, f"{root}/ is ignored by git")
+        )
+    else:
+        findings.append(
+            Finding(
+                "runtime_root_ignored",
+                False,
+                f"{root}/ is not ignored by git; add the line `{root}/` to "
+                f"{facts.gitignore} — the runtime root holds worktrees, session "
+                "transcripts and verification evidence, and one that reaches git "
+                "history lands megabytes of agent output on a landing branch",
+            )
+        )
+
+    if facts.runtime_root_is_legacy:
+        findings.append(
+            Finding(
+                "runtime_root_migration",
+                False,
+                f"this repository's runtime root is still the legacy {root}/; run "
+                "`ergane repo migrate-runtime-root` to move it to .ergane/",
+            )
+        )
+
+
+def _registry_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """The engine must know where this repo is; the registry is how it knows."""
+    if facts.registry_error is not None:
+        findings.append(
+            Finding(
+                "registry_entry",
+                False,
+                f"the engine registry {facts.registry_path} could not be read: "
+                f"{facts.registry_error} — it is a cache: re-derive it with "
+                f"`ergane repo rebuild {facts.repo_root}`",
+            )
+        )
+        return
+
+    if facts.registry_slug is not None:
+        findings.append(
+            Finding(
+                "registry_entry",
+                True,
+                f"registered as '{facts.registry_slug}' in {facts.registry_path}",
+            )
+        )
+        return
+
+    findings.append(
+        Finding(
+            "registry_entry",
+            False,
+            f"no entry in the engine registry {facts.registry_path} points at "
+            f"{facts.repo_root}; run `ergane init` here to register it — the "
+            "committed manifest is what makes a repo managed, but the engine "
+            "cannot enumerate repos it has no pointer to",
+        )
+    )
+
+
+def _landing_branch_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """The branch the manifest declares must be a branch the repo has."""
+    if facts.landing_branch is None:
+        findings.append(
+            Finding(
+                "landing_branch",
+                False,
+                "the landing branch could not be judged: this repository's "
+                "manifest did not load (see the factory_yaml finding)",
+            )
+        )
+        return
+
+    branch = facts.landing_branch
+    if facts.landing_branch_exists:
+        findings.append(
+            Finding("landing_branch", True, f"landing branch '{branch}' exists")
+        )
+        return
+
+    findings.append(
+        Finding(
+            "landing_branch",
+            False,
+            f"the manifest declares `landing_branch: {branch}` but "
+            f"{facts.repo_root} has no such branch; create it with "
+            f"`git -C {facts.repo_root} branch {branch}`, or declare the branch "
+            "this repository actually lands on",
+        )
+    )
+
+
+def _control_plane_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """One summary finding over 033's probes, carrying their detail through.
+
+    Fails closed three ways: the probes could not run, some probe failed, or no
+    probe ran at all. The last is the one worth naming — "reachable" because
+    nothing was probed would be worse than no check.
+    """
+    if facts.control_plane_error is not None:
+        findings.append(
+            Finding(
+                "control_plane",
+                False,
+                f"the control plane could not be probed: {facts.control_plane_error}"
+                " — `ergane install --verify` reports each subsystem separately",
+            )
+        )
+        return
+
+    if not facts.control_plane:
+        findings.append(
+            Finding(
+                "control_plane",
+                False,
+                "no control-plane probe ran, so control-plane readiness is "
+                "unknown; run `ergane install --verify` to see why",
+            )
+        )
+        return
+
+    failed: list[Finding] = []
+    for probe in facts.control_plane:
+        if not probe.passed:
+            failed.append(probe)
+
+    if not failed:
+        names: list[str] = []
+        for probe in facts.control_plane:
+            names.append(probe.check)
+        findings.append(
+            Finding(
+                "control_plane",
+                True,
+                f"control plane reachable: {len(names)} probes passed "
+                f"({', '.join(names)})",
+            )
+        )
+        return
+
+    reasons: list[str] = []
+    for probe in failed:
+        reasons.append(f"{probe.check}: {probe.detail}")
+    findings.append(
+        Finding(
+            "control_plane",
+            False,
+            f"{len(failed)} of {len(facts.control_plane)} control-plane probes "
+            f"failed — {'; '.join(reasons)}",
         )
     )

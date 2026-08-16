@@ -121,11 +121,21 @@ class ScriptedPrompter:
 
 @pytest.fixture
 def scripted(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Run]:
-    """Factory that runs init with a scripted prompter and captures output."""
+    """Factory that runs init with a scripted prompter and captures output.
+
+    US4 made the check init's automatic last act (FR-010), so a completed init
+    now reaches `gh` and 033's probes. Both seams are bound to scripted doubles:
+    a unit test must never spawn real `gh`, nor deliver a real escalation.
+    """
 
     def runner(*argv: str, answers: list[str]) -> Run:
+        # Imported here, not at module scope: the check module imports this
+        # one's helpers, and a module-level import either way would cycle.
+        from tests.test_ergane_init_check import bind_offline_seams
+
         prompter = ScriptedPrompter(answers)
         monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
+        bind_offline_seams(monkeypatch)
         return _invoke(list(argv), monkeypatch)
 
     return runner
