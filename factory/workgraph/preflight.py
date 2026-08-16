@@ -7,6 +7,21 @@ are *served*, and the first-attempt key aliases that epic will mint do not
 issued, and finding them at dispatch costs one message instead of attempts,
 issued keys and a burned node.
 
+044 adds a third fact with the same shape and no proxy at all: **every node of
+the graph can assemble its attempt prompt** from the trio the epic's spec
+directory holds. It belongs here because it is the same bargain — knowable
+offline, ruinous at dispatch. On 2026-08-15 a four-node epic was dispatched
+whose `tasks.md` phase headings named each story's title and never its key;
+one tick later every node was dead, killed before any agent ran, and the price
+of learning it was an epic. `check_prompt_assembly` is that lesson moved to
+`ergane spec validate`, where it costs one command.
+
+It is deliberately *not* a second reader of the authored markdown. It calls
+`build_attempt_prompt` — the public assembler the dispatch path itself calls —
+once per node and reports what it refuses. A check with its own copy of the
+heading grammar would agree with dispatch right up until the day one copy was
+edited, which is a worse position than having no check (044 FR-004).
+
 This is the pure core shared by the two callers that run a preflight:
 
 - `ergane build start` runs it in-process (CLI) before starting the workflow,
@@ -40,12 +55,20 @@ it so nothing that imported the CLI's name changes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping
 
 from factory.activities.usage_activities import key_alias_for
 from factory.config import Persona
 from factory.usage.litellm_client import LiteLLMClient, LiteLLMError
 from factory.workgraph.models import WorkGraph
+from factory.workgraph.prompt import (
+    PLAN_DOCUMENT,
+    SPEC_DOCUMENT,
+    TASKS_DOCUMENT,
+    PromptAssemblyError,
+    build_attempt_prompt,
+)
 from factory.workgraph.workflow import JUDGE_PERSONA
 
 
@@ -68,6 +91,138 @@ class PreflightFinding:
     passed: bool
     detail: str
     transport: bool = False
+
+
+@dataclass(frozen=True)
+class AssemblyFinding:
+    """One node whose prompt will not assemble, and the document at fault.
+
+    Three fields because an operator needs three things and the offline layer,
+    the roadmap park and a future `--json` reader all need them apart rather
+    than glued into a sentence: which node (so a graph of sixteen is not a
+    search), which authored file to open, and the assembler's own refusal
+    verbatim.
+
+    `detail` is quoted, never paraphrased — it is the same discipline the
+    prompt applies to gate tails. The refusal already names the node and the
+    story, and an operator who is handed a summary of it has been handed a
+    description of the defect instead of the defect.
+
+    `node_id` is `None` for the findings that belong to no node: a document that
+    could not be read at all is a fact about the trio, not about any one story.
+    """
+
+    document: str
+    detail: str
+    node_id: str | None = None
+
+    def __str__(self) -> str:
+        return f"{self.document}: {self.detail}"
+
+
+def assembly_findings(
+    graph: WorkGraph,
+    *,
+    spec_text: str,
+    plan_text: str,
+    tasks_text: str,
+    standards: str | None = None,
+) -> list[AssemblyFinding]:
+    """Assemble every node's prompt and report each refusal (044 FR-001).
+
+    Pure: three texts in, findings out. No filesystem, no registry, no proxy,
+    no clock — which is what lets the roadmap run this inside an activity on the
+    same bytes the dispatch activities loaded (FR-007) while the CLI runs it on
+    the bytes it just read, with no risk that the two surfaces answer
+    differently.
+
+    Every node is attempted, and one node's refusal never stops the next: an
+    author fixing one heading per run, with the second revealed only after the
+    first is fixed, is the failure mode the deriver's collected rejections
+    already exist to avoid. The 2026-08-15 epic had four broken nodes and needed
+    one edit pass, not four.
+
+    `standards` is the declared path, not the document, and is carried only so
+    the assembled bytes are the bytes dispatch would assemble. Assembly has no
+    failure mode that depends on it.
+    """
+    findings: list[AssemblyFinding] = []
+    for node in graph.nodes:
+        try:
+            build_attempt_prompt(
+                node=node,
+                epic_id=graph.epic_id,
+                spec_text=spec_text,
+                plan_text=plan_text,
+                tasks_text=tasks_text,
+                standards=standards,
+            )
+        except PromptAssemblyError as exc:
+            findings.append(
+                AssemblyFinding(
+                    document=exc.document, detail=str(exc), node_id=node.id
+                )
+            )
+    return findings
+
+
+def check_prompt_assembly(
+    graph: WorkGraph,
+    feature_dir: str | Path,
+    *,
+    spec_text: str | None = None,
+) -> list[AssemblyFinding]:
+    """Read the epic's trio off disk, then assemble every node's prompt.
+
+    The reading half of the offline check: `<feature_dir>/spec.md`, `plan.md`
+    and `tasks.md`, the three documents `load_prompt_sources` reads at dispatch.
+    `spec_text` may be supplied by a caller that has already read `spec.md` —
+    `ergane spec validate` derived the graph from it — so the bytes assembly is
+    checked against are provably the bytes the graph was compiled from.
+
+    A document that cannot be read is a **finding naming its path**, never an
+    exception: this runs inside a refinement command, and an author who deleted
+    a `plan.md` should be told so in the same sentence grammar as every other
+    refusal rather than shown a stack trace (US1 scenario 4).
+
+    When any document is missing, per-node assembly is skipped. A prompt cannot
+    be assembled out of a file that is not there, and letting the loop run would
+    bury the one fact that matters under one restatement of it per node.
+    """
+    directory = Path(feature_dir)
+    texts: dict[str, str] = {}
+    unreadable: list[AssemblyFinding] = []
+    for document, already_read in (
+        (SPEC_DOCUMENT, spec_text),
+        (PLAN_DOCUMENT, None),
+        (TASKS_DOCUMENT, None),
+    ):
+        if already_read is not None:
+            texts[document] = already_read
+            continue
+        path = directory / document
+        try:
+            texts[document] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            unreadable.append(
+                AssemblyFinding(
+                    document=document,
+                    detail=(
+                        f"cannot read {path}: {exc} — no node of this epic can "
+                        "be handed a prompt until it is there"
+                    ),
+                )
+            )
+
+    if unreadable:
+        return unreadable
+
+    return assembly_findings(
+        graph,
+        spec_text=texts[SPEC_DOCUMENT],
+        plan_text=texts[PLAN_DOCUMENT],
+        tasks_text=texts[TASKS_DOCUMENT],
+    )
 
 
 def first_attempt_aliases(graph: WorkGraph) -> set[str]:

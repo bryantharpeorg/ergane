@@ -1,0 +1,28 @@
+{
+  "epic_id": "902-stale-graph",
+  "feature": "902-stale-graph",
+  "specs_root": "tests/fixtures/prompt_assembly",
+  "target_repo": "/srv/factory/targets/short-links",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "902-stale-graph:US1",
+      "requirement_keys": ["US1", "FR-001"],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "902-stale-graph:US2",
+      "requirement_keys": ["US2", "FR-002"],
+      "depends_on": ["us1"],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}
