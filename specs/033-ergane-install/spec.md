@@ -1,5 +1,11 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16. US1 5b4351a63ec6 (#68) by the factory; US2
+# 2ee4e3bb1440 (#83) and US3 65d53b54e346 (#97) built by an operator session
+# during the 2026-08-15 provider-quota outage, gated inside the real bwrap
+# boundary and judged through OpenRouter rather than the usual endpoint. US2's
+# judge FAILed on first read and the fix landed before the merge; the record of
+# what could and could not be verified is docs/operator-built-verification-log.md.
 # Drafted 2026-08-11 from an operator planning conversation (the brownfield
 # onboarding / provisioning session). Decisions this spec assumes, made in that
 # session: the brand rename (`.ergane/` runtime root, `ergane.yaml` manifest —

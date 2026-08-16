@@ -1,5 +1,8 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-15. US1 cc806be3caae (#70), US2 4f6ebda2194a (#71),
+# US3 4eb62382ea7f (#72), US4 ca122ad1d556 (#73) — all four observed on
+# ergane-buildout, all four on the first attempt.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Scaffolded by `ergane findings promote` on 2026-08-14 from four findings, then

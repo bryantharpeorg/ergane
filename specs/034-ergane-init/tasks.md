@@ -138,9 +138,11 @@ Chains on US2 merged. Independent of US4.
 
 - [ ] T019 [US3] Write the wiring case FIRST against a scripted `GhRunner`
       (`factory/mergequeue/gh.py:106`) — never the live tier: declared gates
-      `test` and `smoke` produce a queue enabled on the landing branch with
+      `test` and `lint` produce a queue enabled on the landing branch with
       exactly those two required checks, and a scaffolded workflow whose jobs are
-      named `test` and `smoke` running the declared commands (spec US3-S1).
+      named `test` and `lint` running the declared commands (spec US3-S1).
+      (Was `smoke` until 2026-08-16; the manifest schema refuses it — see the
+      note under spec US3-S1.)
 
 - [ ] T020 [US3] Write the idempotence case FIRST (spec US3-S2): a re-run reports
       every step already-satisfied and changes no setting.

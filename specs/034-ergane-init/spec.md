@@ -185,10 +185,21 @@ visibility check with D-007 cited.
 
 **Acceptance Scenarios**:
 
-1. **Given** a public repo with declared gates `test` and `smoke`, **When**
+1. **Given** a public repo with declared gates `test` and `lint`, **When**
    wiring runs, **Then** the merge queue is enabled on the landing branch
-   with required checks `test` and `smoke`, and the scaffolded workflow
-   defines jobs named `test` and `smoke` running the declared commands.
+   with required checks `test` and `lint`, and the scaffolded workflow
+   defines jobs named `test` and `lint` running the declared commands.
+   <!-- Corrected 2026-08-16 by the operator session, before US3 landed: this
+   scenario originally named a gate `smoke`, which the manifest schema cannot
+   accept — `KNOWN_GATES = ("test", "lint", "typecheck")` at
+   factory/verify/factory_yaml.py:80, so a `smoke` fixture fails at manifest
+   load and the scenario was unsatisfiable by construction. Both the
+   implementing session and the judge caught it independently; the judge
+   returned RETRY on this scenario alone and was right to. The correction
+   changes which legal gate the scenario names and nothing else. Widening the
+   schema to admit `smoke` would be a product decision nobody has made, and is
+   not this story. -->
+
 2. **Given** wiring already applied, **When** it re-runs, **Then** every
    step reports already-satisfied and the repo's settings are unchanged.
 3. **Given** a repo whose visibility forbids the merge queue, **When**

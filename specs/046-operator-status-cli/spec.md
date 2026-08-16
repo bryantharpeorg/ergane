@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16. US1 5e38c198a475 (#98), US2 9338e9ed3091 (#85),
+# US3 69e28ec7d104 (#89) — all three built by an operator session during the
+# 2026-08-15 provider-quota outage, gated inside the real bwrap boundary and
+# judged through OpenRouter; US2 and US3 both PASSed on first read. See
+# docs/operator-built-verification-log.md.
 # Drafted 2026-08-15 by an operator session at the operator's request: "what's
 # the CLI-native way to get the status table" — answer: there isn't one, and
 # probing for one found cli/roadmap-verbs-cannot-see-schedule-driven-runs
