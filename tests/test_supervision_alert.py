@@ -253,7 +253,7 @@ def refuses_connections(host: str, port: int) -> bool:
 
 
 def test_the_alert_names_the_service_the_condition_and_the_duration() -> None:
-    """"Degraded" alone sends the operator to a terminal (spec US1-S4)."""
+    """A page saying only "degraded" sends the operator to a terminal (US1-S4)."""
     text = render_alert(DEGRADED).text
 
     assert DEGRADED.service in text
@@ -350,7 +350,7 @@ def test_a_named_transport_beats_the_configured_one(
 def test_the_delivered_alert_is_recorded_in_the_local_log(
     messenger: RecordingAdapter, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """"A local log as its only record" (FR-001), and it names the alert.
+    """The local log is this path's only record (FR-001), and it names the alert.
 
     A record that said only "alert sent" would leave the host with no evidence
     of *what* was sent — and on the host this runs on, that log is the whole
@@ -558,7 +558,9 @@ async def test_the_await_side_door_swallows_a_raising_transport_too(
 
 
 def test_a_failing_send_never_quotes_the_exceptions_own_message(
-    messenger: RecordingAdapter, caplog: pytest.LogCaptureFixture
+    messenger: RecordingAdapter,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The class is the diagnosis; the message may be quoting a credential.
 
@@ -571,8 +573,14 @@ def test_a_failing_send_never_quotes_the_exceptions_own_message(
 
     outcome = send_alert(DEGRADED)
 
+    # Every channel this path writes to, because the probe's stderr is what a
+    # timer's failure mail carries off the host.
     written = " ".join(
-        [outcome.failure or "", *(record.getMessage() for record in caplog.records)]
+        [
+            outcome.failure or "",
+            capsys.readouterr().err,
+            *(record.getMessage() for record in caplog.records),
+        ]
     )
     assert SECRET_SHAPED not in written, written
 
@@ -734,13 +742,24 @@ def test_the_alert_carries_no_button_to_press(messenger: RecordingAdapter) -> No
     assert message.actions == ()
 
 
-def test_the_outcome_carries_no_handle_to_wait_on() -> None:
+def test_the_two_records_hold_exactly_these_fields() -> None:
     """Nothing an alert returns can be awaited, polled or correlated back.
 
     `AlertOutcome` is what it said and whether anyone got it; a fourth field
     holding a message handle or an escalation id is how a fire-and-forget path
-    grows a reply it then has to wait for.
+    grows a reply it then has to wait for. `StackAlert` is FR-002's three
+    terms and no fourth.
+
+    Written as an equality on the whole list rather than a membership check
+    because the failure this guards against is *appending*: two stories editing
+    one module from two worktrees, each adding a field at the end, conflict
+    nowhere and both survive the merge.
     """
+    assert [field.name for field in dataclasses.fields(StackAlert)] == [
+        "service",
+        "condition",
+        "duration_s",
+    ]
     assert [field.name for field in dataclasses.fields(AlertOutcome)] == [
         "text",
         "delivered",
