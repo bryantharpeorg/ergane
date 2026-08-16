@@ -1408,6 +1408,29 @@ def test_reset_preserves_all_history_and_ensure_rebuilds_fresh(
 # compare `record.epic_id` to the operator's argument first.  Routing that one
 # comparison through the seam function — not a second normalization — is what
 # makes US3-S1's "every verb" true rather than nearly true.
+#
+# GREEN — the same seam after the fix, and the two refusal shapes it composes:
+#
+#     $ uv run python -c "
+#     from factory.cli.nouns.build import workflow_id, looked_for
+#     print(workflow_id('011-agent-sandbox'))
+#     print(workflow_id('epic-011-agent-sandbox'))
+#     print(looked_for('011-agent-sandbox'))
+#     print(looked_for('epic-011-agent-sandbox'))
+#     "
+#     epic-011-agent-sandbox
+#     epic-011-agent-sandbox
+#     looked for workflow id epic-011-agent-sandbox
+#     looked for workflow id epic-011-agent-sandbox, not epic-epic-011-agent-sandbox (a spec directory literally named 'epic-011-agent-sandbox' would be the latter)
+#
+# The third line is byte-identical to today's — US3-S2's refusal did not move.
+# The fourth is US3-S3: both candidates named, one of them dialled.
+#
+#     $ uv run pytest -q tests/test_ergane_build.py -k "both_id_forms or
+#       pasted_workflow_id or names_nothing or both_candidates or
+#       only_at_the_seam"
+#     ...............                                                          [100%]
+#     15 passed, 20 deselected in 1.50s
 
 
 PREFIXED_EPIC = f"epic-{EPIC_ID}"  # what Temporal prints; == WORKFLOW_ID

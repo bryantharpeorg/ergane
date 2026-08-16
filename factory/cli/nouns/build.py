@@ -88,9 +88,63 @@ KILL_SIGNAL = "kill_epic"
 # --- ports from factory/workgraph/cli.py --------------------------------------
 
 
+#: The one prefix that turns a spec directory's name into a workflow id.
+#: Written once, on purpose: every build verb must inherit normalization from
+#: the seam below rather than re-deriving it (046 plan, trap 7).
+EPIC_ID_PREFIX = "epic-"
+
+
 def workflow_id(epic_id: str) -> str:
-    """The one id convention: predictable from the spec directory's name."""
-    return f"epic-{epic_id}"
+    """The one id convention: predictable from the spec directory's name.
+
+    Also the one place the prefix is applied, which is why the normalization
+    lives here.  Temporal's own output prints the workflow id
+    (`epic-011-agent-sandbox`), the operator pastes that into a build verb, and
+    before 046-US3 the verb dialled `epic-epic-011-agent-sandbox`.  An id that
+    already carries the prefix is returned unchanged, so both forms name one
+    workflow and every verb gets the fix without being edited.
+
+    This narrows nothing and widens nothing: exactly one id comes back, so
+    exactly one workflow is dialled.  An id that names no running epic still
+    fails, with the refusal `looked_for` composes.
+    """
+    if epic_id.startswith(EPIC_ID_PREFIX):
+        return epic_id
+    return f"{EPIC_ID_PREFIX}{epic_id}"
+
+
+def workflow_id_candidates(epic_id: str) -> tuple[str, ...]:
+    """Every workflow id this argument could name, the dialled one first.
+
+    One entry for the ordinary spec-directory form.  Two when the argument
+    already carries the prefix: the id `workflow_id` dials, and the doubled id
+    that a spec directory *literally* named `epic-…` produced before ids were
+    normalized.  The second entry exists so a refusal can name the collision —
+    it is never dialled.  Chasing it would widen what counts as found, which is
+    a worse defect than the double prefix this replaces.
+    """
+    dialled = workflow_id(epic_id)
+    doubled = f"{EPIC_ID_PREFIX}{epic_id}"
+    if doubled == dialled:
+        return (dialled,)
+    return (dialled, doubled)
+
+
+def looked_for(epic_id: str) -> str:
+    """The parenthetical every not-found refusal shares.
+
+    Unchanged for the ordinary form — an id that matches nothing fails today's
+    way, naming the one workflow id it dialled.  For an already-prefixed id it
+    names both candidates, so a collision with a spec directory literally named
+    `epic-…` is legible rather than silent.
+    """
+    candidates = workflow_id_candidates(epic_id)
+    if len(candidates) == 1:
+        return f"looked for workflow id {candidates[0]}"
+    return (
+        f"looked for workflow id {candidates[0]}, not {candidates[1]} "
+        f"(a spec directory literally named '{epic_id}' would be the latter)"
+    )
 
 
 def _positive_int(value: str) -> int:
@@ -361,7 +415,7 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
         if error.status is RPCStatusCode.NOT_FOUND:
             raise OperatorError(
                 f"no epic '{epic_id}' is running here "
-                f"(looked for workflow id {workflow_id(epic_id)})"
+                f"({looked_for(epic_id)})"
             ) from error
         from factory.cli.errors import EXIT_TRANSPORT
 
@@ -435,7 +489,7 @@ async def _send_signal(epic_id: str, signal_name: str) -> int:
         if error.status is RPCStatusCode.NOT_FOUND:
             raise OperatorError(
                 f"no epic '{epic_id}' is running here "
-                f"(looked for workflow id {workflow_id(epic_id)})"
+                f"({looked_for(epic_id)})"
             ) from error
         from factory.cli.errors import EXIT_TRANSPORT
 
@@ -480,7 +534,11 @@ async def _answer(epic_id: str, question_id: str | None, text: str | None) -> in
             raise OperatorError(
                 f"question '{question_id}' is not on record; nothing was signalled"
             )
-        if record.epic_id != epic_id:
+        # Compared through the seam, not against the raw argument: `answer`
+        # checks ownership before it dials, so a pasted workflow id would be
+        # refused here and never reach the normalization at all.  This is the
+        # same function every verb resolves with, not a second one.
+        if workflow_id(record.epic_id) != workflow_id(epic_id):
             raise OperatorError(
                 f"question '{question_id}' belongs to epic '{record.epic_id}', "
                 f"not '{epic_id}'; nothing was signalled"
@@ -508,7 +566,7 @@ async def _answer(epic_id: str, question_id: str | None, text: str | None) -> in
             if error.status is RPCStatusCode.NOT_FOUND:
                 raise OperatorError(
                     f"no epic '{epic_id}' is running here "
-                    f"(looked for workflow id {workflow_id(epic_id)})"
+                    f"({looked_for(epic_id)})"
                 ) from error
             from factory.cli.errors import EXIT_TRANSPORT
 
@@ -605,7 +663,8 @@ async def _resolve(
                 f"escalation '{escalation_id}' is not on record; "
                 "nothing was signalled"
             )
-        if record.epic_id != epic_id:
+        # Through the seam, for the reason `_answer` records above.
+        if workflow_id(record.epic_id) != workflow_id(epic_id):
             raise OperatorError(
                 f"escalation '{escalation_id}' belongs to epic "
                 f"'{record.epic_id}', not '{epic_id}'; nothing was signalled"
@@ -644,7 +703,7 @@ async def _resolve(
             if error.status is RPCStatusCode.NOT_FOUND:
                 raise OperatorError(
                     f"no epic '{epic_id}' is running here "
-                    f"(looked for workflow id {workflow_id(epic_id)})"
+                    f"({looked_for(epic_id)})"
                 ) from error
             from factory.cli.errors import EXIT_TRANSPORT
 
