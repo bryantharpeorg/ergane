@@ -105,6 +105,21 @@ CREATE TABLE IF NOT EXISTS external_completion_signals (
 
 CREATE INDEX IF NOT EXISTS idx_extcomp_epic_node ON external_completion_signals (epic_id, node_id);
 
+-- 035-US3: a durable counter of accepted external completions. Keyed by the
+-- completion identity (epic, node, branch, provenance) so a repeat signal is
+-- recorded once, not twice — the count is evidence of a trend, and a
+-- double-count would invent one.
+CREATE TABLE IF NOT EXISTS external_completion_counts (
+    epic_id     TEXT    NOT NULL CHECK (epic_id <> ''),
+    node_id     TEXT    NOT NULL CHECK (node_id <> ''),
+    branch      TEXT    NOT NULL CHECK (branch <> ''),
+    provenance  TEXT    NOT NULL CHECK (provenance <> ''),
+    recorded_at TEXT    NOT NULL,
+    PRIMARY KEY (epic_id, node_id, branch, provenance)
+);
+
+CREATE INDEX IF NOT EXISTS idx_extcomp_counts_epic ON external_completion_counts (epic_id);
+
 -- Canonical queries -----------------------------------------------------------
 
 -- Failure history for one node (retry prompts, escalation summaries, SC-005):

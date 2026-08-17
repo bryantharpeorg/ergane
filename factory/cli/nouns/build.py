@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -52,7 +53,10 @@ from factory.usage.models import UsageSnapshot
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 from factory.verify.store import (
     EXPIRED,
+    ExternalCompletionCount,
     connect as verify_connect,
+    connect_readonly as verify_connect_readonly,
+    external_completion_count,
     get_escalation,
     get_question,
     pending_escalations,
@@ -538,6 +542,66 @@ def complete_node_externally_command(args: argparse.Namespace) -> int:
     )
 
 
+def external_completion_count_command(args: argparse.Namespace) -> int:
+    """Report the durable count of externally-completed nodes."""
+    path = _verification_store_path()
+    if not path.exists():
+        # No store means no use of the hatch: the count is 0, explicitly
+        # measured by the absence of a counter (035-US3, FR-008).
+        result = ExternalCompletionCount(total=0, by_spec={})
+        _print_external_completion_count(result, args.as_json)
+        return EXIT_OK
+
+    try:
+        conn = verify_connect_readonly(path)
+    except sqlite3.Error as error:
+        raise OperatorError(
+            f"cannot read external-completion count from {path}: {error}",
+            EXIT_TRANSPORT,
+        ) from error
+    try:
+        result = external_completion_count(conn)
+    finally:
+        conn.close()
+
+    _print_external_completion_count(result, args.as_json)
+    return EXIT_OK
+
+
+def _print_external_completion_count(result: ExternalCompletionCount, as_json: bool) -> None:
+    """Render the count, total and per-spec, with the target stated."""
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "total": result.total,
+                    "by_spec": result.by_spec,
+                    "measured": result.measured,
+                    "target": result.target,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    lines = [f"external completions: {result.total} (target: {result.target})"]
+    if result.by_spec:
+        width = max(len(spec) for spec in result.by_spec)
+        for spec, count in sorted(result.by_spec.items()):
+            lines.append(f"  {spec.ljust(width)}  {count}")
+    else:
+        lines.append("  no spec has used the external-completion hatch")
+    print("\n".join(lines))
+
+
+def _verification_store_path() -> Path:
+    return resolve_env_path(
+        ERGANE_VERIFICATION_DB_PATH_ENV,
+        FACTORY_VERIFICATION_DB_PATH_ENV,
+        DEFAULT_VERIFICATION_DB_PATH,
+    )
+
+
 async def _send_signal_with_args(
     epic_id: str, signal_name: str, signal_args: list[Any]
 ) -> int:
@@ -1002,6 +1066,26 @@ def add_parser(subparsers: Any) -> None:
         help="who completed the work and how (e.g. 'operator:manual-2026-08-17')",
     )
     complete_node_externally.set_defaults(run=complete_node_externally_command)
+
+    external_completion_count_parser = commands.add_parser(
+        "external-completion-count",
+        help="how many times the operator hand-back hatch has been used",
+        description=(
+            "Read the durable count of accepted external completions. "
+            "Reports the total, the per-spec breakdown, and states that "
+            "the target is zero. A store that has never recorded a use "
+            "answers 0 explicitly, not as an empty table."
+        ),
+    )
+    external_completion_count_parser.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="emit the count as JSON",
+    )
+    external_completion_count_parser.set_defaults(
+        run=external_completion_count_command
+    )
 
 
 NOUN = Noun(
