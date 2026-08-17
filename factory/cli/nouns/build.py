@@ -39,6 +39,7 @@ from factory.env import (
 )
 from factory.cli.nouns import Noun, _open_preflight_client
 from factory.config import ConfigError, Persona, WriteScope, load_personas
+from factory.verify.factory_yaml import FactoryConfigError, load_loop_config
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
     DEFAULT_TEMPORAL_NAMESPACE,
@@ -50,7 +51,12 @@ from factory.notify.service import (
 )
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
-from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
+from factory.verify.models import (
+    EscalationChoice,
+    EscalationRecord,
+    QuestionRecord,
+    VerificationConfig,
+)
 from factory.verify.store import (
     EXPIRED,
     ExternalCompletionCount,
@@ -382,7 +388,22 @@ def start_command(args: argparse.Namespace) -> int:
 
     proxy_url = _resolved_proxy_url()
 
-    return asyncio.run(_start_epic(graph, proxy_url, args.max_concurrent_nodes))
+    try:
+        config, verify_order = load_loop_config(graph.target_repo)
+    except FactoryConfigError as exc:
+        raise OperatorError(
+            f"preflight: manifest: [{exc.rule}] {exc.problem}"
+        ) from exc
+
+    return asyncio.run(
+        _start_epic(
+            graph,
+            proxy_url,
+            args.max_concurrent_nodes,
+            config=config,
+            verify_order=verify_order,
+        )
+    )
 
 
 def _resolved_proxy_url() -> str:
@@ -416,7 +437,12 @@ def _resolved_proxy_url() -> str:
 
 
 async def _start_epic(
-    graph: WorkGraph, proxy_url: str, max_concurrent_nodes: int = 1
+    graph: WorkGraph,
+    proxy_url: str,
+    max_concurrent_nodes: int = 1,
+    *,
+    config: VerificationConfig | None = None,
+    verify_order: tuple[str, ...] | None = None,
 ) -> int:
     client = await _connect()
 
@@ -434,6 +460,11 @@ async def _start_epic(
             )
         return exit_code
 
+    if config is None:
+        config = VerificationConfig()
+    if verify_order is None:
+        verify_order = ("gates", "diff_check", "judge")
+
     epic_workflow_id = workflow_id(graph.epic_id)
     try:
         await client.start_workflow(
@@ -441,6 +472,8 @@ async def _start_epic(
             EpicInput(
                 graph=graph,
                 proxy_url=proxy_url,
+                config=config,
+                verify_order=verify_order,
                 max_concurrent_nodes=max_concurrent_nodes,
             ),
             id=epic_workflow_id,

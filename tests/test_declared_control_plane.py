@@ -184,7 +184,15 @@ def _write_graph(tmp_path: Path) -> Path:
     """A minimal compiled graph `ergane build start` will accept.
 
     `build._persona_registry` synthesises the registry from the graph itself.
+    The target directory gets a v1 manifest so dispatch-time loop-config read
+    succeeds without touching anything else in the test.
     """
+    target = tmp_path / "target"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "ergane.yaml").write_text(
+        "version: 1\nruntime: bwrap\ngates:\n  test: uv run pytest -q\n",
+        encoding="utf-8",
+    )
     graph_path = tmp_path / "workgraph.json"
     graph_path.write_text(
         json.dumps(
@@ -192,7 +200,7 @@ def _write_graph(tmp_path: Path) -> Path:
                 "epic_id": EPIC_ID,
                 "feature": EPIC_ID,
                 "specs_root": str(tmp_path / "specs"),
-                "target_repo": str(tmp_path / "target"),
+                "target_repo": str(target),
                 "nodes": [
                     {
                         "id": "us1",
