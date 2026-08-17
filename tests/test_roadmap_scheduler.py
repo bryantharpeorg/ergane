@@ -41,7 +41,7 @@ from temporalio.worker._interceptor import (
 )
 
 from factory.activities import roadmap_activities
-from factory.activities.roadmap_activities import CloneResult
+from factory.activities.roadmap_activities import CloneResult, ReadLoopConfigResult
 from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.roadmap.models import Roadmap, SpecState
 import factory.roadmap.workflow as factory_roadmap_workflow
@@ -51,7 +51,8 @@ from factory.roadmap.workflow import (
     RoadmapWorkflow,
     roadmap_workflow_id,
 )
-from factory.workgraph.workflow import EpicStatus
+from factory.verify.models import VerificationConfig
+from factory.workgraph.workflow import EpicInput, EpicStatus
 
 from tests.roadmap_script import (
     BlockerDoneWorkflow,
@@ -298,6 +299,7 @@ class RoadmapWorld:
         open_epics: Callable[[], set[str]] | None = None,
         derive_runner: Callable[..., Any] | None = None,
         drift_runner: Callable[..., bool] | None = None,
+        loop_configs: dict[str, "ReadLoopConfigResult"] | None = None,
     ) -> None:
         self.clone_ok = clone_ok
         self.preflight = preflight or (lambda epic_id: [])
@@ -315,6 +317,11 @@ class RoadmapWorld:
         # What the clone seam was asked to refresh — the scheduler dispatches a
         # fresh clone per spec (FR-006), so the count is the dispatch count.
         self.clone_calls: list[str] = []
+        # 023 FR-006: per-spec loop-config values to feed `read_loop_config`.
+        self.loop_configs: dict[str, ReadLoopConfigResult] = dict(loop_configs or {})
+        # Counter used by `_loop_config` to map sequential dispatch calls to spec
+        # keys when the test does not script `_loop_config` directly.
+        self._loop_config_index = 0
 
     def apply(self) -> None:
         """Replace the roadmap's activity seams with this world's scripted answers.
@@ -341,6 +348,7 @@ class RoadmapWorld:
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
             roadmap_activities._open_epics_provider,
+            getattr(roadmap_activities, "_loop_config_provider", None),
             getattr(roadmap_activities, "check_aliases", None),
             preflight_mod.check_aliases,
         )
@@ -352,6 +360,10 @@ class RoadmapWorld:
         roadmap_activities._preflight_client = lambda proxy_url: None
         roadmap_activities._onboard = self._onboard
         roadmap_activities._open_epics_provider = self._open_epics_provider
+        # 023 FR-006: script the per-dispatch loop-config read so the test can
+        # drive manifest values without a real target repo, and can vary them
+        # between specs.
+        roadmap_activities._loop_config_provider = self._loop_config
         # Route the shared `check_aliases` through this world's scripted
         # findings without touching the proxy. The activity imported the name
         # by reference, so patch the binding the activity actually calls —
@@ -377,9 +389,17 @@ class RoadmapWorld:
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
             roadmap_activities._open_epics_provider,
+            saved_loop_config,
             saved_check,
             saved_preflight_check,
         ) = self._saved
+        if saved_loop_config is not None:
+            roadmap_activities._loop_config_provider = saved_loop_config
+        else:
+            try:
+                delattr(roadmap_activities, "_loop_config_provider")
+            except AttributeError:
+                pass
         if saved_check is not None:
             roadmap_activities.check_aliases = saved_check
         else:
@@ -406,6 +426,34 @@ class RoadmapWorld:
 
     async def _open_epics_provider(self) -> set[str]:
         return set(self.open_epics())
+
+    def _loop_config(self, target_repo: str) -> ReadLoopConfigResult:
+        # 023 FR-006: default to today's defaults when the test did not script a
+        # value. Per-spec configs are keyed by spec_dir via a mutable counter: the
+        # roadmap dispatches one child at a time and the activity is awaited before
+        # the next one starts, so the first call is alpha's and the second is
+        # bravo's. `_SCRIPT.last_input` is not reliable for the *next* spec's config
+        # because the child workflow records its input only after the activity has
+        # already run; a counter is deterministic under the sequential dispatch this
+        # test exercises. A test that wants repo-keyed values can still script
+        # `_loop_config` directly.
+        self._loop_config_index += 1
+        spec_key = f"{Path(target_repo).name}-{self._loop_config_index}"
+        if spec_key in self.loop_configs:
+            return self.loop_configs[spec_key]
+        # Fall back to the older per-spec_dir key for tests that recorded their
+        # children via `_SCRIPT.last_input` before the next dispatch.
+        fallback = None
+        if _SCRIPT.last_input is not None:
+            fallback = _SCRIPT.last_input.graph.epic_id
+        for key in (fallback, Path(target_repo).name):
+            if key is not None and key in self.loop_configs:
+                return self.loop_configs[key]
+        defaults = VerificationConfig()
+        return ReadLoopConfigResult(
+            config=defaults,
+            verify_order=("gates", "diff_check", "judge"),
+        )
 
     def _derive_full(self, request) -> Any:
         """Default derive seam: the full pre-delta graph, no git baseline."""
@@ -487,6 +535,7 @@ async def run_roadmap(
         drift_for_spec,
         onboard_target,
         preflight_spec,
+        read_loop_config,
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
@@ -500,6 +549,7 @@ async def run_roadmap(
         preflight_spec,
         onboard_target,
         count_open_epics,
+        read_loop_config,
         read_corpus_activity,
         read_spec_text_activity,
         record_roadmap_failure,
@@ -736,6 +786,132 @@ async def test_two_dispatchable_specs_run_concurrently_when_the_bound_allows(
         env, world, str(specs_root), max_concurrent_epics=2
     )
     assert _status_of(status, "001-alpha").landed is True
+    assert _status_of(status, "002-bravo").landed is True
+
+
+async def test_dispatch_reads_loop_config_per_child_so_manifest_changes_apply(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """023 US2-S3: each child gets the loop config read at *its* dispatch.
+
+    Two specs dispatch against the same target repo name. The scripted
+    `read_loop_config` seam returns different ladder caps for the two specs,
+    proving `_dispatch` reads per child rather than freezing at roadmap start.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    started: list[str] = []
+
+    def on_dispatch(epic_id: str) -> None:
+        started.append(epic_id)
+
+    configs = {
+        # The key is the repo basename; _loop_config uses the spec's target_repo.
+        "library": {
+            "001-alpha": ReadLoopConfigResult(
+                config=VerificationConfig(
+                    max_attempts=2,
+                    max_judge_retries=1,
+                    debugger_cycles=0,
+                    escalation_timeout_s=7200,
+                ),
+                verify_order=("gates", "diff_check", "judge"),
+            ),
+            "002-bravo": ReadLoopConfigResult(
+                config=VerificationConfig(
+                    max_attempts=5,
+                    max_judge_retries=0,
+                    debugger_cycles=3,
+                    escalation_timeout_s=1800,
+                ),
+                verify_order=("gates", "diff_check"),
+            ),
+        }
+    }
+
+    world = RoadmapWorld(
+        loop_configs={
+            "library-1": configs["library"]["001-alpha"],
+            "library-2": configs["library"]["002-bravo"],
+        }
+    )
+    async with run_roadmap(
+        env, world, str(specs_root), on_dispatch=on_dispatch
+    ) as handle:
+        status = await handle.result()
+
+    assert _status_of(status, "001-alpha").landed is True
+    assert _status_of(status, "002-bravo").landed is True
+    assert started == ["001-alpha", "002-bravo"]
+    assert "001-alpha" in _SCRIPT.inputs
+    assert "002-bravo" in _SCRIPT.inputs
+    alpha_input = _SCRIPT.inputs["001-alpha"]
+    bravo_input = _SCRIPT.inputs["002-bravo"]
+    # alpha's config is the per-spec scripted value, not the default 3/2/1/3600.
+    assert alpha_input.config.max_attempts == 2
+    assert alpha_input.config.max_judge_retries == 1
+    assert alpha_input.config.debugger_cycles == 0
+    assert alpha_input.config.escalation_timeout_s == 7200
+    assert alpha_input.verify_order == ("gates", "diff_check", "judge")
+    assert bravo_input.config.max_attempts == 5
+    assert bravo_input.config.max_judge_retries == 0
+    assert bravo_input.config.debugger_cycles == 3
+    assert bravo_input.config.escalation_timeout_s == 1800
+    assert bravo_input.verify_order == ("gates", "diff_check")
+
+
+async def test_a_malformed_manifest_at_dispatch_parks_the_spec_and_continues(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """023 US2-S6: a manifest parse failure at dispatch parks the spec with the
+    rule named, and the roadmap run continues to other specs."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+
+    world = RoadmapWorld(
+        loop_configs={
+            "001-alpha": None,  # type: ignore[dict-value]  # signals a parse failure
+        }
+    )
+
+    call_count = [0]
+
+    def loop_config(target_repo: str) -> ReadLoopConfigResult:
+        # alpha is the first spec dispatched; bravo gets defaults.
+        call_count[0] += 1
+        if call_count[0] == 1:
+            from temporalio.exceptions import ApplicationError
+
+            raise ApplicationError(
+                "ergane.yaml: [malformed_yaml] is not parseable YAML",
+                non_retryable=True,
+                type="FactoryConfigError",
+            )
+        defaults = VerificationConfig()
+        return ReadLoopConfigResult(
+            config=defaults,
+            verify_order=("gates", "diff_check", "judge"),
+        )
+
+    world._loop_config = loop_config
+    async with run_roadmap(env, world, str(specs_root)) as handle:
+        status = await handle.result()
+
+    parked = {p.spec_dir: p for p in status.parked}
+    assert "001-alpha" in parked
+    assert parked["001-alpha"].check == "loop_config"
+    assert "malformed_yaml" in parked["001-alpha"].detail
+    # The roadmap continued and bravo landed.
     assert _status_of(status, "002-bravo").landed is True
 
 

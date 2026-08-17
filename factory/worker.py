@@ -169,12 +169,14 @@ ACTIVITIES = [
     # Onboarding reuses 003's `validate_target_repo` activity (registered above)
     # from inside the roadmap's own `onboard_target` wrapper; the wrapper is
     # registered whole here so the worker serves the roadmap's call shape.
+    # 023 FR-006: per-dispatch loop-config read, pinned at child start.
     roadmap_activities.clone_target,
     roadmap_activities.derive_spec,
     roadmap_activities.drift_for_spec,
     roadmap_activities.preflight_spec,
     roadmap_activities.onboard_target,
     roadmap_activities.count_open_epics,
+    roadmap_activities.read_loop_config,
     read_corpus_activity,
     read_spec_text_activity,
 ]

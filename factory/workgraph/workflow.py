@@ -413,6 +413,10 @@ class EpicInput:
     graph: WorkGraph
     proxy_url: str
     config: VerificationConfig = VerificationConfig()
+    #: 023 FR-003. The verification-step order pinned at dispatch. Defaults to
+    #: today's order so a payload from a pre-023 worker replays the sequence it
+    #: was started with. The parser guarantees the three names when declared.
+    verify_order: tuple[str, ...] = ("gates", "diff_check", "judge")
     poll_interval_s: int = DEFAULT_POLL_INTERVAL_S
     landing_config: LandingConfig = LandingConfig()
     #: How many ready nodes the scheduler may have in flight at once (US1,

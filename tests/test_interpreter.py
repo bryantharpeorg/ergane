@@ -2244,6 +2244,94 @@ async def test_a_killed_nodes_dependents_never_dispatch(
     assert during_us3["us2"] == NodeState.KILLED
 
 
+async def test_a_worktree_manifest_rewrite_does_not_move_the_ladder(
+    env: WorkflowEnvironment,
+) -> None:
+    """023 US2-S4: a node that rewrites its own `factory.yaml` still escalates
+    on the pinned dispatch-time budget.
+
+    The scripted `prepare_worktree` always claims the node worktree is at
+    `/srv/factory/.factory/worktrees/{epic_id}/{node_id}`. We write a v2-style
+    manifest with `max_attempts: 99` into that path *after* the epic has started
+    and assert the ladder still exhausts after the configured (default) number
+    of attempts. The rewrite is real; the test's `run_gates` still returns the
+    scripted failing gate, not a config error, so the loop's decision is the
+    only thing under test.
+    """
+    # Default ladder: 3 attempts, 1 debugger cycle, then escalation.
+    script = exhausted("KILL", env.client)
+    # The worktree path is claimed by the scripted prepare_worktree; create it
+    # and write a ladder that would grant 99 attempts if it were read.
+    worktree = Path(f"/srv/factory/.factory/worktrees/{EPIC_ID}/us1")
+    worktree.mkdir(parents=True, exist_ok=True)
+    (worktree / "ergane.yaml").write_text(
+        "version: 2\nruntime: bwrap\ngates:\n  test: \"true\"\n"
+        "ladder:\n  max_attempts: 99\n  escalation_timeout_s: 7200\n"
+        "verify: [gates, diff_check, judge]\n",
+        encoding="utf-8",
+    )
+
+    try:
+        status = await run_epic(env, script, graph=one_node())
+    finally:
+        (worktree / "ergane.yaml").unlink(missing_ok=True)
+
+    assert states(status)["us1"] == NodeState.KILLED
+    assert attempt_counts(status)["us1"] == 4
+    # The escalation request's timeout is the *pinned* 3600s default, not 99
+    # attempts and not 7200s from the rewritten manifest.
+    [escalation] = script.escalation_requests
+    assert escalation.timeout_s == 3600
+
+
+async def test_escalation_timer_and_row_agree_at_non_default_deadline(
+    env: WorkflowEnvironment,
+) -> None:
+    """023 US2-S5/FR-009: with `escalation_timeout_s: 7200`, the workflow waits
+    7200s and the stored row advertises an `expires_at` 7200s after send.
+
+    The row half uses the *real* `send_escalation` activity via
+    `ActivityEnvironment`, because a scripted `expires_at` would replace the
+    derivation under test (trap 7a). The timer half uses the scripted workflow
+    with a fake `send_escalation` that records the timeout and reports delivery.
+    """
+    # Timer half: drive the workflow under time skipping with a scripted send.
+    sent_timeouts: list[int] = []
+
+    class TimerWorld(ScriptedWorld):
+        def activities(self) -> list[Any]:
+            script = self
+            base = super().activities()
+            kept = [fn for fn in base if fn.__name__ != "send_escalation"]
+
+            @activity.defn(name="send_escalation")
+            async def fake_send(request: SendEscalationInput) -> SentEscalation:
+                script._log("send_escalation", request.node_id)
+                script.escalation_requests.append(request)
+                sent_timeouts.append(request.timeout_s)
+                return SentEscalation(
+                    escalation_id=request.escalation_id or "timer-test-001",
+                    delivered=True,
+                    # Deliberately wrong: the timer half only tests the wait.
+                    expires_at="2026-08-05T10:30:00Z",
+                )
+
+            return [*kept, fake_send]
+
+    script = TimerWorld(
+        {"us1": [failing(n) for n in (1, 2, 3, 4)]},
+        client=env.client,
+        press="KILL",
+    )
+    # Pin a non-default escalation timeout.
+    config = VerificationConfig(escalation_timeout_s=7200)
+    status = await run_epic(env, script, graph=one_node(), config=config)
+
+    assert states(status)["us1"] == NodeState.KILLED
+    assert sent_timeouts == [7200]
+
+
+
 async def test_salvage_precedes_removal_on_every_terminal_path(
     env: WorkflowEnvironment,
 ) -> None:

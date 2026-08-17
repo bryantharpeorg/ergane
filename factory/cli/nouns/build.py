@@ -74,6 +74,7 @@ from factory.workgraph.preflight import (
     check_aliases,
     prompt_assembly_preflight,
 )
+from factory.verify.factory_yaml import FactoryConfigError, load_factory_config_with_name
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
 from factory.workgraph.worktree import (
     NodeSalvage,
@@ -426,6 +427,14 @@ async def _start_epic(
             )
         return exit_code
 
+    # 023 FR-005: read the operator clone's committed manifest at dispatch and pin
+    # the loop configuration into EpicInput. A manifest parse failure refuses the
+    # dispatch at preflight, naming the rule, before any workflow starts.
+    try:
+        parsed, _name = load_factory_config_with_name(graph.target_repo)
+    except FactoryConfigError as error:
+        raise OperatorError(f"preflight: [{error.rule}] {error.problem}") from error
+
     epic_workflow_id = workflow_id(graph.epic_id)
     try:
         await client.start_workflow(
@@ -433,6 +442,8 @@ async def _start_epic(
             EpicInput(
                 graph=graph,
                 proxy_url=proxy_url,
+                config=parsed.ladder,
+                verify_order=parsed.verify_order,
                 max_concurrent_nodes=max_concurrent_nodes,
             ),
             id=epic_workflow_id,

@@ -184,15 +184,23 @@ def _write_graph(tmp_path: Path) -> Path:
     """A minimal compiled graph `ergane build start` will accept.
 
     `build._persona_registry` synthesises the registry from the graph itself.
+    023 US2: the dispatch path now reads `target_repo/ergane.yaml`, so the fixture
+    target repo needs a committed v1 manifest.
     """
     graph_path = tmp_path / "workgraph.json"
+    target_repo = tmp_path / "target"
+    target_repo.mkdir(parents=True, exist_ok=True)
+    (target_repo / "ergane.yaml").write_text(
+        "version: 1\nruntime: bwrap\ngates:\n  test: \"true\"\n",
+        encoding="utf-8",
+    )
     graph_path.write_text(
         json.dumps(
             {
                 "epic_id": EPIC_ID,
                 "feature": EPIC_ID,
                 "specs_root": str(tmp_path / "specs"),
-                "target_repo": str(tmp_path / "target"),
+                "target_repo": str(target_repo),
                 "nodes": [
                     {
                         "id": "us1",

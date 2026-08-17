@@ -41,6 +41,10 @@ class _Script:
         #: `pause_roadmap` mid-flight and a `running`-child status observable.
         #: Additive only — unset, it changes nothing US2 relies on.
         self.hold: set[str] = set()
+        #: 023 US2: every EpicInput the scripted child received, keyed by epic_id.
+        #: The most recent is also exposed as `last_input`.
+        self.inputs: dict[str, EpicInput] = {}
+        self.last_input: EpicInput | None = None
 
     def release(self, epic_id: str) -> None:
         """Drop a held child so it completes (the test's release signal)."""
@@ -103,6 +107,14 @@ class ScriptedEpicWorkflow:
     @workflow.run
     async def run(self, request: EpicInput) -> EpicStatus:
         epic_id = request.graph.epic_id
+        # 023 US2: capture the pinned loop config *before* the dispatch hook, so
+        # tests can assert the roadmap passed the dispatch-time values through.
+        # The module-level script holds every input keyed by epic_id, plus the
+        # latest. Recording here rather than after dispatch means a test that
+        # scripts `read_loop_config` from `_SCRIPT.last_input` sees the spec that
+        # is about to be dispatched.
+        _SCRIPT.inputs[epic_id] = request
+        _SCRIPT.last_input = request
         if _SCRIPT.on_dispatch is not None:
             _SCRIPT.on_dispatch(epic_id)
         # US3 (T015): if the test held this child open, block here until the

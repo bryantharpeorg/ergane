@@ -381,6 +381,23 @@ async def test_a_configured_timeout_moves_the_deadline_the_row_advertises(
     )
 
 
+async def test_a_non_default_timeout_moves_both_result_and_row_together(
+    env: ActivityEnvironment, db_path: Path, telegram_env: None, bot: FakeBot
+) -> None:
+    """023 US2-S5/FR-009: under 7200s the row and result agree on the deadline.
+
+    The default 3600s makes the two indistinguishable from a constant; a
+    configured timeout proves the activity derives `expires_at` from the input.
+    """
+    result = await send(env, timeout_s=7200)
+
+    row = only_row(db_path)
+    sent_at = parse_iso(row["sent_at"])
+    assert parse_iso(result.expires_at) - sent_at == timedelta(seconds=7200)
+    assert parse_iso(row["expires_at"]) - sent_at == timedelta(seconds=7200)
+    assert result.expires_at == row["expires_at"]
+
+
 async def test_the_message_carries_the_history_and_one_button_per_choice(
     env: ActivityEnvironment, db_path: Path, telegram_env: None, bot: FakeBot
 ) -> None:

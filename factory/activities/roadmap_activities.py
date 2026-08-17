@@ -65,6 +65,8 @@ from factory.activities.merge_activities import (
     ValidateTargetRepoInput,
     validate_target_repo,
 )
+from factory.verify.factory_yaml import FactoryConfigError, load_factory_config_with_name
+from factory.verify.models import VerificationConfig
 
 
 # --- clone: refresh the target clone to its current default branch ------------
@@ -519,3 +521,68 @@ async def count_open_epics(request: CountOpenInput) -> CountOpenResult:
     """
     open_ids = await _open_epics_provider()
     return CountOpenResult(open_ids=tuple(sorted(open_ids)))
+
+
+# --- loop config: read the target repo's committed ladder and verify order ------
+
+
+@dataclass(frozen=True)
+class ReadLoopConfigInput:
+    """Which target repo to read the loop configuration from (023 FR-006).
+
+    `target_repo` is the worker-host path to the operator's clone. The loop is
+    read once per child dispatch, from the committed manifest at that path, so
+    a manifest edit between two scheduled epics reaches the second one.
+    """
+
+    target_repo: str
+
+
+@dataclass(frozen=True)
+class ReadLoopConfigResult:
+    """The loop configuration pinned at dispatch time (023 FR-005/006).
+
+    `config` is the retry-ladder caps; `verify_order` is the verification-step
+    order. Both are read from the committed manifest, so a node worktree that
+    rewrites its own `factory.yaml` cannot move either value.
+    """
+
+    config: VerificationConfig
+    verify_order: tuple[str, ...]
+
+
+def _read_loop_config(target_repo: str) -> ReadLoopConfigResult:
+    """Production: parse the committed manifest and return its loop config."""
+    try:
+        parsed, _name = load_factory_config_with_name(target_repo)
+    except FactoryConfigError as error:
+        # Re-raise as a non-retryable ApplicationError so the roadmap parks the
+        # spec on the first attempt rather than retrying a parse refusal three
+        # times (the same discipline `derive_spec` uses for `DerivationError`).
+        from temporalio.exceptions import ApplicationError
+
+        raise ApplicationError(str(error), non_retryable=True, type="FactoryConfigError")
+    return ReadLoopConfigResult(
+        config=parsed.ladder,
+        verify_order=parsed.verify_order,
+    )
+
+
+#: The loop-config seam — production reads the committed manifest; tests script
+#: a result so they can drive dispatch-time values without a real repo.
+_loop_config_provider: Callable[[str], ReadLoopConfigResult] | None = None
+
+
+@activity.defn
+async def read_loop_config(request: ReadLoopConfigInput) -> ReadLoopConfigResult:
+    """Read the target repo's committed loop configuration at dispatch (023 FR-006).
+
+    A manifest that fails to parse is returned as a `FactoryConfigError` raised
+    through the activity so the roadmap can park the spec with the parse rule
+    named. The workflow does not read files itself (constitution IV); this
+    thin activity wraps the parser and the test seam.
+    """
+    provider = _loop_config_provider
+    if provider is None:
+        return _read_loop_config(request.target_repo)
+    return provider(request.target_repo)

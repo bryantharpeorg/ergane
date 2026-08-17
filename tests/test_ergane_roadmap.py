@@ -119,6 +119,7 @@ def _worker(env: WorkflowEnvironment, world: RoadmapWorld) -> Worker:
         drift_for_spec,
         onboard_target,
         preflight_spec,
+        read_loop_config,
     )
     from factory.roadmap.workflow import read_corpus_activity, read_spec_text_activity
 
@@ -133,6 +134,7 @@ def _worker(env: WorkflowEnvironment, world: RoadmapWorld) -> Worker:
             preflight_spec,
             onboard_target,
             count_open_epics,
+            read_loop_config,
             read_corpus_activity,
             read_spec_text_activity,
             record_roadmap_failure,

@@ -219,6 +219,7 @@ async def run_roadmap_with_notifications(
         drift_for_spec,
         onboard_target,
         preflight_spec,
+        read_loop_config,
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
@@ -232,6 +233,7 @@ async def run_roadmap_with_notifications(
         preflight_spec,
         onboard_target,
         count_open_epics,
+        read_loop_config,
         read_corpus_activity,
         read_spec_text_activity,
         record_roadmap_failure,
@@ -312,6 +314,7 @@ async def run_roadmap_with_sandboxed_workflow(
         drift_for_spec,
         onboard_target,
         preflight_spec,
+        read_loop_config,
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
@@ -325,6 +328,7 @@ async def run_roadmap_with_sandboxed_workflow(
         preflight_spec,
         onboard_target,
         count_open_epics,
+        read_loop_config,
         read_corpus_activity,
         read_spec_text_activity,
         record_roadmap_failure,

@@ -94,12 +94,15 @@ with workflow.unsafe.imports_passed_through():
         DriftInput,
         OnboardInput,
         PreflightInput,
+        ReadLoopConfigInput,
+        ReadLoopConfigResult,
         clone_target,
         count_open_epics,
         derive_spec,
         drift_for_spec,
         onboard_target,
         preflight_spec,
+        read_loop_config,
     )
     from factory.activities.verify_activities import (
         DEFAULT_VERIFICATION_DB_PATH,
@@ -1166,7 +1169,22 @@ class RoadmapWorkflow:
             self._park(spec_dir, "derive", "delta is empty: all stories are satisfied")
             return
 
-        # 6. Start the child epic — ABANDON on parent close (SC-004: killing the
+        # 6. Read the target repo's committed loop configuration at this dispatch
+        # (023 FR-006). A manifest parse failure parks the spec with the rule
+        # named and the roadmap proceeds; the config is *not* frozen at roadmap
+        # start. The workflow does not read files, so this is an activity.
+        try:
+            loop_config: ReadLoopConfigResult = await workflow.execute_activity(
+                read_loop_config,
+                ReadLoopConfigInput(target_repo=request.target_repo),
+                **_FAST,
+            )
+        except FailureError as exc:
+            cause = _loop_config_error_detail(exc)
+            self._park(spec_dir, "loop_config", cause)
+            return
+
+        # 7. Start the child epic — ABANDON on parent close (SC-004: killing the
         # roadmap never kills the epic), default id reuse (a closed id is
         # reusable; a running collision parks, never adopts — T011).
         try:
@@ -1175,7 +1193,8 @@ class RoadmapWorkflow:
                 EpicInput(
                     graph=graph,
                     proxy_url=request.proxy_url,
-                    config=request.config,
+                    config=loop_config.config,
+                    verify_order=loop_config.verify_order,
                     poll_interval_s=request.poll_interval_s,
                     landing_config=request.landing_config,
                     max_concurrent_nodes=request.max_concurrent_nodes,
@@ -1341,3 +1360,16 @@ def _onboarding_detail(profile: TargetRepoProfile) -> str:
         f"target repo {profile.repo} failed onboarding:\n  "
         + "\n  ".join(lines)
     )
+
+
+def _loop_config_error_detail(exc: FailureError) -> str:
+    """A manifest parse failure at dispatch time, with the rule named (023 FR-006).
+
+    `read_loop_config` re-raises a `FactoryConfigError` as a non-retryable
+    `ApplicationError` so the roadmap parks the spec rather than retrying a
+    refusal. The rule slug and problem ride on the inner cause's message.
+    """
+    inner = exc.cause
+    if isinstance(inner, ApplicationError):
+        return inner.message or str(exc)
+    return str(exc)

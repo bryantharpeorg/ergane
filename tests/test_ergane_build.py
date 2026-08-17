@@ -95,6 +95,8 @@ from factory.verify.models import (
 )
 from factory.cli.nouns.build import load_workgraph
 from factory.workgraph.derive import derive_workgraph
+from factory.verify.factory_yaml import FactoryConfigError
+from factory.verify.models import VerificationConfig
 from factory.verify.store import (
     EXPIRED,
     connect as verify_connect,
@@ -118,7 +120,7 @@ from factory.workgraph.worktree import (
     record_salvage_ref,
     salvage,
 )
-from tests.target_repo import git, git_env
+from tests.target_repo import build_target_repo, git, git_env
 from factory.verify.question import QuestionMarker
 from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicInput, EpicWorkflow
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
@@ -747,10 +749,17 @@ async def test_start_prints_the_workflow_id_and_starts_that_epic(
     run_async: Callable[..., Awaitable[Run]],
     temporal_env: WorkflowEnvironment,
     workgraph_json: Path,
+    target_repo: Callable[..., Path],
 ) -> None:
+    # 023 US2: every dispatch path now reads the target repo's committed manifest.
+    # The legacy fixture graph points at a non-existent repo path, so build one
+    # under tmp_path and rewrite the graph before starting.
+    repo = target_repo("passing", name="short-links")
+    _graph_with_target(workgraph_json, str(repo))
+
     result = await run_async("build", "start", str(workgraph_json))
 
-    assert result.code == 0
+    assert result.code == 0, result.stderr
     assert result.stdout.strip() == WORKFLOW_ID
 
     described = await temporal_env.client.get_workflow_handle(WORKFLOW_ID).describe()
@@ -758,13 +767,133 @@ async def test_start_prints_the_workflow_id_and_starts_that_epic(
     assert described.task_queue == TASK_QUEUE
 
 
+# --- T007: dispatch-time loop config pin (023 US2) -----------------------------
+
+
+_V2_MANIFEST = """
+version: 2
+runtime: bwrap
+gates:
+  test: "uv run pytest -q"
+ladder:
+  max_attempts: 2
+  max_judge_retries: 1
+  debugger_cycles: 0
+  escalation_timeout_s: 7200
+verify: [gates, diff_check, judge]
+"""
+
+
+def _graph_with_target(graph_path: Path, target_repo: str) -> None:
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph["target_repo"] = target_repo
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+
+
+async def _started_epic_input(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    workgraph_json: Path,
+    target_repo: Path,
+) -> EpicInput:
+    """Start an epic and return the EpicInput the workflow received."""
+    script = ScriptedEpic(
+        spec_text=(workgraph_json.parent / "spec.md").read_text(encoding="utf-8"),
+        fail_resolve=True,
+    )
+
+    async with worker_for(temporal_env, script):
+        await run_async("build", "start", str(workgraph_json))
+        # fail_resolve raises during the first node, so the workflow is alive and
+        # its first decision is recorded; the input is in the first history event.
+        history = await temporal_env.client.get_workflow_handle(
+            WORKFLOW_ID
+        ).fetch_history()
+
+    for event in history.events:
+        if hasattr(event, "workflow_execution_started_event_attributes"):
+            attrs = event.workflow_execution_started_event_attributes
+            decoded = await temporal_env.client.data_converter.decode(
+                list(attrs.input.payloads), [EpicInput]
+            )
+            return decoded[0]
+    raise AssertionError("workflow start event not found in history")
+
+
+async def test_start_with_v2_manifest_pins_declared_caps_and_order(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    workgraph_json: Path,
+) -> None:
+    """023 US2-S1/S2: `ergane build start` pins the declared ladder and verify order."""
+    target_repo = tmp_path / "target-v2"
+    build_target_repo(target_repo, variant="passing")
+    (target_repo / "ergane.yaml").write_text(_V2_MANIFEST, encoding="utf-8")
+    git(target_repo, "add", "ergane.yaml")
+    git(target_repo, "commit", "--quiet", "-m", "v2 manifest")
+    _graph_with_target(workgraph_json, str(target_repo))
+
+    request = await _started_epic_input(
+        run_async, temporal_env, tmp_path, workgraph_json, target_repo
+    )
+
+    assert request.config.max_attempts == 2
+    assert request.config.max_judge_retries == 1
+    assert request.config.debugger_cycles == 0
+    assert request.config.escalation_timeout_s == 7200
+    assert request.verify_order == ("gates", "diff_check", "judge")
+
+
+async def test_start_with_v1_manifest_pins_todays_defaults(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    workgraph_json: Path,
+) -> None:
+    """023 US2-S2: a v1 manifest produces today's defaults exactly."""
+    target_repo = tmp_path / "target-v1"
+    build_target_repo(target_repo, variant="passing")
+    _graph_with_target(workgraph_json, str(target_repo))
+
+    request = await _started_epic_input(
+        run_async, temporal_env, tmp_path, workgraph_json, target_repo
+    )
+
+    defaults = VerificationConfig()
+    assert request.config == defaults
+    assert request.verify_order == ("gates", "diff_check", "judge")
+
+
+async def test_start_with_malformed_manifest_refuses_at_preflight(
+    run_async: Callable[..., Awaitable[Run]],
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    workgraph_json: Path,
+) -> None:
+    """023 US2-S6: a malformed committed manifest refuses dispatch, rule named."""
+    target_repo = tmp_path / "target-bad"
+    build_target_repo(target_repo, variant="malformed-manifest")
+    _graph_with_target(workgraph_json, str(target_repo))
+
+    result = await run_async("build", "start", str(workgraph_json))
+
+    assert result.code != 0
+    assert "malformed_yaml" in result.stderr
+    assert result.stdout == ""
+
+
 async def test_status_json_is_the_query_result_verbatim(
     run_async: Callable[..., Awaitable[Run]],
     temporal_env: WorkflowEnvironment,
     epic_dir: Path,
     workgraph_json: Path,
+    target_repo: Callable[..., Path],
 ) -> None:
     """`ergane build status <epic> --json` dumps the query document unchanged."""
+    repo = target_repo("passing", name="short-links")
+    _graph_with_target(workgraph_json, str(repo))
     script = ScriptedEpic(spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"))
 
     async with worker_for(temporal_env, script):
@@ -808,8 +937,11 @@ async def test_status_reads_live_spend_off_the_running_attempt(
     temporal_env: WorkflowEnvironment,
     epic_dir: Path,
     workgraph_json: Path,
+    target_repo: Callable[..., Path],
 ) -> None:
     """Live spend is a sibling key, never merged into a node."""
+    repo = target_repo("passing", name="short-links")
+    _graph_with_target(workgraph_json, str(repo))
     snapshot = UsageSnapshot(spend_usd=6.25, captured_at="2026-08-05T09:31:00Z")
     script = ScriptedEpic(
         spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
@@ -857,8 +989,11 @@ async def test_pause_and_resume_send_their_signals(
     temporal_env: WorkflowEnvironment,
     epic_dir: Path,
     workgraph_json: Path,
+    target_repo: Callable[..., Path],
 ) -> None:
     """FR-012: pause and resume each send exactly their named signal."""
+    repo = target_repo("passing", name="short-links")
+    _graph_with_target(workgraph_json, str(repo))
     script = ScriptedEpic(
         spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
         pause_at="us2",
@@ -1562,12 +1697,15 @@ async def test_a_pasted_workflow_id_reaches_the_running_epic(
     temporal_env: WorkflowEnvironment,
     epic_dir: Path,
     workgraph_json: Path,
+    target_repo: Callable[..., Path],
 ) -> None:
     """046-US3-S1, against a workflow that is actually running.
 
     `epic-valid_epic` must read and signal the epic that `valid_epic` started,
     not a second workflow named `epic-epic-valid_epic`.
     """
+    repo = target_repo("passing", name="short-links")
+    _graph_with_target(workgraph_json, str(repo))
     script = ScriptedEpic(
         spec_text=(epic_dir / "spec.md").read_text(encoding="utf-8"),
         pause_at="us2",
