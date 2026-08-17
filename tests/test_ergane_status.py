@@ -1630,3 +1630,68 @@ def test_no_guard_names_a_class_temporalio_cannot_raise(specs_root: Path) -> Non
     for guarded_class in guarded:
         assert f"raise {guarded_class.__name__}(" in sources, guarded_class
     assert "raise NotAClassTemporalioRaises(" not in sources
+
+
+# ============================================================================
+# 052 T004 / US1-S4, FR-004 — the repair that would have been worse
+# ============================================================================
+#
+# `except Exception` around the query makes every test above pass and is the
+# wrong fix. The command would stop dying and start lying: a genuine defect
+# behind a query — the wrong argument, a decode failure, a bug in the renderer
+# reached through the result — would render as a blank section with a plausible
+# note, which is the same silence one layer along. These two tests exist to be
+# in the way of that repair, so both were written before it.
+
+#: Nothing may guard a Temporal call with these.
+BLANKET_GUARDS = frozenset({"Exception", "BaseException", "<bare except>"})
+
+
+def test_no_temporal_call_site_is_guarded_by_a_blanket_except(
+    specs_root: Path,
+) -> None:
+    """FR-004: not `Exception`, not `BaseException`, not a bare `except`.
+
+    Preventive, and green on both sides of the repair by design — the point of
+    a test written before an implementation is that the implementation cannot
+    introduce the thing it forbids. Its ability to fail is proved by mutation,
+    not by having been red once: swapping either guard for `Exception` turns it
+    red, and that mutant is recorded in this story's battery.
+
+    The anti-vacuity assertion is the same derived call-site list the sweep
+    above uses, so this cannot pass by finding nothing to check.
+    """
+    functions = _awaiting_functions()
+    assert set(functions) == set(EXPECTED_GUARDS)
+
+    offenders = [
+        (name, clause)
+        for name, function in functions.items()
+        for group in _try_groups(function)
+        for clause in group
+        if BLANKET_GUARDS & set(clause)
+    ]
+
+    assert offenders == []
+
+
+def test_a_query_failure_that_is_neither_transport_nor_refusal_still_escapes(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S4: the exception still escapes, and the operator still hears about it.
+
+    The runtime half of FR-004. A `ValueError` out of the roadmap query is a
+    real defect, not a degradation, and it must reach the CLI's boundary
+    handler exactly as it does today — exit 1, named on stderr, nothing
+    swallowed into a note. This is the assertion a blanket `except` breaks.
+    """
+    refusing_floor(fake_temporal, ValueError("a real defect, not a refusal"))
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 1
+    assert "unexpected error" in result.stderr
+    assert "a real defect, not a refusal" in result.stderr
+    assert result.stdout == ""
