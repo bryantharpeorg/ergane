@@ -1,6 +1,18 @@
 # Implementation Plan: 050-init-preconditions
 
-Refined against the tree at `c4bc570`. Every anchor below was read by hand at
+Refined against `c4bc570`, **re-read against `dfec47b` on 2026-08-16** — every
+anchor below had drifted 30–50 lines and is corrected here. `factory/cli/init.py`
+is 878 lines at that commit.
+
+> **US2 and US3: read this before you trust a number.** 050/US1 is in the merge
+> queue as PR #150 and adds **+82 lines to `factory/cli/init.py`**, all of them
+> at or above `_schedule`. Every anchor below `:561` shifts again the moment it
+> lands. Locate `_schedule`, `_schedule_facts`, `run_check` and `init_command`
+> **by name** — the four `def` lines are unambiguous — and treat the numbers here
+> as a sanity check rather than a destination. This file took eight commits in
+> one day earlier this week and cost two hand-merges.
+
+Original note: Every anchor below was read by hand at
 that commit. Where an anchor moves before you dispatch, re-read it — a plan
 citing a function that has since moved sends you hunting at the operator's
 expense.
@@ -9,18 +21,18 @@ expense.
 
 | Thing | Where | What it does today |
 | --- | --- | --- |
-| The init command body | `factory/cli/init.py:435-468` | Interviews, scaffolds, registers, **schedules**, prints guidance, then runs readiness |
-| The schedule step | `factory/cli/init.py:529-549` (`_schedule`) | Loads the manifest; on success calls `apply_schedule(desired)` unconditionally |
-| The readiness report | `factory/cli/init.py:826-846` (`run_check`) | Prints each check, returns `EXIT_OK if profile.passed else EXIT_USER` |
+| The init command body | `factory/cli/init.py:416` (`init_command`) | Interviews, scaffolds, registers, **schedules**, prints guidance, then runs readiness |
+| The schedule step | `factory/cli/init.py:561` (`_schedule`) | Loads the manifest; on success calls `apply_schedule(desired)` unconditionally |
+| The readiness report | `factory/cli/init.py:873` (`run_check`) | Prints each check, returns `EXIT_OK if profile.passed else EXIT_USER` |
 | The control-plane probe | `factory/controlplane/` | Raises `ControlPlaneConfigError` with a `[config_missing]` code when `config.toml` cannot be read |
 | Schedule application | `factory/roadmap/schedule.py` | `desired_for_repo`, `apply_schedule`, `format_step`, `schedule_id_for`, and the `ScheduleStep` / `FAILED` vocabulary |
-| The init check facts | `factory/cli/init.py:713` (`_schedule_facts`) | Builds this repo's schedule facts as `InitFacts` kwargs |
+| The init check facts | `factory/cli/init.py:745` (`_schedule_facts`) | Builds this repo's schedule facts as `InitFacts` kwargs |
 
 Two facts make this cheaper than it looks:
 
 - **`_schedule` already has a failure shape.** It returns
   `format_step(ScheduleStep(FAILED, schedule_id_for(slug), "<reason>"))` when
-  the manifest will not load (`:539-545`). US1's refusal is a *second* instance
+  the manifest will not load (inside `_schedule`, the manifest-load branch). US1's refusal is a *second* instance
   of a branch that already exists, with a different reason string. You are not
   inventing an outcome, a return type or a rendering.
 - **The control-plane failure is already computed.** `run_check` produces it
@@ -41,7 +53,7 @@ Two facts make this cheaper than it looks:
 
 ## Traps
 
-1. **The refusal must not raise.** `_schedule`'s docstring at `:532` says
+1. **The refusal must not raise.** `_schedule`'s docstring says
    "Never raises (FR-017)", and `init` depends on that: a GitHub refusal must
    not cost the repo its scaffold. Your precondition is a `FAILED` step, not an
    exception. FR-002 and US1-S5 both exist to hold this, and S5 is specifically
