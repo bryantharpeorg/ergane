@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Drafted 2026-08-16 by an operator session, from two findings produced the same
 # afternoon by walking the portability path on a machine that had never seen this
 # project: a Debian 13 container, Python 3.12, git 2.47, the wheel from
