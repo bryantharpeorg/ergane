@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Requested by Bryan 2026-08-12, mid-032: "a way to 'fail out' of ergane for a
 # spec that repeatedly fails. allows the running claude process to complete the
 # work on the agent's behalf, note it was built by something else but otherwise

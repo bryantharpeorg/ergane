@@ -125,3 +125,62 @@ beat). US3: cross-epic signal + namespace completion + decision-log and
 architecture-doc entries. US4: `consult_activities.py` + the consult rung
 in routing + memory config — parallel to US2/US3, merged after US1. No new
 dependency; no new store; no new clock.
+
+## Added at the 2026-08-16 re-verification, and read this part first
+
+**This spec was held for a reason, and the reason has not expired — it has been
+converted into a dispatch condition.**
+
+The 2026-08-08 verification pass found that a peer-addressed park would have
+reused 008's operator park, which raises the scheduler's pause flag. The node
+that must answer a peer question is a node of the *same epic*, so the pause
+prevents the very dispatch that would answer it. Every peer question would have
+dead-waited the 8-hour window and then paged the operator — making SC-001's
+headline claim ("zero operator messages") false in production **while every
+scripted test passed**. FR-016 now forbids that pause.
+
+**A defect of that shape is exactly what a judge reading a diff cannot catch.**
+So this epic gets a **watched run**: the operator watches the first peer exchange
+happen for real, rather than accepting a PASS and moving on. That is a condition
+on dispatch, not on readiness, and it is why this spec sat at `draft` for eight
+days.
+
+**What blocked validation, now fixed.** `ergane spec validate` refused this spec
+outright: the 08-08 split of US1 into US1 + US2 renumbered the spec's stories and
+never gave US2 a phase in `tasks.md`, so node `us2` had no task slice and could
+not be dispatched at all. Phase 2b now exists. A repair on 2026-08-16 (#92) had
+addressed part of the renumbering and missed this half.
+
+**Sizing risk, stated plainly.** Five stories, and US5 alone spans consult-spawn
+plus a two-layer memory integration. The diff ceiling is 61,440 bytes, refused
+deterministically. Measure through `size_refusal` from
+`factory/verify/diffbounds.py`, importing `DIFF_INPUT_LIMIT` rather than quoting
+it. **If a story does not fit whole, say where you would split it — do not trim
+checks.** On 2026-08-16 six stories landed on evidence the judge only partly saw,
+one at 2.1x the ceiling; a seventh refused to fit, reported it, and was split
+instead. The refusal was the right answer and cost nothing.
+
+## Instrument traps carried forward from 2026-08-16
+
+**Purge `__pycache__` between mutants**, or run under `PYTHONDONTWRITEBYTECODE=1`.
+CPython validates a cached `.pyc` on `(mtime-in-whole-seconds, size)` only, so
+two same-size mutants written inside one wall-clock second make the second run
+execute the *first* mutant's bytecode. It fails toward green and reproduces
+stably.
+
+**Quote `passed` and `skipped`, never the warning count** — a warm cache
+suppresses compile-time warnings. Baseline skips are 44; a new skip is a hidden
+test you must declare.
+
+**A mutation can be indistinguishable from correct** when every test observes the
+two states at a moment they coincide. This spec is unusually exposed: a message
+that arrives at the *next* attempt and one that arrives *mid* attempt look
+identical to any test whose two attempts do not actually overlap in time. US2's
+Independent Test says "attempts overlap" for that reason — honour it, or US2's
+whole protocol change is unfalsifiable.
+
+**Assert against the world, not a call log.** "We routed the message" is a claim
+about your own code; "the addressee's assembled prompt contains it" and "neither
+attempt terminated" are claims about the world. Only the second kind would have
+caught the park deadlock this spec was held for.
+
