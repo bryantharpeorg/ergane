@@ -97,7 +97,7 @@ that failed it.
 - **Targets**: the factory's first self-hosted target is this repository — epic 003
   is dispatched by the factory against Ergane itself, human-merged until 003 lands
   (D-024, superseding the earlier never-self-target constraint). Each target repo
-  declares runtime and test/lint/typecheck commands in a committed `factory.yaml`.
+  declares runtime, gates and loop composition in a committed `factory.yaml`.
 
 ## Development Workflow
 
@@ -115,9 +115,11 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.3.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-13 (2.3.0 —
-D-037: Principle VIII added; acceptance criteria must be provable from the diff alone,
-because the judge sees nothing else. 2.2.0 —
+**Version**: 2.4.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-17 (2.4.0 —
+D-046: loop composition is declared data; environment-constraints wording amended to
+say each target repo declares runtime, gates and loop composition in a committed
+`factory.yaml`. 2.3.0 — D-037: Principle VIII added; acceptance criteria must be
+provable from the diff alone, because the judge sees nothing else. 2.2.0 —
 D-023/D-024: intent layer is Spec Kit feature specs; build order gains minimal 005
 before 003; 003 is built by the factory against this repository, superseding the
 never-self-target constraint; preamble updated to spend attribution. 2.1.0:
