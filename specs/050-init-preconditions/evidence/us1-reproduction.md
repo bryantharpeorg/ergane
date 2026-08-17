@@ -6,11 +6,17 @@ that same walk, against the wheel built from this branch, and for the transcript
 to be committed: the judge is given this diff and the criteria, never a terminal
 (constitution VIII / D-037).
 
-Everything below is pasted verbatim. The scratch prefix
-`/tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro`
-appears in full rather than abbreviated, because a *scratch temporary directory
-that no longer exists* is precisely what the orphaned schedule pointed at, and
-seeing it is part of reading this.
+Everything below is pasted verbatim, under one stated substitution: `$S` stands
+for the scratch root
+
+```
+/tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro
+```
+
+and nothing else is elided. The one line the whole document exists for — the
+schedule step's report — is left with its paths in full, because a *scratch
+temporary directory that no longer exists* is exactly what the orphaned schedule
+pointed at, and seeing that is part of reading it.
 
 ## Setup: the shipped wheel, a clean venv, a fresh repository
 
@@ -46,10 +52,10 @@ lifecycle running at all:
 $ cd $S/portab/repo && env -i HOME=$S/home PATH=/usr/bin:/bin:$S/venv/bin \
     $S/venv/bin/python -c '<print factory.__file__, the config path, the reason, the target>'
 
-factory from: /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/venv/lib/python3.12/site-packages/factory/__init__.py
-config path : /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/home/.config/ergane/config.toml
+factory from: $S/venv/lib/python3.12/site-packages/factory/__init__.py
+config path : $S/home/.config/ergane/config.toml
 exists      : False
-reason      : ControlPlaneConfigError: /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/home/.config/ergane/config.toml: [config_missing] cannot be read (No such file or directory); run `ergane install` to create the control-plane config
+reason      : ControlPlaneConfigError: $S/home/.config/ergane/config.toml: [config_missing] cannot be read (No such file or directory); run `ergane install` to create the control-plane config
 would reach : Temporal at localhost:7233 in namespace 'factory' (built-in default)
 rc=0
 ```
@@ -89,12 +95,12 @@ stdout, verbatim (the interview's prompts run together on one line because
 nothing echoed a newline into a redirected stdin):
 
 ```
-schema version [1]: runtime backend [bwrap]: gates (YAML mapping of gate name to command) [test: 'true']: timeouts in seconds (YAML mapping of gate name to seconds, optional) []: standards document path (optional) []: landing branch [main]: roadmap dials (YAML mapping of cadence_s, max_concurrent_epics, max_concurrent_nodes, optional) []: forge this repository is on (optional) []: repo slug [repo]: joined /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/portab/repo as slug 'repo'
+schema version [1]: runtime backend [bwrap]: gates (YAML mapping of gate name to command) [test: 'true']: timeouts in seconds (YAML mapping of gate name to seconds, optional) []: standards document path (optional) []: landing branch [main]: roadmap dials (YAML mapping of cadence_s, max_concurrent_epics, max_concurrent_nodes, optional) []: forge this repository is on (optional) []: repo slug [repo]: joined $S/portab/repo as slug 'repo'
 written:
-  /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/portab/repo/ergane.yaml
-  /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/portab/repo/.gitignore
-  /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/portab/repo/.ergane
-registered: 'repo' -> /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/portab/repo
+  $S/portab/repo/ergane.yaml
+  $S/portab/repo/.gitignore
+  $S/portab/repo/.ergane
+registered: 'repo' -> $S/portab/repo
 schedule: failed ergane-roadmap-repo — refused: the control plane could not be read, so no schedule was created — ControlPlaneConfigError: /tmp/claude-1000/-home-admin-code-ergane/26b636f4-b4ec-41c9-b750-8585e2849003/scratchpad/scratch-050-us1/us1-repro/home/.config/ergane/config.toml: [config_missing] cannot be read (No such file or directory); run `ergane install` to create the control-plane config — and `ergane install` is what creates it; a schedule for this repository would otherwise have gone to Temporal at localhost:7233 in namespace 'factory' (built-in default)
 github wiring: not attempted — re-run with `ergane init --wire` to
   queue the landing branch and require one check per declared gate

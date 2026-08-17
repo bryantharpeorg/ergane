@@ -193,21 +193,8 @@ FAILED test_init_schedule_precondition.py::test_a_control_plane_config_that_will
 FAILED test_ergane_init.py::test_the_interview_offers_no_multi_line_default
 FAILED test_ergane_registry.py::test_completed_init_maps_the_slug_to_the_repo_absolute_path
 FAILED test_ergane_registry.py::test_the_registry_entry_exists_nowhere_inside_the_repo
-FAILED test_ergane_registry.py::test_a_second_repo_declaring_a_taken_slug_is_refused_naming_the_holder
-FAILED test_ergane_registry.py::test_a_refused_collision_leaves_the_holder_in_place
-FAILED test_ergane_registry.py::test_reregistering_the_same_repo_under_the_same_slug_is_a_no_op
-FAILED test_ergane_registry.py::test_an_awkward_directory_name_yields_a_proposed_slug_the_operator_accepts
-FAILED test_ergane_registry.py::test_an_unusable_slug_is_re_asked_rather_than_written
-FAILED test_ergane_registry.py::test_rebuild_prunes_a_repo_that_is_gone_and_reports_it
-FAILED test_ergane_registry.py::test_rebuild_leaves_a_live_entry_byte_identical
-FAILED test_ergane_registry.py::test_list_renders_a_deleted_manifest_as_missing_rather_than_dropping_it
-FAILED test_ergane_registry.py::test_list_renders_an_unparseable_manifest_as_invalid
-FAILED test_ergane_registry.py::test_list_renders_a_valid_manifest_as_valid
-FAILED test_ergane_registry.py::test_no_memory_scope_when_no_control_plane_is_installed
-FAILED test_ergane_registry.py::test_the_registry_survives_its_own_destruction
-FAILED test_ergane_registry.py::test_rebuild_keeps_the_declared_slug_of_a_repo_it_already_knows
-FAILED test_ergane_registry.py::test_a_corrupt_registry_is_refused_naming_the_path_and_offering_rebuild
-FAILED test_ergane_registry.py::test_rebuild_recovers_a_corrupt_registry_from_seed_paths
+…and 14 more in test_ergane_registry.py, elided for length; the four above
+and these fourteen are every failure in the row.
 ```
 
 Eighteen of those twenty-two are in `test_ergane_registry.py`, which drives a
@@ -268,3 +255,64 @@ This is its own species of the tests-that-cannot-fail class, and worth naming
 because it is not a weak assertion: it is a strong assertion about a string that
 something *else* in the message guarantees. A test whose subject is a message
 has to assert on the part the code under test is responsible for.
+
+## 5. The full suite, and what it left on the live control plane
+
+Run in the worktree with a purged `__pycache__` and a deleted `.pytest_cache` —
+a cold cache, stated because a warm one suppresses compile-time warnings, which
+is why the count below quotes `passed` and `skipped` and not warnings. Run in
+the *normal* environment rather than the battery's closed-port one, so the skip
+count is comparable to the 44 the suite has today: closing the port would skip
+the live tier by guard and a new skip is a finding, not a detail.
+
+```
+$ uv run pytest -q
+3151 passed, 44 skipped, 6 warnings in 306.89s (0:05:06)
+pytest rc=0
+```
+
+44 skips, the expected baseline, and no new one.
+
+Then the check the plan asks for, which a green suite is not a substitute for:
+
+```
+$ temporal schedule list --namespace factory      # after that run
+    ScheduleId                Action              Paused  NextRunTime  LastRunTime
+  ergane-roadmap  {"Workflow":"RoadmapWorkflow"}  true    1 day ago    1 day ago
+rc=0
+```
+
+One schedule, the operator's, still paused. The suite created nothing — which is
+the same sentence 034's evidence ends with, and the reason it is repeated is
+that the run in between those two sentences is the one that created five.
+
+## 6. The diff, measured the way the judge measures it
+
+Against the merge-base, not the moving tip, and through `size_refusal` rather
+than `git diff | wc -c` — the latter omits the generated file listing and
+preamble the judge's prompt actually carries.
+
+```
+$ git add -A && git diff --cached $(git merge-base HEAD origin/ergane-buildout)
+merge-base: 3e9cbde1d147d6667c2ff28f3e644bf56bb3a7a8
+
+measured as the judge measures : 55193 bytes
+DIFF_INPUT_LIMIT               : 61440 bytes
+size_refusal(diff_text)        : None
+
+   18870  tests/test_init_schedule_precondition.py
+   16440  specs/050-init-preconditions/evidence/us1-mutations.md
+   10540  specs/050-init-preconditions/evidence/us1-reproduction.md
+    5372  factory/cli/init.py
+    3687  tests/test_ergane_init_check.py
+```
+
+`DIFF_INPUT_LIMIT` is imported rather than quoted. No refusal, with 6247 bytes
+of headroom. The production change is 5.4 KB of a 61 KB budget; the two evidence
+files SC-001 and SC-002 require are 27 KB of it, which is the cost of a judge
+that sees no terminal.
+
+The measurement is self-referential — this file is inside the diff it reports,
+so writing the figure down moves it. The figure above is the one measured after
+the last edit to this file, and it is stable because the replacement is the same
+number of digits wide.
