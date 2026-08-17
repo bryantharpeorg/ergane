@@ -338,8 +338,23 @@ exists and verify's finding says whose contract the uptime is.
   after, pasted into the diff.
 - **SC-003**: A seeded orphan population is reaped by the probe and reported,
   and a population above the threshold raises an alert.
-- **SC-004**: A managed Temporal unit restarted mid-epic resumes with workflow
-  history intact.
+- **SC-004**: A managed Temporal unit **persists its history across a restart**,
+  proven three ways that are each obtainable: the generated unit declares
+  persistent storage rather than in-memory, asserted on the unit text; a Temporal
+  instance started from that same generated configuration, on a scratch port and
+  a scratch data directory, still holds a written workflow after a stop and
+  start; and the unit's `ExecStart` names a data path inside the operator's own
+  installation rather than a temporary one.
+
+  **Not** "restarted mid-epic on this host". That was the original wording and no
+  implementer can satisfy it: the only managed Temporal here is
+  `ergane-temporal.service`, the server the factory itself runs on, and
+  restarting it mid-epic means taking an outage on a live floor to produce
+  evidence. Repaired 2026-08-16, before US3 was dispatched, after the US2
+  implementer found and reported the identical defect one criterion up in
+  SC-002 — the third success criterion this week to demand evidence that could
+  only be obtained by breaking the thing being measured. What SC-004 was
+  defending is unchanged and is what the wording above now states.
 - **SC-005**: `uninstall` on a host with one engine-written unit and one
   hand-written unit of a colliding name removes the first and reports the
   second, leaving it on disk.
