@@ -353,23 +353,6 @@ def test_load_from_default_path_fail_closed(tmp_path: Path, monkeypatch: pytest.
     assert "ergane install" in err.problem.lower()
 
 
-# ---------------------------------------------------------------------------
-# T006 [US1-S6 / FR-004] Managed mode refused before 042
-# ---------------------------------------------------------------------------
-
-
-def test_temporal_managed_mode_refused(tmp_path: Path) -> None:
-    """US1-S6: temporal.mode = managed is refused naming 042."""
-    path = tmp_path / "config.toml"
-    text = _happy_toml().replace('mode = "external"', 'mode = "managed"')
-    path.write_text(text, encoding="utf-8")
-
-    with pytest.raises(ControlPlaneConfigError) as exc_info:
-        load_controlplane_config(path)
-
-    err = exc_info.value
-    assert err.rule == "temporal_managed_not_implemented"
-    assert "042" in err.problem
 
 
 # ---------------------------------------------------------------------------

@@ -245,6 +245,27 @@ def _ask_memory(prompter: Any, document: dict[str, Any], path: Path) -> dict[str
     )
 
 
+def _systemd_user_session_available() -> bool:
+    """Whether this host can run `systemctl --user` commands (FR-011).
+
+    A host without a user D-Bus bus — common in containers and minimal SSH
+    sessions — fails with 'Failed to connect to bus'.  Managed mode needs that
+    bus to enable, start and watch its unit, so it is refused here rather than
+    half-way through unit installation.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        ("systemctl", "--user", "daemon-reload"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Any stderr means the bus is missing; a present session answers empty stderr
+    # (even if the daemon state is otherwise not ideal).
+    return result.stderr.strip() == ""
+
+
 def _ask_temporal(
     prompter: Any, document: dict[str, Any], path: Path
 ) -> dict[str, Any]:
@@ -256,6 +277,20 @@ def _ask_temporal(
         default=document["temporal"].get("mode"),
         apply=_apply_temporal_mode,
     )
+    if document["temporal"].get("mode") == "managed" and not _systemd_user_session_available():
+        raise OperatorError(
+            "temporal.mode = \"managed\" requires a systemd user session; "
+            "this host does not have one (systemctl --user is not available). "
+            "Choose external Temporal or enable user sessions.",
+            code=EXIT_USER,
+        )
+    if document["temporal"].get("mode") == "managed":
+        # Managed mode installs its own server; these fields are not operator inputs.
+        document["temporal"].pop("address", None)
+        document["temporal"].pop("namespace", None)
+        document["temporal"].pop("api_key_env", None)
+        document["temporal"].pop("tls_enabled", None)
+        return document
     document = _ask(
         prompter,
         "temporal address",

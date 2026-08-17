@@ -747,23 +747,6 @@ def test_a_plaintext_secret_is_refused_at_entry_with_the_parsers_rule(
     assert secret not in result.stderr
 
 
-def test_managed_temporal_is_refused_at_entry_naming_042(
-    walkthrough: Callable[..., tuple[Run, ScriptedPrompter]],
-    config_path: Path,
-) -> None:
-    """T022a: answering `managed` is refused at entry with the landed parser's rule."""
-    answers = _answers(temporal_mode="managed")
-    answers.insert(7, "external")  # the re-ask after the refusal
-
-    _, prompter = walkthrough(answers)
-
-    errors = prompter.errors_for("temporal mode (external|managed)")
-    assert len(errors) == 1
-    assert "temporal_managed_not_implemented" in errors[0]
-    assert "042" in errors[0]
-
-    config = load_controlplane_config(str(config_path))
-    assert config.temporal.mode == "external"
 
 
 # ---------------------------------------------------------------------------

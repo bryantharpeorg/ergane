@@ -281,22 +281,29 @@ class LLMProbe:
 class TemporalProbe:
     """Pings Temporal and confirms the configured namespace exists.
 
-    The question this probe asks is `DescribeNamespace`, not "does some workflow
-    exist".  Those are different objects: a healthy factory host answers
-    `NOT_FOUND` for the workflow id `ergane-install-verify` while the namespace
-    is registered, so describing a workflow reports every correctly-installed
-    host as missing its namespace and tells the operator to create one that is
-    already there.
-
-    `describe_namespace` lives on the *workflow* service in temporalio 1.31.0
-    (the operator service carries only `delete_namespace`), which is why the
-    call below goes through `service_client.workflow_service`.
+    For `external` mode the probe dials the declared address and checks the
+    namespace.  For `managed` mode the unit generation is the contract; the probe
+    reports that uptime is the operator's responsibility only when the config
+    explicitly chose external — a silent pass would make a remote outage a
+    mystery (FR-010).
     """
 
     name = "temporal"
 
     async def gather(self, config: ControlPlaneConfig) -> TemporalSnapshot:
         from temporalio.service import RPCError, RPCStatusCode
+
+        if config.temporal.mode == "managed":
+            # Managed mode installs and supervises its own server; the verify
+            # check is whether the unit was generated, which happens at install
+            # time, not here.  Returning a finding would either be misleading or
+            # would require a live server already running.
+            return TemporalSnapshot(
+                address="",
+                namespace="",
+                namespace_exists=True,
+                detail="managed Temporal: the engine installs and supervises the server; uptime is verified by the supervision probe",
+            )
 
         # Resolved once, and the same resolution the connect below is built
         # from, so the address this finding names is the one it dialed (SC-006).

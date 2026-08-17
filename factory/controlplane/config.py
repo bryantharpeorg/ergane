@@ -401,12 +401,9 @@ def _read_temporal(
         )
 
     if mode == "managed":
-        raise ControlPlaneConfigError(
-            RULE_TEMPORAL_MANAGED_NOT_IMPLEMENTED,
-            "`temporal.mode = \"managed\"` is not implemented; it arrives with "
-            "epic 042 (managed Temporal + worker units)",
-            source=source,
-        )
+        # Managed mode installs a local Temporal server under systemd; address
+        # and namespace are not operator inputs (FR-009).
+        return ControlPlaneConfig.Temporal(mode="managed")
 
     address = _require_string(block, "temporal.address", source)
     namespace = _read_namespace(block, source)
