@@ -45,24 +45,24 @@ question/reply round trip with no Telegram send and no ladder cost.
 - [ ] T002 [US1] Verify prerequisites in this worktree: `uv run pytest -q`
       green; the plan's reuse-inventory refs exist — constitution I gate;
       STOP and report blocked if not satisfied.
-- [ ] T003 [P] [US1] Write addressee-grammar cases FIRST: addressee parsed
+- [ ] T003 [P] [US1] (spec US1-S1, US1-S2) Write addressee-grammar cases FIRST: addressee parsed
       from marker and ferry bodies; absent addressee routes the existing
       008 path with existing tests' meaning unchanged (assert against the
       008 fixtures, unedited); unknown addressee refuses to the asker;
       self-address refuses — must fail.
-- [ ] T004 [P] [US1] Write routing cases FIRST with scripted children: peer
+- [ ] T004 [P] [US1] (spec US1-S3, US1-S4) Write routing cases FIRST with scripted children: peer
       with attempt in flight receives via ferry inbox within one poll
       interval; peer without an attempt receives via the dedicated prompt
       section on next dispatch verbatim; reply threads back by message id
       on both paths; terminal-target and expiry cases degrade to an
       operator question carrying the message body — must fail.
-- [ ] T005 [P] [US1] Write cap and discipline cases FIRST: outstanding
+- [ ] T005 [P] [US1] (spec US1-S5) Write cap and discipline cases FIRST: outstanding
       messages beyond the configured cap refuse with the cap named
       (SC-004's ping-pong terminates); message text is unreadable by gates
       and judge (extend 008's FR-010 guard test); the credential sweep
       asserts message bodies and stored rows; ledger rows unchanged by an
       exchange — must fail.
-- [ ] T006 [P] [US1] Write store cases FIRST: `messages` table rows carry
+- [ ] T006 [P] [US1] (spec US1-S6) Write store cases FIRST: `messages` table rows carry
       sender, addressee, body, reply, resolution, expiry; guarded
       resolution is first-wins against expiry (the `resolve_question`
       pattern); late replies stored and never read — must fail.
@@ -75,6 +75,51 @@ question/reply round trip with no Telegram send and no ladder cost.
 
 ---
 
+## Phase 2b: User Story 2 — A message reaches an attempt that is already running (Priority: P1)
+
+Added 2026-08-16. The 2026-08-08 refinement split the original US1 into US1
+(routing, no adapter change) and US2 (live delivery, which needs a new adapter
+direction the original story never named) — and renumbered the spec's stories
+without giving US2 a phase here. `ergane spec validate` refused the whole spec
+for it: *"node 'us2': tasks.md declares no phase naming user story US2, so this
+node has no task slice to work"*. A node with no slice cannot be dispatched at
+all, so this was a hard blocker, not a tidiness point.
+
+**This is the story with the protocol change in it.** Today's ferry is a *pull*:
+the adapter's answer poll only begins once the agent has itself written a
+question file, so there is no path by which an unsolicited message reaches a
+running attempt. US1 needs none of that — it lands the message in the target's
+next assembled prompt. Do not let US1's shape mislead you into thinking this one
+is more of the same.
+
+### Tests for User Story 2 (write FIRST, must fail)
+
+- [ ] T007a [P] [US2] (spec US2-S1) Write the unsolicited-inbound case FIRST:
+      with a scripted agent whose attempt is already in flight and which has
+      asked nothing, a routed peer message is surfaced within one poll
+      interval — must fail, because the pull-only ferry cannot do this today.
+- [ ] T007b [P] [US2] (spec US2-S2) Write the reply-threading case FIRST: a
+      running addressee writes a reply, it threads to the asker by message id,
+      and **neither attempt terminates** — assert both attempts are still live
+      after the exchange, not merely that the reply arrived.
+- [ ] T007c [P] [US2] (spec US2-S3, FR-017) Write the attributed-advisory case
+      FIRST: an external peer's reply surfaced mid attempt is presented as
+      attributed advisory text naming its registry entry, verbatim in content
+      and framed as an outside opinion — must fail.
+- [ ] T007d [P] [US2] (spec US2-S4) Write the ignored-inbox case FIRST: an agent
+      that never reads its inbox ends its attempt normally and the undelivered
+      message degrades exactly as an expired one does. **Assert the node's
+      attempt ceiling did not move** — a peer that ignores its inbox costs a
+      message, never a node.
+
+### Implementation for User Story 2
+
+- [ ] T007e [US2] Add the inbound direction to the adapter: a way to deliver an
+      unsolicited message to a live attempt and to read what it writes back,
+      plus the prompt instructions that tell an agent to watch its inbox while
+      it works. Implement until T007a–T007d pass and the existing ferry tests
+      are unchanged — the pull path is not being replaced, it is being joined.
+
 ## Phase 3: User Story 3 — A message reaches a named external agent (Priority: P2)
 
 **Goal**: operator-owned peer registry; mailbox transport; Telegram mirror;
@@ -85,11 +130,11 @@ mirror, reply file to next prompt; expiry degrades to operator.
 
 ### Tests for User Story 3 (write FIRST, must fail)
 
-- [ ] T008 [P] [US3] Write registry cases FIRST: `peers.yaml` parse with
+- [ ] T008 [P] [US3] (spec US3-S1, US3-S2) Write registry cases FIRST: `peers.yaml` parse with
       named findings (personas-loader style); transport values closed
       (`mailbox` today); namespace collision with node ids refused at
       load; unregistered addressee refuses as undeliverable — must fail.
-- [ ] T009 [P] [US3] Write mailbox cases FIRST: one JSON file per message,
+- [ ] T009 [P] [US3] (spec US3-S3, US3-S4) Write mailbox cases FIRST: one JSON file per message,
       atomic write, documented schema (id, sender, body, reply
       instructions); unwritable path refuses immediately to the asker;
       outbox reply reaches the asker by US1's paths; reply after expiry
@@ -115,7 +160,7 @@ a cross-epic round trip; absent sibling degrades; docs name the channel.
 
 ### Tests for User Story 4 (write FIRST, must fail)
 
-- [ ] T011 [P] [US4] Write cross-epic cases FIRST: an epic-addressed message
+- [ ] T011 [P] [US4] (spec US4-S1, US4-S2, US4-S3) Write cross-epic cases FIRST: an epic-addressed message
       delivers as a signal to the sibling workflow, buffers incuriously,
       and reaches the target node by US1's rules; reply crosses back; a
       finished or absent sibling epic degrades to the operator (the client
@@ -147,7 +192,7 @@ operator path or a refusal.
 
 ### Tests for User Story 5 (write FIRST, must fail)
 
-- [ ] T014 [P] [US5] Write consult-spawn cases FIRST with a scripted
+- [ ] T014 [P] [US5] (spec US5-S1, US5-S2, US5-S3) Write consult-spawn cases FIRST with a scripted
       adapter: a persona-addressed message with no live attempt spawns
       exactly one consult with that persona's registry model and the
       assembled context (message, spec, plan, asker identity) in its
@@ -158,7 +203,7 @@ operator path or a refusal.
       configured bound refuse into the operator path; the consult's key is
       issued and torn down inside the spawn bracket and its spend lands in
       the ledger attributed to the asking node — must fail.
-- [ ] T015 [P] [US5] Write memory-layer cases FIRST: with a bank endpoint
+- [ ] T015 [P] [US5] (spec US5-S4, US5-S5) Write memory-layer cases FIRST: with a bank endpoint
       configured, the consult's written MCP config names only the
       factory-owned bank (assert no other endpoint can appear — sweep
       style); with no endpoint configured, no MCP config is written and the

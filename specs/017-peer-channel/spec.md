@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # HELD, deliberately — refined 2026-08-08 ~1:10 AM CT but NOT dispatched, at the
 # operator's call, because its worst failure mode is one the judge cannot catch.
 # The verification pass found that a peer-addressed park would have reused 008's
