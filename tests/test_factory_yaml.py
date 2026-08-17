@@ -556,14 +556,14 @@ REJECTIONS: list[Rejection] = [
         id="version-unsupported",
         text=_yaml(
             """
-            version: 2
+            version: 3
             runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
         ),
         rule="version",
-        names=("2",),
+        names=("3",),
     ),
     Rejection(
         id="version-is-a-string",
@@ -1027,7 +1027,7 @@ def test_every_rejection_becomes_one_config_error_gate(case: Rejection) -> None:
 def test_source_label_appears_in_messages() -> None:
     """Callers holding a path label the parse with it, so the error names it."""
     with pytest.raises(FactoryConfigError) as excinfo:
-        parse_factory_config("version: 2\n", source="/repos/target/factory.yaml")
+        parse_factory_config("version: 3\n", source="/repos/target/factory.yaml")
 
     assert "/repos/target/factory.yaml" in str(excinfo.value)
 
@@ -1077,7 +1077,7 @@ def test_load_errors_name_the_file_they_came_from(tmp_path: Path) -> None:
     path.write_text(
         _yaml(
             """
-            version: 2
+            version: 3
             runtime: bwrap
             gates:
               test: "uv run pytest -q"
