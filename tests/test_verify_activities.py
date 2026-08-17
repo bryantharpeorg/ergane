@@ -1445,6 +1445,28 @@ def test_drift_flags_a_result_and_never_changes_its_verdict() -> None:
     assert drifted.verdict is steady.verdict is OverallVerdict.PASS
 
 
+def test_zero_gate_results_with_a_failing_output_check_is_a_fail() -> None:
+    """Trap 4 pin: a short-circuited phase can reach compose_result with no gates.
+
+    Fail-fast order composition (US3) creates the first legitimate path where
+    `gate_results` is empty: e.g. `verify: [diff_check, gates, judge]` with an
+    empty diff. The truth table must still read "something failed" as FAIL,
+    never "nothing failed" as PASS (SC-002).
+    """
+    result = compose(gate_results=[], output_check=EMPTY_OUTPUT, judge=None)
+
+    assert result.verdict is OverallVerdict.FAIL
+
+
+def test_zero_gate_results_with_nothing_failing_is_still_a_fail() -> None:
+    """The vacuous case is not a pass: no gates ran means nothing was checked."""
+    # `PASSED_OUTPUT` claims a diff exists, but no gate verified it, so the
+    # outcome is FAIL — same row the truth table already uses for CONFIG_ERROR.
+    result = compose(gate_results=[], output_check=PASSED_OUTPUT, judge=None)
+
+    assert result.verdict is OverallVerdict.FAIL
+
+
 def test_composition_carries_the_evidence_through_untouched() -> None:
     result = compose()
 
