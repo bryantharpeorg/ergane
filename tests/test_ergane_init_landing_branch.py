@@ -111,3 +111,46 @@ def test_the_question_offers_the_branch_the_repository_is_on(
     assert result.code == EXIT_OK
     assert offered(prompter, LANDING_BRANCH_PROMPT) == "master"
     assert (LANDING_BRANCH_PROMPT, "main") not in prompter.calls
+
+
+# --- T002 / US1-S2: the real check, against the real written file -------------
+
+
+def landing_branch_finding(repo: Path) -> Finding:
+    """Run the shipped readiness check over the manifest `init` just wrote.
+
+    Deliberately not a constructed `InitFacts`: the facts are gathered from the
+    repository on disk by the same function `ergane init --check` calls, and the
+    judgment is `onboard._landing_branch_finding` itself. A test that built its
+    own profile would prove the check agrees with the test, not with the file.
+    """
+    facts = init_module.gather_init_facts(repo)
+    findings: list[Finding] = []
+    onboard._landing_branch_finding(findings, facts)
+    assert len(findings) == 1, findings
+    return findings[0]
+
+
+def test_pressing_enter_writes_master_and_the_real_check_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US1-S2, FR-001: enter through the interview, and the check passes.
+
+    This is SC-001's claim reduced to a unit: the manifest the operator did not
+    have to think about declares the branch they are actually on, and the check
+    that failed in the spec's Context transcript now passes.
+    """
+    repo = make_master_repo(tmp_path)
+
+    result, _prompter = run_init(repo, monkeypatch)
+
+    assert result.code == EXIT_OK
+    written = yaml.safe_load((repo / "ergane.yaml").read_text(encoding="utf-8"))
+    assert written["landing_branch"] == "master"
+
+    finding = landing_branch_finding(repo)
+    assert finding.passed, finding.detail
+    assert "master" in finding.detail
+
+    # And the report the operator reads at the end of `ergane init` says so.
+    assert "[PASS] landing_branch" in result.stdout
