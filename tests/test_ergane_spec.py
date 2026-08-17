@@ -410,8 +410,8 @@ def test_validate_reports_frontmatter_derivation_and_persona_errors(
     assert "US9" in output
     # Persona-registry error named.
     assert "implementer" in output
-    # Count: exactly the three expected findings (scenario coverage is satisfied).
-    assert output.count("ergane spec validate:") == 3
+    # Count: exactly the three expected refusal findings (scenario coverage is satisfied).
+    assert output.count("ergane spec validate — refusal:") == 3
 
 
 def test_validate_exits_zero_and_names_checks_on_sound_spec(
@@ -467,8 +467,14 @@ def test_validate_reports_uncovered_scenario_ids(
         scenarios={"US1": ["it works", "it also works"]},
     )
     (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    # A sound trio keeps prompt_assembly and slice_coverage from adding
+    # refusals that would mask the scenario_coverage advisory verdict.
+    (specs_dir / "plan.md").write_text("# Plan\n\nOne store.\n", encoding="utf-8")
     (specs_dir / "tasks.md").write_text(
-        "- [ ] T001 [US1-S1] write the first test\n", encoding="utf-8"
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
+        "- [ ] T001 [US1-S1] write the first test\n",
+        encoding="utf-8",
     )
     _git(repo, "add", "-A", env=env)
     _commit(repo, "fixture skeleton", env=env)
@@ -612,8 +618,14 @@ def test_validate_json_findings_carry_severity_and_preserve_document_shape(
         scenarios={"US1": ["it works", "it also works"]},
     )
     (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    # A sound trio keeps prompt_assembly and slice_coverage from adding
+    # refusals that would mask the scenario_coverage advisory verdict.
+    (specs_dir / "plan.md").write_text("# Plan\n\nOne store.\n", encoding="utf-8")
     (specs_dir / "tasks.md").write_text(
-        "- [ ] T001 [US1-S1] write the first test\n", encoding="utf-8"
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
+        "- [ ] T001 [US1-S1] write the first test\n",
+        encoding="utf-8",
     )
     _git(repo, "add", "-A", env=env)
     _commit(repo, "fixture skeleton", env=env)

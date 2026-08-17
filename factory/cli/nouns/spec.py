@@ -215,9 +215,10 @@ def _landed_command(args: argparse.Namespace) -> int:
 
 
 class _ValidateFinding:
-    def __init__(self, layer: str, message: str) -> None:
+    def __init__(self, layer: str, message: str, *, severity: str = "refusal") -> None:
         self.layer = layer
         self.message = message
+        self.severity = severity
 
 
 def _validate_command(args: argparse.Namespace) -> int:
@@ -329,7 +330,7 @@ def _validate_command(args: argparse.Namespace) -> int:
         "checked": checked,
         "skipped": skipped,
         "findings": [
-            {"layer": finding.layer, "message": finding.message}
+            {"layer": finding.layer, "message": finding.message, "severity": finding.severity}
             for finding in findings
         ],
         "information": [
@@ -337,12 +338,28 @@ def _validate_command(args: argparse.Namespace) -> int:
         ],
     }
 
+    has_refusal = any(finding.severity == "refusal" for finding in findings)
+    has_advisory = any(finding.severity == "advisory" for finding in findings)
+
     if args.as_json:
         print(json.dumps(report, indent=2))
     else:
         if findings:
             for finding in findings:
-                print(f"ergane spec validate: [{finding.layer}] {finding.message}", file=sys.stderr)
+                if finding.severity == "advisory":
+                    label = "advisory"
+                else:
+                    label = "refusal"
+                print(
+                    f"ergane spec validate — {label}: [{finding.layer}] {finding.message}",
+                    file=sys.stderr,
+                )
+            if has_advisory and not has_refusal:
+                print(
+                    f"{spec_path}: frontmatter, work-graph derivation, persona registry, "
+                    "scenario coverage, prompt assembly and slice coverage all pass; "
+                    "see advisory above"
+                )
         else:
             print(
                 f"{spec_path}: frontmatter, work-graph derivation, persona registry, "
@@ -364,7 +381,7 @@ def _validate_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    return EXIT_USER if findings else EXIT_OK
+    return EXIT_USER if has_refusal else EXIT_OK
 
 
 def _check_frontmatter(spec_dir: Path, epic_id: str, findings: list[_ValidateFinding]) -> None:
@@ -489,5 +506,6 @@ def _check_scenario_coverage(
             _ValidateFinding(
                 "scenario_coverage",
                 f"acceptance scenarios with no task reference: {', '.join(uncovered)}",
+                severity="advisory",
             )
         )
