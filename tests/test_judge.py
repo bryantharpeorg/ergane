@@ -422,8 +422,12 @@ def test_a_node_with_no_scenarios_has_nothing_for_the_judge_to_score() -> None:
 # --- diff bounds --------------------------------------------------------------
 
 
-def test_the_input_cap_is_60_kib() -> None:
-    assert DIFF_INPUT_LIMIT == 60 * 1024
+def test_the_input_cap_is_64_kib() -> None:
+    # A pin, not a tautology: moving the cap must be a decision that edits
+    # this line in the same diff. 60 KiB → 64 KiB was decided 2026-08-17
+    # (operator-directed; the 60 KiB comfort margin's first false positive
+    # refused a fully-green story four times at 61,725 bytes).
+    assert DIFF_INPUT_LIMIT == 64 * 1024
 
 
 def test_a_diff_under_the_cap_arrives_whole() -> None:
