@@ -39,7 +39,9 @@ definitions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import hashlib
+import json
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Sequence
 
@@ -438,6 +440,10 @@ class VerificationResult:
     `provenance` is None for agent-completed work and a non-empty string for
     externally-completed work (035-US1, FR-005). It is stored in the evidence
     row so the record of *who* completed the work travels with the verdict.
+
+    `loop_digest` and `loop_summary` are None for rows written before 023 and
+    non-None afterwards; they record the resolved loop configuration so a PASS is
+    a claim relative to a named definition of verified (FR-010, SC-006).
     """
 
     epic_id: str
@@ -455,6 +461,8 @@ class VerificationResult:
     started_at: str
     finished_at: str
     provenance: str | None = None
+    loop_digest: str | None = None
+    loop_summary: str | None = None
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:
@@ -519,6 +527,8 @@ def compose_result(
     started_at: str,
     finished_at: str,
     criteria_drift: bool = False,
+    loop_digest: str | None = None,
+    loop_summary: str | None = None,
 ) -> VerificationResult:
     """Turn one attempt's evidence into the verdict downstream edges read.
 
@@ -536,10 +546,9 @@ def compose_result(
     under it (R8) and never moves the verdict, or the flag would silently become
     a second, quieter gate.
 
-    Everything else is copied verbatim. The retry prompt and the escalation
-    summary are built from the same evidence this writes to the store (FR-006,
-    SC-004, SC-005), so a bundle edited on its way through would make the record
-    disagree with the prompt.
+    `loop_digest` and `loop_summary` ride through untouched when supplied; callers
+    that do not yet know the resolved loop leave them as None, which keeps pre-023
+    payloads replaying identically.
     """
     judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
     judge_accepts = (
@@ -562,7 +571,62 @@ def compose_result(
         spec_ref=spec_ref,
         started_at=started_at,
         finished_at=finished_at,
+        loop_digest=loop_digest,
+        loop_summary=loop_summary,
     )
+
+
+#: Ladder fields that participate in the loop digest (FR-010).
+_LOOP_DIGEST_LADDER_FIELDS = (
+    "max_attempts",
+    "max_judge_retries",
+    "debugger_cycles",
+    "escalation_timeout_s",
+)
+
+
+def loop_digest(
+    config: VerificationConfig,
+    verify_order: tuple[str, ...],
+    gate_names: tuple[str, ...],
+    *,
+    schema_version: int = 1,
+) -> str:
+    """Stable SHA-256 identifier of a resolved loop configuration (FR-010).
+
+    Covers schema version, gate names in declared order, verify order, ladder
+    caps, and whether the judge is present. Same declared loop -> same digest,
+    regardless of epic or attempt.
+    """
+    data = {
+        "schema_version": schema_version,
+        "gate_names": list(gate_names),
+        "verify_order": list(verify_order),
+        "ladder": {
+            field: getattr(config, field) for field in _LOOP_DIGEST_LADDER_FIELDS
+        },
+        "judge_present": "judge" in verify_order,
+    }
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def loop_summary(
+    config: VerificationConfig,
+    verify_order: tuple[str, ...],
+    gate_names: tuple[str, ...],
+    *,
+    schema_version: int = 1,
+) -> str:
+    """Human-readable one-line summary of the resolved loop (FR-010)."""
+    steps = ", ".join(verify_order)
+    ladder = (
+        f"attempts={config.max_attempts}, judge_retries={config.max_judge_retries}, "
+        f"debugger={config.debugger_cycles}, deadline={config.escalation_timeout_s}s"
+    )
+    judge = "judge present" if "judge" in verify_order else "no judge"
+    gates = ", ".join(gate_names) if gate_names else "no gates"
+    return f"schema v{schema_version}; gates [{gates}]; order [{steps}]; {ladder}; {judge}"
 
 
 # Ladder entities (pure) -----------------------------------------------------
@@ -581,6 +645,13 @@ class VerificationConfig:
     debugger_cycles: int = 1
     gate_timeout_s: int = 600
     escalation_timeout_s: int = 3600
+
+
+#: The digest of the unconfigured default loop: v1, default gate names, default
+#: order, default ladder, judge present. Stored explicitly for v1 repos (US4-S3).
+DEFAULT_LOOP_DIGEST = loop_digest(
+    VerificationConfig(), ("gates", "diff_check", "judge"), ("test", "lint", "typecheck")
+)
 
 
 @dataclass(frozen=True)

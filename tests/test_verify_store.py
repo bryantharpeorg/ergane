@@ -112,6 +112,9 @@ EXPECTED_RESULT_COLUMNS: list[tuple[str, str, int, int]] = [
     ("finished_at", "TEXT", 1, 0),
     # 035-US1: non-NULL for externally-completed work, otherwise NULL.
     ("provenance", "TEXT", 0, 0),
+    # 023-US4: loop configuration carried with every verdict; NULL for pre-023 rows.
+    ("loop_digest", "TEXT", 0, 0),
+    ("loop_summary", "TEXT", 0, 0),
 ]
 
 EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
@@ -395,11 +398,12 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 5 since 035-US3 added the `external_completion_counts` table. The literal
-    # is here on purpose: a bump is a claim that every existing store has a
-    # migration path, and `tests/test_escalation_record.py` is where that claim
-    # is checked against a store built in the previous shape.
-    assert SCHEMA_VERSION == 5
+    # 6 since 023-US4 added `loop_digest` and `loop_summary` to
+    # `verification_results`. The literal is here on purpose: a bump is a claim
+    # that every existing store has a migration path, and
+    # `tests/test_escalation_record.py` is where that claim is checked against a
+    # store built in the previous shape.
+    assert SCHEMA_VERSION == 6
     assert versions == [SCHEMA_VERSION]
 
 
@@ -1141,13 +1145,13 @@ def _us4_loop_summary(
 ) -> str:
     """Human-readable one-line summary of the resolved loop."""
     steps = ", ".join(verify_order)
-    caps = (
+    ladder = (
         f"attempts={config.max_attempts}, judge_retries={config.max_judge_retries}, "
         f"debugger={config.debugger_cycles}, deadline={config.escalation_timeout_s}s"
     )
     judge = "judge present" if "judge" in verify_order else "no judge"
     gates = ", ".join(gate_names) if gate_names else "no gates"
-    return f"schema v{schema_version}; gates [{gates}]; order [{steps}]; {caps}; {judge}"
+    return f"schema v{schema_version}; gates [{gates}]; order [{steps}]; {ladder}; {judge}"
 
 
 #: v1 repo with default gate names, default verify order, default VerificationConfig.
@@ -1201,6 +1205,9 @@ def _us4_result(
         "spec_ref": "023-composable-verification/US4",
         "started_at": "2026-08-17T10:00:00Z",
         "finished_at": "2026-08-17T10:03:00Z",
+        "verdict": OverallVerdict.PASS,
+        "judge_unavailable": False,
+        "criteria_drift": False,
         "loop_digest": _us4_loop_digest(
             config, verify_order, gate_names, schema_version=schema_version
         ),
@@ -1226,16 +1233,14 @@ def test_digest_is_stable_across_attempts_under_same_loop(
     upsert_result(store, first)
     upsert_result(store, second)
 
-    rows = [
-        row["loop_digest"]
-        for row in store.execute(
-            "SELECT loop_digest FROM verification_results WHERE epic_id = '023-us4' "
-            "ORDER BY attempt"
-        ).fetchall()
-    ]
+    rows = store.execute(
+        "SELECT loop_digest FROM verification_results WHERE epic_id = '023-us4' "
+        "ORDER BY attempt"
+    ).fetchall()
+    digests = [row[0] for row in rows]
 
-    assert rows[0] == rows[1]
-    assert rows[0] == _US4_DEFAULT_LOOP_DIGEST
+    assert digests[0] == digests[1]
+    assert digests[0] == _US4_DEFAULT_LOOP_DIGEST
 
 
 def test_digest_differs_across_different_loops(store: sqlite3.Connection) -> None:
@@ -1263,12 +1268,10 @@ def test_digest_differs_across_different_loops(store: sqlite3.Connection) -> Non
     upsert_result(store, reordered)
     upsert_result(store, judgeless)
 
-    digests = {
-        row["epic_id"]: row["loop_digest"]
-        for row in store.execute(
-            "SELECT epic_id, loop_digest FROM verification_results ORDER BY id"
-        ).fetchall()
-    }
+    rows = store.execute(
+        "SELECT epic_id, loop_digest FROM verification_results ORDER BY id"
+    ).fetchall()
+    digests = {row[0]: row[1] for row in rows}
 
     assert len(set(digests.values())) == 3
 
@@ -1285,10 +1288,10 @@ def test_unconfigured_default_loop_digest_is_named_constant(
 
     upsert_result(store, result)
 
-    row = result_row(store, epic_id="023-us4", node_id="node-a", attempt=1, form="PHASE")
-    assert row["loop_digest"] == _US4_DEFAULT_LOOP_DIGEST
-    assert "schema v1" in row["loop_summary"]
-    assert "judge present" in row["loop_summary"]
+    raw = result_row(store, epic_id="023-us4", node_id="node-a", attempt=1, form="PHASE")
+    assert raw["loop_digest"] == _US4_DEFAULT_LOOP_DIGEST
+    assert "schema v1" in raw["loop_summary"]
+    assert "judge present" in raw["loop_summary"]
 
 
 def test_pre_023_rows_read_loop_digest_as_absent(store: sqlite3.Connection) -> None:

@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS verification_results (
     finished_at       TEXT    NOT NULL,
     -- 035-US1: non-NULL for externally-completed work, otherwise NULL.
     provenance        TEXT,
+    -- 023-US4: resolved loop configuration, carried with every verdict (FR-010).
+    -- NULL for rows written before this feature; additive, never backfilled.
+    loop_digest       TEXT,
+    loop_summary      TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
