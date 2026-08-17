@@ -130,6 +130,8 @@ def _no_ambient_temporal(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.delenv("TEMPORAL_ADDRESS", raising=False)
     monkeypatch.delenv("TEMPORAL_NAMESPACE", raising=False)
+    if not os.environ.get("USER"):
+        monkeypatch.setenv("USER", "ergane-test")
 
 
 # ---------------------------------------------------------------------------

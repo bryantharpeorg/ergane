@@ -52,6 +52,17 @@ def _free_port() -> int:
     return port
 
 
+@pytest.fixture(autouse=True)
+def _ensure_user_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The downloaded Temporal dev server binary calls os/user.Current, which
+    requires cgo or ``$USER``.  In minimal containers / sandbox sessions the
+    variable is unset and the server exits during startup.  Setting a harmless
+    placeholder is enough; the value is not used for permissions.
+    """
+    if not os.environ.get("USER"):
+        monkeypatch.setenv("USER", "ergane-test")
+
+
 @pytest.fixture
 def layout(tmp_path: Path) -> Iterator[InstallLayout]:
     """An installation whose every root is under `tmp_path`."""
