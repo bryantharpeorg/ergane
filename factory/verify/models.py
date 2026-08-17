@@ -546,9 +546,11 @@ def compose_result(
     under it (R8) and never moves the verdict, or the flag would silently become
     a second, quieter gate.
 
-    `loop_digest` and `loop_summary` ride through untouched when supplied; callers
-    that do not yet know the resolved loop leave them as None, which keeps pre-023
-    payloads replaying identically.
+    `loop_digest` and `loop_summary` default to the unconfigured loop so a v1
+    repo records the explicit default rather than an absent field (US4-S3).
+    Callers that know the resolved loop override them; None is intentionally not
+    the default here. Pre-023 replay safety is preserved because the row fields
+    are additive and read back as None when missing from the store.
     """
     judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
     judge_accepts = (
@@ -571,8 +573,8 @@ def compose_result(
         spec_ref=spec_ref,
         started_at=started_at,
         finished_at=finished_at,
-        loop_digest=loop_digest,
-        loop_summary=loop_summary,
+        loop_digest=loop_digest if loop_digest is not None else DEFAULT_LOOP_DIGEST,
+        loop_summary=loop_summary if loop_summary is not None else DEFAULT_LOOP_SUMMARY,
     )
 
 
@@ -650,6 +652,13 @@ class VerificationConfig:
 #: The digest of the unconfigured default loop: v1, default gate names, default
 #: order, default ladder, judge present. Stored explicitly for v1 repos (US4-S3).
 DEFAULT_LOOP_DIGEST = loop_digest(
+    VerificationConfig(), ("gates", "diff_check", "judge"), ("test", "lint", "typecheck")
+)
+
+
+#: The summary that goes with `DEFAULT_LOOP_DIGEST`: v1, default gate names,
+#: default order, default ladder, judge present.
+DEFAULT_LOOP_SUMMARY = loop_summary(
     VerificationConfig(), ("gates", "diff_check", "judge"), ("test", "lint", "typecheck")
 )
 

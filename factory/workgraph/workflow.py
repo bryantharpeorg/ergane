@@ -220,6 +220,8 @@ with workflow.unsafe.imports_passed_through():
         VerificationResult,
         compose_result,
         judge_required,
+        loop_digest,
+        loop_summary,
     )
     from factory.workgraph.adapter import home_path
     from factory.workgraph.models import (
@@ -1734,6 +1736,10 @@ class EpicWorkflow:
                 request, node, criteria, diff_text, attempt, judge, prior_feedback
             )
 
+        gate_names = tuple(r.name for r in gate_results)
+        resolved_digest = loop_digest(config, request.verify_order, gate_names)
+        resolved_summary = loop_summary(config, request.verify_order, gate_names)
+
         result = compose_result(
             epic_id=request.graph.epic_id,
             node_id=node.id,
@@ -1746,6 +1752,8 @@ class EpicWorkflow:
             spec_ref=node.spec_ref,
             started_at=started_at,
             finished_at=_now(),
+            loop_digest=resolved_digest,
+            loop_summary=resolved_summary,
         )
         if provenance is not None:
             result = replace(result, provenance=provenance)

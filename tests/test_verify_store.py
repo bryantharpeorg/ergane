@@ -51,6 +51,8 @@ from typing import Any, Iterator
 import pytest
 
 from factory.verify.models import (
+    DEFAULT_LOOP_DIGEST,
+    DEFAULT_LOOP_SUMMARY,
     EscalationChoice,
     EscalationRecord,
     GateResult,
@@ -1290,6 +1292,53 @@ def test_unconfigured_default_loop_digest_is_named_constant(
 
     raw = result_row(store, epic_id="023-us4", node_id="node-a", attempt=1, form="PHASE")
     assert raw["loop_digest"] == _US4_DEFAULT_LOOP_DIGEST
+    assert "schema v1" in raw["loop_summary"]
+    assert "judge present" in raw["loop_summary"]
+
+
+def test_v1_unconfigured_repo_records_default_loop_from_compose_result(
+    store: sqlite3.Connection,
+) -> None:
+    """A caller that does not pass loop fields still records the explicit default.
+
+    US4-S3: the unconfigured default is a described state, never an absent field.
+    This test exercises the production compose path rather than constructing a
+    result manually, so it proves the default is applied automatically.
+    """
+    result = compose_result(
+        epic_id="v1-default",
+        node_id="node-a",
+        attempt=1,
+        form=VerificationForm.PHASE,
+        gate_results=[
+            GateResult(
+                name="test",
+                command="echo pass",
+                status=GateStatus.PASS,
+                exit_code=0,
+                duration_s=1.0,
+                output_tail="ok",
+            )
+        ],
+        output_check=OutputCheck(
+            write_scope="worktree",
+            has_diff=True,
+            expected_artifacts=[],
+            artifacts_present=None,
+            passed=True,
+        ),
+        judge=None,
+        criteria_sha256="a" * 64,
+        spec_ref="v1/US1",
+        started_at="2026-08-17T10:00:00Z",
+        finished_at="2026-08-17T10:03:00Z",
+    )
+
+    upsert_result(store, result)
+
+    raw = result_row(store, epic_id="v1-default", node_id="node-a", attempt=1, form="PHASE")
+    assert raw["loop_digest"] == DEFAULT_LOOP_DIGEST
+    assert raw["loop_summary"] == DEFAULT_LOOP_SUMMARY
     assert "schema v1" in raw["loop_summary"]
     assert "judge present" in raw["loop_summary"]
 
