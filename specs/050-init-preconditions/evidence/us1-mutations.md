@@ -286,6 +286,35 @@ One schedule, the operator's, still paused. The suite created nothing — which 
 the same sentence 034's evidence ends with, and the reason it is repeated is
 that the run in between those two sentences is the one that created five.
 
+### One flake, seen once, recorded rather than hidden
+
+A confirmation run of the whole suite taken afterwards failed one test:
+
+```
+FAILED tests/test_interpreter.py::test_a_question_attempt_salvages_and_preserves_committed_work
+1 failed, 3150 passed, 44 skipped, 6 warnings in 330.30s (0:05:30)
+```
+
+The two whole-suite runs were over **identical code** — only the markdown in
+this directory differed between them — so nothing in this diff can be what
+changed the answer. It passes alone three times and as a module twice:
+
+```
+$ uv run pytest -q tests/test_interpreter.py::test_a_question_attempt_salvages_and_preserves_committed_work
+1 passed in 0.91s / 1 passed in 0.34s / 1 passed in 0.33s
+$ uv run pytest -q tests/test_interpreter.py
+90 passed in 90.85s   …then…   90 passed in 92.75s
+$ uptime
+ 02:56:44 up  2:28,  7 users,  load average: 16.55, 15.89, 11.11
+```
+
+It drives a real `WorkflowEnvironment` and waits on a status predicate, and its
+own docstring records a previous race in the same place that CI hit on `53eae60`
+and that cost `016/us1` an attempt. A load average of 16 on a host running three
+other nodes plus two whole-suite runs is the likeliest reading. Nothing in this
+diff is reachable from the interpreter's salvage path, and it is written down
+rather than re-run until it is convenient.
+
 ## 6. The diff, measured the way the judge measures it
 
 Against the merge-base, not the moving tip, and through `size_refusal` rather
@@ -296,18 +325,18 @@ preamble the judge's prompt actually carries.
 $ git add -A && git diff --cached $(git merge-base HEAD origin/ergane-buildout)
 merge-base: 3e9cbde1d147d6667c2ff28f3e644bf56bb3a7a8
 
-measured as the judge measures : 55193 bytes
+measured as the judge measures : 56543 bytes
 DIFF_INPUT_LIMIT               : 61440 bytes
 size_refusal(diff_text)        : None
 
    18870  tests/test_init_schedule_precondition.py
-   16440  specs/050-init-preconditions/evidence/us1-mutations.md
+   17790  specs/050-init-preconditions/evidence/us1-mutations.md
    10540  specs/050-init-preconditions/evidence/us1-reproduction.md
     5372  factory/cli/init.py
     3687  tests/test_ergane_init_check.py
 ```
 
-`DIFF_INPUT_LIMIT` is imported rather than quoted. No refusal, with 6247 bytes
+`DIFF_INPUT_LIMIT` is imported rather than quoted. No refusal, with 4897 bytes
 of headroom. The production change is 5.4 KB of a 61 KB budget; the two evidence
 files SC-001 and SC-002 require are 27 KB of it, which is the cost of a judge
 that sees no terminal.
