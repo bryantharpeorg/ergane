@@ -434,6 +434,10 @@ class VerificationResult:
     scenarios). `judge_unavailable` marks the one PASS that was reached without
     judge agreement; `criteria_drift` marks a spec that changed under the node
     and flags the row without touching `verdict`.
+
+    `provenance` is None for agent-completed work and a non-empty string for
+    externally-completed work (035-US1, FR-005). It is stored in the evidence
+    row so the record of *who* completed the work travels with the verdict.
     """
 
     epic_id: str
@@ -450,6 +454,7 @@ class VerificationResult:
     spec_ref: str
     started_at: str
     finished_at: str
+    provenance: str | None = None
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:

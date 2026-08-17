@@ -87,7 +87,11 @@ from factory.verify.models import (
 #: assuming a fresh database — the first thing the factory does with a store is
 #: `SELECT` the escalation columns by name, and a deployment answering `no such
 #: column` would have lost the escalation channel outright.
-SCHEMA_VERSION = 3
+#:
+#: 4 (035-US1): `verification_results.provenance` and the
+#: `external_completion_signals` log. Provenance must travel with the mechanism,
+#: so the column is added by migration; the signal log is new.
+SCHEMA_VERSION = 4
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -138,6 +142,7 @@ CREATE TABLE IF NOT EXISTS verification_results (
     spec_ref          TEXT    NOT NULL CHECK (spec_ref <> ''),
     started_at        TEXT    NOT NULL,   -- ISO-8601 UTC
     finished_at       TEXT    NOT NULL,
+    provenance        TEXT,              -- 035-US1: non-NULL for externally-completed work
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
@@ -199,6 +204,22 @@ CREATE TABLE IF NOT EXISTS questions (
 
 CREATE INDEX IF NOT EXISTS idx_q_pending ON questions (resolution) WHERE resolution IS NULL;
 CREATE INDEX IF NOT EXISTS idx_q_node    ON questions (epic_id, node_id);
+
+-- 035-US1: every external-completion signal the workflow receives, accepted or
+-- refused. The signal is buffered by the workflow and validated at the ladder
+-- decision point, so this log records what happened rather than what was sent.
+CREATE TABLE IF NOT EXISTS external_completion_signals (
+    id          INTEGER PRIMARY KEY,
+    epic_id     TEXT    NOT NULL CHECK (epic_id <> ''),
+    node_id     TEXT    NOT NULL CHECK (node_id <> ''),
+    branch      TEXT    NOT NULL CHECK (branch <> ''),
+    provenance  TEXT    NOT NULL CHECK (provenance <> ''),
+    accepted    INTEGER NOT NULL DEFAULT 0 CHECK (accepted IN (0, 1)),
+    reason      TEXT,
+    recorded_at TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_extcomp_epic_node ON external_completion_signals (epic_id, node_id);
 """
 
 
@@ -296,6 +317,41 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "check_evidence TEXT NOT NULL DEFAULT '[]'"
         )
 
+    result_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(verification_results)")
+    }
+    if result_columns and "provenance" not in result_columns:
+        # 035-US1: provenance is NULL for every row written before this feature.
+        conn.execute(
+            "ALTER TABLE verification_results ADD COLUMN provenance TEXT"
+        )
+
+    extcomp_tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if extcomp_tables and "external_completion_signals" not in extcomp_tables:
+        # 035-US1: the refusal/acceptance log is a new table, not a column.
+        conn.execute(
+            """
+            CREATE TABLE external_completion_signals (
+                id          INTEGER PRIMARY KEY,
+                epic_id     TEXT    NOT NULL CHECK (epic_id <> ''),
+                node_id     TEXT    NOT NULL CHECK (node_id <> ''),
+                branch      TEXT    NOT NULL CHECK (branch <> ''),
+                provenance  TEXT    NOT NULL CHECK (provenance <> ''),
+                accepted    INTEGER NOT NULL DEFAULT 0 CHECK (accepted IN (0, 1)),
+                reason      TEXT,
+                recorded_at TEXT    NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX idx_extcomp_epic_node "
+            "ON external_completion_signals (epic_id, node_id)"
+        )
+
 
 # --- verification results ---------------------------------------------------
 
@@ -320,6 +376,7 @@ _RESULT_COLUMNS = (
     "spec_ref",
     "started_at",
     "finished_at",
+    "provenance",
 )
 
 #: A re-run overwrites every column except the four it matched on: the second
@@ -443,6 +500,7 @@ def _result_values(result: VerificationResult) -> dict[str, Any]:
         "spec_ref": result.spec_ref,
         "started_at": result.started_at,
         "finished_at": result.finished_at,
+        "provenance": result.provenance,
     }
 
 
@@ -468,6 +526,7 @@ def _result_from_row(row: tuple[Any, ...]) -> VerificationResult:
         spec_ref=values["spec_ref"],
         started_at=values["started_at"],
         finished_at=values["finished_at"],
+        provenance=values["provenance"],
     )
 
 
@@ -1102,3 +1161,53 @@ def _question_from_row(row: tuple[Any, ...]) -> QuestionRecord:
         answer_text=values["answer_text"],
         resolved_at=values["resolved_at"],
     )
+
+
+# --- external completion signals (035-US1) ----------------------------------
+
+_EXTERNAL_COMPLETION_COLUMNS = (
+    "epic_id",
+    "node_id",
+    "branch",
+    "provenance",
+    "accepted",
+    "reason",
+    "recorded_at",
+)
+
+_INSERT_EXTERNAL_COMPLETION_SQL = (
+    f"INSERT INTO external_completion_signals ({', '.join(_EXTERNAL_COMPLETION_COLUMNS)}) "
+    f"VALUES ({', '.join(f':{column}' for column in _EXTERNAL_COMPLETION_COLUMNS)})"
+)
+
+
+def record_external_completion_signal(
+    conn: sqlite3.Connection,
+    *,
+    epic_id: str,
+    node_id: str,
+    branch: str,
+    provenance: str,
+    accepted: bool,
+    reason: str | None,
+    recorded_at: str,
+) -> int:
+    """Log one external-completion signal decision, returning its row id.
+
+    Both acceptances and refusals are recorded so the operator can audit what
+    happened. A refusal carries a reason; an acceptance may leave it NULL.
+    """
+    conn.execute(
+        _INSERT_EXTERNAL_COMPLETION_SQL,
+        {
+            "epic_id": epic_id,
+            "node_id": node_id,
+            "branch": branch,
+            "provenance": provenance,
+            "accepted": int(accepted),
+            "reason": reason,
+            "recorded_at": recorded_at,
+        },
+    )
+    conn.commit()
+    return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])

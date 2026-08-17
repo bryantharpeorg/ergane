@@ -160,6 +160,7 @@ with workflow.unsafe.imports_passed_through():
         DEFAULT_CHOICES,
         QUESTION_TIMEOUT_S,
     )
+    from factory.notify.service import EXTERNAL_COMPLETION_SIGNAL
     from factory.escalation.question import (
         QuestionRequest,
         QuestionWorkflow,
@@ -180,12 +181,14 @@ with workflow.unsafe.imports_passed_through():
         JUDGE_UNAVAILABLE,
         CheckOutputInput,
         DetectQuestionInput,
+        RecordExternalCompletionInput,
         RecordVerificationInput,
         RunGatesInput,
         RunJudgeInput,
         SnapshotCriteriaInput,
         check_output,
         detect_operator_question_activity,
+        record_external_completion,
         record_verification,
         run_gates,
         run_judge,
@@ -508,6 +511,9 @@ class EpicWorkflow:
         self._paused = False
         self._kill_requested = False
 
+        #: 035-US1: buffered operator hand-backs `(node_id, branch, provenance)`.
+        self._external_completions: list[tuple[str, str, str]] = []
+
     # --- signals and queries -------------------------------------------------
 
     @workflow.signal
@@ -542,6 +548,13 @@ class EpicWorkflow:
         change their mind.
         """
         self._kill_requested = True
+
+    @workflow.signal(name=EXTERNAL_COMPLETION_SIGNAL)
+    def complete_node_externally(
+        self, node_id: str, branch: str, provenance: str
+    ) -> None:
+        """Buffer an operator hand-back. Validation happens at the ladder decision."""
+        self._external_completions.append((node_id, branch, provenance))
 
     @workflow.query
     def epic_status(self) -> EpicStatus:
@@ -1118,6 +1131,11 @@ class EpicWorkflow:
         record.prepared = prepared
         record.criteria = criteria
 
+        # 035-US1: a PENDING node has no ladder outcome; any buffered signal is refused.
+        await self._refuse_buffered_external_completions(
+            graph.epic_id, node.id, reason="node ladder has not run"
+        )
+
         results: list[VerificationResult] = []
         evidence: list[AttemptEvidence] = []
         persona = node.persona
@@ -1390,24 +1408,38 @@ class EpicWorkflow:
                     record.history, request.config, escalations=record.escalations
                 )
                 if action == NextAction.ESCALATE:
-                    escalation = await self._escalate(graph, node, results, request.config)
-                    record.escalations.append(escalation.resolution)
-                    if escalation.resolution == EscalationChoice.PAUSE_EPIC:
-                        # The press the ladder can only half answer: it ends the
-                        # node (as every non-grant does), and the epic-level half —
-                        # park rather than abandon, and stop dispatching — is this
-                        # component's to supply (contracts/workflow.md).
-                        parked = True
-                        self._paused = True
-                    action = next_action(
-                        record.history, request.config, escalations=record.escalations
+                    # 035-US1: the ladder is exhausted. Offer the operator hand-back
+                    # precedence over paging: if a completion is buffered, verify it.
+                    external_action = await self._apply_external_completion_if_present(
+                        record, request, resolved, criteria, prepared, judge, results, evidence, termination
                     )
-                    if action == NextAction.ESCALATE:
-                        # The grant bought an attempt the caps cannot spend — the
-                        # debugger has had its turn and the budget is gone. Paging
-                        # again would ask the same question forever, so the node ends
-                        # where the operator was already told it might.
-                        action = NextAction.KILLED
+                    if external_action is not None:
+                        action = external_action
+                    else:
+                        escalation = await self._escalate(graph, node, results, request.config)
+                        record.escalations.append(escalation.resolution)
+                        if escalation.resolution == EscalationChoice.PAUSE_EPIC:
+                            # The press the ladder can only half answer: it ends the
+                            # node (as every non-grant does), and the epic-level half —
+                            # park rather than abandon, and stop dispatching — is this
+                            # component's to supply (contracts/workflow.md).
+                            parked = True
+                            self._paused = True
+                        action = next_action(
+                            record.history, request.config, escalations=record.escalations
+                        )
+                        if action == NextAction.ESCALATE:
+                            # 035-US1: one more hand-back chance before KILLED.
+                            external_action = await self._apply_external_completion_if_present(
+                                record, request, resolved, criteria, prepared, judge, results, evidence, termination
+                            )
+                            action = external_action if external_action is not None else NextAction.KILLED
+
+                # 035-US1: non-exhausted nodes refuse any buffered signal.
+                if action not in _TERMINAL_ACTIONS:
+                    await self._refuse_buffered_external_completions(
+                        graph.epic_id, node.id, reason="node ladder not exhausted"
+                    )
 
                 if action in _TERMINAL_ACTIONS:
                     break
@@ -1444,6 +1476,11 @@ class EpicWorkflow:
                         teardown_done = True
                     else:
                         await self._teardown(lease, termination, record.last_snapshot)
+
+        # 035-US1: any unconsumed buffered signal is refused once the node is terminal.
+        await self._refuse_buffered_external_completions(
+            graph.epic_id, node.id, reason="node already terminal"
+        )
 
         if action == NextAction.PASSED:
             # Verified — the fact FR-009's `depends_on` edges wait on, and the
@@ -1634,6 +1671,8 @@ class EpicWorkflow:
         attempt: int,
         judge: ResolvedPersona,
         prior_feedback: str | None,
+        *,
+        provenance: str | None = None,
     ) -> tuple[VerificationResult, JudgeVerdict | None]:
         """Gates, then output, then — only if it can still matter — the judge.
 
@@ -1647,7 +1686,8 @@ class EpicWorkflow:
         unreachable judge becomes a PASS carrying `judge_unavailable` rather than
         a third kind of answer. The row lands before anything acts on it
         (invariant 3).
-        """
+
+        `provenance` is recorded for externally-completed work (035-US1)."""
         node = resolved.node
         config = request.config
         started_at = _now()
@@ -1699,6 +1739,8 @@ class EpicWorkflow:
             started_at=started_at,
             finished_at=_now(),
         )
+        if provenance is not None:
+            result = replace(result, provenance=provenance)
 
         recorded = await workflow.execute_activity(
             record_verification,
@@ -1781,6 +1823,104 @@ class EpicWorkflow:
 
         assert verdict is not None  # the range above is never empty
         return verdict
+
+    def _pop_external_completion(self, node_id: str) -> tuple[str, str] | None:
+        """Remove and return the first buffered completion for `node_id`, if any."""
+        for i, (nid, branch, provenance) in enumerate(self._external_completions):
+            if nid == node_id:
+                del self._external_completions[i]
+                return (branch, provenance)
+        return None
+
+    async def _record_external_completion(
+        self,
+        epic_id: str,
+        node_id: str,
+        branch: str,
+        provenance: str,
+        accepted: bool,
+        reason: str | None,
+    ) -> None:
+        await workflow.execute_activity(
+            record_external_completion,
+            RecordExternalCompletionInput(
+                epic_id=epic_id, node_id=node_id, branch=branch,
+                provenance=provenance, accepted=accepted, reason=reason,
+            ),
+            **_FAST,
+        )
+
+    async def _refuse_buffered_external_completions(
+        self, epic_id: str, node_id: str, reason: str
+    ) -> None:
+        """Refuse every buffered completion for `node_id`, logging each one."""
+        while True:
+            completion = self._pop_external_completion(node_id)
+            if completion is None:
+                return
+            branch, provenance = completion
+            await self._record_external_completion(
+                epic_id,
+                node_id,
+                branch,
+                provenance,
+                accepted=False,
+                reason=reason,
+            )
+
+    async def _apply_external_completion_if_present(
+        self,
+        record: NodeRecord,
+        request: EpicInput,
+        resolved: ResolvedNode,
+        criteria: CriteriaSet,
+        prepared: PreparedWorktree,
+        judge: ResolvedPersona,
+        results: list[VerificationResult],
+        evidence: list[Any],
+        termination: Termination,
+    ) -> NextAction | None:
+        """If a completion signal is buffered for this node, verify it and return the terminal action.
+
+        The ladder has just returned ESCALATE, so the node is exhausted. The
+        operator's branch becomes the node's result; a new attempt number is issued
+        for the external verification row. The path rejoins the normal VERIFYING
+        flow: gates, judge, PR and queue all run unchanged.
+        """
+        completion = self._pop_external_completion(record.node_id)
+        if completion is None:
+            return None
+
+        branch, provenance = completion
+        record.branch = branch
+        record.attempt += 1
+
+        result, verdict = await self._verify(
+            request,
+            resolved,
+            criteria,
+            prepared,
+            record.attempt,
+            judge,
+            None,
+            provenance=provenance,
+        )
+
+        # Keep evidence lists and ladder history consistent with the normal loop.
+        results.append(result)
+        evidence.append(AttemptEvidence(termination=termination, result=result))
+        record.history.append(
+            AttemptRecord(
+                attempt=record.attempt,
+                persona=resolved.node.persona,
+                verdict=result.verdict,
+                judge_outcome=None if result.judge is None else result.judge.outcome,
+            )
+        )
+        await self._record_external_completion(
+            request.graph.epic_id, record.node_id, branch, provenance, accepted=True, reason=None
+        )
+        return NextAction.PASSED if result.verdict == OverallVerdict.PASS else NextAction.KILLED
 
     async def _score(
         self,

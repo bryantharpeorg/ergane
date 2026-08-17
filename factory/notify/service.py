@@ -94,6 +94,11 @@ SIGNAL_NAME = "escalation_resolved"
 #: prompt verbatim (FR-003).
 QUESTION_SIGNAL_NAME = "question_answered"
 
+#: 035-US1: the operator hand-back signal, sent as
+#: `complete_node_externally(node_id, branch, provenance)`. It is accepted only
+#: when the node's ladder is exhausted; otherwise it is refused and recorded.
+EXTERNAL_COMPLETION_SIGNAL = "complete_node_externally"
+
 #: Read inside this process only, never placed in a payload or a log line — the
 #: master-key discipline of 001 FR-009, extended to the bot token.
 BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
