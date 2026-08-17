@@ -739,10 +739,11 @@ def test_the_probe_prints_its_verdict_on_stdout(
 #
 #     3182 passed, 44 skipped, 6 warnings in 315.20s (0:05:15)
 #
-# The 42 are this file's 36 tests plus 6 parametrised sweep cases for the one
-# module this story adds, each enumerated by diffing collected node ids between
-# the two commits rather than inferred by subtraction. Skips are unchanged at
-# 44: no test here fails to run. Warning counts are not quoted — a warm cache
+# The 42 are this story's 36 tests — 32 here, and four on the probe's unit in
+# tests/test_supervision_units.py — plus 6 parametrised sweep cases for the one
+# module it adds, each enumerated by diffing collected node ids between the two
+# commits rather than inferred by subtraction. Skips are unchanged at 44: no
+# test here fails to run. Warning counts are not quoted — a warm cache
 # suppresses compile-time warnings, so that number describes the cache.
 #
 # What is *not* measured, disclosed rather than implied: no probe ever ran
