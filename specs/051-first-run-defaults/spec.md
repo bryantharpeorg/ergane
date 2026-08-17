@@ -1,5 +1,30 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/051-first-run-defaults --default-branch ergane-buildout` observed both
+# stories in git. Each passed the real bwrap boundary gate and an LLM judge on a
+# diff that fit whole, judged on `ollama-cloud/glm-5.2` through the operator's
+# own proxy: US1 5 of 5 at 46,058 bytes, US2 4 of 4 at 33,562.
+#
+# Two things this epic proved that its own spec had wrong:
+#
+# SC-001's literal reproduction cannot pass, and no implementation could make
+# it. `git init . && ergane init` with no commit produces a repository with no
+# refs at all, so the landing_branch check fails whatever the interview offers.
+# That case is governed by US1-S3/FR-002 -- offer the literal, complete, exit 0
+# -- and it does. The committed transcript covers both shapes rather than the
+# one that flatters the story.
+#
+# "Flipping the default moves nothing that runs" was true of the worker and
+# FALSE of the gate. `factory/verify/gates.py:96` is a strict env allowlist, so
+# TEMPORAL_NAMESPACE never reaches a gate command, and `:495` does not unshare
+# the network -- so before US2, `tests/test_live_capacity.py` dialled the
+# production `factory` namespace from inside a gate sandbox. After it, the
+# namespace does not exist and the SDK's heartbeat loop retried NOT_FOUND, so a
+# suite HUNG rather than failing. US2 moved that failure back into the guard as
+# a declared scope addition; without it the story could not pass its own gate.
+# That is also where the probe workflows found running on the production
+# namespace for up to fourteen hours came from.
 # Drafted 2026-08-16 by an operator session, from two findings produced the same
 # afternoon by walking the portability path on a machine that had never seen this
 # project: a Debian 13 container, Python 3.12, git 2.47, the wheel from

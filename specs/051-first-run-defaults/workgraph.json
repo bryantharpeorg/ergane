@@ -1,0 +1,44 @@
+{
+  "epic_id": "051-first-run-defaults",
+  "feature": "051-first-run-defaults",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "051-first-run-defaults:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-010"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "051-first-run-defaults:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-011",
+        "FR-012"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}
