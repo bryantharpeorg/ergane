@@ -40,10 +40,11 @@ module lands, every test here fails at import.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -60,8 +61,10 @@ from factory.verify.models import (
     OutputCheck,
     OverallVerdict,
     QuestionRecord,
+    VerificationConfig,
     VerificationForm,
     VerificationResult,
+    compose_result,
 )
 from factory.verify.store import (
     ANSWERED,
@@ -1100,3 +1103,217 @@ def test_find_pending_question_by_attempt_picks_the_newest_pending_row(
         store, epic_id="epic-008", node_id="us1", attempt=1
     )
     assert found is not None and found.question_id == "ferryffffff"
+
+
+# --- 023-US4: loop digest and summary on the evidence row --------------------
+
+
+def _us4_loop_digest(
+    config: VerificationConfig,
+    verify_order: tuple[str, ...],
+    gate_names: tuple[str, ...],
+    *,
+    schema_version: int = 1,
+) -> str:
+    """SHA-256 of the canonical loop configuration (FR-010)."""
+    data = {
+        "schema_version": schema_version,
+        "gate_names": list(gate_names),
+        "verify_order": list(verify_order),
+        "ladder": {
+            k: v
+            for k, v in asdict(config).items()
+            if k in ("max_attempts", "max_judge_retries", "debugger_cycles", "escalation_timeout_s")
+        },
+        "judge_present": "judge" in verify_order,
+    }
+    return hashlib.sha256(
+        json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _us4_loop_summary(
+    config: VerificationConfig,
+    verify_order: tuple[str, ...],
+    gate_names: tuple[str, ...],
+    *,
+    schema_version: int = 1,
+) -> str:
+    """Human-readable one-line summary of the resolved loop."""
+    steps = ", ".join(verify_order)
+    caps = (
+        f"attempts={config.max_attempts}, judge_retries={config.max_judge_retries}, "
+        f"debugger={config.debugger_cycles}, deadline={config.escalation_timeout_s}s"
+    )
+    judge = "judge present" if "judge" in verify_order else "no judge"
+    gates = ", ".join(gate_names) if gate_names else "no gates"
+    return f"schema v{schema_version}; gates [{gates}]; order [{steps}]; {caps}; {judge}"
+
+
+#: v1 repo with default gate names, default verify order, default VerificationConfig.
+_US4_DEFAULT_LOOP_DIGEST = _us4_loop_digest(
+    VerificationConfig(), ("gates", "diff_check", "judge"), ("test", "lint", "typecheck")
+)
+
+
+def _us4_result(
+    config: VerificationConfig,
+    verify_order: tuple[str, ...],
+    gate_names: tuple[str, ...],
+    *,
+    schema_version: int = 1,
+    attempt: int = 1,
+    **overrides: Any,
+) -> VerificationResult:
+    """A passing result carrying the loop digest/summary for the given config."""
+    fields: dict[str, Any] = {
+        "epic_id": "023-us4",
+        "node_id": "node-a",
+        "attempt": attempt,
+        "form": VerificationForm.PHASE,
+        "gate_results": [
+            GateResult(
+                name=name,
+                command="echo pass",
+                status=GateStatus.PASS,
+                exit_code=0,
+                duration_s=1.0,
+                output_tail=f"{name} passed",
+            )
+            for name in gate_names
+        ],
+        "output_check": OutputCheck(
+            write_scope="worktree",
+            has_diff=True,
+            expected_artifacts=[],
+            artifacts_present=None,
+            passed=True,
+        ),
+        "judge": JudgeVerdict(
+            outcome=JudgeOutcome.PASS,
+            findings=[],
+            feedback="ok",
+            judge_attempt=1,
+            truncated_input=False,
+            model_alias="judge",
+        ),
+        "criteria_sha256": "a" * 64,
+        "spec_ref": "023-composable-verification/US4",
+        "started_at": "2026-08-17T10:00:00Z",
+        "finished_at": "2026-08-17T10:03:00Z",
+        "loop_digest": _us4_loop_digest(
+            config, verify_order, gate_names, schema_version=schema_version
+        ),
+        "loop_summary": _us4_loop_summary(
+            config, verify_order, gate_names, schema_version=schema_version
+        ),
+    }
+    fields.update(overrides)
+    return VerificationResult(**fields)
+
+
+def test_digest_is_stable_across_attempts_under_same_loop(
+    store: sqlite3.Connection,
+) -> None:
+    """The digest identifies the loop, not the attempt (US4-S4)."""
+    config = VerificationConfig()
+    order = ("gates", "diff_check", "judge")
+    gates = ("test", "lint", "typecheck")
+
+    first = _us4_result(config, order, gates, attempt=1)
+    second = _us4_result(config, order, gates, attempt=2)
+
+    upsert_result(store, first)
+    upsert_result(store, second)
+
+    rows = [
+        row["loop_digest"]
+        for row in store.execute(
+            "SELECT loop_digest FROM verification_results WHERE epic_id = '023-us4' "
+            "ORDER BY attempt"
+        ).fetchall()
+    ]
+
+    assert rows[0] == rows[1]
+    assert rows[0] == _US4_DEFAULT_LOOP_DIGEST
+
+
+def test_digest_differs_across_different_loops(store: sqlite3.Connection) -> None:
+    """A different declared loop produces a different digest (US4-S1)."""
+    default = _us4_result(
+        VerificationConfig(),
+        ("gates", "diff_check", "judge"),
+        ("test", "lint", "typecheck"),
+        epic_id="epic-default",
+    )
+    reordered = _us4_result(
+        VerificationConfig(),
+        ("diff_check", "gates", "judge"),
+        ("unit", "contract"),
+        epic_id="epic-reordered",
+    )
+    judgeless = _us4_result(
+        VerificationConfig(),
+        ("gates", "diff_check"),
+        ("test",),
+        epic_id="epic-judgeless",
+    )
+
+    upsert_result(store, default)
+    upsert_result(store, reordered)
+    upsert_result(store, judgeless)
+
+    digests = {
+        row["epic_id"]: row["loop_digest"]
+        for row in store.execute(
+            "SELECT epic_id, loop_digest FROM verification_results ORDER BY id"
+        ).fetchall()
+    }
+
+    assert len(set(digests.values())) == 3
+
+
+def test_unconfigured_default_loop_digest_is_named_constant(
+    store: sqlite3.Connection,
+) -> None:
+    """A v1 repo records the explicit default digest, not an absent field (US4-S3)."""
+    result = _us4_result(
+        VerificationConfig(),
+        ("gates", "diff_check", "judge"),
+        ("test", "lint", "typecheck"),
+    )
+
+    upsert_result(store, result)
+
+    row = result_row(store, epic_id="023-us4", node_id="node-a", attempt=1, form="PHASE")
+    assert row["loop_digest"] == _US4_DEFAULT_LOOP_DIGEST
+    assert "schema v1" in row["loop_summary"]
+    assert "judge present" in row["loop_summary"]
+
+
+def test_pre_023_rows_read_loop_digest_as_absent(store: sqlite3.Connection) -> None:
+    """Stores written before US4 return absent loop fields, never backfilled."""
+    raw_insert_result(
+        store,
+        epic_id="pre-023",
+        node_id="node-a",
+        attempt=1,
+        form="PHASE",
+        verdict="PASS",
+        gate_results="[]",
+        output_check=(
+            '{"write_scope":"worktree","has_diff":false,'
+            '"expected_artifacts":[],"artifacts_present":null,"passed":false}'
+        ),
+        judge_verdict=None,
+        judge_unavailable=0,
+        criteria_drift=0,
+        criteria_sha256="a" * 64,
+        spec_ref="old/US1",
+        started_at="2026-08-01T10:00:00Z",
+        finished_at="2026-08-01T10:03:00Z",
+    )
+
+    (restored,) = node_history(store, "pre-023", "node-a")
+    assert restored.loop_digest is None
+    assert restored.loop_summary is None
