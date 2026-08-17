@@ -443,7 +443,7 @@ def test_a_gate_that_commits_is_not_asked_who_it_is() -> None:
     the boundary (`033-ergane-install/us2`) failed on this in five separate
     tests, none of which were about identity:
 
-        fatal: unable to auto-detect email address (got 'unknown@spark-9cb5.(none)')
+        fatal: unable to auto-detect email address (got 'unknown@buildhost.(none)')
         subprocess.CalledProcessError: Command '['git', '-C', '/tmp/target-.../repo',
         'commit', '--quiet', '-m', 'operator file the agent must not touch']'
         returned non-zero exit status 128.

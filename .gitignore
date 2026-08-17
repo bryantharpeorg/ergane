@@ -16,3 +16,20 @@ __pycache__/
 # ignored until every host has migrated.
 .ergane/
 .factory/
+
+# The defect detector's telemetry: 15 MB of findings JSON that no `.ergane/`
+# or `.factory/` rule matched, so one `git add -A` would have committed it.
+.factory-detector/
+
+# Belt and braces ahead of a public release. Every runtime store lives under an
+# ignored root today, so these are latent rather than active — but a stray
+# `foo.db` at the repo root was not covered by anything above, and a secrets
+# file has to be un-committable by rule rather than by remembering.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+.env
+*.enc.env
+*.pem
+*.key
