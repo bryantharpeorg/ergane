@@ -295,6 +295,11 @@ def test_unsupported_host_refuses_managed_mode_at_walkthrough(
         ]
     )
     monkeypatch.setattr(install_module.init_module, "_prompter_factory", lambda: prompter)
+    # Simulate the unsupported host instead of probing the real one: the probe
+    # shells out to `systemctl --user`, which fails in the sandboxed gate but
+    # succeeds on any host with a user bus (CI runners included), flipping the
+    # test's outcome with the environment.
+    monkeypatch.setattr(install_module, "_systemd_user_session_available", lambda: False)
 
     old_stdout, old_stderr = sys.stdout, sys.stderr
     buf_out, buf_err = io.StringIO(), io.StringIO()
