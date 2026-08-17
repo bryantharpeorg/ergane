@@ -58,7 +58,11 @@ OTHER_SLUG = "gadgets"
 EXPORT_FILES = {"findings.jsonl", "usage.jsonl", "escalations.jsonl", "digest.md"}
 
 #: A credential-shaped value seeded into free text the engine stores verbatim.
-LEAKED_KEY = "sk-liveproxykeyDEADBEEF0123456789"
+#: It must match the scrubber's own pattern (`sk-[A-Za-z0-9_-]{8,}`, see
+#: `factory/cli/repo_export.py`), and must otherwise look nothing like a live
+#: key: low entropy and self-labelling, so neither a human reader nor a secret
+#: scanner mistakes a test fixture in a public repository for a real credential.
+LEAKED_KEY = "sk-EXAMPLE-not-a-real-key-0000000000"
 
 Init = Callable[..., Any]
 

@@ -63,10 +63,15 @@ LIBRARY_MODULES = sorted((REPO_ROOT / "factory" / "mergequeue").rglob("*.py"))
 LIBRARY_IDS = [p.relative_to(REPO_ROOT).as_posix() for p in LIBRARY_MODULES]
 
 #: Real-shaped canaries, unlike anything else in the repository, so "this string
-#: appears" is never a coincidence.
+#: appears" is never a coincidence. *Shaped* like the real thing and never
+#: *drawn* from it: the proxy address is TEST-NET-2 (RFC 5737, reserved for
+#: documentation and routable nowhere), not the operator's own host. A canary
+#: copied from a live deployment publishes that deployment's topology the day
+#: the repository goes public, and buys no fidelity — the sweep only ever
+#: asserts the string is absent.
 CANARY_KEY = "sk-canary-9c41d2e8a07b31f5-litellm-master"
 CANARY_TOKEN = "8102938475:CANARYc2f7a91b4d08e63a5c1b2f9d4e7a8b0"
-CANARY_PROXY = "http://192.168.10.90:4000/secret-proxy"
+CANARY_PROXY = "http://198.51.100.10:4000/secret-proxy"
 
 
 def _parse(path: Path) -> ast.Module:
