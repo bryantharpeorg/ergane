@@ -181,6 +181,7 @@ Degraded, against a closed port, in the same worktree:
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import os
@@ -195,8 +196,14 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable, Iterable, NamedTuple
 
 import pytest
+import temporalio
 import temporalio.client
-from temporalio.client import ScheduleActionStartWorkflow
+from temporalio.client import (
+    ScheduleActionStartWorkflow,
+    WorkflowQueryFailedError,
+    WorkflowQueryRejectedError,
+)
+from temporalio.exceptions import TemporalError
 from temporalio.service import RPCError, RPCStatusCode
 
 from factory.cli import main as main_module
@@ -366,7 +373,13 @@ class _FakeWorkflowHandle:
         self._client.queried.append((self.id, name))
         if self.id not in self._client.workflows:
             raise RPCError("workflow not found", RPCStatusCode.NOT_FOUND, b"")
-        return self._client.workflows[self.id].document
+        document = self._client.workflows[self.id].document
+        # A workflow seeded with an exception for its document *raises* it, so a
+        # refusal is expressed by seeding the real type the client raises rather
+        # than by patching the query out (052 plan trap 2).
+        if isinstance(document, BaseException):
+            raise document
+        return document
 
     async def signal(self, name: str, *args: Any, **kwargs: Any) -> None:  # pragma: no cover
         raise AssertionError("status must never signal anything (FR-002)")
@@ -1216,3 +1229,503 @@ def test_attestation_only_is_named_as_such_when_no_repo_can_be_read(
 
     assert "attestation only" in header
     assert f"blocked by: {RUNNING_SPEC} [attestation only]" in queue
+
+
+# ============================================================================
+# 052 T001 / US1-S1 — a query the workflow refuses degrades one reading
+# ============================================================================
+#
+# `issubclass(WorkflowQueryFailedError, RPCError)` is `False`: they are siblings
+# under `TemporalError`, so the `except RPCError` that guarded the roadmap query
+# could never fire for the case its own comment described. One refused query
+# therefore escaped to the CLI's boundary handler and killed the whole command:
+#
+#     $ ergane status specs
+#     ergane: unexpected error (RoadmapStatus.__init__() missing 1 required
+#     positional argument: 'max_concurrent_nodes'); re-run with --debug
+#     [exit 1]
+#
+# Every test below raises the type `temporalio` itself raises. A locally defined
+# `class FakeQueryFailed(RPCError)` would inherit from the class the broken code
+# already caught and would pass against the defect (052 plan trap 2).
+
+#: The refusal the live control plane actually produced, quoted verbatim so the
+#: test carries the measurement rather than a paraphrase of it.
+REFUSAL_MESSAGE = (
+    "RoadmapStatus.__init__() missing 1 required positional argument: "
+    "'max_concurrent_nodes'"
+)
+
+
+def refusing_floor(
+    setup: Callable[..., FakeTemporalClient], refusal: BaseException
+) -> FakeTemporalClient:
+    """`bare_floor`, except the roadmap run will not answer `roadmap_status`."""
+    return setup(
+        workflows={
+            "roadmap-specs": FakeWorkflow(refusal),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(epic_document(RUNNING_EPIC_NODES)),
+        }
+    )
+
+
+def test_a_refused_roadmap_query_leaves_the_command_alive_at_exit_zero(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-001: the command completes and exits 0, it does not die.
+
+    Raising `temporalio.client.WorkflowQueryFailedError` — the real type, from
+    the real module — against the guard that named only `RPCError`.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryFailedError(REFUSAL_MESSAGE))
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert "unexpected error" not in result.stderr
+    assert result.stderr == ""
+
+
+def test_a_refused_roadmap_query_is_reported_in_the_roadmap_section_with_its_cause(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-002: unavailable, named, and in the section that asked.
+
+    The disposition around it is still real and still printed — the run id came
+    from the discovery ladder, not from the query — so the refusal costs the
+    dispatch reading and nothing else.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryFailedError(REFUSAL_MESSAGE))
+
+    result = invoke("status", str(specs_root))
+    roadmap = section(result.stdout, "roadmap")
+
+    assert result.code == 0, result.stderr
+    assert "run: roadmap-specs" in roadmap
+    assert "unavailable" in roadmap
+    assert REFUSAL_MESSAGE in roadmap
+
+
+def test_a_refused_query_does_not_replace_the_rest_of_the_report(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-002: one reading is missing, not the report.
+
+    The epics, queue, drafts and pace sections are all still answered, and the
+    document still says it is not degraded — the server answered, so this is not
+    the outage case and must not borrow its exit code.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryFailedError(REFUSAL_MESSAGE))
+
+    result = invoke("status", str(specs_root))
+    machine = invoke("status", str(specs_root), "--json")
+
+    assert headers(result.stdout) == ["roadmap", "epics", "queue", "drafts", "pace"]
+    assert RUNNING_SPEC in section(result.stdout, "epics")
+    assert f"blocked by: {RUNNING_SPEC}" in section(result.stdout, "queue")
+    assert DRAFT_SPEC in section(result.stdout, "drafts")
+    assert "verified in 12m30s" in section(result.stdout, "pace")
+
+    document = machine.json
+    assert machine.code == 0, machine.stderr
+    assert document["degraded"] is False
+    assert document["roadmap"]["workflow_id"] == "roadmap-specs"
+    assert REFUSAL_MESSAGE in str(document["roadmap"]["dispatch_unavailable"])
+
+
+def test_an_epic_that_refuses_its_query_is_named_rather_than_dropped(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-001 at the other query: the epic table has the same guard.
+
+    An epic that closed between the listing and the query answers `RPCError` and
+    is correctly dropped. An open epic that *refuses* is a different event: it is
+    still running, so dropping it would under-report the floor.
+    """
+    fake_temporal(
+        workflows={
+            "roadmap-specs": FakeWorkflow(roadmap_document()),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(
+                WorkflowQueryFailedError(REFUSAL_MESSAGE)
+            ),
+        }
+    )
+
+    result = invoke("status", str(specs_root))
+    epics = section(result.stdout, "epics")
+
+    assert result.code == 0, result.stderr
+    assert RUNNING_SPEC in epics
+    assert "unavailable" in epics
+    assert REFUSAL_MESSAGE in epics
+
+
+def test_a_rejected_query_is_guarded_by_the_same_pair(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """FR-003: `WorkflowQueryRejectedError` is the other type this call raises.
+
+    `temporalio/client/_impl.py` raises it beside `WorkflowQueryFailedError`, it
+    is a `TemporalError` too, and it would escape an `RPCError`-only guard for
+    exactly the same reason. Guarded here so the pair is proven, not assumed.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryRejectedError(None))
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert "unavailable" in section(result.stdout, "roadmap")
+
+
+# ============================================================================
+# 052 T002 / US1-S2 — the transport path is not what changed
+# ============================================================================
+
+
+def test_an_rpcerror_from_the_roadmap_query_renders_exactly_what_it_rendered_before(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S2 / FR-005: byte-identical, asserted as bytes rather than described.
+
+    The roadmap section is the whole surface the `roadmap_status` guard can
+    move, so it is pinned verbatim: the disposition the discovery ladder found,
+    no dispatch reading, and — this is the half that would break if the repair
+    leaked — *no* refusal line, because a transport failure at this call site
+    has never printed one and this story does not give it one.
+
+    Written before the repair and green before it. Said plainly rather than
+    dressed up as red-first: a test that pins existing behaviour is supposed to
+    pass on both sides, and that is exactly what makes it evidence the transport
+    path did not move.
+    """
+    refusing_floor(
+        fake_temporal, RPCError("the run will not answer", RPCStatusCode.UNKNOWN, b"")
+    )
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert section(result.stdout, "roadmap") == "  run: roadmap-specs\n"
+
+
+def test_an_rpcerror_from_the_roadmap_query_is_still_not_a_degraded_report(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S2 / FR-005: the exit code, the notes and the flag are all unmoved.
+
+    Paired with the outage tests above, which keep the *other* direction honest:
+    a closed port still degrades and still exits 3. If the repair had widened
+    the outage band to swallow query refusals, or narrowed it, one of the two
+    pairs would move.
+    """
+    refusing_floor(
+        fake_temporal, RPCError("the run will not answer", RPCStatusCode.UNKNOWN, b"")
+    )
+
+    machine = invoke("status", str(specs_root), "--json").json
+
+    assert machine["degraded"] is False
+    assert machine["notes"] == []
+    assert machine["roadmap"]["workflow_id"] == "roadmap-specs"
+    assert machine["roadmap"]["dispatch_paused"] is None
+    assert machine["roadmap"]["running"] == []
+    assert machine["roadmap"]["parked"] is None
+
+
+def test_an_rpcerror_from_an_epic_query_still_drops_that_epic(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S2 / FR-005 at the other call site: the closed-epic path is unmoved.
+
+    An epic that closed between the listing and the query answers `RPCError` and
+    is dropped, exactly as before — the control for
+    `test_an_epic_that_refuses_its_query_is_named_rather_than_dropped`, which
+    seeds the same floor and differs only in the type raised. Both cannot be an
+    accident of the fixture.
+    """
+    fake_temporal(
+        workflows={
+            "roadmap-specs": FakeWorkflow(roadmap_document()),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(
+                RPCError("workflow not found", RPCStatusCode.NOT_FOUND, b"")
+            ),
+        }
+    )
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert section(result.stdout, "epics") == "  none running\n"
+
+
+# ============================================================================
+# 052 T003 / US1-S3, SC-002, SC-003 — the guards, asserted by name
+# ============================================================================
+#
+# The defect was not a missing guard. It was a guard naming the wrong class, in
+# a file where nothing checked which classes were named — so the mistake was
+# invisible to a reader and invisible to the suite at the same time. These tests
+# make the naming itself the thing under test, and they derive the list of call
+# sites from the module rather than hard-coding it, so the *next* Temporal call
+# added to this file cannot be guarded wrongly in silence: it will not be in
+# `EXPECTED_GUARDS`, and the sweep will say so.
+
+#: Every function in `factory/cli/status.py` that awaits Temporal, and the exact
+#: set of `except` clauses it is allowed to carry. Written as the source spells
+#: them, because "which name is written there" is precisely the property that
+#: was wrong. `OperatorError` is the connect failure, raised by `_open_client`
+#: rather than by the Temporal client, and is listed so the set can be exact.
+EXPECTED_GUARDS: dict[str, set[tuple[str, ...]]] = {
+    "collect_floor": {("OperatorError",), ("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+    "_disposition": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+    "_running_epics": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+}
+
+
+def _status_source_tree() -> ast.Module:
+    return ast.parse(Path(status_module.__file__).read_text(encoding="utf-8"))
+
+
+def _awaiting_functions() -> dict[str, ast.AST]:
+    """Every function in the module that awaits or async-iterates something.
+
+    Derived, not listed: in this module the only things awaited are Temporal
+    calls and the two helpers that make them, so this is the set of functions
+    that can see a Temporal failure. A new one shows up here the moment it is
+    written, which is what stops the next guard being wrong quietly.
+    """
+    found: dict[str, ast.AST] = {}
+    for node in ast.walk(_status_source_tree()):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(isinstance(sub, (ast.Await, ast.AsyncFor)) for sub in ast.walk(node)):
+            found[node.name] = node
+    return found
+
+
+def _caught_names(handler: ast.ExceptHandler) -> tuple[str, ...]:
+    """The classes one `except` clause names, as the source writes them."""
+    if handler.type is None:
+        return ("<bare except>",)
+    caught = (
+        handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    )
+    return tuple(ast.unparse(node) for node in caught)
+
+
+def _try_groups(function: ast.AST) -> list[list[tuple[str, ...]]]:
+    """Each `try` in one function, as the list of clauses guarding it."""
+    return [
+        [_caught_names(handler) for handler in node.handlers]
+        for node in ast.walk(function)
+        if isinstance(node, ast.Try)
+    ]
+
+
+def test_every_temporal_call_site_states_which_classes_it_guards(
+    specs_root: Path,
+) -> None:
+    """US1-S3: the guards are asserted by name, not read by eye.
+
+    The first assertion is the anti-vacuity one and the load-bearing one: the
+    swept set is derived from the source, so a Temporal call added to a fourth
+    function fails here rather than shipping with whatever guard seemed right.
+    """
+    functions = _awaiting_functions()
+
+    assert set(functions) == set(EXPECTED_GUARDS)
+    for name, expected in EXPECTED_GUARDS.items():
+        groups = _try_groups(functions[name])
+        assert groups, f"{name} awaits Temporal and guards nothing"
+        assert {
+            clause for group in groups for clause in group
+        } == expected, f"{name} guards something other than {sorted(expected)}"
+
+
+def test_the_two_guard_names_resolve_to_the_classes_the_client_raises(
+    specs_root: Path,
+) -> None:
+    """US1-S3 / FR-003: what the names above are, checked by identity.
+
+    Asserting the source says `TRANSPORT_FAILED` proves nothing on its own — the
+    constant could name anything. This is the other half.
+    """
+    assert status_module.TRANSPORT_FAILED == (RPCError,)
+    assert status_module.QUERY_REFUSED == (
+        WorkflowQueryFailedError,
+        WorkflowQueryRejectedError,
+    )
+
+
+def test_the_refusal_classes_are_not_transport_failures(specs_root: Path) -> None:
+    """US1-S3: the fact that makes two names necessary instead of one.
+
+    Siblings under `TemporalError`, not parent and child. This is the whole
+    diagnosis, pinned so that a future `temporalio` that reparents them turns
+    this test red rather than making the second guard quietly redundant.
+    """
+    assert not issubclass(WorkflowQueryFailedError, RPCError)
+    assert not issubclass(WorkflowQueryRejectedError, RPCError)
+    assert issubclass(WorkflowQueryFailedError, TemporalError)
+    assert issubclass(RPCError, TemporalError)
+
+
+def test_no_temporal_call_site_catches_the_transport_failure_alone(
+    specs_root: Path,
+) -> None:
+    """SC-002: the count of sites guarding only transport is zero.
+
+    Counted from the source, not asserted about it: every `try` that names the
+    transport failure must name the refusal in the same statement. That is the
+    exact shape of the defect — a `try` around a query with one clause on it —
+    so this is the test that would have failed at `46c50f5`.
+    """
+    guards_transport: list[str] = []
+    transport_alone: list[tuple[str, tuple[str, ...]]] = []
+    for name, function in _awaiting_functions().items():
+        for group in _try_groups(function):
+            clauses = {clause for names in group for clause in names}
+            if not clauses & {"TRANSPORT_FAILED", "RPCError"}:
+                continue
+            guards_transport.append(name)
+            if "QUERY_REFUSED" not in clauses:
+                transport_alone.append((name, tuple(sorted(clauses))))
+
+    # Anti-vacuity: a sweep that found no transport guard at all would report
+    # zero lone ones forever.
+    assert sorted(guards_transport) == ["_disposition", "_running_epics", "collect_floor"]
+    assert transport_alone == []
+
+
+def test_no_guard_names_a_class_temporalio_cannot_raise(specs_root: Path) -> None:
+    """FR-003 / SC-003: every guarded class is one the installed client raises.
+
+    Grepped out of the installed `temporalio` sources rather than assumed. The
+    control is the last assertion: a name nothing raises must not be found, or
+    the search answers yes to everything and proves nothing.
+    """
+    sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path(temporalio.__file__).parent.rglob("*.py")
+    )
+    guarded = status_module.TRANSPORT_FAILED + status_module.QUERY_REFUSED
+
+    assert len(guarded) == 3
+    for guarded_class in guarded:
+        assert f"raise {guarded_class.__name__}(" in sources, guarded_class
+    assert "raise NotAClassTemporalioRaises(" not in sources
+
+
+# ============================================================================
+# 052 T004 / US1-S4, FR-004 — the repair that would have been worse
+# ============================================================================
+#
+# `except Exception` around the query makes every test above pass and is the
+# wrong fix. The command would stop dying and start lying: a genuine defect
+# behind a query — the wrong argument, a decode failure, a bug in the renderer
+# reached through the result — would render as a blank section with a plausible
+# note, which is the same silence one layer along. These two tests exist to be
+# in the way of that repair, so both were written before it.
+
+#: Nothing may guard a Temporal call with these.
+BLANKET_GUARDS = frozenset({"Exception", "BaseException", "<bare except>"})
+
+
+def test_no_temporal_call_site_is_guarded_by_a_blanket_except(
+    specs_root: Path,
+) -> None:
+    """FR-004: not `Exception`, not `BaseException`, not a bare `except`.
+
+    Preventive, and green on both sides of the repair by design — the point of
+    a test written before an implementation is that the implementation cannot
+    introduce the thing it forbids. Its ability to fail is proved by mutation,
+    not by having been red once: swapping either guard for `Exception` turns it
+    red, and that mutant is recorded in this story's battery.
+
+    The anti-vacuity assertion is the same derived call-site list the sweep
+    above uses, so this cannot pass by finding nothing to check.
+    """
+    functions = _awaiting_functions()
+    assert set(functions) == set(EXPECTED_GUARDS)
+
+    offenders = [
+        (name, clause)
+        for name, function in functions.items()
+        for group in _try_groups(function)
+        for clause in group
+        if BLANKET_GUARDS & set(clause)
+    ]
+
+    assert offenders == []
+
+
+def test_a_query_failure_that_is_neither_transport_nor_refusal_still_escapes(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S4: the exception still escapes, and the operator still hears about it.
+
+    The runtime half of FR-004. A `ValueError` out of the roadmap query is a
+    real defect, not a degradation, and it must reach the CLI's boundary
+    handler exactly as it does today — exit 1, named on stderr, nothing
+    swallowed into a note. This is the assertion a blanket `except` breaks.
+    """
+    refusing_floor(fake_temporal, ValueError("a real defect, not a refusal"))
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 1
+    assert "unexpected error" in result.stderr
+    assert "a real defect, not a refusal" in result.stderr
+    assert result.stdout == ""
+
+
+def test_an_epic_with_no_table_is_not_paced_as_a_finished_one(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """The pace section must not turn "would not answer" into "nothing left".
+
+    Written because a mutation survived: removing `_pace`'s skip left the whole
+    suite green. An epic that refused its query has an empty node table, so it
+    would be measured as `0 of 0 stories remaining` — which renders identically
+    to an epic that has finished every story, in the one section an operator
+    reads to judge how much work is left. The two readings must not collide.
+    """
+    fake_temporal(
+        workflows={
+            "roadmap-specs": FakeWorkflow(roadmap_document()),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(
+                WorkflowQueryFailedError(REFUSAL_MESSAGE)
+            ),
+        }
+    )
+
+    result = invoke("status", str(specs_root))
+    machine = invoke("status", str(specs_root), "--json").json
+    pace = section(result.stdout, "pace")
+
+    assert result.code == 0, result.stderr
+    assert "0 of 0 stories remaining" not in pace
+    assert "no running epic answered with a story table" in pace
+    assert machine["pace"] == []
+    # ...and the epic is still on the report, in the section that can say why.
+    assert "unavailable" in section(result.stdout, "epics")

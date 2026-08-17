@@ -18,7 +18,11 @@ Three properties are load-bearing:
 - **Degraded is a mode, not an error.** An operator reaching for `ergane
   status` during an outage is the one who most needs the corpus half, so a
   Temporal failure becomes one note naming the address and an exit code that
-  says "degraded", never an abort (FR-004).
+  says "degraded", never an abort (FR-004). 052 split that into the two events
+  it always was: the server not answering (`TRANSPORT_FAILED` — degraded, exit
+  3) and a workflow refusing a reading the server did deliver (`QUERY_REFUSED`
+  — the section says why, exit 0). One name for both is what let a refused
+  roadmap query kill the whole command.
 - **Pace is measurement.** `started_at`/`finished_at` bracket one verification,
   not one story: dispatch-to-verification and merge-queue time are not in the
   store at all. The output therefore carries attempt wall-times and a remaining
@@ -65,6 +69,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from temporalio.client import WorkflowQueryFailedError, WorkflowQueryRejectedError
 from temporalio.service import RPCError
 
 from factory.activities.roadmap_activities import _OPEN_EPIC_STATUS
@@ -106,6 +111,45 @@ EPIC_ID_PREFIX = "epic-"
 _TERMINAL_NODE_STATES = frozenset(str(state) for state in _TERMINAL_STATES)
 
 
+# --- the two ways a Temporal read fails ---------------------------------------
+#
+# Two names, because they are two events and this command says different things
+# about them. Before 052 there was one name, and the difference cost the verb:
+#
+#     $ ergane status specs
+#     ergane: unexpected error (RoadmapStatus.__init__() missing 1 required
+#     positional argument: 'max_concurrent_nodes'); re-run with --debug
+#     [exit 1]
+#
+# The roadmap query below was already wrapped in `except RPCError`, with a
+# comment describing precisely that situation. It could never fire.
+# `WorkflowQueryFailedError` is not an `RPCError` — `issubclass` is `False`, they
+# are *siblings* under `TemporalError` — so a workflow-side refusal walked past
+# the guard written for it and out through the CLI's boundary handler, taking
+# the corpus half of the report with it. A guard is only as good as the class it
+# names, and nothing in the suite was checking the name. Now something is
+# (`tests/test_ergane_status.py`, the `EXPECTED_GUARDS` sweep).
+#
+# Neither tuple is a place to add `Exception`. A blanket catch around a query
+# would have fixed the symptom and converted every future defect behind one into
+# a blank section with a plausible note — the command would stop dying and start
+# lying, which is the same silence one layer along (FR-004).
+
+#: Transport: the server did not answer at all. Nothing this command wanted to
+#: read is readable, so the report is degraded and exits `EXIT_TRANSPORT`.
+TRANSPORT_FAILED: tuple[type[BaseException], ...] = (RPCError,)
+
+#: The server answered and the *workflow* would not — most often because a
+#: running history predates a field the query result now declares. Only the one
+#: reading that was refused is missing, so the section that asked names the
+#: cause and the command still exits 0. This is a degraded *reading*, not a
+#: degraded connection, and conflating the two is what a single guard did.
+QUERY_REFUSED: tuple[type[BaseException], ...] = (
+    WorkflowQueryFailedError,
+    WorkflowQueryRejectedError,
+)
+
+
 # --- the document -------------------------------------------------------------
 
 
@@ -127,6 +171,11 @@ class RoadmapDisposition:
     dispatch_paused: bool | None = None
     running: list[str] = field(default_factory=list)
     parked: int | None = None
+    #: Why the bottom half is missing, when the run refused to answer. `None`
+    #: whenever it answered *or* whenever there was no run to ask — an absent
+    #: reading and a refused one look the same in the fields above, and only one
+    #: of them is worth an operator's attention.
+    dispatch_unavailable: str | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +187,10 @@ class EpicView:
     epic_state: str
     execution_status: str
     nodes: dict[str, Any]
+    #: Why this epic has no table, when it refused the query. An epic that has
+    #: closed is dropped instead; this field is only ever set for one that is
+    #: open, listed, and unwilling to describe itself.
+    refusal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -236,7 +289,7 @@ async def collect_floor(specs_root: Path) -> FloorStatus:
         try:
             disposition = await _disposition(client, specs_root)
             epics = await _running_epics(client)
-        except RPCError as error:
+        except TRANSPORT_FAILED as error:
             notes.append(
                 f"Temporal answered, but not the reads this needs ({error}); "
                 "the roadmap and epics sections could not be read"
@@ -244,6 +297,19 @@ async def collect_floor(specs_root: Path) -> FloorStatus:
             disposition = None
             epics = []
             degraded = True
+        except QUERY_REFUSED as error:
+            # A backstop, and worth naming as one rather than leaving to be
+            # discovered: every query this command makes today is guarded at its
+            # own call site, where the refusal can be reported in the section
+            # that asked for it, so nothing reaches here yet. What this clause
+            # buys is the *next* query added to either helper — it degrades
+            # instead of killing the command, which is the failure mode 052
+            # exists to end, and it does so before anyone remembers to guard it.
+            # It is not `degraded`: the server answered.
+            notes.append(
+                f"a workflow refused a query ({error}); the reading it would "
+                "have provided is missing from this report"
+            )
 
     return FloorStatus(
         specs_root=str(specs_root),
@@ -427,15 +493,27 @@ async def _disposition(client: Any, specs_root: Path) -> RoadmapDisposition:
     """
     location = await resolve_roadmap(client, str(specs_root))
     document: Mapping[str, Any] | None = None
+    refusal: str | None = None
     if location.workflow_id is not None:
         try:
             document = await client.get_workflow_handle(location.workflow_id).query(
                 "roadmap_status"
             )
-        except RPCError:
+        except TRANSPORT_FAILED:
             # The run exists but will not answer: the disposition is still real,
             # and it is more useful than nothing.
             document = None
+        except QUERY_REFUSED as error:
+            # Same outcome for the document, deliberately different for the
+            # report. The run reached the server and refused this reading, which
+            # is a fact about the *run* — a history recorded before the query
+            # result grew a field, most often — and an operator who is told only
+            # "unavailable" goes to the Temporal UI to find out why. So the
+            # cause is carried up and printed where it was asked for. The
+            # disposition around it stays, for the reason above: it came from
+            # the discovery ladder, not from the query, and it is still true.
+            document = None
+            refusal = str(error) or type(error).__name__
 
     return RoadmapDisposition(
         owner=str(location.owner.value),
@@ -447,6 +525,7 @@ async def _disposition(client: Any, specs_root: Path) -> RoadmapDisposition:
         dispatch_paused=None if document is None else bool(document.get("paused")),
         running=[] if document is None else list(document.get("running") or []),
         parked=None if document is None else len(document.get("parked") or []),
+        dispatch_unavailable=refusal,
     )
 
 
@@ -471,9 +550,26 @@ async def _running_epics(client: Any) -> list[EpicView]:
     for workflow_id, execution_status in sorted(listed):
         try:
             document = await client.get_workflow_handle(workflow_id).query("epic_status")
-        except RPCError:
+        except TRANSPORT_FAILED:
             # An epic that closed between the listing and the query is not an
             # error; it is simply no longer part of the answer.
+            continue
+        except QUERY_REFUSED as error:
+            # Not that event. The server reached this epic and it is still open
+            # — it came back from a filter that asks for running executions —
+            # so dropping it would under-report the floor by exactly the epic
+            # something is wrong with. It is listed without a table instead,
+            # carrying the reason it has none.
+            views.append(
+                EpicView(
+                    workflow_id=workflow_id,
+                    epic_id=workflow_id[len(EPIC_ID_PREFIX) :],
+                    epic_state="",
+                    execution_status=execution_status,
+                    nodes={},
+                    refusal=str(error) or type(error).__name__,
+                )
+            )
             continue
         views.append(
             EpicView(
@@ -498,12 +594,18 @@ def _execution_status(execution: Any) -> str:
 
 
 def _pace(epics: Sequence[EpicView]) -> list[EpicPace]:
-    """Measured attempt wall-times per running epic, plus what is still open."""
-    if not epics:
+    """Measured attempt wall-times per running epic, plus what is still open.
+
+    An epic that refused its query is skipped rather than counted: its story
+    totals would both be zero, and "0 of 0 stories remaining" is a measurement
+    the operator would have no way to distinguish from a finished epic.
+    """
+    measurable = [epic for epic in epics if epic.refusal is None]
+    if not measurable:
         return []
     conn = open_store_readonly(_verification_store_path())
     try:
-        return [_epic_pace(conn, epic) for epic in epics]
+        return [_epic_pace(conn, epic) for epic in measurable]
     finally:
         if conn is not None:
             conn.close()
@@ -636,6 +738,8 @@ def _roadmap_lines(floor: FloorStatus) -> list[str]:
         lines.append(f"dispatch: {'paused' if disposition.dispatch_paused else 'running'}")
         lines.append(f"running: {', '.join(disposition.running) or '-'}")
         lines.append(f"parked: {disposition.parked}")
+    if disposition.dispatch_unavailable is not None:
+        lines.append(f"dispatch: unavailable ({disposition.dispatch_unavailable})")
     if not lines:
         lines.append(f"none running (looked for {', then '.join(disposition.looked_for)})")
     return lines
@@ -653,6 +757,9 @@ def _epic_lines(floor: FloorStatus) -> list[str]:
 
     lines: list[str] = []
     for epic in floor.epics:
+        if epic.refusal is not None:
+            lines.append(f"{epic.epic_id}  unavailable ({epic.refusal})")
+            continue
         document = {"epic_state": epic.epic_state, "nodes": epic.nodes}
         lines.extend(
             render_status(epic.epic_id, document, epic.execution_status).splitlines()
@@ -687,6 +794,8 @@ def _pace_lines(floor: FloorStatus) -> list[str]:
     if not floor.pace:
         if floor.roadmap is None:
             return ["unavailable (see note)"]
+        if floor.epics:
+            return ["no running epic answered with a story table"]
         return ["no epic is running"]
 
     lines: list[str] = []
