@@ -182,7 +182,10 @@ def landed_command(args: argparse.Namespace) -> int:
     else:
         print(f"default branch: {default_branch}")
         for story_key, fact in sorted(facts.items()):
-            print(f"{story_key} landed at {fact.commit[:12]} ({fact.kind.value})")
+            line = f"{story_key} landed at {fact.commit[:12]} ({fact.kind.value})"
+            if fact.external_completion:
+                line += "  [external completion]"
+            print(line)
     return EXIT_OK
 
 

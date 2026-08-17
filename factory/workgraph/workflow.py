@@ -454,6 +454,8 @@ class NodeStatus:
     #: US1: the reason a node ended KILLED when the ladder did not produce it.
     #: Set only when a node coroutine crashed; otherwise None.
     terminal_reason: str | None = None
+    #: US2: external-completion provenance, or None for agent-built work.
+    provenance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -580,6 +582,7 @@ class EpicWorkflow:
                     if record.landing is not None
                     else 0,
                     terminal_reason=record.terminal_reason,
+                    provenance=record.provenance,
                 )
                 for node_id, record in self._nodes.items()
             },
@@ -1894,6 +1897,7 @@ class EpicWorkflow:
         branch, provenance = completion
         record.branch = branch
         record.attempt += 1
+        record.provenance = provenance
 
         result, verdict = await self._verify(
             request,

@@ -339,9 +339,13 @@ def render_status(
         spend_token = (
             f"  spend ${figure['spend_usd']:.2f}" if figure is not None else ""
         )
+        provenance = node.get("provenance")
+        external_token = (
+            f"  external completion: {provenance}" if provenance else ""
+        )
         lines.append(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
-            f"attempt {node['attempt']}  {node['branch']}{spend_token}"
+            f"attempt {node['attempt']}  {node['branch']}{spend_token}{external_token}"
         )
     return "\n".join(lines)
 
