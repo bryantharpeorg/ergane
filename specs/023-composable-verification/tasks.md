@@ -21,7 +21,7 @@ any order. Tasks without it are sequential because they share a file.
 
 ## Phase 1: Setup (operator preflight — dispatched to no node)
 
-- [ ] T001 Operator preflight. Re-verify every `file:line` anchor in plan.md
+- [x] T001 Operator preflight. Re-verify every `file:line` anchor in plan.md
       against the tree that will host this work, and record findings here as
       021's T001 did — findings supersede plan.md where they differ. Beyond
       line drift, confirm four facts specifically:
@@ -42,6 +42,75 @@ any order. Tasks without it are sequential because they share a file.
       (d) The parked-findings path the roadmap will reuse for a malformed
       manifest (plan § US2) — name the function and confirm a park carries
       an error detail a human can read later.
+
+      **T001 findings, done 2026-08-17 against `deff9d0` (supersede plan.md
+      where they differ):**
+
+      General anchor state: the merges of 2026-08-17 (#157–#164) touched no
+      cited file in `factory/verify/`, `factory/workgraph/`,
+      `factory/cli/nouns/build.py`, `factory/activities/` or
+      `factory/mergequeue/` except `factory/roadmap/workflow.py` (#162).
+      Line drift from the 2026-08-10 numbers is uniform and small; every
+      named construct exists — resolve by name.
+
+      - **The live manifest is `ergane.yaml`** (040-manifest-rename).
+        `MANIFEST_NAME = "ergane.yaml"` (`factory_yaml.py:59`);
+        `factory.yaml` is `LEGACY_MANIFEST_NAME`, kept byte-identical at the
+        repo root, and 040 forbids the legacy name as a quoted literal in
+        that module — spell it via `LEGACY_MANIFEST_NAME` if a test needs
+        it. Wherever plan.md or a task says "repo root `factory.yaml`", read
+        "both root manifests, `ergane.yaml` the live one". US2's dispatch
+        read joins via `resolve_manifest_path()` + `load_factory_config()`
+        the way `factory/mergequeue/merge_activities.py:548-552` already
+        does — not `Path(target_repo) / MANIFEST_NAME`.
+      - (a) CONFIRMED on this tree: `parse_factory_config` on a
+        `version: 2` snippet raises `FactoryConfigError: ergane.yaml:
+        [version] declares `version: 2`; this factory supports only the
+        integer literal 1` (rule `version`).
+      - (b) The empty-gate-list FAIL guard ALREADY EXISTS: `gates_passed`
+        (`factory/verify/models.py:443-457`) is `bool(gate_results) and
+        all(...)`, with a docstring naming exactly this hazard. T011
+        therefore takes its declared-exception branch — it passes
+        immediately and stands as the regression pin; `compose_result`
+        needs no change before T14.
+      - (c) The judge-absent states today are two: `judge is None`
+        (skipped-by-guard; composes PASS through `models.py:529` when gates
+        and output pass) and `judge_unavailable`
+        (`JudgeOutcome.UNAVAILABLE`, flag computed at `models.py:527`,
+        store column `store.py:135`). Excluded-by-loop is a third state
+        added beside these two.
+      - (d) The roadmap park is `_park` (`factory/roadmap/workflow.py:1196`),
+        writing `ParkedFinding(check, detail)` — `detail` is free text a
+        human reads later. That file was touched tonight by #162; re-grep
+        before citing lines in it.
+      - The plan's four `escalation_timeout_s` call sites are now TWO:
+        `factory/workgraph/workflow.py:1857` (node path) and `:2504`
+        (landing path). `:1869`/`:2423`/`:2432` no longer resolve.
+      - The plan's "roadmap-failure path at `notify_activities.py:549` uses
+        the module constant" points at nothing: the roadmap parks rather
+        than escalates, and `ESCALATION_TIMEOUT_S` appears only as dataclass
+        defaults (`notify_activities.py:163`,
+        `factory/escalation/workflow.py:146`). Trap 7's "do not fix it"
+        instruction is moot; the 7200-parity requirement stands.
+      - The "roadmap bound check `roadmap/workflow.py:546-553`" example of
+        the type-identity idiom is gone from that file; surviving instances
+        are `factory_yaml.py:463` and `factory/controlplane/config.py:799`.
+        Trap 1 stands unchanged.
+      - T010's "extend `tests/test_worker.py`'s AST check" is unnecessary:
+        `_invoked_activity_names` (`test_worker.py:142`) discovers invoked
+        activities generically from the workflow sources, so a new
+        `read_loop_config` is caught automatically once its caller lands.
+        Only `factory/worker.py`'s `ACTIVITIES` (`:98`) needs the edit;
+        extending the hand-listed `_SURFACE_ANCHORS` is optional.
+      - `_TOP_LEVEL_KEYS` is now EIGHT keys including `roadmap` and `forge`
+        (049) — any test pinning the v1 vocabulary must include them.
+      - US4's store column is not just a `_RESULT_COLUMNS` entry: the store
+        carries `SCHEMA_VERSION = 3` with an explicit `_migrate`
+        (`store.py:278-300`). The additive column needs the version bump
+        plus a migration branch, and a pre-023 row still reads as absent.
+      - Baseline suite on this host at `deff9d0`: 3312 passed, 47 skipped.
+        The plan's "44 skips" is stale — measure your own baseline at your
+        base commit before writing anything, and declare any skip beyond it.
 
 ---
 
@@ -80,7 +149,8 @@ the untouched v1 suite is green.
       `verify:` under `version: 1` refused as unknown keys exactly as today
       — must fail.
 - [ ] T005 [P] [US1] (spec US1-S2, US1-S6) Write the v1-identity case FIRST: parse this repository's
-      own committed `factory.yaml` and assert the result equals today's
+      own committed manifest — `ergane.yaml`, the live name since 040; T001
+      explains the rename — and assert the result equals today's
       field-for-field — the file that must stay byte-identical (FR-011) is
       also the regression fixture that proves v1 semantics never moved —
       must fail only if v1 handling changes.
@@ -94,7 +164,8 @@ the untouched v1 suite is green.
       type-identity ints, named rules); `FactoryConfig` grows
       `ladder: VerificationConfig` and `verify_order: tuple[str, ...]` with
       defaults equal to today. **No file outside these two and their tests.**
-      Do not touch the repo root `factory.yaml` (trap 0).
+      Do not touch either repo-root manifest — `ergane.yaml` or its
+      byte-identical legacy copy `factory.yaml` (trap 0, T001).
 
 ---
 
@@ -216,8 +287,9 @@ loop line.
       environment-constraints wording amendment per spec § Assumptions, with
       the constitution version bump); extend `docs/architecture.md`'s
       manifest and verification sections (schema v2, the dispatch pin, the
-      two-read asymmetry); `git diff` the repo root `factory.yaml` against
-      the epic's base and paste the empty output (FR-011).
+      two-read asymmetry); `git diff` both repo-root manifests —
+      `ergane.yaml` and the legacy `factory.yaml` — against the epic's base
+      and paste the empty output (FR-011).
 
 ---
 
