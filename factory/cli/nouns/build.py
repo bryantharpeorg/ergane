@@ -41,6 +41,7 @@ from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
     DEFAULT_TEMPORAL_NAMESPACE,
+    EXTERNAL_COMPLETION_SIGNAL,
     QUESTION_SIGNAL_NAME,
     SIGNAL_NAME,
     TEMPORAL_ADDRESS_ENV,
@@ -526,6 +527,39 @@ def kill_command(args: argparse.Namespace) -> int:
     return asyncio.run(_send_signal(args.epic_id, KILL_SIGNAL))
 
 
+def complete_node_externally_command(args: argparse.Namespace) -> int:
+    """Send `complete_node_externally` with provenance."""
+    return asyncio.run(
+        _send_signal_with_args(
+            args.epic_id,
+            EXTERNAL_COMPLETION_SIGNAL,
+            [args.node_id, args.branch, args.provenance],
+        )
+    )
+
+
+async def _send_signal_with_args(
+    epic_id: str, signal_name: str, signal_args: list[Any]
+) -> int:
+    client = await _connect()
+    handle = client.get_workflow_handle(workflow_id(epic_id))
+    try:
+        await handle.signal(signal_name, args=signal_args)
+    except RPCError as error:
+        if error.status is RPCStatusCode.NOT_FOUND:
+            raise OperatorError(
+                f"no epic '{epic_id}' is running here "
+                f"({looked_for(epic_id)})"
+            ) from error
+        from factory.cli.errors import EXIT_TRANSPORT
+
+        raise OperatorError(
+            f"cannot signal epic '{epic_id}': {error}", EXIT_TRANSPORT
+        ) from error
+    print(f"sent {signal_name} to {workflow_id(epic_id)}")
+    return EXIT_OK
+
+
 async def _send_signal(epic_id: str, signal_name: str) -> int:
     client = await _connect()
     handle = client.get_workflow_handle(workflow_id(epic_id))
@@ -943,6 +977,31 @@ def add_parser(subparsers: Any) -> None:
     )
     salvage.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
     salvage.set_defaults(run=salvage_command)
+
+    complete_node_externally = commands.add_parser(
+        "complete-node-externally",
+        help="tell the epic a node was finished by the operator",
+        description=(
+            "Signal that the operator has finished a stuck node by hand. "
+            "The branch becomes the node's result; the provenance string is "
+            "recorded in the verification store."
+        ),
+    )
+    complete_node_externally.add_argument(
+        "epic_id", help="the epic id (the spec directory's name)"
+    )
+    complete_node_externally.add_argument(
+        "node_id", help="the user-story id the signal is for"
+    )
+    complete_node_externally.add_argument(
+        "branch", help="the branch the operator's work is on"
+    )
+    complete_node_externally.add_argument(
+        "--provenance",
+        required=True,
+        help="who completed the work and how (e.g. 'operator:manual-2026-08-17')",
+    )
+    complete_node_externally.set_defaults(run=complete_node_externally_command)
 
 
 NOUN = Noun(
