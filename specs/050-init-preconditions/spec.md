@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # Drafted 2026-08-16 by an operator session, from a critical finding the
 # operator session filed against itself an hour earlier:
 # `install/init-creates-a-live-schedule-into-a-control-plane-it-then-reports-missing`.
