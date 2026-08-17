@@ -154,3 +154,64 @@ def test_pressing_enter_writes_master_and_the_real_check_passes(
 
     # And the report the operator reads at the end of `ergane init` says so.
     assert "[PASS] landing_branch" in result.stdout
+
+
+# --- T003 / US1-S3: an empty repository is not an error -----------------------
+
+
+def test_the_branch_reading_answers_none_when_head_does_not_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-002: the reading distinguishes three HEAD states, and only one is a branch.
+
+    The route choice the plan left open, settled by measurement rather than by
+    preference. Against git 2.43 the two candidate readings disagree:
+
+        state                     symbolic-ref --short HEAD   rev-parse --abbrev-ref HEAD
+        on `master`, committed    master              rc 0    master              rc 0
+        empty, no commit          master              rc 0    (fatal)             rc 128
+        detached HEAD             (fatal)             rc 128  HEAD                rc 0
+
+    `rev-parse` is the one whose failure *is* FR-002's "no resolvable HEAD", so
+    it is the one used — with the detached-HEAD answer `HEAD` rejected, because
+    git refuses to create a branch by that name and so it can only be the
+    sentinel. `symbolic-ref` would name the unborn branch of an empty
+    repository, which scenario 3 says must not be offered.
+    """
+    committed = make_master_repo(tmp_path, name="committed")
+    empty = make_master_repo(tmp_path, name="empty", commit=False)
+
+    assert init_module._current_branch(committed) == "master"
+    assert init_module._current_branch(empty) is None
+
+    _git(committed, "checkout", "--quiet", "--detach", "HEAD")
+    assert init_module._current_branch(committed) is None
+
+
+def test_an_empty_repository_offers_the_literal_and_init_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US1-S3, FR-002: no commits, no resolvable HEAD — the literal, not a failure.
+
+    Joining a repository before its first commit is a normal thing to do, so
+    this must not raise and must not invent a branch. It also carries FR-005:
+    the report still says `[FAIL] landing_branch`, because an empty repository
+    has no refs at all and *no* offered value could pass there. The offer is an
+    offer; the readiness check stays the verdict.
+
+    Green before the implementation as well as after — it is the assertion that
+    makes the *wrong* reading fail. The mutation battery at the bottom of this
+    file shows it going red under `symbolic-ref`, which would offer `master`
+    here.
+    """
+    repo = make_master_repo(tmp_path, commit=False)
+
+    result, prompter = run_init(repo, monkeypatch)
+
+    assert result.code == EXIT_OK
+    assert offered(prompter, LANDING_BRANCH_PROMPT) == (
+        init_module._PLACEHOLDERS["landing_branch"]
+    )
+    written = yaml.safe_load((repo / "ergane.yaml").read_text(encoding="utf-8"))
+    assert written["landing_branch"] == init_module._PLACEHOLDERS["landing_branch"]
+    assert "[FAIL] landing_branch" in result.stdout
