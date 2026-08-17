@@ -94,12 +94,15 @@ with workflow.unsafe.imports_passed_through():
         DriftInput,
         OnboardInput,
         PreflightInput,
+        ReadLoopConfigInput,
+        ReadLoopConfigResult,
         clone_target,
         count_open_epics,
         derive_spec,
         drift_for_spec,
         onboard_target,
         preflight_spec,
+        read_loop_config,
     )
     from factory.activities.verify_activities import (
         DEFAULT_VERIFICATION_DB_PATH,
@@ -1166,7 +1169,24 @@ class RoadmapWorkflow:
             self._park(spec_dir, "derive", "delta is empty: all stories are satisfied")
             return
 
-        # 6. Start the child epic — ABANDON on parent close (SC-004: killing the
+        # 6. Dispatch-pinned loop config (023 US2). Read the operator clone's
+        # manifest *after* onboarding and before child start, so the ladder and
+        # verify order belong to the commit that will actually dispatch, not to a
+        # stale parent payload or to any worktree the child may later write.
+        try:
+            loop_config: ReadLoopConfigResult = await workflow.execute_activity(
+                read_loop_config,
+                ReadLoopConfigInput(target_repo=request.target_repo),
+                **_FAST,
+            )
+        except FailureError as exc:
+            # `FactoryConfigError` is re-raised as a non-retryable ApplicationError
+            # by the activity; park with the rule named and continue to the next spec
+            # (FR-006: one bad manifest must not stall the line).
+            self._park(spec_dir, "manifest", self._roadmap_failure_message(exc))
+            return
+
+        # 7. Start the child epic — ABANDON on parent close (SC-004: killing the
         # roadmap never kills the epic), default id reuse (a closed id is
         # reusable; a running collision parks, never adopts — T011).
         try:
@@ -1175,7 +1195,8 @@ class RoadmapWorkflow:
                 EpicInput(
                     graph=graph,
                     proxy_url=request.proxy_url,
-                    config=request.config,
+                    config=loop_config.config,
+                    verify_order=loop_config.verify_order,
                     poll_interval_s=request.poll_interval_s,
                     landing_config=request.landing_config,
                     max_concurrent_nodes=request.max_concurrent_nodes,

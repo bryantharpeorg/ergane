@@ -1,5 +1,14 @@
 ---
-state: draft
+state: ready
+# RELEASED 2026-08-17 3:20 PM CT by the operator, at a keyboard. The hold below
+# named exactly one condition -- "flip it then; nothing else about this spec
+# needs doing" -- and that condition is now met: the operator is present and
+# will watch the first peer exchange happen for real. The roadmap schedule is
+# also still paused, so `ready` does not hand this to an unattended scheduler.
+# The watched-run requirement in the plan still stands and is now the operator's
+# to honour, not a flag's.
+#
+# --- the 2026-08-16 hold this releases, kept for the chain ---
 # HELD AGAIN 2026-08-16 ~10:35 PM CT, and this time the reason is the roadmap
 # rather than the spec. The spec itself is ready: `ergane spec validate` passes
 # all six layers, US2's missing task phase is repaired, every anchor was

@@ -120,7 +120,7 @@ from factory.workgraph.worktree import (
     record_salvage_ref,
     salvage,
 )
-from tests.target_repo import git, git_env
+from tests.target_repo import build_target_repo, git, git_env
 from factory.verify.question import QuestionMarker
 from factory.workgraph.workflow import JUDGE_PERSONA, TASK_QUEUE, EpicInput, EpicWorkflow
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
@@ -628,8 +628,13 @@ async def settle_epic(env: WorkflowEnvironment) -> Any:
 
 
 @pytest.fixture
-def workgraph_json(epic_dir: Path) -> Path:
-    """Compile the fixture graph directly; this test is about `build`, not `derive`."""
+def workgraph_json(tmp_path: Path, epic_dir: Path) -> Path:
+    """Compile the fixture graph directly; this test is about `build`, not `derive`.
+
+    The graph names a real scratch target repo so dispatch-time manifest reads
+    succeed without touching /srv/factory (023 US2 FR-002).
+    """
+    target_repo = build_target_repo(tmp_path / "target", variant="passing")
     spec_text = (epic_dir / "spec.md").read_text(encoding="utf-8")
     graph = derive_workgraph(
         spec_text,
@@ -639,7 +644,7 @@ def workgraph_json(epic_dir: Path) -> Path:
         # resolves to `epic_dir` — what dispatch reads, and (044 US2) what the
         # start-time preflight assembles the prompts from.
         specs_root=str(epic_dir.parent),
-        target_repo=TARGET_REPO,
+        target_repo=str(target_repo),
     )
     graph_path = epic_dir / "workgraph.json"
     graph_path.write_text(
