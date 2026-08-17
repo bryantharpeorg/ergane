@@ -196,7 +196,11 @@ from typing import Any, AsyncIterator, Callable, Iterable, NamedTuple
 
 import pytest
 import temporalio.client
-from temporalio.client import ScheduleActionStartWorkflow
+from temporalio.client import (
+    ScheduleActionStartWorkflow,
+    WorkflowQueryFailedError,
+    WorkflowQueryRejectedError,
+)
 from temporalio.service import RPCError, RPCStatusCode
 
 from factory.cli import main as main_module
@@ -366,7 +370,13 @@ class _FakeWorkflowHandle:
         self._client.queried.append((self.id, name))
         if self.id not in self._client.workflows:
             raise RPCError("workflow not found", RPCStatusCode.NOT_FOUND, b"")
-        return self._client.workflows[self.id].document
+        document = self._client.workflows[self.id].document
+        # A workflow seeded with an exception for its document *raises* it, so a
+        # refusal is expressed by seeding the real type the client raises rather
+        # than by patching the query out (052 plan trap 2).
+        if isinstance(document, BaseException):
+            raise document
+        return document
 
     async def signal(self, name: str, *args: Any, **kwargs: Any) -> None:  # pragma: no cover
         raise AssertionError("status must never signal anything (FR-002)")
@@ -1216,3 +1226,159 @@ def test_attestation_only_is_named_as_such_when_no_repo_can_be_read(
 
     assert "attestation only" in header
     assert f"blocked by: {RUNNING_SPEC} [attestation only]" in queue
+
+
+# ============================================================================
+# 052 T001 / US1-S1 — a query the workflow refuses degrades one reading
+# ============================================================================
+#
+# `issubclass(WorkflowQueryFailedError, RPCError)` is `False`: they are siblings
+# under `TemporalError`, so the `except RPCError` that guarded the roadmap query
+# could never fire for the case its own comment described. One refused query
+# therefore escaped to the CLI's boundary handler and killed the whole command:
+#
+#     $ ergane status specs
+#     ergane: unexpected error (RoadmapStatus.__init__() missing 1 required
+#     positional argument: 'max_concurrent_nodes'); re-run with --debug
+#     [exit 1]
+#
+# Every test below raises the type `temporalio` itself raises. A locally defined
+# `class FakeQueryFailed(RPCError)` would inherit from the class the broken code
+# already caught and would pass against the defect (052 plan trap 2).
+
+#: The refusal the live control plane actually produced, quoted verbatim so the
+#: test carries the measurement rather than a paraphrase of it.
+REFUSAL_MESSAGE = (
+    "RoadmapStatus.__init__() missing 1 required positional argument: "
+    "'max_concurrent_nodes'"
+)
+
+
+def refusing_floor(
+    setup: Callable[..., FakeTemporalClient], refusal: BaseException
+) -> FakeTemporalClient:
+    """`bare_floor`, except the roadmap run will not answer `roadmap_status`."""
+    return setup(
+        workflows={
+            "roadmap-specs": FakeWorkflow(refusal),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(epic_document(RUNNING_EPIC_NODES)),
+        }
+    )
+
+
+def test_a_refused_roadmap_query_leaves_the_command_alive_at_exit_zero(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-001: the command completes and exits 0, it does not die.
+
+    Raising `temporalio.client.WorkflowQueryFailedError` — the real type, from
+    the real module — against the guard that named only `RPCError`.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryFailedError(REFUSAL_MESSAGE))
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert "unexpected error" not in result.stderr
+    assert result.stderr == ""
+
+
+def test_a_refused_roadmap_query_is_reported_in_the_roadmap_section_with_its_cause(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-002: unavailable, named, and in the section that asked.
+
+    The disposition around it is still real and still printed — the run id came
+    from the discovery ladder, not from the query — so the refusal costs the
+    dispatch reading and nothing else.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryFailedError(REFUSAL_MESSAGE))
+
+    result = invoke("status", str(specs_root))
+    roadmap = section(result.stdout, "roadmap")
+
+    assert result.code == 0, result.stderr
+    assert "run: roadmap-specs" in roadmap
+    assert "unavailable" in roadmap
+    assert REFUSAL_MESSAGE in roadmap
+
+
+def test_a_refused_query_does_not_replace_the_rest_of_the_report(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-002: one reading is missing, not the report.
+
+    The epics, queue, drafts and pace sections are all still answered, and the
+    document still says it is not degraded — the server answered, so this is not
+    the outage case and must not borrow its exit code.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryFailedError(REFUSAL_MESSAGE))
+
+    result = invoke("status", str(specs_root))
+    machine = invoke("status", str(specs_root), "--json")
+
+    assert headers(result.stdout) == ["roadmap", "epics", "queue", "drafts", "pace"]
+    assert RUNNING_SPEC in section(result.stdout, "epics")
+    assert f"blocked by: {RUNNING_SPEC}" in section(result.stdout, "queue")
+    assert DRAFT_SPEC in section(result.stdout, "drafts")
+    assert "verified in 12m30s" in section(result.stdout, "pace")
+
+    document = machine.json
+    assert machine.code == 0, machine.stderr
+    assert document["degraded"] is False
+    assert document["roadmap"]["workflow_id"] == "roadmap-specs"
+    assert REFUSAL_MESSAGE in str(document["roadmap"]["dispatch_unavailable"])
+
+
+def test_an_epic_that_refuses_its_query_is_named_rather_than_dropped(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S1 / FR-001 at the other query: the epic table has the same guard.
+
+    An epic that closed between the listing and the query answers `RPCError` and
+    is correctly dropped. An open epic that *refuses* is a different event: it is
+    still running, so dropping it would under-report the floor.
+    """
+    fake_temporal(
+        workflows={
+            "roadmap-specs": FakeWorkflow(roadmap_document()),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(
+                WorkflowQueryFailedError(REFUSAL_MESSAGE)
+            ),
+        }
+    )
+
+    result = invoke("status", str(specs_root))
+    epics = section(result.stdout, "epics")
+
+    assert result.code == 0, result.stderr
+    assert RUNNING_SPEC in epics
+    assert "unavailable" in epics
+    assert REFUSAL_MESSAGE in epics
+
+
+def test_a_rejected_query_is_guarded_by_the_same_pair(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """FR-003: `WorkflowQueryRejectedError` is the other type this call raises.
+
+    `temporalio/client/_impl.py` raises it beside `WorkflowQueryFailedError`, it
+    is a `TemporalError` too, and it would escape an `RPCError`-only guard for
+    exactly the same reason. Guarded here so the pair is proven, not assumed.
+    """
+    refusing_floor(fake_temporal, WorkflowQueryRejectedError(None))
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert "unavailable" in section(result.stdout, "roadmap")
