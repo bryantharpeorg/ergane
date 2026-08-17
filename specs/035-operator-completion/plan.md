@@ -204,8 +204,11 @@ same-size mutants written inside one wall-clock second make the second run execu
 the *first* mutant's bytecode. It fails toward green and reproduces stably.
 
 **Quote `passed` and `skipped`, never the warning count** — a warm cache
-suppresses compile-time warnings. Baseline skips are 44; a new skip is a hidden
-test you must declare.
+suppresses compile-time warnings. Baseline skips were re-measured at 47 on this
+host on 2026-08-17 (the 3 beyond the old 44 are `test_live_capacity` guards
+skipping on an unregistered namespace); measure your own baseline at your base
+commit before writing anything, and a skip beyond it is a hidden test you must
+declare.
 
 **Measure exit codes without a pipe.** `cmd | head; echo $?` reports the pipe's
 status, not the command's.
