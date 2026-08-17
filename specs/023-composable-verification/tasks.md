@@ -201,6 +201,14 @@ worktree `ladder:` rewrite changes nothing; timer and row agree at 7200s.
       `escalation_timeout_s: 7200` the workflow's wait and the stored row's
       `expires_at` both reflect 7200 — **the non-default value is the test**
       (trap 7; at 3600 the two sources are indistinguishable) — must fail.
+      **Split this into two tests with two subjects (trap 7a — this is the
+      scenario that failed 023's first run twice):** the timer half against
+      the workflow with a scripted activity, and the row half calling the
+      **real** `send_escalation` through `ActivityEnvironment` with
+      `timeout_s=7200`, asserting `expires_at == sent_at + 7200s` computed
+      from the record. A scripted activity returns a hardcoded `expires_at`,
+      so a parity assertion made against it proves nothing and the judge
+      will refuse it.
 - [ ] T010 [US2] Implement until T007–T009 pass: manifest read in
       `_run_preflight`'s path (`FactoryConfigError` → `OperatorError`, rule
       named); new `read_loop_config` activity; its registration in

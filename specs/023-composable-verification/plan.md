@@ -319,8 +319,41 @@ a v1 repo is a constant the tests can name.
    config-fed path and the constant-fed path are indistinguishable — a
    parity test at the default proves nothing. Configure 7200, assert both
    the workflow timer and the row's `expires_at` moved together. The
-   roadmap-failure escalation (`notify_activities.py:549`) legitimately
-   uses the constant; do not "fix" it.
+   roadmap-failure escalation legitimately uses the module constant; do
+   not "fix" it. (The plan previously cited `notify_activities.py:549` for
+   that; the T001-equivalent re-read on 2026-08-17 found the roadmap parks
+   rather than escalates and the constant appears only as a dataclass
+   default — the instruction stands, the address does not.)
+
+   **7a. A faked `send_escalation` cannot supply the row half, and this is
+   what actually killed the story's first run.** 023's us2 burned four
+   attempts on 2026-08-17 and failed its last two on this scenario alone.
+   Each time the agent drove the workflow against a *scripted* escalation
+   activity whose returned row carried a hardcoded
+   `expires_at='2026-08-05T10:30:00Z'`, then tried to assert parity against
+   that fixture. It cannot work: the derivation under test lives in the real
+   activity —
+
+   ```
+   factory/activities/notify_activities.py:497
+       expires_at=_iso(sent + timedelta(seconds=request.timeout_s))
+   ```
+
+   — so a test that replaces the activity has replaced the very computation
+   the scenario is about, and the judge is right to refuse it every time.
+
+   Write this as **two assertions with two different subjects**:
+
+   - the *timer* half stays where it is — the workflow, under time skipping,
+     with the scripted activity, asserting the wait is 7200; and
+   - the *row* half calls the *real* `send_escalation` directly (an
+     `ActivityEnvironment` unit test, no workflow, no Temporal server) with
+     `timeout_s=7200`, and asserts the returned/stored `expires_at` equals
+     its own `sent_at` plus 7200 seconds — computed from the record, never
+     compared to a literal timestamp.
+
+   One assertion against real code is the whole point. If your parity test
+   never imports the real activity, you have not tested the parity.
 
 8. **Judge exclusion is not judge unavailability.** `compose_result`
    already has a judge-absent path (`judge_unavailable` — an outage that
