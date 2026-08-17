@@ -8,7 +8,7 @@ semantics and the restart bound are carried over verbatim in meaning, and every
 literal path is resolved from the operator's own installation instead
 (SC-006).
 
-Three things here are load-bearing, and each was paid for:
+Four things here are load-bearing, and each was paid for:
 
 - **`KillMode=control-group`.** Agents, gate subprocesses and anything they
   spawned live in the unit's cgroup, and stopping the unit must take the whole
@@ -18,6 +18,9 @@ Three things here are load-bearing, and each was paid for:
   a leak stays inside `MemoryMax` and the kernel reclaims within the slice
   rather than taking the host down. `TasksMax` is the other half: 8,131
   processes is far past anything a healthy floor needs.
+- **The probe is outside the slice.** Every other generated unit goes in it;
+  the probe's does not, and that is the whole point — a supervisor inside the
+  contained slice is reclaimed alongside the leak it exists to report.
 - **The command line may not contain `python -`.** On 2026-08-12 an agent ran
   `pkill -f "python -"` to clean up its own strays; that matched the worker's
   and the bridge's `uv run python -m factory.worker` command lines and killed
@@ -53,6 +56,8 @@ from factory.registry import resolve_state_home
 SLICE_UNIT = "ergane.slice"
 WORKER_UNIT = "ergane-worker.service"
 BRIDGE_UNIT = "ergane-bridge.service"
+PROBE_UNIT = "ergane-probe.service"
+PROBE_TIMER = "ergane-probe.timer"
 
 #: One wrapper, shared by every unit, taking the module to run as its argument.
 WRAPPER_NAME = "ergane-run.sh"
@@ -65,14 +70,16 @@ MANIFEST_NAME = "installed.json"
 #: What an agent's stray-cleanup sweep matched on 2026-08-12.
 PKILL_PATTERN = "python -"
 
-#: The units `install` enables. The slice is not among them: it is pulled in by
-#: the `Slice=` lines that reference it, so enabling it would be declaring a
+#: The units `install` enables. Neither the slice nor the probe *service* is
+#: among them — the slice is pulled in by the `Slice=` lines that reference it
+#: and the probe service by its timer, so enabling either would be declaring a
 #: `WantedBy` that systemd then has to reconcile.
-ENABLE_TARGETS = (WORKER_UNIT, BRIDGE_UNIT)
+ENABLE_TARGETS = (WORKER_UNIT, BRIDGE_UNIT, PROBE_TIMER)
 
 _MODULES = {
     WORKER_UNIT: "factory.worker",
     BRIDGE_UNIT: "factory.notify.service",
+    PROBE_UNIT: "factory.supervision.probe",
 }
 
 
@@ -115,6 +122,7 @@ class InstallLayout:
     tasks_max: int = 2000
     restart_window_s: int = 300
     restart_burst: int = 5
+    probe_interval: str = "2min"
 
     @property
     def roots(self) -> tuple[Path, ...]:
@@ -225,6 +233,8 @@ def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
         GeneratedFile(SLICE_UNIT, _slice_text(layout), units),
         GeneratedFile(WORKER_UNIT, _worker_text(layout), units),
         GeneratedFile(BRIDGE_UNIT, _bridge_text(layout), units),
+        GeneratedFile(PROBE_UNIT, _probe_text(layout), units),
+        GeneratedFile(PROBE_TIMER, _timer_text(layout), units),
         GeneratedFile(WRAPPER_NAME, _wrapper_text(layout), layout.generated_dir, 0o755),
     )
 
@@ -305,6 +315,39 @@ def _bridge_text(layout: InstallLayout) -> str:
         restart="always",
         stop_timeout_s=30,
     )
+
+
+def _probe_text(layout: InstallLayout) -> str:
+    return f"""\
+[Unit]
+Description=ergane — stack liveness, memory and orphan-leak probe
+
+[Service]
+Type=oneshot
+# Deliberately NOT in {SLICE_UNIT}: the supervisor must outlive what it watches.
+# A probe inside the contained slice is reclaimed alongside the leak it exists
+# to report.
+ExecStart={layout.wrapper} {_MODULES[PROBE_UNIT]}
+# A degraded verdict exits 1 by design; that is a report, not a unit failure.
+# Exit 2 — an alert nobody received — is a failure, and must stay one.
+SuccessExitStatus=0 1
+"""
+
+
+def _timer_text(layout: InstallLayout) -> str:
+    return f"""\
+[Unit]
+Description=ergane — run the stack probe on its interval
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec={layout.probe_interval}
+AccuracySec=15s
+Unit={PROBE_UNIT}
+
+[Install]
+WantedBy=timers.target
+"""
 
 
 def _wrapper_text(layout: InstallLayout) -> str:

@@ -29,6 +29,8 @@ import pytest
 from factory.cli.errors import OperatorError
 from factory.supervision.units import (
     BRIDGE_UNIT,
+    PROBE_TIMER,
+    PROBE_UNIT,
     SLICE_UNIT,
     WORKER_UNIT,
     WRAPPER_NAME,
@@ -187,10 +189,10 @@ def test_install_writes_every_unit_and_the_wrapper(layout: InstallLayout) -> Non
     report = install(layout, run=fake)
 
     assert sorted(report.written) == sorted(
-        [BRIDGE_UNIT, SLICE_UNIT, WORKER_UNIT, WRAPPER_NAME]
+        [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT, WORKER_UNIT, WRAPPER_NAME]
     )
     assert report.kept == ()
-    for name in (WORKER_UNIT, BRIDGE_UNIT, SLICE_UNIT):
+    for name in (WORKER_UNIT, BRIDGE_UNIT, PROBE_UNIT, PROBE_TIMER, SLICE_UNIT):
         assert (layout.unit_dir / name).is_file()
     assert (layout.generated_dir / WRAPPER_NAME).is_file()
 
@@ -213,8 +215,8 @@ def test_install_enables_the_units_and_reads_back_what_is_running(
 
     report = install(layout, run=fake)
 
-    assert sorted(report.active) == sorted([BRIDGE_UNIT, WORKER_UNIT])
-    assert sorted(report.enabled) == sorted([BRIDGE_UNIT, WORKER_UNIT])
+    assert sorted(report.active) == sorted([BRIDGE_UNIT, PROBE_TIMER, WORKER_UNIT])
+    assert sorted(report.enabled) == sorted([BRIDGE_UNIT, PROBE_TIMER, WORKER_UNIT])
     assert fake.issued("daemon-reload") != []
 
 
@@ -444,9 +446,10 @@ def test_every_service_unit_is_inside_the_slice(layout: InstallLayout) -> None:
     """An equality over the whole generated set, not two membership checks.
 
     The failure worth catching is a unit added to this generator with no
-    `Slice=` line at all, and both stories that extend it add one: 042-US4's
-    probe (which is the deliberate exception, and asserts its own absence from
-    this set) and US3's Temporal server (which is not).
+    `Slice=` line at all. 042-US4's probe is the deliberate exception and is
+    absent from this set by design — it asserts that itself, in
+    tests/test_supervision_probe.py, where the reason lives. US3's Temporal
+    server will not be an exception.
     """
     in_slice = {
         name
@@ -481,7 +484,7 @@ def test_uninstall_removes_exactly_what_install_created(
     report = uninstall(layout, run=FakeSystemctl(), open_epics=lambda: ())
 
     assert sorted(report.removed) == sorted(
-        [BRIDGE_UNIT, SLICE_UNIT, WORKER_UNIT, WRAPPER_NAME]
+        [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT, WORKER_UNIT, WRAPPER_NAME]
     )
     assert report.kept == ()
     assert tree(home) == before
@@ -627,6 +630,79 @@ def test_the_units_module_imports_temporal_lazily_if_at_all() -> None:
     assert "temporalio" not in top_level
 
 
+
+
+# ============================================================================
+# 042-US4 / FR-006, FR-013, FR-015 — the probe's own unit, and the slice
+# ============================================================================
+#
+# US4's unit text, asserted in the file that owns unit text and already has the
+# fixture and the closed command seam to read it with. Why these could not ship
+# with the units above is in `factory/supervision/units.py`'s own docstring.
+
+
+def test_the_probe_is_the_one_generated_unit_outside_the_slice(
+    layout: InstallLayout,
+) -> None:
+    """FR-006, plan trap 2: a supervisor inside the contained slice is
+    reclaimed alongside the leak it exists to report.
+
+    The complement of `test_every_service_unit_is_inside_the_slice` above, and
+    written as an equality for the same reason: a probe unit that silently
+    gained a `Slice=` line fails here rather than in production, where the
+    symptom is the supervisor dying at the moment it was needed, silently.
+    """
+    in_slice = {
+        name
+        for name, text in texts(layout).items()
+        if directive(text, "Slice") == [SLICE_UNIT]
+    }
+
+    assert in_slice == {WORKER_UNIT, BRIDGE_UNIT}
+    assert directive(texts(layout)[PROBE_UNIT], "Slice") == []
+
+
+def test_a_degraded_verdict_is_a_report_and_not_a_unit_failure(
+    layout: InstallLayout,
+) -> None:
+    """FR-015 in the unit: exactly two codes, not three.
+
+    The probe exits 1 when the stack is degraded — a report — and 2 when it
+    could not escalate at all. Admitting 2 here would turn the one failure the
+    unit exists to end into a green unit, which is the same silence as having
+    no supervision.
+    """
+    accepted = directive(texts(layout)[PROBE_UNIT], "SuccessExitStatus")
+
+    assert accepted == ["0 1"]
+    assert "2" not in accepted[0]
+
+
+def test_the_timer_fires_on_an_interval_and_names_the_probe(
+    layout: InstallLayout,
+) -> None:
+    """FR-013's other end: the interval the edge-trigger table exists for."""
+    text = texts(layout)[PROBE_TIMER]
+
+    assert directive(text, "OnUnitActiveSec") == ["2min"]
+    assert directive(text, "Unit") == [PROBE_UNIT]
+
+
+def test_install_writes_the_probe_unit_and_enables_only_its_timer(
+    layout: InstallLayout,
+) -> None:
+    """A oneshot pulled in by its timer needs no `WantedBy` of its own.
+
+    Enabling it would declare one systemd then has to reconcile against the
+    timer's, which is why `ENABLE_TARGETS` names the timer and not the service.
+    """
+    fake = FakeSystemctl()
+
+    report = install(layout, run=fake)
+
+    assert PROBE_UNIT in report.written and PROBE_TIMER in report.written
+    assert PROBE_TIMER in fake.issued("enable")
+    assert PROBE_UNIT not in fake.issued("enable")
 
 
 # ============================================================================
