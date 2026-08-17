@@ -1,5 +1,22 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17. US1 a5d1c8501e5f (#172), US2 664ac8ab7149 (#175),
+# US3 eaed6e1a127b (#177) — all three observed on ergane-buildout, checked by
+# commit ancestry and by content, not by a PR's merged flag.
+#
+# Two of the three needed an operator hand to land, and neither for a reason the
+# agent or the judge got wrong:
+#   US1 reached PASS only after DIFF_INPUT_LIMIT rose 60→64 KiB; four earlier
+#     attempts died at admission control on a fully green diff of 61,725 bytes.
+#   US3 reached verified:true, then was killed by DEQUEUED_BY_HUMAN decided from
+#     one unconfirmed poll three seconds after its PR opened, while that PR was
+#     open and healthy. GitHub then reported PR #176 merged and never moved the
+#     branch — its merge commit 3cedbbe7 sat on a speculative line that forked
+#     before #173 landed. Recovered by cherry-pick as #177.
+# `ergane spec landed` reports only US2 and US3: #172's title carries a
+# parenthetical that `_LANDING_RE` cannot parse. The work is present; the reader
+# cannot see it. Filed, not fixed.
+#
 # Requested by Bryan 2026-08-12, mid-032: "a way to 'fail out' of ergane for a
 # spec that repeatedly fails. allows the running claude process to complete the
 # work on the agent's behalf, note it was built by something else but otherwise
