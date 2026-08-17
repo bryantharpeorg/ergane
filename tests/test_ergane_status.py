@@ -1382,3 +1382,90 @@ def test_a_rejected_query_is_guarded_by_the_same_pair(
 
     assert result.code == 0, result.stderr
     assert "unavailable" in section(result.stdout, "roadmap")
+
+
+# ============================================================================
+# 052 T002 / US1-S2 — the transport path is not what changed
+# ============================================================================
+
+
+def test_an_rpcerror_from_the_roadmap_query_renders_exactly_what_it_rendered_before(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S2 / FR-005: byte-identical, asserted as bytes rather than described.
+
+    The roadmap section is the whole surface the `roadmap_status` guard can
+    move, so it is pinned verbatim: the disposition the discovery ladder found,
+    no dispatch reading, and — this is the half that would break if the repair
+    leaked — *no* refusal line, because a transport failure at this call site
+    has never printed one and this story does not give it one.
+
+    Written before the repair and green before it. Said plainly rather than
+    dressed up as red-first: a test that pins existing behaviour is supposed to
+    pass on both sides, and that is exactly what makes it evidence the transport
+    path did not move.
+    """
+    refusing_floor(
+        fake_temporal, RPCError("the run will not answer", RPCStatusCode.UNKNOWN, b"")
+    )
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert section(result.stdout, "roadmap") == "  run: roadmap-specs\n"
+
+
+def test_an_rpcerror_from_the_roadmap_query_is_still_not_a_degraded_report(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S2 / FR-005: the exit code, the notes and the flag are all unmoved.
+
+    Paired with the outage tests above, which keep the *other* direction honest:
+    a closed port still degrades and still exits 3. If the repair had widened
+    the outage band to swallow query refusals, or narrowed it, one of the two
+    pairs would move.
+    """
+    refusing_floor(
+        fake_temporal, RPCError("the run will not answer", RPCStatusCode.UNKNOWN, b"")
+    )
+
+    machine = invoke("status", str(specs_root), "--json").json
+
+    assert machine["degraded"] is False
+    assert machine["notes"] == []
+    assert machine["roadmap"]["workflow_id"] == "roadmap-specs"
+    assert machine["roadmap"]["dispatch_paused"] is None
+    assert machine["roadmap"]["running"] == []
+    assert machine["roadmap"]["parked"] is None
+
+
+def test_an_rpcerror_from_an_epic_query_still_drops_that_epic(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """US1-S2 / FR-005 at the other call site: the closed-epic path is unmoved.
+
+    An epic that closed between the listing and the query answers `RPCError` and
+    is dropped, exactly as before — the control for
+    `test_an_epic_that_refuses_its_query_is_named_rather_than_dropped`, which
+    seeds the same floor and differs only in the type raised. Both cannot be an
+    accident of the fixture.
+    """
+    fake_temporal(
+        workflows={
+            "roadmap-specs": FakeWorkflow(roadmap_document()),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(
+                RPCError("workflow not found", RPCStatusCode.NOT_FOUND, b"")
+            ),
+        }
+    )
+
+    result = invoke("status", str(specs_root))
+
+    assert result.code == 0, result.stderr
+    assert section(result.stdout, "epics") == "  none running\n"
