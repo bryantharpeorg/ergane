@@ -19,14 +19,15 @@ passes against the unfixed code too, because the operator's answer was always
 honoured. The defect is in what the question *says* before anyone types, so the
 offered default is what is asserted (plan trap 3).
 
-Pasted evidence — the red runs, each captured before its implementation existed,
-and the mutation battery — is at the bottom of this file.
+Pasted evidence — the red runs, each captured before its implementation existed
+— is at the bottom of this file. The full suite, the mutation battery and the
+SC-001 machine transcript live beside the spec, in
+`specs/051-first-run-defaults/evidence/`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
 
 import pytest
 import yaml
@@ -327,3 +328,49 @@ def test_the_derived_branch_rides_the_default_slot_every_question_uses(
     assert LANDING_BRANCH_PROMPT == "landing branch"
     assert (LANDING_BRANCH_PROMPT, "master") in prompter.calls
     assert len(prompter.calls) == len(_TOP_LEVEL_KEYS) + 1
+
+
+# --- Pasted evidence: the red runs, before any implementation existed ---------
+#
+# T001, against the tree at 3e9cbde. The fixture repository is on `master` and
+# the interview offered the literal:
+#
+#     >       assert offered(prompter, LANDING_BRANCH_PROMPT) == "master"
+#     E       AssertionError: assert 'main' == 'master'
+#     E         - master
+#     E         + main
+#     1 failed in 0.17s
+#
+# T002, same tree — the manifest an operator who pressed enter would have got:
+#
+#     >       assert written["landing_branch"] == "master"
+#     E       AssertionError: assert 'main' == 'master'
+#     2 failed in 0.20s
+#
+# T003, the reading itself. The seam did not exist:
+#
+#     >       assert init_module._current_branch(committed) == "master"
+#     E       AttributeError: module 'factory.cli.init' has no attribute
+#     E                       '_current_branch'
+#     3 failed, 1 passed in 0.22s
+#
+# T004 / T005 / T007 together:
+#
+#     >       assert (LANDING_BRANCH_PROMPT, "master") in prompter.calls
+#     E       assert ('landing branch', 'master') in [('schema version', '1'),
+#     E         ('runtime backend', 'bwrap'), ..., ('landing branch', 'main'), ...]
+#     5 failed, 2 passed in 0.29s
+#
+# Two of the seven were green from the start and are declared as such in their
+# own docstrings, because a test that pins existing behaviour is worth having
+# and worth labelling: `test_an_existing_manifest_is_offered_ahead_of_the_
+# repository_reading` (FR-004 was already built; the brief said to pin it) and
+# `test_an_empty_repository_offers_the_literal_and_init_completes` (FR-002's
+# behaviour was already correct). Both are what make a *wrong* implementation
+# fail — mutants M2, M4 and M5 in
+# `specs/051-first-run-defaults/evidence/us1-mutations.md` are exactly those two
+# going red.
+#
+# After the implementation, on this file alone:
+#
+#     7 passed in 0.29s

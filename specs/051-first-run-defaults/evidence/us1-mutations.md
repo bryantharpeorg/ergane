@@ -109,7 +109,28 @@ three suites, including nine tests in files this story never opened. Adding one
 question is what "prompter ran out of answers" looks like, and it is the failure
 mode the spec forbids by forbidding a new manifest key.
 
-### Not mutated, and why
+## Diff size, measured the way the judge measures
+
+Not `git diff | wc -c`: that omits the generated file listing and the preamble
+the judge's prompt actually carries. `size_refusal` assembles what is shown and
+counts that.
+
+    >>> from factory.verify.diffbounds import DIFF_INPUT_LIMIT, size_refusal
+    DIFF_INPUT_LIMIT         = 61440
+    bytes the judge is shown = 42676
+    headroom                 = 18764
+    size_refusal(diff)       = None
+
+    18092  specs/051-first-run-defaults/evidence/us1-sc-001-transcript.md
+    14213  tests/test_ergane_init_landing_branch.py
+     6090  specs/051-first-run-defaults/evidence/us1-mutations.md
+     4035  factory/cli/init.py
+
+`None` is the answer that means the diff can be shown whole. The transcript is
+the biggest file in it, which is the shape a story whose success criterion is a
+claim about a machine is supposed to have.
+
+## Not mutated, and why
 
 `factory/mergequeue/onboard.py` is not in this battery because it is not in this
 diff. `_landing_branch_finding` produces the message quoted in the spec's
