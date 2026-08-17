@@ -115,20 +115,28 @@ Not `git diff | wc -c`: that omits the generated file listing and the preamble
 the judge's prompt actually carries. `size_refusal` assembles what is shown and
 counts that.
 
+Measured over `git diff 3e9cbde` at commit `f53e00a`, which is this branch with
+every file below at its final content except for these four lines — writing a
+measurement into the thing being measured moves it, so the reading is pinned to
+a commit rather than left to drift.
+
     >>> from factory.verify.diffbounds import DIFF_INPUT_LIMIT, size_refusal
     DIFF_INPUT_LIMIT         = 61440
-    bytes the judge is shown = 42676
-    headroom                 = 18764
+    bytes the judge is shown = 45589
+    headroom                 = 15851
     size_refusal(diff)       = None
 
     18092  specs/051-first-run-defaults/evidence/us1-sc-001-transcript.md
-    14213  tests/test_ergane_init_landing_branch.py
-     6090  specs/051-first-run-defaults/evidence/us1-mutations.md
+    16230  tests/test_ergane_init_landing_branch.py
+     6986  specs/051-first-run-defaults/evidence/us1-mutations.md
      4035  factory/cli/init.py
 
-`None` is the answer that means the diff can be shown whole. The transcript is
-the biggest file in it, which is the shape a story whose success criterion is a
-claim about a machine is supposed to have.
+`None` is the answer that means the diff can be shown whole. Not `wc -c` on the
+patch: `size_refusal` assembles the file listing and preamble the judge's prompt
+carries, which the raw patch omits, and those two disagree exactly at the margin
+where it would matter. The transcript is the biggest file in the diff, which is
+the shape a story whose success criterion is a claim about a machine is supposed
+to have.
 
 ## Not mutated, and why
 
