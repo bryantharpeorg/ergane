@@ -2,7 +2,7 @@
   "epic_id": "024-ledger-token-honesty",
   "feature": "024-ledger-token-honesty",
   "specs_root": "specs",
-  "target_repo": "/home/admin/code/ergane-024-target",
+  "target_repo": "/home/admin/code/ergane",
   "nodes": [
     {
       "id": "us1",

@@ -1,5 +1,13 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17 by an operator session, after `ergane spec landed
+# specs/050-init-preconditions --default-branch ergane-buildout` observed all
+# three stories in git: US1 8cff22f8f807, US2 deff9d0d7aa8, US3 a6f335815905.
+# US1 landed 2026-08-16 under the eject-mode method (operator-run bwrap gate and
+# judge). US2 and US3 were factory-dispatched overnight via `ergane build start`
+# on the remainder graph (workgraph-remainder.json, committed here), both first
+# attempt, gates and judge inside the epic workflow, landed by the merge queue
+# as PRs #164 and #161.
 # Drafted 2026-08-16 by an operator session, from a critical finding the
 # operator session filed against itself an hour earlier:
 # `install/init-creates-a-live-schedule-into-a-control-plane-it-then-reports-missing`.

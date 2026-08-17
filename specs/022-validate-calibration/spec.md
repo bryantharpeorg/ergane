@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17 by an operator session, after `ergane spec landed
+# specs/022-validate-calibration --default-branch ergane-buildout` observed its
+# single story in git: US1 8ab5e61a223c. Factory-dispatched overnight via
+# `ergane build start` on the delta graph, first attempt: real bwrap gate PASS
+# and judge PASS inside the epic workflow, landed by the merge queue as PR #160.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-019-target
 #

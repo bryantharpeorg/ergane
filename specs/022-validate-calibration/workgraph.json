@@ -2,7 +2,7 @@
   "epic_id": "022-validate-calibration",
   "feature": "022-validate-calibration",
   "specs_root": "specs",
-  "target_repo": "/home/admin/code/ergane-019-target",
+  "target_repo": "/home/admin/code/ergane",
   "nodes": [
     {
       "id": "us1",

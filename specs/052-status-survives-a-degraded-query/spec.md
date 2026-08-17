@@ -1,5 +1,18 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17 by an operator session, after `ergane spec landed
+# specs/052-status-survives-a-degraded-query --default-branch ergane-buildout`
+# observed both stories in git: US1 ea92b35863f3, US2 a74ecde59165. Both built
+# by eject-mode agents under the 2026-08-16 overnight delegation and operator-
+# verified end to end: real bwrap gate PASS, judged whole through `size_refusal`
+# on `ollama-cloud/glm-5.2` (US1 4 of 4 at 51,040 bytes, PR #159; US2 2 of 2 at
+# 35,234 bytes, PR #162), landed by the merge queue.
+#
+# US2's build surfaced two facts the spec did not anticipate, recorded in PR
+# #162: the predates-history mechanism was real but the proximate cause of the
+# dead verb was the pre-corpus call site omitting `max_concurrent_nodes`; and
+# two roadmap prompt-assembly tests were green only because of the defect's
+# 112 ms query-retry stall, now synchronized explicitly via `_await_running`.
 # Drafted 2026-08-16 ~10:05 PM CT from a critical finding the operator session
 # filed against itself the same evening:
 # `status/the-query-guard-catches-rpcerror-but-temporal-raises-workflowqueryfailederror`.

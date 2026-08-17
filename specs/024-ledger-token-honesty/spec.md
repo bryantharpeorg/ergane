@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17 by an operator session, after `ergane spec landed
+# specs/024-ledger-token-honesty --default-branch ergane-buildout` observed its
+# single story in git: US1 7e839ad19d59. Factory-dispatched overnight via
+# `ergane build start` on the delta graph, first attempt: real bwrap gate PASS
+# and judge PASS inside the epic workflow, landed by the merge queue as PR #163.
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-024-target
 # Scaffolded by `ergane findings promote` from
