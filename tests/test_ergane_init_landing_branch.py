@@ -215,3 +215,110 @@ def test_an_empty_repository_offers_the_literal_and_init_completes(
     written = yaml.safe_load((repo / "ergane.yaml").read_text(encoding="utf-8"))
     assert written["landing_branch"] == init_module._PLACEHOLDERS["landing_branch"]
     assert "[FAIL] landing_branch" in result.stdout
+
+
+# --- T004 / US1-S4: a default, not a constraint -------------------------------
+
+
+def answering(landing_branch: str) -> list[str]:
+    """`PRESS_ENTER` with one question answered — located by key, not by index.
+
+    `_TOP_LEVEL_KEYS.index` rather than a hardcoded `5`: the interview is
+    generated from that tuple, and a list that counted positions by hand would
+    answer the wrong question the day the schema grows one.
+    """
+    answers = list(PRESS_ENTER)
+    answers[_TOP_LEVEL_KEYS.index("landing_branch")] = landing_branch
+    return answers
+
+
+def test_a_typed_branch_wins_unchanged_over_the_derived_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US1-S4, FR-003: the operator types `release`, and `release` is written.
+
+    Both halves matter. The offer is still the repository's branch — so this is
+    a genuine override of a derived value, not of the old literal — and the
+    typed answer survives it unchanged.
+    """
+    repo = make_master_repo(tmp_path)
+    _git(repo, "branch", "release")
+
+    result, prompter = run_init(repo, monkeypatch, answers=answering("release"))
+
+    assert result.code == EXIT_OK
+    assert offered(prompter, LANDING_BRANCH_PROMPT) == "master"
+    written = yaml.safe_load((repo / "ergane.yaml").read_text(encoding="utf-8"))
+    assert written["landing_branch"] == "release"
+
+    # The typed branch is what the check then judges, not the derived one.
+    finding = landing_branch_finding(repo)
+    assert finding.passed, finding.detail
+    assert "release" in finding.detail
+
+
+# --- T005 / US1-S5: a joined repository reconciles, it does not re-point -------
+
+
+EXISTING_MANIFEST = """\
+version: 1
+runtime: bwrap
+gates:
+  test: uv run pytest -q
+landing_branch: main
+"""
+
+
+def test_an_existing_manifest_is_offered_ahead_of_the_repository_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US1-S5, FR-004: what is declared beats what is checked out.
+
+    This behaviour already exists — `_build_defaults` prefers the existing
+    manifest's value over the placeholder — so this test pins it rather than
+    building it. It is here because the derivation goes *underneath* that
+    preference, and a diff that put it in front would silently re-point a joined
+    repository at whatever branch happened to be checked out.
+
+    The repository is on `master` and the manifest declares `main`, so the two
+    answers differ: a diff that dropped the preference would offer `master` and
+    fail here. On a repository whose branch already matched its manifest the two
+    coincide and this test could not fail at all.
+    """
+    repo = make_master_repo(tmp_path)
+    (repo / "ergane.yaml").write_text(EXISTING_MANIFEST, encoding="utf-8")
+
+    result, prompter = run_init(repo, monkeypatch)
+
+    assert result.code == EXIT_OK
+    assert offered(prompter, LANDING_BRANCH_PROMPT) == "main"
+    written = yaml.safe_load((repo / "ergane.yaml").read_text(encoding="utf-8"))
+    assert written["landing_branch"] == "main"
+
+
+# --- T007 / FR-005: an offer, and the check is still the verdict --------------
+
+
+def test_the_derived_branch_rides_the_default_slot_every_question_uses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FR-005: the reading is offered, never announced as verified.
+
+    The question's *text* is unchanged and claims nothing — no "detected", no
+    "verified". The branch arrives in the `default=` slot that carries every
+    other answer the interview proposes, which is the slot the operator already
+    knows they can type over. Nothing here re-implements the verdict:
+    `onboard._landing_branch_finding` is the only thing that says whether the
+    branch exists, and this story does not touch it.
+
+    SC-004 rides along: the interview asks one question per manifest key plus
+    the slug, and no more. A story that added a key would break the nine
+    scripted interviews already in this suite (FR-010).
+    """
+    repo = make_master_repo(tmp_path)
+
+    _result, prompter = run_init(repo, monkeypatch)
+
+    assert LANDING_BRANCH_PROMPT == "landing branch"
+    assert (LANDING_BRANCH_PROMPT, "master") in prompter.calls
+    assert len(prompter.calls) == len(_TOP_LEVEL_KEYS) + 1
