@@ -203,11 +203,43 @@ confirm the value is the one the install interview would seed.
   environment over declaration over default — MUST be unchanged.
 - **FR-009**: A sweep MUST hold FR-006 by path, with an anti-vacuity assertion
   that it read a non-empty file list containing both modules by name.
+- **FR-011**: The single literal FR-006 requires MUST read `ergane`. Decided by
+  the operator on 2026-08-16. `factory` is this repository's own deployment name
+  and a product default may not be one installation's proper noun.
+- **FR-012**: `scripts/ergane-env.sh` MUST NOT be edited by this spec. It is the
+  operator's own pin and the reason FR-011 is safe; see the note below.
 - **FR-010**: The number of questions `ergane init` asks MUST be unchanged, and
   no manifest key MUST be added. Each story MUST change what a question *offers*,
   never how many there are. `ergane init` generates its interview from
   `_TOP_LEVEL_KEYS` and nine test files script that interview with fixed answer
   lists, so one new key breaks all nine.
+
+## Why flipping the default does not move this floor
+
+FR-011 sounds like it should require a migration. It does not, and the reason was
+measured at `3d08d90` rather than reasoned:
+
+```
+scripts/ergane-env.sh:77   emit TEMPORAL_NAMESPACE "${TEMPORAL_NAMESPACE:-factory}"
+ergane-worker-run.sh:18    eval "$(scripts/ergane-env.sh)"
+ergane-worker.service:15   ExecStart=…/ergane-worker-run.sh
+```
+
+The live worker is a systemd user unit whose `ExecStart` runs a wrapper that
+evals `ergane-env.sh`, which exports `TEMPORAL_NAMESPACE=factory` **explicitly**.
+Under the precedence 048-declared-control-plane landed — environment over
+declaration over default — the export wins and the code default is never
+consulted. There is no `~/.config/ergane/config.toml` on that host at all; this
+operator has never run `ergane install`.
+
+So changing the constant to `ergane` moves nothing that is running. What it
+changes is what a *stranger's* machine gets, which is the entire point.
+
+The consequence worth stating plainly: after this lands, **`scripts/ergane-env.sh`
+is the only thing pinning this floor to `factory`**. That is a per-repository
+operator script, not the product, which is where a deployment's own name belongs.
+Editing it and the constant in the same change is what would move the worker, so
+FR-012 forbids touching it here.
 
 ## Success Criteria
 
@@ -229,12 +261,10 @@ confirm the value is the one the install interview would seed.
   at `factory/cli/init.py:459-464`; already recorded in 050's Out of Scope. It
   was re-measured at drafting time and the earlier contrary reading was a
   measurement error — a piped `echo $?` reports the pipe's status.
-- **Which namespace value wins.** US2 requires *one* literal; it does not decide
-  whether that literal reads `ergane` or `factory`. That choice has a migration
-  attached, because this repository's own floor runs in `factory` and changing
-  the constant without a plan points its worker at an empty namespace. It is an
-  operator decision and must be made before this story is dispatched, not
-  inside it.
+- **Changing what this repository's own floor runs in.** The value question is
+  answered — see FR-011 — but the answer must not move the operator's worker,
+  and the reason it does not is measured rather than assumed. See the note
+  below.
 - **Any other interview default.** The schema version, runtime backend, gates and
   dials are not facts on disk in the way a branch is. Deriving them is a
   different argument and does not belong in this spec's evidence.
@@ -250,7 +280,7 @@ US1:
   implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-010]
 US2:
   depends_on: []
-  implements: [FR-006, FR-007, FR-008, FR-009]
+  implements: [FR-006, FR-007, FR-008, FR-009, FR-011, FR-012]
 ```
 
 The two stories touch disjoint files and neither needs the other to exist, so
