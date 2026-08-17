@@ -33,9 +33,13 @@ from typing import Sequence
 
 from factory.verify.models import DiffFileSize, DiffSizeRefusal
 
-#: Diff bytes the judge may be shown (R6). ~15k tokens: comfortable beside the
-#: criteria and instructions in any cheap-tier model's context.
-DIFF_INPUT_LIMIT = 60 * 1024
+#: Diff bytes the judge may be shown (R6). ~16k tokens: comfortable beside the
+#: criteria and instructions in any cheap-tier model's context. Raised from
+#: 60 KiB on 2026-08-17 at the operator's direction — the original value was
+#: a comfort margin, not a measurement, and its first false positive was a
+#: fully-green story refused four times at 61,725 bytes (035/us1). Still an
+#: attention budget, not a context limit: raise it only deliberately.
+DIFF_INPUT_LIMIT = 64 * 1024
 
 #: How many of the diff's biggest files an oversize refusal names (045 FR-003).
 #: Bounded because this list is quoted verbatim into the next attempt's prompt:
