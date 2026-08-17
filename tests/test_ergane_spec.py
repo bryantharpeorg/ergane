@@ -410,8 +410,8 @@ def test_validate_reports_frontmatter_derivation_and_persona_errors(
     assert "US9" in output
     # Persona-registry error named.
     assert "implementer" in output
-    # Count: exactly the three expected findings (scenario coverage is satisfied).
-    assert output.count("ergane spec validate:") == 3
+    # Count: exactly the three expected refusal findings (scenario coverage is satisfied).
+    assert output.count("ergane spec validate — refusal:") == 3
 
 
 def test_validate_exits_zero_and_names_checks_on_sound_spec(
@@ -467,15 +467,23 @@ def test_validate_reports_uncovered_scenario_ids(
         scenarios={"US1": ["it works", "it also works"]},
     )
     (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    # A sound trio keeps prompt_assembly and slice_coverage from adding
+    # refusals that would mask the scenario_coverage advisory verdict.
+    (specs_dir / "plan.md").write_text("# Plan\n\nOne store.\n", encoding="utf-8")
     (specs_dir / "tasks.md").write_text(
-        "- [ ] T001 [US1-S1] write the first test\n", encoding="utf-8"
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
+        "- [ ] T001 [US1-S1] write the first test\n",
+        encoding="utf-8",
     )
     _git(repo, "add", "-A", env=env)
     _commit(repo, "fixture skeleton", env=env)
 
     result = run("spec", "validate", str(specs_dir))
 
-    assert result.code == 1
+    # FR-002: uncovered scenarios are an advisory, so they do not exit 1 by
+    # themselves.  The missing reference is still reported.
+    assert result.code == 0
     assert "US1-S2" in (result.stdout + result.stderr)
 
 
@@ -511,6 +519,25 @@ def test_validate_scenario_coverage_passes_when_all_referenced(
     result = run("spec", "validate", str(specs_dir))
 
     assert result.code == 0
+    assert (
+        f"{specs_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
+        "scenario coverage, prompt assembly and slice coverage all pass"
+    ) in result.stdout
+    # A deliberate gap must still be reported; otherwise the check could be
+    # deleted and this test would pass for the wrong reason.
+    (specs_dir / "tasks.md").write_text(
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
+        "- [ ] T001 [US1-S1] write the first test\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "gap fixture", env=env)
+
+    result = run("spec", "validate", str(specs_dir))
+
+    assert result.code == 0
+    assert "US1-S2" in (result.stdout + result.stderr)
 
 
 def test_validate_reports_missing_tasks_file(
@@ -535,8 +562,90 @@ def test_validate_reports_missing_tasks_file(
 
     result = run("spec", "validate", str(specs_dir))
 
+    # FR-004: a spec with no task list is a structural defect, not a
+    # convention gap, so it stays a refusal and exits 1.
     assert result.code == 1
     assert "tasks.md" in (result.stdout + result.stderr)
+
+
+# --- T011a: advisory vs refusal semantics -------------------------------------
+
+
+def test_validate_frontmatter_defect_and_uncovered_scenarios_exits_refusal(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    repo = tmp_path / "scen-repo"
+    repo.mkdir()
+    env = _git_env(tmp_path / "empty-home")
+    _git(repo, "init", "-b", "main", "--quiet", env=env)
+    specs_dir = repo / "specs" / "scen-spec"
+    specs_dir.mkdir(parents=True)
+    # Invalid state triggers a frontmatter finding.
+    spec = _spec(
+        state="invalid-state",
+        stories=["US1"],
+        work_graph="US1:\n  depends_on: []\n  implements: [FR-001]\n",
+        scenarios={"US1": ["it works", "it also works"]},
+    )
+    (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    (specs_dir / "tasks.md").write_text(
+        "- [ ] T001 [US1-S1] write the first test\n", encoding="utf-8"
+    )
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "fixture skeleton", env=env)
+
+    result = run("spec", "validate", str(specs_dir))
+
+    # The refusal severity of the frontmatter finding decides the verdict.
+    assert result.code == 1
+    assert "US1-S2" in (result.stdout + result.stderr)
+    assert "frontmatter" in (result.stdout + result.stderr)
+
+
+def test_validate_json_findings_carry_severity_and_preserve_document_shape(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    repo = tmp_path / "scen-repo"
+    repo.mkdir()
+    env = _git_env(tmp_path / "empty-home")
+    _git(repo, "init", "-b", "main", "--quiet", env=env)
+    specs_dir = repo / "specs" / "scen-spec"
+    specs_dir.mkdir(parents=True)
+    spec = _spec(
+        state="ready",
+        stories=["US1"],
+        work_graph="US1:\n  depends_on: []\n  implements: [FR-001]\n",
+        scenarios={"US1": ["it works", "it also works"]},
+    )
+    (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    # A sound trio keeps prompt_assembly and slice_coverage from adding
+    # refusals that would mask the scenario_coverage advisory verdict.
+    (specs_dir / "plan.md").write_text("# Plan\n\nOne store.\n", encoding="utf-8")
+    (specs_dir / "tasks.md").write_text(
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
+        "- [ ] T001 [US1-S1] write the first test\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "fixture skeleton", env=env)
+
+    result = run("spec", "validate", "--json", str(specs_dir))
+
+    assert result.code == 0
+    doc = result.json
+    assert doc.get("spec_dir") == str(specs_dir)
+    assert "checked" in doc
+    assert "findings" in doc
+    # FR-007: every finding carries a severity; nothing else about the
+    # document shape changes.
+    assert all("severity" in finding for finding in doc["findings"])
+    # The order of findings is unchanged.
+    findings = doc["findings"]
+    assert len(findings) == 1
+    assert findings[0].get("layer") == "scenario_coverage"
+    assert "US1-S2" in findings[0].get("message", "")
+    assert findings[0].get("severity") == "advisory"
 
 
 # --- T013: --json for every verb ---------------------------------------------
