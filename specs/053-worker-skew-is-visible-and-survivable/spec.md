@@ -1,5 +1,14 @@
 ---
-state: draft
+state: ready
+# Flipped ready 2026-08-17 4:12 PM CT on Bryan's word, at a keyboard, in the same
+# session that drafted it. The roadmap schedule is paused, so `ready` does not
+# hand this to an unattended scheduler; dispatch remains an operator act.
+#
+# Dispatch condition, restated from plan.md so it survives being read alone:
+# US3 edits `factory/worker.py`, which the running worker imports. Land it when
+# the floor is otherwise quiet, or accept that the change reaches the worker
+# only at its next restart -- which is the very skew this spec is about.
+#
 # specs_root: specs
 # target_repo: /home/admin/code/ergane
 # Scaffolded by `ergane findings promote` from
