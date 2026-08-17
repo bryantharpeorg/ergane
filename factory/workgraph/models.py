@@ -283,6 +283,8 @@ class NodeRecord:
     #: today that means one thing, a crashed node coroutine. The text is surfaced
     #: in `ergane build status` for the KILLED node.
     terminal_reason: str | None = None
+    #: US2: provenance for externally-completed work, surfaced in status and PR.
+    provenance: str | None = None
 
 
 # The adapter seam's payloads (FR-005) ----------------------------------------

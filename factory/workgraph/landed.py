@@ -68,6 +68,11 @@ class LandedFact:
     story_key: str
     commit: str
     kind: LandedKind
+    #: US2: whether the attesting frontmatter marks this spec as containing
+    #: externally-completed work. None for facts not backed by a `state: landed`
+    #: attestation, True when the attestation marks the whole spec, a list of
+    #: story keys when it names them, or None when the key is absent/false.
+    external_completion: bool | list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -164,14 +169,27 @@ def landed_facts(
     frontmatter = _frontmatter_at(repo_path, head, spec_dir)
     if frontmatter.get("state") == "landed":
         attesting = _attesting_commit(repo_path, head, spec_dir)
+        external_completion = frontmatter.get("external_completion")
+        if external_completion is True:
+            external_completion = True
+        elif external_completion in (False, None):
+            external_completion = None
+        elif isinstance(external_completion, list):
+            external_completion = list(external_completion)
+        else:
+            external_completion = None
         if attesting is not None:
             requirements = _spec_requirements_at(repo_path, head, spec_dir)
             for story_key in _story_keys(requirements):
                 if story_key not in observed:
+                    story_external = external_completion
+                    if isinstance(external_completion, list):
+                        story_external = story_key in external_completion
                     observed[story_key] = LandedFact(
                         story_key=story_key,
                         commit=attesting,
                         kind=LandedKind.ATTESTED,
+                        external_completion=story_external,
                     )
 
     return observed

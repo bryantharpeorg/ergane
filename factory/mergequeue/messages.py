@@ -97,9 +97,22 @@ def render_pr_body(
         "### Judge",
         _judge_line(result),
         "",
+    ]
+    lines += [
         f"_Landed by {LANDED_BY}._",
         "",
     ]
+    if result.provenance:
+        lines += [
+            "### Provenance",
+            "",
+            f"This work was completed externally after the node's ladder was exhausted.",
+            f"The operator signalled completion with branch `{branch}` and the workflow",
+            f"verified it through the normal gates, judge and merge queue before landing.",
+            "",
+            f"Provenance-by: {result.provenance}",
+            "",
+        ]
     return "\n".join(lines)
 
 

@@ -796,6 +796,7 @@ async def test_status_json_is_the_query_result_verbatim(
                 + 1,
                 "recovery_cycles": 0,
                 "terminal_reason": None,
+                "provenance": None,
             }
             for node_id in NODE_IDS
         },
