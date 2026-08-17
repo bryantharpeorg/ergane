@@ -112,12 +112,11 @@ the test file.
 
 ---
 
-### User Story 2 - The worker installs, is contained, and is watched (Priority: P1)
+### User Story 2 - The worker installs, is contained, and is uninstallable (Priority: P1)
 
 As an operator, `ergane worker install` puts the worker and the notify bridge
-under systemd user units, inside a memory- and task-bounded slice, with a probe
-timer that reports degradation through US1 and reaps the orphaned test-server
-processes systemd cannot. `ergane worker uninstall` removes what install
+under systemd user units, inside a memory- and task-bounded slice, on paths
+inside my own installation. `ergane worker uninstall` removes what install
 created and nothing else.
 
 **Why this priority**: the worker is what the operator runs today by hand, the
@@ -125,10 +124,24 @@ containment lessons are already paid for, and this story is where they become
 portable. It rides ahead of managed Temporal because the worker is the process
 whose children leak.
 
+**Split note**: this story and US4 were one story until 2026-08-16. Built whole
+it measured **103,057 bytes against a 61,440 ceiling — 1.68x** — and the
+implementer reported that rather than trimming checks to fit, which is the
+correct behaviour and the reason the split is along a seam the code already had
+(`SupervisedUnit` versus `StackProbe`) rather than along a byte count. US4 owns
+the probe. The dependency runs one way: the probe reads the unit names, never
+the reverse.
+
+**The probe unit's text belongs to US4, not here.** Generating a
+`ergane-probe.service` that execs a module US4 has not written yet is a live
+defect, not a stub: Python exits 1 on `ModuleNotFoundError`, 1 is *inside* the
+generated `SuccessExitStatus=0 1`, and the timer would read green while
+supervising nothing. That is the exact failure FR-015 exists to end, shipped by
+the story that forbids it.
+
 **Independent Test**: after install, the units are active and enabled with
-linger; killing the worker produces a restart; stopping the unit takes its
-whole process tree; a seeded orphan is reaped and reported; uninstall leaves
-the config file and every unit the engine did not write untouched.
+linger; stopping the unit takes its whole process tree; uninstall leaves the
+config file and every unit the engine did not write untouched.
 
 **Evidence rule for every scenario below**: as US1.
 
@@ -142,29 +155,57 @@ the config file and every unit the engine did not write untouched.
    unit is stopped, **Then** the entire process tree stops with it — a bare kill
    of the worker pid is what leaves orphans on PID 1, and the generated unit
    must make that impossible.
-3. **Given** orphaned test-server processes on the host, **When** the probe
+3. **Given** a repeatedly failing unit, **When** it restarts, **Then** the
+   restart rate is bounded — a restart loop during a memory storm deepens it,
+   and giving up loudly beats flapping quietly.
+4. **Given** installed units, **When** `ergane worker uninstall` runs, **Then**
+   exactly the units install created are removed, the config file is untouched,
+   and any pre-existing unit of the same name that the engine did not write is
+   reported rather than deleted.
+
+---
+
+### User Story 4 - The probe watches, reports, and never remediates (Priority: P1)
+
+As a supervision timer, I read the state of the units US2 installed, reap the
+orphaned test-server processes systemd cannot, and report degradation through
+US1's alert path — without restarting anything, because systemd owns restarts.
+
+**Why this priority**: P1 alongside US2 because units nobody watches are half
+the value, and the orphan reaping is the one thing here systemd cannot do for
+itself — it is the 2026-08-11 outage class, where 8,131 orphaned test-server
+processes consumed 123 GiB and OOM-killed the host.
+
+**Split note**: see US2. This half carries `probe.py`, the probe unit and timer
+text, and the `PROBE_UNIT` / `PROBE_TIMER` constants, because a probe unit
+without the module it execs is worse than no probe unit.
+
+**Independent Test**: a seeded orphan population is reaped and reported; a dead
+unit raises an alert naming the unit and its outage duration; a second identical
+healthy run is silent; a probe that cannot deliver its alert exits non-zero.
+
+**Evidence rule for every scenario below**: as US1.
+
+**Acceptance Scenarios**:
+
+1. **Given** orphaned test-server processes on the host, **When** the probe
    next fires, **Then** they are reaped, the count is reported, and a count
    above the configured threshold raises an alert through US1 — this is the
    2026-08-11 outage class, and it is the one thing the probe does that systemd
    cannot.
-4. **Given** the worker process killed, **When** the probe next fires against a
+2. **Given** the worker process killed, **When** the probe next fires against a
    dead unit, **Then** an alert is delivered naming the unit and the outage
    duration, while the unit is still down.
-5. **Given** a repeatedly failing unit, **When** it restarts, **Then** the
-   restart rate is bounded — a restart loop during a memory storm deepens it,
-   and giving up loudly beats flapping quietly.
-6. **Given** installed units, **When** `ergane worker uninstall` runs, **Then**
-   exactly the units install created are removed, the config file is untouched,
-   and any pre-existing unit of the same name that the engine did not write is
-   reported rather than deleted.
-7. **Given** a probe firing on its interval against an unchanged healthy stack,
+3. **Given** a probe firing on its interval against an unchanged healthy stack,
    **When** it completes, **Then** no alert is sent — alerts are edge-triggered
    on a status change — **and** a periodic heartbeat is sent on its own much
    longer interval, so operator silence stays distinguishable from a dead probe.
-8. **Given** a degraded stack, **When** the probe runs, **Then** it reports and
+   A test that observes only one run cannot tell edge-triggered from
+   always-silent; the second identical run is the assertion.
+4. **Given** a degraded stack, **When** the probe runs, **Then** it reports and
    does not restart anything — systemd owns restarts, and restarting into an
    already-dying host deepens a memory storm rather than ending it.
-9. **Given** a probe that cannot deliver its alert at all, **When** it runs,
+5. **Given** a probe that cannot deliver its alert at all, **When** it runs,
    **Then** it says so loudly in its own output and exits non-zero — a probe
    that cannot escalate is otherwise indistinguishable from a healthy floor,
    which is the exact failure this unit exists to end.
@@ -347,9 +388,13 @@ US1:
 US2:
   depends_on: []
   depends_on_merged: [US1]
-  implements: [FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-012, FR-013, FR-014, FR-015]
-US3:
+  implements: [FR-003, FR-004, FR-005, FR-008, FR-012]
+US4:
   depends_on: []
   depends_on_merged: [US2]
+  implements: [FR-006, FR-007, FR-013, FR-014, FR-015]
+US3:
+  depends_on: []
+  depends_on_merged: [US2, US4]
   implements: [FR-009, FR-010, FR-011]
 ```
