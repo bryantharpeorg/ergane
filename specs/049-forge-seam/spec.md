@@ -1,5 +1,21 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/049-forge-seam --default-branch ergane-buildout` observed every
+# story in git: US1 fde4309d, US2 784c03ba, US3 6ca72111, US4 0f8f6b36, US5 63760c17, US6 1bfc8c8b.
+# Every story passed the real bwrap boundary gate and an LLM judge on a diff
+# that fit whole, each with truncated_input=False.
+#
+# The work graph was rewritten mid-epic (#125) to cut depth from six to four,
+# which let US2, US3 and US5 build concurrently -- and cost an ejection from
+# the merge queue when US3 landed under US5. `depends_on_merged` models what a
+# story needs to EXIST, not what it will TOUCH, and all three extended
+# `factory/mergequeue/forge.py`.
+#
+# SC-001 was repaired before US6 was dispatched: it demanded the onboarding
+# profile be unchanged "finding for finding" while US2-S4 mandates a distinct
+# new finding, so no correct implementation could satisfy both. The US2
+# implementer reported it rather than picking a reading quietly.
 # Flipped to ready 2026-08-16 by the operator session after reading the three
 # documents. What decided it: the spec does the design act rather than the
 # renaming act. It derives six forge-neutral questions from what the factory

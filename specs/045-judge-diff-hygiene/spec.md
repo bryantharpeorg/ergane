@@ -1,5 +1,12 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/045-judge-diff-hygiene --default-branch ergane-buildout` observed every
+# story in git: US1 7ad68fd8, US2 fbf06664, US3 c12df24d.
+# Every story passed the real bwrap boundary gate and an LLM judge on a diff
+# that fit whole. This is the spec whose FR-003 the operator's own eject-mode
+# driver was bypassing -- the admission control it specifies is what caught the
+# six oversized landings on 2026-08-16, once the driver was fixed to run it.
 # Drafted 2026-08-15 by an operator session, from three open critical findings
 # sharing one mechanism: `mergequeue/agent-session-home-lands-on-the-landing-branch`,
 # `verify/judge-cannot-see-a-large-diff`, and

@@ -1,5 +1,15 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/041-escalation-workflow --default-branch ergane-buildout` observed every
+# story in git: US1 63b52d85, US2 1461b424, US3 faa4e7fd, US4 1fdac912.
+# Every story passed the real bwrap boundary gate and an LLM judge on a diff
+# measured through `size_refusal`. US1 and US2 landed on diffs later found to
+# exceed the judge's input ceiling -- 93,381 and 131,078 bytes -- because the
+# operator's driver called `run_judge` directly and skipped the admission
+# control `check_output` runs in front of it (045 FR-003). Both were re-judged
+# by chunking on 2026-08-16: US1 4 of 4, US2 7 of 7 on the union. Nothing was
+# reverted, and the driver now refuses an oversized diff.
 # Split out of 033-ergane-install on 2026-08-13. 033 as drafted carried seven
 # stories across three unrelated domains — a config parser, a Temporal workflow
 # type, and systemd unit management. This spec is the middle one: escalation
@@ -23,7 +33,6 @@ depends_on_landed: [008-operator-channel, 033-ergane-install]
 
 **Created**: 2026-08-13
 
-**Status**: Draft
 
 **Input**: An operator challenge during the 2026-08-11 provisioning session —
 "shouldn't an escalation be a Temporal-hosted thing, a workflow type?" —

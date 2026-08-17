@@ -1,5 +1,15 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/047-durable-salvage --default-branch ergane-buildout` observed every
+# story in git: US1 ce66bc31, US2 73da830a, US3 9112e5da.
+# Every story passed the real bwrap boundary gate and an LLM judge on a diff
+# that fit whole; US3 judged 6 of 6 at 34,961 bytes. US3's mutation battery
+# found two defects in its own tests before landing: a `git fetch` inserted
+# into a read-only path survived the entire suite because every ref it could
+# create already existed, and `ls-remote` matched the tail of a ref name, so
+# the naive reader reported a node's work as safely off-machine when it sat on
+# one disk.
 # Flipped to ready 2026-08-16 by the operator session on Bryan's instruction,
 # after an operator read of all three documents: every criterion is decidable
 # from a diff, the two seam-disabled controls (SC-002, SC-004) are what make the

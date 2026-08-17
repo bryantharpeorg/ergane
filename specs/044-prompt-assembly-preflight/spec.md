@@ -1,5 +1,11 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/044-prompt-assembly-preflight --default-branch ergane-buildout` observed every
+# story in git: US1 cca9fd5c, US2 3a8a3ddd, US3 b193b01c.
+# Every story passed the real bwrap boundary gate and an LLM judge. US3's diff
+# measured 68,059 bytes and was re-judged by chunking on 2026-08-16: 4 of 4 on
+# the union.
 # Drafted 2026-08-15 by an operator session, same morning as the incident in the
 # Context. Scaffolded by hand, not by `ergane findings promote`; the driving
 # finding is `interpreter/prompt-assembly-fails-only-at-dispatch` (critical,

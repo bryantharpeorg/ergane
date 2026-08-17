@@ -1,5 +1,20 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-16 by an operator session, after `ergane spec landed
+# specs/048-declared-control-plane --default-branch ergane-buildout` observed every
+# story in git: US1 1b2c1b6a, US2 f390a449, US3 5b439d42, US4 c00c9981.
+# Every story passed the real bwrap boundary gate and an LLM judge on a diff
+# that fit whole; US4 judged 5 of 5 at 60,533 bytes with truncated_input=False.
+# US4's first full gate failed on
+# `test_hanging_agent_is_killed_at_deadline_with_no_survivors`, established as
+# unrelated by control -- that test alone passes in bwrap on this branch and on
+# the clean tip, the full gate passes on the clean tip, and the re-run passes
+# here. Filed as `ci/the-deadline-boundary-test-fails-intermittently-in-the-full-suite`.
+#
+# US4 also produced the `.pyc` finding this repository now carries as a trap in
+# every plan: CPython validates a cached bytecode file on (mtime-seconds, size)
+# only, so two same-size mutants written inside one wall-clock second make the
+# second run execute the first's bytecode.
 # Flipped to ready 2026-08-16 by the operator session after reading all three
 # documents. What decided it: every scenario ends "proven by a committed test",
 # and the anti-vacuity is designed rather than asserted — US1-S3 binds the config
