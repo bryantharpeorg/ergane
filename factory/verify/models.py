@@ -39,7 +39,7 @@ definitions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Sequence
 
@@ -422,6 +422,10 @@ class VerificationResult:
     scenarios). `judge_unavailable` marks the one PASS that was reached without
     judge agreement; `criteria_drift` marks a spec that changed under the node
     and flags the row without touching `verdict`.
+
+    `provenance` is None for agent-completed work and a non-empty string for
+    externally-completed work (035-US1, FR-005). It is stored in the evidence
+    row so the record of *who* completed the work travels with the verdict.
     """
 
     epic_id: str
@@ -438,6 +442,7 @@ class VerificationResult:
     spec_ref: str
     started_at: str
     finished_at: str
+    provenance: str | None = None
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:
@@ -546,6 +551,45 @@ def compose_result(
         started_at=started_at,
         finished_at=finished_at,
     )
+
+
+def compose_result_with_provenance(
+    *,
+    epic_id: str,
+    node_id: str,
+    attempt: int,
+    form: VerificationForm,
+    gate_results: Sequence[GateResult],
+    output_check: OutputCheck,
+    judge: JudgeVerdict | None,
+    criteria_sha256: str,
+    spec_ref: str,
+    started_at: str,
+    finished_at: str,
+    provenance: str,
+    criteria_drift: bool = False,
+) -> VerificationResult:
+    """Compose a result for externally-supplied work (035-US1).
+
+    The caller has already decided this attempt is externally completed, so the
+    provenance is required and non-empty. This is the same composition as
+    `compose_result` with the provenance field pinned.
+    """
+    result = compose_result(
+        epic_id=epic_id,
+        node_id=node_id,
+        attempt=attempt,
+        form=form,
+        gate_results=gate_results,
+        output_check=output_check,
+        judge=judge,
+        criteria_sha256=criteria_sha256,
+        spec_ref=spec_ref,
+        started_at=started_at,
+        finished_at=finished_at,
+        criteria_drift=criteria_drift,
+    )
+    return replace(result, provenance=provenance)
 
 
 # Ladder entities (pure) -----------------------------------------------------

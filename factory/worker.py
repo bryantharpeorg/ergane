@@ -115,6 +115,8 @@ ACTIVITIES = [
     verify_activities.check_output,
     verify_activities.run_judge,
     verify_activities.record_verification,
+    # 035-US1: external completion signal decisions are recorded by the epic.
+    verify_activities.record_external_completion,
     # 008 — the operator-question marker: a read-only scan over the archived
     # transcript (FR-010). Registered beside the ladder it runs before, so a
     # node that asks a blocking question parks rather than hangs on a missing

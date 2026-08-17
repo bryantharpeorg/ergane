@@ -64,6 +64,7 @@ import hashlib
 import os
 from contextlib import closing
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -480,12 +481,29 @@ async def record_verification(
     moment, and a rerun rebuilds exactly the same unaccountable row.
     """
     _require_attribution(request.result)
+    _require_provenance_when_external(request.result)
     result = _with_drift(request.result, request.criteria_source_path)
 
     with closing(store.connect(_store_path())) as conn:
         row_id = store.upsert_result(conn, result)
 
     return RecordedVerification(row_id=row_id, criteria_drift=result.criteria_drift)
+
+
+def _require_provenance_when_external(result: VerificationResult) -> None:
+    """Refuse an external completion that would store no provenance (035-US1 FR-005).
+
+    The column is nullable in the schema because agent-completed work has none,
+    but the external-completion path must not be able to write a row without it.
+    """
+    if result.provenance is None:
+        return
+    if not result.provenance.strip():
+        raise ApplicationError(
+            "external completion provenance must be a non-empty string",
+            type=ATTRIBUTION_INCOMPLETE,
+            non_retryable=True,
+        )
 
 
 def _require_attribution(result: VerificationResult) -> None:
@@ -509,6 +527,50 @@ def _require_attribution(result: VerificationResult) -> None:
         type=ATTRIBUTION_INCOMPLETE,
         non_retryable=True,
     )
+
+
+@dataclass(frozen=True)
+class RecordExternalCompletionInput:
+    """One external-completion signal decision to log (035-US1)."""
+
+    epic_id: str
+    node_id: str
+    branch: str
+    provenance: str
+    accepted: bool
+    reason: str | None
+
+
+@activity.defn
+async def record_external_completion(
+    request: RecordExternalCompletionInput,
+) -> int:
+    """Log an accepted or refused external-completion signal.
+
+    Idempotent in intent, not by key: every signal the workflow decides on gets
+    its own row, because a refusal that is silently dropped is the defect this
+    feature exists to prevent.
+    """
+    with closing(store.connect(_store_path())) as conn:
+        return store.record_external_completion_signal(
+            conn,
+            epic_id=request.epic_id,
+            node_id=request.node_id,
+            branch=request.branch,
+            provenance=request.provenance,
+            accepted=request.accepted,
+            reason=request.reason,
+            recorded_at=_now(),
+        )
+
+
+def _now() -> str:
+    """ISO-8601 UTC timestamp for store rows."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+# Keep the old module-level `_now` shadow visible for any internal callers.
+now = _now
 
 
 def _is_blank(value: object) -> bool:

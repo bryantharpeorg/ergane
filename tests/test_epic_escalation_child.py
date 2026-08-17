@@ -204,7 +204,12 @@ def test_the_signal_handlers_moved_to_the_children() -> None:
     declaring no `question_answered` is equally consistent with the handler
     having been deleted, which would strand every reply.
     """
-    assert signal_names(EpicWorkflow) == {"pause_epic", "resume_epic", "kill_epic"}
+    assert signal_names(EpicWorkflow) == {
+        "pause_epic",
+        "resume_epic",
+        "kill_epic",
+        "complete_node_externally",
+    }
     assert signal_names(QuestionWorkflow) == {QUESTION_SIGNAL_NAME}
 
 

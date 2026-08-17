@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS verification_results (
     spec_ref          TEXT    NOT NULL CHECK (spec_ref <> ''),
     started_at        TEXT    NOT NULL,   -- ISO-8601 UTC
     finished_at       TEXT    NOT NULL,
+    -- 035-US1: non-NULL for externally-completed work, otherwise NULL.
+    provenance        TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
@@ -86,6 +88,22 @@ CREATE TABLE IF NOT EXISTS questions (
 
 CREATE INDEX IF NOT EXISTS idx_q_pending ON questions (resolution) WHERE resolution IS NULL;
 CREATE INDEX IF NOT EXISTS idx_q_node    ON questions (epic_id, node_id);
+
+-- 035-US1: every external-completion signal the workflow receives, accepted or
+-- refused. The signal is buffered by the workflow and validated at the ladder
+-- decision point, so this log records what happened rather than what was sent.
+CREATE TABLE IF NOT EXISTS external_completion_signals (
+    id          INTEGER PRIMARY KEY,
+    epic_id     TEXT    NOT NULL CHECK (epic_id <> ''),
+    node_id     TEXT    NOT NULL CHECK (node_id <> ''),
+    branch      TEXT    NOT NULL CHECK (branch <> ''),
+    provenance  TEXT    NOT NULL CHECK (provenance <> ''),
+    accepted    INTEGER NOT NULL DEFAULT 0 CHECK (accepted IN (0, 1)),
+    reason      TEXT,
+    recorded_at TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_extcomp_epic_node ON external_completion_signals (epic_id, node_id);
 
 -- Canonical queries -----------------------------------------------------------
 

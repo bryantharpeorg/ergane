@@ -413,6 +413,9 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
         "worktree_path", "write_scope"
     ),
     "factory.activities.verify_activities.DetectQuestionInput": ("transcript_path",),
+    "factory.activities.verify_activities.RecordExternalCompletionInput": (
+        "epic_id", "node_id", "branch", "provenance", "accepted", "reason"
+    ),
     "factory.activities.verify_activities.RecordVerificationInput": ("result",),
     "factory.activities.verify_activities.RecordedVerification": (
         "row_id", "criteria_drift"

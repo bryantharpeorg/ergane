@@ -107,6 +107,8 @@ EXPECTED_RESULT_COLUMNS: list[tuple[str, str, int, int]] = [
     ("spec_ref", "TEXT", 1, 0),
     ("started_at", "TEXT", 1, 0),
     ("finished_at", "TEXT", 1, 0),
+    # 035-US1: non-NULL for externally-completed work, otherwise NULL.
+    ("provenance", "TEXT", 0, 0),
 ]
 
 EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
@@ -390,11 +392,12 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 3 since 041-US2 added `escalations.check_evidence`. The literal is here on
-    # purpose: a bump is a claim that every existing store has a migration path,
-    # and `tests/test_escalation_record.py` is where that claim is checked
-    # against a store built in the previous shape.
-    assert SCHEMA_VERSION == 3
+    # 4 since 035-US1 added `verification_results.provenance` and the
+    # `external_completion_signals` log. The literal is here on purpose: a bump
+    # is a claim that every existing store has a migration path, and
+    # `tests/test_escalation_record.py` is where that claim is checked against a
+    # store built in the previous shape.
+    assert SCHEMA_VERSION == 4
     assert versions == [SCHEMA_VERSION]
 
 

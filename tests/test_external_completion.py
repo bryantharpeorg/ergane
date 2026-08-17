@@ -41,12 +41,19 @@ from factory.activities.merge_activities import (
     ValidateTargetRepoInput,
 )
 from factory.activities.usage_activities import IssueKeyInput, TeardownInput
+from factory.activities.notify_activities import (
+    SendEscalationInput,
+    SentEscalation,
+    send_escalation,
+)
 from factory.activities.verify_activities import (
     CheckOutputInput,
     DetectQuestionInput,
     RecordVerificationInput,
     RunGatesInput,
     SnapshotCriteriaInput,
+    record_external_completion,
+    record_verification as _real_record_verification,
 )
 from factory.cli.main import main as ergane_main
 from factory.config import Persona, WriteScope
@@ -77,17 +84,22 @@ from factory.workgraph.derive import derive_workgraph
 from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
+    EpicState,
     ResolvedNode,
     ResolvedPersona,
     WorkGraph,
+    WorkNode,
     validate_workgraph,
 )
 from factory.workgraph.workflow import (
     JUDGE_PERSONA,
     TASK_QUEUE,
     EpicInput,
+    EpicStatus,
     EpicWorkflow,
+    NodeStatus,
 )
+from factory.escalation.workflow import EscalationWorkflow
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
 from tests.target_repo import add_worktree, build_target_repo
 from tests.test_ergane_build import (
@@ -119,7 +131,16 @@ PERSONAS = {
 }
 
 PLAN_TEXT = "# Plan\n\nDo the thing.\n"
-TASKS_TEXT = "# Tasks\n\n- [ ] T001 Do the thing\n"
+TASKS_TEXT = """# Tasks
+
+## Phase 1: User Story 1 - The operator hands finished work back
+
+- [ ] T001 Accept the external completion signal
+
+## Phase 2: User Story 2 - A later node
+
+- [ ] T002 Run after US1
+"""
 
 
 @pytest.fixture
@@ -224,9 +245,43 @@ def _make_spec_text() -> str:
 
 Operator hand-back.
 
+## User Scenarios & Testing
+
+### User Story 1 - The operator hands finished work back (Priority: P1)
+
+An operator completes a stuck node.
+
+**Independent Test**: Signal complete_node_externally for an exhausted node.
+
+**Acceptance Scenarios**:
+
+1. **Given** a stuck node, **When** the operator signals completion, **Then** the node verifies and lands.
+
+### User Story 2 - A later node (Priority: P1)
+
+A node that waits until US1 finishes.
+
+**Independent Test**: It runs after US1.
+
+**Acceptance Scenarios**:
+
+1. **Given** US1 completed, **When** US2 runs, **Then** it passes.
+
+## Requirements
+
+- **FR-001**: The system MUST accept an external completion signal.
+- **FR-002**: The system MUST run US2 after US1.
+
 ## Work Graph
 
-- US1 [P1] The operator hands finished work back, and it is recorded as theirs
+```yaml
+US1:
+  depends_on: []
+  implements: [FR-001]
+US2:
+  depends_on: [US1]
+  implements: [FR-002]
+```
 """
 
 
@@ -289,16 +344,20 @@ class ConfigurableScript:
         output_check: OutputCheck,
         pause_at: str | None = None,
         live_snapshot: UsageSnapshot | None = None,
+        hold_verification_at: tuple[str, int] | None = None,
     ) -> None:
         self._spec_text = spec_text
         self._gate_results = gate_results
         self._output_check = output_check
         self._pause_at = pause_at
         self.live_snapshot = live_snapshot
+        self._hold_verification_at = hold_verification_at
 
         self.attempts: list[AttemptContext] = []
         self.paused = asyncio.Event()
         self._released = asyncio.Event()
+        self._verification_released = asyncio.Event()
+        self.verification_holding = asyncio.Event()
         self._gate_index = 0
 
     async def wait_for_pause(self, timeout: float = 30.0) -> None:
@@ -306,6 +365,12 @@ class ConfigurableScript:
 
     def release(self) -> None:
         self._released.set()
+
+    def release_verification(self) -> None:
+        self._verification_released.set()
+
+    async def wait_for_verification_hold(self, timeout: float = 30.0) -> None:
+        await asyncio.wait_for(self.verification_holding.wait(), timeout=timeout)
 
     def gate_result(self) -> list[GateResult]:
         if self._gate_index < len(self._gate_results):
@@ -454,12 +519,20 @@ class ConfigurableScript:
             return script._output_check
 
         @activity.defn(name="record_verification")
-        async def record_verification(
-            request: RecordVerificationInput,
-        ) -> Any:
-            from factory.activities.verify_activities import RecordedVerification
+        async def record_verification(request: RecordVerificationInput) -> Any:
+            if script._hold_verification_at is not None:
+                node_id, attempt = script._hold_verification_at
+                if (
+                    request.result.epic_id == EPIC_ID
+                    and request.result.node_id == node_id
+                    and request.result.attempt == attempt
+                ):
+                    script.verification_holding.set()
+                    await asyncio.wait_for(
+                        script._verification_released.wait(), timeout=30
+                    )
 
-            return RecordedVerification(row_id=1, criteria_drift=False)
+            return await _real_record_verification(request)
 
         @activity.defn(name="teardown_attempt")
         async def teardown_attempt(request: TeardownInput) -> UsageRecord:
@@ -517,12 +590,14 @@ class ConfigurableScript:
         @activity.defn(name="poll_landing")
         async def poll_landing(request: PollLandingInput) -> PrSnapshot:
             return PrSnapshot(
-                number=request.pr_number,
                 state="MERGED",
-                head_sha="0" * 40,
-                merge_commit_sha="1" * 40,
-                conclusion="SUCCESS",
-                checks=[],
+                is_draft=False,
+                auto_merge_requested=False,
+                merge_state_status="CLEAN",
+                merged_at="2026-08-17T00:00:00Z",
+                closed_at=None,
+                failing_required_checks=(),
+                observed_at="2026-08-17T00:00:01Z",
             )
 
         @activity.defn(name="disable_auto_merge")
@@ -537,6 +612,20 @@ class ConfigurableScript:
 
             return QuestionMarker(is_question=False)
 
+        @activity.defn(name="send_escalation")
+        async def send_escalation(request: SendEscalationInput) -> SentEscalation:
+            return SentEscalation(
+                escalation_id="esc-000000000000",
+                delivered=False,
+                expires_at="2026-08-17T01:00:00Z",
+            )
+
+        @activity.defn(name="expire_escalation")
+        async def expire_escalation(request: Any) -> Any:
+            from factory.activities.notify_activities import ExpiredEscalation
+
+            return ExpiredEscalation(final_state="EXPIRED")
+
         return [
             validate_target_repo,
             resolve_graph,
@@ -550,6 +639,7 @@ class ConfigurableScript:
             run_gates,
             check_output,
             record_verification,
+            record_external_completion,
             teardown_attempt,
             salvage_worktree,
             remove_worktree,
@@ -559,6 +649,8 @@ class ConfigurableScript:
             poll_landing,
             disable_auto_merge,
             detect_operator_question_activity,
+            send_escalation,
+            expire_escalation,
         ]
 
 
@@ -566,15 +658,26 @@ def worker_for(env: WorkflowEnvironment, script: ConfigurableScript) -> Worker:
     return Worker(
         env.client,
         task_queue=TASK_QUEUE,
-        workflows=[EpicWorkflow],
+        workflows=[EpicWorkflow, EscalationWorkflow],
         activities=script.activities(),
     )
 
 
-async def settle_epic(env: WorkflowEnvironment) -> Any:
+async def settle_epic(env: WorkflowEnvironment) -> EpicStatus:
     handle = env.client.get_workflow_handle(WORKFLOW_ID)
     await env.sleep(timedelta(seconds=LANDING_POLL_INTERVAL_S + 1))
-    return await handle.result()
+    raw = await handle.result()
+    return _reconstruct_status(raw)
+
+
+def _reconstruct_status(raw: Any) -> EpicStatus:
+    from factory.workgraph.models import EpicState
+    from factory.workgraph.workflow import NodeStatus
+
+    if isinstance(raw, EpicStatus):
+        return raw
+    nodes = {k: NodeStatus(**v) for k, v in raw["nodes"].items()}
+    return EpicStatus(epic_state=EpicState(raw["epic_state"]), nodes=nodes)
 
 
 def _start_epic_input(graph: WorkGraph, **overrides: Any) -> EpicInput:
@@ -642,8 +745,7 @@ async def test_external_completion_signal_refused_for_pending_node(
     )
 
     async with worker_for(env, script):
-        handle = env.client.get_workflow_handle(WORKFLOW_ID)
-        await handle.start(
+        await env.client.start_workflow(
             EpicWorkflow.run,
             _start_epic_input(load_workgraph(workgraph_json)),
             id=WORKFLOW_ID,
@@ -690,8 +792,7 @@ async def test_external_completion_signal_refused_for_running_node(
     )
 
     async with worker_for(env, script):
-        handle = env.client.get_workflow_handle(WORKFLOW_ID)
-        await handle.start(
+        await env.client.start_workflow(
             EpicWorkflow.run,
             _start_epic_input(load_workgraph(workgraph_json)),
             id=WORKFLOW_ID,
@@ -736,11 +837,11 @@ async def test_external_completion_signal_refused_when_attempts_remain(
             artifacts_present=None,
             passed=True,
         ),
+        hold_verification_at=("us1", 1),
     )
 
     async with worker_for(env, script):
-        handle = env.client.get_workflow_handle(WORKFLOW_ID)
-        await handle.start(
+        await env.client.start_workflow(
             EpicWorkflow.run,
             EpicInput(
                 graph=load_workgraph(workgraph_json),
@@ -750,10 +851,10 @@ async def test_external_completion_signal_refused_when_attempts_remain(
             id=WORKFLOW_ID,
             task_queue=TASK_QUEUE,
         )
-        # Wait for the first failure to land in the store.
-        await asyncio.sleep(0.5)
-        # The node is between attempts; the ladder still has budget for a retry.
+        await script.wait_for_verification_hold()
+        # The first attempt has been recorded; the ladder still has budget for a retry.
         await _signal(env, "us1", "factory/external_completion/us1", "operator:finished-us1")
+        script.release_verification()
 
         result = await settle_epic(env)
 
@@ -784,18 +885,17 @@ async def test_external_completion_accepts_exhausted_node_and_lands(
             artifacts_present=None,
             passed=True,
         ),
+        hold_verification_at=("us1", 1),
     )
 
     async with worker_for(env, script):
-        handle = env.client.get_workflow_handle(WORKFLOW_ID)
-        await handle.start(
+        await env.client.start_workflow(
             EpicWorkflow.run,
             _start_epic_input(load_workgraph(workgraph_json)),
             id=WORKFLOW_ID,
             task_queue=TASK_QUEUE,
         )
-        # Wait for the single attempt to exhaust the ladder.
-        await asyncio.sleep(0.5)
+        await script.wait_for_verification_hold()
 
         await _signal(
             env,
@@ -803,6 +903,7 @@ async def test_external_completion_accepts_exhausted_node_and_lands(
             "factory/external_completion/us1",
             "operator:completed-us1-after-exhaustion",
         )
+        script.release_verification()
 
         result = await settle_epic(env)
 
@@ -833,17 +934,17 @@ async def test_external_completion_records_provenance_and_is_non_nullable_on_pat
             artifacts_present=None,
             passed=True,
         ),
+        hold_verification_at=("us1", 1),
     )
 
     async with worker_for(env, script):
-        handle = env.client.get_workflow_handle(WORKFLOW_ID)
-        await handle.start(
+        await env.client.start_workflow(
             EpicWorkflow.run,
             _start_epic_input(load_workgraph(workgraph_json)),
             id=WORKFLOW_ID,
             task_queue=TASK_QUEUE,
         )
-        await asyncio.sleep(0.5)
+        await script.wait_for_verification_hold()
 
         await _signal(
             env,
@@ -851,6 +952,7 @@ async def test_external_completion_records_provenance_and_is_non_nullable_on_pat
             "factory/external_completion/us1",
             "operator:provenance-required",
         )
+        script.release_verification()
 
         await settle_epic(env)
 
@@ -878,17 +980,17 @@ async def test_external_completion_fails_when_work_breaks_gates(
             artifacts_present=None,
             passed=True,
         ),
+        hold_verification_at=("us1", 1),
     )
 
     async with worker_for(env, script):
-        handle = env.client.get_workflow_handle(WORKFLOW_ID)
-        await handle.start(
+        await env.client.start_workflow(
             EpicWorkflow.run,
             _start_epic_input(load_workgraph(workgraph_json)),
             id=WORKFLOW_ID,
             task_queue=TASK_QUEUE,
         )
-        await asyncio.sleep(0.5)
+        await script.wait_for_verification_hold()
 
         # External work also fails the gate.
         script._gate_results = [[ConfigurableScript._fail_gate()], [ConfigurableScript._fail_gate()]]
@@ -898,6 +1000,7 @@ async def test_external_completion_fails_when_work_breaks_gates(
             "factory/external_completion/us1",
             "operator:bad-work",
         )
+        script.release_verification()
 
         result = await settle_epic(env)
 
