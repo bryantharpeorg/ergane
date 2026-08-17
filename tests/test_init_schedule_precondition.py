@@ -185,9 +185,13 @@ def test_no_schedule_is_created_when_the_control_plane_cannot_be_read(
 
     assert result.code == EXIT_OK, result.stderr
     assert floor.schedules == {}, f"a schedule was published: {list(floor.schedules)}"
-    # Supporting, never load-bearing: the state above is the claim, and this
-    # says the refusal happened before the control plane was touched at all.
-    assert floor.calls == [], f"the control plane was reached: {floor.calls}"
+    # Supporting, never load-bearing: the state above is the claim.  Writes
+    # only — the readiness report `init` ends with still *describes* the
+    # schedule to judge it, which is a read, predates this story, and is not
+    # what FR-001 forbids.  Asserting no call at all would make this test fail
+    # for a reason that has nothing to do with the precondition.
+    writes = [call for call in floor.calls if call[0] != "describe"]
+    assert writes == [], f"the control plane was written to: {writes}"
 
 
 # --- T002 / US1-S1, FR-003: the line names the cause, the remedy and where ----

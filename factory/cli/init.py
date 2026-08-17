@@ -463,7 +463,14 @@ def init_command(args: argparse.Namespace) -> int:
     # The scheduler, before wiring: a GitHub refusal must not cost the repo the
     # thing that makes a `ready` spec dispatch, and an unreachable control plane
     # must not cost it the wiring (FR-017).  Neither step can abort the other.
-    schedule_line = _schedule(repo_root, slug)
+    #
+    # 050/FR-001: the readability of the control plane is decided *here*, above
+    # the one act of init that publishes to shared infrastructure, and handed
+    # down.  Every fact needed to refuse was already in hand when the schedule
+    # that produced this spec was created — it was simply computed afterwards.
+    schedule_line = _schedule(
+        repo_root, slug, control_plane_reason=_control_plane_reason()
+    )
 
     # Wiring runs last, after the repo-local half is complete and recorded, so a
     # refusal from GitHub's side never costs the operator the scaffold.
@@ -558,13 +565,84 @@ def _wire(
     return lines
 
 
-def _schedule(repo_root: Path, slug: str) -> str:
+def _control_plane_reason() -> str | None:
+    """Why this host's control-plane config cannot be read, or `None` when it can.
+
+    A file read, not a probe.  The question 050/FR-001 asks is the cheap one —
+    does the operator have a control plane at all, the thing `ergane install`
+    writes — and it is deliberately not the probe suite: `_control_plane_facts`
+    reaches the network, and a precondition that cost a round trip per init
+    would be one the next person moved back below the act it guards.
+
+    Every exception is caught and rendered, in the same idiom and the same
+    vocabulary `_control_plane_facts` already uses for the readiness report, so
+    an operator meets one phrasing rather than two (FR-003).  An escape here
+    would cost the repository its scaffold, which is the outcome FR-017 spent a
+    whole failure branch avoiding.
+    """
+    from factory.controlplane.config import load_controlplane_config
+
+    try:
+        load_controlplane_config()
+    except Exception as error:  # noqa: BLE001 - a precondition must never abort init
+        return f"{type(error).__name__}: {error}"
+    return None
+
+
+def _schedule_target() -> str:
+    """Which Temporal a schedule from this repository would have reached.
+
+    Named in the refusal on purpose.  FR-001 catches a fresh machine, where
+    nothing is listening — it does *not* catch a machine already running a
+    control plane on the namespace the fallback happens to pick, which is how
+    the schedule this spec was filed for came to exist: an `env -i` init found a
+    live namespace nobody had declared, passed every readability check, and
+    published into it.  Saying which namespace, and which source chose it, is
+    what turns that from a bare success into a visible mismatch.
+
+    Resolution itself refuses on a config it cannot use, so the answer is
+    guarded: this is reached only when the control plane is already unreadable,
+    and a refusal message is the last place that may raise.
+    """
+    try:
+        from factory.controlplane.resolve import resolve_temporal_target
+
+        target = resolve_temporal_target()
+    except Exception as error:  # noqa: BLE001 - see above; never raises
+        return f"a Temporal that could not be resolved ({type(error).__name__}: {error})"
+    return (
+        f"Temporal at {target.address} in namespace '{target.namespace}' "
+        f"({target.namespace_source})"
+    )
+
+
+def _schedule(repo_root: Path, slug: str, *, control_plane_reason: str | None) -> str:
     """Create or reconcile this repo's roadmap schedule, and report one line.
 
     Never raises (FR-017).  The manifest is re-read from disk rather than taken
     from the interview's values, so what steers the schedule is exactly what the
     operator will commit.
+
+    This is the only act of `ergane init` whose blast radius reaches past the
+    repository being joined, and the only one another person can observe — so it
+    is the only one with a precondition (050/FR-001).  `control_plane_reason` is
+    that precondition's answer, computed once by the caller rather than here so
+    the readiness report can share the single evaluation (FR-006).  A refusal is
+    a *failed step*, never an exception: the second instance of a branch this
+    function already had, because a control plane that is not there must not cost
+    the operator the scaffold, the registry row or the wiring (FR-002).
     """
+    if control_plane_reason is not None:
+        return roadmap_schedule.format_step(
+            roadmap_schedule.ScheduleStep(
+                roadmap_schedule.FAILED,
+                roadmap_schedule.schedule_id_for(slug),
+                f"refused: the control plane could not be read, so no schedule "
+                f"was created — {control_plane_reason} — and `ergane install` is "
+                f"what creates it; a schedule for this repository would "
+                f"otherwise have gone to {_schedule_target()}",
+            )
+        )
     try:
         config = load_factory_config(repo_root / MANIFEST_NAME)
     except FactoryConfigError as problem:
