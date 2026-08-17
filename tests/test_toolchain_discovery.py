@@ -655,3 +655,49 @@ def test_a_gate_on_a_host_without_uv_refuses_by_name_before_it_forks(
     assert outcome.exit_code == 127, f"a refusal is a 127, got {outcome.exit_code}"
     assert "'uv'" in outcome.output, f"the refusal must name the tool: {outcome.output}"
     assert not outcome.timed_out
+
+
+# --- the sandbox environment is built, not inherited -------------------------
+
+
+def test_the_agent_sandbox_clears_the_inherited_environment(
+    planted: PlantedHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sandbox must start from an empty environment, not the worker's.
+
+    `attempt_env` builds an allowlist so a credential is absent by omission, and
+    the host backend applies it by passing `env=`. The bwrap backend does not:
+    it launches without `env=`, and bwrap forwards its own environment unless
+    told otherwise, so the allowlist decided nothing about what the child could
+    read. Measured 2026-08-17 on a live implementer node — its `pytest` child
+    held `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, and `tests/test_live_notify.py`
+    (which skips only when those are absent) sent a real escalation to the
+    operator's chat on every suite run the agent performed.
+
+    Reverting the `--clearenv` fails this test.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567:must-never-reach-an-agent")
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-must-never-reach-an-agent")
+
+    argv = BwrapBackend()._build_argv(_agent_invocation(planted))
+
+    assert "--clearenv" in argv, (
+        "the agent sandbox inherits the worker's environment: bwrap forwards its "
+        f"own env unless --clearenv is passed, and it is absent from {argv}"
+    )
+
+    # Order is load-bearing: bwrap keeps what --setenv sets *after* the clear,
+    # and drops everything before it. A --clearenv trailing the --setenv flags
+    # would erase HOME and PATH and break every attempt.
+    cleared_at = argv.index("--clearenv")
+    set_positions = [i for i, token in enumerate(argv) if token == "--setenv"]
+    assert set_positions, "the sandbox sets no environment at all"
+    assert cleared_at < min(set_positions), (
+        f"--clearenv at {cleared_at} must precede every --setenv {set_positions}, "
+        "or the values the agent needs are cleared along with the ones it must not see"
+    )
+
+    # Nothing the allowlist excludes may be handed over explicitly either.
+    set_names = {argv[i + 1] for i in set_positions}
+    assert "TELEGRAM_BOT_TOKEN" not in set_names
+    assert "LITELLM_MASTER_KEY" not in set_names
