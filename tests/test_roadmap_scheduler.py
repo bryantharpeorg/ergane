@@ -341,6 +341,7 @@ class RoadmapWorld:
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
             roadmap_activities._open_epics_provider,
+            getattr(roadmap_activities, "_read_loop_config_runner", None),
             getattr(roadmap_activities, "check_aliases", None),
             preflight_mod.check_aliases,
         )
@@ -352,6 +353,7 @@ class RoadmapWorld:
         roadmap_activities._preflight_client = lambda proxy_url: None
         roadmap_activities._onboard = self._onboard
         roadmap_activities._open_epics_provider = self._open_epics_provider
+        roadmap_activities._read_loop_config_runner = self._read_loop_config
         # Route the shared `check_aliases` through this world's scripted
         # findings without touching the proxy. The activity imported the name
         # by reference, so patch the binding the activity actually calls —
@@ -377,9 +379,17 @@ class RoadmapWorld:
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
             roadmap_activities._open_epics_provider,
+            saved_read_loop_config,
             saved_check,
             saved_preflight_check,
         ) = self._saved
+        if saved_read_loop_config is not None:
+            roadmap_activities._read_loop_config_runner = saved_read_loop_config
+        else:
+            try:
+                delattr(roadmap_activities, "_read_loop_config_runner")
+            except AttributeError:
+                pass
         if saved_check is not None:
             roadmap_activities.check_aliases = saved_check
         else:
@@ -406,6 +416,12 @@ class RoadmapWorld:
 
     async def _open_epics_provider(self) -> set[str]:
         return set(self.open_epics())
+
+    def _read_loop_config(self, target_repo: str) -> Any:
+        from factory.activities.roadmap_activities import ReadLoopConfigResult
+        from factory.verify.models import VerificationConfig
+
+        return ReadLoopConfigResult(config=VerificationConfig(), verify_order=("gates", "diff_check", "judge"))
 
     def _derive_full(self, request) -> Any:
         """Default derive seam: the full pre-delta graph, no git baseline."""
@@ -487,6 +503,7 @@ async def run_roadmap(
         drift_for_spec,
         onboard_target,
         preflight_spec,
+        read_loop_config,
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
@@ -502,6 +519,7 @@ async def run_roadmap(
         count_open_epics,
         read_corpus_activity,
         read_spec_text_activity,
+        read_loop_config,
         record_roadmap_failure,
         reset_roadmap_failures,
         send_roadmap_notice,

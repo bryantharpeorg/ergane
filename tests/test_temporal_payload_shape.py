@@ -405,6 +405,10 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.activities.roadmap_activities.PreflightInput": (
         "graph", "proxy_url", "spec_dir"
     ),
+    "factory.activities.roadmap_activities.ReadLoopConfigInput": ("target_repo",),
+    "factory.activities.roadmap_activities.ReadLoopConfigResult": (
+        "config", "verify_order"
+    ),
     "factory.activities.usage_activities.IssueKeyInput": (
         "node_id", "epic_id", "attempt", "persona", "spec_ref"
     ),

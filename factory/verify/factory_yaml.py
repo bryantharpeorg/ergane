@@ -758,6 +758,19 @@ def load_factory_config_with_name(repo_root: str | Path) -> tuple[FactoryConfig,
     return load_factory_config(path), name
 
 
+def load_loop_config(repo_root: str | Path) -> tuple[VerificationConfig, tuple[str, ...]]:
+    """Dispatch-time loop config pinned from the operator clone's manifest.
+
+    This is the read that matters for the ladder: it happens before any node
+    worktree exists, so a worktree rewrite of the manifest cannot move the
+    budget or order (023 FR-002/FR-003). Callers that hold a path use
+    `resolve_manifest_path` + `load_factory_config` the same way the onboarding
+    gate does; the returned values are what ride `EpicInput`.
+    """
+    config, _ = load_factory_config_with_name(repo_root)
+    return config.ladder, config.verify_order
+
+
 # Reporting -------------------------------------------------------------------
 
 

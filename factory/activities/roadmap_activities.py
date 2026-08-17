@@ -60,6 +60,8 @@ from factory.workgraph.preflight import (
 )
 from factory.workgraph.workflow import JUDGE_PERSONA
 from factory.workgraph.worktree import landing_branch
+from factory.verify.factory_yaml import load_loop_config
+from factory.verify.models import VerificationConfig
 
 from factory.activities.merge_activities import (
     ValidateTargetRepoInput,
@@ -519,3 +521,57 @@ async def count_open_epics(request: CountOpenInput) -> CountOpenResult:
     """
     open_ids = await _open_epics_provider()
     return CountOpenResult(open_ids=tuple(sorted(open_ids)))
+
+
+# --- loop config: dispatch-time ladder + order read ---------------------------
+
+
+@dataclass(frozen=True)
+class ReadLoopConfigInput:
+    """The operator clone whose manifest decides this spec's loop (023 FR-002).
+
+    The target repo is a worker-host path; the workflow never touches the
+    filesystem, so this read runs as an activity and is pinned before the
+    child starts. A manifest that does not parse is a non-retryable refusal:
+    it will not become valid by being read again a moment later.
+    """
+
+    target_repo: str
+
+
+@dataclass(frozen=True)
+class ReadLoopConfigResult:
+    """The two loop facts that ride `EpicInput` into the child epic."""
+
+    config: VerificationConfig
+    verify_order: tuple[str, ...]
+
+
+#: Test seam for `read_loop_config`: production reads the clone's manifest;
+#: scheduler tests script a fixed result so the manifest file is not the subject.
+_read_loop_config_runner: Callable[[str], ReadLoopConfigResult] | None = None
+
+
+@activity.defn
+async def read_loop_config(request: ReadLoopConfigInput) -> ReadLoopConfigResult:
+    """Read the committed loop config from the operator clone (023 US2).
+
+    The read is pinned at dispatch time so the child epic's ladder and step
+    order are properties of the commit the roadmap saw, not of any worktree
+    the child may later write (trap 2, FR-002). `FactoryConfigError` is raised
+    as a non-retryable `ApplicationError` so the workflow parks the spec with
+    the rule named.
+    """
+    runner = _read_loop_config_runner
+    if runner is not None:
+        return runner(request.target_repo)
+
+    from factory.verify.factory_yaml import FactoryConfigError
+
+    try:
+        config, verify_order = load_loop_config(request.target_repo)
+    except FactoryConfigError as exc:
+        from temporalio.exceptions import ApplicationError
+
+        raise ApplicationError(str(exc), non_retryable=True, type="FactoryConfigError") from None
+    return ReadLoopConfigResult(config=config, verify_order=verify_order)

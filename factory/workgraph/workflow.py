@@ -415,6 +415,11 @@ class EpicInput:
     config: VerificationConfig = VerificationConfig()
     poll_interval_s: int = DEFAULT_POLL_INTERVAL_S
     landing_config: LandingConfig = LandingConfig()
+    #: 023 FR-003. The verification-step order the child epic must execute. It
+    #: is part of dispatch so the operator clone's manifest pins it; a node
+    #: worktree cannot move it. Defaults to today's order so every pre-023
+    #: payload and every v1 repo replays identically.
+    verify_order: tuple[str, ...] = ("gates", "diff_check", "judge")
     #: How many ready nodes the scheduler may have in flight at once (US1,
     #: FR-001/002). A property of the epic's dispatch — the machine's capacity,
     #: not the repo's — supplied at `ergane build start`. Defaulting to 1 is what

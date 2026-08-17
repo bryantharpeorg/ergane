@@ -175,6 +175,7 @@ ACTIVITIES = [
     roadmap_activities.preflight_spec,
     roadmap_activities.onboard_target,
     roadmap_activities.count_open_epics,
+    roadmap_activities.read_loop_config,
     read_corpus_activity,
     read_spec_text_activity,
 ]
