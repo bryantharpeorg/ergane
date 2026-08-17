@@ -502,3 +502,28 @@ def test_the_environment_still_wins_over_a_declared_namespace(
 # pass. `tests/test_env_sources.py`'s byte-parity transcript needed the same
 # treatment: it spelled `(default: factory)` twice, and now interpolates the
 # constant, so the pair still measures the two labels 048 moved.
+#
+# --- T015: the full suite, on the tree in this diff -------------------------
+#
+# Cold cache: `__pycache__` purged under `factory/` and `tests/`, `.pytest_cache`
+# removed, `PYTHONDONTWRITEBYTECODE=1`. Nothing exported — the same condition
+# the gate runs in, since its allowlist drops every `TEMPORAL_*`, `LITELLM_*`
+# and `ERGANE_*` variable.
+#
+#   $ uv run pytest -q
+#   3148 passed, 47 skipped, 6 warnings in 331.20s (0:05:31)
+#   rc=0
+#
+# Against the pre-story baseline of `3143 passed, 44 skipped` on the same host,
+# every one of the eleven moved tests is accounted for:
+#
+#   +8 passed   the eight cases in this file
+#   -3 passed   } the three `test_live_capacity` tests that needed a live
+#   +3 skipped  } client; they now skip by name instead of dialing a namespace
+#               } the server does not have. Collected totals: 3187 -> 3195.
+#
+# Warning counts are not quoted: a `SyntaxWarning` fires at compile time, so a
+# warm cache reports fewer than a cold one on an identical tree.
+#
+# The only difference between the tree that run measured and the tree this
+# commit lands is the comment block you are reading, which no test reads.
