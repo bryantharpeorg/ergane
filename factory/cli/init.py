@@ -268,11 +268,62 @@ _OPTIONAL_KEYS = ("timeouts", "standards", "roadmap", "forge")
 _ROADMAP_KEY = "roadmap"
 
 #: Placeholder values that keep a partial manifest valid for full-parser checks.
+#: `landing_branch` is the *last* resort rather than the answer: see
+#: `_default_landing_branch`.
 _PLACEHOLDERS: dict[str, Any] = {
     "runtime": "bwrap",
     "gates": {"test": "true"},
     "landing_branch": "main",
 }
+
+#: What `git rev-parse --abbrev-ref HEAD` answers on a detached HEAD. Git
+#: refuses to create a branch by this name, so it can only ever be the sentinel.
+_DETACHED_HEAD = "HEAD"
+
+
+def _current_branch(repo_root: Path) -> str | None:
+    """The branch this repository is on, or None when it is not on one.
+
+    Three HEAD states, measured against git 2.43 rather than assumed, because
+    the two obvious readings disagree on two of them:
+
+        state                     symbolic-ref --short HEAD   rev-parse --abbrev-ref HEAD
+        on `master`, committed    master              rc 0    master              rc 0
+        empty, no commit          master              rc 0    (fatal)             rc 128
+        detached HEAD             (fatal)             rc 128  HEAD                rc 0
+
+    `rev-parse` is used because its failure *is* "no resolvable HEAD", which is
+    exactly the case FR-002 sends back to the literal. `symbolic-ref` would name
+    the unborn branch of an empty repository — a branch that does not exist and
+    that the operator has not committed to — and 051 US1-S3 says an empty
+    repository gets the literal instead.
+
+    A read, never a write: `_git_read` is the same helper `--check` uses, for
+    the same reason.
+    """
+    completed = _git_read(repo_root, "rev-parse", "--abbrev-ref", "HEAD")
+    if completed.returncode != 0:
+        return None
+    branch = completed.stdout.strip()
+    if not branch or branch == _DETACHED_HEAD:
+        return None
+    return branch
+
+
+def _default_landing_branch(repo_root: Path) -> str:
+    """The landing branch to *offer*: this repository's own, or the literal.
+
+    051 US1. `git init` on a stock machine creates `master`, and git 2.47 still
+    defaults `init.defaultBranch` to that; the interview offered `main` anyway
+    and the readiness check then failed on a fact the tool already had in hand
+    when it asked. A machine that sets `init.defaultBranch = main` made the
+    literal accidentally correct, which is why this survived so long.
+
+    An offer, not a verdict (FR-005): `onboard._landing_branch_finding` is still
+    the only thing that says whether the branch exists, and on an empty
+    repository — which has no refs at all — it will fail whatever is offered.
+    """
+    return _current_branch(repo_root) or _PLACEHOLDERS["landing_branch"]
 
 
 def _default_gate_command(repo_root: Path) -> str | None:
@@ -348,7 +399,11 @@ def _build_defaults(repo_root: Path) -> dict[str, Any]:
         "version": existing.get("version", _SUPPORTED_VERSION),
         "runtime": existing.get("runtime", _PLACEHOLDERS["runtime"]),
         "gates": existing.get("gates", ({"test": gate_default.split(":", 1)[1].strip().strip('"')} if gate_default else _PLACEHOLDERS["gates"])),
-        "landing_branch": existing.get("landing_branch", _PLACEHOLDERS["landing_branch"]),
+        # The repository reading goes *underneath* the existing-manifest
+        # preference, never in front of it (051 FR-004): re-running init in a
+        # joined repository reconciles what is declared, and must not silently
+        # re-point it at whatever branch happens to be checked out.
+        "landing_branch": existing.get("landing_branch", _default_landing_branch(repo_root)),
     }
     if "timeouts" in existing:
         defaults["timeouts"] = existing["timeouts"]
