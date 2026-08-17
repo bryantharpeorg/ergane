@@ -410,6 +410,20 @@ class BwrapBackend:
 
         argv: list[str] = [
             binary,
+            # The environment the child gets is BUILT, never inherited. bwrap
+            # passes its own environment through by default, and this backend
+            # is launched without an `env=` argument, so without this flag the
+            # sandboxed agent receives the *worker's* entire environment —
+            # `attempt_env`'s allowlist notwithstanding, because that dict is
+            # only read for the `--setenv` values below, never applied as the
+            # base. Measured 2026-08-17 on a live implementer: its `pytest`
+            # child held `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` and the
+            # worker unit's own systemd variables, and the live-notify smoke
+            # test — which skips only on *absent* credentials — paged the
+            # operator once per suite run all night. `--clearenv` must precede
+            # every `--setenv`: bwrap keeps what is set after it, and clears
+            # what came before.
+            "--clearenv",
             # Minimal system tree: read-only /usr plus the symlinks Ubuntu uses
             # on aarch64. No /lib64 on this host.
             "--ro-bind", "/usr", "/usr",
