@@ -4,8 +4,9 @@ The roadmap's `count_open_epics` delegates to `_open_epics_provider`, which in
 production is `_list_open_epics`. The time-skipping workflow tests replace
 that provider with a scripted set (`tests/test_roadmap_scheduler.py`), so they
 never exercise the real visibility query. This file closes that gap: it calls
-the production read directly against the `factory` namespace, with real
-workflows started and stopped, and asserts the query behaves as FR-001
+the production read directly against the resolved namespace — the environment's
+`TEMPORAL_NAMESPACE` if it is exported, otherwise the built-in default — with
+real workflows started and stopped, and asserts the query behaves as FR-001
 requires.
 
 Like `test_live_judge.py`, this lives in the live tier: it skips with a named
@@ -26,6 +27,7 @@ from datetime import timedelta
 
 import pytest
 from temporalio import workflow
+from temporalio.api.workflowservice.v1 import DescribeNamespaceRequest
 from temporalio.client import Client
 from temporalio.service import RPCError
 from temporalio.testing import ActivityEnvironment
@@ -114,7 +116,26 @@ def _temporal_reachable(address: str) -> bool:
 
 
 async def _live_client() -> Client:
-    """Connect to the operator's Temporal, or skip with a named reason."""
+    """Connect to the operator's Temporal, or skip with a named reason.
+
+    `Client.connect` is lazy about the *namespace*: a server that is listening
+    hands back a client for a namespace that does not exist, and the
+    `NOT_FOUND` arrives at the first call that uses it — inside a test body, as
+    a red test rather than here as a skip. Worse, one of them arrives inside the
+    SDK's heartbeat loop, where it retries: this file hung a full-suite run
+    indefinitely rather than failing it (051-US2).
+
+    So the guard makes one cheap call that touches the namespace before handing
+    the client back. That is what turns "the operator does not have this
+    namespace" into the skip this docstring has always promised, on the same
+    footing as "nothing is listening on the port".
+
+    It matters more since 051-US2, which made `DEFAULT_TEMPORAL_NAMESPACE` read
+    `ergane` rather than this repository's own `factory`: the value is now a
+    namespace most hosts will not have, and the gate's environment allowlist
+    (`factory/verify/gates.py`) drops `TEMPORAL_NAMESPACE`, so a gate run
+    resolves the default and reaches exactly this branch.
+    """
     address = os.environ.get(TEMPORAL_ADDRESS_ENV) or DEFAULT_TEMPORAL_ADDRESS
     namespace = os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE
     if not _temporal_reachable(address):
@@ -123,7 +144,11 @@ async def _live_client() -> Client:
             f"(namespace {namespace!r}); the port is unreachable"
         )
     try:
-        return await Client.connect(address, namespace=namespace)
+        client = await Client.connect(address, namespace=namespace)
+        await client.service_client.workflow_service.describe_namespace(
+            DescribeNamespaceRequest(namespace=namespace)
+        )
+        return client
     except (OSError, RuntimeError) as exc:
         pytest.skip(
             f"live capacity read needs a Temporal server at {address} "

@@ -43,7 +43,11 @@ import pytest
 
 from factory.cli import main as main_module
 from factory.env import ERGANE_CONFIG_PATH_ENV, FACTORY_CONFIG_PATH_ENV
-from factory.notify.service import TEMPORAL_ADDRESS_ENV, TEMPORAL_NAMESPACE_ENV
+from factory.notify.service import (
+    DEFAULT_TEMPORAL_NAMESPACE,
+    TEMPORAL_ADDRESS_ENV,
+    TEMPORAL_NAMESPACE_ENV,
+)
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 
 #: What the fixture `[temporal]` block declares. 048-US4 added these two to the
@@ -402,9 +406,19 @@ _BARE_UNSET = (
 
 #: Captured from `ergane env` on the tree at `2a40d1d`, before this story
 #: touched `factory/cli/env.py`. Pasted verbatim, not reconstructed.
+#:
+#: One substitution, made by 051-US2 and not by 048: the namespace line
+#: interpolates `DEFAULT_TEMPORAL_NAMESPACE` where the capture read
+#: `(default: factory)`. That capture is still what the tree at `2a40d1d`
+#: printed — the constant read `factory` then. Interpolating rather than
+#: re-typing the new value is what keeps this pair a *parity* check: the
+#: assertion below is that the two labels moved and five entries did not, and a
+#: default whose value changes must move on both sides or it starts reporting a
+#: difference 048 never made. It also keeps the value single-sourced, which is
+#: the requirement 051-US2 exists to hold (FR-006).
 TODAY = (
     "TEMPORAL_ADDRESS= (default: localhost:7233)  [set, default]\n"
-    "TEMPORAL_NAMESPACE= (default: factory)  [not set, default]\n"
+    f"TEMPORAL_NAMESPACE= (default: {DEFAULT_TEMPORAL_NAMESPACE})  [not set, default]\n"
     "LITELLM_PROXY_URL=  [set, required]\n"
     "LITELLM_MASTER_KEY=[REDACTED]  [set, required]\n"
     "TELEGRAM_BOT_TOKEN=  [not set, required]\n"
@@ -412,10 +426,11 @@ TODAY = (
     "ERGANE_VERIFICATION_DB_PATH=  [not set, default .factory/verification.db]\n"
 )
 
-#: The same output after this story. Two lines move and five do not.
+#: The same output after this story. Two lines move and five do not. Same
+#: substitution, same reason, as `TODAY` above.
 AFTER = (
     "TEMPORAL_ADDRESS= (default: localhost:7233)  [set, default]\n"
-    "TEMPORAL_NAMESPACE= (default: factory)  [not set, default]\n"
+    f"TEMPORAL_NAMESPACE= (default: {DEFAULT_TEMPORAL_NAMESPACE})  [not set, default]\n"
     "LITELLM_PROXY_URL=  [set, override of the control-plane config]\n"
     "LITELLM_MASTER_KEY=[REDACTED]  [set, override of the control-plane config]\n"
     "TELEGRAM_BOT_TOKEN=  [not set, required]\n"
