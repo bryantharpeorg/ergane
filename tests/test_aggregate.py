@@ -223,20 +223,21 @@ def test_row_missing_token_columns_still_counts_as_a_request() -> None:
 # --- boundaries ------------------------------------------------------------
 
 
-def test_empty_row_set_is_a_zero_request_aggregate() -> None:
-    """An attempt that made no calls really did spend nothing.
+def test_empty_row_set_is_an_unmeasured_aggregate() -> None:
+    """An empty snapshot has nothing to aggregate; the metrics are unknown.
 
-    Zeros are correct here — the proxy answered, and it answered "no rows". The
-    cache metrics stay `None`: no row reported them, vacuously (FR-004).
+    The proxy answered, but it answered "no rows". That is not a measurement of
+    prompt, completion or request count, so those columns are `None`. Cache
+    metrics stay `None`: no row reported them, vacuously (FR-004, US1).
     """
     usage = aggregate_rows([])
 
     assert usage == AggregatedUsage(
-        prompt_tokens=0,
-        completion_tokens=0,
+        prompt_tokens=None,
+        completion_tokens=None,
         cache_read_tokens=None,
         cache_write_tokens=None,
-        request_count=0,
+        request_count=None,
         spend_usd=0.0,
     )
 
@@ -311,7 +312,7 @@ async def test_aggregates_rows_exactly_as_the_client_returns_them(
     assert usage.cache_write_tokens is None
 
 
-async def test_attempt_that_never_called_the_proxy_aggregates_to_zero_requests(
+async def test_attempt_that_never_called_the_proxy_aggregates_to_unmeasured(
     fake_litellm: FakeLiteLLM, client: LiteLLMClient
 ) -> None:
     """A key that was issued and never used: no rows, no invented usage."""
@@ -319,7 +320,8 @@ async def test_attempt_that_never_called_the_proxy_aggregates_to_zero_requests(
 
     usage = aggregate_rows(await client.fetch_spend_log_rows(key, issued_at="2026-08-05T00:00:00Z"))
 
-    assert usage.request_count == 0
-    assert usage.prompt_tokens == 0
+    assert usage.request_count is None
+    assert usage.prompt_tokens is None
+    assert usage.completion_tokens is None
     assert usage.spend_usd == 0.0
     assert usage.cache_read_tokens is None

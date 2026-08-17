@@ -561,21 +561,23 @@ async def test_the_confirmed_spend_is_the_keys_own_total(
     assert record.request_count == 3
 
 
-async def test_an_attempt_that_never_called_the_proxy_records_real_zeros(
+async def test_an_attempt_that_never_called_the_proxy_records_unmeasured(
     env: ActivityEnvironment, proxy: FakeLiteLLM
 ) -> None:
-    """The proxy answered "no rows" — that is a measurement, so zeros are right.
+    """The proxy answered "no rows" — there is no measurement, so tokens are NULL.
 
-    Cache stays NULL: no row reported the metric, vacuously (FR-004/FR-005).
+    A genuine zero is still 0, but "no rows" means the proxy never reported any
+    tokens, not that the attempt made zero-token requests (US1). Cache stays NULL:
+    no row reported the metric, vacuously (FR-004/FR-005).
     """
     lease = await issue(env)
 
     record = await tear_down(env, lease, termination=Termination.AGENT_ERROR)
 
     assert record.final_usage_confirmed is True
-    assert record.prompt_tokens == 0
-    assert record.completion_tokens == 0
-    assert record.request_count == 0
+    assert record.prompt_tokens is None
+    assert record.completion_tokens is None
+    assert record.request_count is None
     assert record.spend_usd == 0.0
     assert record.cache_read_tokens is None
     assert record.cache_write_tokens is None
