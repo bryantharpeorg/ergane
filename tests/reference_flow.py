@@ -108,6 +108,8 @@ with workflow.unsafe.imports_passed_through():
         VerificationResult,
         compose_result,
         judge_required,
+        loop_digest,
+        loop_summary,
     )
 
 #: The registry entry the judge's own key is minted against — a persona, never a
@@ -184,6 +186,9 @@ class NodeDispatch:
     expected_artifacts: list[str] = field(default_factory=list)
     form: VerificationForm = VerificationForm.PHASE
     criteria_source_path: str | None = None
+    #: 023: the verification-step order this node must execute. Defaults to
+    #: today's order so pre-023 payloads replay identically.
+    verify_order: tuple[str, ...] = ("gates", "diff_check", "judge")
 
 
 @dataclass(frozen=True)
@@ -354,6 +359,10 @@ class VerificationFlow:
         if judge_required(gate_results, output, node.criteria):
             verdict = await self._judge(node, attempt, prior_feedback)
 
+        gate_names = tuple(r.name for r in gate_results)
+        resolved_digest = loop_digest(node.config, node.verify_order, gate_names)
+        resolved_summary = loop_summary(node.config, node.verify_order, gate_names)
+
         result = compose_result(
             epic_id=node.epic_id,
             node_id=node.node_id,
@@ -366,6 +375,8 @@ class VerificationFlow:
             spec_ref=node.spec_ref,
             started_at=started_at,
             finished_at=_now(),
+            loop_digest=resolved_digest,
+            loop_summary=resolved_summary,
         )
 
         recorded = await workflow.execute_activity(

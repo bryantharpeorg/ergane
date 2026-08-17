@@ -5,6 +5,34 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-046 · Loop composition is declared data; environment-constraints wording amended (decided)
+
+Decided 2026-08-17, claimed at landing of spec `023-composable-verification` US4.
+The factory's environment-constraints wording stated that each target repo declares
+"runtime and test/lint/typecheck commands". Once loops became composable, that
+description was under-inclusive: a repo's `factory.yaml` now also declares its gate
+names, verification-step order, retry-ladder caps, and whether a judge scores its
+diffs. The declaration is data, not code: every step resolves to an already-registered
+activity, every knob is typed and bounded, and every violation is refused at parse time.
+
+1. **Loop configuration is declared, not inferred.** Schema v2 of `factory.yaml` adds
+   `ladder:` and `verify:`; absent keys reproduce today's defaults exactly.
+2. **The declaration is read once, at dispatch, from the operator clone.** The loop
+   that runs is pinned in `EpicInput`; a node worktree's manifest rewrite cannot move
+   it. Gate *commands* continue to be read from the worktree manifest, preserving the
+   CI backstop that caught 020-US1's self-target hazard.
+3. **Every verdict names the loop that granted it.** The resolved configuration is
+   digested and recorded with each verification result, and the PR body's evidence
+   line renders a human-readable summary. Two repos' PASSes under different declared
+   loops are therefore distinguishable in both the store and the public record.
+
+The constitution's environment-constraints line is amended accordingly:
+"Each target repo declares runtime, gates and loop composition in a committed
+`factory.yaml`" (was "runtime and test/lint/typecheck commands"). Constitution
+version bumped from 2.3.0 to 2.4.0.
+
+---
+
 ## D-045 · The sanctioned exception to "no human-written production code": explicit, visible, and counted (decided)
 
 Decided 2026-08-17, claimed at landing of spec `035-operator-completion` US3.

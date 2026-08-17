@@ -109,7 +109,10 @@ from factory.verify.models import (
 #:
 #: 5 (035-US3): `external_completion_counts` table. Counts every accepted
 #: external completion idempotently per (epic_id, node_id, branch, provenance).
-SCHEMA_VERSION = 5
+#:
+#: 6 (023-US4): `verification_results.loop_digest` and `.loop_summary`. Additive
+#: text columns; pre-023 rows read as NULL, never backfilled.
+SCHEMA_VERSION = 6
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -161,6 +164,10 @@ CREATE TABLE IF NOT EXISTS verification_results (
     started_at        TEXT    NOT NULL,   -- ISO-8601 UTC
     finished_at       TEXT    NOT NULL,
     provenance        TEXT,              -- 035-US1: non-NULL for externally-completed work
+    -- 023-US4: resolved loop configuration, carried with every verdict (FR-010).
+    -- NULL for rows written before this feature; additive, never backfilled.
+    loop_digest       TEXT,
+    loop_summary      TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
@@ -358,6 +365,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE verification_results ADD COLUMN provenance TEXT"
         )
+    if result_columns and "loop_digest" not in result_columns:
+        # 023-US4: loop_digest and loop_summary are NULL for pre-023 rows.
+        conn.execute(
+            "ALTER TABLE verification_results ADD COLUMN loop_digest TEXT"
+        )
+        conn.execute(
+            "ALTER TABLE verification_results ADD COLUMN loop_summary TEXT"
+        )
 
     extcomp_tables = {
         row[0] for row in conn.execute(
@@ -429,6 +444,8 @@ _RESULT_COLUMNS = (
     "started_at",
     "finished_at",
     "provenance",
+    "loop_digest",
+    "loop_summary",
 )
 
 #: A re-run overwrites every column except the four it matched on: the second
@@ -553,6 +570,8 @@ def _result_values(result: VerificationResult) -> dict[str, Any]:
         "started_at": result.started_at,
         "finished_at": result.finished_at,
         "provenance": result.provenance,
+        "loop_digest": result.loop_digest,
+        "loop_summary": result.loop_summary,
     }
 
 
@@ -579,6 +598,8 @@ def _result_from_row(row: tuple[Any, ...]) -> VerificationResult:
         started_at=values["started_at"],
         finished_at=values["finished_at"],
         provenance=values["provenance"],
+        loop_digest=values["loop_digest"],
+        loop_summary=values["loop_summary"],
     )
 
 

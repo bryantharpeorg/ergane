@@ -207,6 +207,8 @@ from factory.verify.models import (
     Scenario,
     VerificationConfig,
     VerificationResult,
+    loop_digest,
+    loop_summary,
 )
 from factory.verify.store import EXPIRED
 from factory.workgraph.models import (
@@ -4042,6 +4044,63 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
     assert record.judge is not None
     assert record.judge.outcome == JudgeOutcome.PASS
     assert record.judge_unavailable is False
+
+
+async def test_a_scored_node_records_the_resolved_loop_digest_and_summary(
+    env: WorkflowEnvironment,
+) -> None:
+    """The recorded row names the loop that granted the verdict (US4-S1/S2)."""
+    custom_gates = [
+        GateResult(
+            name="unit",
+            command="pytest",
+            status=GateStatus.PASS,
+            exit_code=0,
+            duration_s=1.0,
+            output_tail="unit passed",
+        ),
+        GateResult(
+            name="contract",
+            command="make contract",
+            status=GateStatus.PASS,
+            exit_code=0,
+            duration_s=1.0,
+            output_tail="contract passed",
+        ),
+    ]
+    custom_config = VerificationConfig(
+        max_attempts=5,
+        max_judge_retries=4,
+        debugger_cycles=2,
+        escalation_timeout_s=7200,
+    )
+    custom_order = ("diff_check", "gates", "judge")
+
+    script = scored_world(
+        scored(judge_pass(), gates=custom_gates),
+        client=env.client,
+    )
+
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        config=custom_config,
+        verify_order=custom_order,
+    )
+
+    assert states(status) == {"us1": NodeState.MERGED}
+
+    [record] = script.records
+    gate_names = tuple(r.name for r in custom_gates)
+    expected_digest = loop_digest(custom_config, custom_order, gate_names)
+    expected_summary = loop_summary(custom_config, custom_order, gate_names)
+    assert record.loop_digest == expected_digest
+    assert record.loop_summary == expected_summary
+    assert "schema v1" in record.loop_summary
+    assert "deadline=7200s" in record.loop_summary
+    assert "order [diff_check, gates, judge]" in record.loop_summary
+    assert "judge present" in record.loop_summary
 
 
 async def test_the_judges_alias_never_collides_with_the_live_implementer_key(

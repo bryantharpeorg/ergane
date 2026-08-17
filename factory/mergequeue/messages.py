@@ -99,6 +99,8 @@ def render_pr_body(
         "",
     ]
     lines += [
+        f"- loop: {result.loop_summary}",
+        "",
         f"_Landed by {LANDED_BY}._",
         "",
     ]

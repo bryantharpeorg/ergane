@@ -394,42 +394,55 @@ The pipeline, cheapest signal first:
    grammar) down to the node's requested requirement keys and hashes the raw bytes.
    Verification scores against that snapshot; a later edit to the spec surfaces as a
    `criteria_drift` flag on the evidence row, never as moved goalposts (FR-010).
-2. **Deterministic gates** — `test` / `lint` / `typecheck` commands from the target repo's
-   committed `factory.yaml` (D-009), exit-code semantics, run in the node's worktree in
+2. **Manifest** — `factory.yaml` (schema v1 by default, v2 composable from spec 023)
+   declares the repo's runtime, gate names and commands, and optionally its verification
+   loop: the ordered step list (`gates`, `diff_check`, `judge`) and the retry-ladder
+   caps (`max_attempts`, `max_judge_retries`, `debugger_cycles`, `escalation_timeout_s`).
+   The parser refuses every violation by name; the loop is read at dispatch from the
+   operator clone's committed manifest and pinned into `EpicInput` so a node worktree
+   cannot move it. Gate *commands* are still read from the worktree manifest — that
+   asymmetry preserves the CI backstop that catches a self-modified `factory.yaml`.
+3. **Deterministic gates** — the declared gate commands run in the node's worktree in
    declaration order: per-gate timeout (default 600s, SIGTERM then SIGKILL), 32 KiB output
    tail retained as evidence, environment scrubbed so no proxy or bot credential is visible
    to the command. A missing or malformed manifest is a single `CONFIG_ERROR` result —
    never a pass by default.
-3. **Anti-rubber-stamp** — a write-scope node with an empty worktree diff fails regardless
+4. **Anti-rubber-stamp** — a write-scope node with an empty worktree diff fails regardless
    of gates; a read-scope node must instead produce every declared artifact, non-empty.
-4. **LLM judge** — `judge` persona (cheap tier, own attribution key, read-only), scoring the
+5. **LLM judge** — `judge` persona (cheap tier, own attribution key, read-only), scoring the
    diff strictly per scenario against the parsed acceptance criteria. Bounded: diff
    truncated to 60 KiB with explicit markers (criteria never truncated), response capped at
    2000 tokens, **max 2 judge retries**; on `retry` verdict the judge's feedback is
    handed **verbatim** to the retry attempt (Bernstein's highest-value pattern). Skipped
-   entirely when a gate already failed — a two-second lint failure costs no completion.
-5. **Composed verdict, recorded first** — any failing gate, a failed output check, or a
+   entirely when a gate already failed — a two-second lint failure costs no completion. A
+   loop that excludes `judge` mints no judge key at all (SC-005).
+6. **Composed verdict, recorded first** — any failing gate, a failed output check, or a
    judge `retry`/`fail` makes the attempt FAIL; an unreachable judge behind green gates
    passes with `judge_unavailable` recorded rather than fabricated. The row is written
    before any routing decision, and downstream DAG edges unlock only on `PASSED` (FR-005).
-6. **Fail → ladder** — `ladder.next_action(history, config)` is a pure function of the
+   Every row written after spec 023 carries `loop_digest` and `loop_summary` — a stable
+   SHA-256 of the resolved loop configuration and a human-readable one-line summary — so
+   a PASS is a claim relative to a named definition of verified (FR-010, SC-006).
+7. **Fail → ladder** — `ladder.next_action(history, config)` is a pure function of the
    recorded attempts: retry-with-feedback within `max_attempts` (default 3, with the 2
    judge retries bounded *inside* that total), then the `debugger` persona once, then
    Telegram escalation (§9). Escalation `RETRY` grants exactly one further attempt;
-   `KILL`, `PAUSE_EPIC`, and the 1h timeout end the node.
+   `KILL`, `PAUSE_EPIC`, and the configured timeout end the node.
 
 ### 6.1 Evidence store (SQLite)
 
-`.factory/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 1) —
+`.factory/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 6) —
 the same single-designated-host topology as the 001 ledger, path overridable with
-`FACTORY_VERIFICATION_DB_PATH`. Two tables:
+`ERGANE_VERIFICATION_DB_PATH` or the legacy `FACTORY_VERIFICATION_DB_PATH`. Two tables:
 
 - `verification_results` — one row per attempt per form, upserted on
   `(epic_id, node_id, attempt, form)` so a redelivered activity lands on the first run's
   row instead of duplicating evidence: verdict, gate results / output check / judge verdict
   as JSON evidence bundles, `judge_unavailable` and `criteria_drift` flags, criteria hash,
-  spec ref, timestamps. `judge_verdict` is NULL when the judge never ran — a different fact
-  from a judge that ran and returned FAIL.
+  spec ref, timestamps, and (since 023-US4) `loop_digest` / `loop_summary` — the resolved
+  loop configuration. `judge_verdict` is NULL when the judge never ran — a different fact
+  from a judge that ran and returned FAIL. Pre-023 rows read `loop_digest`/`loop_summary`
+  as NULL; they are never backfilled.
 - `escalations` — one row per operator decision, written *before* the message is sent and
   making exactly one terminal transition (a button resolution *xor* the timeout `EXPIRED`)
   under a guarded UPDATE, because the press and the workflow's timer race by design.

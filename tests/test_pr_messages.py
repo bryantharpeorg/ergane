@@ -277,3 +277,99 @@ def test_same_inputs_produce_identical_bytes() -> None:
     second = render_pr_body(**kwargs)
 
     assert first == second
+
+
+# --- 023-US4: loop configuration line in the PR body -------------------------
+
+
+def test_body_includes_the_loop_configuration_line() -> None:
+    """The PR body names the loop that granted the verdict (US4-S2)."""
+    from factory.verify.models import VerificationConfig
+
+    # Reuse the existing helper, then patch in the loop fields the real
+    # composer will carry once US4 lands.
+    result = _passing_result()
+    result = VerificationResult(
+        epic_id=result.epic_id,
+        node_id=result.node_id,
+        attempt=result.attempt,
+        form=result.form,
+        gate_results=result.gate_results,
+        output_check=result.output_check,
+        judge=result.judge,
+        verdict=result.verdict,
+        judge_unavailable=result.judge_unavailable,
+        criteria_drift=result.criteria_drift,
+        criteria_sha256=result.criteria_sha256,
+        spec_ref=result.spec_ref,
+        started_at=result.started_at,
+        finished_at=result.finished_at,
+        loop_digest="abc123" * 8,
+        loop_summary=(
+            "schema v1; gates [test, lint]; order [gates, diff_check, judge]; "
+            "attempts=3, judge_retries=2, debugger=1, deadline=3600s; judge present"
+        ),
+    )
+
+    body = render_pr_body(
+        epic_id=EPIC,
+        node_id=NODE,
+        branch=BRANCH,
+        attempt=ATTEMPT,
+        feature=FEATURE,
+        requirement_keys=REQUIREMENT_KEYS,
+        result=result,
+        proxy_url=PROXY_URL,
+        master_key=LITELLM_MASTER_KEY,
+        telegram_token=TELEGRAM_TOKEN,
+        transcript_path=TRANSCRIPT,
+    )
+
+    assert "loop:" in body
+    assert "order [gates, diff_check, judge]" in body
+    assert "attempts=3" in body
+    assert "judge present" in body
+
+
+def test_loop_line_does_not_leak_secrets() -> None:
+    """The loop summary line is part of the public body and must stay secret-free."""
+    from factory.verify.models import VerificationConfig
+
+    result = _passing_result()
+    result = VerificationResult(
+        epic_id=result.epic_id,
+        node_id=result.node_id,
+        attempt=result.attempt,
+        form=result.form,
+        gate_results=result.gate_results,
+        output_check=result.output_check,
+        judge=result.judge,
+        verdict=result.verdict,
+        judge_unavailable=result.judge_unavailable,
+        criteria_drift=result.criteria_drift,
+        criteria_sha256=result.criteria_sha256,
+        spec_ref=result.spec_ref,
+        started_at=result.started_at,
+        finished_at=result.finished_at,
+        loop_digest="abc123" * 8,
+        loop_summary="loop summary line",
+    )
+
+    body = render_pr_body(
+        epic_id=EPIC,
+        node_id=NODE,
+        branch=BRANCH,
+        attempt=ATTEMPT,
+        feature=FEATURE,
+        requirement_keys=REQUIREMENT_KEYS,
+        result=result,
+        proxy_url=PROXY_URL,
+        master_key=LITELLM_MASTER_KEY,
+        telegram_token=TELEGRAM_TOKEN,
+        transcript_path=TRANSCRIPT,
+    )
+
+    assert PROXY_URL not in body
+    assert LITELLM_MASTER_KEY not in body
+    assert TELEGRAM_TOKEN not in body
+    assert TRANSCRIPT not in body
