@@ -36,6 +36,7 @@ from factory.controlplane.resolve import (
 )
 from factory.env import ERGANE_CONFIG_PATH_ENV, FACTORY_CONFIG_PATH_ENV
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
+from factory.verify.models import FactoryConfig
 
 # --- fixture values: the two sources disagree on everything (plan trap 5) -----
 
@@ -392,11 +393,18 @@ def _start_and_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     async def _open_client() -> Any:
         return recorder
 
-    async def _no_findings(graph: Any) -> list[Any]:
-        return []
+    async def _default_preflight(graph: Any) -> tuple[list[Any], FactoryConfig]:
+        return (
+            [],
+            FactoryConfig(
+                version=1,
+                runtime="bwrap",
+                gates={"test": "uv run pytest -q"},
+            ),
+        )
 
     monkeypatch.setattr(nouns_package, "_open_client", _open_client)
-    monkeypatch.setattr(build_module, "_run_preflight", _no_findings)
+    monkeypatch.setattr(build_module, "_run_preflight", _default_preflight)
 
     graph_path = _write_graph(tmp_path)
     assert build_module.start_command(

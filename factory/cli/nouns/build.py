@@ -221,8 +221,8 @@ def _preflight_registry() -> dict[str, Persona]:
     return load_personas()
 
 
-async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
-    """Check that every prompt assembles, then what the proxy serves.
+async def _run_preflight(graph: WorkGraph) -> tuple[list[PreflightFinding], "FactoryConfig"]:
+    """Check that every prompt assembles, then what the proxy serves, then the manifest.
 
     The same two checks the roadmap's pre-dispatch activity runs, in the same
     order and from the same module (044 FR-004): an epic started by hand dies of
@@ -230,14 +230,31 @@ async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
     refused here rather than one tick after `ergane build start` printed a
     workflow id. Assembly reads `specs_root/feature` — where the graph itself
     says its authored trio lives, and where dispatch will read it.
+
+    023 FR-005: the loop is read from the operator clone's committed manifest at
+    dispatch, so the epic's `VerificationConfig` and declared order are pinned
+    before the workflow starts. A manifest that fails to parse is refused at
+    preflight with the parse rule named.
     """
+    from factory.verify.factory_yaml import (
+        FactoryConfigError,
+        load_factory_config,
+        resolve_manifest_path,
+    )
+
     findings = prompt_assembly_preflight(
         graph, Path(graph.specs_root) / graph.feature
     )
     findings += await check_aliases(
         graph, _preflight_registry(), _open_preflight_client()
     )
-    return findings
+
+    manifest_path, _ = resolve_manifest_path(graph.target_repo)
+    try:
+        parsed = load_factory_config(manifest_path)
+    except FactoryConfigError as error:
+        raise ConfigError(f"[{error.rule}] {error.problem}") from error
+    return findings, parsed
 
 
 async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:
@@ -412,7 +429,7 @@ async def _start_epic(
     client = await _connect()
 
     try:
-        findings = await _run_preflight(graph)
+        findings, parsed = await _run_preflight(graph)
     except ConfigError as error:
         raise OperatorError(f"preflight: {error}") from error
 
@@ -432,6 +449,8 @@ async def _start_epic(
             EpicInput(
                 graph=graph,
                 proxy_url=proxy_url,
+                config=parsed.ladder,
+                verify_order=parsed.verify_order,
                 max_concurrent_nodes=max_concurrent_nodes,
             ),
             id=epic_workflow_id,

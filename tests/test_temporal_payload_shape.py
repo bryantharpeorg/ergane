@@ -453,6 +453,7 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.roadmap.models.SpecEntry": ("spec_dir", "state", "depends_on_landed",),
     "factory.roadmap.workflow.ParkedFinding": ("spec_dir", "check", "detail",),
     "factory.roadmap.workflow.ReadCorpusInput": ("specs_root",),
+    "factory.roadmap.workflow.ReadLoopConfigInput": ("target_repo",),
     "factory.roadmap.workflow.ReadSpecInput": ("specs_root", "spec_dir",),
     "factory.roadmap.workflow.RoadmapInput": (
         "specs_root", "target_repo", "proxy_url"

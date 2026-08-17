@@ -116,6 +116,11 @@ with workflow.unsafe.imports_passed_through():
         compute_readiness,
         read_roadmap,
     )
+    from factory.verify.factory_yaml import (
+        FactoryConfigError,
+        load_factory_config,
+        resolve_manifest_path,
+    )
     from factory.verify.models import VerificationConfig
     from factory.workgraph.models import EpicState
     from factory.workgraph.preflight import PreflightFinding
@@ -452,6 +457,36 @@ async def read_spec_text_activity(request: ReadSpecInput) -> str:
     return (Path(request.specs_root) / request.spec_dir / "spec.md").read_text(
         encoding="utf-8"
     )
+
+
+@dataclass(frozen=True)
+class ReadLoopConfigInput:
+    """The target repo whose manifest declares the loop for one child epic (023 FR-006)."""
+
+    target_repo: str
+
+
+@activity.defn
+async def read_loop_config(request: ReadLoopConfigInput) -> tuple[VerificationConfig, tuple[str, ...]]:
+    """Read the committed manifest once, at dispatch, and return the pinned loop.
+
+    The loop is read from the operator clone's committed manifest so a manifest
+    edit reaches the next scheduled epic, not one already in flight (023 FR-006).
+    A parse failure surfaces as a non-retryable `ApplicationError` whose `type`
+    is the rule slug; the workflow parks the spec and the run continues.
+    """
+    from pathlib import Path
+
+    from temporalio.exceptions import ApplicationError
+
+    manifest_path, _ = resolve_manifest_path(Path(request.target_repo))
+    try:
+        parsed = load_factory_config(manifest_path)
+    except FactoryConfigError as error:
+        raise ApplicationError(
+            str(error), type=error.rule, non_retryable=True
+        ) from None
+    return (parsed.ladder, parsed.verify_order)
 
 
 @workflow.defn
@@ -1159,14 +1194,32 @@ class RoadmapWorkflow:
             self._park(spec_dir, "onboarding", _onboarding_detail(profile))
             return
 
-        # 5. Zero-node delta refusal after clone, before child start (FR-010).
+        # 5. Read the loop configuration from the operator clone's committed
+        # manifest at dispatch (023 FR-006). A parse failure parks this spec with
+        # the rule named and the run continues to other specs.
+        try:
+            loop_config, verify_order = await workflow.execute_activity(
+                read_loop_config,
+                ReadLoopConfigInput(target_repo=request.target_repo),
+                **_FAST,
+            )
+        except FailureError as exc:
+            check = "config"
+            detail = str(exc)
+            cause = exc.cause
+            if isinstance(cause, ApplicationError):
+                check = f"config:{cause.type}"
+            self._park(spec_dir, check, detail)
+            return
+
+        # 6. Zero-node delta refusal after clone, before child start (FR-010).
         # The clone is already refreshed; if the spec is fully landed and nothing
         # drifted, the delta graph is empty and there is no work to dispatch.
         if not graph.nodes:
             self._park(spec_dir, "derive", "delta is empty: all stories are satisfied")
             return
 
-        # 6. Start the child epic — ABANDON on parent close (SC-004: killing the
+        # 7. Start the child epic — ABANDON on parent close (SC-004: killing the
         # roadmap never kills the epic), default id reuse (a closed id is
         # reusable; a running collision parks, never adopts — T011).
         try:
@@ -1175,7 +1228,8 @@ class RoadmapWorkflow:
                 EpicInput(
                     graph=graph,
                     proxy_url=request.proxy_url,
-                    config=request.config,
+                    config=loop_config,
+                    verify_order=verify_order,
                     poll_interval_s=request.poll_interval_s,
                     landing_config=request.landing_config,
                     max_concurrent_nodes=request.max_concurrent_nodes,

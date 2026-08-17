@@ -492,6 +492,11 @@ async def run_roadmap(
         read_corpus_activity,
         read_spec_text_activity,
     )
+    from factory.verify.models import VerificationConfig
+
+    @activity.defn(name="read_loop_config")
+    async def read_loop_config(request):
+        return (VerificationConfig(), ("gates", "diff_check", "judge"))
 
     activities = [
         clone_target,
@@ -502,6 +507,7 @@ async def run_roadmap(
         count_open_epics,
         read_corpus_activity,
         read_spec_text_activity,
+        read_loop_config,
         record_roadmap_failure,
         reset_roadmap_failures,
         send_roadmap_notice,

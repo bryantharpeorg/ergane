@@ -222,8 +222,14 @@ async def run_roadmap_with_notifications(
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
+        read_loop_config,
         read_spec_text_activity,
     )
+    from factory.verify.models import VerificationConfig
+
+    @activity.defn(name="read_loop_config")
+    async def scripted_read_loop_config(request):
+        return (VerificationConfig(), ("gates", "diff_check", "judge"))
 
     activities = [
         clone_target,
@@ -234,6 +240,7 @@ async def run_roadmap_with_notifications(
         count_open_epics,
         read_corpus_activity,
         read_spec_text_activity,
+        scripted_read_loop_config,
         record_roadmap_failure,
         reset_roadmap_failures,
     ]
@@ -315,8 +322,14 @@ async def run_roadmap_with_sandboxed_workflow(
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
+        read_loop_config,
         read_spec_text_activity,
     )
+    from factory.verify.models import VerificationConfig
+
+    @activity.defn(name="read_loop_config")
+    async def scripted_read_loop_config(request):
+        return (VerificationConfig(), ("gates", "diff_check", "judge"))
 
     activities = [
         clone_target,
@@ -327,6 +340,7 @@ async def run_roadmap_with_sandboxed_workflow(
         count_open_epics,
         read_corpus_activity,
         read_spec_text_activity,
+        scripted_read_loop_config,
         record_roadmap_failure,
         reset_roadmap_failures,
     ]

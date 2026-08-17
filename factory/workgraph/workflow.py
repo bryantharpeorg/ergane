@@ -410,6 +410,11 @@ class EpicInput:
     graph: WorkGraph
     proxy_url: str
     config: VerificationConfig = VerificationConfig()
+    #: 023 FR-002. The order in which verification steps run. Absent means today's
+    #: default order including the judge; a v2 manifest declares otherwise. This
+    #: field is additive with a default equal to the historical loop so replay of
+    #: pre-023 payloads keeps today's behaviour.
+    verify_order: tuple[str, ...] = ("gates", "diff_check", "judge")
     poll_interval_s: int = DEFAULT_POLL_INTERVAL_S
     landing_config: LandingConfig = LandingConfig()
     #: How many ready nodes the scheduler may have in flight at once (US1,

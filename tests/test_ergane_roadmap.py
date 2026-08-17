@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
 
 import pytest
+from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -120,7 +121,16 @@ def _worker(env: WorkflowEnvironment, world: RoadmapWorld) -> Worker:
         onboard_target,
         preflight_spec,
     )
-    from factory.roadmap.workflow import read_corpus_activity, read_spec_text_activity
+    from factory.roadmap.workflow import (
+        read_corpus_activity,
+        read_loop_config,
+        read_spec_text_activity,
+    )
+    from factory.verify.models import VerificationConfig
+
+    @activity.defn(name="read_loop_config")
+    async def read_loop_config(request):
+        return (VerificationConfig(), ("gates", "diff_check", "judge"))
 
     return Worker(
         env.client,
@@ -135,6 +145,7 @@ def _worker(env: WorkflowEnvironment, world: RoadmapWorld) -> Worker:
             count_open_epics,
             read_corpus_activity,
             read_spec_text_activity,
+            read_loop_config,
             record_roadmap_failure,
             reset_roadmap_failures,
             send_roadmap_notice,

@@ -617,6 +617,17 @@ async def test_build_start_refuses_an_epic_whose_prompts_cannot_assemble(
     from factory.cli.nouns import build as build_noun
 
     spec_dir = plant_ready(HEADING_DEFECT, tmp_path / "001-runtime-root")
+    target_repo = Path(TARGET_REPO)
+    target_repo.mkdir(parents=True, exist_ok=True)
+    (target_repo / "ergane.yaml").write_text(
+        """\
+version: 1
+runtime: bwrap
+gates:
+  test: uv run pytest -q
+""",
+        encoding="utf-8",
+    )
     graph = derive_workgraph(
         (spec_dir / "spec.md").read_text(encoding="utf-8"),
         epic_id="001-runtime-root",
@@ -637,7 +648,7 @@ async def test_build_start_refuses_an_epic_whose_prompts_cannot_assemble(
         ),
     )
 
-    findings = await build_noun._run_preflight(graph)
+    findings, _parsed = await build_noun._run_preflight(graph)
 
     assert [finding.check for finding in findings] == ["prompt-assembly"] * 4
     assert INCIDENT_REFUSAL in findings[0].detail

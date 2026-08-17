@@ -625,10 +625,22 @@ async def settle_epic(env: WorkflowEnvironment) -> Any:
     return await handle.result()
 
 
+def _minimal_manifest() -> str:
+    return """\
+version: 1
+runtime: bwrap
+gates:
+  test: uv run pytest -q
+"""
+
+
 @pytest.fixture
 def workgraph_json(epic_dir: Path) -> Path:
     """Compile the fixture graph directly; this test is about `build`, not `derive`."""
     spec_text = (epic_dir / "spec.md").read_text(encoding="utf-8")
+    target_repo = epic_dir.parent / "target-repo"
+    target_repo.mkdir(parents=True, exist_ok=True)
+    (target_repo / "ergane.yaml").write_text(_minimal_manifest(), encoding="utf-8")
     graph = derive_workgraph(
         spec_text,
         epic_id=EPIC_ID,
@@ -637,7 +649,7 @@ def workgraph_json(epic_dir: Path) -> Path:
         # resolves to `epic_dir` — what dispatch reads, and (044 US2) what the
         # start-time preflight assembles the prompts from.
         specs_root=str(epic_dir.parent),
-        target_repo=TARGET_REPO,
+        target_repo=str(target_repo),
     )
     graph_path = epic_dir / "workgraph.json"
     graph_path.write_text(

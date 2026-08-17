@@ -73,6 +73,7 @@ from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
 from factory.roadmap.workflow import (
     read_corpus_activity,
+    read_loop_config,
     read_spec_text_activity,
     RoadmapWorkflow,
 )
@@ -174,6 +175,7 @@ ACTIVITIES = [
     roadmap_activities.onboard_target,
     roadmap_activities.count_open_epics,
     read_corpus_activity,
+    read_loop_config,
     read_spec_text_activity,
 ]
 
