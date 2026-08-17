@@ -9,15 +9,15 @@ resolve.
 
 | What | Where | Used by |
 | --- | --- | --- |
-| The operator-signal pattern, three of them | `factory/workgraph/workflow.py:526` (`pause_epic`), `:539` (`resume_epic`), `:544` (`kill_epic`) | US1 — the shape a new signal copies |
-| A signal carrying operator payload, and its deliberate incuriosity | `workflow.py:559` `escalation_resolved(escalation_id, choice)`; the free-text sibling at `:570` `question_answered(question_id, answer_text)` | US1 — the closest precedent: buffered, not validated at receipt, because validating against state the workflow may not have written yet drops the fastest presses |
-| Signal name constants live beside the sender, not the workflow | `factory/notify/service.py:64` `SIGNAL_NAME = "escalation_resolved"`, `:73` `QUESTION_SIGNAL_NAME` | US1 — where the new constant belongs |
-| The CLI's signal verbs and their plumbing | `factory/cli/nouns/build.py:70-72` (`PAUSE_SIGNAL`/`RESUME_SIGNAL`/`KILL_SIGNAL`), sent via `_send_signal` at `:396`, `:401`, `:414` | US1 — the operator's entry point is a new verb here |
+| The operator-signal pattern, three of them | `factory/workgraph/workflow.py:514` (`pause_epic`), `:527` (`resume_epic`), `:532` (`kill_epic`) | US1 — the shape a new signal copies |
+| A signal carrying operator payload, and its deliberate incuriosity | `factory/escalation/workflow.py:246` `escalation_resolved(escalation_id, choice)` — **moved out of the epic workflow by 041-escalation-workflow, which landed 2026-08-16**; the free-text sibling at `:570` `question_answered(question_id, answer_text)` | US1 — the closest precedent: buffered, not validated at receipt, because validating against state the workflow may not have written yet drops the fastest presses |
+| Signal name constants live beside the sender, not the workflow | `factory/notify/service.py:86` `SIGNAL_NAME = "escalation_resolved"`, `:95` `QUESTION_SIGNAL_NAME` | US1 — where the new constant belongs |
+| The CLI's signal verbs and their plumbing | `factory/cli/nouns/build.py:90-92` (`PAUSE_SIGNAL`/`RESUME_SIGNAL`/`KILL_SIGNAL`), sent via `_send_signal` at `:396`, `:401`, `:414` | US1 — the operator's entry point is a new verb here |
 | The ladder that decides a node is out of road | `factory/verify/ladder.py:63` `next_action(history, config, *, escalations)`; `_TERMINAL_ACTIONS` in `workflow.py` | US1 — read this to know "exhausted"; do not redefine it |
-| The verification record write | `factory/verify/store.py:222` (`INSERT INTO verification_results`), columns in `_RESULT_COLUMNS` | US1 — provenance is a new column on this row |
-| The attempt loop and where a node's result is produced | `workflow.py:1166-1510` (evidence list, the `while True` attempt bracket, `next_action` call at `:1476`) | US1 — the completion path rejoins here |
+| The verification record write | `factory/verify/store.py:328` (`INSERT INTO verification_results`), columns in `_RESULT_COLUMNS` at `:308` | US1 — provenance is a new column on this row |
+| The attempt loop and where a node's result is produced | the attempt loop in `workflow.py` — a 2,557-line file; locate it by `next_action` rather than by line (evidence list, the `while True` attempt bracket, `next_action` call at `:1476`) | US1 — the completion path rejoins here |
 | The recurrence machine — a durable count with first/last seen | `factory/doctor/store.py:112` `report(conn, finding, *, seen_at)` and its `occurrences = findings.occurrences + 1` upsert | US3 — the counting shape to copy, including the trap below |
-| The landed attestation reader | `factory/workgraph/landed.py:228` `_attesting_commit`, and the `state: landed` frontmatter contract at `:101-103` | US2 — where the attestation's meaning is defined |
+| The landed attestation reader | `factory/workgraph/landed.py:254` `_attesting_commit`, and the `state: landed` frontmatter contract at `:102-110` | US2 — where the attestation's meaning is defined |
 | Requested-by record, verbatim | cross-session memory `fail-out-escape-hatch`, and this spec's frontmatter | All three — Bryan's three conditions are binding, not preferences |
 
 ## Traps
@@ -97,8 +97,8 @@ epic's suite runs on the worker host. Every new test builds its stores under
 ### US1 — the signal, the guard, the record
 
 1. Add `EXTERNAL_COMPLETION_SIGNAL = "complete_node_externally"` beside the
-   existing constants in `factory/notify/service.py:64-73`, and the signal
-   handler beside its siblings in `workflow.py` (after `:570`). Payload:
+   existing constants in `factory/notify/service.py:86-95`, and the signal
+   handler beside its siblings in `workflow.py` (after `:537`). Payload:
    `(node_id, branch, provenance)`. Buffer it the way `escalation_resolved`
    buffers into `_resolutions` — receipt validates nothing.
 2. Read the buffer where the node's ladder outcome is decided (`workflow.py`
@@ -107,12 +107,12 @@ epic's suite runs on the worker host. Every new test builds its stores under
    and leave the node alone (FR-002). Do not invent a new notion of exhausted —
    read the one `factory/verify/ladder.py:63` already computes.
 3. On acceptance, the node's result is the named branch. Add a `provenance`
-   column to `verification_results` (`factory/verify/store.py:222`,
+   column to `verification_results` (`factory/verify/store.py:308`,
    `_RESULT_COLUMNS`), non-null on this path, and write the record before the
    node proceeds.
 4. Rejoin the normal path at VERIFYING so gates, judge, PR and queue all run
    unchanged (trap 4). Nothing about this path grants a pass.
-5. Add the CLI verb beside `build.py:396-414`'s siblings. It should require the
+5. Add the CLI verb beside `build.py:508-513`'s siblings. It should require the
    provenance argument rather than defaulting it — the friction is deliberate
    (trap 1).
 
@@ -127,7 +127,7 @@ Dispatches after US1 has **merged**.
 3. The PR body states the work was completed externally and that the node's
    ladder was exhausted — the eligibility is part of the record.
 4. The spec's `state: landed` attestation states the spec contains
-   externally-completed work. `factory/workgraph/landed.py:101-103` and `:228`
+   externally-completed work. `factory/workgraph/landed.py:102-110` and `:254`
    define what an attestation means today; this extends that meaning rather than
    adding a parallel one.
 5. Agent-completed nodes carry none of these (FR-006). A marking that fires on
@@ -168,3 +168,50 @@ Two checks beyond the suite, both graded by inspection rather than assertion:
   gates must fail the node, demonstrated, not asserted. If every test in this
   spec passes on work that was never verified, the feature is a merge bypass
   wearing a provenance field.
+
+## Added at the 2026-08-16 re-verification
+
+Re-read against `851e0bf`. **Every anchor in the table above had drifted**, and
+one had moved out of the file entirely — the corrections are applied in place.
+The structural one is worth stating on its own, because it changes what you copy:
+
+**`escalation_resolved` is no longer in `factory/workgraph/workflow.py`.**
+041-escalation-workflow landed on 2026-08-16 and moved it to
+`factory/escalation/workflow.py:246`. The epic workflow now defines exactly three
+signals — `pause_epic` (`:514`), `resume_epic` (`:527`), `kill_epic` (`:532`).
+So the "signal carrying operator payload" pattern this plan tells you to copy
+lives in a **different module** from the three no-payload signals, and you must
+decide which neighbourhood `complete_node_externally` belongs in rather than
+assuming they are still siblings. `factory/workgraph/workflow.py` is now 2,557
+lines; locate the attempt loop by `next_action` rather than by line number.
+
+**One question this spec should answer before it dispatches, and does not.**
+This session ran an "eject mode" in which the operator session dispatched
+implementer agents by hand — worktrees, real boundary gates, a real judge, real
+merge-queue landings — because the factory's own model backend was unavailable.
+Sixty-plus commits landed that way on 2026-08-16. That is **not** what this spec
+counts, and the distinction is sharp enough to write down: 035 counts work whose
+*code was written by the operator*. Eject mode changed who **orchestrated** the
+agents, not who **wrote** the code — every line still came from a model, through
+the same gates, judged the same way. A future reader will ask; answer them here
+rather than letting them re-derive it.
+
+## Instrument traps carried forward from 2026-08-16
+
+**Purge `__pycache__` between mutants**, or run under `PYTHONDONTWRITEBYTECODE=1`.
+CPython validates a cached `.pyc` on `(mtime-in-whole-seconds, size)` only, so two
+same-size mutants written inside one wall-clock second make the second run execute
+the *first* mutant's bytecode. It fails toward green and reproduces stably.
+
+**Quote `passed` and `skipped`, never the warning count** — a warm cache
+suppresses compile-time warnings. Baseline skips are 44; a new skip is a hidden
+test you must declare.
+
+**Measure exit codes without a pipe.** `cmd | head; echo $?` reports the pipe's
+status, not the command's.
+
+**Assert against the store's state, not a call log.** This story writes a
+`provenance` column and increments a durable count. "We called `report`" is a
+claim about your own code; "the row reads `provenance=external` and the count is
+2" is a claim about the world. Only the second can catch the defect this spec
+exists to prevent — a fail-out that quietly does not get counted.

@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-024-target
 # Scaffolded by `ergane findings promote` from
@@ -20,10 +20,12 @@ real `spend_usd` — a measurement nobody took, printed as if somebody had.
 
 Two reasons, and the second is the one that raises it.
 
-The schema already decided this question. `contracts/ledger-schema.sql` and
-`factory/usage/ledger.py:69` carry the comment `NULL = unknown (never fabricated
-0)`, and `factory/usage/cli.py:55` defines `UNMEASURED = "-"` so a metric nobody
-reported prints as absence. Both mechanisms exist, work, and are bypassed: the
+The schema already decided this question. `factory/usage/ledger.py:69` carries
+the comment `NULL = unknown (never fabricated 0)`, and `factory/usage/cli.py:60`
+defines `UNMEASURED = "-"` so a metric nobody reported prints as absence.
+(Re-checked 2026-08-16: this spec used to cite `contracts/ledger-schema.sql`
+alongside it. **That file no longer exists**; the schema lives in `ledger.py`
+alone.) Both mechanisms exist, work, and are bypassed: the
 writer never sends a `NULL` for these three columns because the aggregate cannot
 produce one.
 
@@ -44,6 +46,13 @@ rather than arguable: `019-operator-cli/us5` carries `spend_usd = 46.4664` besid
 - Re-confirmed live 2026-08-10 against `.factory/ledger.db`: the three most recent
   attempts each carry non-zero `spend_usd` with `prompt_tokens = completion_tokens
   = request_count = 0`.
+- **Re-measured 2026-08-16, and it has got worse.** `ergane usage --by epic`
+  now reports **0 prompt, 0 completion, 0 requests** against real spend for
+  every epic since the defect began: 036 ($11.30), 037 ($5.56), 038 ($52.68),
+  039 ($12.99), and 043 ($48.01 across twenty rows). 033 is stranger still —
+  19 prompt tokens and 2 completion tokens across **79 requests**, which is not
+  a plausible measurement either. Six days of the factory's hardest running are
+  recorded as having cost nothing.
 - **The data is not lost.** Agent transcripts under
   `FACTORY_ROOT/transcripts/<epic>/<node>/attempt-N/*.jsonl` carry intact usage
   blocks. 006's five landed nodes sum to 387,490,083 input and 6,185,313 output

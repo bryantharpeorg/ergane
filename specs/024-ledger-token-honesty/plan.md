@@ -1,8 +1,10 @@
 # Plan: A zero the factory did not measure
 
-Refined against the tree at `b4c5af9` on 2026-08-10. Every anchor below was
-resolved against that tree; if one does not resolve when you read it, trust the
-code and say so in your handoff rather than hunting.
+Refined against `b4c5af9` on 2026-08-10, **re-verified against `851e0bf` on
+2026-08-16**. Every anchor below was read by hand at the later tree. The three
+that had drifted are corrected in place; the rest held. If one still does not
+resolve when you read it, trust the code and say so in your handoff rather than
+hunting.
 
 ## The shape of this change
 
@@ -31,12 +33,12 @@ are finishing one, and the docstring you should match is already written.
 | The existing accumulator | `factory/usage/aggregate.py:61-62` | `_accumulate(...)` is how the cache fields already do "None until reported" — reuse it |
 | The row-level helper | `factory/usage/aggregate.py:100-102` | `_as_int` — **do not change this**, see trap 2 |
 | The schema's own rule | `factory/usage/ledger.py:69-71` | `NULL = unknown (never fabricated 0)` |
-| The renderer | `factory/usage/cli.py:55` and `:200` | `UNMEASURED = "-"`; `None` already prints as `-` |
-| The writer path | `factory/activities/usage_activities.py:149` | Where `AggregatedUsage` becomes a `UsageRecord` |
-| The record type | `factory/usage/models.py:138-139` | Already `int \| None` — the ledger row can hold this today |
+| The renderer | `factory/usage/cli.py:60` and `:209` | `UNMEASURED = "-"`; `None` already prints as `-` |
+| The writer path | `factory/activities/usage_activities.py:155` | Where `AggregatedUsage` becomes a `UsageRecord` |
+| The record type | `factory/usage/models.py:138-142` | Already `int \| None` — the ledger row can hold this today |
 
 Note the asymmetry that makes this small: the *destination* already accepts
-`NULL` (`models.py:138-139`, and the SQL column is nullable), and the *display*
+`NULL` (`models.py:138-142`, and the SQL column is nullable), and the *display*
 already renders `None` as `-`. Only the middle of the pipe cannot express it.
 
 ## The change
@@ -97,6 +99,25 @@ No test may read `.factory/ledger.db`.
 affected rows stay exactly as they are; they are the evidence that this happened.
 Backfilling them from transcripts is real work the operator has scoped out of this
 spec, not a helpful extra.
+
+**Trap 7 — purge `__pycache__` between mutants.** CPython validates a cached
+`.pyc` on `(mtime-in-whole-seconds, size)` only, so two same-size mutants written
+inside one wall-clock second make the second run execute the *first* mutant's
+bytecode. Your mutations here are type-annotation and seed-value swaps, which
+preserve size trivially — this trap is aimed straight at this story. Run under
+`PYTHONDONTWRITEBYTECODE=1` or purge between runs. Filed as
+`verify/mutation-batteries-can-test-stale-bytecode-when-a-mutation-preserves-file-size`.
+
+**Trap 8 — quote `passed` and `skipped`, never the warning count.** A
+`SyntaxWarning` fires at compile time, so a warm cache reports fewer warnings
+than a cold one on an identical tree. The skip count is the load-bearing one;
+baseline is 44 and a new skip is a hidden test you must declare.
+
+**Trap 9 — measure exit codes without a pipe.** `cmd | head; echo $?` reports the
+pipe's status, not the command's. That error produced a false reading of
+`ergane install --verify` on 2026-08-16 and nearly became a filed finding.
+Capture `rc=$?` before any pipe. Relevant here because "done" below asks you to
+read a row back with `sqlite3`.
 
 ## What "done" looks like
 

@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # specs_root: specs
 # target_repo: /home/admin/code/ergane-019-target
 #
@@ -56,7 +56,7 @@ appears in the report. The signal is worth keeping; the verdict is not.
 
 ## The distinction this spec turns on
 
-`_check_scenario_coverage` at `factory/cli/nouns/spec.py:378` produces **two
+`_check_scenario_coverage` at `factory/cli/nouns/spec.py:457` produces **two
 different findings** through the same layer name, and they do not deserve the
 same treatment:
 

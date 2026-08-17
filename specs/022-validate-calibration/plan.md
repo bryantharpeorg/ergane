@@ -12,16 +12,16 @@ this file is one it created.
 | What | Where | Why it matters |
 | --- | --- | --- |
 | `_ValidateFinding` | `factory/cli/nouns/spec.py:216-219` | Two attributes, `layer` and `message`. This is where severity goes. |
-| `_validate_command` | `factory/cli/nouns/spec.py:222` | The whole verb, ~66 lines. Reads top to bottom. |
+| `_validate_command` | `factory/cli/nouns/spec.py:223` | The whole verb, ~66 lines. Reads top to bottom. |
 | The four check calls | `spec.py:234`, `:250-257`, `:260` | frontmatter, work-graph + persona, scenario coverage, in that order. |
-| The `checked` list | `spec.py:262-267` | Four layer names, emitted in the JSON report. Unchanged by this work. |
-| The report dict | `spec.py:268-275` | `{spec_dir, checked, findings[{layer, message}]}`. FR-007 adds one key per finding here and nowhere else. |
+| The `checked` list | `spec.py:271` | Four layer names, emitted in the JSON report. Unchanged by this work. |
+| The report dict | `spec.py:271-280` | `{spec_dir, checked, findings[{layer, message}]}`. FR-007 adds one key per finding here and nowhere else. |
 | The human print | `spec.py:279-286` | Findings to **stderr**, one per line, prefixed `ergane spec validate: [layer]`. The success line is on stdout. |
-| **The exit rule** | `spec.py:288` | `return EXIT_USER if findings else EXIT_OK`. This single line is FR-002. |
-| `_check_scenario_coverage` | `spec.py:378-414` | Produces both findings this spec separates: missing file at `:396-403`, uncovered ids at `:408-414`. |
-| `_SCENARIO_ID_RE` | `spec.py:45` | `re.compile(r"US\d+-S\d+")`. Unchanged. |
+| **The exit rule** | `spec.py:367` | `return EXIT_USER if findings else EXIT_OK`. This single line is FR-002. |
+| `_check_scenario_coverage` | `spec.py:457-493` | Produces both findings this spec separates: missing file at `:396-403`, uncovered ids at `:408-414`. |
+| `_SCENARIO_ID_RE` | `spec.py:46` | `re.compile(r"US\d+-S\d+")`. Unchanged. |
 | `EXIT_OK` / `EXIT_USER` | `factory/cli/errors.py:23-24` | 0 and 1. Do not add a new exit code; FR-002 is about which findings reach 1. |
-| Existing tests | `tests/test_ergane_spec.py:442-525` | Three tests under a `T011a: scenario coverage` banner. Two of them assert the contract this spec changes. |
+| Existing tests | `tests/test_ergane_spec.py:451` | Three tests under a `T011a: scenario coverage` banner. Two of them assert the contract this spec changes. |
 
 ## Approach
 
@@ -30,7 +30,7 @@ this file is one it created.
    `spec.py:247`, `:257` (via `_check_personas`), `:298`, `:300`, `:307`,
    `:314`, `:321`, `:398` and `:410`. A defaulted parameter means only the one
    advisory site changes.
-2. Change `spec.py:288` to consider severity rather than emptiness.
+2. Change `spec.py:367` to consider severity rather than emptiness.
 3. Mark the human line so an advisory reads differently from a refusal
    (FR-006). The prefix already carries the layer; extend that, do not invent a
    second output stream.
@@ -111,3 +111,28 @@ uncovered scenarios, and the ids still printed on stderr for each.
 - Editing any `tasks.md` in the corpus.
 - A `--strict` flag restoring exit 1. Nobody has asked for it; adding a knob to
   undo the fix is how a calibration becomes a configuration surface.
+
+## Added at the 2026-08-16 re-verification
+
+**The defect still reproduces, and the number has moved — say which way.**
+Measured tonight across all 48 specs in the corpus: **30 pass, 18 fail.** When
+this spec was drafted it was seventeen of seventeen. The improvement is not a fix
+— it is that specs written since then reference scenario ids in `tasks.md`, which
+is the convention the check demands. The eighteen that fail are the older corpus,
+and two of them (`017-peer-channel`, `023-composable-verification`) are drafts
+the operator wants dispatchable, so this calibration is on their critical path.
+
+**Trap 7 — purge `__pycache__` between mutants**, or run under
+`PYTHONDONTWRITEBYTECODE=1`. CPython validates a cached `.pyc` on
+`(mtime-in-whole-seconds, size)` only, so two same-size mutants written inside one
+wall-clock second make the second run execute the *first* mutant's bytecode. A
+one-line exit-code change is exactly the size-preserving mutation this defeats.
+
+**Trap 8 — quote `passed` and `skipped`, never the warning count.** A warm cache
+suppresses compile-time warnings, so warning counts are not comparable between
+runs. Baseline skips are 44; a new skip is a hidden test you must declare.
+
+**Trap 9 — measure exit codes without a pipe.** `cmd | head; echo $?` reports the
+pipe's status. This spec is *about* an exit code, so a piped measurement here
+would not merely mislead you — it would measure the wrong thing entirely.
+Capture `rc=$?` before any pipe.
