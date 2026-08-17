@@ -229,7 +229,7 @@ def test_the_schema_version_records_the_new_shape(db_path: Path) -> None:
     with closing(store.connect(db_path)) as conn:
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
 
-    assert store.SCHEMA_VERSION == 4
+    assert store.SCHEMA_VERSION == 5
     assert versions == [store.SCHEMA_VERSION]
 
 

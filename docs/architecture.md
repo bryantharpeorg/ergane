@@ -75,6 +75,16 @@ flowchart TB
 state tears down the key and writes the usage ledger. (A `BUDGET_BREACH` state joins
 the lifecycle only if deferred spec 004 is reactivated.)
 
+A stuck node whose ladder is exhausted has a third exit: the operator may finish
+the work by hand and signal `complete_node_externally`. The signal is accepted only
+when the ladder has run out of road, the provenance string is recorded in the
+verification row, and the work then proceeds through the normal gates, judge and
+merge queue. This path is deliberately awkward — an explicit operator command,
+a required provenance, no automatic invocation — because the factory's default
+claim is that no production code here is written by a human. The number of times
+the hatch has been used is a durable, idempotent, queryable count; the target is
+zero, and the count surface says so.
+
 ## 2. Intent layer: Spec Kit feature specs (D-023)
 
 The system of record is the target repo's `specs/` directory of Spec Kit feature specs
