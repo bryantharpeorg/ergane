@@ -1,5 +1,15 @@
 ---
-state: draft
+state: ready
+# FLIPPED READY 2026-08-17 3:20 PM CT on Bryan's explicit instruction, over the
+# standing "DO NOT FLIP READY" below. That note is left intact because its
+# argument has not been answered: the merge-group capture it asks for has still
+# never been obtained, and the finding
+# interpreter/replay-test-nondeterminism-under-load survived the fix that was
+# supposed to close it. Anyone dispatching this should expect an implementer to
+# be building against a premise nobody has confirmed, and should watch the first
+# attempt rather than trust a PASS.
+#
+# --- the 2026-08-16 park this overrides, kept for the chain ---
 # STILL PARKED 2026-08-16 — re-read tonight when the operator asked for every
 # draft to be made ready. This is the one that could not be, and the reason is
 # not staleness: the spec's own premise has now been disproven TWICE, and the
