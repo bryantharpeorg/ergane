@@ -108,8 +108,20 @@ TEMPORAL_NAMESPACE_ENV = "TEMPORAL_NAMESPACE"
 
 DEFAULT_TEMPORAL_ADDRESS = "localhost:7233"
 
-#: The namespace the factory's workflows run in (plan.md, Target Platform).
-DEFAULT_TEMPORAL_NAMESPACE = "factory"
+#: The **only** literal for the default Temporal namespace in the shipped
+#: package (051-US2, FR-006). `factory/cli/install.py` seeds its interview from
+#: this name rather than from a second copy of the value: the two disagreed —
+#: `ergane` in the interview, `factory` here — and an operator who pressed enter
+#: through `ergane install` declared one namespace while every unconfigured
+#: command used the other.
+#:
+#: It reads `ergane` rather than `factory` because `factory` is *this*
+#: repository's deployment name, and a product default may not be one
+#: installation's proper noun (FR-011). This repository's own worker is
+#: unaffected: `scripts/ergane-env.sh` exports `TEMPORAL_NAMESPACE=factory`
+#: explicitly, and under 048's precedence — environment over declaration over
+#: default — an export means this value is never consulted there.
+DEFAULT_TEMPORAL_NAMESPACE = "ergane"
 
 #: Callback answers are toasts, capped by the Bot API at 200 characters — these
 #: exist so an ignored press always says *why* it was ignored.

@@ -47,6 +47,7 @@ from factory.controlplane.config import (
 )
 from factory.controlplane.verify import render_findings, verify_controlplane
 from factory.locking import LockUnavailable, exclusive_lock
+from factory.notify.service import DEFAULT_TEMPORAL_NAMESPACE
 
 #: How long `ergane install` waits for another install to finish before it
 #: refuses. Overridable per invocation with `--lock-timeout`.
@@ -57,6 +58,13 @@ CLEAR = "-"
 
 #: What a blank host is offered before it has answered anything. Every value is
 #: valid, so the whole interview can be completed by pressing Enter.
+#:
+#: The Temporal namespace is *named*, not spelled (051-US2, FR-006/FR-007). It
+#: used to be a second `"ergane"` literal here while
+#: `factory/notify/service.py` said `"factory"`, so pressing Enter declared one
+#: namespace and every unconfigured command fell back to another — which on
+#: 2026-08-16 created a live schedule in a namespace nobody had named. One name
+#: cannot disagree with itself.
 BLANK_DOCUMENT: dict[str, Any] = {
     "version": 1,
     "llm": {
@@ -68,7 +76,7 @@ BLANK_DOCUMENT: dict[str, Any] = {
     "temporal": {
         "mode": "external",
         "address": "127.0.0.1:7233",
-        "namespace": "ergane",
+        "namespace": DEFAULT_TEMPORAL_NAMESPACE,
     },
     "telemetry": {},
     "escalation": {
