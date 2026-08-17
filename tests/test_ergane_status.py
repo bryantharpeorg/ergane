@@ -1695,3 +1695,37 @@ def test_a_query_failure_that_is_neither_transport_nor_refusal_still_escapes(
     assert "unexpected error" in result.stderr
     assert "a real defect, not a refusal" in result.stderr
     assert result.stdout == ""
+
+
+def test_an_epic_with_no_table_is_not_paced_as_a_finished_one(
+    fake_temporal: Callable[..., FakeTemporalClient],
+    specs_root: Path,
+    evidence_store: Path,
+) -> None:
+    """The pace section must not turn "would not answer" into "nothing left".
+
+    Written because a mutation survived: removing `_pace`'s skip left the whole
+    suite green. An epic that refused its query has an empty node table, so it
+    would be measured as `0 of 0 stories remaining` — which renders identically
+    to an epic that has finished every story, in the one section an operator
+    reads to judge how much work is left. The two readings must not collide.
+    """
+    fake_temporal(
+        workflows={
+            "roadmap-specs": FakeWorkflow(roadmap_document()),
+            f"epic-{RUNNING_SPEC}": FakeWorkflow(
+                WorkflowQueryFailedError(REFUSAL_MESSAGE)
+            ),
+        }
+    )
+
+    result = invoke("status", str(specs_root))
+    machine = invoke("status", str(specs_root), "--json").json
+    pace = section(result.stdout, "pace")
+
+    assert result.code == 0, result.stderr
+    assert "0 of 0 stories remaining" not in pace
+    assert "no running epic answered with a story table" in pace
+    assert machine["pace"] == []
+    # ...and the epic is still on the report, in the section that can say why.
+    assert "unavailable" in section(result.stdout, "epics")
