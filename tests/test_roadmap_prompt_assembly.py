@@ -412,6 +412,37 @@ async def _await_park(handle: Any, spec_dir: str) -> Any:
     return await asyncio.wait_for(poll(), timeout=30)
 
 
+async def _await_running(handle: Any, spec_dir: str) -> None:
+    """Poll `roadmap_status` until `spec_dir`'s child epic is in flight.
+
+    Both tests below hold `002-bravo` open to keep the roadmap alive, and then
+    signal `epic-002-bravo` directly to release it. That signal needs the child
+    to exist, and parking `001-runtime-root` happens strictly earlier in the same
+    pass — so `_await_park` returning says nothing about whether the child has
+    started yet.
+
+    Until 052 US2 the gap was covered by accident. `roadmap_status` crashed while
+    the roadmap had not yet read its corpus (`RoadmapStatus.__init__() missing 1
+    required positional argument: 'max_concurrent_nodes'`), the SDK retried the
+    failed query behind the client call, and the first answer therefore arrived
+    ~120ms late — by which time the child was running. Repairing the query made
+    the first answer arrive in ~10ms, which is early enough to see the park
+    before the dispatch, and both tests started signalling a workflow that did
+    not exist: `Execution not found in mutable state: workflowId='epic-002-bravo'`.
+
+    So the wait is explicit now, and it says what it is waiting for.
+    """
+
+    async def poll() -> None:
+        while True:
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            if spec_dir in status.running:
+                return
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout=30)
+
+
 async def test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it(
     env: WorkflowEnvironment, tmp_path: Path
 ) -> None:
@@ -455,6 +486,7 @@ async def test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it
         await handle.signal("unpark_spec", "001-runtime-root")
 
         # Let the held child finish; the roadmap's next pass is what dispatches.
+        await _await_running(handle, "002-bravo")
         await env.client.get_workflow_handle("epic-002-bravo").signal("release")
         status = await handle.result()
 
@@ -495,6 +527,7 @@ async def test_a_park_survives_continue_as_new_when_no_one_unparks_it(
         # The operator fixes the document — and does nothing else.
         (spec_dir / "tasks.md").write_text(FIXED_TASKS, encoding="utf-8")
 
+        await _await_running(handle, "002-bravo")
         await env.client.get_workflow_handle("epic-002-bravo").signal("release")
         status = await handle.result()
 
