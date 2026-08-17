@@ -48,7 +48,7 @@ from factory.supervision.probe import (
     reap_orphans,
     run_probe,
 )
-from factory.supervision.units import BRIDGE_UNIT, CommandResult, WORKER_UNIT
+from factory.supervision.units import BRIDGE_UNIT, CommandResult, TEMPORAL_UNIT, WORKER_UNIT
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -128,7 +128,7 @@ class RecordingAdapter:
 
 def host(
     *,
-    active: Sequence[str] = (WORKER_UNIT, BRIDGE_UNIT),
+    active: Sequence[str] = (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT),
     processes: str = "",
     mem_available_kb: int = 64 * 1024 * 1024,
     uptime_s: float = 10_000.0,

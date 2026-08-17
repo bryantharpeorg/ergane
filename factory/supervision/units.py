@@ -56,6 +56,7 @@ from factory.registry import resolve_state_home
 SLICE_UNIT = "ergane.slice"
 WORKER_UNIT = "ergane-worker.service"
 BRIDGE_UNIT = "ergane-bridge.service"
+TEMPORAL_UNIT = "ergane-temporal.service"
 PROBE_UNIT = "ergane-probe.service"
 PROBE_TIMER = "ergane-probe.timer"
 
@@ -74,7 +75,10 @@ PKILL_PATTERN = "python -"
 #: among them — the slice is pulled in by the `Slice=` lines that reference it
 #: and the probe service by its timer, so enabling either would be declaring a
 #: `WantedBy` that systemd then has to reconcile.
-ENABLE_TARGETS = (WORKER_UNIT, BRIDGE_UNIT, PROBE_TIMER)
+#: Units enabled for every installation.  TEMPORAL_UNIT is added when the
+#: layout's `temporal_mode` is `managed`; it is deliberately not in this tuple
+#: because external mode must not enable a unit that was not generated.
+ENABLE_TARGETS = (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT, PROBE_TIMER)
 
 _MODULES = {
     WORKER_UNIT: "factory.worker",
@@ -123,19 +127,29 @@ class InstallLayout:
     restart_window_s: int = 300
     restart_burst: int = 5
     probe_interval: str = "2min"
+    temporal_mode: str = "external"
 
     @property
     def roots(self) -> tuple[Path, ...]:
+        # The Temporal db lives under the state home, one directory above the
+        # supervision subdirectory (SC-004).  Including that parent in roots lets
+        # the path scan treat it as inside the operator's own installation.
         return (
             self.install_root,
             self.unit_dir,
             self.generated_dir,
+            self.generated_dir.parent,
             self.interpreter,
         )
 
     @property
     def wrapper(self) -> Path:
         return self.generated_dir / WRAPPER_NAME
+
+    @property
+    def temporal_db_path(self) -> Path:
+        """Where the managed Temporal server keeps its SQLite history."""
+        return self.generated_dir.parent / "temporal" / "dev.db"
 
 
 def supervision_home() -> Path:
@@ -217,6 +231,17 @@ class GeneratedFile:
         return self.directory / self.name
 
 
+def _temporal_managed(layout: InstallLayout) -> bool:
+    """Whether this installation generates the managed Temporal server unit.
+
+    `ergane worker install` is the supervised path and defaults to managed.  The
+    `ergane install` walkthrough sets `temporal_mode="external"` when the
+    operator chose external Temporal, and that layout is what `resolve_layout`
+    will produce for the same host.
+    """
+    return layout.temporal_mode == "managed"
+
+
 def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
     """Every file `install` writes, rendered from `layout` and nothing else."""
     for module in _MODULES.values():
@@ -229,14 +254,20 @@ def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
             )
 
     units = layout.unit_dir
-    return (
+    generated = layout.generated_dir
+    files: list[GeneratedFile] = [
         GeneratedFile(SLICE_UNIT, _slice_text(layout), units),
         GeneratedFile(WORKER_UNIT, _worker_text(layout), units),
         GeneratedFile(BRIDGE_UNIT, _bridge_text(layout), units),
         GeneratedFile(PROBE_UNIT, _probe_text(layout), units),
         GeneratedFile(PROBE_TIMER, _timer_text(layout), units),
-        GeneratedFile(WRAPPER_NAME, _wrapper_text(layout), layout.generated_dir, 0o755),
-    )
+        GeneratedFile(WRAPPER_NAME, _wrapper_text(layout), generated, 0o755),
+    ]
+    if _temporal_managed(layout):
+        files.insert(
+            3, GeneratedFile(TEMPORAL_UNIT, _temporal_text(layout), units)
+        )
+    return tuple(files)
 
 
 def _slice_text(layout: InstallLayout) -> str:
@@ -315,6 +346,47 @@ def _bridge_text(layout: InstallLayout) -> str:
         restart="always",
         stop_timeout_s=30,
     )
+
+
+def _temporal_text(layout: InstallLayout) -> str:
+    """The managed Temporal server unit: persistence, containment, restart bound.
+
+    The Go dev server is downloaded on demand by the temporalio package and cached
+    under the state home.  Persistence lives there too: a host reinstall that
+    preserves the state directory keeps history, while a fresh install starts
+    clean — which is the contract SC-004 defends.
+    """
+    db_path = layout.temporal_db_path
+    # Use a tiny Python shim so the command line does not contain `python -`.
+    # The shim starts the local dev server on the bound frontend port and blocks
+    # until the process exits; systemd receives the server's stdout and the
+    # usual signals.
+    return f"""\
+[Unit]
+Description=ergane — managed Temporal server (SQLite persistence)
+# Give up rather than flap: a restart loop during a memory storm deepens it.
+StartLimitIntervalSec={layout.restart_window_s}
+StartLimitBurst={layout.restart_burst}
+
+[Service]
+Type=simple
+Slice={SLICE_UNIT}
+WorkingDirectory={layout.install_root}
+ExecStart={layout.wrapper} factory.supervision.temporal_server --db-filename {db_path} --namespace ergane --log-level warn
+
+# The point, not a default worth losing: the dev server spawns child processes,
+# and stopping the unit must take the whole tree. A bare kill of the main pid is
+# what leaves orphans on PID 1.
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+"""
 
 
 def _probe_text(layout: InstallLayout) -> str:

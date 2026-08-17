@@ -66,6 +66,25 @@ def layout(tmp_path: Path) -> Iterator[InstallLayout]:
         interpreter=interpreter,
         unit_dir=home / ".config/systemd/user",
         generated_dir=home / ".local/state/ergane/supervision",
+        temporal_mode="external",
+    )
+
+
+@pytest.fixture
+def managed_layout(tmp_path: Path) -> Iterator[InstallLayout]:
+    """A managed-mode installation whose every root is under `tmp_path`."""
+    home = tmp_path / "home"
+    interpreter = home / "code/ergane/.venv/bin/python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+    (home / ".config/ergane").mkdir(parents=True)
+    (home / ".config/ergane/config.toml").write_text("[temporal]\n", encoding="utf-8")
+    yield InstallLayout(
+        install_root=home / "code/ergane",
+        interpreter=interpreter,
+        unit_dir=home / ".config/systemd/user",
+        generated_dir=home / ".local/state/ergane/supervision",
+        temporal_mode="managed",
     )
 
 
@@ -74,27 +93,27 @@ def layout(tmp_path: Path) -> Iterator[InstallLayout]:
 # ---------------------------------------------------------------------------
 
 
-def test_managed_mode_installs_temporal_unit(layout: InstallLayout) -> None:
+def test_managed_mode_installs_temporal_unit(managed_layout: InstallLayout) -> None:
     """US3-S1: managed Temporal produces `ergane-temporal.service`."""
-    names = {generated.name for generated in generated_files(layout)}
+    names = {generated.name for generated in generated_files(managed_layout)}
     assert TEMPORAL_UNIT in names
 
 
-def test_temporal_unit_is_inside_the_slice(layout: InstallLayout) -> None:
+def test_temporal_unit_is_inside_the_slice(managed_layout: InstallLayout) -> None:
     """US3-S1: the Temporal server is contained the same way the worker is."""
-    text = texts(layout)[TEMPORAL_UNIT]
+    text = texts(managed_layout)[TEMPORAL_UNIT]
     assert directive(text, "Slice") == [SLICE_UNIT]
 
 
-def test_temporal_unit_has_persistent_storage(layout: InstallLayout) -> None:
+def test_temporal_unit_has_persistent_storage(managed_layout: InstallLayout) -> None:
     """US3-S1 / SC-004: the unit declares SQLite persistence."""
-    text = texts(layout)[TEMPORAL_UNIT]
+    text = texts(managed_layout)[TEMPORAL_UNIT]
     assert directive(text, "ExecStart") != []
     assert "--db-filename" in text
     assert "temporal" in text.lower() or "server" in text.lower()
 
 
-def test_temporal_unit_is_enabled_when_managed(layout: InstallLayout) -> None:
+def test_temporal_unit_is_enabled_when_managed(managed_layout: InstallLayout) -> None:
     """US3-S1: the Temporal unit is part of what `install` enables."""
     assert TEMPORAL_UNIT in ENABLE_TARGETS
 

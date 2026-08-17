@@ -45,6 +45,7 @@ from factory.supervision.alert import AlertOutcome, StackAlert, send_alert
 from factory.supervision.units import (
     BRIDGE_UNIT,
     SLICE_UNIT,
+    TEMPORAL_UNIT,
     WORKER_UNIT,
     CommandResult,
     _run_command,
@@ -72,7 +73,7 @@ STATE_FILE = "probe.json"
 class ProbeConfig:
     """The thresholds, and the units this installation supervises."""
 
-    units: tuple[str, ...] = (WORKER_UNIT, BRIDGE_UNIT)
+    units: tuple[str, ...] = (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT)
     slice_unit: str = SLICE_UNIT
     dial: tuple[tuple[str, int], ...] = ()
     mem_warn_gib: int = 16
