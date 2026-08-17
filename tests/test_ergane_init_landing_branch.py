@@ -209,11 +209,16 @@ def test_an_empty_repository_offers_the_literal_and_init_completes(
     result, prompter = run_init(repo, monkeypatch)
 
     assert result.code == EXIT_OK
+    # Twice over, on purpose. By reference, because "the existing literal" is a
+    # structural claim about *which* value is the fallback; and by name, because
+    # a test that only spelled the constant would follow a mutation of it and
+    # never go red.
     assert offered(prompter, LANDING_BRANCH_PROMPT) == (
         init_module._PLACEHOLDERS["landing_branch"]
     )
+    assert offered(prompter, LANDING_BRANCH_PROMPT) == "main"
     written = yaml.safe_load((repo / "ergane.yaml").read_text(encoding="utf-8"))
-    assert written["landing_branch"] == init_module._PLACEHOLDERS["landing_branch"]
+    assert written["landing_branch"] == "main"
     assert "[FAIL] landing_branch" in result.stdout
 
 
