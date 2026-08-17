@@ -135,6 +135,10 @@ _RESERVED_GATE_NAMES = frozenset({"gates", "diff_check", "judge", "config"})
 #: The verification steps a v2 `verify:` list may name, and today's default.
 _VERIFY_STEPS = ("gates", "diff_check", "judge")
 
+#: Backwards-compatible name for the default schema version (still v1). New
+#: code should query membership in `_SUPPORTED_VERSIONS` instead.
+_SUPPORTED_VERSION = 1
+
 _SUPPORTED_VERSIONS = (1, 2)
 
 
@@ -331,6 +335,13 @@ def _read_gates(document: Mapping[Any, Any], source: str, version: int) -> dict[
             )
 
     for name, command in gates.items():
+        if not isinstance(name, str) or not name.strip():
+            raise FactoryConfigError(
+                "gate_name",
+                f"declares a gate with empty name {name!r}; schema v2 gate names "
+                "must be non-empty strings",
+                source=source,
+            )
         if not isinstance(command, str) or not command.strip():
             raise FactoryConfigError(
                 "gate_command",
