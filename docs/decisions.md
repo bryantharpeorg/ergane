@@ -5,6 +5,36 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-045 · The sanctioned exception to "no human-written production code": explicit, visible, and counted (decided)
+
+Decided 2026-08-17, claimed at landing of spec `035-operator-completion` US3.
+D-024 and `CLAUDE.md` state that no production code in this repository is written
+by a human. This decision records the one sanctioned exception: an operator may
+finish what an agent could not, by hand, when the node's ladder is exhausted.
+The exception is deliberately awkward to reach: it requires an explicit operator
+command (`ergane build complete-node-externally`), a non-empty provenance string,
+and a node whose ladder has run out of road. It is not reachable from ladder
+exhaustion, recovery cycles, timeouts, or escalation expiry. The work still runs
+through the normal gates, judge and merge queue; the operator supplies authorship,
+not a verdict. Every accepted completion increments a durable, idempotent counter
+keyed by (epic_id, node_id, branch, provenance), and the count surface reports the
+total, the per-spec breakdown, an explicit zero when the hatch has never been used,
+and states that zero is the target.
+
+1. **No automatic path.** Nothing in the factory may invoke the completion signal
+   except an explicit operator command. The four failure paths that must stay
+   untouched are ladder exhaustion, recovery cycles, attempt timeouts, and
+   escalation expiry (FR-003, SC-003).
+2. **Provenance travels with the mechanism.** The verification record carries a
+   non-null provenance column on the external-completion path; US1 shipped the
+   record together with the signal so there was never a merge window in which
+   human-written code landed with no marker.
+3. **The count is idempotent and measured.** A repeat completion for the same
+   (spec, node, branch, provenance) counts once; a corpus that never used the
+   hatch answers 0 explicitly, distinguishable from a missing counter.
+
+---
+
 ## D-044 · A `CHECKS_FAILED` recovery is a retry with evidence; re-enqueueing an identical tree requires an operator (decided)
 
 Decided 2026-08-13, claimed at landing of spec `025-ci-red-recovery` US3.
