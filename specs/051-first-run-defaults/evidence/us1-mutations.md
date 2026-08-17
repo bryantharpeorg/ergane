@@ -11,7 +11,11 @@ tracked and untracked — at the start.
     $ find factory tests -name '__pycache__' -type d -prune -exec rm -rf {} +
     $ rm -rf .pytest_cache
     $ uv run pytest -q
-    3150 passed, 44 skipped, 6 warnings in 300.33s (0:05:00)
+    3150 passed, 44 skipped, 6 warnings in 307.01s (0:05:07)
+
+Run twice on two cold caches — once when the implementation landed and once on
+the final tree — with identical counts both times (`3150 passed, 44 skipped`);
+only the wall clock moved, `300.33s` then `307.01s`.
 
 Skips are **44**, the baseline. No test in this story is skipped, and none was
 added that could be. The warning count is not quoted as evidence: a
