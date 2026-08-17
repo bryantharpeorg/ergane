@@ -43,7 +43,7 @@ host outage. Every trap in the plan is a line from them.
 
 - [ ] T006 [US1] Full suite green: `uv run pytest -q`.
 
-## Phase 2: User Story 2 — The worker installs, is contained, and is watched (Priority: P1)
+## Phase 2: User Story 2 — The worker installs, is contained, and is uninstallable (Priority: P1)
 
 Chains on US1 merged. **Read plan traps 1, 2, 3, 4, 5 and 7 before writing —
 each is a verbatim line from the prior art and each was paid for.**
@@ -68,52 +68,15 @@ each is a verbatim line from the prior art and each was paid for.**
       processes before and after and paste both counts. Plan trap 1 quotes why
       `KillMode=control-group` is not a default worth losing.
 
-- [ ] T009 [US2] Write the three reaping conditions FIRST (spec US2-S3, FR-006,
-      SC-003): seed an orphan older than the grace period, a fresh orphan, and a
-      parented process; assert exactly one is reaped. Plan trap 3 explains each
-      condition — in particular that `comm` truncates at 15 characters, so
-      matching the full `temporal-test-server` matches nothing, forever,
-      silently.
-
-- [ ] T010 [US2] Write the outside-the-slice assertion FIRST (FR-006, plan
-      trap 2): every generated unit is in the slice **except** the probe. A
-      probe inside the slice is reclaimed alongside the leak it exists to
-      report.
-
-- [ ] T011 [US2] Write the dead-unit alert case FIRST (spec US2-S4, FR-007): a
-      unit not active produces an alert naming the unit and the outage duration
-      through US1's path, while it is still down. Cover the bridge unit
-      explicitly, not only the worker — plan trap 10: the bridge's death is
-      invisible from inside the factory because the sending half needs no
-      bridge, so this probe check is the only watcher the answering half has.
-
-- [ ] T012 [US2] Write the bounded-restart assertion FIRST (spec US2-S5,
+- [ ] T012 [US2] Write the bounded-restart assertion FIRST (spec US2-S3,
       FR-005): the generated unit bounds its restart rate. Flapping during a
       memory storm deepens it.
 
-- [ ] T013 [US2] Write the uninstall cases FIRST (spec US2-S6, FR-008, SC-005):
+- [ ] T013 [US2] Write the uninstall cases FIRST (spec US2-S4, FR-008, SC-005):
       exactly the units install created are removed, the config file is
       untouched, and a same-named unit the engine did not write is reported and
       left on disk. Record provenance at install time — do not guess at
       uninstall time.
-
-- [ ] T014 [US2] Write the edge-trigger cases FIRST (spec US2-S7, FR-013): an
-      unchanged healthy stack on the interval sends nothing; a status change
-      sends once; a heartbeat rides its own much longer interval. The timer
-      fires every couple of minutes, and a channel that pages that often is
-      muted within a day — plan trap 4.
-
-- [ ] T015 [US2] Write the no-remediation assertion FIRST (spec US2-S8,
-      FR-014): the probe restarts and kills nothing except orphaned test
-      servers. Assert it against the source — the instinct on reading "the
-      worker is down" is to restart it, and plan trap 5 quotes why not.
-
-- [ ] T016 [US2] Write the unescalatable-probe case FIRST (spec US2-S9,
-      FR-015): a probe that cannot deliver says so in its own output and exits
-      non-zero. Silent inability to escalate is indistinguishable from a healthy
-      floor.
-
-### Implementation for User Story 2
 
 - [ ] T017 [US2] Generate the unit text from resolved paths: the slice, the kill
       semantics, the bounded restart. No literal from this plan's quotations
@@ -123,14 +86,6 @@ each is a verbatim line from the prior art and each was paid for.**
       linger, recording provenance, and refusing uninstall while an epic is in
       flight (FR-012) via the existing capacity read
       (`factory/activities/roadmap_activities.py:469`, `count_open_epics`).
-
-- [ ] T019 [US2] Implement the probe: unit liveness, TCP reachability, host
-      memory headroom, orphan detection and reap, slice memory as a note.
-      Edge-triggered with a heartbeat, state under the XDG state home — reuse
-      034/us2's registry state home if it has landed by your dispatch;
-      otherwise derive from `XDG_STATE_HOME` matching `resolve_config_path`'s
-      pattern (`factory/controlplane/config.py:174`) and say which route you
-      took in the commit (plan reuse inventory).
 
 - [ ] T020 [US2] Full suite green: `uv run pytest -q`, with the SC-002 and
       SC-003 measurements pasted verbatim into the test files.
@@ -187,3 +142,61 @@ Chains on US2 merged.
 - [ ] The three reaping conditions are discriminated by test, not by comment.
 - [ ] Workflow history survived a managed-unit restart, with evidence.
 - [ ] The probe is the one generated unit outside the slice.
+
+## Phase 4: User Story 4 — The probe watches, reports, and never remediates (Priority: P1)
+
+Split out of Phase 2 on 2026-08-16: built whole, US2 measured 103,057 bytes
+against a 61,440 ceiling. This phase owns `probe.py`, the probe unit and timer
+text, and the `PROBE_UNIT` / `PROBE_TIMER` constants — a probe unit that execs
+a module nobody has written exits 1, which is inside the generated
+`SuccessExitStatus=0 1`, so the timer reads green while supervising nothing.
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T009 [US4] Write the three reaping conditions FIRST (spec US4-S1, FR-006,
+      SC-003): seed an orphan older than the grace period, a fresh orphan, and a
+      parented process; assert exactly one is reaped. Plan trap 3 explains each
+      condition — in particular that `comm` truncates at 15 characters, so
+      matching the full `temporal-test-server` matches nothing, forever,
+      silently.
+
+- [ ] T010 [US4] Write the outside-the-slice assertion FIRST (FR-006, plan
+      trap 2): every generated unit is in the slice **except** the probe. A
+      probe inside the slice is reclaimed alongside the leak it exists to
+      report.
+
+- [ ] T011 [US4] Write the dead-unit alert case FIRST (spec US4-S2, FR-007): a
+      unit not active produces an alert naming the unit and the outage duration
+      through US1's path, while it is still down. Cover the bridge unit
+      explicitly, not only the worker — plan trap 10: the bridge's death is
+      invisible from inside the factory because the sending half needs no
+      bridge, so this probe check is the only watcher the answering half has.
+
+- [ ] T014 [US4] Write the edge-trigger cases FIRST (spec US4-S3, FR-013): an
+      unchanged healthy stack on the interval sends nothing; a status change
+      sends once; a heartbeat rides its own much longer interval. The timer
+      fires every couple of minutes, and a channel that pages that often is
+      muted within a day — plan trap 4.
+
+- [ ] T015 [US4] Write the no-remediation assertion FIRST (spec US4-S4,
+      FR-014): the probe restarts and kills nothing except orphaned test
+      servers. Assert it against the source — the instinct on reading "the
+      worker is down" is to restart it, and plan trap 5 quotes why not.
+
+- [ ] T016 [US4] Write the unescalatable-probe case FIRST (spec US4-S5,
+      FR-015): a probe that cannot deliver says so in its own output and exits
+      non-zero. Silent inability to escalate is indistinguishable from a healthy
+      floor.
+
+### Implementation for User Story 2
+
+- [ ] T019 [US4] Implement the probe: unit liveness, TCP reachability, host
+      memory headroom, orphan detection and reap, slice memory as a note.
+      Edge-triggered with a heartbeat, state under the XDG state home — reuse
+      034/us2's registry state home if it has landed by your dispatch;
+      otherwise derive from `XDG_STATE_HOME` matching `resolve_config_path`'s
+      pattern (`factory/controlplane/config.py:174`) and say which route you
+      took in the commit (plan reuse inventory).
+
+- [ ] T029 [US4] Full suite green with the probe's evidence pasted verbatim
+      into the test file, and the diff measured through `size_refusal`.
