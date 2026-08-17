@@ -1,5 +1,20 @@
 ---
-state: ready
+state: draft
+# HELD AGAIN 2026-08-16 ~10:35 PM CT, and this time the reason is the roadmap
+# rather than the spec. The spec itself is ready: `ergane spec validate` passes
+# all six layers, US2's missing task phase is repaired, every anchor was
+# re-read. What changed is that the roadmap scheduler is about to be unpaused,
+# and it dispatches whatever is `ready` on a five-minute cadence without asking.
+#
+# This epic's plan carries a WATCHED RUN as a dispatch condition -- its worst
+# failure mode is a peer park that deadlocks the epic that must answer, which
+# every scripted test passes through and no judge reading a diff can catch. An
+# unattended scheduler is precisely the thing that condition forbids.
+#
+# `state: ready` is the only channel the scheduler reads. There is no "ready,
+# but only by hand" -- so the flag goes back to `draft` until the operator is
+# at a keyboard to watch the first peer exchange happen for real. Flip it then;
+# nothing else about this spec needs doing.
 # HELD, deliberately — refined 2026-08-08 ~1:10 AM CT but NOT dispatched, at the
 # operator's call, because its worst failure mode is one the judge cannot catch.
 # The verification pass found that a peer-addressed park would have reused 008's
