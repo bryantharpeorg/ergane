@@ -357,13 +357,34 @@ class RoadmapStatus:
     US3's pause flag (FR-008): a roadmap between epics reports it is not
     dispatching because the operator parked it, not because nothing is ready.
     No credential reaches any field (FR-009, asserted in T012).
+
+    **Both bounds have defaults, and that is a wire-compatibility decision, not
+    a convenience** (052 US2, FR-006). This record is a query answer *and* a run
+    result, so it is encoded into histories that outlive the worker that wrote
+    them; the roadmap's history outlives them by design, since US3 keeps one run
+    chain alive across continue-as-new for as long as the line is running. When
+    a later worker decodes one of those payloads, `temporalio` rebuilds the
+    record with `cls(**decoded)` — an extra key is dropped, but a key the older
+    payload never carried is a missing required argument. `max_concurrent_nodes`
+    arrived here without a default and cost exactly that: `ergane status` died
+    with `RoadmapStatus.__init__() missing 1 required positional argument:
+    'max_concurrent_nodes'` and reported nothing at all.
+
+    A default is honest here and only here because the bounds are *knobs*: one
+    epic and one node is what an unconfigured roadmap runs (`RoadmapInput` says
+    so, and `RoadmapWorkflow.__init__` starts there), so a payload that carries
+    neither means "not configured" rather than "not known". `specs`, `running`
+    and `parked` get no default for the same reason — defaulting them to empty
+    would report a roadmap that knows about nothing, which is a lie an operator
+    cannot see through. `tests/test_temporal_payload_shape.py` holds that line
+    for every record on this boundary, not just this one.
     """
 
     specs: list[RoadmapSpecStatus]
     running: list[str]
     parked: list[ParkedFinding]
-    max_concurrent_epics: int
-    max_concurrent_nodes: int
+    max_concurrent_epics: int = 1
+    max_concurrent_nodes: int = 1
     paused: bool = False
 
 
@@ -572,11 +593,18 @@ class RoadmapWorkflow:
         """
         roadmap = self._roadmap
         if roadmap is None:
+            # Before the first corpus read the roadmap has no specs to report,
+            # but it does already know its bounds, so both are named here. The
+            # record now defaults them, and leaning on that default instead
+            # would report one node in flight for a run configured for four —
+            # a query that answers wrongly, which is worse than the one that
+            # used to raise (052 US2).
             return RoadmapStatus(
                 specs=[],
                 running=[],
                 parked=[],
                 max_concurrent_epics=self._max_concurrent_epics,
+                max_concurrent_nodes=self._max_concurrent_nodes,
                 paused=self._paused,
             )
         # The query is read-only and runs without a request in scope, so it
