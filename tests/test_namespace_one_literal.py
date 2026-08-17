@@ -317,3 +317,139 @@ def test_the_environment_still_wins_over_a_declared_namespace(
 
     assert target.namespace == OVERRIDE_NAMESPACE
     assert target.namespace_source == TEMPORAL_NAMESPACE_ENV
+
+
+# === Runtime evidence (constitution VIII / D-037): pasted, not described. ===
+#
+# --- T009-T011: red before the implementation existed -----------------------
+#
+#   $ uv run pytest -q tests/test_namespace_one_literal.py
+#   FAILED ...::test_no_site_binds_a_temporal_namespace_to_its_own_string_literal
+#   FAILED ...::test_the_install_interview_imports_the_default_rather_than_restating_it
+#   FAILED ...::test_an_unconfigured_resolution_yields_the_value_the_interview_seeds
+#   FAILED ...::test_the_single_default_reads_ergane
+#   4 failed, 4 passed in 0.10s
+#
+#   E   AssertionError: assert 'factory' == 'ergane'
+#
+# The four that passed are declared rather than accidental, and each is killed
+# by a mutant below: the anti-vacuity test is true of the *list* before it is
+# true of the tree; the literal *count* passed because `install.py` restated the
+# seed's value, not the constant's — a different string, which is exactly why a
+# second structural clause exists; and the two precedence tests pin behaviour
+# 048 already got right, so a red-first version of them would have meant 048 was
+# broken before this story started.
+#
+# --- T013: 048/US4's AST guard, the test this change is most likely to break -
+#
+#   $ uv run pytest tests/test_declared_temporal.py::\
+#     test_no_connect_site_keeps_its_own_copy_of_the_temporal_contract -v
+#   collected 1 item
+#   tests/test_declared_temporal.py::test_no_connect_site_keeps_its_own_copy_of_
+#     the_temporal_contract PASSED                                       [100%]
+#   1 passed in 0.05s
+#
+# The collected count is quoted because a mistyped node id collects nothing and
+# reports success. `factory/cli/install.py` is not one of that guard's
+# `_CONNECT_SITES`, so importing `DEFAULT_TEMPORAL_NAMESPACE` there does not
+# trip its contract-name ban; M7 below shows the guard still bites.
+#
+# --- T014: plan trap 7, discharged ------------------------------------------
+#
+# The plan asks whether `factory/notify/service.py:679` — said to still spell
+# `os.environ.get(TEMPORAL_NAMESPACE_ENV) or DEFAULT_TEMPORAL_NAMESPACE` — is a
+# gap in 048/US4's guard. It is neither: the expression no longer exists.
+#
+#   $ grep -rn 'TEMPORAL_NAMESPACE_ENV) or\|TEMPORAL_ADDRESS_ENV) or' factory/
+#   $ echo $?
+#   1
+#
+# `:679` is now inside `CallbackBridge._signal`. The module dials through the
+# one resolver like everything else, which is why `_RESOLVER_SITES` includes it:
+#
+#   factory/notify/service.py:793  from factory.controlplane.resolve import \
+#                                      resolve_temporal_target
+#   factory/notify/service.py:795  target = resolve_temporal_target()
+#
+# The three surviving `os.environ`-and-TEMPORAL matches under `factory/` are
+# comments recording what 048/US4 replaced (`doctor/probes.py:483`,
+# `worker.py:220`, `controlplane/verify.py:120`). Nothing was fixed here.
+#
+# --- T016: the mutation battery ---------------------------------------------
+#
+# `PYTHONDONTWRITEBYTECODE=1` *and* a `__pycache__` purge before every run: a
+# one-word literal swap preserves file size, and a `.pyc` is validated on
+# (mtime-in-whole-seconds, size) only, so two same-size mutants inside one
+# wall-clock second would run the first's bytecode (plan trap 10). The tree was
+# asserted clean — tracked *and* untracked, `git status --porcelain
+# --untracked-files=all` — before and after; `git checkout -- .` alone does not
+# remove untracked files, so `git clean -fd` (never `-x`) runs with it.
+#
+#   $ uv run pytest --collect-only -q tests/test_namespace_one_literal.py
+#   8 tests collected in 0.08s
+#
+#   tree before battery: clean (tracked and untracked)
+#   M-none  committed tree                            8 passed in 0.10s
+#
+#   CONTROL, FIRST — point the sweep at nothing (plan trap 8):
+#   M0a  PACKAGE_ROOT points at nothing               4 failed, 4 passed
+#   M0b  NAMESPACE_SITES emptied                      2 failed, 6 passed
+#   M0c  a swept path that does not exist             3 failed, 5 passed
+#
+#   M1   the duplicate literal comes back             2 failed, 6 passed
+#   M2   install.py reverted whole                    3 failed, 5 passed
+#   M3   the constant reads `factory` again           1 failed, 7 passed
+#   M4a  the default beats a declaration              1 failed, 7 passed
+#   M4b  a declaration beats the environment          1 failed, 7 passed
+#   M5   definition site points at cli/env.py         2 failed, 6 passed
+#   M6   a third module re-leaks the literal          2 failed, 6 passed
+#   M8   the pre-story tree, both halves              4 failed, 4 passed
+#   M7   048 guard: a connect site re-copies          1 failed  (that guard)
+#   tree after battery: clean (tracked and untracked)
+#
+# Every one of the eight tests is killed by at least one mutant:
+#
+#   the sweep read a non-empty list ......... M0a, M0b, M0c
+#   exactly one site spells it .............. M0a-c, M1, M2, M5, M6
+#   no site binds its own literal ........... M0a, M0c, M1, M2, M6, M8
+#   the interview imports rather than says .. M0a, M2, M5, M8
+#   seed and unconfigured resolution agree .. M8
+#   the single default reads `ergane` ....... M3, M8
+#   a declaration beats the default ......... M4a
+#   the environment beats a declaration ..... M4b
+#
+# Three results kept rather than tidied away.
+#
+# M8 — both halves reverted, which *is* the defect — reproduces the red-first
+# run exactly: `4 failed, 4 passed`. It is also the only mutant that can kill
+# the agreement test, and that is a property rather than a weakness. M2 reverts
+# `install.py` alone and leaves both spellings reading `ergane`, so the two
+# values still agree; once the seed derives from the constant, no single-site
+# mutation can separate them. Which is the whole of FR-006.
+#
+# M3 — the constant flipped back to `factory` — moves the seed with it, so the
+# agreement test cannot see it. That is the "mutation indistinguishable from
+# correct" case, and it is why FR-011's value is pinned by a test of its own
+# rather than left to the agreement test to imply.
+#
+# M6 puts `{"namespace": "ergane"}` in a module that never had one and is killed
+# by both sweep clauses, so the guard fails on a re-leak rather than on a count.
+#
+# --- The export cannot mask any of this (instrument check) ------------------
+#
+# `scripts/ergane-env.sh` exports `TEMPORAL_NAMESPACE=factory` on this host, and
+# a test that inherited it would read the export and be unable to tell `ergane`
+# from `factory`. Every test here passes an explicit `environ` mapping, so:
+#
+#   with TEMPORAL_NAMESPACE=factory exported, committed tree:  8 passed
+#   with TEMPORAL_NAMESPACE=factory exported, M3 applied:      1 failed, 7 passed
+#
+# The export does not leak in, and it cannot hide a mutation of the default.
+#
+# --- FR-012: `scripts/ergane-env.sh` is not in this diff --------------------
+#
+# It is the only thing pinning this repository's floor to `factory` after this
+# lands, and that is deliberate: the export beats the default, which is why
+# changing the constant moves nothing that is running. Editing it and the
+# constant together is the one combination that would point the operator's
+# running worker at an empty namespace.
