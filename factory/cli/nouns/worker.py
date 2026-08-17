@@ -39,8 +39,9 @@ def add_parser(subparsers: Any) -> None:
         description=(
             "Generate systemd user units for the worker and the notify bridge, "
             "inside a memory- and task-bounded slice that takes their whole "
-            "process tree down with them. Uninstall removes exactly what "
-            "install wrote, and reports anything it did not."
+            "process tree down with them, plus a probe timer that reports "
+            "degradation out of band and reaps orphaned test servers. "
+            "Uninstall removes exactly what install wrote."
         ),
     )
     verbs = parser.add_subparsers(dest="verb", required=True)
