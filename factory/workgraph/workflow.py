@@ -219,7 +219,6 @@ with workflow.unsafe.imports_passed_through():
         VerificationForm,
         VerificationResult,
         compose_result,
-        compose_result_with_provenance,
         judge_required,
     )
     from factory.workgraph.adapter import home_path
@@ -512,9 +511,7 @@ class EpicWorkflow:
         self._paused = False
         self._kill_requested = False
 
-        #: 035-US1: buffered operator hand-backs. Each entry is
-        #: `(node_id, branch, provenance)`. Validation happens at the ladder
-        #: decision point, not at receipt, so the fastest press is never dropped.
+        #: 035-US1: buffered operator hand-backs `(node_id, branch, provenance)`.
         self._external_completions: list[tuple[str, str, str]] = []
 
     # --- signals and queries -------------------------------------------------
@@ -556,14 +553,7 @@ class EpicWorkflow:
     def complete_node_externally(
         self, node_id: str, branch: str, provenance: str
     ) -> None:
-        """Buffer an operator claim that a stuck node is complete.
-
-        Sent as `complete_node_externally(node_id, branch, provenance)`. The
-        signal is deliberately incurious: validation against a ladder state the
-        workflow may not have written yet drops the fastest presses (041-US2
-        precedent). The buffer is read at the ladder decision point, where the
-        node is accepted only if its ladder is exhausted and refused otherwise.
-        """
+        """Buffer an operator hand-back. Validation happens at the ladder decision."""
         self._external_completions.append((node_id, branch, provenance))
 
     @workflow.query
@@ -1141,8 +1131,7 @@ class EpicWorkflow:
         record.prepared = prepared
         record.criteria = criteria
 
-        # 035-US1: a signal that arrived while the node was PENDING is a refusal
-        # by definition — the ladder has not run yet.
+        # 035-US1: a PENDING node has no ladder outcome; any buffered signal is refused.
         await self._refuse_buffered_external_completions(
             graph.epic_id, node.id, reason="node ladder has not run"
         )
@@ -1440,20 +1429,13 @@ class EpicWorkflow:
                             record.history, request.config, escalations=record.escalations
                         )
                         if action == NextAction.ESCALATE:
-                            # The grant bought an attempt the caps cannot spend —
-                            # the debugger has had its turn and the budget is gone.
-                            # Paging again would ask the same question forever, so
-                            # the node ends where the operator was already told it
-                            # might — unless another hand-back arrived while the
-                            # escalation was in flight.
+                            # 035-US1: one more hand-back chance before KILLED.
                             external_action = await self._apply_external_completion_if_present(
                                 record, request, resolved, criteria, prepared, judge, results, evidence, termination
                             )
                             action = external_action if external_action is not None else NextAction.KILLED
 
-                # 035-US1: a signal that arrived for a node that is not exhausted
-                # is a refusal. This also catches signals sent during RUNNING or
-                # while a node still has retries left.
+                # 035-US1: non-exhausted nodes refuse any buffered signal.
                 if action not in _TERMINAL_ACTIONS:
                     await self._refuse_buffered_external_completions(
                         graph.epic_id, node.id, reason="node ladder not exhausted"
@@ -1495,9 +1477,7 @@ class EpicWorkflow:
                     else:
                         await self._teardown(lease, termination, record.last_snapshot)
 
-        # 035-US1: any external-completion signal that was buffered but not
-        # consumed is a refusal. This covers signals sent while RUNNING that
-        # arrive after the node is already terminal, and duplicate signals.
+        # 035-US1: any unconsumed buffered signal is refused once the node is terminal.
         await self._refuse_buffered_external_completions(
             graph.epic_id, node.id, reason="node already terminal"
         )
@@ -1707,9 +1687,7 @@ class EpicWorkflow:
         a third kind of answer. The row lands before anything acts on it
         (invariant 3).
 
-        `provenance` is non-None only for externally-completed work (035-US1):
-        it is recorded with the verdict so authorship travels with the result.
-        """
+        `provenance` is recorded for externally-completed work (035-US1)."""
         node = resolved.node
         config = request.config
         started_at = _now()
@@ -1748,35 +1726,21 @@ class EpicWorkflow:
                 request, node, criteria, diff_text, attempt, judge, prior_feedback
             )
 
+        result = compose_result(
+            epic_id=request.graph.epic_id,
+            node_id=node.id,
+            attempt=attempt,
+            form=VerificationForm.PHASE,
+            gate_results=gate_results,
+            output_check=output,
+            judge=verdict,
+            criteria_sha256=criteria.source_sha256,
+            spec_ref=node.spec_ref,
+            started_at=started_at,
+            finished_at=_now(),
+        )
         if provenance is not None:
-            result = compose_result_with_provenance(
-                epic_id=request.graph.epic_id,
-                node_id=node.id,
-                attempt=attempt,
-                form=VerificationForm.PHASE,
-                gate_results=gate_results,
-                output_check=output,
-                judge=verdict,
-                criteria_sha256=criteria.source_sha256,
-                spec_ref=node.spec_ref,
-                started_at=started_at,
-                finished_at=_now(),
-                provenance=provenance,
-            )
-        else:
-            result = compose_result(
-                epic_id=request.graph.epic_id,
-                node_id=node.id,
-                attempt=attempt,
-                form=VerificationForm.PHASE,
-                gate_results=gate_results,
-                output_check=output,
-                judge=verdict,
-                criteria_sha256=criteria.source_sha256,
-                spec_ref=node.spec_ref,
-                started_at=started_at,
-                finished_at=_now(),
-            )
+            result = replace(result, provenance=provenance)
 
         recorded = await workflow.execute_activity(
             record_verification,
@@ -1877,16 +1841,11 @@ class EpicWorkflow:
         accepted: bool,
         reason: str | None,
     ) -> None:
-        """Persist one external-completion signal decision."""
         await workflow.execute_activity(
             record_external_completion,
             RecordExternalCompletionInput(
-                epic_id=epic_id,
-                node_id=node_id,
-                branch=branch,
-                provenance=provenance,
-                accepted=accepted,
-                reason=reason,
+                epic_id=epic_id, node_id=node_id, branch=branch,
+                provenance=provenance, accepted=accepted, reason=reason,
             ),
             **_FAST,
         )
@@ -1947,16 +1906,9 @@ class EpicWorkflow:
             provenance=provenance,
         )
 
-        # Keep the evidence lists consistent with the normal loop so landing and
-        # escalation summaries quote the external verification result.
+        # Keep evidence lists and ladder history consistent with the normal loop.
         results.append(result)
-        evidence.append(
-            AttemptEvidence(termination=termination, result=result)
-        )
-
-        # The external attempt is recorded in the ladder history so retry prompts
-        # and escalation summaries can quote it, using the node's persona so it
-        # does not introduce a spurious debugger cycle.
+        evidence.append(AttemptEvidence(termination=termination, result=result))
         record.history.append(
             AttemptRecord(
                 attempt=record.attempt,
@@ -1965,19 +1917,10 @@ class EpicWorkflow:
                 judge_outcome=None if result.judge is None else result.judge.outcome,
             )
         )
-
         await self._record_external_completion(
-            request.graph.epic_id,
-            record.node_id,
-            branch,
-            provenance,
-            accepted=True,
-            reason=None,
+            request.graph.epic_id, record.node_id, branch, provenance, accepted=True, reason=None
         )
-
-        if result.verdict == OverallVerdict.PASS:
-            return NextAction.PASSED
-        return NextAction.KILLED
+        return NextAction.PASSED if result.verdict == OverallVerdict.PASS else NextAction.KILLED
 
     async def _score(
         self,
