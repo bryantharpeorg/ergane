@@ -187,12 +187,16 @@ _GROUP_EXPRESSIONS = {
 
 #: The metric block of `contracts/cli.md`, as output field -> aggregate.
 #:
-#: The token sums are deliberately bare `SUM`s: SQLite returns NULL when every
-#: input row was NULL, which is precisely FR-004/FR-005's "not measured" — a
-#: `COALESCE(..., 0)` here would quietly convert an unanswered question into an
-#: answer of zero. Row counts are the exception, because a count of nothing is
-#: genuinely 0; `final_usage_confirmed` is NOT NULL, so its sum is only ever
-#: NULL for an empty scope.
+#: Group aggregates use bare `SUM`s: a metric reported by some rows in the group
+#: is summed over those rows, and a metric absent from every row stays `NULL`.
+#: This is the existing FR-004/FR-005 contract for cache counters and the same
+#: rule US1 extends to prompt, completion and request count.
+#:
+#: The grand totals are stricter: if any row in the filtered scope is unknown
+#: for a token/request metric, the total for that metric is `NULL` rather than a
+#: partial sum that looks complete (US1 scenario 5, trap 4). Spend and counts are
+#: still summed across every row; `unconfirmed_rows` remains the flag for rows
+#: whose token detail is missing.
 _METRICS = (
     ("prompt_tokens", "SUM(prompt_tokens)"),
     ("completion_tokens", "SUM(completion_tokens)"),
@@ -206,6 +210,23 @@ _METRICS = (
 
 _METRIC_FIELDS = tuple(field for field, _ in _METRICS)
 _METRIC_SELECT = ", ".join(expression for _, expression in _METRICS)
+
+#: The same metric block for the totals query, where a partial answer is not an
+#: honest answer. If any row in scope has `NULL` for one of the token or request
+#: columns, the total for that column is `NULL` rather than the sum of the rows
+#: that did report it. Cache counters keep their group-level partial-sum rule.
+_TOTALS_METRICS = (
+    ("prompt_tokens", "CASE WHEN COUNT(prompt_tokens) < COUNT(*) THEN NULL ELSE SUM(prompt_tokens) END"),
+    ("completion_tokens", "CASE WHEN COUNT(completion_tokens) < COUNT(*) THEN NULL ELSE SUM(completion_tokens) END"),
+    ("cache_read_tokens", "SUM(cache_read_tokens)"),
+    ("cache_write_tokens", "SUM(cache_write_tokens)"),
+    ("requests", "CASE WHEN COUNT(request_count) < COUNT(*) THEN NULL ELSE SUM(request_count) END"),
+    ("spend_usd", "SUM(spend_usd)"),
+    ("rows", "COUNT(*)"),
+    ("unconfirmed_rows", "COALESCE(SUM(1 - final_usage_confirmed), 0)"),
+)
+
+_TOTALS_SELECT = ", ".join(expression for _, expression in _TOTALS_METRICS)
 
 
 def rollup(
@@ -241,7 +262,7 @@ def rollup(
         params,
     ).fetchall()
     totals = conn.execute(
-        f"SELECT {_METRIC_SELECT} FROM usage_records{where}", params
+        f"SELECT {_TOTALS_SELECT} FROM usage_records{where}", params
     ).fetchone()
 
     return {

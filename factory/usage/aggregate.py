@@ -39,22 +39,23 @@ CACHE_WRITE_FIELD = "cache_creation_input_tokens"
 def aggregate_rows(rows: Iterable[Mapping[str, Any]]) -> AggregatedUsage:
     """Sum `/spend/logs/v2` rows for a single key into one attempt's usage.
 
-    An empty row set is a genuine zero-request aggregate: the proxy answered,
-    and it answered "no rows". Its cache metrics are still `None` — vacuously,
-    no row reported them.
+    An empty row set is an unmeasured aggregate: the proxy answered, but it
+    answered "no rows", so there is no measurement of prompt, completion or
+    request count. A zero is only a zero when a row said so. Cache metrics stay
+    `None` when no row reported them.
     """
-    prompt_tokens = 0
-    completion_tokens = 0
-    request_count = 0
     spend_usd = 0.0
     # `None` until some row actually reports the metric; then a running sum.
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
     cache_read_tokens: int | None = None
     cache_write_tokens: int | None = None
+    request_count: int | None = None
 
     for row in rows:
-        request_count += 1
-        prompt_tokens += _as_int(row.get("prompt_tokens"))
-        completion_tokens += _as_int(row.get("completion_tokens"))
+        request_count = _accumulate(request_count, 1)
+        prompt_tokens = _accumulate(prompt_tokens, row.get("prompt_tokens"))
+        completion_tokens = _accumulate(completion_tokens, row.get("completion_tokens"))
         spend_usd += _as_float(row.get("spend"))
 
         additional = _additional_usage_values(row)

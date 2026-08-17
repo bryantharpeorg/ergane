@@ -98,17 +98,18 @@ class UsageSnapshot:
 class AggregatedUsage:
     """Spend-log rows for one key, summed (R2) — internal, never persisted raw.
 
-    The cache fields are `None` when the metric was absent from *every* row, and
-    a sum when it was present on any: an attempt that genuinely read no cache
-    reports 0, an attempt whose backend does not report cache reports nothing
-    (FR-004).
+    The token and cache fields are `None` when the metric was absent from *every*
+    row, and a sum when it was present on any: an attempt that genuinely made no
+    requests reports 0, an attempt whose proxy gave back no rows reports nothing
+    (FR-004, FR-005). `spend_usd` is read on a different path and is always a
+    number here, even when it is 0.0.
     """
 
-    prompt_tokens: int
-    completion_tokens: int
+    prompt_tokens: int | None
+    completion_tokens: int | None
     cache_read_tokens: int | None
     cache_write_tokens: int | None
-    request_count: int
+    request_count: int | None
     spend_usd: float
 
 

@@ -300,10 +300,13 @@ def test_by_node_aggregates_a_nodes_attempts(ledger: sqlite3.Connection) -> None
 def test_grand_totals_cover_every_row(ledger: sqlite3.Connection) -> None:
     result = rollup(ledger, by="persona")
 
+    # US1: the debugger fallback row has NULL token/request counts. A grand total
+    # spanning a mix of known and unknown rows must not report a partial sum as if
+    # it were complete, so the token/request totals are NULL rather than 10500/26.
     assert result["totals"] == metrics(
-        prompt_tokens=10500, completion_tokens=1050,
+        prompt_tokens=None, completion_tokens=None,
         cache_read_tokens=2200, cache_write_tokens=220,
-        requests=26, spend_usd=1.10, rows=6, unconfirmed_rows=1,
+        requests=None, spend_usd=1.10, rows=6, unconfirmed_rows=1,
     )
 
 
