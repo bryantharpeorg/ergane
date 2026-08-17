@@ -515,17 +515,18 @@ def init_command(args: argparse.Namespace) -> int:
 
     registration = _register(slug, repo_root)
 
-    # The scheduler, before wiring: a GitHub refusal must not cost the repo the
-    # thing that makes a `ready` spec dispatch, and an unreachable control plane
-    # must not cost it the wiring (FR-017).  Neither step can abort the other.
-    #
     # 050/FR-001: the readability of the control plane is decided *here*, above
     # the one act of init that publishes to shared infrastructure, and handed
     # down.  Every fact needed to refuse was already in hand when the schedule
     # that produced this spec was created — it was simply computed afterwards.
-    schedule_line = _schedule(
-        repo_root, slug, control_plane_reason=_control_plane_reason()
-    )
+    #
+    # 050/FR-006: the readability check runs once per init run and its result is
+    # shared between the schedule precondition and the readiness report.  When the
+    # control plane is unreadable, the same error string is handed to both, so the
+    # probe suite is skipped and no network calls are made for a refusal we
+    # already know.
+    control_plane_reason = _control_plane_reason()
+    schedule_line = _schedule(repo_root, slug, control_plane_reason=control_plane_reason)
 
     # Wiring runs last, after the repo-local half is complete and recorded, so a
     # refusal from GitHub's side never costs the operator the scaffold.
@@ -539,6 +540,9 @@ def init_command(args: argparse.Namespace) -> int:
     print(f"  {repo_root / '.gitignore'}")
     print(f"  {repo_root / RUNTIME_ROOT}")
     print(_registration_line(registration))
+    # US2-S1: the control-plane verdict is reported before the act that depends
+    # on it, so the transcript reads as a decision rather than a confession.
+    print(_control_plane_verdict_line(control_plane_reason))
     print(schedule_line)
     for line in wiring_lines:
         print(line)
@@ -553,7 +557,13 @@ def init_command(args: argparse.Namespace) -> int:
     # an unreachable control plane (FR-017) must not read as init having failed.
     # `ergane init --check` is the door whose exit code is the verdict.
     print()
-    run_check(repo_root)
+    # FR-006: reuse the single readability result when it already refuses; when
+    # the control plane is readable, the readiness report still runs the probe
+    # suite so the operator sees per-subsystem detail.
+    run_check(
+        repo_root,
+        control_plane=((), control_plane_reason) if control_plane_reason is not None else None,
+    )
 
     return EXIT_OK
 
@@ -618,6 +628,18 @@ def _wire(
     for step in steps:
         lines.extend(format_step(step))
     return lines
+
+
+def _control_plane_verdict_line(reason: str | None) -> str:
+    """One line reporting the control-plane verdict, in the readiness vocabulary.
+
+    Reuses `_control_plane_finding` so the operator meets one phrasing for the
+    same fact, whether it appears above the schedule step or in the final
+    readiness report (FR-003).
+    """
+    if reason is not None:
+        return f"control plane: not readable — {reason}"
+    return "control plane: readable"
 
 
 def _control_plane_reason() -> str | None:
@@ -923,12 +945,19 @@ def _schedule_facts(
     }
 
 
-def gather_init_facts(repo_root: Path) -> InitFacts:
+def gather_init_facts(
+    repo_root: Path, *, control_plane: tuple[tuple[Finding, ...], str | None] | None = None
+) -> InitFacts:
     """Read the facts init created, so `evaluate_repo` can judge them (FR-010).
 
     Gathering only: the judgment lives in `factory/mergequeue/onboard.py` beside
     the 003 checks, because a second place deciding what "ready" means is a
     second place that can drift.
+
+    `control_plane`, when provided, is the precomputed result of
+    `_control_plane_facts()` so a full init evaluates the control plane once
+    and shares it between the schedule precondition and the readiness report
+    (FR-006).  `ergane init --check` omits it and gathers fresh.
     """
     root_name, is_legacy = resolve_repo_runtime_root(repo_root)
     registry_path, slug, registry_error = _registry_facts(repo_root)
@@ -944,7 +973,10 @@ def gather_init_facts(repo_root: Path) -> InitFacts:
         config = None
     landing_branch = config.landing_branch if config is not None else None
 
-    control_plane, control_plane_error = _control_plane_facts()
+    if control_plane is None:
+        control_plane_findings, control_plane_error = _control_plane_facts()
+    else:
+        control_plane_findings, control_plane_error = control_plane
 
     return InitFacts(
         repo_root=str(repo_root),
@@ -959,13 +991,17 @@ def gather_init_facts(repo_root: Path) -> InitFacts:
         landing_branch_exists=(
             landing_branch is not None and _git_has_branch(repo_root, landing_branch)
         ),
-        control_plane=control_plane,
+        control_plane=control_plane_findings,
         control_plane_error=control_plane_error,
         **_schedule_facts(repo_root, slug, config),
     )
 
 
-def check_repo(repo_root: str | Path) -> TargetRepoProfile:
+def check_repo(
+    repo_root: str | Path,
+    *,
+    control_plane: tuple[tuple[Finding, ...], str | None] | None = None,
+) -> TargetRepoProfile:
     """Judge one repository's readiness through the shared judgment (FR-010).
 
     `onboard_target_repo` is the seam both doors already share, so the 003 facts
@@ -976,7 +1012,7 @@ def check_repo(repo_root: str | Path) -> TargetRepoProfile:
     from factory.activities.merge_activities import onboard_target_repo
 
     root = Path(repo_root).resolve()
-    facts = gather_init_facts(root)
+    facts = gather_init_facts(root, control_plane=control_plane)
     forge = _forge_factory(repo_path=str(root))
     return onboard_target_repo(forge, str(root), init_facts=facts)
 
@@ -1003,9 +1039,19 @@ def render_check(profile: TargetRepoProfile, repo_root: Path, manifest_name: str
     return "\n".join(lines)
 
 
-def run_check(repo_root: Path) -> int:
-    """Render the report; non-zero on any failing finding, 0 when all pass."""
-    profile = check_repo(repo_root)
+def run_check(
+    repo_root: Path,
+    *,
+    control_plane: tuple[tuple[Finding, ...], str | None] | None = None,
+) -> int:
+    """Render the report; non-zero on any failing finding, 0 when all pass.
+
+    `control_plane`, when provided, is the precomputed result of
+    `_control_plane_facts()` so a full init shares one evaluation between the
+    schedule precondition and the readiness report (FR-006).  `ergane init
+    --check` omits it and probes fresh.
+    """
+    profile = check_repo(repo_root, control_plane=control_plane)
     _manifest_path, manifest_name = resolve_manifest_path(repo_root)
     print(render_check(profile, repo_root, manifest_name))
     return EXIT_OK if profile.passed else EXIT_USER
