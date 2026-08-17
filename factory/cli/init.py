@@ -631,11 +631,11 @@ def _wire(
 
 
 def _control_plane_verdict_line(reason: str | None) -> str:
-    """One line reporting the control-plane verdict, in the readiness vocabulary.
+    """One line reporting the control-plane verdict.
 
-    Reuses `_control_plane_finding` so the operator meets one phrasing for the
-    same fact, whether it appears above the schedule step or in the final
-    readiness report (FR-003).
+    Uses the same error string `_control_plane_facts` already uses for the
+    readiness report, so an operator meets one phrasing for the same fact,
+    whether it appears above the schedule step or in the final report (FR-003).
     """
     if reason is not None:
         return f"control plane: not readable — {reason}"
