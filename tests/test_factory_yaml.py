@@ -72,7 +72,7 @@ import json
 import subprocess
 import sys
 
-from factory.verify.models import FactoryConfig, GateResult, GateStatus
+from factory.verify.models import FactoryConfig, GateResult, GateStatus, VerificationConfig
 
 
 def _yaml(text: str) -> str:
@@ -556,14 +556,14 @@ REJECTIONS: list[Rejection] = [
         id="version-unsupported",
         text=_yaml(
             """
-            version: 2
+            version: 3
             runtime: bwrap
             gates:
               test: "uv run pytest -q"
             """
         ),
         rule="version",
-        names=("2",),
+        names=("3",),
     ),
     Rejection(
         id="version-is-a-string",
@@ -1027,7 +1027,7 @@ def test_every_rejection_becomes_one_config_error_gate(case: Rejection) -> None:
 def test_source_label_appears_in_messages() -> None:
     """Callers holding a path label the parse with it, so the error names it."""
     with pytest.raises(FactoryConfigError) as excinfo:
-        parse_factory_config("version: 2\n", source="/repos/target/factory.yaml")
+        parse_factory_config("version: 3\n", source="/repos/target/factory.yaml")
 
     assert "/repos/target/factory.yaml" in str(excinfo.value)
 
@@ -1077,7 +1077,7 @@ def test_load_errors_name_the_file_they_came_from(tmp_path: Path) -> None:
     path.write_text(
         _yaml(
             """
-            version: 2
+            version: 3
             runtime: bwrap
             gates:
               test: "uv run pytest -q"
@@ -1317,3 +1317,361 @@ def test_no_literal_factory_yaml_in_manifest_readers() -> None:
         if forbidden in line
     ]
     assert not found, f"literal {forbidden!r} found in manifest readers: {found}"
+
+
+# Schema v2 (023-composable-verification US1) ---------------------------------
+
+#: The slugs that refuse a malformed v2 manifest. Each gets at least one fixture
+#: below, and `test_v2_rejection_table_covers_every_rule` enforces that.
+V2_CONTRACT_RULES = frozenset(
+    {
+        "unknown_key",  # v1 manifests that declare ladder:/verify:
+        "unknown_ladder_key",
+        "ladder_max_attempts_type",
+        "ladder_max_attempts_min",
+        "ladder_max_attempts_max",
+        "ladder_max_judge_retries_type",
+        "ladder_max_judge_retries_min",
+        "ladder_max_judge_retries_max",
+        "ladder_debugger_cycles_type",
+        "ladder_debugger_cycles_min",
+        "ladder_debugger_cycles_max",
+        "ladder_escalation_timeout_s_type",
+        "ladder_escalation_timeout_s_min",
+        "ladder_escalation_timeout_s_max",
+        "verify",
+        "gate_name",
+    }
+)
+
+#: A minimal v2 manifest that can be bent for refusal fixtures.
+V2_MINIMAL = _yaml(
+    """
+    version: 2
+    runtime: bwrap
+    gates:
+      unit: "uv run pytest -q"
+    """
+)
+
+
+def test_v2_manifest_with_full_declaration_parses() -> None:
+    """US1-S1: gates keep order, verify order is recorded, ladder caps parsed."""
+    text = _yaml(
+        """
+        version: 2
+        runtime: bwrap
+        gates:
+          unit: "uv run pytest -q"
+          contract: "uv run pytest tests/contract -q"
+        verify: [diff_check, gates, judge]
+        ladder:
+          max_attempts: 2
+        """
+    )
+
+    config = parse_factory_config(text)
+
+    assert config.version == 2
+    assert list(config.gates) == ["unit", "contract"]
+    assert config.verify_order == ("diff_check", "gates", "judge")
+    assert config.ladder == VerificationConfig(max_attempts=2)
+
+
+def test_v2_manifest_defaults_ladder_and_verify_order() -> None:
+    """Absent `ladder:` and `verify:` mean today's defaults, including judge."""
+    text = _yaml(
+        """
+        version: 2
+        runtime: bwrap
+        gates:
+          unit: "uv run pytest -q"
+        """
+    )
+
+    config = parse_factory_config(text)
+
+    assert config.version == 2
+    assert config.ladder == VerificationConfig()
+    assert config.verify_order == ("gates", "diff_check", "judge")
+
+
+@dataclass(frozen=True)
+class V2Rejection:
+    """One malformed v2 manifest: well-formed everywhere except the defect named."""
+
+    id: str
+    text: str
+    rule: str
+    names: tuple[str, ...] = field(default=())
+
+
+V2_REJECTIONS: list[V2Rejection] = [
+    V2Rejection(
+        id="ladder-unknown-key",
+        text=V2_MINIMAL + "ladder:\n  max_attempts: 3\n  retries: 1\n",
+        rule="unknown_ladder_key",
+        names=("'retries'",),
+    ),
+    V2Rejection(
+        id="ladder-max-attempts-is-bool",
+        text=V2_MINIMAL + "ladder:\n  max_attempts: true\n",
+        rule="ladder_max_attempts_type",
+        names=("'max_attempts'", "True"),
+    ),
+    V2Rejection(
+        id="ladder-max-attempts-is-string",
+        text=V2_MINIMAL + "ladder:\n  max_attempts: \"2\"\n",
+        rule="ladder_max_attempts_type",
+        names=("'max_attempts'", "'2'"),
+    ),
+    V2Rejection(
+        id="ladder-max-attempts-below-floor",
+        text=V2_MINIMAL + "ladder:\n  max_attempts: 0\n",
+        rule="ladder_max_attempts_min",
+        names=("'max_attempts'", "0"),
+    ),
+    V2Rejection(
+        id="ladder-max-attempts-above-ceiling",
+        text=V2_MINIMAL + "ladder:\n  max_attempts: 11\n",
+        rule="ladder_max_attempts_max",
+        names=("'max_attempts'", "11"),
+    ),
+    V2Rejection(
+        id="ladder-max-judge-retries-is-bool",
+        text=V2_MINIMAL + "ladder:\n  max_judge_retries: true\n",
+        rule="ladder_max_judge_retries_type",
+        names=("'max_judge_retries'", "True"),
+    ),
+    V2Rejection(
+        id="ladder-max-judge-retries-below-floor",
+        text=V2_MINIMAL + "ladder:\n  max_judge_retries: -1\n",
+        rule="ladder_max_judge_retries_min",
+        names=("'max_judge_retries'", "-1"),
+    ),
+    V2Rejection(
+        id="ladder-max-judge-retries-above-ceiling",
+        text=V2_MINIMAL + "ladder:\n  max_judge_retries: 11\n",
+        rule="ladder_max_judge_retries_max",
+        names=("'max_judge_retries'", "11"),
+    ),
+    V2Rejection(
+        id="ladder-debugger-cycles-is-string",
+        text=V2_MINIMAL + "ladder:\n  debugger_cycles: \"1\"\n",
+        rule="ladder_debugger_cycles_type",
+        names=("'debugger_cycles'", "'1'"),
+    ),
+    V2Rejection(
+        id="ladder-debugger-cycles-below-floor",
+        text=V2_MINIMAL + "ladder:\n  debugger_cycles: -1\n",
+        rule="ladder_debugger_cycles_min",
+        names=("'debugger_cycles'", "-1"),
+    ),
+    V2Rejection(
+        id="ladder-debugger-cycles-above-ceiling",
+        text=V2_MINIMAL + "ladder:\n  debugger_cycles: 4\n",
+        rule="ladder_debugger_cycles_max",
+        names=("'debugger_cycles'", "4"),
+    ),
+    V2Rejection(
+        id="ladder-escalation-timeout-is-bool",
+        text=V2_MINIMAL + "ladder:\n  escalation_timeout_s: true\n",
+        rule="ladder_escalation_timeout_s_type",
+        names=("'escalation_timeout_s'", "True"),
+    ),
+    V2Rejection(
+        id="ladder-escalation-timeout-below-floor",
+        text=V2_MINIMAL + "ladder:\n  escalation_timeout_s: 30\n",
+        rule="ladder_escalation_timeout_s_min",
+        names=("'escalation_timeout_s'", "30"),
+    ),
+    V2Rejection(
+        id="ladder-escalation-timeout-above-ceiling",
+        text=V2_MINIMAL + "ladder:\n  escalation_timeout_s: 90000\n",
+        rule="ladder_escalation_timeout_s_max",
+        names=("'escalation_timeout_s'", "90000"),
+    ),
+    V2Rejection(
+        id="verify-empty",
+        text=V2_MINIMAL + "verify: []\n",
+        rule="verify",
+        names=("empty",),
+    ),
+    V2Rejection(
+        id="verify-duplicated",
+        text=V2_MINIMAL + "verify: [gates, diff_check, gates]\n",
+        rule="verify",
+        names=("duplicate", "'gates'"),
+    ),
+    V2Rejection(
+        id="verify-unknown-step",
+        text=V2_MINIMAL + "verify: [gates, diff_check, smoke]\n",
+        rule="verify",
+        names=("unknown", "'smoke'"),
+    ),
+    V2Rejection(
+        id="verify-missing-gates",
+        text=V2_MINIMAL + "verify: [diff_check, judge]\n",
+        rule="verify",
+        names=("missing", "'gates'"),
+    ),
+    V2Rejection(
+        id="verify-missing-diff-check",
+        text=V2_MINIMAL + "verify: [gates, judge]\n",
+        rule="verify",
+        names=("missing", "'diff_check'"),
+    ),
+    V2Rejection(
+        id="verify-judge-before-gates",
+        text=V2_MINIMAL + "verify: [judge, diff_check, gates]\n",
+        rule="verify",
+        names=("before", "'judge'", "'gates'"),
+    ),
+    V2Rejection(
+        id="verify-judge-before-diff-check",
+        text=V2_MINIMAL + "verify: [gates, judge, diff_check]\n",
+        rule="verify",
+        names=("before", "'judge'", "'diff_check'"),
+    ),
+    V2Rejection(
+        id="gate-name-is-judge",
+        text=_yaml(
+            """
+            version: 2
+            runtime: bwrap
+            gates:
+              judge: "uv run pytest -q"
+            """
+        ),
+        rule="gate_name",
+        names=("'judge'",),
+    ),
+    V2Rejection(
+        id="gate-name-is-diff-check",
+        text=_yaml(
+            """
+            version: 2
+            runtime: bwrap
+            gates:
+              diff_check: "uv run pytest -q"
+            """
+        ),
+        rule="gate_name",
+        names=("'diff_check'",),
+    ),
+    V2Rejection(
+        id="gate-name-is-gates",
+        text=_yaml(
+            """
+            version: 2
+            runtime: bwrap
+            gates:
+              gates: "uv run pytest -q"
+            """
+        ),
+        rule="gate_name",
+        names=("'gates'",),
+    ),
+    V2Rejection(
+        id="gate-name-is-config",
+        text=_yaml(
+            """
+            version: 2
+            runtime: bwrap
+            gates:
+              config: "uv run pytest -q"
+            """
+        ),
+        rule="gate_name",
+        names=("'config'",),
+    ),
+    V2Rejection(
+        id="v1-rejects-ladder",
+        text=_yaml(
+            """
+            version: 1
+            runtime: bwrap
+            gates:
+              test: "uv run pytest -q"
+            ladder:
+              max_attempts: 2
+            """
+        ),
+        rule="unknown_key",
+        names=("'ladder'",),
+    ),
+    V2Rejection(
+        id="v1-rejects-verify",
+        text=_yaml(
+            """
+            version: 1
+            runtime: bwrap
+            gates:
+              test: "uv run pytest -q"
+            verify: [gates, diff_check, judge]
+            """
+        ),
+        rule="unknown_key",
+        names=("'verify'",),
+    ),
+]
+
+V2_REJECTION_IDS = [case.id for case in V2_REJECTIONS]
+
+
+def test_v2_rejection_table_covers_every_rule() -> None:
+    covered = {case.rule for case in V2_REJECTIONS}
+    assert covered == V2_CONTRACT_RULES
+
+
+@pytest.mark.parametrize("case", V2_REJECTIONS, ids=V2_REJECTION_IDS)
+def test_v2_rejects_and_names_the_violated_rule(case: V2Rejection) -> None:
+    with pytest.raises(FactoryConfigError) as excinfo:
+        parse_factory_config(case.text)
+
+    error = excinfo.value
+    assert error.rule == case.rule
+    message = str(error)
+    assert MANIFEST_NAME in message
+    assert case.rule in message
+    for token in case.names:
+        assert token in message, f"message must name {token!r}: {message!r}"
+
+
+@pytest.mark.parametrize("case", V2_REJECTIONS, ids=V2_REJECTION_IDS)
+def test_v2_every_rejection_becomes_one_config_error_gate(case: V2Rejection) -> None:
+    with pytest.raises(FactoryConfigError) as excinfo:
+        parse_factory_config(case.text)
+
+    result = config_error_result(excinfo.value)
+
+    assert isinstance(result, GateResult)
+    assert result.name == "config"
+    assert result.status is GateStatus.CONFIG_ERROR
+    assert result.exit_code is None
+    assert result.command == ""
+    assert result.duration_s == 0.0
+    assert str(excinfo.value) in result.output_tail
+
+
+# v1 identity (US1-S2, US1-S6) ------------------------------------------------
+
+
+def test_v1_identity_against_erganes_own_manifest() -> None:
+    """US1-S2/S6: the committed manifest must parse to exactly today's shape.
+
+    This is the regression fixture that proves v1 semantics never moved. The
+    repo root `ergane.yaml` must stay byte-identical in every story (FR-011);
+    the parser must continue to produce the same field-for-field result.
+    """
+    config = load_factory_config(REPO_ROOT / MANIFEST_NAME)
+
+    assert config == FactoryConfig(
+        version=1,
+        runtime="bwrap",
+        gates={"test": "uv run pytest -q"},
+        standards=".specify/memory/constitution.md",
+        landing_branch="ergane-buildout",
+        ladder=VerificationConfig(),
+        verify_order=("gates", "diff_check", "judge"),
+    )

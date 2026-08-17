@@ -53,7 +53,13 @@ from typing import Any, Mapping
 
 import yaml
 
-from factory.verify.models import FactoryConfig, GateResult, GateStatus, RoadmapDials
+from factory.verify.models import (
+    FactoryConfig,
+    GateResult,
+    GateStatus,
+    RoadmapDials,
+    VerificationConfig,
+)
 
 #: The manifest's committed filename; callers compose `<worktree>/ergane.yaml`.
 MANIFEST_NAME = "ergane.yaml"
@@ -105,10 +111,35 @@ _TOP_LEVEL_KEYS = (
     "forge",
 )
 
+#: Keys that only schema v2 recognises; v1 refuses them as unknown (US1-S6).
+_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify")
+
 #: The keys a `roadmap:` block may declare, and the dial each one sets.
 _ROADMAP_KEYS = ("cadence_s", "max_concurrent_epics", "max_concurrent_nodes")
 
+#: The ladder fields a v2 manifest may declare, with their platform ceilings.
+_LADDER_KEYS = ("max_attempts", "max_judge_retries", "debugger_cycles", "escalation_timeout_s")
+
+#: (min, max) inclusive bounds for each ladder dial.
+_LADDER_BOUNDS = {
+    "max_attempts": (1, 10),
+    "max_judge_retries": (0, 10),
+    "debugger_cycles": (0, 3),
+    "escalation_timeout_s": (60, 86400),
+}
+
+#: Reserved gate names in schema v2. They collide with step names or the
+#: synthetic `config` gate emitted by `config_error_result`.
+_RESERVED_GATE_NAMES = frozenset({"gates", "diff_check", "judge", "config"})
+
+#: The verification steps a v2 `verify:` list may name, and today's default.
+_VERIFY_STEPS = ("gates", "diff_check", "judge")
+
+#: Backwards-compatible name for the default schema version (still v1). New
+#: code should query membership in `_SUPPORTED_VERSIONS` instead.
 _SUPPORTED_VERSION = 1
+
+_SUPPORTED_VERSIONS = (1, 2)
 
 
 class FactoryConfigError(ValueError):
@@ -139,18 +170,21 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     """
     document = _load_mapping(text, source)
 
-    # Unknown keys are checked before the required ones: a manifest that says
-    # `image:` where it means `runtime:` has two defects, and naming the typo
-    # points at the line that is actually wrong.
-    _reject_unknown_keys(document, source)
+    # Version is read first because the set of legal top-level keys is
+    # version-dependent: v1 rejects `ladder:` and `verify:` as unknown (US1-S6),
+    # while v2 recognises them. A manifest with an unknown key that is also an
+    # invalid version still reports the version rule first.
     version = _read_version(document, source)
+    _reject_unknown_keys(document, source, version)
     runtime = _read_runtime(document, source)
-    gates = _read_gates(document, source)
+    gates = _read_gates(document, source, version)
     timeouts = _read_timeouts(document, gates, source)
     standards = _read_standards(document, source)
     landing_branch = _read_landing_branch(document, source)
     roadmap = _read_roadmap(document, source)
     forge = _read_forge(document, source)
+    ladder = _read_ladder(document, source)
+    verify_order = _read_verify(document, source)
 
     return FactoryConfig(
         version=version,
@@ -161,6 +195,8 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         landing_branch=landing_branch,
         roadmap=roadmap,
         forge=forge,
+        ladder=ladder,
+        verify_order=verify_order,
     )
 
 
@@ -189,13 +225,14 @@ def _load_mapping(text: str, source: str) -> Mapping[Any, Any]:
     return document
 
 
-def _reject_unknown_keys(document: Mapping[Any, Any], source: str) -> None:
-    unknown = [key for key in document if key not in _TOP_LEVEL_KEYS]
+def _reject_unknown_keys(document: Mapping[Any, Any], source: str, version: int) -> None:
+    known = _V2_TOP_LEVEL_KEYS if version == 2 else _TOP_LEVEL_KEYS
+    unknown = [key for key in document if key not in known]
     if unknown:
         raise FactoryConfigError(
             "unknown_key",
-            f"declares {_names(unknown)} at the top level; schema v1 knows only "
-            f"{_names(_TOP_LEVEL_KEYS)}",
+            f"declares {_names(unknown)} at the top level; schema v{version} knows only "
+            f"{_names(known)}",
             source=source,
         )
 
@@ -204,18 +241,18 @@ def _read_version(document: Mapping[Any, Any], source: str) -> int:
     if "version" not in document:
         raise FactoryConfigError(
             "version",
-            "declares no `version`; schema v1 requires the integer literal "
-            f"`version: {_SUPPORTED_VERSION}`",
+            "declares no `version`; this factory supports only the integer literals "
+            f"{_names(_SUPPORTED_VERSIONS)}",
             source=source,
         )
     version = document["version"]
     # `isinstance(True, int)` is True, and YAML spells booleans `true`, so the
     # bool has to be excluded by type identity or `version: true` slips through.
-    if type(version) is not int or version != _SUPPORTED_VERSION:
+    if type(version) is not int or version not in _SUPPORTED_VERSIONS:
         raise FactoryConfigError(
             "version",
             f"declares `version: {version!r}`; this factory supports only the "
-            f"integer literal {_SUPPORTED_VERSION}",
+            f"integer literals {_names(_SUPPORTED_VERSIONS)}",
             source=source,
         )
     return version
@@ -247,8 +284,15 @@ def _read_runtime(document: Mapping[Any, Any], source: str) -> str:
     return runtime
 
 
-def _read_gates(document: Mapping[Any, Any], source: str) -> dict[str, str]:
+def _read_gates(document: Mapping[Any, Any], source: str, version: int) -> dict[str, str]:
     if "gates" not in document:
+        if version == 2:
+            raise FactoryConfigError(
+                "gates",
+                "declares no `gates`; schema v2 requires at least one gate with a "
+                "non-empty name and command",
+                source=source,
+            )
         raise FactoryConfigError(
             "gates",
             f"declares no `gates`; schema v1 requires at least one of "
@@ -260,27 +304,44 @@ def _read_gates(document: Mapping[Any, Any], source: str) -> dict[str, str]:
         raise FactoryConfigError(
             "gates",
             f"declares `gates` as {_kind(gates)}; it must be a mapping of gate "
-            f"name to command, with names drawn from {_names(KNOWN_GATES)}",
+            "name to command",
             source=source,
         )
     if not gates:
         raise FactoryConfigError(
             "gates",
-            f"declares an empty `gates` mapping; at least one of "
-            f"{_names(KNOWN_GATES)} must be present",
+            "declares an empty `gates` mapping; at least one gate must be present",
             source=source,
         )
-    unknown = [name for name in gates if name not in KNOWN_GATES]
-    if unknown:
-        raise FactoryConfigError(
-            "gates",
-            f"declares the gate(s) {_names(unknown)}; schema v1 fixes the gate "
-            f"names to {_names(KNOWN_GATES)} so merge-queue required checks map "
-            "to them 1:1",
-            source=source,
-        )
+    if version == 1:
+        unknown = [name for name in gates if name not in KNOWN_GATES]
+        if unknown:
+            raise FactoryConfigError(
+                "gates",
+                f"declares the gate(s) {_names(unknown)}; schema v1 fixes the gate "
+                f"names to {_names(KNOWN_GATES)} so merge-queue required checks map "
+                "to them 1:1",
+                source=source,
+            )
+    else:
+        reserved = [name for name in gates if name in _RESERVED_GATE_NAMES]
+        if reserved:
+            raise FactoryConfigError(
+                "gate_name",
+                f"declares the reserved gate name(s) {_names(reserved)}; schema v2 "
+                "gate names must not collide with the verification step names "
+                f"{_names(_VERIFY_STEPS)} or the synthetic gate name 'config'",
+                source=source,
+            )
 
     for name, command in gates.items():
+        if not isinstance(name, str) or not name.strip():
+            raise FactoryConfigError(
+                "gate_name",
+                f"declares a gate with empty name {name!r}; schema v2 gate names "
+                "must be non-empty strings",
+                source=source,
+            )
         if not isinstance(command, str) or not command.strip():
             raise FactoryConfigError(
                 "gate_command",
@@ -474,6 +535,138 @@ def _read_roadmap(document: Mapping[Any, Any], source: str) -> RoadmapDials | No
         max_concurrent_epics=int(block.get("max_concurrent_epics", defaults.max_concurrent_epics)),
         max_concurrent_nodes=int(block.get("max_concurrent_nodes", defaults.max_concurrent_nodes)),
     )
+
+
+def _read_ladder(document: Mapping[Any, Any], source: str) -> "VerificationConfig":
+    """The v2 retry-ladder caps, defaulting to today's `VerificationConfig`.
+
+    Absent means the current defaults. Declared means declared, and every
+    value is type-identity-checked as a non-boolean integer within platform
+    ceilings — `ladder: {max_attempts: true}` would otherwise become a budget
+    of 1 (trap 1).
+    """
+    if "ladder" not in document:
+        return VerificationConfig()
+    block = document["ladder"]
+    if not isinstance(block, Mapping) or not block:
+        raise FactoryConfigError(
+            "ladder",
+            f"declares `ladder: {block!r}`; when declared it must be a non-empty "
+            f"mapping drawn from {_names(_LADDER_KEYS)}, e.g. "
+            "`ladder: {max_attempts: 3}`",
+            source=source,
+        )
+
+    unknown = [key for key in block if key not in _LADDER_KEYS]
+    if unknown:
+        raise FactoryConfigError(
+            "unknown_ladder_key",
+            f"declares {_names(unknown)} under `ladder`; the ladder dials are "
+            f"{_names(_LADDER_KEYS)}",
+            source=source,
+        )
+
+    defaults = VerificationConfig()
+    values: dict[str, int] = {}
+    for key in _LADDER_KEYS:
+        if key not in block:
+            values[key] = getattr(defaults, key)
+            continue
+        value = block[key]
+        # `isinstance(True, int)` is True, so the bool is excluded by identity.
+        if type(value) is not int:
+            raise FactoryConfigError(
+                f"ladder_{key}_type",
+                f"gives ladder.{key!r} the value {value!r}; it must be a whole "
+                "number (booleans are not integers here)",
+                source=source,
+            )
+        minimum, maximum = _LADDER_BOUNDS[key]
+        if value < minimum:
+            raise FactoryConfigError(
+                f"ladder_{key}_min",
+                f"gives ladder.{key!r} the value {value!r}; the floor is {minimum}",
+                source=source,
+            )
+        if value > maximum:
+            raise FactoryConfigError(
+                f"ladder_{key}_max",
+                f"gives ladder.{key!r} the value {value!r}; the ceiling is {maximum}",
+                source=source,
+            )
+        values[key] = value
+
+    return VerificationConfig(
+        max_attempts=values["max_attempts"],
+        max_judge_retries=values["max_judge_retries"],
+        debugger_cycles=values["debugger_cycles"],
+        gate_timeout_s=defaults.gate_timeout_s,
+        escalation_timeout_s=values["escalation_timeout_s"],
+    )
+
+
+def _read_verify(document: Mapping[Any, Any], source: str) -> tuple[str, ...]:
+    """The v2 verification-step order, defaulting to today's order.
+
+    The list must be non-empty, duplicate-free, and drawn from exactly the
+    three step names. `gates` and `diff_check` are mandatory; `judge` is
+    optional but, when present, must follow both — a judge only ever scores
+    work that is already green.
+    """
+    if "verify" not in document:
+        return _VERIFY_STEPS
+    declared = document["verify"]
+    if not isinstance(declared, list) or not declared:
+        raise FactoryConfigError(
+            "verify",
+            f"declares `verify: {declared!r}`; it must be a non-empty ordered list "
+            f"drawn from {_names(_VERIFY_STEPS)}",
+            source=source,
+        )
+
+    seen: set[str] = set()
+    for step in declared:
+        if step in seen:
+            raise FactoryConfigError(
+                "verify",
+                f"declares `verify` with duplicate step {step!r}; each step may "
+                "appear at most once",
+                source=source,
+            )
+        if step not in _VERIFY_STEPS:
+            raise FactoryConfigError(
+                "verify",
+                f"declares `verify` with unknown step {step!r}; the steps are "
+                f"{_names(_VERIFY_STEPS)}",
+                source=source,
+            )
+        seen.add(step)
+
+    if "gates" not in seen:
+        raise FactoryConfigError(
+            "verify",
+            "declares verify missing 'gates'; the gate step is not optional",
+            source=source,
+        )
+    if "diff_check" not in seen:
+        raise FactoryConfigError(
+            "verify",
+            "declares verify missing 'diff_check'; the diff check is not optional",
+            source=source,
+        )
+    if "judge" in seen:
+        judge_index = declared.index("judge")
+        gates_index = declared.index("gates")
+        diff_check_index = declared.index("diff_check")
+        if judge_index < gates_index or judge_index < diff_check_index:
+            raise FactoryConfigError(
+                "verify",
+                "declares 'judge' before 'gates' or 'diff_check'; a judge only "
+                "scores work that is already green",
+                source=source,
+            )
+
+    return tuple(declared)
 
 
 # Resolution ------------------------------------------------------------------

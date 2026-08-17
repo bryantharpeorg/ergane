@@ -209,9 +209,14 @@ class RoadmapDials:
     max_concurrent_nodes: int = 1
 
 
+def _default_ladder() -> "VerificationConfig":
+    """Deferred default so `VerificationConfig` need not move above `FactoryConfig`."""
+    return VerificationConfig()
+
+
 @dataclass(frozen=True)
 class FactoryConfig:
-    """The target repo's committed `factory.yaml`, schema v1.
+    """The target repo's committed `factory.yaml`, schema v1 or v2.
 
     `runtime` is recorded but execution-reserved — gates run as `bash -c` on the
     worker for now (R3), and keeping the field means the manifest does not have
@@ -247,6 +252,13 @@ class FactoryConfig:
     #: here would close a cycle through `factory.verify.gates`; the two
     #: spellings are pinned together by `tests/test_forge_manifest.py`.
     forge: str = "github"
+    #: 023 FR-002. Retry-ladder caps declared by the repo. Absent means today's
+    #: defaults, which is why the default reproduces `VerificationConfig()`.
+    ladder: "VerificationConfig" = field(default_factory=_default_ladder)
+    #: 023 FR-003. The order in which verification steps run. Absent on v2 means
+    #: today's order; v1 always gets this default. Includes `judge` because that
+    #: is today's default loop.
+    verify_order: tuple[str, ...] = ("gates", "diff_check", "judge")
 
 
 @dataclass(frozen=True)
