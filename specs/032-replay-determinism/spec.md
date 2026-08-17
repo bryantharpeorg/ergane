@@ -1,5 +1,40 @@
 ---
 state: draft
+# STILL PARKED 2026-08-16 — re-read tonight when the operator asked for every
+# draft to be made ready. This is the one that could not be, and the reason is
+# not staleness: the spec's own premise has now been disproven TWICE, and the
+# evidence for what replaced it is incomplete in a way no refinement can close.
+#
+#   1. The original US1 blamed command-emission order in
+#      factory/workgraph/workflow.py. The 08-12 audit showed the workflow emits
+#      validate_target_repo exactly once and is clean on every nondeterminism
+#      axis. Premise dead.
+#   2. The 08-12 replacement blamed a corrupted recorded history (a phantom
+#      second schedule). The 08-13 capture night killed that too: ten captured
+#      histories each held exactly one validate_target_repo, well-formed, 356
+#      events, and every one replays CLEAN locally.
+#   3. The 08-13 diagnosis -- eviction-path CancelledError swallow plus command
+#      emission in finally blocks -- WAS drafted, as 038-replay-eviction-leak,
+#      and 038 LANDED on 2026-08-13 (US1 at 867930e0d533, state: landed).
+#
+# And the flake is still here. The finding
+# interpreter/replay-test-nondeterminism-under-load was last seen
+# 2026-08-16T17:45:48Z -- three days after 038 landed -- at occurrence 8, first
+# seen 2026-08-11. So 038 fixed a real defect and did not fix this one.
+#
+# What the finding now says is missing, verbatim in shape: every observed
+# failure was a pull_request MERGE-COMMIT CI run, while 24 push-event samples
+# stayed green. The capture that would settle it must run IN THE MERGE GROUP,
+# not on a branch -- and the apparatus built for it (PR #41) was dirty with
+# potentialMergeCommit=none, so it could never produce the one configuration
+# that fails. #41 is now CLOSED. That capture has never been obtained.
+#
+# DO NOT FLIP READY. There is no story here that an implementer could satisfy:
+# the third diagnosis shipped, the symptom survived it, and nobody knows what
+# the fourth is. Dispatching against this would repeat the 4-attempt kill that
+# produced the first re-scope. What it needs is a measurement, not a builder.
+#
+# --- the 2026-08-12 note this supersedes, kept for the chain ---
 # PARKED pending re-scope 2026-08-12 ~7:52 PM CT (operator, on Bryan's word):
 # the operator diagnosis (finding interpreter/replay-test-nondeterminism-
 # under-load, recurrence 5, evidence chain in its notes) shows the incident's
