@@ -28,17 +28,31 @@
         "FR-003",
         "FR-004",
         "FR-005",
+        "FR-008",
+        "FR-012"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "implementer",
+      "spec_ref": "042-supervised-services:US4",
+      "requirement_keys": [
+        "US4",
         "FR-006",
         "FR-007",
-        "FR-008",
-        "FR-012",
         "FR-013",
         "FR-014",
         "FR-015"
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us1"
+        "us2"
       ],
       "timeout_override_s": null
     },
@@ -55,7 +69,8 @@
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us2"
+        "us2",
+        "us4"
       ],
       "timeout_override_s": null
     }
