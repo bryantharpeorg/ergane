@@ -331,6 +331,19 @@ async def _apply(desired: RoadmapSchedule) -> ScheduleStep:
             f"over {desired.specs_root}{note}",
         )
 
+    # 050/US3: the schedule id is derived from the slug, so a different repository
+    # with the same slug (or an orphan left by a moved repo) must not be adopted or
+    # overwritten.  The comparison is against the root recorded on the schedule,
+    # not the local filesystem — a local-only check cannot see a stranger's repo.
+    if live.target_repo != desired.target_repo:
+        return ScheduleStep(
+            FAILED,
+            desired.schedule_id,
+            f"refused: schedule {desired.schedule_id} is recorded for "
+            f"{live.target_repo}, not this repository ({desired.target_repo}); "
+            "another repository already owns this schedule id",
+        )
+
     moved = disagreements(desired, live)
     if not moved:
         return ScheduleStep(UNCHANGED, desired.schedule_id, "already satisfied; nothing changed")
