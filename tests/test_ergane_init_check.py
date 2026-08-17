@@ -26,6 +26,8 @@ import factory.cli.init as init_module
 import factory.workgraph.cli as workgraph_cli
 from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER
+from factory.controlplane.config import resolve_config_path
+from factory.env import ERGANE_CONFIG_PATH_ENV, FACTORY_CONFIG_PATH_ENV
 from factory.mergequeue.gh import GhClient
 from factory.mergequeue.github_forge import GithubForge
 from factory.mergequeue.models import Finding, TargetRepoProfile
@@ -128,6 +130,34 @@ HEALTHY_PROBES: list[Finding] = [
     Finding("memory", True, "skipped by declaration: memory.backend is `none`"),
 ]
 
+#: The `config.toml` a host with a control plane installed has. The Temporal it
+#: declares is a name that does not resolve, so a test that somehow got past
+#: both of `factory.roadmap.schedule`'s isolation guards would fail DNS rather
+#: than find this host's live namespace.
+INSTALLED_CONTROL_PLANE = """\
+version = 1
+
+[llm]
+mode = "gateway"
+base_url = "http://litellm.invalid"
+master_key_env = "LITELLM_MASTER_KEY"
+
+[memory]
+backend = "none"
+
+[temporal]
+mode = "external"
+address = "control-plane.invalid:7233"
+namespace = "offline-tests"
+
+[telemetry]
+
+[escalation]
+adapter = "telegram"
+chat_id_env = "TELEGRAM_CHAT_ID"
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+"""
+
 
 def bind_offline_seams(
     monkeypatch: pytest.MonkeyPatch,
@@ -136,6 +166,7 @@ def bind_offline_seams(
     probes: list[Finding] | None = None,
     probe_error: Exception | None = None,
     schedules: FakeScheduleServer | None = None,
+    control_plane_installed: bool = True,
 ) -> FakeGh:
     """Bind every outward seam so no test can reach GitHub or a control plane.
 
@@ -149,8 +180,29 @@ def bind_offline_seams(
     schedule.  `factory.roadmap.schedule` refuses to connect under pytest at
     all, so a forgotten binding fails loudly; this makes the bound case the
     default anyway.
+
+    050/US1 added the fourth thing this promises, and it is a *file* rather than
+    a seam: `ergane init` now refuses to publish a schedule at all when the
+    control-plane config cannot be read (FR-001), and the suite's session
+    fixture points `ERGANE_CONFIG_PATH` at a path nothing creates.  A helper
+    that promised a healthy control plane while leaving no config behind was
+    promising something incoherent — every init driven through it would have
+    taken the refusal path, and the three tests in
+    `test_ergane_init_schedule.py` that read a created schedule off the backend
+    said so.  Pass `control_plane_installed=False` for a host where `ergane
+    install` has never run.
     """
     gh = fake if fake is not None else conforming_gh()
+
+    if control_plane_installed:
+        # Beside the path the session fixture already points at, so this stays
+        # inside pytest's own temporary tree; the binding is monkeypatched, so a
+        # test that wants a different config just sets one after this returns.
+        config = resolve_config_path().parent / "offline-control-plane.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(INSTALLED_CONTROL_PLANE, encoding="utf-8")
+        monkeypatch.setenv(ERGANE_CONFIG_PATH_ENV, str(config))
+        monkeypatch.setenv(FACTORY_CONFIG_PATH_ENV, str(config))
 
     control_plane = schedules if schedules is not None else FakeScheduleServer()
     if schedules is None:
