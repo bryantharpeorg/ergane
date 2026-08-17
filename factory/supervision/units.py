@@ -30,11 +30,11 @@ Provenance is recorded at install time — a digest of what was written — so
 their names. The operator's own unit of a colliding name may be the one keeping
 their host alive, and it is reported rather than deleted (FR-008).
 
-What is deliberately absent: the probe's own unit and timer. They belong to
-042-US4 with the probe itself, because a unit generated here whose `ExecStart`
-names a module that does not exist yet would exit 1 on `ModuleNotFoundError` —
-and 1 is inside the `SuccessExitStatus=0 1` such a unit declares, so the timer
-would read green while supervising nothing.
+The probe's own unit and timer belong to 042-US4 with the probe itself, and
+could not have shipped ahead of it: a unit whose `ExecStart` names a module
+that does not exist yet exits 1 on `ModuleNotFoundError`, and 1 is inside the
+`SuccessExitStatus=0 1` such a unit declares — the timer would read green while
+supervising nothing.
 """
 
 from __future__ import annotations
