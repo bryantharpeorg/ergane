@@ -453,3 +453,52 @@ def test_the_environment_still_wins_over_a_declared_namespace(
 # changing the constant moves nothing that is running. Editing it and the
 # constant together is the one combination that would point the operator's
 # running worker at an empty namespace.
+#
+# --- What the spec did not foresee: the gate resolves this default -----------
+#
+# "Flipping the default moves nothing that runs" is true of the *worker* — its
+# systemd unit evals `scripts/ergane-env.sh`, which exports
+# `TEMPORAL_NAMESPACE=factory`. It is NOT true of the factory's own gate. The
+# gate's environment is a strict allowlist (`factory/verify/gates.py:96`):
+#
+#   PATH HOME TMPDIR LANG LC_ALL LC_CTYPE TZ TERM USER LOGNAME SHELL
+#
+# `TEMPORAL_NAMESPACE` is not in it, and the sandbox does not unshare the
+# network (`gates.py:495`), so a gate run reaches a live Temporal on
+# `localhost:7233` and resolves the namespace from this default. Before this
+# story it resolved `factory` and `tests/test_live_capacity.py` ran its probe
+# workflows against the operator's production namespace; after it, it resolves
+# `ergane`, which that server does not have:
+#
+#   $ uv run pytest -q tests/test_live_capacity.py::\
+#     test_capacity_read_finds_open_epic_workflows_and_excludes_others --tb=line
+#   E   temporalio.service.RPCError: Namespace ergane is not found.
+#   E   asyncio.exceptions.CancelledError
+#   WARN temporalio_sdk_core::worker::heartbeat: Network error while describing
+#        namespace for heartbeat capabilities error=Status { code: NotFound, ... }
+#   1 failed in 3.62s
+#
+# The heartbeat loop *retries* that, so the first full-suite run of this story
+# did not go red — it HUNG, at 63%, for sixteen minutes until it was killed.
+#
+# `_live_client` promised "connect to the operator's Temporal, or skip with a
+# named reason" and could not keep it: `Client.connect` is lazy about the
+# namespace, so `NOT_FOUND` arrived inside a test body rather than inside the
+# guard. One `describe_namespace` call inside the same `try` moves it back:
+#
+#   $ uv run pytest -q -rs tests/test_live_capacity.py     # nothing exported
+#   SKIPPED [3] live capacity read needs a reachable Temporal namespace
+#     'ergane' at localhost:7233; RPC failed: Namespace ergane is not found.
+#   1 passed, 3 skipped in 0.24s
+#
+#   $ TEMPORAL_NAMESPACE=factory uv run pytest -q tests/test_live_capacity.py
+#   4 passed in 2.74s
+#
+# The tier still runs wherever the namespace exists; it no longer hangs where it
+# does not. Two consequences to declare rather than bury: the skip count in a
+# bare shell rises from 44 to 47 — three tests that used to reach the operator's
+# production namespace from inside a gate sandbox, which they should never have
+# done — and under `eval "$(scripts/ergane-env.sh)"` it stays 44 and all four
+# pass. `tests/test_env_sources.py`'s byte-parity transcript needed the same
+# treatment: it spelled `(default: factory)` twice, and now interpolates the
+# constant, so the pair still measures the two labels 048 moved.
