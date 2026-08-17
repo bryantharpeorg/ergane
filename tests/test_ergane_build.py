@@ -98,8 +98,10 @@ from factory.workgraph.derive import derive_workgraph
 from factory.verify.store import (
     EXPIRED,
     connect as verify_connect,
+    external_completion_count,
     insert_escalation,
     insert_question,
+    record_external_completion_signal,
     resolve_escalation,
     resolve_question,
 )
@@ -1100,6 +1102,101 @@ def test_resolve_lists_choices_when_none_given(
     assert "RETRY" in result.stdout
     assert "KILL" in result.stdout
     assert "no choice given" in result.stdout.lower()
+
+
+# --- 035-US3: external-completion count ----------------------------------------
+
+
+def test_external_completion_count_reports_zero_when_no_store_exists(
+    run: Callable[..., Run],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SC-004: a corpus that has never used the hatch reports an explicit 0."""
+    monkeypatch.setenv("ERGANE_VERIFICATION_DB_PATH", str(tmp_path / "no-such.db"))
+    monkeypatch.delenv("FACTORY_VERIFICATION_DB_PATH", raising=False)
+
+    result = run("build", "external-completion-count")
+
+    assert result.code == 0
+    assert "0" in result.stdout
+    assert "target: 0" in result.stdout
+
+
+def test_external_completion_count_reports_total_and_per_spec_breakdown(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """SC-004: the count surface reports total and per-spec breakdown."""
+    conn = verify_connect(verification_db)
+    record_external_completion_signal(
+        conn,
+        epic_id="spec-a",
+        node_id="us1",
+        branch="factory/spec-a/us1",
+        provenance="operator:manual",
+        accepted=True,
+        reason=None,
+        recorded_at="2026-08-17T10:00:00Z",
+    )
+    record_external_completion_signal(
+        conn,
+        epic_id="spec-b",
+        node_id="us1",
+        branch="factory/spec-b/us1",
+        provenance="operator:manual",
+        accepted=True,
+        reason=None,
+        recorded_at="2026-08-17T10:01:00Z",
+    )
+    # A refused signal must not inflate the count.
+    record_external_completion_signal(
+        conn,
+        epic_id="spec-c",
+        node_id="us1",
+        branch="factory/spec-c/us1",
+        provenance="operator:manual",
+        accepted=False,
+        reason="node already terminal",
+        recorded_at="2026-08-17T10:02:00Z",
+    )
+    # A repeat accepted completion must count once (idempotence, trap 5).
+    record_external_completion_signal(
+        conn,
+        epic_id="spec-a",
+        node_id="us1",
+        branch="factory/spec-a/us1",
+        provenance="operator:manual",
+        accepted=True,
+        reason=None,
+        recorded_at="2026-08-17T10:03:00Z",
+    )
+    conn.close()
+
+    result = run("build", "external-completion-count")
+
+    assert result.code == 0
+    assert "2" in result.stdout
+    assert "spec-a" in result.stdout
+    assert "spec-b" in result.stdout
+    assert "target: 0" in result.stdout
+    # Refused spec does not appear.
+    assert "spec-c" not in result.stdout
+
+
+def test_external_completion_count_json_emits_measured_zero(
+    run: Callable[..., Run],
+    verification_db: Path,
+) -> None:
+    """SC-004: JSON output carries the explicit measured flag and target."""
+    result = run("build", "external-completion-count", "--json")
+
+    assert result.code == 0
+    document = result.json
+    assert document["total"] == 0
+    assert document["by_spec"] == {}
+    assert document["measured"] is True
+    assert document["target"] == 0
 
 
 # --- US3: reset ----------------------------------------------------------------

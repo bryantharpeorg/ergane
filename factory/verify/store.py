@@ -55,6 +55,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+
+@dataclass(frozen=True)
+class ExternalCompletionCount:
+    """The measured external-completion count for a whole corpus.
+
+    `total` is the number of distinct accepted completions recorded.
+    `by_spec` maps each epic_id to how many of those completions belong to it.
+    `measured` is always True when this value is returned by the store: it
+    distinguishes "0 because the counter checked" from "0 because the counter
+    was never asked" (035-US3, FR-008).
+    `target` is zero: the number this feature exists to drive to zero, stated
+    alongside the count so a first-time reader knows what the number means.
+    """
+
+    total: int
+    by_spec: dict[str, int]
+    measured: bool = True
+    target: int = 0
+
 from factory.env import (
     ERGANE_EVIDENCE_STORE_ALLOW_REAL_ENV,
     FACTORY_EVIDENCE_STORE_ALLOW_REAL_ENV,
@@ -88,10 +107,9 @@ from factory.verify.models import (
 #: `SELECT` the escalation columns by name, and a deployment answering `no such
 #: column` would have lost the escalation channel outright.
 #:
-#: 4 (035-US1): `verification_results.provenance` and the
-#: `external_completion_signals` log. Provenance must travel with the mechanism,
-#: so the column is added by migration; the signal log is new.
-SCHEMA_VERSION = 4
+#: 5 (035-US3): `external_completion_counts` table. Counts every accepted
+#: external completion idempotently per (epic_id, node_id, branch, provenance).
+SCHEMA_VERSION = 5
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -220,6 +238,21 @@ CREATE TABLE IF NOT EXISTS external_completion_signals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_extcomp_epic_node ON external_completion_signals (epic_id, node_id);
+
+-- 035-US3: a durable counter of accepted external completions. Keyed by the
+-- completion identity (epic, node, branch, provenance) so a repeat signal is
+-- recorded once, not twice — the count is evidence of a trend, and a
+-- double-count would invent one.
+CREATE TABLE IF NOT EXISTS external_completion_counts (
+    epic_id     TEXT    NOT NULL CHECK (epic_id <> ''),
+    node_id     TEXT    NOT NULL CHECK (node_id <> ''),
+    branch      TEXT    NOT NULL CHECK (branch <> ''),
+    provenance  TEXT    NOT NULL CHECK (provenance <> ''),
+    recorded_at TEXT    NOT NULL,
+    PRIMARY KEY (epic_id, node_id, branch, provenance)
+);
+
+CREATE INDEX IF NOT EXISTS idx_extcomp_counts_epic ON external_completion_counts (epic_id);
 """
 
 
@@ -350,6 +383,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX idx_extcomp_epic_node "
             "ON external_completion_signals (epic_id, node_id)"
+        )
+
+    if extcomp_tables and "external_completion_counts" not in extcomp_tables:
+        # 035-US3: the counter table arrives on stores that already exist.
+        conn.execute(
+            """
+            CREATE TABLE external_completion_counts (
+                epic_id     TEXT    NOT NULL CHECK (epic_id <> ''),
+                node_id     TEXT    NOT NULL CHECK (node_id <> ''),
+                branch      TEXT    NOT NULL CHECK (branch <> ''),
+                provenance  TEXT    NOT NULL CHECK (provenance <> ''),
+                recorded_at TEXT    NOT NULL,
+                PRIMARY KEY (epic_id, node_id, branch, provenance)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX idx_extcomp_counts_epic "
+            "ON external_completion_counts (epic_id)"
         )
 
 
@@ -1196,6 +1248,11 @@ def record_external_completion_signal(
 
     Both acceptances and refusals are recorded so the operator can audit what
     happened. A refusal carries a reason; an acceptance may leave it NULL.
+
+    An accepted signal also records the completion in the durable counter.
+    The counter is idempotent per (epic_id, node_id, branch, provenance): a
+    repeat signal for the same completion lands on the same row rather than
+    inventing a second occurrence (035-US3, plan.md trap 5).
     """
     conn.execute(
         _INSERT_EXTERNAL_COMPLETION_SQL,
@@ -1209,5 +1266,80 @@ def record_external_completion_signal(
             "recorded_at": recorded_at,
         },
     )
+    row_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    if accepted:
+        _record_external_completion_count(
+            conn,
+            epic_id=epic_id,
+            node_id=node_id,
+            branch=branch,
+            provenance=provenance,
+            recorded_at=recorded_at,
+        )
     conn.commit()
-    return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    return row_id
+
+
+#: 035-US3: the durable counter of accepted external completions.
+#: Keyed by (epic_id, node_id, branch, provenance) so a repeat signal is a
+#: no-op, not a second occurrence.
+_EXTERNAL_COMPLETION_COUNT_COLUMNS = (
+    "epic_id",
+    "node_id",
+    "branch",
+    "provenance",
+    "recorded_at",
+)
+
+_INSERT_EXTERNAL_COMPLETION_COUNT_SQL = (
+    f"INSERT INTO external_completion_counts ({', '.join(_EXTERNAL_COMPLETION_COUNT_COLUMNS)}) "
+    f"VALUES ({', '.join(f':{column}' for column in _EXTERNAL_COMPLETION_COUNT_COLUMNS)}) "
+    "ON CONFLICT (epic_id, node_id, branch, provenance) DO NOTHING"
+)
+
+
+def _record_external_completion_count(
+    conn: sqlite3.Connection,
+    *,
+    epic_id: str,
+    node_id: str,
+    branch: str,
+    provenance: str,
+    recorded_at: str,
+) -> None:
+    """Record one accepted external completion in the durable counter.
+
+    The unique constraint on (epic_id, node_id, branch, provenance) makes a
+    repeat of the same completion a no-op, so a re-delivered signal or a
+    re-run activity cannot inflate the count.
+    """
+    conn.execute(
+        _INSERT_EXTERNAL_COMPLETION_COUNT_SQL,
+        {
+            "epic_id": epic_id,
+            "node_id": node_id,
+            "branch": branch,
+            "provenance": provenance,
+            "recorded_at": recorded_at,
+        },
+    )
+
+
+def external_completion_count(conn: sqlite3.Connection) -> ExternalCompletionCount:
+    """Read the durable external-completion count, total and per spec.
+
+    A store that has never recorded an accepted completion returns an explicit
+    zero with `measured=True`, so the absence of use is distinguishable from a
+    broken or absent counter (035-US3, FR-008). The target is stated as zero.
+    """
+    rows = conn.execute(
+        """
+        SELECT epic_id, COUNT(*) AS n
+        FROM external_completion_counts
+        GROUP BY epic_id
+        ORDER BY epic_id
+        """
+    ).fetchall()
+    by_spec = {row[0]: row[1] for row in rows}
+    total = sum(by_spec.values())
+    return ExternalCompletionCount(total=total, by_spec=by_spec)
