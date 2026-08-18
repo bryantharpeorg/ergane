@@ -2,9 +2,17 @@
 #
 # Nodes are routed by persona, never by model tier. This registry is the only
 # place a model name appears — code never hardcodes one. The `model` and
-# `fallback` values are LiteLLM aliases from the operator's proxy config; the
-# issued virtual key's `models` list is derived from these, so the binding is
-# enforceable, not advisory.
+# `fallback` values are LiteLLM aliases from the operator's proxy config.
+#
+# Whether the binding is enforceable depends on the LLM mode declared in the
+# control-plane config:
+#
+# - In `gateway` mode the factory issues each attempt a model-constrained
+#   virtual key whose `models` list is derived from this registry, so the
+#   persona-to-model binding is enforceable.
+# - In `direct` mode the factory hands the agent the operator's static provider
+#   key and does not model-constrain it, so the binding is advisory rather than
+#   enforceable (055-US2 FR-011).
 #
 # Current wiring (2026-08-06, Bryan): hosted models via the proxy's
 # `ollama-cloud/*` aliases (Ollama Cloud key on the worker host — the planned

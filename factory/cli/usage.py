@@ -65,6 +65,18 @@ def add_usage_parser(subparsers: argparse._SubParsersAction) -> argparse.Argumen
 def usage_command(args: argparse.Namespace) -> int:
     import json
 
+    if _attribution_unavailable():
+        message = (
+            "Attribution is unavailable in direct mode: `llm.mode = \"direct\"` "
+            "has no LiteLLM proxy to read per-key spend from, so `ergane usage "
+            "cannot roll up usage to a node, persona, or epic."
+        )
+        if args.as_json:
+            print(json.dumps({"error": message}, indent=2))
+        else:
+            print(message)
+        return EXIT_OK
+
     try:
         conn = open_readonly(args.db)
     except sqlite3.Error as error:
@@ -78,6 +90,22 @@ def usage_command(args: argparse.Namespace) -> int:
 
     print(json.dumps(document, indent=2) if args.as_json else render_table(document))
     return EXIT_OK
+
+
+def _attribution_unavailable() -> bool:
+    """True when the control plane admits only direct mode and not the gateway.
+
+    The command degrades gracefully: a missing or unreadable config is treated as
+    gateway-capable so the normal empty-ledger path is preserved.
+    """
+    from factory.controlplane.config import load_controlplane_config
+    from factory.controlplane.resolve import resolve_config_path
+
+    try:
+        cfg = load_controlplane_config(resolve_config_path())
+    except Exception:
+        return False
+    return cfg.llm.mode == "direct"
 
 
 def _default_ledger_path() -> Path:

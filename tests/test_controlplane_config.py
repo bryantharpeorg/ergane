@@ -39,11 +39,7 @@ from factory.env import (
 #: expectation.
 _DIRECT_LLM_BLOCK = """\
 mode = "direct"
-
-[[llm.persona]]
-name = "implementer"
 base_url = "http://llm.local/v1"
-model = "openai/gpt-4o"
 api_key_env = "ERGANE_LLM_IMPLEMENTER_KEY"
 """
 
@@ -360,25 +356,23 @@ def test_load_from_default_path_fail_closed(tmp_path: Path, monkeypatch: pytest.
 # ---------------------------------------------------------------------------
 
 
-def test_direct_llm_mode_refused(tmp_path: Path) -> None:
-    """048-US2 / FR-008: the config this file's fixture used to be is now refused.
+def test_direct_llm_mode_parses(tmp_path: Path) -> None:
+    """055-US2 / FR-006: the config this file's fixture used to be is now supported.
 
-    The text is unchanged — a complete `[[llm.persona]]` block that parsed to a
-    `direct` LLM block until this story, which is what makes the refusal the new
-    rule firing rather than an incidental "persona block missing". What moved is
-    the verdict.
+    The `[[llm.persona]]` apparatus is gone; direct mode now carries `base_url`
+    and `api_key_env`. What was a refusal under 048 is now a parsed block.
     """
     path = tmp_path / "config.toml"
     text = _happy_toml().replace(_GATEWAY_LLM_BLOCK, _DIRECT_LLM_BLOCK)
     path.write_text(text, encoding="utf-8")
 
-    with pytest.raises(ControlPlaneConfigError) as exc_info:
-        load_controlplane_config(path)
+    cfg = load_controlplane_config(path)
 
-    err = exc_info.value
-    assert err.rule == "llm_direct_not_supported"
-    assert "virtual key" in err.problem
-    assert "gateway" in err.problem
+    assert cfg.llm.mode == "direct"
+    assert cfg.llm.direct is not None
+    assert cfg.llm.direct.base_url == "http://llm.local/v1"
+    assert cfg.llm.direct.api_key_env == "ERGANE_LLM_IMPLEMENTER_KEY"
+    assert cfg.llm.gateway is None
 
 
 # ---------------------------------------------------------------------------

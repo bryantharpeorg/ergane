@@ -164,6 +164,39 @@ def open_client() -> LiteLLMClient:
     return LiteLLMClient.from_env()
 
 
+def _is_direct_mode() -> bool:
+    """Whether the control plane is configured for direct provider access."""
+    from factory.controlplane.config import load_controlplane_config
+    from factory.controlplane.resolve import resolve_config_path
+
+    try:
+        cfg = load_controlplane_config(resolve_config_path())
+    except Exception:
+        return False
+    return cfg.llm.mode == "direct"
+
+
+def _direct_credential() -> str:
+    """The static credential declared for direct mode, read from the environment.
+
+    Raises `LiteLLMError` when the variable is missing, using the same vocabulary
+    `from_env` uses so callers treat a misconfigured direct host the same way.
+    """
+    from factory.controlplane.config import load_controlplane_config
+    from factory.controlplane.resolve import resolve_config_path
+
+    cfg = load_controlplane_config(resolve_config_path())
+    assert cfg.llm.direct is not None
+    env_name = cfg.llm.direct.api_key_env
+    value = os.environ.get(env_name)
+    if not value:
+        raise LiteLLMError(
+            f"{env_name} is not set; it is the credential variable declared for "
+            "direct mode in the control-plane config"
+        )
+    return value
+
+
 def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str:
     """The key's identity as the proxy and the ledger both spell it (R1).
 
@@ -179,7 +212,12 @@ def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str
 
 @activity.defn
 async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
-    """Mint the attempt's virtual key (FR-001, US3 FR-007).
+    """Open the attempt's bracket and return its credential (FR-001, US3 FR-007).
+
+    In `gateway` mode this mints a LiteLLM virtual key. In `direct` mode it
+    returns the static provider credential declared in the config. Both paths
+    still write the attempt's ledger row, because the row is the record that the
+    attempt happened (US2 FR-007).
 
     A killed epic leaves a deterministic alias orphaned in the proxy. When the
     alias belongs to this epic, the activity recovers by deleting the orphan and
@@ -193,15 +231,32 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
     credential, or a live-epic alias collision — so a restarting proxy still
     gets the workflow's ten-minute retry budget (R4).
     """
+    alias = key_alias_for(
+        request.epic_id, request.node_id, request.attempt, request.persona
+    )
+
+    if _is_direct_mode():
+        try:
+            key = _direct_credential()
+        except LiteLLMError as exc:
+            raise _issuance_failed(exc, permanent=True) from exc
+        return KeyLease(
+            key=key,
+            key_alias=alias,
+            node_id=request.node_id,
+            epic_id=request.epic_id,
+            attempt=request.attempt,
+            persona=request.persona,
+            spec_ref=request.spec_ref,
+            issued_at=_now_iso(),
+        )
+
     try:
         client = open_client()
     except LiteLLMError as exc:
         # The worker host itself is misconfigured: no amount of waiting fixes it.
         raise _issuance_failed(exc, permanent=True) from exc
 
-    alias = key_alias_for(
-        request.epic_id, request.node_id, request.attempt, request.persona
-    )
     try:
         existing = await _find_key_for_alias(client, alias)
         if existing is not None:
