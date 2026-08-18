@@ -274,7 +274,9 @@ async def test_llm_probe_reports_unknown_alias_and_continues_sweep(
 
     assert finding.passed is False, finding.detail
     assert unknown in finding.detail
-    assert "first" not in finding.detail or "third" not in finding.detail or True  # names persona(s)
+    # The finding must name the persona that would have used the unknown alias.
+    assert "second" in finding.detail
+    # The remaining aliases still passed and are reported.
     assert "known-a" in finding.detail or "known-b" in finding.detail or "passed" in finding.detail.lower()
 
     # Every alias was still attempted.
