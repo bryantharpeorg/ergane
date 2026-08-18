@@ -29,86 +29,31 @@ let the file start keeping a second copy of the roadmap.
 from __future__ import annotations
 
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from tests.page_holds_true import (
+    BIN_DIR,
+    REPO_ROOT,
+    extract_commands,
+    extract_paths,
+    run_help,
+    split_argv,
+    status_claims,
+    verbs_of,
+)
+
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
-BIN_DIR = Path(sys.executable).parent
 
 TEXT = CLAUDE_MD.read_text(encoding="utf-8")
 LINES = TEXT.splitlines()
-
-#: Everything the file sets in backticks. One pass, three readers below.
-CODE_SPANS = re.findall(r"`([^`\n]+)`", TEXT)
 
 
 # --- every command it names still exists -------------------------------------
 
 
-def _commands() -> list[tuple[str, ...]]:
-    """Each distinct `ergane` invocation the file recommends, as argv.
-
-    Flags are kept — a renamed `--by` is as broken a recommendation as a renamed
-    verb — but placeholders are not, because `<spec-dir>` is the reader's to
-    fill in and `--help` does not want it.
-    """
-    found: list[tuple[str, ...]] = []
-    for span in CODE_SPANS:
-        words = span.split()
-        if not words or words[0] != "ergane":
-            continue
-        argv = tuple(w for w in words if not w.startswith("<") and not w.endswith(">"))
-        if argv not in found:
-            found.append(argv)
-    return found
-
-
-COMMANDS = _commands()
-
-#: How argparse renders a subcommand set. Read only out of the positional
-#: section: an option with a choice list renders the same way, and `--by
-#: {persona,epic,…}` is not a set of verbs.
-_CHOICES = re.compile(r"\{([A-Za-z0-9_,\-]+)\}")
-_POSITIONALS = re.compile(r"positional arguments:\n(.*?)(?:\n\n|\noptions:)", re.S)
-
-
-def _verbs_of(help_text: str) -> set[str]:
-    section = _POSITIONALS.search(help_text)
-    if section is None:
-        return set()
-    listed = _CHOICES.search(section.group(1))
-    return set(listed.group(1).split(",")) if listed else set()
-
-
-def _split(argv: tuple[str, ...]) -> tuple[list[str], list[tuple[str, str | None]]]:
-    """Positional words, and flags with the value each was given.
-
-    A bare word after a flag is that flag's value, not a positional — `--by
-    epic` names a rollup dimension, and asking the parser for a verb called
-    `epic` would be asking the wrong question.
-    """
-    positionals: list[str] = []
-    flags: list[tuple[str, str | None]] = []
-    index = 1
-    while index < len(argv):
-        word = argv[index]
-        if word.startswith("-"):
-            following = argv[index + 1] if index + 1 < len(argv) else None
-            value = following if following and not following.startswith("-") else None
-            flags.append((word, value))
-            index += 2 if value else 1
-        else:
-            positionals.append(word)
-            index += 1
-    return positionals, flags
-
-
-def _help(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command + ["--help"], capture_output=True, text=True, timeout=120)
+COMMANDS = extract_commands(TEXT)
 
 
 @pytest.mark.parametrize("argv", COMMANDS, ids=lambda argv: " ".join(argv))
@@ -119,16 +64,16 @@ def test_every_command_the_file_names_resolves(argv: tuple[str, ...]) -> None:
         f"{argv[0]} entry point installed — check [project.scripts] in pyproject.toml"
     )
 
-    positionals, flags = _split(argv)
+    positionals, flags = split_argv(argv)
     command = [str(executable)]
-    result = _help(command)
+    result = run_help(command)
     assert result.returncode == 0, f"{argv[0]} --help does not parse:\n{result.stderr.strip()}"
 
     # Descend the real parser one verb at a time. Falling back to a shorter
     # prefix would be the wrong kindness: `ergane doctor lyst` would then be
     # checked as `ergane doctor`, and pass.
     for word in positionals:
-        verbs = _verbs_of(result.stdout)
+        verbs = verbs_of(result.stdout)
         if not verbs:
             # No subcommands left to take: everything remaining is an argument
             # the reader supplies, not a name this file is claiming exists.
@@ -139,7 +84,7 @@ def test_every_command_the_file_names_resolves(argv: tuple[str, ...]) -> None:
             f"`{word}` verb — it has {sorted(verbs)}"
         )
         command.append(word)
-        result = _help(command)
+        result = run_help(command)
         assert result.returncode == 0, (
             f"`{' '.join(command)} --help` does not parse:\n{result.stderr.strip()}"
         )
@@ -169,24 +114,7 @@ def test_the_command_sweep_actually_read_the_file() -> None:
 
 # --- every path it cites still exists ----------------------------------------
 
-#: What counts as a claim about the tree: something with a directory separator,
-#: or a bare filename with an extension this repository actually uses.
-_SUFFIXES = (".md", ".py", ".yaml", ".yml", ".sh", ".json", ".toml", ".sql", ".db")
-
-
-def _paths() -> list[str]:
-    found: list[str] = []
-    for span in CODE_SPANS:
-        if " " in span or span.startswith("-") or "<" in span or span.startswith(":"):
-            continue
-        if "/" not in span and not span.endswith(_SUFFIXES):
-            continue
-        if span not in found:
-            found.append(span)
-    return found
-
-
-PATHS = _paths()
+PATHS = extract_paths(TEXT)
 
 
 @pytest.mark.parametrize("cited", PATHS, ids=lambda path: path)
@@ -217,37 +145,9 @@ def test_the_path_sweep_actually_read_the_file() -> None:
 
 # --- it states no status a live source already answers -----------------------
 
-#: How a spec is referred to: a numbered feature directory, or the bare number.
-_SPEC_ID = re.compile(r"\b\d{3}-[a-z][a-z0-9-]*|\b0\d\d\b")
-
-#: Words that assert where a spec has got to. Every one of them has a live
-#: source — `ergane spec list` for the first four, `ergane build landed`
-#: and `ergane build status` for the rest — so every one of them is a copy.
-_STATUS_WORD = re.compile(
-    r"\b(draft|ready|deferred|landed|shipped|blocked|in[- ]flight|dispatched"
-    r"|running|done|complete|completed|passing|failing|merged)\b",
-    re.IGNORECASE,
-)
-
-#: Near enough to read as a claim about that spec. Wider than a table cell,
-#: narrower than a paragraph.
-_WINDOW = 80
-
-
-def _status_claims(lines: list[str] | None = None) -> list[tuple[int, str, str]]:
-    """Every (line number, spec id, status word) that sit close enough to be read
-    as one statement."""
-    claims: list[tuple[int, str, str]] = []
-    for number, line in enumerate(LINES if lines is None else lines, start=1):
-        for spec in _SPEC_ID.finditer(line):
-            window = line[max(0, spec.start() - _WINDOW) : spec.end() + _WINDOW]
-            for status in _STATUS_WORD.finditer(window):
-                claims.append((number, spec.group(0), status.group(0)))
-    return claims
-
 
 def test_the_file_names_no_spec_status() -> None:
-    claims = _status_claims()
+    claims = status_claims(TEXT)
     assert not claims, (
         "CLAUDE.md states a spec's status, which has a live source and will rot:\n"
         + "\n".join(
@@ -298,7 +198,7 @@ def test_the_status_sweep_can_actually_see_a_status() -> None:
     # The one test here that asserts an absence, so it is the one that could
     # quietly stop testing anything. This proves the detector still fires — and
     # that it does not fire on prose making no claim about a spec.
-    assert _status_claims(["The delta work in 016-delta-derivation is landed as of today."])
-    assert _status_claims(["Story 3 of 006 is still blocked."])
-    assert not _status_claims(["`docs/architecture.md` describes how an epic is judged."])
-    assert not _status_claims(["Landed story numbers are immutable; new work takes new ones."])
+    assert status_claims("The delta work in 016-delta-derivation is landed as of today.".splitlines())
+    assert status_claims("Story 3 of 006 is still blocked.".splitlines())
+    assert not status_claims("`docs/architecture.md` describes how an epic is judged.".splitlines())
+    assert not status_claims("Landed story numbers are immutable; new work takes new ones.".splitlines())
