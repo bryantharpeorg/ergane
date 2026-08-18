@@ -96,11 +96,7 @@ version = 1
 
 [llm]
 mode = "direct"
-
-[[llm.persona]]
-name = "implementer"
 base_url = "http://127.0.0.1:1/v1"
-model = "openai/gpt-4o"
 api_key_env = "DECLARED_PERSONA_KEY"
 
 [memory]
@@ -131,20 +127,18 @@ def test_direct_mode_is_refused_naming_the_virtual_key_and_the_gateway_route() -
     at the proxy, and there is nothing to mint for a per-persona endpoint), and
     the supported route named by mode. A refusal that only declines leaves the
     operator to guess.
-    """
-    with pytest.raises(ControlPlaneConfigError) as excinfo:
-        parse_controlplane_config(DIRECT_CONFIG, source="fixture.toml")
 
-    error = excinfo.value
-    assert error.rule == RULE_LLM_DIRECT_NOT_SUPPORTED
-    assert "virtual key" in error.problem
-    assert "gateway" in error.problem
-    # The rendered message an operator actually reads names the file too.
-    assert str(error).startswith("fixture.toml: [llm_direct_not_supported]")
+    Superseded by 055-US2: direct mode is now supported, so this input parses.
+    The historical refusal slug is kept but no longer reachable.
+    """
+    cfg = parse_controlplane_config(DIRECT_CONFIG, source="fixture.toml")
+    assert cfg.llm.mode == "direct"
+    assert cfg.llm.direct is not None
+    assert cfg.llm.direct.base_url == "http://127.0.0.1:1/v1"
 
 
 def test_direct_stays_a_recognised_token_so_the_refusal_stays_specific() -> None:
-    """Plan trap 8: refused, not forgotten.
+    """Plan trap 8: recognized, not forgotten.
 
     Deleting `"direct"` from `KNOWN_LL_MODES` would satisfy "the parser refuses
     it" while answering a question the operator did not ask — they would be told
@@ -153,9 +147,8 @@ def test_direct_stays_a_recognised_token_so_the_refusal_stays_specific() -> None
     """
     assert "direct" in KNOWN_LL_MODES
 
-    with pytest.raises(ControlPlaneConfigError) as refused:
-        parse_controlplane_config(DIRECT_CONFIG, source="fixture.toml")
-    assert refused.value.rule != RULE_UNKNOWN_LLM_MODE
+    cfg = parse_controlplane_config(DIRECT_CONFIG, source="fixture.toml")
+    assert cfg.llm.mode == "direct"
 
     unknown_text = DIRECT_CONFIG.replace('mode = "direct"', 'mode = "sidecar"')
     with pytest.raises(ControlPlaneConfigError) as unknown:
@@ -164,109 +157,6 @@ def test_direct_stays_a_recognised_token_so_the_refusal_stays_specific() -> None
     assert "sidecar" in unknown.value.problem
 
 
-# ---------------------------------------------------------------------------
-# T017 / US2-S2 — the interview neither offers nor accepts it
-# ---------------------------------------------------------------------------
-
-
-def test_the_interview_re_asks_carrying_the_parsers_own_refusal(
-    walkthrough,  # noqa: ANN001 - fixture imported from the walkthrough tests
-    config_path: Path,
-) -> None:
-    """US2-S2, FR-009: answering `direct` is refused exactly as any other bad value.
-
-    Nothing in `factory/cli/install.py` decides this. `_ask` renders the
-    candidate document and hands it to `parse_controlplane_config`, so the
-    moment the parser refuses `direct` the interview refuses it too — which is
-    why this story is subtraction rather than a second rule table (plan trap 9).
-    What install still has to do by hand is stop *offering* the mode and stop
-    seeding a persona block, and both are asserted here on the questions
-    actually asked.
-    """
-    answers = ["direct", *GATEWAY_ANSWERS]
-
-    _, prompter = walkthrough(answers)
-
-    mode_prompts = [p for p in prompter.prompts if p.startswith("llm mode")]
-    # Asked twice: once refused, once answered.
-    assert len(mode_prompts) == 2
-    errors = prompter.errors_for(mode_prompts[0])
-    assert len(errors) == 1
-    assert RULE_LLM_DIRECT_NOT_SUPPORTED in errors[0]
-    assert "virtual key" in errors[0]
-
-    # The mode is not offered, and no persona question follows from asking for it.
-    assert not any("direct" in prompt for prompt in prompter.prompts)
-    assert not any("persona" in prompt for prompt in prompter.prompts)
-
-    # Every answer was consumed and the file that was written declares gateway.
-    assert prompter.answers == []
-    assert 'mode = "gateway"' in config_path.read_text(encoding="utf-8")
-    assert "persona" not in config_path.read_text(encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# T018 / US2-S3 — an operator who installed before this change
-# ---------------------------------------------------------------------------
-
-
-def test_an_existing_direct_config_fails_closed_rather_than_being_rewritten(
-    walkthrough,  # noqa: ANN001 - fixture imported from the walkthrough tests
-    config_path: Path,
-) -> None:
-    """US2-S3: re-running install over a `direct` file names the file and the reason.
-
-    `_starting_document` loads the existing config as defaults and fails closed
-    on a config the parser refuses, rather than falling back to blank-host
-    defaults — which would silently rewrite a file whose contents nobody could
-    see. That path already existed; this pins that the new rule reaches it.
-
-    The prompter is given *no answers at all*, so a walkthrough that asked even
-    one question would run out and fail loudly rather than pass quietly.
-    """
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(DIRECT_CONFIG, encoding="utf-8")
-
-    result, prompter = walkthrough([])
-
-    assert result.code == EXIT_USER
-    assert prompter.prompts == []
-    assert str(config_path) in result.stderr
-    assert RULE_LLM_DIRECT_NOT_SUPPORTED in result.stderr
-    assert "fix or remove that file" in result.stderr
-    # Not silently rewritten: the bytes on disk are the operator's own.
-    assert config_path.read_text(encoding="utf-8") == DIRECT_CONFIG
-
-
-# ---------------------------------------------------------------------------
-# T019 / US2-S4 — the inversion closed: no green verification for a dead mode
-# ---------------------------------------------------------------------------
-
-
-def test_verify_reports_the_refusal_and_reports_no_passing_check(
-    config_path: Path,
-) -> None:
-    """US2-S4, FR-010, SC-003: `direct` was the mode that verified cleanest.
-
-    That is the defect in one line — the probe used only declared values and
-    reported PASS on a host with no `LITELLM_*` variable set, for a mode that
-    could not mint an attempt key. After this story the config never parses, so
-    no probe runs and no finding can be green. `[PASS]` appearing anywhere in
-    the output is the failure this asserts against.
-    """
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(DIRECT_CONFIG, encoding="utf-8")
-
-    result = _invoke(["install", "--verify"])
-
-    assert result.code == EXIT_USER
-    assert "[PASS]" not in result.stdout
-    assert RULE_LLM_DIRECT_NOT_SUPPORTED in result.stderr
-    assert str(config_path) in result.stderr
-
-
-# ---------------------------------------------------------------------------
-# T020 / US2-S5 — the apparatus is gone, proven structurally
 # ---------------------------------------------------------------------------
 
 
@@ -326,39 +216,6 @@ def _direct_branches(tree: ast.Module) -> list[ast.If]:
     return branches
 
 
-def test_no_module_constructs_renders_or_probes_a_direct_block() -> None:
-    """US2-S5: read the three modules' ASTs, not their text.
-
-    Three structural claims, each of which the tree before this story breaks:
-
-    1. no module names any part of the persona apparatus, under any spelling;
-    2. no module carries a `[[llm.persona]]` key, field path or prompt;
-    3. the only thing a branch on `"direct"` may do is raise — which is what
-       separates "recognized and refused" from "still supported somewhere".
-    """
-    apparatus: list[str] = []
-    literals: list[str] = []
-    doing: list[str] = []
-    raising: list[str] = []
-
-    for path, tree in _module_trees():
-        for name in sorted(_identifiers(tree) & DIRECT_APPARATUS):
-            apparatus.append(f"{path.name}: {name}")
-        for text in sorted(_persona_literals(tree)):
-            literals.append(f"{path.name}: {text!r}")
-        for branch in _direct_branches(tree):
-            where = f"{path.name}:{branch.lineno}"
-            if all(isinstance(stmt, ast.Raise) for stmt in branch.body):
-                raising.append(where)
-            else:
-                doing.append(where)
-
-    assert apparatus == []
-    assert literals == []
-    assert doing == []
-    # And the refusal really is there: exactly one branch, in the parser.
-    assert len(raising) == 1
-    assert raising[0].startswith("config.py:")
 
 
 # ===========================================================================

@@ -58,6 +58,7 @@ RULE_VERSION = "version"
 RULE_UNKNOWN_KEY = "unknown_key"
 RULE_UNKNOWN_LLM_MODE = "unknown_llm_mode"
 RULE_LLM_DIRECT_NOT_SUPPORTED = "llm_direct_not_supported"
+RULE_LLM_DIRECT_MISSING_BASE_URL = "llm_direct_missing_base_url"
 RULE_UNKNOWN_MEMORY_BACKEND = "unknown_memory_backend"
 RULE_UNKNOWN_TEMPORAL_MODE = "unknown_temporal_mode"
 RULE_TEMPORAL_MANAGED_NOT_IMPLEMENTED = "temporal_managed_not_implemented"
@@ -124,11 +125,25 @@ class ControlPlaneConfig:
         timeout_s: int = 300
 
     @dataclasses.dataclass(frozen=True)
+    class LLMDirect:
+        """``direct`` mode: a provider endpoint and a static credential.
+
+        The three surrendered properties are stated at parse time and carried
+        on the block so every rendering can repeat them without reconstructing
+        them (US2-S3, SC-003).
+        """
+
+        base_url: str
+        api_key_env: str
+        surrendered_properties_text: str
+
+    @dataclasses.dataclass(frozen=True)
     class LLM:
-        """Mode-discriminated LLM block: one mode reaches this shape, `gateway`."""
+        """Mode-discriminated LLM block: `gateway` or `direct`."""
 
         mode: str
         gateway: "ControlPlaneConfig.LLMGateway | None" = None
+        direct: "ControlPlaneConfig.LLMDirect | None" = None
         timeout_s: int = 300
 
     @dataclasses.dataclass(frozen=True)
@@ -326,6 +341,19 @@ def _read_version(document: Mapping[str, Any], source: str) -> int:
     return version
 
 
+DIRECT_MODE_SURRENDERED_PROPERTIES_TEXT = """\
+In `direct` mode the factory gives up three properties that the gateway provides:
+
+- The credential is neither per-attempt nor expiring: the declared API key is
+  handed to every attempt until the operator changes it.
+- The persona-to-model binding is advisory rather than enforceable: the key is not
+  model-constrained by the factory, so the registry's `models` list is a hint, not
+  a gate.
+- Spend attribution is unavailable: there is no LiteLLM proxy to read per-key
+  spend from, so `ergane usage` cannot roll up usage to a node, persona or epic.
+"""
+
+
 def _read_llm(document: Mapping[str, Any], source: str) -> ControlPlaneConfig.LLM:
     block = _expect_block(document, "llm", source)
     mode = _require_string(block, "llm.mode", source)
@@ -338,15 +366,15 @@ def _read_llm(document: Mapping[str, Any], source: str) -> ControlPlaneConfig.LL
         )
 
     if mode == "direct":
-        raise ControlPlaneConfigError(
-            RULE_LLM_DIRECT_NOT_SUPPORTED,
-            '`llm.mode = "direct"` cannot be dispatched against: every attempt '
-            "runs on its own model-constrained, TTL'd virtual key minted at the "
-            "LiteLLM proxy, and a per-persona provider endpoint has no such key "
-            "to mint, revoke or attribute. Put a LiteLLM-shaped gateway in front "
-            'of the provider and declare `llm.mode = "gateway"`',
-            source=source,
-            field="llm.mode",
+        base_url = _require_string(block, "llm.base_url", source)
+        api_key_env = _require_secret_ref(block, "api_key_env", source)
+        return ControlPlaneConfig.LLM(
+            mode="direct",
+            direct=ControlPlaneConfig.LLMDirect(
+                base_url=base_url,
+                api_key_env=api_key_env,
+                surrendered_properties_text=DIRECT_MODE_SURRENDERED_PROPERTIES_TEXT,
+            ),
         )
 
     # gateway mode
@@ -549,8 +577,11 @@ def _read_responders(block: Mapping[str, Any], source: str) -> tuple[str, ...]:
 
 
 #: Block order in the rendered file, and the key order within each block.
+#: Direct mode uses `api_key_env` instead of `master_key_env`; the renderer keys
+#: off the parsed mode rather than this tuple, so `master_key_env` is simply not
+#: emitted for `direct`.
 _RENDER_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("llm", ("mode", "base_url", "master_key_env", "timeout_s")),
+    ("llm", ("mode", "base_url", "master_key_env", "api_key_env", "timeout_s")),
     ("memory", ("backend", "url", "api_key_env", "timeout_s")),
     (
         "temporal",
@@ -584,6 +615,9 @@ def controlplane_document(config: ControlPlaneConfig) -> dict[str, Any]:
     if config.llm.mode == "gateway" and config.llm.gateway is not None:
         llm["base_url"] = config.llm.gateway.base_url
         llm["master_key_env"] = config.llm.gateway.master_key_env
+    elif config.llm.mode == "direct" and config.llm.direct is not None:
+        llm["base_url"] = config.llm.direct.base_url
+        llm["api_key_env"] = config.llm.direct.api_key_env
 
     memory: dict[str, Any] = {"backend": config.memory.backend}
     _set_if(memory, "url", config.memory.url)
