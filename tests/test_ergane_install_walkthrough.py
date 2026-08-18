@@ -553,6 +553,17 @@ def test_the_real_terminal_prompter_drives_the_interview(
     answers.insert(2, pasted)
     monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(answers) + "\n"))
 
+    # US3 runs a scan before the LLM question. On this host that scan finds an
+    # inference-only endpoint and offers `direct`; the test's answers still pick
+    # `gateway`, so the only thing that must hold is that the default mode is
+    # shown in brackets, whichever mode the scan chose.
+    import factory.cli.install as install_module
+
+    def _no_scan(*_a: object, **_k: object) -> list:
+        return []
+
+    monkeypatch.setattr(install_module, "_scan_endpoints", _no_scan)
+
     result = _invoke(["install"])
 
     assert pasted not in result.stdout

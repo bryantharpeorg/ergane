@@ -31,12 +31,15 @@ from __future__ import annotations
 
 import argparse
 import copy
+import dataclasses
 from pathlib import Path
 from typing import Any, Callable
 
 from factory.cli import init as init_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.controlplane.config import (
+    DIRECT_MODE_SURRENDERED_PROPERTIES_TEXT,
+    KNOWN_LL_MODES,
     RULE_SECRET_VALUE_NOT_REFERENCE,
     ControlPlaneConfigError,
     controlplane_document,
@@ -46,6 +49,11 @@ from factory.controlplane.config import (
     resolve_config_path,
 )
 from factory.controlplane.verify import render_findings, verify_controlplane
+from factory.discovery.llm_scanner import (
+    EndpointClassification,
+    ScanResult,
+    scan_endpoints,
+)
 from factory.locking import LockUnavailable, exclusive_lock
 from factory.notify.service import DEFAULT_TEMPORAL_NAMESPACE
 
@@ -88,10 +96,18 @@ BLANK_DOCUMENT: dict[str, Any] = {
 
 #: Seeds used when an operator switches a block to a mode it was not in.
 _GATEWAY_SEED: dict[str, Any] = dict(BLANK_DOCUMENT["llm"])
+_DIRECT_SEED: dict[str, Any] = {
+    "mode": "direct",
+    "base_url": "http://127.0.0.1:4000",
+    "api_key_env": "ERGANE_LLM_API_KEY",
+}
 _HINDSIGHT_SEED: dict[str, Any] = {
     "backend": "hindsight",
     "url": "http://127.0.0.1:8888",
 }
+
+#: Seam: how the interview probes the network. Rebound in US3 tests.
+_scan_endpoints = scan_endpoints
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +171,12 @@ def _interview(path: Path) -> dict[str, Any]:
     document = _starting_document(path)
     prompter = init_module._prompter()
 
-    document = _ask_llm(prompter, document, path)
+    # US3: discover what is reachable before asking. The scan is advisory: a
+    # failure, absence or classification may never prevent the operator from
+    # answering by hand.
+    scan = _llm_scan()
+
+    document = _ask_llm(prompter, document, path, scan)
     document = _ask_memory(prompter, document, path)
     document = _ask_temporal(prompter, document, path)
     document = _ask_telemetry(prompter, document, path)
@@ -182,36 +203,66 @@ def _starting_document(path: Path) -> dict[str, Any]:
     return controlplane_document(existing)
 
 
-def _ask_llm(prompter: Any, document: dict[str, Any], path: Path) -> dict[str, Any]:
-    # One mode is offered because one mode can dispatch. `direct` is still a
-    # token the parser recognizes, so an operator who types it is told why it
-    # cannot be served and what to declare instead — see `_ask`, which validates
-    # every answer through `parse_controlplane_config` (048-US2, D-048).
-    document = _ask(
-        prompter,
-        "llm mode (gateway)",
-        document,
-        path,
-        default=document["llm"].get("mode"),
-        apply=_apply_llm_mode,
-    )
+def _ask_llm(
+    prompter: Any, document: dict[str, Any], path: Path, scan: ScanResult | None
+) -> dict[str, Any]:
+    """Ask the LLM block, using a scan to default mode and address.
+
+    The scan is advisory: an operator-declared address always wins, and a scan
+    that found nothing falls back to today's question unchanged.
+    """
+    offered = _offered_llm_mode(scan, document)
 
     document = _ask(
         prompter,
-        "llm gateway base_url",
+        f"llm mode ({offered.choices})",
         document,
         path,
-        default=document["llm"].get("base_url"),
-        apply=lambda doc, value: _set(doc, ("llm", "base_url"), value),
+        default=offered.mode,
+        apply=_apply_llm_mode,
+        unavailable_error=offered.unavailable_reason,
     )
-    return _ask(
-        prompter,
-        "llm gateway master key env-var name",
-        document,
-        path,
-        default=document["llm"].get("master_key_env"),
-        apply=lambda doc, value: _set(doc, ("llm", "master_key_env"), value),
-    )
+
+    # The chosen mode decides which follow-up fields are asked.
+    mode = document["llm"].get("mode")
+    if mode == "gateway":
+        document = _ask(
+            prompter,
+            "llm gateway base_url",
+            document,
+            path,
+            default=document["llm"].get("base_url"),
+            apply=lambda doc, value: _set(doc, ("llm", "base_url"), value),
+        )
+        document = _ask(
+            prompter,
+            "llm gateway master key env-var name",
+            document,
+            path,
+            default=document["llm"].get("master_key_env"),
+            apply=lambda doc, value: _set(doc, ("llm", "master_key_env"), value),
+        )
+    elif mode == "direct":
+        # Before accepting the answer, state what direct gives up.
+        print(DIRECT_MODE_SURRENDERED_PROPERTIES_TEXT)
+
+        document = _ask(
+            prompter,
+            "llm direct base_url",
+            document,
+            path,
+            default=document["llm"].get("base_url"),
+            apply=lambda doc, value: _set(doc, ("llm", "base_url"), value),
+        )
+        document = _ask(
+            prompter,
+            "llm direct api key env-var name",
+            document,
+            path,
+            default=document["llm"].get("api_key_env"),
+            apply=lambda doc, value: _set(doc, ("llm", "api_key_env"), value),
+        )
+    return document
 
 
 def _ask_memory(prompter: Any, document: dict[str, Any], path: Path) -> dict[str, Any]:
@@ -387,6 +438,7 @@ def _ask(
     default: Any,
     apply: Callable[[dict[str, Any], Any], dict[str, Any]],
     optional: bool = False,
+    unavailable_error: str | None = None,
 ) -> dict[str, Any]:
     """Ask one question until the whole document parses with the answer applied.
 
@@ -419,6 +471,14 @@ def _ask(
         except ControlPlaneConfigError as refusal:
             error = _redacted(refusal, value)
             continue
+        # If the operator explicitly picked a mode the scan says is unavailable,
+        # explain why before returning the valid candidate. The parser accepts
+        # `direct` now (055-US2), so this is the scan's advisory warning.
+        if unavailable_error is not None and value == default and answer == "":
+            # They accepted the default; nothing else to say.
+            return candidate
+        if unavailable_error is not None and value == "direct" and answer != "":
+            print(unavailable_error)
         return candidate
 
 
@@ -492,12 +552,24 @@ def _set(document: dict[str, Any], route: tuple[Any, ...], value: Any) -> dict[s
 
 
 def _apply_llm_mode(document: dict[str, Any], mode: Any) -> dict[str, Any]:
-    """Switch the `[llm]` block to `mode`, seeding only that mode's fields."""
+    """Switch the `[llm]` block to `mode`, seeding only that mode's fields.
+
+    The scan may have already set `base_url` to a discovered address; preserve it
+    when switching to the matching mode so the operator sees the discovered default.
+    """
     current = document.get("llm") or {}
     if current.get("mode") == mode:
         return document
+
+    preserved_address = current.get("base_url")
     if mode == "gateway":
         document["llm"] = dict(_GATEWAY_SEED)
+        if preserved_address:
+            document["llm"]["base_url"] = preserved_address
+    elif mode == "direct":
+        document["llm"] = dict(_DIRECT_SEED)
+        if preserved_address:
+            document["llm"]["base_url"] = preserved_address
     else:
         # Unrecognized, or recognized and refused: keep the answer so the parser
         # refuses it by name and the operator reads the parser's own reason.
@@ -522,6 +594,82 @@ def _apply_temporal_mode(document: dict[str, Any], mode: Any) -> dict[str, Any]:
     current = document.get("temporal") or {}
     document["temporal"] = {**current, "mode": mode}
     return document
+
+
+@dataclasses.dataclass(frozen=True)
+class _OfferedLLM:
+    mode: str
+    choices: str
+    unavailable_reason: str | None
+
+
+def _llm_scan() -> ScanResult | None:
+    """Probe the default loopback candidates and return the most capable result.
+
+    Returns the first dispatchable result found, then the first reachable
+    inference-only result, then `None` when nothing answers. The scan is
+    unauthenticated: no credential is sent.
+    """
+    results = _scan_endpoints()
+    dispatchable = [r for r in results if r.classification == EndpointClassification.DISPATCHABLE]
+    if dispatchable:
+        return dispatchable[0]
+    reachable = [r for r in results if r.reachable and r.classification is not None]
+    if reachable:
+        return reachable[0]
+    return None
+
+
+def _offered_llm_mode(scan: ScanResult | None, document: dict[str, Any]) -> _OfferedLLM:
+    """Choose the offered mode and default address from the scan.
+
+    - Dispatchable endpoint: offer `gateway` and default its address.
+    - Inference-only endpoint: offer `direct`, default its address, and keep a
+      reason naming the missing key-management capability.
+    - No scan result / no reachable endpoint: fall back to today's question.
+
+    An existing config's mode is respected on a *re-run* so a saved gateway config
+    is not flipped to direct by a local inference endpoint. On a blank host the
+    scan's classification is offered.
+    """
+    existing_mode = document.get("llm", {}).get("mode")
+    # A blank host is seeded with BLANK_DOCUMENT whose mode is the historical
+    # gateway default. Treat that seed as "no prior operator declaration" so the
+    # scan can offer a different mode. A re-run loads the existing file via
+    # `controlplane_document`, which produces a fresh dict, so identity is enough.
+    blank_host = existing_mode is None or document.get("llm") == BLANK_DOCUMENT["llm"]
+
+    if scan is None or not scan.reachable or scan.classification is None:
+        # No usable scan result: keep the existing mode if there is one.
+        mode = existing_mode if existing_mode is not None else "gateway"
+        return _OfferedLLM(mode=mode, choices=mode, unavailable_reason=None)
+
+    if scan.classification == EndpointClassification.DISPATCHABLE:
+        # A dispatchable endpoint is good for gateway mode.
+        document["llm"]["base_url"] = scan.address
+        if blank_host or existing_mode != "direct":
+            return _OfferedLLM(
+                mode="gateway",
+                choices="gateway",
+                unavailable_reason=None,
+            )
+        # Operator already chose direct on a re-run; keep that default.
+        return _OfferedLLM(mode="direct", choices="direct", unavailable_reason=None)
+
+    # Inference-only: direct is the natural offer for a blank host.
+    reason = (
+        f"`gateway` is unavailable: the endpoint at {scan.address} answers "
+        f"/v1/models but not the key-management API (/key/generate), so the "
+        f"factory cannot mint per-attempt virtual keys there."
+    )
+    if blank_host:
+        document["llm"]["base_url"] = scan.address
+        return _OfferedLLM(mode="direct", choices="direct", unavailable_reason=reason)
+
+    # Re-run: keep the existing mode (gateway or direct) and its existing address.
+    # Only update the default address when the host has no prior declaration.
+    mode = existing_mode if existing_mode in KNOWN_LL_MODES else "direct"
+    return _OfferedLLM(mode=mode, choices=mode, unavailable_reason=reason)
 
 
 __all__ = [
