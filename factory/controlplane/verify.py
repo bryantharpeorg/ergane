@@ -58,11 +58,22 @@ class Probe(Protocol):
 
 @dataclass(frozen=True)
 class LLMSnapshot:
-    """What the LLM probe gathered: persona used, model resolved, completion shape."""
+    """What the LLM probe gathered: aliases probed, per-alias results, and a summary."""
 
-    persona: str
+    aliases: tuple[str, ...]
+    persona_by_alias: dict[str, tuple[str, ...]]
+    results: tuple["LLMAliasResult", ...]
+    detail: str
+
+
+@dataclass(frozen=True)
+class LLMAliasResult:
+    """One distinct alias probe outcome."""
+
+    alias: str
     model: str | None
     completed: bool
+    persona_names: tuple[str, ...]
     detail: str
 
 
@@ -123,6 +134,18 @@ class HostItem:
 
 
 # --- seams for tests / live doubles ------------------------------------------
+
+
+def _load_personas_for_probe() -> dict[str, Any]:
+    """Load the persona registry for the LLM probe.
+
+    This seam lets tests inject a fixture registry without touching the
+    package-data path resolution in `factory.config.load_personas`. Production
+    callers always use `load_personas()` (054-US3, trap 4).
+    """
+    from factory.config import load_personas
+
+    return load_personas()
 
 
 def _llm_client_factory(config: ControlPlaneConfig.LLM) -> LiteLLMClient:
@@ -271,18 +294,13 @@ def _host_seam_factory() -> dict[str, Any]:
 
 
 class LLMProbe:
-    """Completes one token through the configured LLM endpoint."""
+    """Completes one token through the configured LLM endpoint for every
+    distinct model alias the registry can dispatch."""
 
     name = "llm"
 
     async def gather(self, config: ControlPlaneConfig) -> LLMSnapshot:
-        from factory.config import load_personas
-
         # `gateway` is the only mode a parsed config can carry (048-US2).
-        persona = "implementer"
-        registry = load_personas()
-        p = registry.get(persona)
-        model = p.model if p else None
         gateway = config.llm.gateway
         assert gateway is not None
         base_url = gateway.base_url
@@ -292,75 +310,112 @@ class LLMProbe:
 
         if not api_key:
             return LLMSnapshot(
-                persona=persona,
-                model=model,
-                completed=False,
+                aliases=(),
+                persona_by_alias={},
+                results=(),
                 detail=f"{api_key_env} is not set; no credential to complete a round trip",
             )
 
-        async def _do_completion() -> bool:
-            """POST a 1-token completion to the configured endpoint and return whether choices arrived."""
-            async with httpx.AsyncClient(
-                base_url=base_url.rstrip("/"),
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=timeout,
-            ) as http_client:
-                response = await http_client.post("/chat/completions", json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 1,
-                })
-                response.raise_for_status()
-                data = response.json()
-                return bool(data.get("choices"))
+        registry = _load_personas_for_probe()
+        alias_to_personas: dict[str, set[str]] = {}
+        for name, persona in registry.items():
+            if not getattr(persona, "is_llm", True):
+                continue
+            for alias in (persona.model, persona.fallback):
+                if alias:
+                    alias_to_personas.setdefault(alias, set()).add(name)
 
-        try:
-            client = _llm_client_factory(config.llm)
-            if hasattr(client, "chat_completion"):
-                response_data = await client.chat_completion(
-                    {
-                        "model": model,
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 1,
-                    }
-                )
-                completed = bool(response_data.get("choices"))
-                await client.aclose()
-            else:
-                completed = await _do_completion()
-        except httpx.TimeoutException:
+        if not alias_to_personas:
             return LLMSnapshot(
-                persona=persona,
-                model=model,
-                completed=False,
-                detail=f"timed out after {timeout}s waiting for LLM completion at {base_url}",
+                aliases=(),
+                persona_by_alias={},
+                results=(),
+                detail="no dispatchable model aliases in the persona registry",
             )
-        except Exception as exc:
-            # A refused or unreachable host should still name the endpoint so the
-            # operator knows which subsystem did not answer.
-            detail = f"LLM completion failed at {base_url}: {type(exc).__name__}: {exc}"
-            return LLMSnapshot(
-                persona=persona,
-                model=model,
-                completed=False,
+
+        async def _probe_one_alias(alias: str, persona_names: set[str]) -> LLMAliasResult:
+            """POST a 1-token completion for one alias and return the result."""
+            request = {
+                "model": alias,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            }
+            try:
+                client = _llm_client_factory(config.llm)
+                if hasattr(client, "chat_completion"):
+                    response_data = await client.chat_completion(request)
+                    completed = bool(response_data.get("choices"))
+                    await client.aclose()
+                else:
+                    async with httpx.AsyncClient(
+                        base_url=base_url.rstrip("/"),
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        timeout=timeout,
+                    ) as http_client:
+                        response = await http_client.post("/chat/completions", json=request)
+                        response.raise_for_status()
+                        data = response.json()
+                        completed = bool(data.get("choices"))
+                detail = (
+                    f"completed a 1-token completion for alias `{alias}`"
+                    f" (personas: {', '.join(sorted(persona_names))})"
+                )
+            except httpx.TimeoutException:
+                completed = False
+                detail = (
+                    f"timed out after {timeout}s waiting for LLM completion "
+                    f"for alias `{alias}` at {base_url}"
+                )
+            except Exception as exc:
+                completed = False
+                detail = (
+                    f"LLM completion failed for alias `{alias}` at {base_url}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            return LLMAliasResult(
+                alias=alias,
+                model=alias,
+                completed=completed,
+                persona_names=tuple(sorted(persona_names)),
                 detail=detail,
             )
-        return LLMSnapshot(
-            persona=persona,
-            model=model,
-            completed=completed,
-            detail=(
-                f"completed a 1-token completion against persona `{persona}`"
-                f"{' (model ' + model + ')' if model else ''}"
+
+        results: list[LLMAliasResult] = []
+        for alias in sorted(alias_to_personas):
+            results.append(await _probe_one_alias(alias, alias_to_personas[alias]))
+
+        passed_aliases = {r.alias for r in results if r.completed}
+        failed_results = [r for r in results if not r.completed]
+        all_passed = not failed_results
+
+        if all_passed:
+            detail = (
+                f"completed 1-token completions for {len(results)} distinct alias"
+                f"{'es' if len(results) != 1 else ''}: "
+                + ", ".join(f"`{r.alias}`" for r in results)
             )
-            if completed
-            else f"completion returned no choices for persona `{persona}`",
+        else:
+            failed = ", ".join(
+                f"`{r.alias}` (personas: {', '.join(r.persona_names)}): {r.detail}"
+                for r in failed_results
+            )
+            detail = (
+                f"{len(passed_aliases)}/{len(results)} aliases passed; "
+                f"failed: {failed}"
+            )
+
+        return LLMSnapshot(
+            aliases=tuple(r.alias for r in results),
+            persona_by_alias={r.alias: r.persona_names for r in results},
+            results=tuple(results),
+            detail=detail,
         )
 
     def evaluate(self, snapshot: LLMSnapshot) -> Finding:
+        passed = all(r.completed for r in snapshot.results)
         return Finding(
             check="llm",
-            passed=snapshot.completed,
+            passed=passed,
             detail=snapshot.detail,
         )
 
