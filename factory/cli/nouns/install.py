@@ -18,6 +18,7 @@ from factory.cli.install import add_install_arguments, install_command
 from factory.cli.nouns import Noun
 from factory.controlplane.config import ControlPlaneConfigError
 from factory.controlplane.verify import render_findings, verify_controlplane
+from factory.discovery.llm_scanner import render_scan_results, scan_endpoints
 
 
 def _verify_command(_args: argparse.Namespace) -> int:
@@ -38,6 +39,21 @@ def _verify_command(_args: argparse.Namespace) -> int:
     return EXIT_OK if exit_code == 0 else EXIT_USER
 
 
+def _scan_command(args: argparse.Namespace) -> int:
+    """Probe candidate LLM endpoints and report what they advertise.
+
+    Read-only: writes no config and does not start the interview. The scanner
+    is unauthenticated by design; any address the operator wants to use is
+    confirmed in the interview, not here.
+    """
+    addresses = None
+    if getattr(args, "address", None):
+        addresses = [args.address]
+    results = scan_endpoints(addresses=addresses)
+    print(render_scan_results(results))
+    return EXIT_OK
+
+
 def add_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser(
         "install",
@@ -53,11 +69,23 @@ def add_parser(subparsers: Any) -> None:
         action="store_true",
         help="skip the interview: probe the declared subsystems and report one finding per check",
     )
+    parser.add_argument(
+        "--scan",
+        action="store_true",
+        help="read-only discovery: list reachable LLM endpoints and their capabilities",
+    )
+    parser.add_argument(
+        "--address",
+        metavar="URL",
+        help="probe this address instead of the default loopback candidates",
+    )
     add_install_arguments(parser)
     parser.set_defaults(run=_run)
 
 
 def _run(args: argparse.Namespace) -> int:
+    if args.scan:
+        return _scan_command(args)
     if args.verify:
         return _verify_command(args)
     return install_command(args)
