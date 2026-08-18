@@ -297,3 +297,244 @@ def test_no_temporal_call_site_in_build_py_uses_a_blanket_except() -> None:
         if name != "_live_spend"
     ]
     assert temporal_offenders == []
+
+
+# --- US3 T012–T015: worker revision skew is visible and survivable ---------------
+# The read-path degraded in US1; this story makes the cause legible. A worker
+# built from a different revision than the CLI's must say so. Matching revisions
+# must say nothing. An absent revision must degrade to today's behaviour and be
+# reported as unknown.
+
+
+def _query_document(worker_revision: str | None) -> dict[str, Any]:
+    """A minimal `epic_status` answer that records what the worker reported."""
+    return {
+        "epic_state": "RUNNING",
+        "nodes": {
+            "us3": {
+                "state": "RUNNING",
+                "attempt": 1,
+                "branch": "factory/053-worker-skew/us3",
+                "verified": False,
+                "landing_state": None,
+                "landing_history": [],
+                "recovery_cycles": 0,
+                "terminal_reason": None,
+                "provenance": None,
+            }
+        },
+        "worker_revision": worker_revision,
+    }
+
+
+CLI_REVISION = "b6233ee"
+WORKER_REVISION_A = "e840123"
+WORKER_REVISION_B = "7837b2e"
+
+
+class _RevisionRecordingFakeWorkflowHandle(_FakeWorkflowHandle):
+    """Records how many times the query answer was asked for, to prove once-ness."""
+
+    def __init__(self, client: "_FakeTemporalClient", workflow_id: str) -> None:
+        super().__init__(client, workflow_id)
+        self.query_count = 0
+
+    async def query(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        self.query_count += 1
+        return await super().query(name, *args, **kwargs)
+
+
+class _RevisionRecordingFakeClient(_FakeTemporalClient):
+    def get_workflow_handle(self, workflow_id: str, **kwargs: Any) -> _RevisionRecordingFakeWorkflowHandle:
+        return _RevisionRecordingFakeWorkflowHandle(self, workflow_id)
+
+
+@pytest.fixture
+def fake_revision_client(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _RevisionRecordingFakeClient]:
+    def setup(**kwargs: Any) -> _RevisionRecordingFakeClient:
+        client = _RevisionRecordingFakeClient(**kwargs)
+
+        async def _open_client() -> _RevisionRecordingFakeClient:
+            return client
+
+        monkeypatch.setattr(nouns, "_open_client", _open_client)
+        return client
+
+    return setup
+
+
+def _set_cli_revision(monkeypatch: pytest.MonkeyPatch, revision: str | None) -> None:
+    """Patch the CLI's own revision lookup to a known value without touching disk.
+
+    The noun module is reloaded by `ergane_main`, so the patch has to live on the
+    package object that survives reloads rather than on the imported module.
+    """
+    monkeypatch.setattr(nouns, "_cli_revision_for_tests", lambda: revision)
+
+
+def test_skew_is_visible_when_worker_revision_differs(
+    fake_revision_client: Callable[..., _RevisionRecordingFakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T012 / US3-S1 / FR-009: differing revisions name both and say the worker is different."""
+    _set_cli_revision(monkeypatch, CLI_REVISION)
+    fake_revision_client(
+        workflows={
+            WORKFLOW_ID: _FakeWorkflow(_query_document(worker_revision=WORKER_REVISION_A))
+        }
+    )
+
+    result = _invoke("build", "status", EPIC_ID)
+
+    assert result.code == 0, result.stderr
+    assert CLI_REVISION in result.stderr
+    assert WORKER_REVISION_A in result.stderr
+    assert "worker is running different code" in result.stderr.lower()
+
+
+def test_skew_is_visible_in_json_when_worker_revision_differs(
+    fake_revision_client: Callable[..., _RevisionRecordingFakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T012 / US3-S1: the JSON view also carries the skew notice on the degraded path."""
+    _set_cli_revision(monkeypatch, CLI_REVISION)
+    fake_revision_client(
+        workflows={
+            WORKFLOW_ID: _FakeWorkflow(_query_document(worker_revision=WORKER_REVISION_B))
+        }
+    )
+
+    result = _invoke("build", "status", EPIC_ID, "--json")
+
+    assert result.code == 0, result.stderr
+    document = result.json
+    assert document.get("worker_revision") == WORKER_REVISION_B
+    notice = document.get("skew_notice")
+    assert notice is not None
+    assert CLI_REVISION in notice
+    assert WORKER_REVISION_B in notice
+    assert "worker is running different code" in notice.lower()
+
+
+def test_skew_is_silent_when_revisions_match(
+    fake_revision_client: Callable[..., _RevisionRecordingFakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T013 / US3-S2 / FR-009: matching revisions produce no skew notice anywhere."""
+    _set_cli_revision(monkeypatch, CLI_REVISION)
+    fake_revision_client(
+        workflows={
+            WORKFLOW_ID: _FakeWorkflow(_query_document(worker_revision=CLI_REVISION))
+        }
+    )
+
+    result = _invoke("build", "status", EPIC_ID)
+
+    assert result.code == 0, result.stderr
+    assert "worker is running different code" not in result.stderr.lower()
+    assert "skew" not in result.stderr.lower()
+    # The revision identifiers themselves must not appear in the human output either.
+    assert CLI_REVISION not in result.stderr
+
+
+def test_skew_is_silent_in_json_when_revisions_match(
+    fake_revision_client: Callable[..., _RevisionRecordingFakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T013 / US3-S2: the JSON answer has no skew key when revisions match."""
+    _set_cli_revision(monkeypatch, CLI_REVISION)
+    fake_revision_client(
+        workflows={
+            WORKFLOW_ID: _FakeWorkflow(_query_document(worker_revision=CLI_REVISION))
+        }
+    )
+
+    result = _invoke("build", "status", EPIC_ID, "--json")
+
+    assert result.code == 0, result.stderr
+    assert "skew_notice" not in result.json
+    assert result.json.get("worker_revision") == CLI_REVISION
+
+
+def test_skew_degrades_when_worker_revision_is_unknown(
+    fake_revision_client: Callable[..., _RevisionRecordingFakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T014 / US3-S3 / FR-010: an absent worker revision reports unknown and does not raise."""
+    _set_cli_revision(monkeypatch, CLI_REVISION)
+    fake_revision_client(
+        workflows={
+            WORKFLOW_ID: _FakeWorkflow(_query_document(worker_revision=None))
+        }
+    )
+
+    result = _invoke("build", "status", EPIC_ID)
+
+    assert result.code == 0, result.stderr
+    assert "worker revision is unknown" in result.stderr.lower()
+    assert CLI_REVISION in result.stderr
+
+
+def test_skew_degrades_in_json_when_worker_revision_is_unknown(
+    fake_revision_client: Callable[..., _RevisionRecordingFakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T014 / US3-S3: the JSON answer reports unknown, not guessed."""
+    _set_cli_revision(monkeypatch, CLI_REVISION)
+    fake_revision_client(
+        workflows={
+            WORKFLOW_ID: _FakeWorkflow(_query_document(worker_revision=None))
+        }
+    )
+
+    result = _invoke("build", "status", EPIC_ID, "--json")
+
+    assert result.code == 0, result.stderr
+    document = result.json
+    assert document.get("worker_revision") is None
+    notice = document.get("skew_notice")
+    assert notice is not None
+    assert "unknown" in notice.lower()
+    assert CLI_REVISION in notice
+
+
+def test_worker_revision_is_recorded_once_and_carried_not_recomputed(
+    fake_revision_client: Callable[..., _RevisionRecordingFakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T015 / US3-S4 / FR-008: the revision is captured at worker start and carried.
+
+    A per-call `git rev-parse` would report the tree's current revision, which is
+    the CLI's; the worker's own revision can only differ if it is snapshotted at
+    boot and carried. We prove the snapshot path by making the query answer carry
+    a worker_revision that does not match the CLI's: if the code recomputed from
+    the tree, it would see the CLI's revision and the skew notice above could
+    never be tested.
+    """
+    _set_cli_revision(monkeypatch, CLI_REVISION)
+    client = fake_revision_client(
+        workflows={
+            WORKFLOW_ID: _FakeWorkflow(_query_document(worker_revision=WORKER_REVISION_A))
+        }
+    )
+
+    # Capture the actual handle returned to _query_status so we count the same
+    # object the CLI used, not a freshly-created twin.
+    used_handles: list[_RevisionRecordingFakeWorkflowHandle] = []
+    original_get_handle = client.get_workflow_handle
+
+    def recording_get_handle(workflow_id: str, **kwargs: Any) -> _RevisionRecordingFakeWorkflowHandle:
+        handle = original_get_handle(workflow_id, **kwargs)
+        used_handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(
+        client, "get_workflow_handle", recording_get_handle
+    )
+
+    result = _invoke("build", "status", EPIC_ID)
+    assert result.code == 0, result.stderr
+
+    assert used_handles, "status did not request a workflow handle"
+    assert used_handles[0].query_count >= 1
+    assert WORKER_REVISION_A in result.stderr

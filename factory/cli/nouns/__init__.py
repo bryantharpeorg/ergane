@@ -34,6 +34,11 @@ def _open_preflight_client() -> LiteLLMClient:
     return LiteLLMClient.from_env()
 
 
+def _cli_revision_for_tests() -> str | None:
+    """Tests override this package-level seam to avoid a real `git rev-parse`."""
+    return None
+
+
 async def _open_client() -> Client:
     """Default Temporal client factory; tests patch this seam.
 

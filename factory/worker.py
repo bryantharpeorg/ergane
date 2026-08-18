@@ -55,10 +55,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
+from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 
 from temporalio.client import Client
-from temporalio.worker import Worker
+from temporalio.worker import Interceptor, Worker
+from temporalio.worker._interceptor import (
+    ExecuteWorkflowInput,
+    WorkflowInboundInterceptor,
+)
 
 from factory.activities import (
     agent_activities,
@@ -199,6 +206,29 @@ def _heartbeat_cadence_limits() -> dict[str, timedelta]:
     }
 
 
+def _worker_revision() -> str | None:
+    """The revision of the code this worker imported, captured once at boot (US3).
+
+    Returns `None` when the tree is not a git checkout, so an old or unpacked
+    worker degrades to "unknown" rather than guessing.
+    """
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip() or None
+    except Exception:
+        return None
+
+
+#: 053 US3: captured once when this module is imported by the worker process.
+#: The worker is the process that imported `EpicWorkflow`; carrying the value
+#: into the query answer is what lets the CLI compare it against its own revision.
+_WORKER_REVISION = _worker_revision()
+
+
 def build_worker(client: Client) -> Worker:
     """The production registration, against a caller's client.
 
@@ -215,7 +245,30 @@ def build_worker(client: Client) -> Worker:
         # 006-US4: heartbeat cadence limits keep kill latency small even when the
         # heartbeat timeout itself is derived from a multi-hour attempt timeout.
         **_heartbeat_cadence_limits(),
+        # 053 US3: the workflow sees the worker revision that imported it, so the
+        # query answer can carry it without re-reading the tree per call.
+        interceptors=[_WorkerRevisionInterceptor(_WORKER_REVISION)],
     )
+
+
+class _WorkerRevisionInterceptor(Interceptor):
+    """Factory that injects the captured worker revision into every EpicWorkflow input."""
+
+    def __init__(self, revision: str | None) -> None:
+        self._revision = revision
+
+    def workflow_interceptor_class(self, _input):
+        revision = self._revision
+
+        class _Inbound(WorkflowInboundInterceptor):
+            async def execute_workflow(self, input: ExecuteWorkflowInput) -> None:
+                if input.type == "EpicWorkflow" and input.args:
+                    original = input.args[0]
+                    if getattr(original, "worker_revision", None) is None:
+                        input.args = (replace(original, worker_revision=revision),)
+                await self.next.execute_workflow(input)
+
+        return _Inbound
 
 
 async def main() -> None:
