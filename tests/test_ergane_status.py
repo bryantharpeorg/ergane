@@ -1486,37 +1486,103 @@ def test_an_rpcerror_from_an_epic_query_still_drops_that_epic(
 # added to this file cannot be guarded wrongly in silence: it will not be in
 # `EXPECTED_GUARDS`, and the sweep will say so.
 
-#: Every function in `factory/cli/status.py` that awaits Temporal, and the exact
-#: set of `except` clauses it is allowed to carry. Written as the source spells
-#: them, because "which name is written there" is precisely the property that
-#: was wrong. `OperatorError` is the connect failure, raised by `_open_client`
-#: rather than by the Temporal client, and is listed so the set can be exact.
-EXPECTED_GUARDS: dict[str, set[tuple[str, ...]]] = {
-    "collect_floor": {("OperatorError",), ("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
-    "_disposition": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
-    "_running_epics": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+#: Every function across the CLI package that awaits something in a module that
+#: touches Temporal, keyed by module. US2 generalizes the 052 sweep from one
+#: module to the whole CLI package, while keeping the existing
+#: `factory/cli/status.py` entries exactly as 052 wrote them.
+EXPECTED_GUARDS: dict[str, dict[str, set[tuple[str, ...]]]] = {
+    "factory/cli/status.py": {
+        "collect_floor": {("OperatorError",), ("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+        "_disposition": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+        "_running_epics": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+    },
+    "factory/cli/nouns/__init__.py": {
+        "_open_client": {("RPCError", "RuntimeError", "OSError")},
+    },
+    "factory/cli/nouns/build.py": {
+        "_connect": set(),
+        "_run_preflight": set(),
+        "_live_spend": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",), ("Exception",)},
+        "_query_status": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+        "_send_signal": {("RPCError",)},
+        "_send_signal_with_args": {("RPCError",)},
+        "_answer": {("RPCError",)},
+        "_reset_epic": {("RPCError",)},
+        "_resolve": {("RPCError",)},
+        "_start_epic": {("ConfigError",), ("WorkflowAlreadyStartedError",)},
+    },
+    "factory/cli/repo.py": {
+        "_open_client": {("Exception",)},
+        "_running_epic_ids": set(),
+    },
+    "factory/cli/roadmap.py": {
+        "_connect": {("RPCError", "RuntimeError", "OSError")},
+        "roadmap_start_command": {("WorkflowAlreadyStartedError",)},
+        "_locate": {("RPCError",)},
+        "_get_handle": set(),
+        "roadmap_pause_command": set(),
+        "roadmap_resume_command": set(),
+        "roadmap_promote_command": set(),
+        "roadmap_unpark_command": set(),
+        "roadmap_status_command": {("RPCError",)},
+    },
 }
 
 
-def _status_source_tree() -> ast.Module:
-    return ast.parse(Path(status_module.__file__).read_text(encoding="utf-8"))
+CLI_ROOT = Path(status_module.__file__).parent
+REPO_ROOT = CLI_ROOT.parent.parent
+
+#: A call that can fail because of Temporal: client connection, queries, signals,
+#: workflow starts, and the helper reads (`resolve_roadmap`, `open_escalations`,
+#: `handle_relay`) that wrap them. `count_open_epics` is an activity read that
+#: reaches Temporal through the test activity environment.
+_TEMPORAL_CALL_MARKERS = (
+    "Client.connect",
+    "query(",
+    "start_workflow(",
+    "signal(",
+    "describe(",
+    "list_workflows(",
+    "get_schedule_handle",
+    "resolve_roadmap",
+    "open_escalations",
+    "handle_relay",
+    "count_open_epics",
+)
 
 
-def _awaiting_functions() -> dict[str, ast.AST]:
-    """Every function in the module that awaits or async-iterates something.
-
-    Derived, not listed: in this module the only things awaited are Temporal
-    calls and the two helpers that make them, so this is the set of functions
-    that can see a Temporal failure. A new one shows up here the moment it is
-    written, which is what stops the next guard being wrong quietly.
-    """
-    found: dict[str, ast.AST] = {}
-    for node in ast.walk(_status_source_tree()):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+def _cli_python_modules() -> list[Path]:
+    """Every module under `factory/cli` that imports or mentions Temporal."""
+    modules: list[Path] = []
+    for path in sorted(CLI_ROOT.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "await " not in text:
             continue
-        if any(isinstance(sub, (ast.Await, ast.AsyncFor)) for sub in ast.walk(node)):
-            found[node.name] = node
-    return found
+        if not (
+            "temporalio" in text
+            or "RPCError" in text
+            or "WorkflowQuery" in text
+            or "WorkflowAlreadyStartedError" in text
+        ):
+            continue
+        modules.append(path)
+    return modules
+
+
+def _module_id(path: Path) -> str:
+    return path.relative_to(REPO_ROOT).as_posix()
+
+
+def _source_tree(path: Path) -> ast.Module:
+    return ast.parse(path.read_text(encoding="utf-8"))
+
+
+def _parent_map(tree: ast.Module) -> dict[ast.AST, ast.AST]:
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    return parents
 
 
 def _caught_names(handler: ast.ExceptHandler) -> tuple[str, ...]:
@@ -1529,33 +1595,154 @@ def _caught_names(handler: ast.ExceptHandler) -> tuple[str, ...]:
     return tuple(ast.unparse(node) for node in caught)
 
 
-def _try_groups(function: ast.AST) -> list[list[tuple[str, ...]]]:
-    """Each `try` in one function, as the list of clauses guarding it."""
-    return [
-        [_caught_names(handler) for handler in node.handlers]
-        for node in ast.walk(function)
-        if isinstance(node, ast.Try)
-    ]
+def _is_temporal_await(await_node: ast.Await) -> bool:
+    call_text = ast.unparse(await_node.value)
+    return any(marker in call_text for marker in _TEMPORAL_CALL_MARKERS)
 
 
-def test_every_temporal_call_site_states_which_classes_it_guards(
+def _nearest_try_ancestor(await_node: ast.Await, function: ast.AST, parents: dict[ast.AST, ast.AST]) -> ast.Try | None:
+    cur: ast.AST | None = await_node
+    while cur is not function and cur is not None:
+        cur = parents.get(cur)
+        if isinstance(cur, ast.Try):
+            return cur
+    return None
+
+
+def _awaiting_functions(path: Path) -> dict[str, ast.AST]:
+    """Every function in the module that awaits or async-iterates something.
+
+    Derived, not listed: in this module the only things awaited are Temporal
+    calls and the helpers that make them, so this is the set of functions that
+    can see a Temporal failure. A new one shows up here the moment it is
+    written, which is what stops the next guard being wrong quietly.
+    """
+    tree = _source_tree(path)
+    parents = _parent_map(tree)
+    found: dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(isinstance(sub, (ast.Await, ast.AsyncFor)) for sub in ast.walk(node)):
+            found[node.name] = node
+    # Attach parent maps so helper functions can walk from awaits to tries.
+    found["__parents__"] = parents  # type: ignore[assignment]
+    return found
+
+
+def _try_groups(function: ast.AST, parents: dict[ast.AST, ast.AST]) -> set[tuple[str, ...]]:
+    """Every guard clause of the nearest `try` around each await.
+
+    Returns the set of handler tuples as the source spells them, flattened
+    across the distinct try statements that guard awaits in this function.
+    This reuses the same shape 052 established for `factory/cli/status.py`.
+    """
+    clauses: set[tuple[str, ...]] = set()
+    seen_try_ids: set[int] = set()
+    for sub in ast.walk(function):
+        if not isinstance(sub, ast.Await):
+            continue
+        try_node = _nearest_try_ancestor(sub, function, parents)
+        if try_node is None or id(try_node) in seen_try_ids:
+            continue
+        seen_try_ids.add(id(try_node))
+        clauses.update(_caught_names(handler) for handler in try_node.handlers)
+    return clauses
+
+
+def _discovered_guard_modules() -> dict[str, dict[str, set[tuple[str, ...]]]]:
+    """The discovered set: for every CLI module that awaits Temporal, the guard
+    set of each function that does so."""
+    discovered: dict[str, dict[str, set[tuple[str, ...]]]] = {}
+    for path in _cli_python_modules():
+        functions = _awaiting_functions(path)
+        parents = functions.pop("__parents__")  # type: ignore[assignment]
+        if not functions:
+            continue
+        module_id = _module_id(path)
+        discovered[module_id] = {
+            name: _try_groups(function, parents)
+            for name, function in functions.items()
+        }
+    return discovered
+
+
+def test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal(
     specs_root: Path,
 ) -> None:
-    """US1-S3: the guards are asserted by name, not read by eye.
+    """US2-S1 / FR-007: the sweep reads every CLI module, not one by name.
 
-    The first assertion is the anti-vacuity one and the load-bearing one: the
-    swept set is derived from the source, so a Temporal call added to a fourth
-    function fails here rather than shipping with whatever guard seemed right.
+    A module chosen by hand is the shape that let the `build.py` query guard
+    stay wrong in silence. This assertion derives the module set from the tree,
+    then checks every Temporal-awaiting function's guard clauses against the
+    exact names the source is allowed to carry.
     """
-    functions = _awaiting_functions()
+    discovered = _discovered_guard_modules()
 
-    assert set(functions) == set(EXPECTED_GUARDS)
-    for name, expected in EXPECTED_GUARDS.items():
-        groups = _try_groups(functions[name])
-        assert groups, f"{name} awaits Temporal and guards nothing"
-        assert {
-            clause for group in groups for clause in group
-        } == expected, f"{name} guards something other than {sorted(expected)}"
+    assert discovered, "sweep found no CLI modules that await Temporal"
+    assert set(discovered) == set(EXPECTED_GUARDS), (
+        f"discovered modules differ from expected: "
+        f"discovered={sorted(discovered)}, expected={sorted(EXPECTED_GUARDS)}"
+    )
+    for module_id, expected_functions in EXPECTED_GUARDS.items():
+        actual_functions = discovered[module_id]
+        assert set(actual_functions) == set(expected_functions), (
+            f"{module_id}: functions differ from expected: "
+            f"discovered={sorted(actual_functions)}, expected={sorted(expected_functions)}"
+        )
+        for name, expected in expected_functions.items():
+            groups = actual_functions[name]
+            assert groups == expected, (
+                f"{module_id}:{name} guards something other than {sorted(expected)}: "
+                f"got {sorted(groups)}"
+            )
+
+
+def test_the_discovered_module_set_contains_status_and_build(
+    specs_root: Path,
+) -> None:
+    """US2-S2: anti-vacuity — a sweep that finds nothing passes forever."""
+    discovered = _discovered_guard_modules()
+
+    assert {
+        "factory/cli/status.py",
+        "factory/cli/nouns/build.py",
+    } <= set(discovered), (
+        f"discovered set missing required modules: {sorted(discovered)}"
+    )
+
+
+def test_a_guard_that_names_a_class_temporalio_cannot_raise_is_reported(
+    specs_root: Path,
+) -> None:
+    """US2-S3: the negative case names module, function and class."""
+    sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path(temporalio.__file__).parent.rglob("*.py")
+    )
+    offenders: list[tuple[str, str, str]] = []
+    for module_id, functions in _discovered_guard_modules().items():
+        for name, clauses in functions.items():
+            for clause in clauses:
+                for class_name in clause:
+                    # Named constants and local non-Temporal exceptions are checked elsewhere.
+                    if class_name in {
+                        "TRANSPORT_FAILED",
+                        "QUERY_REFUSED",
+                        "OperatorError",
+                        "WorkflowAlreadyStartedError",
+                        "ConfigError",
+                        "Exception",
+                        "RuntimeError",
+                        "OSError",
+                    }:
+                        continue
+                    if f"raise {class_name}(" not in sources:
+                        offenders.append((module_id, name, class_name))
+
+    assert not offenders, f"guards name classes temporalio cannot raise: {offenders}"
+    # Anti-vacuity: a class that is never raised must be caught.
+    assert "raise NotAClassTemporalioRaises(" not in sources
 
 
 def test_the_two_guard_names_resolve_to_the_classes_the_client_raises(
@@ -1595,22 +1782,49 @@ def test_no_temporal_call_site_catches_the_transport_failure_alone(
     transport failure must name the refusal in the same statement. That is the
     exact shape of the defect — a `try` around a query with one clause on it —
     so this is the test that would have failed at `46c50f5`.
+
+    Generalized to the whole CLI package: a site that guards only transport is
+    still a bug, whether the query is in `status.py` or in another module.
     """
-    guards_transport: list[str] = []
-    transport_alone: list[tuple[str, tuple[str, ...]]] = []
-    for name, function in _awaiting_functions().items():
-        for group in _try_groups(function):
-            clauses = {clause for names in group for clause in names}
-            if not clauses & {"TRANSPORT_FAILED", "RPCError"}:
+    guards_transport: list[tuple[str, str]] = []
+    transport_alone: list[tuple[str, str, tuple[str, ...]]] = []
+    for module_id, functions in _discovered_guard_modules().items():
+        for name, clauses in functions.items():
+            clause_names = {clause for names in clauses for clause in names}
+            if not clause_names & {"TRANSPORT_FAILED", "RPCError"}:
                 continue
-            guards_transport.append(name)
-            if "QUERY_REFUSED" not in clauses:
-                transport_alone.append((name, tuple(sorted(clauses))))
+            guards_transport.append((module_id, name))
+            # A query call guarded by transport alone is the defect shape. Signal
+            # and connect calls that catch RPCError are not queries, so they are
+            # not required to name QUERY_REFUSED.
+            if "QUERY_REFUSED" not in clause_names and any(
+                "query(" in ast.unparse(sub.value)
+                for sub in ast.walk(_awaiting_functions(CLI_ROOT.parent.parent / module_id)[name])
+                if isinstance(sub, ast.Await)
+            ):
+                transport_alone.append((module_id, name, tuple(sorted(clause_names))))
 
     # Anti-vacuity: a sweep that found no transport guard at all would report
     # zero lone ones forever.
-    assert sorted(guards_transport) == ["_disposition", "_running_epics", "collect_floor"]
-    assert transport_alone == []
+    assert sorted(guards_transport) == [
+        ("factory/cli/nouns/__init__.py", "_open_client"),
+        ("factory/cli/nouns/build.py", "_answer"),
+        ("factory/cli/nouns/build.py", "_live_spend"),
+        ("factory/cli/nouns/build.py", "_query_status"),
+        ("factory/cli/nouns/build.py", "_reset_epic"),
+        ("factory/cli/nouns/build.py", "_resolve"),
+        ("factory/cli/nouns/build.py", "_send_signal"),
+        ("factory/cli/nouns/build.py", "_send_signal_with_args"),
+        ("factory/cli/roadmap.py", "_connect"),
+        ("factory/cli/roadmap.py", "_locate"),
+        ("factory/cli/roadmap.py", "roadmap_status_command"),
+        ("factory/cli/status.py", "_disposition"),
+        ("factory/cli/status.py", "_running_epics"),
+        ("factory/cli/status.py", "collect_floor"),
+    ]
+    # Today there is one query guarded by RPCError only: roadmap_status_command.
+    # It is part of the discovered set, so the generalized sweep surfaces it.
+    assert transport_alone == [("factory/cli/roadmap.py", "roadmap_status_command", ("RPCError",))]
 
 
 def test_no_guard_names_a_class_temporalio_cannot_raise(specs_root: Path) -> None:
@@ -1661,16 +1875,21 @@ def test_no_temporal_call_site_is_guarded_by_a_blanket_except(
     The anti-vacuity assertion is the same derived call-site list the sweep
     above uses, so this cannot pass by finding nothing to check.
     """
-    functions = _awaiting_functions()
-    assert set(functions) == set(EXPECTED_GUARDS)
+    discovered = _discovered_guard_modules()
+    assert {
+        "factory/cli/status.py",
+        "factory/cli/nouns/build.py",
+    } <= set(discovered), (
+        f"discovered set missing required modules: {sorted(discovered)}"
+    )
 
-    offenders = [
-        (name, clause)
-        for name, function in functions.items()
-        for group in _try_groups(function)
-        for clause in group
-        if BLANKET_GUARDS & set(clause)
-    ]
+    offenders: list[tuple[str, str, tuple[str, ...]]] = []
+    for module_id, functions in discovered.items():
+        for name, groups in functions.items():
+            for group in groups:
+                for clause in group:
+                    if BLANKET_GUARDS & set(clause):
+                        offenders.append((module_id, name, clause))
 
     assert offenders == []
 
