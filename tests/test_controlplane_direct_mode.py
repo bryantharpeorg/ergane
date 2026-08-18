@@ -215,16 +215,15 @@ async def test_issue_attempt_key_for_gateway_still_mints(
     litellm_env: Any,  # noqa: ANN401 - conftest fixture
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    config_path: Path,
 ) -> None:
     """Gateway mode is unchanged: a virtual key is minted at the proxy."""
     # Ensure no direct-mode config is visible to this gateway test by writing a
-    # gateway config to the session config path the activity reads.
-    import factory.controlplane.resolve as resolve_module
+    # complete gateway config to the isolated path the activity reads.
     import factory.activities.usage_activities as usage_activities
 
-    session_config = Path(resolve_module.resolve_config_path())
-    session_config.parent.mkdir(parents=True, exist_ok=True)
-    session_config.write_text(
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
         """\
 version = 1
 
@@ -235,6 +234,16 @@ master_key_env = "LITELLM_MASTER_KEY"
 
 [memory]
 backend = "none"
+
+[temporal]
+mode = "external"
+address = "127.0.0.1:4"
+namespace = "ergane"
+
+[telemetry]
+
+[escalation]
+adapter = "telegram"
 """,
         encoding="utf-8",
     )
