@@ -429,6 +429,12 @@ class EpicInput:
     #: gets today's sequential behaviour exactly. Validated here as well as in
     #: the CLI, because `EpicInput` can be constructed without the CLI.
     max_concurrent_nodes: int = 1
+    #: 053 US3: the revision of the worker code that imported this workflow,
+    #: captured once at worker boot and carried in the query answer. `None` when
+    #: the worker predates this story or runs from a non-git tree. It is part of
+    #: dispatch so the worker that will serve the epic advertises its own revision
+    #: up front, and the query answer can return it without re-reading the tree.
+    worker_revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -476,6 +482,10 @@ class EpicStatus:
 
     epic_state: EpicState
     nodes: dict[str, NodeStatus]
+    #: 053 US3: the worker revision that produced this answer, captured at worker
+    #: boot and carried unchanged through the epic's life. `None` when the worker
+    #: recorded none.
+    worker_revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -502,6 +512,10 @@ class EpicWorkflow:
         #: state, and the reason replay needs no store to rebuild it.
         self._nodes: dict[str, NodeRecord] = {}
         self._epic_state = EpicState.RUNNING
+        #: 053 US3: the revision of the worker that imported this workflow class,
+        #: captured once at worker boot and supplied in `EpicInput`. `None` when
+        #: the worker predates this story or runs outside a git checkout.
+        self._worker_revision: str | None = None
 
         #: One background poll task per open landing, keyed by node id. Started
         #: when a PASS node's landing enqueues (US1) and reaped when the landing
@@ -593,6 +607,7 @@ class EpicWorkflow:
                 )
                 for node_id, record in self._nodes.items()
             },
+            worker_revision=self._worker_revision,
         )
 
     # --- the main loop (R10) -------------------------------------------------
@@ -607,6 +622,10 @@ class EpicWorkflow:
         widen — the ready set is already computed, only the picker is narrow.
         """
         graph = request.graph
+        # 053 US3: the worker revision is part of dispatch input, captured once at
+        # worker boot, so the query answer can report the worker's revision without
+        # re-reading the tree (which would always report the CLI's revision).
+        self._worker_revision = request.worker_revision
         # The concurrency cap is validated here as well as in the CLI (FR-002):
         # `EpicInput` can be constructed without the CLI, so CLI-only validation
         # is not validation. A non-positive cap is a wiring error, not a dispatch

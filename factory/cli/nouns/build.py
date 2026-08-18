@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -513,6 +514,43 @@ async def _start_epic(
     return EXIT_OK
 
 
+def _cli_revision() -> str | None:
+    """The revision of the CLI code that is running this command."""
+    # Tests patch the package-level seam; when present, use it so a reload does
+    # not rebind to the real `git rev-parse`.
+    from factory.cli.nouns import _cli_revision_for_tests
+
+    seam = _cli_revision_for_tests()
+    if seam is not None:
+        return seam
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip() or None
+    except Exception:
+        return None
+
+
+def _skew_notice(worker_revision: str | None, cli_revision: str | None) -> str | None:
+    """A human-readable notice when the worker and CLI disagree, or None."""
+    if worker_revision is None:
+        return (
+            f"worker revision is unknown (CLI revision {cli_revision or 'unknown'}); "
+            "the worker predates this check or is not a git checkout"
+        )
+    if cli_revision is None:
+        return None
+    if worker_revision == cli_revision:
+        return None
+    return (
+        f"worker is running different code: worker revision {worker_revision}, "
+        f"CLI revision {cli_revision}"
+    )
+
+
 def status_command(args: argparse.Namespace) -> int:
     """Read one epic's live state."""
     return asyncio.run(_query_status(args.epic_id, as_json=args.as_json))
@@ -569,6 +607,9 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
         execution_status = "unavailable"
 
     live_spend = await _live_spend(client, handle, document)
+    cli_revision = _cli_revision()
+    worker_revision = document.get("worker_revision")
+    skew_notice = _skew_notice(worker_revision, cli_revision)
     if as_json:
         rendered: Any = dict(document)
         rendered["execution_status"] = execution_status
@@ -576,6 +617,8 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
             rendered["live_spend"] = live_spend
         if refusal is not None:
             rendered["refusal"] = refusal
+        if skew_notice is not None:
+            rendered["skew_notice"] = skew_notice
         print(json.dumps(rendered, indent=2))
     else:
         if refusal is not None:
@@ -586,6 +629,8 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
                     epic_id, document, execution_status, live_spend=live_spend
                 )
             )
+        if skew_notice is not None:
+            print(f"ergane: {skew_notice}", file=sys.stderr)
     return EXIT_OK
 
 
