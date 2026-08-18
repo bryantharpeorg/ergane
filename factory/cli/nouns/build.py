@@ -21,9 +21,21 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from temporalio.client import Client
+from temporalio.client import Client, WorkflowQueryFailedError, WorkflowQueryRejectedError
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
+
+#: The server answered but the workflow would not answer this query. A read that
+#: is refused degrades: the command reports the cause and still exits 0.
+#: Distinct from a transport failure because the connection is fine.
+QUERY_REFUSED: tuple[type[BaseException], ...] = (
+    WorkflowQueryFailedError,
+    WorkflowQueryRejectedError,
+)
+
+#: The server did not answer at all. Nothing this command wanted to read is
+#: readable, so the read fails with the transport exit code.
+TRANSPORT_FAILED: tuple[type[BaseException], ...] = (RPCError,)
 
 from factory.activities.verify_activities import (
     DEFAULT_VERIFICATION_DB_PATH,
@@ -285,11 +297,23 @@ async def _live_spend(
     handle: Any,
     document: Mapping[str, Any],
 ) -> dict[str, Mapping[str, Any]]:
-    """Each running attempt's newest heartbeat snapshot, per node."""
+    """Each running attempt's newest heartbeat snapshot, per node.
+
+    A read: if the describe call fails we degrade to no live spend rather than
+    killing the status report. The two `Exception` catches below are not around
+    Temporal calls — they guard decoding a heartbeat payload and reading the
+    client data converter, both of which can raise for local reasons.
+    """
     try:
         description = await handle.describe()
-    except RPCError:
+    except TRANSPORT_FAILED:
+        # Degrade: live spend is optional extra detail.
         return {}
+    except QUERY_REFUSED:
+        # A workflow that refuses a status query will also refuse describe.
+        # Degrade rather than report the same refusal twice.
+        return {}
+
     pending = description.raw_description.pending_activities
     try:
         converter = client.data_converter
@@ -497,9 +521,18 @@ def status_command(args: argparse.Namespace) -> int:
 async def _query_status(epic_id: str, *, as_json: bool) -> int:
     client = await _connect()
     handle = client.get_workflow_handle(workflow_id(epic_id))
+
+    refusal: str | None = None
     try:
         document = await handle.query("epic_status")
-    except RPCError as error:
+    except QUERY_REFUSED as error:
+        # A workflow-side refusal is a degraded *reading*, not a failed command.
+        # The epic exists (the server reached it) but will not describe itself,
+        # most often because its history predates a field the query result now
+        # declares. Report the cause in place and exit 0.
+        refusal = str(error) or type(error).__name__
+        document: Mapping[str, Any] = {"nodes": {}}
+    except TRANSPORT_FAILED as error:
         if error.status is RPCStatusCode.NOT_FOUND:
             raise OperatorError(
                 f"no epic '{epic_id}' is running here "
@@ -522,12 +555,18 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
                 EXIT_TRANSPORT,
             )
         execution_status = status.name
-    except RPCError as error:
+    except TRANSPORT_FAILED as error:
         from factory.cli.errors import EXIT_TRANSPORT
 
         raise OperatorError(
             f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
         ) from error
+    except QUERY_REFUSED as error:
+        # The epic is reachable but would not describe itself. Degrade the
+        # execution-status reading in place rather than kill the report.
+        if refusal is None:
+            refusal = str(error) or type(error).__name__
+        execution_status = "unavailable"
 
     live_spend = await _live_spend(client, handle, document)
     if as_json:
@@ -535,13 +574,18 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
         rendered["execution_status"] = execution_status
         if live_spend:
             rendered["live_spend"] = live_spend
+        if refusal is not None:
+            rendered["refusal"] = refusal
         print(json.dumps(rendered, indent=2))
     else:
-        print(
-            render_status(
-                epic_id, document, execution_status, live_spend=live_spend
+        if refusal is not None:
+            print(f"epic {epic_id}  unavailable  ({refusal})")
+        else:
+            print(
+                render_status(
+                    epic_id, document, execution_status, live_spend=live_spend
+                )
             )
-        )
     return EXIT_OK
 
 
