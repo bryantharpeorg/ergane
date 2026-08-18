@@ -1,5 +1,22 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-18. US1 336697688230 (#195), US2 30b33aba92db (#196),
+# US3 e0cf102891c9 (#197) -- all three observed on ergane-buildout.
+#
+# Six attempts for three stories, improving as the chain descended: US1 took
+# three (attempt 1 lost the boundary gate to the known real-clock concurrency
+# flake under cap-2 load -- occurrence 3 of
+# ci/flaky-concurrency-test-is-a-random-epic-killer -- and attempt 2 failed the
+# judge on US1-S5, a test that asserted the scan result structure but never
+# called render_scan_results). US2 took two (long first attempt, retry landed).
+# US3 landed on its first attempt, integrating both siblings' surfaces --
+# its tests reuse 033's scripted-prompter walkthrough harness, import
+# EndpointClassification/ScanResult from US1's scanner, and quote
+# DIRECT_MODE_SURRENDERED_PROPERTIES_TEXT from US2's config work.
+#
+# Committed to git before dispatch (PR #194), applying 054's lesson the same
+# night it was learned.
+#
 # Flipped draft -> ready 2026-08-17 ~10:13 PM CT at the operator's instruction.
 # Ready is eligibility, not dispatch: the ordering note below still binds, and
 # this epic is not to be started until 054 has landed.
