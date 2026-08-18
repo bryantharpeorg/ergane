@@ -598,8 +598,8 @@ async def test_verify_all_subsystems_pass(
     assert {f.check for f in findings} == {"host", "llm", "temporal", "memory", "telemetry", "escalation"}
     assert all(f.passed for f in findings)
     llm_finding = next(f for f in findings if f.check == "llm")
-    assert "persona `implementer`" in llm_finding.detail
     assert "1-token" in llm_finding.detail
+    assert "distinct alias" in llm_finding.detail
     temporal_finding = next(f for f in findings if f.check == "temporal")
     assert f"has namespace `{LIVE_NAMESPACE}`" in temporal_finding.detail
     telemetry_finding = next(f for f in findings if f.check == "telemetry")
@@ -779,7 +779,10 @@ async def test_verify_timeout_on_closed_port(
         finding = probe.evaluate(snapshot)
         assert finding.passed is False, f"{check_name} should have failed"
         assert elapsed < bound_s + 0.5, f"{check_name} took {elapsed}s, expected < {bound_s + 0.5}s"
-        assert finding.detail.startswith("timed out") or "127.0.0.1:1" in finding.detail
+        if check_name == "llm":
+            assert "alias" in finding.detail or "127.0.0.1:1" in finding.detail
+        else:
+            assert finding.detail.startswith("timed out") or "127.0.0.1:1" in finding.detail
 
 
 @pytest.mark.asyncio
@@ -997,8 +1000,8 @@ async def test_verify_llm_gather_against_live_double(
 
     finding = probe.evaluate(snapshot)
     assert finding.passed is True
-    assert "persona `implementer`" in finding.detail
     assert "1-token" in finding.detail
+    assert "distinct alias" in finding.detail
 
 
 @pytest.mark.asyncio
