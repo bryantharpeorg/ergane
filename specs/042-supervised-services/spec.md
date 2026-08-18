@@ -1,5 +1,24 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17. US1 b931f0cf3300 (#141), US2 df71bf78743f (#149),
+# US3 b6233eec65b2 (#183), US4 4426faa48330 (#157) — all four observed on
+# ergane-buildout by content.
+#
+# US3 is the epic's exception and worth reading before trusting its record. It
+# burned four attempts: attempt 1 built the whole slice and opened #183, whose
+# CI then went red on one of the story's OWN new tests; attempts 2 and 3 died
+# instantly on Ollama 429s (quota exhaustion, zero signal about the code); the
+# operator answered the resulting escalation and attempt 4 ran clean but, unable
+# to reproduce the failure inside its sandbox, declared it flaky and committed
+# nothing. The failure was not flaky. `_systemd_user_session_available()` shells
+# out to `systemctl --user`, which fails in the bwrap gate (no user bus) and
+# succeeds on a CI runner, so the refusal test inverted with the environment —
+# green in the gate, red in CI, forever. An operator session reproduced the CI
+# failure locally, patched the TEST ONLY (monkeypatch the probe to False; no
+# production code touched), and pushed 0f6fe59 to the node branch; CI went green
+# and the merge queue landed it normally. This is the first story in the tree
+# with an operator-authored commit inside it — see the fail-out escape hatch,
+# still unspecified as of this attestation.
 # Split out of 033-ergane-install on 2026-08-13. 033 as drafted carried seven
 # stories across three unrelated domains; this spec is the third — supervision
 # and systemd. Was 033's US4 and US7; its FR-004..FR-011 were 033's FR-008,

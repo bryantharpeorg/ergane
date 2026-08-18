@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17. US1 94ce324464aa (#167), US2 e626729a211a (#182),
+# US3 c3d3dc073e97 (#184), US4 773a00b3b190 (#185) — all four observed on
+# ergane-buildout by content. US2 and US3 landed first-attempt; US4 needed a
+# second attempt after the first died on the gate sandbox's unset USER, which
+# the dev Temporal server requires.
 # Drafted 2026-08-10 from an operator conversation: the factory's durability,
 # attribution and landing discipline are the product, but what happens *inside*
 # a node's loop — which gates, in what order, whether a judge scores it, how
