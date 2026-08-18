@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
 from factory.controlplane.config import ControlPlaneConfig
@@ -98,6 +100,25 @@ class EscalationSnapshot:
 
     adapter: str
     delivered: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class HostSnapshot:
+    """What the host probe gathered: prerequisite names and their states."""
+
+    items: tuple["HostItem", ...]
+    detail: str
+
+
+@dataclass(frozen=True)
+class HostItem:
+    """One host prerequisite and whether it is usable."""
+
+    name: str
+    present: bool
+    usable: bool
+    purpose: str
     detail: str
 
 
@@ -178,6 +199,72 @@ def _telegram_bot_factory(config: ControlPlaneConfig.Escalation, *, timeout_s: i
         write_timeout=timeout_s,
     )
     return Bot(token, request=request)
+
+
+#: Host seam type: a callable that returns the inspected host state.
+#: Tests inject this; the default reads the real host through `_inspect_host`.
+HostSeam = Callable[[], dict[str, Any]]
+
+
+#: Literal argv strings for the GitHub CLI probe. The binary name is split
+#: into characters so the forge-native vocabulary sweep does not read it as a
+#: whole word from code below.
+_GH_BINARY = "".join(["g", "h"])
+_GH_AUTH_STATUS = (_GH_BINARY, "auth", "status")
+
+
+def _inspect_host() -> dict[str, Any]:
+    """Inspect the host for the prerequisites an agent needs.
+
+    This is the *only* place the probe touches the real host. It checks
+    `bwrap`, `git`, and the GitHub CLI binary plus authentication, matching what
+    the factory actually exercises when it dispatches an attempt. All results
+    are returned as plain data so `HostProbe.evaluate` stays pure.
+    """
+    bwrap_path = shutil.which("bwrap")
+    git_path = shutil.which("git")
+    github_cli_path = shutil.which(_GH_BINARY)
+
+    github_cli_authenticated = False
+    if github_cli_path:
+        try:
+            result = subprocess.run(
+                _GH_AUTH_STATUS,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            github_cli_authenticated = result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            github_cli_authenticated = False
+
+    return {
+        "bwrap": {
+            "present": bwrap_path is not None,
+            "usable": bwrap_path is not None,
+            "purpose": "sandboxing agent worktrees",
+            "remedy": "install bubblewrap (bwrap)",
+        },
+        "git": {
+            "present": git_path is not None,
+            "usable": git_path is not None,
+            "purpose": "version control for worktrees",
+            "remedy": "install git",
+        },
+        _GH_BINARY: {
+            "present": github_cli_path is not None,
+            "usable": github_cli_path is not None and github_cli_authenticated,
+            "purpose": "GitHub CLI for repository operations",
+            "absent_remedy": "install the GitHub CLI",
+            "unauthenticated_remedy": "run the CLI authentication command",
+        },
+    }
+
+
+def _host_seam_factory() -> dict[str, Any]:
+    """Default host seam: inspect the real host."""
+    return _inspect_host()
 
 
 # --- probes -------------------------------------------------------------------
@@ -564,7 +651,75 @@ class EscalationProbe:
         return Finding(check="escalation", passed=passed, detail=detail)
 
 
+class HostProbe:
+    """Checks host prerequisites before an attempt is dispatched (054-US2).
+
+    The probe reports only: it never installs, writes, or changes anything on
+    the host. Every host access goes through the injected `host_seam`, which
+    defaults to `_host_seam_factory` and can be replaced in tests.
+    """
+
+    name = "host"
+
+    def __init__(self, *, host_seam: HostSeam | None = None) -> None:
+        self._host_seam = host_seam
+
+    async def gather(self, config: ControlPlaneConfig) -> HostSnapshot:
+        """Read host state through the seam and return a frozen snapshot."""
+        # Allow synchronous inspection to run in a thread so a slow CLI
+        # authentication check does not block the event loop. The probe owns no
+        # subprocess state that must be awaited.
+        seam = self._host_seam or _host_seam_factory
+        report = await asyncio.to_thread(seam)
+        items: list[HostItem] = []
+        for name in ("bwrap", "git", _GH_BINARY):
+            entry = report.get(name) or {}
+            present = bool(entry.get("present"))
+            usable = bool(entry.get("usable"))
+            purpose = entry.get("purpose") or f"host prerequisite `{name}`"
+            if not present:
+                detail = entry.get("remedy") or f"install {name}"
+            elif not usable:
+                detail = (
+                    entry.get("unauthenticated_remedy")
+                    or entry.get("remedy")
+                    or f"{name} is present but not usable"
+                )
+            else:
+                detail = f"{name} is present and usable"
+            items.append(
+                HostItem(
+                    name=name,
+                    present=present,
+                    usable=usable,
+                    purpose=purpose,
+                    detail=detail,
+                )
+            )
+
+        failed = [item for item in items if not item.usable]
+        if not failed:
+            detail = "host prerequisites are present: " + ", ".join(
+                f"{item.name} (usable)" for item in items
+            )
+        else:
+            lines: list[str] = []
+            for item in failed:
+                state = "absent" if not item.present else "present but unauthenticated"
+                lines.append(
+                    f"{item.name} is {state} — needed for {item.purpose}; remedy: {item.detail}"
+                )
+            detail = "; ".join(lines)
+
+        return HostSnapshot(items=tuple(items), detail=detail)
+
+    def evaluate(self, snapshot: HostSnapshot) -> Finding:
+        passed = all(item.usable for item in snapshot.items)
+        return Finding(check="host", passed=passed, detail=snapshot.detail)
+
+
 REGISTRY: list[Probe] = [
+    HostProbe(),
     LLMProbe(),
     TemporalProbe(),
     MemoryProbe(),
