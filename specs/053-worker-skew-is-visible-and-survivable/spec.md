@@ -1,5 +1,21 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-17. US1 e840123e3b45 (#187), US2 e51e426f4a68 (#188),
+# US3 0ae48d666870 (#189) -- all three observed on ergane-buildout by
+# `ergane spec landed --default-branch ergane-buildout`, not by a merged flag.
+#
+# The epic ran twice. The first run reached US1 verified=true with gates and
+# judge PASS, and was then killed in the landing path: the operator checkout was
+# sitting on `attest/023-042-landed`, the landing base followed it, and a PR
+# based off a branch with no merge queue was read as DEQUEUED_BY_HUMAN. That
+# killed US1 and cascaded to US2 and US3 before either was dispatched. Filed as
+# `mergequeue/landing-base-follows-the-operator-checkout`. Recovery was to
+# retarget PR #187 by REST, land it, and re-derive with `--delta`, which
+# correctly reported "us1 satisfied by e840123e" and compiled a two-node graph.
+#
+# So the only story that cost anything cost it for a reason outside its own diff.
+# US2 and US3 each landed on the first attempt, at 19 and roughly 15 minutes of
+# agent time, and the whole epic finished 16 minutes inside its estimate.
 # Flipped ready 2026-08-17 4:12 PM CT on Bryan's word, at a keyboard, in the same
 # session that drafted it. The roadmap schedule is paused, so `ready` does not
 # hand this to an unattended scheduler; dispatch remains an operator act.
