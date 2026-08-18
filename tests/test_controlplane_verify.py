@@ -574,6 +574,11 @@ async def test_verify_all_subsystems_pass(
     monkeypatch.setenv("ERGANE_TELEGRAM_BOT_TOKEN", "123456:AAAA")
     monkeypatch.setenv("ERGANE_TELEGRAM_CHAT_ID", "-1")
 
+    # US2 host probe now runs before the subsystem probes. To keep this test
+    # focused on the five existing probes, simulate a fully passing host through
+    # the probe's injected seam.
+    monkeypatch.setattr(verify_module, "_host_seam_factory", _passing_host_seam)
+
     # Control: the registered namespace holds no workflow at all, and in
     # particular not the `ergane-install-verify` id the probe used to describe.
     # A probe that answers "namespace exists" from a workflow describe fails
@@ -589,8 +594,8 @@ async def test_verify_all_subsystems_pass(
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
 
     assert exit_code == 0
-    assert len(findings) == 5
-    assert {f.check for f in findings} == {"llm", "temporal", "memory", "telemetry", "escalation"}
+    assert len(findings) == 6
+    assert {f.check for f in findings} == {"host", "llm", "temporal", "memory", "telemetry", "escalation"}
     assert all(f.passed for f in findings)
     llm_finding = next(f for f in findings if f.check == "llm")
     assert "persona `implementer`" in llm_finding.detail
@@ -637,15 +642,18 @@ async def test_verify_no_masking_temporal_namespace_missing(
     monkeypatch.setenv("ERGANE_TELEGRAM_BOT_TOKEN", "123456:AAAA")
     monkeypatch.setenv("ERGANE_TELEGRAM_CHAT_ID", "-1")
 
+    # Simulate a fully passing host so the test measures only the subsystem probes.
+    monkeypatch.setattr(verify_module, "_host_seam_factory", _passing_host_seam)
+
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
 
     assert exit_code == 1
     checks = {f.check: f for f in findings}
-    assert len(findings) == 5
+    assert len(findings) == 6
     assert checks["temporal"].passed is False
     assert "absent-namespace" in checks["temporal"].detail
     assert "temporal operator namespace create absent-namespace" in checks["temporal"].detail
-    for check in ("llm", "memory", "telemetry", "escalation"):
+    for check in ("host", "llm", "memory", "telemetry", "escalation"):
         assert checks[check].passed is True
 
 
@@ -879,6 +887,36 @@ def _raising_llm_factory(config: Cfg.LLM) -> Any:
 
 def _raising_telegram_factory(config: Cfg.Escalation, **kwargs: Any) -> Any:
     raise verify_module.ServiceNotAnswering("escalation", reason="no telegram in this test")
+
+
+def _passing_host_seam() -> dict[str, Any]:
+    """Simulate a host with every prerequisite present and usable.
+
+    The US2 host probe runs before subsystem probes. Existing subsystem tests
+    must keep working without requiring a real, authenticated host, so this
+    seam is patched in wherever the test's subject is a different probe.
+    """
+    return {
+        "bwrap": {
+            "present": True,
+            "usable": True,
+            "purpose": "sandboxing agent worktrees",
+            "remedy": "install bubblewrap (bwrap)",
+        },
+        "git": {
+            "present": True,
+            "usable": True,
+            "purpose": "version control for worktrees",
+            "remedy": "install git",
+        },
+        "gh": {
+            "present": True,
+            "usable": True,
+            "purpose": "GitHub CLI for repository operations",
+            "absent_remedy": "install the GitHub CLI (gh)",
+            "unauthenticated_remedy": "run `gh auth login`",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
