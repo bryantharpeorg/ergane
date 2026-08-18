@@ -20,6 +20,7 @@ from factory.discovery.llm_scanner import (
     EndpointClassification,
     ScanResult,
     default_candidates,
+    render_scan_results,
     scan_endpoints,
 )
 
@@ -208,6 +209,13 @@ def test_scan_finding_nothing_reports_plainly(
     transport = transport_factory(dead=set(default_candidates()))
     results = scan_endpoints(transport=transport)
     assert not any(r.reachable for r in results)
+
+    rendered = render_scan_results(results)
+    lowered = rendered.lower()
+    assert "the scan found no reachable llm endpoint" in lowered
+    assert "/v1/models" in rendered
+    assert "/key/generate" in rendered
+    assert "loopback candidates" in lowered
 
 
 # T006: network reached only through injected seam; no real socket opened.
