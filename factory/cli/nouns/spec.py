@@ -52,12 +52,18 @@ _STRUCTURAL_TIMEOUT_S = 1
 
 
 def _vacuous_registry(graph: WorkGraph) -> dict[str, Persona]:
+    """A registry that answers every persona the graph names for structural checks.
+
+    `skills` is reserved and unused (062-US3 FR-009); the empty tuple is here only
+    to satisfy the `Persona` dataclass.
+    """
     return {
         node.persona: Persona(
             name=node.persona,
             agent="",
             model=None,
             fallback=None,
+            # skills is reserved and unused; the empty tuple keeps the dataclass happy.
             skills=(),
             write_scope=WriteScope.WORKTREE,
             needs_worktree=True,

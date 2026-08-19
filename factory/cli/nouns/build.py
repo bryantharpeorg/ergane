@@ -224,13 +224,18 @@ def load_workgraph(path: str | Path) -> WorkGraph:
 
 
 def _persona_registry(graph: WorkGraph) -> Mapping[str, Persona]:
-    """A registry that answers for every persona the graph names, and no more."""
+    """A registry that answers for every persona the graph names, and no more.
+
+    `skills` is reserved and unused (062-US3 FR-009): structural personas pass an
+    empty tuple only to satisfy the dataclass.
+    """
     return {
         node.persona: Persona(
             name=node.persona,
             agent="",
             model=None,
             fallback=None,
+            # skills is reserved and unused; the empty tuple keeps the dataclass happy.
             skills=(),
             write_scope=WriteScope.WORKTREE,
             needs_worktree=True,

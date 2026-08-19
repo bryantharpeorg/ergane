@@ -137,7 +137,16 @@ class WriteScope(str, Enum):
 
 @dataclass(frozen=True)
 class Persona:
-    """One registry entry: how to run a node routed to this persona."""
+    """One registry entry: how to run a node routed to this persona.
+
+    The `skills` field is parsed for validation and backward compatibility, but
+    it is reserved and unused (062-US3 FR-009). No adapter invocation consumes
+    it, because the factory constructs a per-node, factory-owned HOME at
+    dispatch time (`factory/workgraph/adapter.py:339`) and home-scoped agent
+    skills are therefore invisible to the node. Project-scoped skills committed
+    at ``<repo>/.claude/skills/`` remain visible, because the node's worktree
+    carries committed files.
+    """
 
     name: str
     agent: str
