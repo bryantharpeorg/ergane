@@ -23,11 +23,7 @@ from factory.workgraph.models import EpicState
 from factory.workgraph.workflow import EpicInput, EpicStatus, EpicWorkflow
 
 from tests.test_interpreter import (
-    EPIC_ID,
-    FEATURE,
     PROXY_URL,
-    SPECS_ROOT,
-    TARGET_REPO,
     TASK_QUEUE,
     WORKFLOW_ID,
     ScriptedWorld,
