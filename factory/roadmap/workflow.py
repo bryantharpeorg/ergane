@@ -136,6 +136,18 @@ with workflow.unsafe.imports_passed_through():
 _ROADMAP_NODE_ID = "roadmap"
 
 
+def _is_epic_status(value: object) -> bool:
+    """Runtime guard: a value can be interpreted as an `EpicStatus` (FR-005).
+
+    The annotation `status: EpicStatus = handle.result()` only declares intent;
+    a child returning `None` or a value from a different worker version can be
+    a dataclass of the wrong shape. This guard checks the attributes the roadmap
+    actually uses (`epic_state` and `nodes`) before `_landed_status_for` touches
+    them (trap 2). `None` and dicts both fail here.
+    """
+    return hasattr(value, "epic_state") and hasattr(value, "nodes")
+
+
 def _should_notify_failure(count: int) -> bool:
     """Throttle repeated identical failures geometrically (FR-003).
 
@@ -634,8 +646,12 @@ class RoadmapWorkflow:
             # itself, so an attested-landed spec reports `landed=True` with
             # `landed_kind=ATTESTED` and an observed one reports `OBSERVED`.
             own = self._landed.get(entry.spec_dir)
-            if own is not None and own.landed:
-                own_landed = True
+            if own is not None:
+                # Observed facts are the stronger signal (FR-003). A child that
+                # completed without landing is reported finished-but-not-landed
+                # with kind OBSERVED, so the operator can distinguish it from a
+                # spec the roadmap never dispatched.
+                own_landed = own.landed
                 own_kind: LandedKind | None = own.kind
             elif entry.state is SpecState.LANDED:
                 own_landed = True
@@ -829,7 +845,20 @@ class RoadmapWorkflow:
                     # the sandbox resolves the child's return value into it, so
                     # awaiting it raises (an `EpicStatus` is not awaitable). The
                     # `done()` guard above makes the value available now.
-                    status: EpicStatus = handle.result()
+                    status = handle.result()
+                    if not _is_epic_status(status):
+                        received = type(status).__name__
+                        await self._report_roadmap_failure(
+                            request,
+                            f"discarded child result for {spec_dir}: "
+                            f"could not read returned value as EpicStatus "
+                            f"(received {received})",
+                        )
+                        self._landed[spec_dir] = LandedStatus(
+                            landed=False, kind=LandedKind.OBSERVED
+                        )
+                        completed_this_run = True
+                        continue
                     self._landed[spec_dir] = self._landed_status_for(status)
                     completed_this_run = True
                 # A child concluded and zero are open now: continue-as-new at

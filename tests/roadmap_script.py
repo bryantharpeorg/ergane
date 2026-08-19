@@ -47,6 +47,13 @@ class _Script:
         self.hold.discard(epic_id)
 
 
+#: Sentinel value a test can place in `_SCRIPT.statuses[spec_dir]` when it wants
+#: the scripted child to return `None` as its workflow result. A bare `None` in
+#: the map is ambiguous with "no entry, return the default landed status", so
+#: US1 uses this distinct sentinel (trap 2: `None` is one member of the class).
+_SCRIPT_RETURN_NONE = object()
+
+
 #: The single script tests set before starting the roadmap.
 _SCRIPT = _Script()
 
@@ -114,6 +121,8 @@ class ScriptedEpicWorkflow:
         if epic_id in _SCRIPT.hold:
             await workflow.wait_condition(lambda: self._released)
         status = _SCRIPT.statuses.get(epic_id)
+        if status is _SCRIPT_RETURN_NONE:
+            return None
         if status is None:
             status = _landed_status({"us1": _merged_node()})
         if _SCRIPT.on_complete is not None:
@@ -172,3 +181,5 @@ class BlockerDoneWorkflow:
     @workflow.run
     async def run(self) -> str:
         return "done"
+
+

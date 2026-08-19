@@ -65,9 +65,11 @@ from factory.verify.models import EscalationChoice
 from tests.roadmap_script import (
     ScriptedEpicWorkflow,
     _SCRIPT,
+    _SCRIPT_RETURN_NONE,
 )
 from tests.test_roadmap_scheduler import (
     RoadmapWorld,
+    _status_of,
     build_corpus,
 )
 
@@ -981,3 +983,61 @@ async def test_record_roadmap_failure_raise_preserves_original_exception(
     _assert_original_failure_in_chain(
         exc_info.value, "RuntimeError", FAILURE_MESSAGE
     )
+
+
+async def test_unreadable_child_result_records_failure_and_notifies(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S3 / FR-004: a child result the roadmap discards is recorded as a
+    roadmap failure and the notifier is reached.
+
+    Surviving must not mean swallowing: the operator must be told the scheduler
+    threw away a result it could not read, and the spec must be recorded
+    finished-but-not-landed.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    recorder = NotificationRecorder()
+    roadmap_id = _stable_roadmap_id(str(specs_root))
+
+    async with run_roadmap_with_notifications(
+        env,
+        RoadmapWorld(),
+        str(specs_root),
+        recorder,
+        statuses={"001-alpha": _SCRIPT_RETURN_NONE},
+    ) as handle:
+        status = await handle.result()
+
+    # The scheduler survived and bravo landed.
+    assert _status_of(status, "002-bravo").landed is True
+    assert status.running == []
+
+    # A failure notice went out naming the discarded result.
+    assert len(recorder.calls) >= 1, recorder.calls
+    assert any(
+        "001-alpha" in call.message and "could not read" in call.message
+        for call in recorder.calls
+    ), recorder.calls
+    assert all(call.roadmap_id == roadmap_id for call in recorder.calls)
+
+    # The fact is recorded durably in the verification store.
+    from factory.verify.store import connect
+
+    db_path = os.environ.get(ERGANE_VERIFICATION_DB_PATH_ENV)
+    assert db_path is not None
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT consecutive_count, last_failure_text FROM roadmap_failures WHERE roadmap_id = ?",
+            (roadmap_id,),
+        ).fetchone()
+        assert row is not None, "no roadmap-failure row recorded for the discarded child result"
+        assert "001-alpha" in row[1], row
+    finally:
+        conn.close()
