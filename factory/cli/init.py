@@ -87,6 +87,17 @@ RUNTIME_ROOT = Path(".ergane")
 #: Module-level seam so tests can inject a scripted prompter.
 _prompter_factory: Callable[[], Any] | None = None
 
+#: When True, the default `_TerminalPrompter` refuses on EOF instead of silently
+#: accepting defaults. Set by `init_command` from the `--non-interactive` flag so
+#: the distinguishing signal is the flag, not the state of stdin (US2, FR-005).
+_require_explicit_consent: bool = False
+
+#: Sentinel returned by `_init_default` when a manifest key has no safe default.
+#: A non-interactive path that omits such a field must refuse before writing
+#: anything (FR-004).
+_NO_DEFAULT = object()
+
+
 def _default_forge(*, repo_path: str) -> Any:
     """Resolve the forge this repository's manifest declares (049 FR-014).
 
@@ -138,7 +149,16 @@ class _TerminalPrompter:
             display = f"{prompt} [{default}]"
         try:
             answer = input(f"{display}: ")
-        except EOFError:
+        except (EOFError, ValueError, RuntimeError):
+            # US2/FR-005: a closed stdin is not consent unless the operator
+            # explicitly asked for non-interactive mode.  A closed `StringIO`
+            # raises `ValueError`; a real closed stdin raises `EOFError` or
+            # `RuntimeError` depending on the interpreter path.
+            if _require_explicit_consent:
+                raise OperatorError(
+                    f"stdin is closed; cannot answer question: {prompt}",
+                    code=EXIT_USER,
+                ) from None
             answer = ""
         if default is not None and answer.strip() == "":
             return default
@@ -235,6 +255,15 @@ def add_init_parser(subparsers: argparse._SubParsersAction) -> argparse.Argument
             "also wire the repo's GitHub side to match the declarations: enable "
             "the merge queue on the declared landing branch, require one check "
             "per declared gate, and scaffold the workflow that produces them"
+        ),
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        dest="non_interactive",
+        help=(
+            "use documented defaults for every question; fields with no safe "
+            "default cause a refusal"
         ),
     )
     parser.set_defaults(run=init_command)
@@ -416,6 +445,22 @@ def _build_defaults(repo_root: Path) -> dict[str, Any]:
     return defaults
 
 
+def _init_default(key: str, repo_root: Path) -> Any:
+    """Return the documented default for one manifest key, or `_NO_DEFAULT`.
+
+    This is the shared defaults source for the non-interactive path.  The
+    interactive path displays the same values through `_build_defaults`; a field
+    whose only safe value is operator-supplied has no default here.
+    """
+    defaults = _build_defaults(repo_root)
+    # Optional keys have a safe default of "absent".
+    if key in _OPTIONAL_KEYS:
+        return None
+    if key in defaults:
+        return defaults[key]
+    return _NO_DEFAULT
+
+
 def _ask_for_key(
     key: str,
     *,
@@ -459,6 +504,56 @@ def _ask_for_key(
         return parsed
 
 
+class _NonInteractivePrompter:
+    """A prompter that returns the documented default for each question.
+
+    Used by `init --non-interactive` so the same interview functions drive the
+    non-interactive path (trap 1).  A field with no safe default causes the
+    command to refuse before any manifest is written (FR-004).
+    """
+
+    def __init__(self, repo_root: Path, reports: list[str]) -> None:
+        self._repo_root = repo_root
+        self._reports = reports
+
+    def ask(self, prompt: str, *, default: str | None = None, error: str | None = None) -> str:
+        if error is not None:
+            raise AssertionError(
+                f"non-interactive answer was refused by the parser: {error}"
+            )
+        # Resolve the question from its prompt text.  `_PROMPTS` is keyed by
+        # manifest key; find the key whose human prompt matches.
+        key: str | None = None
+        for k, text in _PROMPTS.items():
+            if text == prompt:
+                key = k
+                break
+        # The slug question is not in `_PROMPTS`.
+        if key is None and prompt == "repo slug":
+            # The default is the normalized directory name or existing registry slug.
+            try:
+                known = registry.load_registry().for_path(self._repo_root)
+            except registry.RegistryError:
+                known = None
+            default_slug = known.slug if known is not None else registry.normalize_slug(self._repo_root.name)
+            self._reports.append(f"applied default: repo slug = \"{default_slug}\"")
+            return default_slug
+        if key is None:
+            raise AssertionError(f"non-interactive prompter does not know prompt: {prompt!r}")
+        value = _init_default(key, self._repo_root)
+        if value is _NO_DEFAULT:
+            raise OperatorError(
+                f"non-interactive init cannot answer question: {prompt} "
+                "(no safe documented default)",
+                code=EXIT_USER,
+            )
+        if value is None:
+            return ""
+        rendered = _yaml_repr(value)
+        self._reports.append(f"applied default: {key} = {rendered}")
+        return rendered
+
+
 def _render_manifest(values: dict[str, Any]) -> str:
     """Render the in-progress manifest as YAML."""
     ordered: dict[str, Any] = {}
@@ -475,10 +570,15 @@ def init_command(args: argparse.Namespace) -> int:
     touched: it is the judging half of init, and its exit code is the contract
     (0 when every finding passes, non-zero when any fails).
     """
+    global _require_explicit_consent
+
     repo_root = resolve_repo_root(args.path)
 
     if getattr(args, "check", False):
         return run_check(repo_root)
+
+    non_interactive = getattr(args, "non_interactive", False)
+    _require_explicit_consent = not non_interactive
 
     defaults = _build_defaults(repo_root)
 
@@ -490,28 +590,40 @@ def init_command(args: argparse.Namespace) -> int:
         if key in defaults
     }
 
-    prompter = _prompter()
+    reports: list[str] = []
+    if non_interactive:
+        prompter: Any = _NonInteractivePrompter(repo_root, reports)
+    else:
+        prompter = _prompter()
 
-    for key in _TOP_LEVEL_KEYS:
-        default_value = manifest_values.get(key)
-        value = _ask_for_key(
-            key,
-            default_value=default_value,
-            manifest_values=manifest_values,
-            prompter=prompter,
-        )
-        if value is None:
-            manifest_values.pop(key, None)
-        else:
-            manifest_values[key] = value
+    try:
+        for key in _TOP_LEVEL_KEYS:
+            default_value = manifest_values.get(key)
+            value = _ask_for_key(
+                key,
+                default_value=default_value,
+                manifest_values=manifest_values,
+                prompter=prompter,
+            )
+            if value is None:
+                manifest_values.pop(key, None)
+            else:
+                manifest_values[key] = value
 
-    # The slug is declared by the operator and lives in the engine's registry,
-    # never in the manifest: it is what the engine calls this repo, not what the
-    # repo declares about itself.
-    slug = _ask_for_slug(repo_root, prompter=prompter)
+        # The slug is declared by the operator and lives in the engine's registry,
+        # never in the manifest: it is what the engine calls this repo, not what the
+        # repo declares about itself.
+        slug = _ask_for_slug(repo_root, prompter=prompter)
+    finally:
+        # Reset so a subsequent invocation in the same process is not permanently
+        # pinned to the last invocation's flag.
+        _require_explicit_consent = False
 
     text = _render_manifest(manifest_values)
     _write_scaffold(repo_root, text)
+
+    for line in reports:
+        print(line)
 
     registration = _register(slug, repo_root)
 
