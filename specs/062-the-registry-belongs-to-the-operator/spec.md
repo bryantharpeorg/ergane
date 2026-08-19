@@ -1,5 +1,23 @@
 ---
-state: ready
+state: landed
+# ATTESTED landed 2026-08-19 5:05 PM CT by an operator session, on git evidence,
+# after the epic completed 3/3 on the roadmap. `ergane spec landed
+# specs/062-the-registry-belongs-to-the-operator --default-branch ergane-buildout`
+# reports, on cb093ef:
+#
+#   US1 landed at 0fff7060a011 (observed)   PR #215, 2026-08-19 2:32 PM CT
+#   US2 landed at 1813e484d0b5 (observed)   PR #217, 2026-08-19 3:58 PM CT
+#   US3 landed at 539a38a06534 (observed)   PR #219, 2026-08-19 3:46 PM CT
+#
+# Attested because the roadmap reads THIS frontmatter, not git. Left at `ready`,
+# a fully-landed spec stays dispatchable and takes the next epic slot -- which is
+# what 056 did on this same roadmap earlier today. The attestation is what stops
+# the scheduler re-picking finished work.
+#
+# NOT attested: that the work is good. Only that it landed. Trap 4's precedence
+# chain -- which registry THIS repository resolves -- has not been exercised by an
+# operator independently of the gate.
+#
 # Flipped draft -> ready 2026-08-19 ~12:15 AM CT at the operator's instruction.
 # Ready is eligibility, not dispatch. No hard dependency, but read this spec's
 # trap 4 before dispatching: the precedence chain it introduces can change which

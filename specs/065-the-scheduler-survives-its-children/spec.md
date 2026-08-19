@@ -1,5 +1,38 @@
 ---
-state: ready
+state: landed
+# ATTESTED landed 2026-08-19 5:05 PM CT by an operator session, on git evidence.
+# All three stories landed first attempt. `ergane spec landed
+# specs/065-the-scheduler-survives-its-children --default-branch ergane-buildout`
+# reports, on cb093ef:
+#
+#   US1 landed at 7c3adf38fad5 (observed)   PR #221, 2026-08-19 4:10 PM CT
+#   US2 landed at 28a988aac23a (observed)   PR #218, 2026-08-19 3:37 PM CT
+#   US3 landed at 4de82ca969bb (observed)   PR #220, 2026-08-19 4:02 PM CT
+#
+# WHAT THIS ATTESTATION DOES NOT CLAIM, and the distinction matters more here
+# than on any other spec in the set:
+#
+# US1's guard is IN THE RUNNING WORKER. Verified, not assumed: the guard is at
+# `factory/roadmap/workflow.py:849` (`if not _is_epic_status(status)`), and
+# `systemctl --user show ergane-worker.service` gives ExecMainStart
+# 2026-08-19T21:28:45Z -- 18 minutes AFTER US1 merged at 21:10Z. The roadmap run
+# `roadmap-specs-2026-08-19T21:30:00Z` and `epic-061` both started after that.
+#
+# But the guard has still never been watched surviving a real epic completion.
+# SC-002 -- two epics completing back to back under one roadmap run chain with no
+# operator between them -- has not happened on this host, before or after the fix.
+# 061 is the first execution that will test it. Until it does, this spec is
+# landed, deployed, and UNPROVEN, and that is the gate on unattended running.
+#
+# AND THE CAUSE IS STILL UNKNOWN. US3 did the honest thing US3-S3 permitted
+# rather than the dishonest thing it forbade: its commit states that the local
+# Temporal test environment could not reproduce the live binary/null return, that
+# the red test was obtained by temporarily breaking the return rather than by
+# reproducing the defect, and that "the root cause of the production null return
+# is stated explicitly as not determined by this attempt." So what landed is a
+# contract test plus a guard against a mechanism nobody has yet explained. That
+# is worth having and is not the same as a fix.
+#
 # FLIPPED READY 2026-08-19 2:55 PM CT at the operator's instruction, and
 # dispatched BY HAND rather than through the roadmap, at all three nodes in
 # parallel. The operator asked for the 035 escape hatch "to get it done
