@@ -1,0 +1,50 @@
+{
+  "epic_id": "007-parallel-dispatch",
+  "feature": "007-parallel-dispatch",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane-007-target",
+  "nodes": [
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "007-parallel-dispatch:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-006"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "implementer",
+      "spec_ref": "007-parallel-dispatch:US4",
+      "requirement_keys": [
+        "US4",
+        "FR-007",
+        "FR-008",
+        "FR-009"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us5",
+      "story_key": "US5",
+      "persona": "implementer",
+      "spec_ref": "007-parallel-dispatch:US5",
+      "requirement_keys": [
+        "US5",
+        "FR-010",
+        "FR-011"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}

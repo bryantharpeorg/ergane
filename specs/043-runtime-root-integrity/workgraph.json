@@ -1,0 +1,66 @@
+{
+  "epic_id": "043-runtime-root-integrity",
+  "feature": "043-runtime-root-integrity",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "043-runtime-root-integrity:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "043-runtime-root-integrity:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-002",
+        "FR-006"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "043-runtime-root-integrity:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-003",
+        "FR-004"
+      ],
+      "depends_on": [
+        "us2"
+      ],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "implementer",
+      "spec_ref": "043-runtime-root-integrity:US4",
+      "requirement_keys": [
+        "US4",
+        "FR-005"
+      ],
+      "depends_on": [
+        "us3"
+      ],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}

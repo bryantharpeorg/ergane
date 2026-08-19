@@ -1,0 +1,42 @@
+{
+  "epic_id": "026-manifest-self-extension",
+  "feature": "026-manifest-self-extension",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "026-manifest-self-extension:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "026-manifest-self-extension:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-003",
+        "FR-004",
+        "FR-005",
+        "FR-006",
+        "FR-007",
+        "FR-008"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    }
+  ]
+}

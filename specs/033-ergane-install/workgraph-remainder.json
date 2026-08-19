@@ -1,0 +1,36 @@
+{
+  "epic_id": "033-ergane-install",
+  "feature": "033-ergane-install",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "033-ergane-install:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-006"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "033-ergane-install:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-007"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us2"
+      ],
+      "timeout_override_s": null
+    }
+  ]
+}
