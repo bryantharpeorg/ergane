@@ -13,7 +13,9 @@
         "US1",
         "FR-001",
         "FR-002",
+        "FR-003",
         "FR-004",
+        "FR-005",
         "FR-016",
         "FR-006",
         "FR-007",
@@ -30,13 +32,11 @@
       "spec_ref": "017-peer-channel:US2",
       "requirement_keys": [
         "US2",
-        "FR-003",
-        "FR-017",
-        "FR-005"
+        "FR-017"
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us1"
+        "us5"
       ],
       "timeout_override_s": null
     },
@@ -81,11 +81,12 @@
         "US5",
         "FR-013",
         "FR-014",
-        "FR-015"
+        "FR-015",
+        "FR-018"
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us3"
+        "us1"
       ],
       "timeout_override_s": null
     }

@@ -1,58 +1,133 @@
 # Implementation Plan: Peer Channel
 
 **Input**: [spec.md](spec.md) in this directory. Grounded in the 008
-implementation as it landed (PRs #11/#12/#13, attested 2026-08-07).
+implementation as it landed (PRs #11/#12/#13, attested 2026-08-07), and
+re-grounded on 2026-08-18 against 041-escalation-workflow, which moved the
+mechanism this plan reuses.
 
-## Reuse inventory (verified against the tree 2026-08-08)
+## What 041 moved, and why it makes US1 smaller
+
+This plan was written on 2026-08-08. Spec 041 landed afterwards and **took the
+question lifecycle out of the epic workflow**. It was motivated by this very
+spec: the peer-park deadlock is the recorded evidence that welding a park into
+the epic workflow costs the next consumer. That next consumer is you.
+
+What this changes, concretely:
+
+- A question is now a **child workflow** — `QuestionWorkflow`
+  (`factory/escalation/question.py:87`), a sibling of `EscalationWorkflow`. It
+  owns its own signal, its own 8h window, its own ferry dedup and its own row.
+- The epic workflow starts it and parks the node:
+  `factory/workgraph/workflow.py:1320` (`start_child_workflow`), then sets
+  `record.state = NodeState.WAITING_OPERATOR` and `record.pending_question_id`,
+  then awaits at `workflow.py:1357`.
+
+**So do not build peer messages as sibling buffers inside the epic workflow.**
+That was this plan's original instruction and it is now the wrong shape — it
+swims against the tree and re-commits the mistake 041 was written to undo.
+Build a `MessageWorkflow` child in `factory/escalation/`, modelled on
+`question.py`, and start it from the same seam.
+
+**This is what makes FR-016 cheap.** Read `factory/workgraph/workflow.py:1344`.
+It is one line:
+
+```python
+self._paused = True
+```
+
+That single line is the deadlock. It is what raises the scheduler's pause flag
+(consumed at `workflow.py:691`, which drains and parks the whole scheduler until
+the flag clears). FR-016 forbids exactly it for a peer park. **Mirror the
+question block and omit that line** — plus give the park its own `NodeState`
+member alongside `WAITING_OPERATOR` (`factory/workgraph/models.py:111`), because
+FR-016 also requires a distinct node state.
+
+Note the consequence for the drain: `_drain_in_flight` skips nodes in
+`WAITING_OPERATOR` (`workflow.py:1027`) so a parked question is not treated as a
+bracket to close. A new peer-park state must be added to that same exemption, or
+the drain will wait forever on a node that is alive by design. That test is the
+one worth writing first.
+
+## Reuse inventory (re-verified against the tree 2026-08-18 — every anchor below was read)
 
 The channel exists; this feature adds the address. Every mechanism below is
-landed and live:
+landed and live.
 
-- **Free-text answer signal + incurious buffering** —
-  `factory/workgraph/workflow.py:541-566` (`question_answered`, buffered in
-  `_answers` keyed by id, `_questions` stashed at park time,
-  `workflow.py:472-487`). Peer messages get sibling buffers with the same
+**Read the note "What 041 moved" before this list.** The 2026-08-08 edition of
+this inventory pointed the question mechanism at `factory/workgraph/workflow.py`.
+041-US3 moved it out. Every anchor below is the 2026-08-18 location; the old ones
+resolve to unrelated code, not to nothing, so a stale anchor here reads as a real
+answer.
+
+- **Free-text answer signal + incurious buffering** — now a child workflow:
+  `factory/escalation/question.py:87` (`QuestionWorkflow`), whose
+  `question_answered` handler is at `question.py:98` and buffers into
+  `self._replies` (`question.py:95`), read by a `wait_condition` at
+  `question.py:142`. The wire name is `QUESTION_SIGNAL_NAME`
+  (`factory/notify/service.py:95`). Peer messages get a sibling with the same
   discipline: signals only buffer; wait conditions read.
-- **The in-flight ferry** — `factory/workgraph/adapter.py:108-203`
-  (`FERRY_QUESTION_FILE`/`FERRY_ANSWER_FILE` in `$ATTEMPT_ARCHIVE`,
-  `_FerryState`, poll cadence constants), with the activity-side callbacks
-  `ferry_send_question`/`ferry_read_answer` wired at
-  `factory/activities/agent_activities.py:73,453`. The addressee line is
+- **The in-flight ferry** — `factory/workgraph/adapter.py:148-217`
+  (`FERRY_QUESTION_FILE`/`FERRY_ANSWER_FILE` at `adapter.py:148-149` in
+  `$ATTEMPT_ARCHIVE`, `_FerryState` at `adapter.py:170`, the question write at
+  `adapter.py:199`, `write_answer` at `adapter.py:206`), with the activity-side
+  callbacks `ferry_send_question`/`ferry_read_answer` now in
+  `factory/activities/notify_activities.py:918,942`, imported and wired in
+  `factory/activities/agent_activities.py:74,230,476`. The addressee line is
   parsed from the same file; delivery down to a running peer reuses
   `write_answer`'s pattern with a distinct inbox file so a peer message is
   never confused with an operator answer.
-- **Question store + guarded resolution** — `factory/verify/store.py:136-163`
+- **Question store + guarded resolution** — `factory/verify/store.py:213`
   (questions DDL: 12-hex id as routing key, resolution states, expiry
   column, partial index on pending) and the guarded `resolve_question`
-  first-wins arbiter (`store.py:609+`). Messages are a sibling table
+  first-wins arbiter (`store.py:1183`). Messages are a sibling table
   (`messages`: id, sender epic/node/attempt/persona, addressee, body,
   reply, resolution, expiry) in the same WAL/contract-DDL discipline.
-- **Expiry loop** — the workflow's timer-driven park/expiry evaluation
-  (`workflow.py:682-691` region): the same beat evaluates message expiry
-  and sweeps mailbox outboxes via activity, so no new clock exists.
+- **Expiry** — no new clock: the question's window is owned by its child
+  workflow (`factory/escalation/question.py:109` onward, anchored at the send
+  rather than compared against the row's `expires_at` — two clocks, one bug).
+  A message window is the same shape in its own child. The mailbox outbox
+  sweep is the one genuinely new beat; hang it off the same activity cadence,
+  never off a wall clock read inside workflow code (039's guard finds that).
 - **Degradation target** — the whole 008 US1/US2 path
-  (`notify_activities.py:169+`, `question_message` in
-  `factory/notify/messages.py`, `CallbackBridge.handle_reply` →
-  `_answer_signal` in `factory/notify/service.py:198,279`): degrading a
-  message = writing a question row from its content and shipping it through
-  this path unchanged.
+  (`send_question` at `factory/activities/notify_activities.py:763`,
+  `question_message` at `factory/notify/messages.py:337`,
+  `CallbackBridge.handle_reply` at `factory/notify/service.py:472` →
+  `_answer_signal` at `service.py:644`): degrading a message = writing a
+  question row from its content and shipping it through this path unchanged.
 - **Prompt assembly's operator-answer section** — the dedicated section US2
   of 008 delivers answers through; the peer-message section is its sibling
   in the same assembly seam (`agent_activities.py`, prompt construction).
 - **Telegram mirror** — the notify bridge's plain-notification path (no
   keyboard, no reply key), already used for lifecycle notices.
 
-## Reuse inventory — US4 consults
+## Reuse inventory — US5 consults (the story that now lands second)
 
-- **Ephemeral spawn machinery is every attempt**: `adapter_for` +
-  `run_attempt` (`factory/workgraph/adapter.py:219-249`) already dispatch,
+- **Ephemeral spawn machinery is every attempt**: `adapter_for`
+  (`factory/workgraph/adapter.py:668`) + `run_attempt` (the protocol at
+  `adapter.py:653`, the claude-CLI implementation at `adapter.py:816`)
+  already dispatch,
   monitor, classify, and tear down a one-shot `claude -p`. A consult is
   `run_attempt` with no verification ladder behind it — the reply is the
   final message, classification is reply-or-not.
-- **The judge is the persona precedent** for one-request lifetimes and for
-  context-in-prompt over worktree access: v0 consults get no worktree —
-  message, spec, plan, and asker identity are assembled into the prompt
-  (the registry can grant a worktree later without touching the seam).
+- **The judge is the persona precedent for one-request lifetimes — and for
+  nothing else.** It was also read, on 2026-08-08, as the precedent for
+  context-in-prompt over worktree access, and that half was **reversed by the
+  operator on 2026-08-18**: a consult reads the asking node's worktree,
+  read-only, live (FR-018). The judge is blinded to everything but a finished
+  diff on purpose; a consult advises work in progress and needs to see it.
+  Assembled context — message, spec, plan, asker identity — is still assembled;
+  the worktree is added to it, not substituted for it.
+- **The worktree the consult reads already has an address.** Node worktrees live
+  at `.factory/worktrees/<epic>/<node>` (`factory/workgraph/worktree.py`, the
+  same path the branch namespace mirrors), on this host, so the grant is a path
+  and a mode — not a transport. Resolve it from the asker's node record rather
+  than by string-building the path a second time.
+- **`needs_worktree` in `personas.yaml` is not this.** It is a real field
+  (`factory/config.py:103,203`, required at `:75`) meaning *provision this
+  persona its own worktree from a base* — `architect` already carries
+  `needs_worktree: true` with `write_scope: docs`. FR-018's grant is a
+  read-only view of **someone else's** existing worktree. Reaching for the
+  existing field because it has the right name is how this becomes a write.
 - **Key issuance bracket**: consults get their own scoped virtual key,
   issued and torn down inside the spawn bracket (constitution V — no key
   outlives its work), and the usage read meters them exactly as attempts,
@@ -107,7 +182,15 @@ landed and live:
   nothing but tokens, which the usage read already meters. Consults are the
   exception that proves it: they DO spend, so they are metered and
   attributed like attempts (FR-015) while consuming no ladder slot.
-- **No consult recursion** (US4-S3): a consult's output is scanned for the
+- **Read-only is a grant, not an instruction** (FR-018). The finding
+  `agent-edits-outside-its-worktree` stands at two occurrences of two, and both
+  agents had been told to stay put — the cause is structural, since a node
+  worktree is nested inside the operator's checkout and is therefore an ancestor
+  of the agent's cwd. A consult pointed at another node's worktree is that same
+  shape with a second agent in it. Enforce the bound where the process is
+  configured, and test the refusal by observing a write that does not land, not
+  by reading the prompt.
+- **No consult recursion** (US5-S3): a consult's output is scanned for the
   marker only to refuse it — consults answer or decline, and a consult that
   wants help is a decline. Without this rule a consult chain is an unbounded
   spawn tree.
@@ -117,14 +200,23 @@ landed and live:
 
 ## Structure
 
-US1: grammar + routing + store + degradation + cap + sweep extension
-(workflow.py, adapter.py, store.py, agent_activities.py, notify surfaces).
-US2: `peers.py` + mailbox transport + mirror + registry refusals
-(`peer_activities.py`, one workflow seam for outbox sweep on the expiry
-beat). US3: cross-epic signal + namespace completion + decision-log and
-architecture-doc entries. US4: `consult_activities.py` + the consult rung
-in routing + memory config — parallel to US2/US3, merged after US1. No new
-dependency; no new store; no new clock.
+**Dispatch order is US1 → US5 → US2 → US3 → US4**, strictly serial, every edge a
+merge-edge. The 2026-08-18 reorder moved consults from fourth to second; the
+paragraphs below are written in that order and the story numbers are the spec's,
+unchanged.
+
+US1: grammar + routing + store + degradation + cap + sweep extension + threading
+and the no-verdict guard (FR-003, FR-005, which moved here with the reorder) —
+`workflow.py`, `store.py`, `agent_activities.py`, notify surfaces. US5:
+`consult_activities.py` + the consult rung in routing + the worktree grant +
+memory config. US2: the adapter's inbound direction and the prompt instructions
+that go with it (`adapter.py`). US3: `peers.py` + mailbox transport + mirror +
+registry refusals (`peer_activities.py`, one workflow seam for outbox sweep on
+the expiry beat). US4: cross-epic signal + namespace completion + decision-log
+and architecture-doc entries. No new dependency; no new store; no new clock.
+
+US5 and US3 both insert a rung into the same routing ladder, which is why
+nothing here runs beside anything else. At concurrency 1 that costs nothing.
 
 ## Added at the 2026-08-16 re-verification, and read this part first
 
@@ -152,10 +244,12 @@ not be dispatched at all. Phase 2b now exists. A repair on 2026-08-16 (#92) had
 addressed part of the renumbering and missed this half.
 
 **Sizing risk, stated plainly.** Five stories, and US5 alone spans consult-spawn
-plus a two-layer memory integration. The diff ceiling is 61,440 bytes, refused
-deterministically. Measure through `size_refusal` from
-`factory/verify/diffbounds.py`, importing `DIFF_INPUT_LIMIT` rather than quoting
-it. **If a story does not fit whole, say where you would split it — do not trim
+plus a two-layer memory integration. The diff ceiling is 65,536 bytes, refused
+deterministically — **raised from 61,440 on 2026-08-17**, so any 60 KiB figure
+you have seen quoted for this repo is stale. Measure through `size_refusal`
+(`factory/verify/diffbounds.py:113`), importing `DIFF_INPUT_LIMIT`
+(`diffbounds.py:42`) rather than quoting it; that is exactly why the number
+moved under this paragraph without breaking anything that imported it. **If a story does not fit whole, say where you would split it — do not trim
 checks.** On 2026-08-16 six stories landed on evidence the judge only partly saw,
 one at 2.1x the ceiling; a seventh refused to fit, reported it, and was split
 instead. The refusal was the right answer and cost nothing.
