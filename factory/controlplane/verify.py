@@ -29,6 +29,7 @@ import httpx
 from factory.config import EXAMPLE_ALIAS_PREFIXES, is_example_alias
 from factory.controlplane.config import ControlPlaneConfig
 from factory.controlplane.resolve import temporal_target_for
+from factory.discovery.llm_scanner import EndpointClassification
 from factory.mergequeue.models import Finding
 from factory.usage.litellm_client import LiteLLMClient
 
@@ -353,6 +354,87 @@ class LLMProbe:
                 ),
             )
 
+        # --- key-management capability probe (US1) ----------------------------
+        # Before burning alias completions, prove the gateway can actually
+        # dispatch: mint a short-TTL key, assert it is model-constrained, check
+        # that spend logs are readable, and revoke it.  The classification
+        # vocabulary is the scanner's own so the two do not drift.  Revocation
+        # runs in a `finally` so a key is never leaked on the failure path
+        # (FR-002).
+        key_probe_detail: str | None = None
+        key_probe_passed = False
+        minted_key: str | None = None
+        client = _llm_client_factory(config.llm)
+        try:
+            try:
+                minted_key = await client.issue_key(
+                    key_alias="ergane-install-verify-probe",
+                    models=list(alias_to_personas.keys()),
+                    ttl="5m",
+                )
+            except Exception as exc:
+                key_probe_detail = self._classify_key_failure(exc, base_url)
+            else:
+                try:
+                    info = await client.get_key_info(minted_key)
+                except Exception as exc:
+                    key_probe_detail = (
+                        f"gateway minted a key but /key/info could not confirm its "
+                        f"properties at {base_url}: {type(exc).__name__}: {exc}"
+                    )
+                else:
+                    constrained = self._key_is_model_constrained(
+                        info, set(alias_to_personas)
+                    )
+                    if not constrained:
+                        key_probe_detail = (
+                            f"gateway minted a key for the probe but it is not "
+                            f"model-constrained; the factory relies on per-attempt "
+                            f"model constraints to bind personas to models"
+                        )
+                    else:
+                        # Spend-log reads are part of attribution; a gateway that
+                        # cannot report usage cannot support the factory's spend
+                        # tracking (constitution V).
+                        try:
+                            from datetime import datetime, timezone
+
+                            await client.fetch_spend_log_rows(
+                                minted_key,
+                                issued_at=datetime.now(timezone.utc).isoformat(),
+                            )
+                        except Exception as exc:
+                            key_probe_detail = (
+                                f"gateway minted a model-constrained key but "
+                                f"/spend/logs/v2 did not answer at {base_url}: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                        else:
+                            key_probe_detail = (
+                                f"gateway minted, constrained and revoked a "
+                                f"short-TTL verify key; spend logs answered"
+                            )
+                            key_probe_passed = True
+        finally:
+            if minted_key is not None:
+                try:
+                    await client.revoke_key_by_tokens([minted_key])
+                except Exception:
+                    pass
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
+        if not key_probe_passed:
+            return LLMSnapshot(
+                aliases=tuple(sorted(alias_to_personas)),
+                persona_by_alias={a: tuple(sorted(p)) for a, p in alias_to_personas.items()},
+                results=(),
+                detail=key_probe_detail or f"LLM gateway key-management probe failed at {base_url}",
+            )
+
+        # --- per-alias completion probe (054/US3) -----------------------------
         async def _probe_one_alias(alias: str, persona_names: set[str]) -> LLMAliasResult:
             """POST a 1-token completion for one alias and return the result."""
             request = {
@@ -361,11 +443,9 @@ class LLMProbe:
                 "max_tokens": 1,
             }
             try:
-                client = _llm_client_factory(config.llm)
                 if hasattr(client, "chat_completion"):
                     response_data = await client.chat_completion(request)
                     completed = bool(response_data.get("choices"))
-                    await client.aclose()
                 else:
                     async with httpx.AsyncClient(
                         base_url=base_url.rstrip("/"),
@@ -428,8 +508,46 @@ class LLMProbe:
             aliases=tuple(r.alias for r in results),
             persona_by_alias={r.alias: r.persona_names for r in results},
             results=tuple(results),
-            detail=detail,
+            detail=f"{key_probe_detail}; {detail}" if key_probe_detail else detail,
         )
+
+    @staticmethod
+    def _classify_key_failure(exc: Exception, base_url: str) -> str:
+        """Map a key-management failure to the same vocabulary the scanner uses.
+
+        A config-only LiteLLM proxy (no `DATABASE_URL`) answers completions and
+        404s `/key/generate`; the failure names that capability and its usual
+        cause so the operator knows the remedy (FR-004).
+        """
+        message = str(exc).lower()
+        if "404" in message or "unknown route" in message or "not found" in message:
+            classification = EndpointClassification.INFERENCE_ONLY
+            return (
+                f"LLM gateway is {classification.value}: key-management API "
+                f"(/key/generate) does not answer at {base_url}; "
+                f"the usual cause is a LiteLLM proxy started without DATABASE_URL"
+            )
+        return (
+            f"LLM gateway key-management API failed at {base_url}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    @staticmethod
+    def _key_is_model_constrained(
+        info: dict[str, Any], expected_aliases: set[str]
+    ) -> bool:
+        """Whether the minted key's info shows a non-empty model list.
+
+        The constraint must be at least one of the expected aliases; an empty
+        list or an absent models field means the key is unconstrained.
+        """
+        inner = info.get("info") if isinstance(info, dict) else None
+        if not isinstance(inner, dict):
+            inner = info
+        models = inner.get("models") if isinstance(inner, dict) else None
+        if not isinstance(models, list):
+            return False
+        return bool(models) and any(isinstance(m, str) and m in expected_aliases for m in models)
 
     def evaluate(self, snapshot: LLMSnapshot) -> Finding:
         # An empty result set means no aliases were probed (no credential, or an

@@ -317,32 +317,85 @@ async def _loopback_memory_listener() -> AsyncIterator[str]:
 
 @asynccontextmanager
 async def _loopback_llm_listener() -> AsyncIterator[str]:
-    """A tiny HTTP server that answers a chat completion on /chat/completions."""
+    """A tiny HTTP server that answers the LLM probe's chat and admin endpoints.
+
+    US1 extended the probe to mint a key, assert its model constraint, and
+    revoke it, so the double now answers /key/generate, /key/info,
+    /spend/logs/v2 and /key/delete as well as /chat/completions.
+    """
     server: asyncio.Server | None = None
 
     async def _handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        # httpx reuses connections, so handle every request on the socket until
+        # the client closes it.
         try:
-            headers = bytearray()
             while True:
-                line = await reader.readline()
-                if not line or line in (b"\r\n", b"\n"):
+                request_line = await reader.readline()
+                if not request_line:
                     break
-                headers.extend(line)
-            content_length = 0
-            for h in headers.split(b"\r\n"):
-                if h.lower().startswith(b"content-length:"):
-                    content_length = int(h.split(b":", 1)[1].strip())
-            if content_length:
-                await reader.readexactly(content_length)
-            body = b'{"choices":[{"message":{"content":"pong"}}]}'
-            writer.write(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
-                + str(len(body)).encode()
-                + b"\r\n\r\n"
-                + body
-            )
-            await writer.drain()
-            await asyncio.sleep(0.05)
+                parts = request_line.decode("ascii", errors="replace").split()
+                if len(parts) < 2:
+                    break
+                raw_path = parts[1]
+                path = raw_path.split("?", 1)[0]
+
+                headers = bytearray()
+                while True:
+                    line = await reader.readline()
+                    if not line or line in (b"\r\n", b"\n"):
+                        break
+                    headers.extend(line)
+                content_length = 0
+                for h in headers.split(b"\r\n"):
+                    if h.lower().startswith(b"content-length:"):
+                        content_length = int(h.split(b":", 1)[1].strip())
+                if content_length:
+                    await reader.readexactly(content_length)
+
+                if path == "/chat/completions":
+                    body = b'{"choices":[{"message":{"content":"pong"}}]}'
+                elif path == "/key/generate":
+                    body = b'{"key":"sk-loopback-verify","key_alias":"verify","models":[],"metadata":{},"duration":"5m","max_budget":null}'
+                elif path == "/key/info":
+                    # Return every alias the shipped registry uses so the
+                    # model-constraint assertion passes regardless of which persona
+                    # the loopback double was asked about.
+                    body = (
+                        b'{"key":"sk-loopback-verify","info":{'
+                        b'"key_alias":"verify",'
+                        b'"models":['
+                        b'"ollama-cloud/kimi-k2.7-code",'
+                        b'"ollama-cloud/deepseek-v4-flash",'
+                        b'"ollama-cloud/glm-5.2",'
+                        b'"anthropic/claude-opus-5",'
+                        b'"local/qwen3.6-27b"'
+                        b'],'
+                        b'"metadata":{},'
+                        b'"spend":0.0'
+                        b'}}'
+                    )
+                elif path == "/spend/logs/v2":
+                    body = b'{"data":[],"total_records":0,"current_page":1,"total_pages":1}'
+                elif path == "/key/delete":
+                    body = b'{"deleted_keys":["sk-loopback-verify"]}'
+                else:
+                    body = b'{"error":{"message":"not found"}}'
+
+                status = b"200 OK" if path in (
+                    "/chat/completions",
+                    "/key/generate",
+                    "/key/info",
+                    "/spend/logs/v2",
+                    "/key/delete",
+                ) else b"404 Not Found"
+                writer.write(
+                    b"HTTP/1.1 " + status + b"\r\nContent-Type: application/json\r\nContent-Length: "
+                    + str(len(body)).encode()
+                    + b"\r\n\r\n"
+                    + body
+                )
+                await writer.drain()
+                await asyncio.sleep(0.05)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -478,6 +531,33 @@ class _FakeLiteLLMClient:
     async def chat_completion(self, request: dict[str, Any]) -> dict[str, Any]:
         self.completion_calls.append(request)
         return {"choices": [{"message": {"content": "pong"}}]}
+
+    async def issue_key(
+        self,
+        *,
+        key_alias: str,
+        models: list[str],
+        metadata: dict[str, Any] | None = None,
+        ttl: str | None = None,
+    ) -> str:
+        return "sk-fake-verify-key"
+
+    async def get_key_info(self, key: str) -> dict[str, Any]:
+        return {
+            "key": key,
+            "info": {
+                "key_alias": "verify-probe",
+                "models": [self.persona_model],
+                "metadata": {},
+                "spend": 0.0,
+            },
+        }
+
+    async def fetch_spend_log_rows(self, key: str, *, issued_at: str) -> list[dict[str, Any]]:
+        return []
+
+    async def revoke_key_by_tokens(self, keys: list[str]) -> bool:
+        return True
 
     async def aclose(self) -> None:
         pass
@@ -908,12 +988,39 @@ class _FakeLiteLLMClient:
         self.completion_calls.append(request)
         return {"choices": [{"message": {"content": "pong"}}]}
 
+    async def issue_key(
+        self,
+        *,
+        key_alias: str,
+        models: list[str],
+        metadata: dict[str, Any] | None = None,
+        ttl: str | None = None,
+    ) -> str:
+        return "sk-fake-verify-key"
+
+    async def get_key_info(self, key: str) -> dict[str, Any]:
+        return {
+            "key": key,
+            "info": {
+                "key_alias": "verify-probe",
+                "models": [self.persona_model],
+                "metadata": {},
+                "spend": 0.0,
+            },
+        }
+
+    async def fetch_spend_log_rows(self, key: str, *, issued_at: str) -> list[dict[str, Any]]:
+        return []
+
+    async def revoke_key_by_tokens(self, keys: list[str]) -> bool:
+        return True
+
     async def aclose(self) -> None:
         pass
 
 
 def _fake_llm_factory(config: Cfg.LLM) -> Any:
-    return _FakeLiteLLMClient()
+    return _FakeLiteLLMClient(persona_model="ollama-cloud/kimi-k2.7-code")
 
 
 def _passing_host_seam() -> dict[str, Any]:
@@ -1012,8 +1119,10 @@ async def test_verify_llm_gather_against_live_double(
         )
         monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
         monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
-        # LiteLLMClient.from_env() is called first and requires these env vars.
-        monkeypatch.setenv("LITELLM_PROXY_URL", "http://127.0.0.1:1")
+        # Point the real LiteLLM admin client at the loopback double.  US1's
+        # probe uses issue_key / get_key_info / fetch_spend_log_rows / revoke,
+        # so the double must answer those endpoints, not only /chat/completions.
+        monkeypatch.setenv("LITELLM_PROXY_URL", llm_endpoint)
         monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-dummy")
 
         from factory.controlplane.config import load_controlplane_config
