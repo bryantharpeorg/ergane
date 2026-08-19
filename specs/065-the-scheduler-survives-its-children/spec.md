@@ -1,5 +1,28 @@
 ---
-state: draft
+state: ready
+# FLIPPED READY 2026-08-19 2:55 PM CT at the operator's instruction, and
+# dispatched BY HAND rather than through the roadmap, at all three nodes in
+# parallel. The operator asked for the 035 escape hatch "to get it done
+# quickly"; what he gets is the hatch ARMED rather than the hatch USED, and the
+# distinction is worth recording because it is a property of 035's design that
+# is easy to misremember:
+#
+#   The hand-back is only offered when the ladder returns ESCALATE
+#   (factory/workgraph/workflow.py:1439). A node that has not exhausted its
+#   attempts refuses any buffered signal outright -- "node ladder not
+#   exhausted", :1466-1470. And the accepted branch still runs the full
+#   gates + judge + PR + queue path (:1935), by design.
+#
+# So the hatch cannot be a shortcut PAST dispatch; used as one it would be
+# SLOWER, requiring three failed attempts at roughly $15 each before the signal
+# is even legal. It is an exit from a stuck node, not an alternative to
+# starting one.
+#
+# The fast path with the same effect is: dispatch all three stories at once
+# (they are declared independent and their file assignments were checked
+# against the tree, not assumed), and hand back the moment any node exhausts
+# instead of letting it re-ladder or page. That is what is happening.
+#
 # Drafted 2026-08-19 1:35 PM CT by an operator session, from two live incidents
 # on the same day rather than from a review.
 #
