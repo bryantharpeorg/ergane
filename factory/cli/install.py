@@ -107,9 +107,14 @@ def _deep_set(document: dict[str, Any], path: tuple[str, ...], value: Any) -> No
 def _controlplane_default(document: Mapping[str, Any], field: tuple[str, ...]) -> Any:
     """Return the documented default for an interview field.
 
-    This is the single source both the interactive and the file-driven paths read
-    (FR-006).  A returned value of `_NO_DEFAULT` means the field is required and
-    must be supplied by the operator or the answer file.
+    This is the shared defaults source the non-interactive paths read.  The
+    interactive path displays the same values through `BLANK_DOCUMENT` for fields
+    that have a safe default; fields with no safe default keep a placeholder in
+    `BLANK_DOCUMENT` only so the full-parser checks in `_ask` stay valid while
+    the interview is in progress (FR-006).
+
+    A returned value of `_NO_DEFAULT` means the field is required and must be
+    supplied by the operator or the answer file.
     """
     if field == ("version",):
         return 1
