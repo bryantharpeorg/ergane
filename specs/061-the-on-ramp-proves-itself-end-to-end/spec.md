@@ -1,5 +1,42 @@
 ---
-state: ready
+state: draft
+# HELD ready -> draft 2026-08-19 6:18 PM CT to STOP A RE-DISPATCH LOOP, not
+# because anything is wrong with the spec. us1 is landed; us2-us4 are not.
+#
+# WHAT HAPPENED. The epic died at 23:10Z: us2's PR failed the required `test`
+# check, the recovery attempt was told only the outcome word, it rebuilt
+# identical code, `max_recovery_cycles` (1, and unraisable) was spent, and us2
+# was KILLED taking us3 and us4 with it at attempt 0. The operator terminated the
+# epic. The roadmap's next tick then RE-DISPATCHED IT FIVE MINUTES LATER, because
+# `ready` plus `landed=False` is the whole of the dispatch predicate.
+#
+# WHY THAT WAS A LOOP RATHER THAN A RETRY. The relaunched node resumed the DEAD
+# RUN'S TREE. Verified on the live worktree at 6:17 PM CT:
+#   .factory/worktrees/061-.../us2 HEAD = `salvage(...): completed attempt 2`
+#   tests/test_ergane_init_creates_specs.py:40 calls git commit, and the file
+#   sets no user.email and no user.name anywhere.
+# That is the exact fixture whose `exit 128` killed the epic. CI has no git
+# identity; the sandbox HOME has a seeded .gitconfig, so it passes where it is
+# written and fails where it is checked. The relaunch would have failed the same
+# way, been killed the same way, and been re-dispatched again -- all night,
+# unattended.
+#
+# WHAT MUST BE TRUE BEFORE THIS RETURNS TO `ready`:
+#   1. The stale remote branches and PR #226 are cleared. `ergane build reset`
+#      archives local state and never touches the forge, so the dead run's
+#      `factory/061-.../us1` and `/us2` and its open PR outlive the kill. That is
+#      069/US3.
+#   2. The recovery agent receives the failing check's LOG.
+#      `interpreter/ci-failure-never-reaches-an-agent` is now REGRESSED at four
+#      occurrences -- it was marked resolved by spec 025, which landed, and whose
+#      own prose describes this night verbatim. Until an agent is told what
+#      failed, every red check costs the epic.
+#   3. Ideally `max_recovery_cycles` becomes operator-settable at all
+#      (`mergequeue/max-recovery-cycles-bounds-every-raced-node-and-no-operator-
+#      can-raise-it`). It is 1, constructed bare at every call site, and no
+#      configuration surface reaches it.
+#
+# Nothing restores this to `ready` automatically.
 depends_on_landed: [059-a-wired-repo-can-land, 060-install-can-be-driven-without-a-human]
 # Flipped draft -> ready 2026-08-19 ~12:15 AM CT at the operator's instruction.
 # Ready is eligibility, not dispatch, and here the distinction is enforced: the
