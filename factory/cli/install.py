@@ -226,6 +226,15 @@ def add_install_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        dest="non_interactive",
+        help=(
+            "use documented defaults for every question; fields with no safe "
+            "default cause a refusal"
+        ),
+    )
+    parser.add_argument(
         "--lock-timeout",
         type=float,
         default=DEFAULT_LOCK_TIMEOUT_S,
@@ -244,6 +253,9 @@ def install_command(args: argparse.Namespace) -> int:
 
     if getattr(args, "from_file", None) is not None:
         return _install_from_file(Path(args.from_file), path, timeout_s)
+
+    if getattr(args, "non_interactive", False):
+        return _install_non_interactive(path, timeout_s)
 
     try:
         with exclusive_lock(path, timeout_s=timeout_s):
@@ -270,6 +282,58 @@ def _write_config(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     path.chmod(0o600)
+
+
+# ---------------------------------------------------------------------------
+# Shared non-interactive planning (US1/US2)
+# ---------------------------------------------------------------------------
+
+
+def _install_non_interactive(path: Path, timeout_s: float) -> int:
+    """Use documented defaults and run the same interview without a terminal."""
+    # The blank document is the shared source for fields with safe defaults.
+    # Fields with no safe default are left missing and will be reported.
+    raw_doc: dict[str, Any] = copy.deepcopy(BLANK_DOCUMENT)
+    answers, reports, missing, completed = _plan_file_answers(raw_doc)
+
+    for line in reports:
+        print(line)
+
+    if missing:
+        raise OperatorError(
+            "non-interactive install is missing required fields with no safe default: "
+            + ", ".join(sorted(missing)),
+            code=EXIT_USER,
+        )
+
+    # Validate before taking the lock or writing.
+    try:
+        parse_controlplane_config(
+            render_controlplane_document(completed), source=str(path)
+        )
+    except ControlPlaneConfigError as refusal:
+        raise OperatorError(
+            _redact_parser_error(refusal, completed), code=EXIT_USER
+        ) from None
+
+    try:
+        with exclusive_lock(path, timeout_s=timeout_s):
+            document = _interview(path, prompter=_FilePrompter(answers))
+            text = render_controlplane_document(document)
+            _write_config(path, text)
+            print(f"wrote {path}")
+            print("")
+            print("verifying the control plane...")
+            findings, exit_code = verify_controlplane(str(path))
+            print(render_findings(findings))
+            return EXIT_OK if exit_code == 0 else EXIT_USER
+    except LockUnavailable as error:
+        raise OperatorError(
+            f"another `ergane install` holds the lock on {path} "
+            f"(waited {error.timeout_s:g}s); wait for it to finish, or remove "
+            f"{error.target.name}.lock if no install is running",
+            code=EXIT_USER,
+        ) from None
 
 
 # ---------------------------------------------------------------------------
