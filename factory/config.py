@@ -31,14 +31,26 @@ in as dead config.
 from __future__ import annotations
 
 import importlib.resources
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 import yaml
 
+from factory.env import resolve_env_path
+
 #: The registry's basename, identical in both layouts below.
 REGISTRY_FILENAME = "personas.yaml"
+
+#: Default relative path under XDG_CONFIG_HOME / HOME (FR-001).
+DEFAULT_REGISTRY_REL = Path("ergane") / REGISTRY_FILENAME
+
+#: Modern env variable name for the persona registry path.
+ERGANE_PERSONAS_PATH_ENV = "ERGANE_PERSONAS_PATH"
+
+#: Legacy env variable name honoured during the 062 rename.
+FACTORY_PERSONAS_PATH_ENV = "FACTORY_PERSONAS_PATH"
 
 
 def _resolve_default_registry_path() -> Path:
@@ -62,6 +74,39 @@ def _resolve_default_registry_path() -> Path:
     if packaged.is_file():
         return Path(str(packaged))
     return Path(__file__).resolve().parents[1] / REGISTRY_FILENAME
+
+
+def _xdg_config_home() -> Path:
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg)
+    return Path.home() / ".config"
+
+
+def resolve_default_registry_path() -> Path:
+    """Return the persona registry path: env override, then XDG/HOME, then package.
+
+    Mirrors ``factory/controlplane/config.py:resolve_config_path`` (FR-001):
+    ``ERGANE_PERSONAS_PATH`` wins, the legacy ``FACTORY_PERSONAS_PATH`` is
+    honored with one deprecation warning per process, and the default falls back
+    to ``~/.config/ergane/personas.yaml`` via ``XDG_CONFIG_HOME`` when set.
+
+    The final branch is the unchanged package-data resolver, so an installed
+    wheel with no operator config still resolves the shipped registry (FR-004,
+    trap 2). A present override that is unreadable or unparseable is the loader's
+    job to surface; this resolver does not silently fall back (FR-003, trap 1).
+    """
+    default = _xdg_config_home() / DEFAULT_REGISTRY_REL
+    env_path = resolve_env_path(
+        ERGANE_PERSONAS_PATH_ENV,
+        FACTORY_PERSONAS_PATH_ENV,
+        default,
+    )
+    if env_path != default:
+        return env_path
+    if default.is_file():
+        return default
+    return _resolve_default_registry_path()
 
 
 #: The shipped registry. A module-level constant because it is also the seam
@@ -117,12 +162,18 @@ class Persona:
 def load_personas(path: Path | str | None = None) -> dict[str, Persona]:
     """Parse and validate a persona registry, keyed by persona name.
 
-    Defaults to the shipped `personas.yaml`. Raises `ConfigError` for anything
-    that would leave a node unroutable: unreadable or malformed YAML, a missing
-    or unknown field, a `write_scope` outside the enum, or a persona whose
-    agent and model disagree.
+    Defaults to the resolved default registry path (env override, then
+    ``XDG_CONFIG_HOME`` / ``HOME``-relative, then package data). Raises
+    `ConfigError` for anything that would leave a node unroutable: unreadable
+    or malformed YAML, a missing or unknown field, a `write_scope` outside the
+    enum, or a persona whose agent and model disagree.
     """
-    registry_path = Path(path) if path is not None else DEFAULT_REGISTRY_PATH
+    registry_path = Path(path) if path is not None else resolve_default_registry_path()
+
+    if registry_path.is_dir():
+        raise ConfigError(
+            f"persona registry path is a directory, expected a file: {registry_path}"
+        )
 
     try:
         raw = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
