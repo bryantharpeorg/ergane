@@ -318,6 +318,15 @@ class GhClient:
             "-f", f"squash_merge_commit_title={value}",
         )
 
+    def set_allow_auto_merge(self, owner_repo: str, value: bool) -> None:
+        """Set the repo's `allow_auto_merge` flag — a precondition for the queue
+        driver's only merge invocation, `gh pr merge --auto`.
+        """
+        self._run(
+            "api", "-X", "PATCH", f"repos/{owner_repo}",
+            "-f", f"allow_auto_merge={str(value).lower()}",
+        )
+
     def list_rulesets(self, owner_repo: str) -> list[dict[str, Any]]:
         """The repo's branch rulesets, as summaries (`id`, `name`, `target`)."""
         payload = self._run_json("api", f"repos/{owner_repo}/rulesets")

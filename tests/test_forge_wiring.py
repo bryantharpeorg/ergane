@@ -97,7 +97,7 @@ def test_wiring_through_the_forge_makes_the_factorys_own_gate_pass_the_model(
 
     # The acts are reported too — secondary to the verdict, and asserted as the
     # operator reads them.
-    assert [step.status for step in steps] == [APPLIED, APPLIED]
+    assert [step.status for step in steps] == [APPLIED, APPLIED, APPLIED]
 
 
 def test_a_forge_that_never_heard_of_github_is_wired_and_judged_the_same_way(
@@ -166,7 +166,7 @@ def test_a_second_wiring_run_reports_every_act_satisfied_and_changes_nothing(
 
     steps = github_forge_over(model, repo).apply_landing_policy("main", FIXTURE_GATES)
 
-    assert [step.status for step in steps] == [ALREADY_SATISFIED, ALREADY_SATISFIED]
+    assert [step.status for step in steps] == [ALREADY_SATISFIED, ALREADY_SATISFIED, ALREADY_SATISFIED]
     assert model.mutations() == []
     assert model.snapshot() == before
 

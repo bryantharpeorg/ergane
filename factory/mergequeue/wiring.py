@@ -86,11 +86,12 @@ def manual_steps(
     names = ", ".join(gates)
     return [
         f"1. gh api -X PATCH repos/{owner_repo} -f squash_merge_commit_title={SQUASH_TITLE}",
-        f"2. add a branch ruleset targeting '{landing_branch}' with the Merge queue",
+        f"2. gh api -X PATCH repos/{owner_repo} -f allow_auto_merge=true",
+        f"3. add a branch ruleset targeting '{landing_branch}' with the Merge queue",
         f"   rule (Settings -> Rules -> Rulesets), merging by squash",
-        f"3. in that same ruleset, require exactly these checks and no others:",
+        f"4. in that same ruleset, require exactly these checks and no others:",
         f"   {names}",
-        f"4. commit {WORKFLOW_PATH}, so CI produces a check named after each of them",
+        f"5. commit {WORKFLOW_PATH}, so CI produces a check named after each of them",
     ]
 
 
@@ -248,6 +249,7 @@ def wire_repo(
         )
         steps = [
             _squash_title_step(client, owner_repo),
+            _auto_merge_step(client, owner_repo),
             _queue_step(client, owner_repo, landing_branch, gate_names),
         ]
     except GhError as error:
@@ -354,6 +356,34 @@ def _squash_title_step(client: Any, owner_repo: str) -> WiringStep:
         APPLIED,
         f"squash_merge_commit_title {observed} -> {SQUASH_TITLE}; the landing grammar "
         f"is read off the squashed subject, so it must come from the PR title",
+    )
+
+
+def _auto_merge_step(client: Any, owner_repo: str) -> WiringStep:
+    """Enable `allow_auto_merge`, or report that it already is.
+
+    The merge driver in this component issues only one merge invocation:
+    `gh pr merge --auto`. That command is a no-op unless the repository's
+    `allow_auto_merge` flag is on, so wiring the flag is a precondition of
+    the landing path rather than a convenience.
+    """
+    settings = client.merge_settings(owner_repo)
+    current = settings.get("allow_auto_merge")
+    if current is not None:
+        current = bool(current)
+
+    if current is True:
+        return WiringStep(
+            "auto-merge",
+            ALREADY_SATISFIED,
+            "allow_auto_merge is already enabled",
+        )
+
+    client.set_allow_auto_merge(owner_repo, True)
+    return WiringStep(
+        "auto-merge",
+        APPLIED,
+        "enabled allow_auto_merge; without it `gh pr merge --auto` is a no-op",
     )
 
 
