@@ -573,7 +573,9 @@ def _persona_registry(graph: WorkGraph) -> Mapping[str, Persona]:
     So the CLI answers every lookup, which makes the two registry rules vacuous
     and leaves every structural rule — identity fields, duplicate ids, dangling
     edges, cycles, malformed overrides — in full force. Only `timeout_s` is read
-    off these values, and only to prove a bound resolves.
+    off these values, and only to prove a bound resolves. `skills` is reserved
+    and unused (062-US3 FR-009), so every structural persona passes an empty
+    tuple for compatibility with the dataclass.
     """
     return {
         node.persona: Persona(
@@ -581,6 +583,7 @@ def _persona_registry(graph: WorkGraph) -> Mapping[str, Persona]:
             agent="",
             model=None,
             fallback=None,
+            # skills is reserved and unused; the empty tuple keeps the dataclass happy.
             skills=(),
             write_scope=WriteScope.WORKTREE,
             needs_worktree=True,

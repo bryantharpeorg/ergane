@@ -22,11 +22,20 @@
 # claude-CLI-against-GLM path is precedented). Every persona keeps
 # `local/qwen3.6-27b` as fallback.
 #
+# Skill scope (062-US3 FR-010).
+#
+# The `skills` field below is parsed and validated, but it is reserved and
+# unused: the factory constructs a per-node, factory-owned HOME at dispatch
+# (`factory/workgraph/adapter.py:339`), so home-scoped agent skills that live in
+# `$HOME/.claude/skills/` are invisible to a node. Project-scoped skills
+# committed at `<repo>/.claude/skills/` are visible, because worktrees carry
+# committed files into the node worktree.
+#
 # Fields per persona:
 #   agent          adapter name (D-018); "none" = deterministic persona, no key
 #   model          LiteLLM alias; required iff agent != "none", null iff "none"
 #   fallback       LiteLLM alias used on primary-model failure; optional (null)
-#   skills         backing skills; may be empty
+#   skills         reserved and unused; parsed only for backward compatibility
 #   write_scope    worktree | docs | read  (drives component 2's diff exemption)
 #   needs_worktree whether the node runs against an isolated git worktree
 #   timeout        attempt wall-clock bound in SECONDS; positive integer, and
