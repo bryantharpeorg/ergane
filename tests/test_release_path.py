@@ -243,22 +243,49 @@ def test_mismatched_version_tag_is_refused_before_upload(
 # --- T020 [P] [US3] no branch/PR/merge-group workflow can publish ------------
 
 
-_GITHUB_EVENT_TYPES = (
+_BRANCHLIKE_EVENT_TYPES = (
     "pull_request",
     "merge_group",
-    "push",
 )
 
 
+def _push_is_tag_only(push_config: Any) -> bool:
+    """Return True if the push trigger is filtered to tags and never to branches."""
+    if push_config is None or push_config is True:
+        return False
+    if isinstance(push_config, str):
+        return False
+    if not isinstance(push_config, dict):
+        return False
+    # A tag-only push trigger must list tags and must not list branches.
+    if "tags" not in push_config or not push_config["tags"]:
+        return False
+    if "branches" in push_config and push_config["branches"]:
+        return False
+    if "branches-ignore" in push_config and push_config["branches-ignore"]:
+        return False
+    return True
+
+
 def _workflow_is_operator_tag_trigger_only(workflow_text: str) -> bool:
-    """Return True if the workflow's `on:` block permits only `workflow_dispatch` on a tag."""
+    """Return True if the workflow's `on:` block permits only operator actions on a tag.
+
+    Permitted triggers are:
+    - ``push`` with a tag-only filter (e.g. ``on: push: tags: ["v*.*.*"]``)
+    - ``workflow_dispatch`` (explicit operator invocation)
+
+    Forbidden triggers are branch/PR/merge-group events and any unfiltered push.
+    """
     try:
         workflow = yaml.safe_load(workflow_text)
     except Exception:
         # If we cannot parse it, treat it as suspicious.
         return False
 
-    on_block = workflow.get("on", workflow.get("true", {}))
+    on_block = workflow.get("on")
+    if on_block is None and "true" in workflow:
+        # GitHub Actions normalizes `on:` as `true:` under PyYAML.
+        on_block = workflow["true"]
     if on_block is None:
         return True
     if isinstance(on_block, str):
@@ -266,21 +293,25 @@ def _workflow_is_operator_tag_trigger_only(workflow_text: str) -> bool:
     if not isinstance(on_block, dict):
         return False
 
-    for event in _GITHUB_EVENT_TYPES:
+    # Branch-like events must never trigger a publishing workflow.
+    for event in _BRANCHLIKE_EVENT_TYPES:
         if event in on_block:
             return False
 
-    # Even workflow_dispatch must be gated to tags only to satisfy FR-011.
-    dispatch = on_block.get("workflow_dispatch")
-    if dispatch is not None:
-        # The presence of workflow_dispatch is allowed only if there are no
-        # branch/PR/merge-group triggers above. We already rejected those.
+    # push is allowed only when it is tag-only.
+    if "push" in on_block and not _push_is_tag_only(on_block["push"]):
+        return False
+
+    # workflow_dispatch is an explicit operator action and is allowed.
+    if "workflow_dispatch" in on_block:
         return True
 
-    # A workflow with no triggers at all is inert; publishing requires an operator
-    # action, so it cannot fire accidentally. Still, we require a tag gate for
-    # anything that mentions publishing.
-    return "push" not in on_block and len(on_block) == 0
+    # A push trigger that is tag-only is also allowed.
+    if "push" in on_block:
+        return True
+
+    # A workflow with no triggers at all is inert and therefore cannot publish.
+    return False
 
 
 def test_no_workflow_can_publish_on_branch_pr_or_merge_group() -> None:
