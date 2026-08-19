@@ -16,13 +16,18 @@ in any order. Tasks without it are sequential because they share a file.
 ## Phase 1: Setup (operator preflight — dispatched to no node)
 
 - [ ] T001 Operator: confirm 008 is landed on the target's default branch
-      (this spec's frontmatter edge); re-verify plan.md's reuse inventory —
-      the `question_answered` signal and buffers
-      (`factory/workgraph/workflow.py:472-566`), the ferry constants and
-      callbacks (`factory/workgraph/adapter.py:108-203`,
-      `factory/activities/agent_activities.py:73,453`), the questions DDL
-      and guarded resolution (`factory/verify/store.py:136-163,609+`), and
-      the bridge reply path (`factory/notify/service.py:198-297`). Decide
+      (this spec's frontmatter edge); re-verify plan.md's reuse inventory.
+      **Done 2026-08-18** — every anchor was stale and is now corrected in
+      plan.md, because 041 moved the question lifecycle out of the epic
+      workflow into a child `QuestionWorkflow`. Current anchors: the
+      `question_answered` signal and its buffer
+      (`factory/escalation/question.py:87,95,98`), the child start and park
+      (`factory/workgraph/workflow.py:1320,1344`), the ferry constants
+      (`factory/workgraph/adapter.py:148-217`) and callbacks
+      (`factory/activities/notify_activities.py:918,942`, wired at
+      `factory/activities/agent_activities.py:74,230,476`), the questions DDL
+      and guarded resolution (`factory/verify/store.py:213,1183`), and
+      the bridge reply path (`factory/notify/service.py:472,644`). Decide
       the mailbox root for the homelab peer (outside every repo working
       tree) and record it in the registry entry. For US4: provision the
       factory-owned Hindsight bank, verify a recall round trip against it,
@@ -181,13 +186,19 @@ a cross-epic round trip; absent sibling degrades; docs name the channel.
 
 ---
 
-## Phase 5: User Story 5 — A message with no live recipient spawns its answerer (Priority: P2)
+## Phase 5: User Story 5 — A message with no live recipient spawns its answerer (Priority: P1)
+
+**This phase dispatches SECOND, immediately after US1** (reordered 2026-08-18).
+Phase numbers are stable identifiers here, not a running order; the work graph
+in spec.md is the dispatch truth and it reads US1 → US5 → US2 → US3 → US4.
 
 **Goal**: the consult rung — ephemeral persona spawn, reply-or-degrade,
-spend attributed, bounded; the two-layer memory split wired and optional.
+spend attributed, bounded; a read-only view of the asking node's worktree; the
+two-layer memory split wired and optional.
 
 **Independent Test**: scripted-adapter consult round trip with ledger
-attribution; failure, decline, recursion, and bound cases all end at the
+attribution; the consult reads uncommitted work in the asker's worktree and
+cannot write to it; failure, decline, recursion, and bound cases all end at the
 operator path or a refusal.
 
 ### Tests for User Story 5 (write FIRST, must fail)
@@ -211,10 +222,29 @@ operator path or a refusal.
       file; consult behavior is identical under both except for the tool's
       presence — must fail.
 
+- [ ] T015a [P] [US5] (spec US5-S6, US5-S7, FR-018, SC-008) Write worktree-grant
+      cases FIRST: with the asking node's worktree holding a file that is
+      present in the working tree and absent from its branch, the consult's
+      assembled context contains that file's content — proving the read could
+      have come from nowhere else; a write attempted from the consult to that
+      worktree and to a path above it both fail, and the worktree is
+      byte-identical afterwards; the bound is enforced where the process is
+      configured, so the refusal holds with the instruction removed from the
+      prompt; an asker with no readable worktree (terminal node, swept tree,
+      bare persona address) still gets an answer, and the reply says which
+      context it had — must fail.
+
 ### Implementation for User Story 5
 
 - [ ] T016 [US5] Implement `factory/activities/consult_activities.py` and
       the consult rung in routing until T014, T015 pass.
+- [ ] T016a [US5] (FR-018) Implement the worktree grant until T015a passes:
+      resolve the asker's worktree from its node record rather than
+      re-deriving the path, mount it read-only for the consult, and refuse
+      anything outside it. Do **not** reuse `personas.yaml`'s
+      `needs_worktree` (`factory/config.py:103`) — that field provisions a
+      persona its *own* worktree from a base and is a different capability
+      with a larger blast radius (plan trap).
 - [ ] T017 [US5] Docs: record the consult decision and the two-layer memory
       split (§ Decision) alongside US3's claimed entries — coordinate the
       decision-log numbers with whichever of US3/US4 lands second — and add
@@ -222,49 +252,63 @@ operator path or a refusal.
 
 ---
 
-## Known gap: the already-running-attempt story has no phase yet
+## Closed gap: the already-running-attempt story now has a phase
 
-**017 must not be dispatched until this is written.** There is deliberately no
-phase heading naming it, because a missing phase is what `ergane spec validate`
-refuses on — and a refusal is the only thing that mechanically stops a dispatch.
-A phase heading carrying a note instead would assemble cleanly and hand the
-agent a paragraph where its task list should be.
+**Resolved — kept because the failure mode is worth recognising again.** For
+eight days this file's phases were numbered against the story list from *before*
+the already-running-attempt story was inserted into the spec, so every phase
+below Phase 2 carried the wrong story's number: the second node would have been
+handed the third story's tasks, the third the fourth story's, the fourth the
+fifth story's, and the fifth would have found no phase at all.
 
-The phases above were numbered against the story list from *before* the
-already-running-attempt story was inserted into the spec, so every phase below
-Phase 2 carried the wrong story's number: the second node would have been handed
-the third story's tasks, the third node the fourth story's, the fourth node the
-fifth story's, and the fifth node would have found no phase at all. Three of
-those four are silent — assembly succeeds and the agent works the wrong slice,
-which is worse than a refusal because nothing reports it. The numbers are now
-corrected, which turns the silent half into one honest refusal.
+Three of those four fail **silently** — assembly succeeds and the agent works
+the wrong slice, which is worse than a refusal because nothing reports it. Only
+the missing phase produced an honest `ergane spec validate` refusal, and that
+refusal is the only reason the other three were ever found. Phase 2b now exists
+and the numbers are correct.
 
-Writing the missing task list is spec work, not a rename, and it belongs with
-the refinement pass that resolves why 017 is held at draft at all: a peer park
-that reuses 008's operator park pauses the scheduler and deadlocks the answering
-peer, FR-016 forbids it, and the proof has to be a watched run rather than a
-judge verdict.
+The same drift had reached the two narrative sections at the foot of this file,
+which were still describing US2 as the homelab peer and consults as US4; both
+were rewritten on 2026-08-18. **When a story is inserted, renumbered or
+reordered, the prose is where the stale mapping hides** — the work graph and the
+phase headings get checked, and paragraphs do not.
 
 ## Dependencies & Execution Order
 
-- Phase 1 is operator work and gates everything — including the mailbox
+Rewritten 2026-08-18 with the reorder. The list below had drifted a story out of
+step with the phases — it described US2's work under Phase 3 and consults under
+Phase 5 as "US4" — which is the same silent failure the note above this section
+was written about. Every edge is a merge-edge.
+
+- **Phase 1** is operator work and gates everything — including the mailbox
   root decision the registry entry needs and the memory-bank decision the
   consult runner reads.
-- Phase 2 (US1) is the MVP seam: the address, the routing, and the floor.
-- Phase 3 (US2) imports US1's routing and store — merged, not passed.
-- Phase 4 (US3) imports both and completes the namespace — merged,
-  sequential, carries the docs with Phase 5.
-- Phase 5 (US4) imports only US1 — merged after it, parallel to Phases 3–4.
+- **Phase 2 (US1)** is the MVP seam: the address, the routing, the store, the
+  floor, threading, and the no-verdict guard. Dispatches first.
+- **Phase 5 (US5)** dispatches second: consults, the worktree grant, memory.
+  Imports US1's routing and store — merged, not passed. This is the story that
+  makes the channel useful at a concurrency of 1.
+- **Phase 2b (US2)** dispatches third: the adapter's inbound direction.
+- **Phase 3 (US3)** dispatches fourth: the registry and mailbox transport. It
+  inserts a rung into the same routing ladder US5 touched, which is why it
+  waits rather than running beside it.
+- **Phase 4 (US4)** dispatches last: cross-epic routing and the closing docs.
 
 ## Implementation Strategy
 
-US1 alone already self-answers the question class that burned 006-us1: an
-implementer can ask its architect instead of the operator's phone. US2 is
-the operator's named want — the homelab peer — and rides entirely on US1's
-semantics. US4 is the escalation vision completed: "ask the architect"
-works with no architect running, the machine is always tried before the
-human, and what the consults learn accrues in the factory's own memory
-bank. US3 completes the topology when concurrency makes it real. The
-operator path is the floor under every story: nothing in this spec can make
+Rewritten 2026-08-18: the previous version named the wrong stories throughout,
+crediting the homelab peer to US2 and consults to US4.
+
+US1 lands the address, the routing and the floor. On its own it self-answers
+the question class that burned 006-us1 — but slowly, because at a concurrency
+of 1 the peer being asked is almost never running, so each exchange costs a
+dispatch. **US5 is what makes that fast**, and it is the escalation vision
+itself: "ask the architect" works with no architect running, the architect can
+read what the implementer has actually written rather than what the plan said,
+and the machine is always tried before the human. US2 makes the conversation
+live rather than turn-based. US3 is the operator's named want, the homelab
+peer. US4 completes the topology when concurrency makes it real.
+
+The operator path is the floor under every story: nothing in this spec can make
 a question die unheard, because every failure branch lands on the channel
 008 proved in production.

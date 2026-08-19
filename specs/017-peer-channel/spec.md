@@ -1,5 +1,24 @@
 ---
 state: ready
+# RESCOPED 2026-08-18 5:45 PM CT on two operator decisions taken together, after
+# he asked "what other agents would we reach out to? could we set up a team
+# lead / architect agent that looks at the work tree as the agent has been
+# working on it, to see if it can answer the agent's question?"
+#
+#   1. CONSULTS MOVE SECOND. At the configured concurrency of 1 there is at most
+#      one node running, so "a peer in the same epic" almost always means a peer
+#      that is NOT running -- which is US1's next-prompt path, one dispatch per
+#      exchange. The addressee class that actually answers at cap 1 is a persona
+#      consult, and `architect` already exists in personas.yaml. So US5 takes a
+#      merge-edge on US1 and everything else follows it. The old ordering put
+#      the spec's only cap-1-useful story fourth.
+#   2. A CONSULT READS THE ASKER'S WORKTREE, read-only, live. The plan's v0 gave
+#      consults no worktree and assembled context from the spec and plan -- so
+#      the architect would have answered from the plan rather than from the code
+#      the implementer had actually written, which is the opposite of what was
+#      asked for. FR-018 is new and states the grant and its bound.
+#
+# --- prior chain ---
 # RELEASED 2026-08-17 3:20 PM CT by the operator, at a keyboard. The hold below
 # named exactly one condition -- "flip it then; nothing else about this spec
 # needs doing" -- and that condition is now met: the operator is present and
@@ -284,7 +303,7 @@ channel.
 
 ---
 
-### User Story 5 - A message with no live recipient spawns its answerer (Priority: P2)
+### User Story 5 - A message with no live recipient spawns its answerer (Priority: P1)
 
 As the factory operator, when a message names a persona — or a node whose
 attempts are done — the factory spins up an ephemeral consult to answer it:
@@ -304,15 +323,27 @@ layer: recall against a factory-owned memory bank, never the operator's
 personal one, so cross-epic knowledge accumulates without the operator's
 bank silting up with machine churn (§ Decision).
 
+A consult also **reads the asking node's worktree** — read-only, as it stands at
+spawn time, uncommitted work included. This is what separates an architect that
+can answer from one that can only recite the plan: the question an implementer
+actually asks is about the code it has just written, and the code it has just
+written is in that worktree and nowhere else. It is more context than the judge
+ever sees, which is deliberate — the judge scores a finished diff, a consult
+advises work in progress. FR-018 states the grant and its bound.
+
 **Why this priority**: This is the escalation vision the channel exists for —
 questions answered by the cheapest competent answerer, with the operator as
-the floor rather than the default. It is P2 because it rides entirely on
-US1's routing, threading, and degradation.
+the floor rather than the default. It is **P1 and lands second**, immediately
+after US1: at a concurrency of 1 there is at most one node running, so a
+same-epic peer is nearly always a peer that is not running, and the consult is
+the only addressee class that answers a question the same day it is asked.
 
 **Independent Test**: With a scripted consult adapter, a persona-addressed
 message spawns exactly one consult, the reply threads back to the asker, the
 consult's spend lands in the ledger attributed to the asking node, and a
-failing consult degrades to an operator question.
+failing consult degrades to an operator question. The worktree grant is tested
+separately and in both directions — a read that sees uncommitted work, and a
+write that does not land.
 
 **Acceptance Scenarios**:
 
@@ -334,6 +365,15 @@ failing consult degrades to an operator question.
 5. **Given** consult spawns reaching the configured bound, **When** one more
    is requested, **Then** it is refused and the message degrades to the
    operator — spawning is bounded by configuration, not by message volume.
+6. **Given** a consult answering a message from a node whose worktree exists,
+   **When** it runs, **Then** it can read that worktree as it stands including
+   uncommitted work, and cannot write to it — proven both ways: the read by a
+   file present only in the asker's working tree and absent from its branch,
+   the refusal by an attempted write that does not land.
+7. **Given** a consult whose asker has no readable worktree — terminal node,
+   worktree swept, or a persona-addressed message with no worktree behind it —
+   **When** it runs, **Then** it still answers from assembled context, and says
+   which context it had.
 
 ---
 
@@ -361,6 +401,13 @@ failing consult degrades to an operator question.
   a question correctly is the price of trying the machine first.
 - A flood of persona-addressed messages: the spawn bound (FR-015) refuses
   the excess into the operator path — consults amplify answers, never spend.
+- The asker's worktree is mid-write when the consult reads it: there is no
+  quiesce and there must not be one — the asker is parked awaiting the reply,
+  so the tree is as settled as it is going to get. A half-written file is a
+  fact about that moment, and the consult answers from what it sees or says it
+  could not.
+- A consult asked to read a path outside the asker's worktree: refused by the
+  grant, not by the prompt (FR-018).
 
 ## Requirements *(mandatory)*
 
@@ -442,6 +489,16 @@ failing consult degrades to an operator question.
   epic, so the pause prevents the very dispatch that would answer. A peer park
   MUST be a distinct node state, and an asker's wait MUST NOT change any other
   node's dispatch eligibility.
+- **FR-018**: A consult MUST be able to read the asking node's worktree as it
+  stands at spawn time, uncommitted work included, and MUST NOT be able to write
+  to it or to anything outside it. The grant MUST be explicit and bounded to
+  that one path — it is **not** the persona registry's `needs_worktree`, which
+  provisions a persona its own fresh worktree from a base and is a different
+  capability with a different blast radius. Read-only MUST be enforced by the
+  grant rather than by instructing the agent: `agent-edits-outside-its-worktree`
+  is an open finding at two occurrences of two, and both were agents that had
+  been told not to. A consult whose asker has no readable worktree MUST still
+  answer from assembled context.
 
 ### Key Entities
 
@@ -482,6 +539,10 @@ failing consult degrades to an operator question.
   round trip through exactly one consult spawn with the spend visible in the
   ledger against the asking node, and the same question with consults
   disabled reaches the operator — both demonstrated by test.
+- **SC-008**: A consult's assembled context contains a file that exists only in
+  the asker's working tree and not on its branch, and an attempted write from
+  that consult leaves the worktree byte-identical — the read proved by content
+  that could come from nowhere else, the bound proved by a write that fails.
 
 ## Work Graph
 
@@ -512,26 +573,44 @@ creates, and because registry names and epic names share one namespace that
 must exist before a third kind of address joins it; it also carries the closing
 documentation duties.
 
-US5 chains on US3 rather than landing beside it. Both insert a rung into the
-same degradation ladder in `workflow.py` — US3 the registry refusal, US5 the
-consult — and two in-flight worktrees editing one routing function is a
-merge-queue conflict where the second lander rebases blind. The original claim
-that US5 "touches neither the registry nor the cross-epic hop, so it may land
-in parallel" was true about its *concepts* and false about its *files*.
+The chain stays strictly serial after the reorder, and the reason is the
+degradation ladder: US5 inserts the consult rung and US3 the registry refusal
+into the same routing function in `workflow.py`, so two in-flight worktrees
+there is a merge-queue conflict where the second lander rebases blind. That was
+already the reason US5 could not land beside US3 — its concepts are independent
+and its *files* are not. At a concurrency of 1 the serial chain costs nothing
+anyway: five stories, five dispatches, in either arrangement.
 
 All edges are `depends_on_merged` (003 FR-009): each dependent imports modules
 its predecessor lands, so its worktree must clone a base already containing the
 predecessor's merge. The deriver requires `depends_on: []` spelled out even
 when empty.
 
+**Reordered 2026-08-18: US5 lands second.** The original chain put consults
+fourth, behind the external mailbox. That ordering is wrong at this factory's
+configured concurrency of 1, where at most one node runs at a time: a
+same-epic peer is nearly always a peer that is *not* running, so US1 alone buys
+a conversation costing one dispatch per exchange, and the only addressee class
+that answers a question the same hour it is asked is a persona consult. US5
+therefore takes the merge-edge on US1, and the rest of the chain follows it.
+
+Two requirements moved with it. **FR-003** (threading a reply back by message id,
+verbatim) and **FR-005** (message text reaches no verdict) are now US1's, because
+US5 depends on both and would otherwise be building on requirements that had not
+landed. US1 already owns the next-prompt delivery path those two describe.
+
 ```yaml
 US1:
   depends_on: []
-  implements: [FR-001, FR-002, FR-004, FR-016, FR-006, FR-007, FR-008]
-US2:
+  implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-016, FR-006, FR-007, FR-008]
+US5:
   depends_on: []
   depends_on_merged: [US1]
-  implements: [FR-003, FR-017, FR-005]
+  implements: [FR-013, FR-014, FR-015, FR-018]
+US2:
+  depends_on: []
+  depends_on_merged: [US5]
+  implements: [FR-017]
 US3:
   depends_on: []
   depends_on_merged: [US2]
@@ -540,11 +619,14 @@ US4:
   depends_on: []
   depends_on_merged: [US3]
   implements: [FR-011, FR-012]
-US5:
-  depends_on: []
-  depends_on_merged: [US3]
-  implements: [FR-013, FR-014, FR-015]
 ```
+
+**One straddle survives this edit and belongs in the pre-dispatch pass, not
+here.** FR-002 names both delivery paths — the in-flight ferry and the next
+assembled prompt — and sits in US1, but the ferry direction is precisely the
+adapter change US2 owns. That mismatch predates the reorder. Either FR-002
+splits, or US1's scope is stated as the next-prompt half; decide it while
+refining US1, and do not let an implementer discover it.
 
 ## Assumptions
 
@@ -609,6 +691,33 @@ ephemeral agent an activity dispatches, monitors, and tears down, and the
 judge is a persona that lives one request at a time. What US5 adds is an
 attempt with the ladder removed, whose output contract is a reply instead of
 a diff.
+
+**Amended 2026-08-18 (Bryan): a consult reads the asker's worktree.** The
+original v0 gave consults no worktree, on the judge's precedent —
+context-in-prompt, one request, no tree. That precedent is the wrong one. The
+judge scores a *finished* diff and is deliberately blinded to everything else;
+a consult advises *work in progress*, and the question an implementer actually
+asks — "is this the interface the plan meant" — is about code that exists only
+in its worktree, uncommitted. A consult that cannot see it answers from the plan
+and repeats what the asker already read.
+
+So the grant is a read of exactly that worktree, and three properties are
+deliberate. It is **read-only, enforced by the grant** rather than by
+instruction, because `agent-edits-outside-its-worktree` is open at two
+occurrences of two and both agents had been told not to. It is **bounded to one
+path**, not the persona registry's `needs_worktree` — that field provisions a
+persona its own fresh worktree from a base, a different capability with a larger
+blast radius, and conflating the two is how this becomes a write. And it is
+**unquiesced**: the asker is parked awaiting the reply, so its tree is as
+settled as it will get, and a half-written file is a fact rather than an error.
+
+One consequence to state rather than discover: the advice a consult gives is
+shaped by real code, reaches the implementer's next attempt, and shapes the
+diff — while FR-005 keeps message text away from gates and the judge. So the
+judge scores work influenced by reasoning it cannot see. That hole is 008's,
+already open at "park and route"; this widens what the advisor knows, not what
+the judge is denied. It is accepted, and named here so the next person does not
+find it by surprise.
 
 Memory splits in two layers. **Deterministic, epic-scoped context comes from
 Temporal and the repo** — the message, the spec and plan, the asker's

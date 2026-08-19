@@ -1,5 +1,21 @@
 ---
-state: ready
+state: draft
+# RETURNED TO DRAFT 2026-08-18 5:30 PM CT on Bryan's decision: "if we don't
+# think it'll fix anything, let's just not implement it until we're sure it'll
+# fix it. i don't want unintended consequences."
+#
+# This restores the 2026-08-16 park below, whose argument was never answered.
+# The unintended consequence he is guarding against is concrete and named in
+# plan.md trap 1: US1 changes the activity-command order in the module every
+# in-flight epic replays through at worker restart, so a wrong fix does not
+# merely fail -- it can wedge epics that recorded under the old order.
+#
+# What unblocks this is a MEASUREMENT, not a builder: a history captured from a
+# pull_request MERGE-COMMIT CI run, which is the only configuration that has
+# ever failed. Until that capture exists, there is no fourth diagnosis to build
+# against. Flip ready when it does.
+#
+# --- the 2026-08-17 flip this reverses, kept for the chain ---
 # FLIPPED READY 2026-08-17 3:20 PM CT on Bryan's explicit instruction, over the
 # standing "DO NOT FLIP READY" below. That note is left intact because its
 # argument has not been answered: the merge-group capture it asks for has still

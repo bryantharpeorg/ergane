@@ -1,6 +1,6 @@
 {
-  "epic_id": "032-replay-determinism",
-  "feature": "032-replay-determinism",
+  "epic_id": "058-a-verdict-is-a-fact-about-the-code",
+  "feature": "058-a-verdict-is-a-fact-about-the-code",
   "specs_root": "specs",
   "target_repo": "/home/admin/code/ergane",
   "nodes": [
@@ -8,13 +8,14 @@
       "id": "us1",
       "story_key": "US1",
       "persona": "implementer",
-      "spec_ref": "032-replay-determinism:US1",
+      "spec_ref": "058-a-verdict-is-a-fact-about-the-code:US1",
       "requirement_keys": [
         "US1",
         "FR-001",
         "FR-002",
         "FR-003",
-        "FR-004"
+        "FR-004",
+        "FR-008"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -24,11 +25,12 @@
       "id": "us2",
       "story_key": "US2",
       "persona": "implementer",
-      "spec_ref": "032-replay-determinism:US2",
+      "spec_ref": "058-a-verdict-is-a-fact-about-the-code:US2",
       "requirement_keys": [
         "US2",
-        "FR-007",
-        "FR-008"
+        "FR-005",
+        "FR-006",
+        "FR-009"
       ],
       "depends_on": [],
       "depends_on_merged": [
@@ -40,15 +42,14 @@
       "id": "us3",
       "story_key": "US3",
       "persona": "implementer",
-      "spec_ref": "032-replay-determinism:US3",
+      "spec_ref": "058-a-verdict-is-a-fact-about-the-code:US3",
       "requirement_keys": [
         "US3",
-        "FR-005",
-        "FR-006"
+        "FR-007"
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us1"
+        "us2"
       ],
       "timeout_override_s": null
     }
