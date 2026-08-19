@@ -128,13 +128,42 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _version_text() -> str:
-    """What `ergane --version` prints: version, revision, endpoints."""
+#: The name this project is *published* under, and therefore the name
+#: `importlib.metadata` is asked about. It is not the import package: `import
+#: factory` is what resolves in code, `uv install ergane-cli` is what puts it
+#: there. Two names differing is the normal state of a Python package, and here
+#: it is forced rather than chosen -- `ergane` is occupied on PyPI by an
+#: unrelated project, so this one cannot be published under its own name.
+DISTRIBUTION_NAME = "ergane-cli"
+
+
+def _distribution_version() -> str | None:
+    """The version in the installed distribution's metadata, or `None`.
+
+    `pyproject.toml` declares the version once and nothing here restates it
+    (FR-005): a second copy in the source is not a redundancy but a second
+    answer, and the two can disagree while only one of them is true. `None`
+    means the metadata could not be read at all -- no distribution installed
+    under this name, or a partial install -- and the caller must say so.
+
+    This used to end `except Exception: pkg_version = "0.1.0"`, which is the
+    shape worth remembering. Renaming the distribution made every lookup raise
+    `PackageNotFoundError`, the bare `except` swallowed it, and `--version`
+    reported that literal forever regardless of what was installed: no error, no
+    crash, a plausible number. It failed toward green. A wrong version is worse
+    than no version, because only one of the two is visible to the reader.
+    """
     try:
         from importlib.metadata import version
-        pkg_version = version("ergane")
+
+        return version(DISTRIBUTION_NAME)
     except Exception:
-        pkg_version = "0.1.0"
+        return None
+
+
+def _version_text() -> str:
+    """What `ergane --version` prints: version, revision, endpoints."""
+    pkg_version = _distribution_version()
 
     try:
         revision = subprocess.check_output(
@@ -164,8 +193,20 @@ def _version_text() -> str:
         # is what this string has always meant.
         proxy_url = "not configured"
 
+    if pkg_version is None:
+        # FR-006. `--version` is the command run to find out what you have, so a
+        # metadata read that failed has to be the answer rather than be hidden
+        # behind one. Naming the distribution makes it actionable: that is the
+        # name the operator installed and the name they can check for.
+        version_line = (
+            f"ergane version unknown ({revision}); "
+            f"no installed metadata for {DISTRIBUTION_NAME}"
+        )
+    else:
+        version_line = f"ergane {pkg_version} ({revision})"
+
     return (
-        f"ergane {pkg_version} ({revision})\n"
+        f"{version_line}\n"
         f"Temporal: {temporal_address} (namespace {temporal_namespace})\n"
         f"Proxy: {proxy_url}"
     )

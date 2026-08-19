@@ -1,5 +1,14 @@
 [project]
-name = "ergane"
+# The *distribution* name -- what an index serves and what `uv install` fetches.
+# It is not the import package (`factory`, below) and not the console script
+# (`ergane`, below); both of those are unchanged. `ergane` is occupied on PyPI
+# by an unrelated async web scraper, so this project could never have been
+# published under its own name. The rename is forced by that occupancy, and
+# `factory/cli/main.py` asks `importlib.metadata` for this exact string.
+name = "ergane-cli"
+# The one declared version. Nothing in `factory/` restates it: a literal in the
+# source is a second answer that can disagree with this one, and `--version`
+# would print the wrong half without saying so.
 version = "0.1.0"
 description = "Agentic software factory: per-node usage tracking, verification gating, merge queue"
 requires-python = ">=3.11"
