@@ -1,0 +1,39 @@
+# Complete answer file for `ergane install --from-file <path>` (US1).
+#
+# The schema is the same TOML shape that `ergane install` writes to
+# ~/.config/ergane/config.toml.  Each interview question maps to one key:
+#
+#   [llm]      -> llm mode, then the fields that mode needs
+#   [memory]   -> memory backend, then optional url/api_key_env
+#   [temporal] -> temporal mode, then external fields or managed stop
+#   [telemetry]-> optional otlp_endpoint
+#   [escalation]-> adapter, then optional bot_token_env/chat_id_env
+#
+# A field omitted here takes its documented default, and the command reports the
+# default it applied.  A field with no safe default (escalation.adapter in US1)
+# must be supplied, or the command refuses before writing anything.
+
+version = 1
+
+[llm]
+mode = "gateway"
+base_url = "http://127.0.0.1:4000"
+master_key_env = "ERGANE_LLM_MASTER_KEY"
+
+[memory]
+backend = "hindsight"
+url = "http://127.0.0.1:8888"
+api_key_env = "ERGANE_HINDSIGHT_KEY"
+
+[temporal]
+mode = "external"
+address = "127.0.0.1:7233"
+namespace = "ergane"
+
+[telemetry]
+otlp_endpoint = "http://127.0.0.1:4318"
+
+[escalation]
+adapter = "telegram"
+bot_token_env = "TELEGRAM_BOT_TOKEN"
+chat_id_env = "TELEGRAM_CHAT_ID"
