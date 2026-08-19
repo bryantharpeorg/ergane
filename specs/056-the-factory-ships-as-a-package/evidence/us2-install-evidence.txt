@@ -1,0 +1,20 @@
+US2 install evidence
+====================
+
+wheel: ergane_cli-0.1.0-py3-none-any.whl
+install root: /tmp/ergane-evidence-a9qi9kql/install
+interpreter path: /tmp/ergane-evidence-a9qi9kql/install/venv/bin/python
+ergane script path: /tmp/ergane-evidence-a9qi9kql/install/venv/bin/ergane
+
+--- ergane --version ---
+ergane 0.1.0 (unknown)
+Temporal: localhost:7233 (namespace ergane)
+Proxy: not configured
+
+
+
+--- persona registry resolution ---
+RESOLVED /tmp/ergane-evidence-a9qi9kql/install/venv/lib/python3.12/site-packages/factory/personas.yaml
+OK 7 personas
+
+
