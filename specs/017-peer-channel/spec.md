@@ -1,5 +1,19 @@
 ---
-state: ready
+state: draft
+# HELD BACK TO DRAFT 2026-08-19 7:15 AM CT at the operator's instruction, so the
+# roadmap could be resumed for the 059-064 on-ramp set without picking this spec
+# up first. Nothing about the rescope below is withdrawn -- this is a scheduling
+# hold, not a rejection.
+#
+# The reason it cannot ride an unattended roadmap: a peer park that reuses 008's
+# operator park pauses the scheduler and deadlocks the answering peer. FR-016
+# forbids that construction, but forbidding it in the spec is not the same as
+# observing that the implementation avoided it, and a judge PASS cannot tell the
+# difference -- the deadlock is a runtime property of two workflows, and the
+# judge sees one diff. This spec needs an operator watching a live run.
+#
+# Flip back to `ready` in a session that can watch it.
+#
 # RESCOPED 2026-08-18 5:45 PM CT on two operator decisions taken together, after
 # he asked "what other agents would we reach out to? could we set up a team
 # lead / architect agent that looks at the work tree as the agent has been
