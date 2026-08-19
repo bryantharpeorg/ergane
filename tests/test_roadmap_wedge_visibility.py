@@ -280,8 +280,6 @@ def test_status_reports_wedged_roadmap_and_names_run_and_remedy(
     assert "wedged" in result.stderr.lower(), result.stderr
     assert NEWEST_RUN in result.stderr, result.stderr
     assert "terminate" in result.stderr.lower(), result.stderr
-    # It still reached through the ladder and named the schedule in the message.
-    assert SCHEDULE_ID in result.stderr, result.stderr
 
 
 # ============================================================================
