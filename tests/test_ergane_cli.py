@@ -459,7 +459,12 @@ def test_version_reports_version_revision_and_endpoints(invoke: Callable[..., Ru
     )
     assert result.code == 0
     out = result.stdout
-    assert "0.1.0" in out
+    # The version must come from installed metadata, not a literal. Pin it by
+    # reading the same distribution the implementation reads.
+    import importlib.metadata
+
+    expected = importlib.metadata.version("ergane-cli")
+    assert expected in out
     # revision is the short git hash, non-empty.
     assert re.search(r"[0-9a-f]{7,}", out)
     assert "temporal.example:7233" in out
