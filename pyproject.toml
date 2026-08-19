@@ -26,11 +26,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ergane/ergane"
-Documentation = "https://github.com/ergane/ergane/tree/main/docs"
-Repository = "https://github.com/ergane/ergane"
-Issues = "https://github.com/ergane/ergane/issues"
-Changelog = "https://github.com/ergane/ergane/blob/main/docs/decisions.md"
+Homepage = "https://github.com/bryantharpeorg/ergane"
+Documentation = "https://github.com/bryantharpeorg/ergane/tree/main/docs"
+Repository = "https://github.com/bryantharpeorg/ergane"
+Issues = "https://github.com/bryantharpeorg/ergane/issues"
+Changelog = "https://github.com/bryantharpeorg/ergane/blob/main/docs/decisions.md"
 
 [project.scripts]
 ergane = "factory.cli.main:main"
