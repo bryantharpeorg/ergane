@@ -64,7 +64,7 @@ exclude = ["**/*.py.base"]
 # shipped no registry at all and the first thing a new install printed was
 # `cannot read persona registry .../site-packages/personas.yaml`.
 [tool.hatch.build.targets.wheel.force-include]
-"personas.yaml" = "factory/personas.yaml"
+"personas.example.yaml" = "factory/personas.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

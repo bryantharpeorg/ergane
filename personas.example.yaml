@@ -1,0 +1,88 @@
+# Persona registry example.
+#
+# This is the shipped example registry.  `ergane install` copies it to
+# ~/.config/ergane/personas.yaml on a fresh host.  Replace every placeholder
+# alias below with aliases your LiteLLM proxy actually serves.
+#
+# Nodes are routed by persona, never by model tier.  This registry is the only
+# place a model name appears — code never hardcodes one.  The `model` and
+# `fallback` values are LiteLLM aliases from the operator's proxy config.
+#
+# Required fields per persona:
+#   agent          adapter name; "none" means deterministic, no key
+#   model          LiteLLM alias; required when agent != "none", null when "none"
+#   fallback       LiteLLM alias used on primary-model failure; optional (null)
+#   skills         backing skills; may be empty (reserved, currently unused)
+#   write_scope    worktree | docs | read
+#   needs_worktree whether the node runs against an isolated git worktree
+#   timeout        attempt wall-clock bound in seconds; null only when agent is "none"
+#   context_window model context-window tokens; optional (omit for default behavior)
+#
+# The aliases in this example are placeholders the operator must replace.
+# Until they are replaced, `ergane install --verify` reports that the
+# registry has not been configured yet.
+
+architect:
+  agent: claude-code
+  model: example/your-architect-model
+  fallback: example/your-fallback-model
+  skills: [codebase-design, design-an-interface, domain-modeling]
+  write_scope: docs
+  needs_worktree: true
+  timeout: 7200
+
+implementer:
+  agent: claude-code
+  model: example/your-implementer-model
+  fallback: example/your-fallback-model
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400
+  context_window: 262144
+
+verifier:
+  agent: none
+  model: null
+  fallback: null
+  skills: []
+  write_scope: read
+  needs_worktree: true
+  timeout: null
+
+judge:
+  agent: claude-code
+  model: example/your-judge-model
+  fallback: example/your-fallback-model
+  skills: [code-review]
+  write_scope: read
+  needs_worktree: false
+  timeout: 3600
+
+closer:
+  agent: claude-code
+  model: example/your-closer-model
+  fallback: example/your-implementer-model
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400
+  context_window: 1000000
+
+debugger:
+  agent: claude-code
+  model: example/your-debugger-model
+  fallback: example/your-fallback-model
+  skills: [diagnosing-bugs]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 10800
+
+researcher:
+  agent: claude-code
+  model: example/your-researcher-model
+  fallback: example/your-fallback-model
+  skills: [research, grill-with-docs]
+  write_scope: read
+  needs_worktree: false
+  timeout: 7200

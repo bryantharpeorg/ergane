@@ -267,6 +267,8 @@ def test_unsupported_host_refuses_managed_mode_at_walkthrough(
     config_path = tmp_path / "ergane" / "config.toml"
     monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
     monkeypatch.setenv("FACTORY_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
     class ScriptedPrompter:
         def __init__(self, answers: list[str]) -> None:

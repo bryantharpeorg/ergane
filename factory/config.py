@@ -52,6 +52,31 @@ ERGANE_PERSONAS_PATH_ENV = "ERGANE_PERSONAS_PATH"
 #: Legacy env variable name honoured during the 062 rename.
 FACTORY_PERSONAS_PATH_ENV = "FACTORY_PERSONAS_PATH"
 
+#: Alias prefixes that mark a registry as the shipped, unconfigured example.
+#: `ergane install --verify` uses these to report one actionable condition.
+EXAMPLE_ALIAS_PREFIXES = ("example/",)
+
+
+def shipped_registry_text() -> str:
+    """Return the shipped example registry text.
+
+    Reads from package data when available (the wheel layout).  In a development
+    checkout the example source file lives at the repo root, so the same text is
+    returned from there as a fallback.
+    """
+    packaged = importlib.resources.files("factory") / REGISTRY_FILENAME
+    if packaged.is_file():
+        return packaged.read_text(encoding="utf-8")
+    # Development checkout fallback: the source file is at the repo root, not yet
+    # packaged.  The load path never falls back here; this is only for seeding.
+    example_source = Path(__file__).resolve().parents[1] / "personas.example.yaml"
+    return example_source.read_text(encoding="utf-8")
+
+
+def is_example_alias(alias: str) -> bool:
+    """Whether an alias is one of the shipped placeholder prefixes."""
+    return any(alias.startswith(prefix) for prefix in EXAMPLE_ALIAS_PREFIXES)
+
 
 def _resolve_default_registry_path() -> Path:
     """Where the shipped registry lives, in an install and in a checkout.

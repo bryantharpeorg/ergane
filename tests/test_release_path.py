@@ -38,6 +38,8 @@ def _build_wheel(tmp_path: Path) -> Path:
     )
     # Use the edited pyproject.toml from this worktree.
     shutil.copy2(PYPROJECT, copy_root / "pyproject.toml")
+    # The wheel's force-include now points at the example source file.
+    shutil.copy2(REPO_ROOT / "personas.example.yaml", copy_root / "personas.example.yaml")
 
     env = os.environ.copy()
     env["PYTHONPATH"] = ""

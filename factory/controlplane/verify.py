@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 import httpx
+from factory.config import EXAMPLE_ALIAS_PREFIXES, is_example_alias
 from factory.controlplane.config import ControlPlaneConfig
 from factory.controlplane.resolve import temporal_target_for
 from factory.mergequeue.models import Finding
@@ -146,6 +147,13 @@ def _load_personas_for_probe() -> dict[str, Any]:
     from factory.config import load_personas
 
     return load_personas()
+
+
+def _resolve_registry_path_for_probe() -> Path:
+    """Return the resolved registry path for LLM probe diagnostics."""
+    from factory.config import resolve_default_registry_path
+
+    return resolve_default_registry_path()
 
 
 def _llm_client_factory(config: ControlPlaneConfig.LLM) -> LiteLLMClient:
@@ -333,6 +341,18 @@ class LLMProbe:
                 detail="no dispatchable model aliases in the persona registry",
             )
 
+        if all(is_example_alias(alias) for alias in alias_to_personas):
+            registry_path = _resolve_registry_path_for_probe()
+            return LLMSnapshot(
+                aliases=(),
+                persona_by_alias={},
+                results=(),
+                detail=(
+                    f"persona registry has not been configured yet: "
+                    f"edit {registry_path} and replace the example/ placeholder aliases"
+                ),
+            )
+
         async def _probe_one_alias(alias: str, persona_names: set[str]) -> LLMAliasResult:
             """POST a 1-token completion for one alias and return the result."""
             request = {
@@ -412,7 +432,9 @@ class LLMProbe:
         )
 
     def evaluate(self, snapshot: LLMSnapshot) -> Finding:
-        passed = all(r.completed for r in snapshot.results)
+        # An empty result set means no aliases were probed (no credential, or an
+        # unconfigured example registry).  That is a failure, not a vacuous pass.
+        passed = bool(snapshot.results) and all(r.completed for r in snapshot.results)
         return Finding(
             check="llm",
             passed=passed,

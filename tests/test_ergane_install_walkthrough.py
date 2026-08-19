@@ -336,6 +336,14 @@ def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "ergane" / "config.toml"
     monkeypatch.setenv("ERGANE_CONFIG_PATH", str(path))
     monkeypatch.setenv("FACTORY_CONFIG_PATH", str(path))
+    # 062/US2: install seeds ~/.config/ergane/personas.yaml.  Existing walkthrough
+    # tests exercise the real repo registry; point the persona resolver at it so
+    # verify probes the addresses the operator typed, and isolate the config home.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    repo_registry = str(REPO_ROOT / "personas.yaml")
+    monkeypatch.setenv("ERGANE_PERSONAS_PATH", repo_registry)
+    monkeypatch.setenv("FACTORY_PERSONAS_PATH", repo_registry)
     return path
 
 
