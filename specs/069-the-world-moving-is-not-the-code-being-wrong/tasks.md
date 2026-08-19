@@ -15,7 +15,8 @@ lands.
 - [ ] T001 [P] [US1] (spec US1-S1) In `tests/test_moved_base_is_not_charged.py`,
       reject an enqueued landing because the base moved and assert **both** the
       attempt count and the debugger-cycle count are unchanged. Assert the counts
-      directly (`factory/verify/ladder.py:122-130`).
+      directly (`factory/verify/ladder.py:111-119` for attempts, `:122-124` for
+      debugger cycles).
 - [ ] T002 [P] [US1] (spec US1-S3) **The control.** Reject a landing because the
       node's own code fails a required check on an unchanged tree, and assert it
       IS charged as today (trap 1).

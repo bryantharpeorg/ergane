@@ -39,8 +39,13 @@ rely on it.
 
 **US2 — kill and reset:**
 
-- `factory/escalation/workflow.py:395-399` — where a resolution becomes
-  `EscalationChoice.KILL.value`.
+- `factory/escalation/workflow.py:245-263` — the `escalation_resolved` signal,
+  and `_settle_answered` at `:341-371` — **the operator-press path**.
+  **`:373-402` is `_settle_unanswered`, the expiry fail-safe; this spec's own
+  Edge Cases forbid changing it.**
+- `factory/workgraph/workflow.py:561-573` — `kill_epic`, which only sets a flag;
+  `:2023` and `:2673` await escalation children without observing it. That is why
+  a stalled escalation strands the epic.
 - `factory/cli/nouns/build.py:878-900` — `_reset_epic`. It describes the epic and
   refuses on `described.status.name == "RUNNING"`. **That refusal is the one that
   must learn about a stalled escalation child.**
@@ -50,10 +55,14 @@ rely on it.
 
 **US3 — the verb family:**
 
-- `factory/cli/nouns/build.py:1067-1210` — every subparser registration. The
-  outlier is `:1158`, `reset.add_argument("graph", ...)`. Every sibling takes
-  `epic_id`: `:1090` status, `:1106` pause/resume/kill, `:1120` answer, `:1137`
-  resolve, `:1161` salvage, `:1186` complete-node-externally.
+- `factory/cli/nouns/build.py:1067-1219` — every subparser registration, cited at
+  the *argument* line: `start :1078 graph`, `status :1091 epic_id`,
+  `pause/resume/kill :1106 epic_id`, `answer :1124 epic_id`,
+  `resolve :1141 epic_id`, `reset :1158 graph`, `salvage :1173 graph`,
+  `complete-node-externally :1186 epic_id`, `external-completion-count :1201-1219`
+  (**no positional at all**). The family is **not** uniform: three verbs take a
+  graph and one takes nothing. `salvage` keeps its graph path deliberately
+  (`build.py:918-935`).
 
 ## Traps
 
@@ -61,7 +70,9 @@ rely on it.
 the control that catches it. The cap is correct for what it was written for —
 bounding a judge that keeps asking for rewrites. What is wrong is that it applies
 to an attempt the judge did not ask for. The fix is a distinction between
-judge-driven retries and operator-granted ones, not a wider number.
+judge-driven retries and operator-granted ones, not a wider number. Read `factory/verify/ladder.py:17-22` before writing the control:
+at the defaults the two caps expire together, so a control at defaults passes
+with the cap deleted. **Raise `max_attempts` in the control's config.**
 
 **2. Do not remove the second-ESCALATE-means-KILLED rule.** US1-S3 and FR-004.
 `factory/workgraph/workflow.py:1459-1463` exists so a node that escalates, gets
@@ -87,11 +98,17 @@ It is already a pure function of `(history, config, escalations)` and must stay
 one — that purity is what makes US1 testable without a workflow environment at
 all, which is the cheap path to a red test.
 
-**6. US1's red test is nearly free and you should get it first.** `next_action`
-is pure. Build an `AttemptRecord` history with three non-debugger records whose
-latest carries `JudgeOutcome.RETRY`, a `VerificationConfig` at defaults, and
-`escalations=[EscalationChoice.RETRY]`. Assert the result is `RETRY`. It returns
-`ESCALATE` today. That is the whole reproduction and it needs no Temporal.
+**6. US1's red test is nearly free — but only ONE history reproduces it.**
+`next_action` is pure. The reproducing history is **three non-debugger
+`AttemptRecord`s that EACH carry `JudgeOutcome.RETRY`** — the count must *exceed*
+`max_judge_retries=2`, so a history where only the latest carries it returns
+`RETRY` today and your test is green from the first commit — **plus one further
+record with `persona=DEBUGGER_PERSONA`** so the debugger rung at `ladder.py:94`
+is already spent; without it the ladder returns `DEBUGGER`, not `ESCALATE`. With
+`VerificationConfig()` and `escalations=[EscalationChoice.RETRY]` that history
+returns `ESCALATE` today and must return a retry after the fix. Omit either
+requirement and the reproduction silently disappears. Measured against the tree,
+not reasoned about. It needs no Temporal.
 
 **7. US2's refusal must stay a refusal for the running case.** US2-S4. A reset
 that succeeds against a genuinely running epic will interrupt live work. Widening
@@ -112,6 +129,15 @@ so rather than editing across the line.
 
 **10. The judge sees the diff and the criteria, nothing else.** Paste the decided
 actions, the reset output and the subcommand enumeration into the diff.
+
+**11. Do not plan to read the graph off the running workflow.** `describe()`
+exposes memo and static details only — **no input** — and `ergane build start`
+sets no memo (`build.py:500-511`), so every epic that exists today is unreachable
+that way. `fetch_history()` is gone past retention, which is precisely the state
+reset exists for. Resolve `<specs_root>/<epic_id>/workgraph.json` and say what
+happens when it is absent. `_reset_epic` needs `graph.nodes` and
+`graph.target_repo`, not only the id. Keep the positional graph path accepted:
+`tests/test_ergane_build.py:1284, 1297, 1342, 1363, 1378, 1422` all pass one.
 
 ## Sizing
 

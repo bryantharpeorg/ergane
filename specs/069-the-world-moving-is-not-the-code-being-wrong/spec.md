@@ -48,7 +48,7 @@ state: draft
 #   - `factory/verify/models.py:645-647` -- max_attempts: 3, max_judge_retries: 2,
 #     debugger_cycles: 1. The SHIPPED DEFAULT survives zero sibling landings for a
 #     node that also needs its debugger rung for anything else.
-#   - `factory/verify/ladder.py:122-130` -- `_attempts_spent` counts every record
+#   - `factory/verify/ladder.py:111-119` -- `_attempts_spent` counts every record
 #     whose persona is not the debugger. A rejection-driven recovery is such a
 #     record, so a landing rejection costs an attempt AND a debugger cycle.
 #   - `factory/workgraph/workflow.py:2163`, `:2254`, `:2539-2565`, `:2629` -- the

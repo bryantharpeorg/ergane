@@ -54,7 +54,7 @@ an attempt lands.
 - [ ] T010 [P] [US2] (spec US2-S1) In `tests/test_launch_is_not_an_attempt.py`,
       drive a node whose sandbox launch fails before any agent output and assert
       the ladder's spent-attempt count is **unchanged**. Assert the count
-      directly (`factory/verify/ladder.py:122`), not that the node retried.
+      directly (`factory/verify/ladder.py:111-119`), not that the node retried.
 - [ ] T011 [P] [US2] (spec US2-S2) Assert the failure is reported as a launch
       failure distinct from an attempt failure, naming the fault.
 - [ ] T012 [P] [US2] (spec US2-S3) Assert the notifier is reached at the launch
@@ -68,9 +68,13 @@ an attempt lands.
 ### Implementation for this story
 
 - [ ] T015 [US2] (FR-005) Classify a pre-first-token launch fault separately from
-      an attempt, and keep it out of `_attempts_spent`'s count. Find the actual
-      fork site rather than assuming — the argv builder and the launcher are not
-      the same function.
+      an attempt, and keep it out of `_attempts_spent`'s count
+      (`factory/verify/ladder.py:111-119`). **The classification seam is
+      `factory/workgraph/workflow.py:1603-1606`, not the adapter (trap 12).**
+      `factory/activities/agent_activities.py:492-497` already raises the right
+      error; the workflow discards it at `_attempt`'s blanket `except
+      ActivityError`. Follow the `JUDGE_UNAVAILABLE` branch at
+      `workflow.py:1990`.
 - [ ] T016 [US2] (FR-006) Surface it as its own operator-facing condition at the
       time it happens.
 - [ ] T017 [US2] (FR-007) Bound the launch-retry path so it cannot loop
@@ -92,11 +96,21 @@ an attempt lands.
 
 ### Implementation for this story
 
-- [ ] T022 [US3] (FR-008) Resolve `specs_root` and `target_repo` to absolute paths
-      at derive time, in both entry points — `factory/workgraph/cli.py` and
-      `factory/cli/nouns/spec.py`.
-- [ ] T023 [US3] (FR-009, FR-010) Refuse a relative path at read time by name, and
-      report resolution failures as the resolved path.
+- [ ] T023a [US3] (FR-008) Resolve `specs_root` and `target_repo` to absolute paths
+      in **`derive_command` (`factory/workgraph/cli.py:219`, artifact written at
+      `:273-279`)** — the single derive handler. `factory/cli/nouns/spec.py:203-207`
+      only delegates and needs no change. **Resolve in the command, not in the
+      deriver**: `derive_workgraph` / `derive_delta` are also called from
+      `factory/activities/roadmap_activities.py:202`, and
+      `factory/workgraph/derive.py:148-152` states the deriver "is handed text,
+      not a path". Resolving there reds `tests/test_derive.py` and
+      `tests/test_delta.py`.
+- [ ] T023b [US3] (FR-009, FR-010) Refuse a relative path **at
+      `factory/cli/nouns/build.py:196-223`** — `load_workgraph`, the
+      read-for-dispatch site reached by `ergane build start`. The near-identical
+      copy at `factory/workgraph/cli.py:526-560` is dead code reachable only from
+      an unwired handler; a guard added there passes its own test and leaves the
+      real path open. Report resolution failures as the resolved absolute path.
 
 ## Verification
 
