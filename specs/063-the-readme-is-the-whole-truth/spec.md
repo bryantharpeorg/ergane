@@ -1,5 +1,22 @@
 ---
-state: ready
+state: draft
+# HELD ready -> draft 2026-08-19 5:15 PM CT at the operator's instruction, to let
+# the P0 specs drafted from the build-session feedback (067, 068, 069) reach the
+# floor first. This is a QUEUE-ORDER edit and nothing else: the spec is unchanged
+# and still correct.
+#
+# Why the state flag is the only lever available. The roadmap dispatches in
+# DECLARATION ORDER, which is numeric spec order, so a spec numbered 067 cannot
+# overtake 063 no matter how much more urgent it is. Holding the lower number at
+# draft is how priority gets expressed. Restore this to `ready` once the P0 set
+# has landed -- there is no other mechanism that will bring it back.
+#
+# What jumped it: `install/the-sandbox-mount-set-is-aarch64-only-so-no-agent-can-
+# exec-on-x86-64`. Both bwrap boundaries hardcode an aarch64 host's merged-/usr
+# symlinks and omit /lib64, so on x86_64 no agent can be exec'd at all. The
+# published `ergane-cli 0.1.0` is unusable there, and this host is aarch64 --
+# the one architecture on which the defect is invisible.
+#
 # Flipped draft -> ready 2026-08-19 ~12:15 AM CT at the operator's instruction.
 # Ready is eligibility, not dispatch. No hard dependency. US3 extracts the
 # alias derivation out of `LLMProbe.gather`, which 061/US1 also rewrites --
