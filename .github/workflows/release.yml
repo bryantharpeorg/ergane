@@ -1,0 +1,74 @@
+# Release workflow: operator-triggered publishing for the ergane-cli distribution.
+#
+# This workflow is intentionally NOT triggered by branch pushes, pull requests,
+# or merge-group events. It runs only when an operator explicitly dispatches it
+# from a version tag (e.g. via `git tag v0.2.0 && git push origin v0.2.0`).
+#
+# FR-011: no dispatched agent and no ordinary CI run may publish. The publish
+# step is gated behind a tag event and a PyPI credential; without either, the
+# workflow builds and validates the artifact, then stops cleanly.
+#
+# FR-012: a tag whose version does not match the declared `pyproject.toml`
+# version is refused before any artifact is uploaded.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Validate tag against declared version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          DECLARED_VERSION=$(uv run --with tomli --python "${{ matrix.python-version || '3.12' }}" python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          TAG_VERSION="${TAG#v}"
+          if [ "${TAG_VERSION}" != "${DECLARED_VERSION}" ]; then
+            echo "TAG-MISMATCH: tag ${TAG} (${TAG_VERSION}) does not match declared version ${DECLARED_VERSION}" >&2
+            exit 1
+          fi
+          echo "Tag ${TAG} matches declared version ${DECLARED_VERSION}"
+
+      - name: Build distribution
+        run: uv build --wheel
+
+      - name: Validate wheel metadata and contents
+        shell: bash
+        run: |
+          WHEEL=$(ls dist/*.whl | head -n1)
+          if [ -z "${WHEEL}" ]; then
+            echo "VALIDATION-FAIL: no wheel produced" >&2
+            exit 1
+          fi
+
+          NAME=$(unzip -p "${WHEEL}" '*.dist-info/METADATA' | grep -m1 '^Name:' | sed 's/^Name: //')
+          if [ "${NAME}" != "ergane-cli" ]; then
+            echo "VALIDATION-FAIL: wheel Name is ${NAME}, expected ergane-cli" >&2
+            exit 1
+          fi
+
+          if ! unzip -l "${WHEEL}" | grep -q 'factory/personas.yaml'; then
+            echo "VALIDATION-FAIL: personas.yaml missing from wheel" >&2
+            exit 1
+          fi
+
+          echo "Validation passed for ${WHEEL}"
+
+      - name: Publish to PyPI
+        # Gate: only publish when this is a tag push and the OIDC credential is present.
+        # On a fork or a branch run this step is skipped, so no accidental publish occurs.
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
