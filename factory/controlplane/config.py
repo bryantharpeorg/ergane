@@ -48,7 +48,7 @@ KNOWN_TEMPORAL_MODES = ("external", "managed")
 #: `factory.notify.adapter`'s registry by the conformance suite, in both
 #: directions: a name here with nothing registered pages nobody, and a
 #: registered name missing here is not selectable.
-KNOWN_ESC_ADAPTERS = ("telegram", "webhook")
+KNOWN_ESC_ADAPTERS = ("telegram", "webhook", "none")
 
 #: Default relative path under XDG_CONFIG_HOME / HOME (FR-001).
 DEFAULT_CONFIG_REL = Path("ergane") / "config.toml"

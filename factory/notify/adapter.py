@@ -70,6 +70,7 @@ UNKNOWN_SENDER = "unknown"
 _BUILTIN_ADAPTER_MODULES = {
     DEFAULT_ADAPTER: "factory.notify.service",
     "webhook": "factory.notify.webhook",
+    "none": "factory.notify.null_adapter",
 }
 
 

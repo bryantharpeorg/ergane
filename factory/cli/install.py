@@ -798,12 +798,14 @@ def _ask_escalation(
 ) -> dict[str, Any]:
     document = _ask(
         prompter,
-        "escalation adapter (telegram)",
+        "escalation adapter (telegram|none)",
         document,
         path,
         default=document["escalation"].get("adapter"),
-        apply=lambda doc, value: _set(doc, ("escalation", "adapter"), value),
+        apply=_apply_escalation_adapter,
     )
+    if document["escalation"].get("adapter") == "none":
+        return document
     document = _ask(
         prompter,
         "escalation bot token env-var name (optional)",
@@ -996,6 +998,23 @@ def _apply_memory_backend(document: dict[str, Any], backend: Any) -> dict[str, A
 def _apply_temporal_mode(document: dict[str, Any], mode: Any) -> dict[str, Any]:
     current = document.get("temporal") or {}
     document["temporal"] = {**current, "mode": mode}
+    return document
+
+
+def _apply_escalation_adapter(document: dict[str, Any], adapter: Any) -> dict[str, Any]:
+    """Switch the `[escalation]` block to `adapter`, seeding only that adapter's fields.
+
+    Selecting `none` clears the optional Telegram fields so the canonical
+    rendering omits them, matching the non-interactive path that declares
+    `adapter = "none"` without credentials.
+    """
+    current = document.get("escalation") or {}
+    if current.get("adapter") == adapter:
+        return document
+    if adapter == "none":
+        document["escalation"] = {"adapter": "none"}
+    else:
+        document["escalation"] = {**current, "adapter": adapter}
     return document
 
 
