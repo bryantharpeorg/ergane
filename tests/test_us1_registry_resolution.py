@@ -179,7 +179,11 @@ def test_env_override_changes_resolved_registry_at_call_sites(
 ) -> None:
     override = tmp_path / "override" / "personas.yaml"
     override.parent.mkdir(parents=True)
-    _write_registry(override, minimal_personas)
+    # Include a persona name that exists only in the override so that
+    # registry-returning call sites can prove the override was read, not
+    # the shipped seven-persona registry.
+    override_personas = {**minimal_personas, "override_only": minimal_personas["implementer"]}
+    _write_registry(override, override_personas)
 
     # Make sure no XDG/HOME layer masks the env override.
     monkeypatch.delenv(XDG_CONFIG_HOME_ENV, raising=False)
@@ -231,14 +235,25 @@ def test_env_override_changes_resolved_registry_at_call_sites(
         return
 
     if site_name == "spec_validate":
-        from factory.workgraph.models import WorkGraph
+        from factory.workgraph.models import WorkGraph, WorkNode
 
         graph = WorkGraph(
             epic_id="e",
             feature="e",
             specs_root="",
             target_repo="",
-            nodes=[],
+            nodes=[
+                WorkNode(
+                    id="us1",
+                    story_key="US1",
+                    persona="override_only",
+                    spec_ref="e:US1",
+                    requirement_keys=["US1"],
+                    depends_on=[],
+                    depends_on_merged=[],
+                    timeout_override_s=None,
+                )
+            ],
         )
         findings: list = []
         fn(graph, findings)
@@ -247,7 +262,7 @@ def test_env_override_changes_resolved_registry_at_call_sites(
 
     result = fn()
     assert isinstance(result, dict)
-    assert "implementer" in result
+    assert set(result) == set(override_personas)
 
 
 # --- T006: present-but-broken override fails naming path and fault -----------
