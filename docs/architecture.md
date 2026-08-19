@@ -41,7 +41,7 @@ flowchart TB
         AA["agent activity<br/>(adapter: Claude Code, ...)"]
         VF["verifier activities<br/>(gates + output check + judge)"]
         WT[("git worktree<br/>per node")]
-        FDB[(".factory/<br/>ledger.db · verification.db")]
+        FDB[(".ergane/<br/>ledger.db · verification.db")]
         BM --> AA --> WT
         WT --> VF
         BM --> FDB
@@ -163,7 +163,7 @@ node at a time, the first ready one in declaration order, re-evaluated after eac
 terminal state. The cap is supplied per epic at `ergane build start` (an
 `EpicInput` field, not a `factory.yaml` key) because how many agents a host can
 carry is a fact about the host, not about the target repo. Parallel multi-epic
-scheduling remains out of scope; the one-epic-at-a-time `.factory/` SQLite
+scheduling remains out of scope; the one-epic-at-a-time `.ergane/` SQLite
 constraint still holds.
 
 Per node: `PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED | FAILED`, with
@@ -193,12 +193,22 @@ per-node status keyed in declaration order, so reading it top to bottom reads th
 epic in the order it was
 authored to run.
 
+**The runtime root.** Everything below that this document writes under
+`.ergane/` — worktrees, per-node homes, transcripts, process handles, and the
+three SQLite stores — sits beneath one directory resolved once per process. It
+defaults to `.ergane` against the worker's working directory and is overridden by
+`ERGANE_ROOT`. The directory was called `.factory` before 043, and an
+installation that still carries the old name keeps working: the resolver
+recognises it, and `ergane repo migrate-runtime-root` moves the state across when
+an operator chooses to. Read paths below as relative to the resolved root, not as
+literal `.ergane/` on every host.
+
 **Transcript archiving.** Every attempt's evidence lands under
-`.factory/transcripts/<epic>/<node>/attempt-<n>/` — the agent's `stdout.log` and its
+`.ergane/transcripts/<epic>/<node>/attempt-<n>/` — the agent's `stdout.log` and its
 session transcript, archived on every path including timeout and kill. Transcripts
 live on the worker host beside the ledger; they are never written into a target
 repo's worktree and never committed. The adapter's pid/pgid handles live alongside
-under `.factory/run/`, so a crashed worker's orphaned process group is reaped before
+under `.ergane/run/`, so a crashed worker's orphaned process group is reaped before
 the next attempt relaunches.
 
 All side effects live in activities. Workflow code makes pure decisions over graph state —
@@ -431,7 +441,7 @@ The pipeline, cheapest signal first:
 
 ### 6.1 Evidence store (SQLite)
 
-`.factory/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 6) —
+`.ergane/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 6) —
 the same single-designated-host topology as the 001 ledger, path overridable with
 `ERGANE_VERIFICATION_DB_PATH` or the legacy `FACTORY_VERIFICATION_DB_PATH`. Two tables:
 
@@ -619,9 +629,9 @@ layers hold, and they are worth stating together because no single one of them i
 sufficient:
 
 1. **Filesystem isolation.** One real git worktree per node at
-   `.factory/worktrees/<epic>/<node>` on branch `factory/<epic>/<node>`, each with
+   `.ergane/worktrees/<epic>/<node>` on branch `factory/<epic>/<node>`, each with
    its own `HOME`, virtual key, and gate run. The per-node `HOME` lives under
-   `.factory/homes/<epic>/<node>` and is written by the adapter from factory
+   `.ergane/homes/<epic>/<node>` and is written by the adapter from factory
    constants; it is not the operator's `HOME` inherited from the worker.
    Concurrent agents never share a directory, so none can observe another's
    half-written file.
@@ -688,7 +698,7 @@ The child environment is constructed, not filtered (US3 / D-040): `ANTHROPIC_BAS
 `ANTHROPIC_AUTH_TOKEN`, the factory-owned per-node `HOME`, and a small passthrough of
 non-credential names (`PATH`, `LANG`, `TERM`). `HOME` is intentionally absent from the
 passthrough tuple: it is built from `AttemptContext.home_path` pointing at
-`.factory/homes/<epic>/<node>`, so the agent loads its session state from a directory the
+`.ergane/homes/<epic>/<node>`, so the agent loads its session state from a directory the
 factory owns rather than from the operator's home. The home is seeded only with git
 identity from the factory's salvage constants; the CLI writes its own `.claude.json`,
 `plugins/`, `projects/`, `sessions/` and `backups/` from fresh defaults.
