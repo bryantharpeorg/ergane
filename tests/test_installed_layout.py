@@ -141,12 +141,12 @@ def test_wheel_build_ships_the_registry_inside_the_package() -> None:
     wheel = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]
 
     force_include = wheel.get("force-include", {})
-    assert force_include.get("personas.yaml") == "factory/personas.yaml", (
+    assert force_include.get("personas.example.yaml") == "factory/personas.yaml", (
         "the wheel must carry the persona registry inside `factory/`; without it "
         "an installed Ergane resolves no persona and cannot dispatch"
     )
     # The source it copies from has to exist for the build to copy it.
-    assert REGISTRY.is_file()
+    assert (REPO_ROOT / "personas.example.yaml").is_file()
 
 
 def test_no_build_residue_is_left_in_the_package() -> None:

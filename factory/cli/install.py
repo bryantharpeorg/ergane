@@ -38,6 +38,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 from factory.cli import init as init_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
+import factory.config as config_module
 from factory.controlplane.config import (
     DIRECT_MODE_SURRENDERED_PROPERTIES_TEXT,
     KNOWN_LL_MODES,
@@ -257,12 +258,24 @@ def install_command(args: argparse.Namespace) -> int:
     if getattr(args, "non_interactive", False):
         return _install_non_interactive(path, timeout_s)
 
+    personas_dir = config_module._xdg_config_home() / config_module.DEFAULT_REGISTRY_REL.parent
+    try:
+        personas_path, personas_created = _seed_personas_registry(personas_dir)
+    except OSError as error:
+        raise OperatorError(
+            f"cannot seed persona registry at {personas_dir / config_module.REGISTRY_FILENAME}: {error}",
+            code=EXIT_USER,
+        ) from None
+
     try:
         with exclusive_lock(path, timeout_s=timeout_s):
             document = _interview(path)
             text = render_controlplane_document(document)
             _write_config(path, text)
             print(f"wrote {path}")
+            print(
+                f"{'wrote' if personas_created else 'left existing'} {personas_path}"
+            )
             print("")
             print("verifying the control plane...")
             findings, exit_code = verify_controlplane(str(path))
@@ -282,6 +295,21 @@ def _write_config(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     path.chmod(0o600)
+
+
+def _seed_personas_registry(config_home: Path) -> tuple[Path, bool]:
+    """Copy the shipped example registry to the operator's config directory.
+
+    Returns ``(target_path, created)``.  If the file already exists it is left
+    untouched and ``created`` is ``False``.
+    """
+    target = config_home / config_module.REGISTRY_FILENAME
+    if target.exists():
+        return target, False
+    config_home.mkdir(parents=True, exist_ok=True)
+    target.write_text(config_module.shipped_registry_text(), encoding="utf-8")
+    target.chmod(0o600)
+    return target, True
 
 
 # ---------------------------------------------------------------------------
@@ -316,12 +344,24 @@ def _install_non_interactive(path: Path, timeout_s: float) -> int:
             _redact_parser_error(refusal, completed), code=EXIT_USER
         ) from None
 
+    personas_dir = config_module._xdg_config_home() / config_module.DEFAULT_REGISTRY_REL.parent
+    try:
+        personas_path, personas_created = _seed_personas_registry(personas_dir)
+    except OSError as error:
+        raise OperatorError(
+            f"cannot seed persona registry at {personas_dir / config_module.REGISTRY_FILENAME}: {error}",
+            code=EXIT_USER,
+        ) from None
+
     try:
         with exclusive_lock(path, timeout_s=timeout_s):
             document = _interview(path, prompter=_FilePrompter(answers))
             text = render_controlplane_document(document)
             _write_config(path, text)
             print(f"wrote {path}")
+            print(
+                f"{'wrote' if personas_created else 'left existing'} {personas_path}"
+            )
             print("")
             print("verifying the control plane...")
             findings, exit_code = verify_controlplane(str(path))
@@ -398,12 +438,24 @@ def _install_from_file(answer_path: Path, path: Path, timeout_s: float) -> int:
             _redact_parser_error(refusal, completed), code=EXIT_USER
         ) from None
 
+    personas_dir = config_module._xdg_config_home() / config_module.DEFAULT_REGISTRY_REL.parent
+    try:
+        personas_path, personas_created = _seed_personas_registry(personas_dir)
+    except OSError as error:
+        raise OperatorError(
+            f"cannot seed persona registry at {personas_dir / config_module.REGISTRY_FILENAME}: {error}",
+            code=EXIT_USER,
+        ) from None
+
     try:
         with exclusive_lock(path, timeout_s=timeout_s):
             document = _interview(path, prompter=_FilePrompter(answers))
             text = render_controlplane_document(document)
             _write_config(path, text)
             print(f"wrote {path}")
+            print(
+                f"{'wrote' if personas_created else 'left existing'} {personas_path}"
+            )
             print("")
             print("verifying the control plane...")
             findings, exit_code = verify_controlplane(str(path))

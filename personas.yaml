@@ -1,4 +1,8 @@
-# Persona registry (D-012, trimmed per D-021 / research R8).
+# Persona registry for the Ergane factory repository.
+#
+# This file is the operator wiring for *this* repository; it is not shipped in
+# the wheel.  The packaged example lives in `personas.example.yaml` and is
+# copied to `~/.config/ergane/personas.yaml` by `ergane install`.
 #
 # Nodes are routed by persona, never by model tier. This registry is the only
 # place a model name appears — code never hardcodes one. The `model` and
