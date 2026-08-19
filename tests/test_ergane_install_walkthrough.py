@@ -236,6 +236,7 @@ from factory.controlplane.config import (
     load_controlplane_config,
     parse_controlplane_config,
     render_controlplane_config,
+    render_controlplane_document,
 )
 from factory.locking import LockUnavailable, exclusive_lock, lock_path_for
 
@@ -1063,3 +1064,199 @@ def test_verify_with_no_config_reads_as_a_skipped_step_not_a_broken_tool(
     assert str(config_path) in result.stderr
     # The refusal reaches the operator instead of anything reaching stdout.
     assert result.stdout == ""
+
+
+# ---------------------------------------------------------------------------
+# T001-T006 [US1] install can be driven from an answer file
+# ---------------------------------------------------------------------------
+
+#: The full answer document, in the same TOML schema the command writes.
+#: Omitting a block means "use the documented default for every field in it".
+_FILE_ANSWER_DOC: dict[str, Any] = {
+    "version": 1,
+    "llm": {
+        "mode": "gateway",
+        "base_url": LLM_ADDRESS,
+        "master_key_env": "ERGANE_LLM_MASTER_KEY",
+    },
+    "memory": {
+        "backend": "hindsight",
+        "url": MEMORY_ADDRESS,
+        "api_key_env": "ERGANE_HINDSIGHT_KEY",
+    },
+    "temporal": {
+        "mode": "external",
+        "address": TEMPORAL_ADDRESS,
+        "namespace": "ergane",
+        "tls_enabled": False,
+    },
+    "telemetry": {"otlp_endpoint": TELEMETRY_ADDRESS},
+    "escalation": {
+        "adapter": "telegram",
+        "bot_token_env": "ERGANE_TELEGRAM_BOT_TOKEN",
+        "chat_id_env": "ERGANE_TELEGRAM_CHAT_ID",
+    },
+}
+
+
+#: In-tree path to the worked example the documentation promises.
+ANSWER_FILE_EXAMPLE = REPO_ROOT / "docs" / "ergane-install-answer.example.toml"
+
+
+def _run_from_file(
+    document: dict[str, Any],
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Run:
+    """Run `ergane install --from-file <tmp>` with an answer document."""
+    answer_path = tmp_path / "answers.toml"
+    answer_path.write_text(render_controlplane_document(document), encoding="utf-8")
+
+    # The file-driven path must never fall back to the interactive seam.
+    def _refusing_prompter_factory() -> Any:
+        raise AssertionError("interactive prompter factory was invoked for --from-file")
+
+    monkeypatch.setattr(init_module, "_prompter_factory", _refusing_prompter_factory)
+    monkeypatch.delenv("TEMPORAL_ADDRESS", raising=False)
+    monkeypatch.delenv("TEMPORAL_NAMESPACE", raising=False)
+    return _invoke(["install", "--from-file", str(answer_path)])
+
+
+def test_install_from_file_writes_config_without_invoking_terminal_prompter(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """US1-S1: with stdin closed, --from-file writes the config and never prompts."""
+    assert config_path.exists() is False
+    # Simulate a closed stdin: any read would be an EOFError.
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    sys.stdin.close()
+
+    result = _run_from_file(_FILE_ANSWER_DOC, config_path, monkeypatch, tmp_path)
+
+    assert config_path.is_file()
+    config = load_controlplane_config(str(config_path))
+    assert config.llm.gateway is not None
+    assert config.llm.gateway.base_url == LLM_ADDRESS
+    assert config.temporal.address == TEMPORAL_ADDRESS
+    assert config.telemetry.otlp_endpoint == TELEMETRY_ADDRESS
+    # The interactive seam was not used, so the closed stdin never mattered.
+    assert result.code == EXIT_USER
+    assert "unexpected error" not in result.stderr
+
+
+def test_install_from_file_and_interactive_walkthrough_write_identical_configs(
+    walkthrough: Callable[..., tuple[Run, ScriptedPrompter]],
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """US1-S2: the file-driven path must not fork the interview (trap 1)."""
+    interactive, _ = walkthrough(_answers())
+    assert interactive.code == EXIT_USER
+    interactive_bytes = config_path.read_bytes()
+    config_path.unlink()
+
+    result = _run_from_file(_FILE_ANSWER_DOC, config_path, monkeypatch, tmp_path)
+    assert result.code == EXIT_USER
+    file_bytes = config_path.read_bytes()
+
+    assert file_bytes == interactive_bytes
+
+
+def test_install_from_file_applies_and_reports_documented_defaults(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """US1-S3: a field omitted from the file takes its documented default, loudly."""
+    doc = dict(_FILE_ANSWER_DOC)
+    doc["temporal"] = {
+        "mode": "external",
+        "address": TEMPORAL_ADDRESS,
+        # namespace deliberately omitted; the documented default is "ergane".
+    }
+
+    result = _run_from_file(doc, config_path, monkeypatch, tmp_path)
+
+    assert result.code == EXIT_USER
+    assert config_path.is_file()
+    config = load_controlplane_config(str(config_path))
+    assert config.temporal.namespace == "ergane"
+    assert "applied default: temporal.namespace" in result.stdout
+    assert '"ergane"' in result.stdout
+
+
+def test_install_from_file_refuses_when_a_field_has_no_safe_default(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """US1-S4: a required field with no safe default is named and nothing is written."""
+    doc = dict(_FILE_ANSWER_DOC)
+    doc["escalation"] = {
+        # adapter deliberately omitted; no safe default exists in US1.
+        "bot_token_env": "ERGANE_TELEGRAM_BOT_TOKEN",
+        "chat_id_env": "ERGANE_TELEGRAM_CHAT_ID",
+    }
+
+    result = _run_from_file(doc, config_path, monkeypatch, tmp_path)
+
+    assert result.code == EXIT_USER
+    assert config_path.exists() is False
+    assert "escalation.adapter" in (result.stdout + result.stderr)
+
+
+def test_install_from_file_refuses_secret_shape_with_the_same_wording(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """US1-S5: a credential supplied by file hits the same secret-shape guard."""
+    secret = "sk-live-super-secret-value"
+    doc = dict(_FILE_ANSWER_DOC)
+    doc["llm"] = {
+        "mode": "gateway",
+        "base_url": LLM_ADDRESS,
+        "master_key_env": secret,
+    }
+
+    result = _run_from_file(doc, config_path, monkeypatch, tmp_path)
+
+    assert result.code == EXIT_USER
+    assert config_path.exists() is False
+    output = result.stdout + result.stderr
+    assert "secret_value_not_reference" in output
+    assert "<value withheld>" in output
+    assert "master_key_env" in output
+    assert secret not in output
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+
+
+def test_install_documented_answer_file_example_drives_a_successful_install(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """US1-S6: the in-tree worked example parses and writes a config unmodified."""
+    assert ANSWER_FILE_EXAMPLE.is_file(), f"documented example missing: {ANSWER_FILE_EXAMPLE}"
+    example_path = tmp_path / "example-answers.toml"
+    example_path.write_bytes(ANSWER_FILE_EXAMPLE.read_bytes())
+
+    def _refusing_prompter_factory() -> Any:
+        raise AssertionError("interactive prompter factory was invoked for --from-file")
+
+    monkeypatch.setattr(init_module, "_prompter_factory", _refusing_prompter_factory)
+    monkeypatch.delenv("TEMPORAL_ADDRESS", raising=False)
+    monkeypatch.delenv("TEMPORAL_NAMESPACE", raising=False)
+    result = _invoke(["install", "--from-file", str(example_path)])
+
+    assert config_path.is_file(), "config was not written from the documented example"
+    config = load_controlplane_config(str(config_path))
+    assert config.version == 1
+    assert config.llm.mode == "gateway"
+    assert "unexpected error" not in result.stderr
+    assert "--debug" not in result.stderr
