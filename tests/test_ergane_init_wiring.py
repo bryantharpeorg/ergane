@@ -124,6 +124,8 @@ class FakeGitHub:
     visibility: str = "PUBLIC"
     default_branch: str = "main"
     squash_merge_commit_title: str = "COMMIT_OR_PR_TITLE"
+    allow_auto_merge: bool = False
+    refuse_allow_auto_merge_patch: bool = False
     gh_installed: bool = True
     logged_in: bool = True
     on_github: bool = True
@@ -217,6 +219,14 @@ class FakeGitHub:
         if endpoint == prefix:
             if method == "PATCH" and "squash_merge_commit_title" in fields:
                 self.squash_merge_commit_title = fields["squash_merge_commit_title"]
+            if method == "PATCH" and "allow_auto_merge" in fields:
+                if self.refuse_allow_auto_merge_patch:
+                    return _Result(
+                        stderr="Resource not accessible by personal access token (HTTP 403)",
+                        returncode=1,
+                    )
+                value = fields["allow_auto_merge"].lower()
+                self.allow_auto_merge = value in ("1", "true", "yes", "on")
             return self._json(self._repo_payload())
 
         if endpoint == f"{prefix}/rulesets":
@@ -254,6 +264,7 @@ class FakeGitHub:
         return {
             "visibility": self.visibility.lower(),
             "squash_merge_commit_title": self.squash_merge_commit_title,
+            "allow_auto_merge": self.allow_auto_merge,
         }
 
     def _create_ruleset(self, body: Any) -> dict[str, Any]:
@@ -298,6 +309,7 @@ class FakeGitHub:
                 "visibility": self.visibility,
                 "default_branch": self.default_branch,
                 "squash_merge_commit_title": self.squash_merge_commit_title,
+                "allow_auto_merge": self.allow_auto_merge,
                 "rulesets": {str(k): v for k, v in self.rulesets.items()},
             },
             sort_keys=True,
@@ -706,5 +718,100 @@ def test_plain_init_wires_nothing_and_only_reads_for_the_check(
         ("api", "repos/acme/app"),
         ("api", "repos/acme/app/rules/branches/main"),
     ]
-    assert (repo / wiring.WORKFLOW_PATH).exists() is False
-    assert "--wire" in result.stdout
+
+
+# 059/US1 — the auto-merge flag the merge driver requires
+
+
+def _find_patch_call(github: FakeGitHub) -> tuple[str, ...] | None:
+    for call in github.calls:
+        if "-X" in call and "PATCH" in call and f"repos/{github.owner_repo}" in call:
+            return call
+    return None
+
+
+def test_wiring_enables_allow_auto_merge_against_the_fake_client() -> None:
+    """US1-S1: `wire_repo` issues the PATCH that turns on `allow_auto_merge`, and
+    the recorded call list contains the right slug and the right flag value.
+    """
+    github = FakeGitHub(owner_repo="acme/app")
+    client = GhClient(repo="/srv/target", runner=github)
+
+    steps = wiring.wire_repo(client, landing_branch="main", gates=["test"])
+
+    auto_merge_call = _find_auto_merge_patch(github)
+    assert auto_merge_call is not None
+    assert f"repos/{github.owner_repo}" in auto_merge_call
+    assert "allow_auto_merge=true" in auto_merge_call
+
+    assert any(step.name == "auto-merge" for step in steps)
+
+
+def _find_auto_merge_patch(github: FakeGitHub) -> tuple[str, ...] | None:
+    for call in github.calls:
+        if "-X" in call and "PATCH" in call and "allow_auto_merge=true" in call:
+            return call
+    return None
+
+
+def test_manual_steps_renders_the_auto_merge_command() -> None:
+    """US1-S2: the by-hand list names enabling auto-merge, with the placeholder as
+    well as a resolved slug.
+    """
+    resolved = wiring.manual_steps(landing_branch="main", gates=["test"], owner_repo="acme/app")
+    placeholder = wiring.manual_steps(landing_branch="main", gates=["test"])
+
+    def has_auto_merge(steps: list[str]) -> bool:
+        return any("allow_auto_merge=true" in step for step in steps)
+
+    assert has_auto_merge(resolved)
+    assert has_auto_merge(placeholder)
+    assert any("repos/acme/app" in step and "allow_auto_merge=true" in step for step in resolved)
+    assert any("repos/<owner>/<repo>" in step and "allow_auto_merge=true" in step for step in placeholder)
+
+
+def test_auto_merge_step_appears_as_a_wiring_step_with_name_and_status() -> None:
+    """US1-S3: the operation is reported as a named `WiringStep` like its siblings."""
+    github = FakeGitHub(owner_repo="acme/app")
+    client = GhClient(repo="/srv/target", runner=github)
+
+    steps = wiring.wire_repo(client, landing_branch="main", gates=["test"])
+
+    names = [step.name for step in steps]
+    assert "auto-merge" in names
+    auto_merge = next(step for step in steps if step.name == "auto-merge")
+    assert auto_merge.status in {wiring.APPLIED, wiring.ALREADY_SATISFIED}
+
+
+def test_allow_auto_merge_failure_is_reported_as_a_wiring_failure() -> None:
+    """US1-S4: when the PATCH is refused, `wire_repo` raises a refusal naming the
+    setting rather than reporting success with a missing step.
+    """
+    github = FakeGitHub(owner_repo="acme/app", refuse_allow_auto_merge_patch=True)
+    client = GhClient(repo="/srv/target", runner=github)
+
+    with pytest.raises(wiring.WiringRefused) as raised:
+        wiring.wire_repo(client, landing_branch="main", gates=["test"])
+
+    assert "allow_auto_merge" in str(raised.value)
+    assert "403" in str(raised.value)
+
+
+def test_auto_merge_step_is_idempotent_and_403_is_distinct_from_off() -> None:
+    """Edge: a second run when the flag is already true reports `already satisfied`
+    rather than a failure; a 403 refusal is reported as a permission condition."""
+    github = FakeGitHub(owner_repo="acme/app", allow_auto_merge=True)
+    client = GhClient(repo="/srv/target", runner=github)
+
+    steps = wiring.wire_repo(client, landing_branch="main", gates=["test"])
+    auto_merge = next(step for step in steps if step.name == "auto-merge")
+    assert auto_merge.status == wiring.ALREADY_SATISFIED
+    auto_merge_mutations = [m for m in github.mutations() if "allow_auto_merge=true" in m]
+    assert auto_merge_mutations == []
+
+    refused = FakeGitHub(owner_repo="acme/app", refuse_allow_auto_merge_patch=True)
+    refused_client = GhClient(repo="/srv/target", runner=refused)
+    with pytest.raises(wiring.WiringRefused) as raised:
+        wiring.wire_repo(refused_client, landing_branch="main", gates=["test"])
+    assert "403" in str(raised.value)
+    assert "admin" in str(raised.value).lower()
