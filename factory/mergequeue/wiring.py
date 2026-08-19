@@ -15,6 +15,27 @@ repo until that judgment passes, reporting every act. Of its five checks,
 `factory_yaml` is US1's scaffold and `visibility` is refused here (D-007); the
 queue, the squash title and gate<->check parity are what this applies.
 
+Merge-queue eligibility
+-----------------------
+
+GitHub's documented availability rule (the vendor sentence this module uses):
+
+    "Pull request merge queues are available in any public repository owned by an organization, or in private repositories owned by organizations using GitHub Enterprise Cloud."
+
+That rule is the source of truth for the precondition below. Expressed as a
+two-by-two matrix over (owner type, visibility):
+
+    owner type    | visibility | eligible?
+    Organization  | public     | yes
+    Organization  | private    | no  (Enterprise Cloud only, per GitHub)
+    User          | public     | no  (organization ownership required)
+    User          | private    | no  (both properties missing)
+
+The implementation uses a single predicate, `repository_can_host_merge_queue`,
+so the documented matrix and the code decision share one source. A change to
+either that breaks this table is caught by the four-cell parametrized test in
+`tests/test_wiring_us3.py`.
+
 Three decisions, each a place a plausible implementation goes quietly wrong:
 
 **The branch.** The spec says "enable the merge queue on the declared landing
@@ -326,6 +347,28 @@ def _require_gh(client: Any, *, landing_branch: str, gates: Sequence[str]) -> No
         ) from None
 
 
+def repository_can_host_merge_queue(
+    *,
+    is_in_organization: bool,
+    visibility: str,
+) -> bool:
+    """US3: the single named predicate that decides merge-queue eligibility.
+
+    GitHub's documented rule (quoted in the module docstring) is:
+
+        any public repository owned by an organization, or in private
+        repositories owned by organizations using GitHub Enterprise Cloud.
+
+    This factory's own targets are public organization repositories; the
+    predicate therefore returns True only when the repository is public *and*
+    owned by an organization. Private repositories, and user-owned repositories
+    of any visibility, are refused. The matrix is documented in the module
+    docstring and exercised cell-by-cell in `tests/test_wiring_us3.py`.
+    """
+    vis = visibility.strip().lower()
+    return is_in_organization and vis == "public"
+
+
 def _require_eligible(
     *,
     is_in_organization: bool,
@@ -341,6 +384,12 @@ def _require_eligible(
     GitHub Team is insufficient (FR-006). A repository failing on both
     properties has both named in one refusal (FR-007).
     """
+    if repository_can_host_merge_queue(
+        is_in_organization=is_in_organization,
+        visibility=visibility,
+    ):
+        return
+
     vis = visibility.strip().lower()
     is_public = vis == "public"
     missing: list[str] = []
@@ -348,9 +397,6 @@ def _require_eligible(
         missing.append("organization ownership")
     if not is_public:
         missing.append("public visibility")
-
-    if not missing:
-        return
 
     if len(missing) == 2:
         headline = (

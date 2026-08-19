@@ -5,6 +5,35 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-049 · The merge-queue precondition now covers ownership as well as visibility (decided)
+
+Decided 2026-08-19, claimed at landing of spec `059-a-wired-repo-can-land` US3.
+D-007 held that the merge queue is unavailable to this project on private
+repositories under any plan it holds. The precondition that enforced that
+decision originally checked only visibility (`_require_public`), which let a
+user-owned public repository through to GitHub's opaque `422 Invalid rule
+'merge_queue': ` and caused the operator to buy a GitHub Team plan on the
+strength of a remedy that named a plan which does not cover merge queue for
+private repositories.
+
+1. **Owner type joins visibility as an eligibility property.** The rule now
+   decides from `(is_in_organization, visibility)` together, before any ruleset
+   call is issued. The positive cell is "organization-owned and public".
+
+2. **The earlier remedy wording is withdrawn.** The previous text that told an
+   operator to "move to a GitHub plan whose merge queue covers private
+   repositories" has been replaced by wording that names GitHub Enterprise Cloud
+   as the plan that covers merge queue for private repositories and states
+   explicitly that GitHub Team does not. The word "Team" appears only as a
+   negation.
+
+3. **The eligibility matrix is documented and tested.** The module docstring
+   quotes GitHub's documented availability sentence verbatim, and a four-cell
+   parametrized test asserts the single named predicate matches the documented
+   matrix. A change that contradicts the table fails a test.
+
+---
+
 ## D-046 · Loop composition is declared data; environment-constraints wording amended (decided)
 
 Decided 2026-08-17, claimed at landing of spec `023-composable-verification` US4.
