@@ -1,5 +1,5 @@
 [project]
-name = "ergane"
+name = "ergane-cli"
 version = "0.1.0"
 description = "Agentic software factory: per-node usage tracking, verification gating, merge queue"
 requires-python = ">=3.11"

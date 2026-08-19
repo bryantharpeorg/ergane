@@ -132,9 +132,9 @@ def _version_text() -> str:
     """What `ergane --version` prints: version, revision, endpoints."""
     try:
         from importlib.metadata import version
-        pkg_version = version("ergane")
+        pkg_version = version("ergane-cli")
     except Exception:
-        pkg_version = "0.1.0"
+        pkg_version = "unknown"
 
     try:
         revision = subprocess.check_output(
