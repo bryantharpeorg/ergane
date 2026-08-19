@@ -218,7 +218,7 @@ def onboard_gh(monkeypatch: pytest.MonkeyPatch) -> "Any":
 
 def _script_conforming_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={
             "nameWithOwner": owner_repo,
             "visibility": "PUBLIC",
@@ -246,7 +246,7 @@ def _script_conforming_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
 
 def _script_queue_less_gh(fake: "Any", owner_repo: str = "OWNER/REPO") -> None:
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={
             "nameWithOwner": owner_repo,
             "visibility": "PUBLIC",

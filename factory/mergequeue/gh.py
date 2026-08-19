@@ -234,15 +234,20 @@ class GhClient:
     # --- US3 onboarding (FR-010) ---------------------------------------------
 
     def repo_view(self) -> dict[str, Any]:
-        """The repo's identity and visibility, as `gh` resolves them from the clone.
+        """The repo's identity, visibility and ownership, as `gh` resolves them.
 
         `gh repo view` resolves owner/repo from the clone's `origin` remote (the
         client runs with `cwd` = the clone), so the slug, visibility and default
         branch all come back in one call — the activity needs the slug to address
         the rules API, and the visibility/default-branch to judge the repo.
+
+        `isInOrganization` is added here (US2, FR-008) so the wiring precondition
+        can decide merge-queue eligibility from owner type and visibility together
+        without a second `gh` invocation.
         """
         payload = self._run_json(
-            "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef"
+            "repo", "view", "--json",
+            "nameWithOwner,visibility,isInOrganization,defaultBranchRef"
         )
         if not isinstance(payload, dict):
             raise GhError(
