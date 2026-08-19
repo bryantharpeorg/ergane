@@ -1,0 +1,36 @@
+{
+  "epic_id": "053-worker-skew-is-visible-and-survivable",
+  "feature": "053-worker-skew-is-visible-and-survivable",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "053-worker-skew-is-visible-and-survivable:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-007"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "053-worker-skew-is-visible-and-survivable:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-008",
+        "FR-009",
+        "FR-010"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}

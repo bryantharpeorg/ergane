@@ -1,0 +1,60 @@
+{
+  "epic_id": "055-the-gateway-is-a-choice-with-a-scan",
+  "feature": "055-the-gateway-is-a-choice-with-a-scan",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "055-the-gateway-is-a-choice-with-a-scan:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "055-the-gateway-is-a-choice-with-a-scan:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-006",
+        "FR-007",
+        "FR-008",
+        "FR-009",
+        "FR-010",
+        "FR-011"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "055-the-gateway-is-a-choice-with-a-scan:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-012",
+        "FR-013"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1",
+        "us2"
+      ],
+      "timeout_override_s": null
+    }
+  ]
+}

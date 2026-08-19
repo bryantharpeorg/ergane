@@ -1,0 +1,25 @@
+{
+  "epic_id": "038-replay-eviction-leak",
+  "feature": "038-replay-eviction-leak",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "038-replay-eviction-leak:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004",
+        "FR-005"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}

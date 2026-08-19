@@ -1,5 +1,35 @@
 ---
-state: ready
+state: draft
+# HELD ready -> draft 2026-08-19 5:45 PM CT, BEFORE ANY DISPATCH, by the same
+# operator session that wrote this spec ninety minutes earlier. A twelve-agent
+# adversarial pre-dispatch review found 68 defects across 067/068/069 rated
+# would-cost-an-attempt. Dispatching as written would have burned most of nine
+# nodes. This returns to `ready` only after the findings are applied AND a
+# re-review comes back clean.
+#
+# The classes found, so the rework is checkable rather than a matter of taste:
+#
+#   - LINE ANCHORS SYSTEMATICALLY OFF BY ONE OR TWO. Cited from grep context
+#     rather than from opened files. `ladder.py:88` is a comment line and the
+#     assignment is at :89; `:122` is `_debugger_cycles_spent`, while
+#     `_attempts_spent` is at :111; `:100-106` is a def plus docstring, not the
+#     comparison; `workflow.py:1459` is a closing paren and the conversion is at
+#     :1460-1463; `escalation/workflow.py:395-399` is the EXPIRY fail-safe
+#     branch, not the operator-KILL path the task sends an implementer to.
+#   - CENTRAL FACTUAL CLAIMS FALSE. 068 asserts `reset` is the ONLY build verb
+#     keyed by a compiled-artifact path. `start` and `salvage` are too, which
+#     makes FR-010 unachievable as written and its family test unpassable.
+#   - A PRESCRIBED RED TEST THAT DOES NOT REPRODUCE. A reviewer executed 068's
+#     trap-6 recipe against the real tree and got a different result than the
+#     trap asserts.
+#   - A CONTROL TEST STRUCTURALLY UNABLE TO FAIL, proved by mutation.
+#   - STORIES DECLARED INDEPENDENT THAT SHARE A FILE, in all three specs.
+#
+# The lesson, recorded where the next drafter meets it: A SPEC DRAFTED FROM GREP
+# OUTPUT RATHER THAN FROM OPENED FILES READS AS AUTHORITATIVE AND IS NOT. Every
+# anchor above was produced by reading `grep -n -A` context and miscounting the
+# offset, which is invisible to the drafter and fatal to the implementer. The
+# review cost fifteen minutes and caught what would have cost a night.
 # Drafted 2026-08-19 5:40 PM CT by an operator session, from the same
 # build-session report that produced 067 and 068. Flipped straight to `ready` at
 # the operator's instruction; 063 and 064 were held to draft to let the P0 set

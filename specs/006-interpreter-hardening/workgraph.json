@@ -1,0 +1,85 @@
+{
+  "epic_id": "006-interpreter-hardening",
+  "feature": "006-interpreter-hardening",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane-006-target",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "006-interpreter-hardening:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002",
+        "FR-003"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "006-interpreter-hardening:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-004",
+        "FR-005",
+        "FR-006"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "006-interpreter-hardening:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-007"
+      ],
+      "depends_on": [
+        "us2"
+      ],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "implementer",
+      "spec_ref": "006-interpreter-hardening:US4",
+      "requirement_keys": [
+        "US4",
+        "FR-008",
+        "FR-009"
+      ],
+      "depends_on": [
+        "us1"
+      ],
+      "depends_on_merged": [
+        "us3"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us5",
+      "story_key": "US5",
+      "persona": "implementer",
+      "spec_ref": "006-interpreter-hardening:US5",
+      "requirement_keys": [
+        "US5",
+        "FR-010",
+        "FR-011"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "epic_id": "035-operator-completion",
+  "feature": "035-operator-completion",
+  "specs_root": "specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "035-operator-completion:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-006"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "035-operator-completion:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-007",
+        "FR-008"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}
