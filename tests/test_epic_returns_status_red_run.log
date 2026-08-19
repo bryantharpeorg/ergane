@@ -1,0 +1,25 @@
+# US3 reproduction notes
+
+## What was tried
+
+1. `WorkflowEnvironment.start_time_skipping()` + `UnsandboxedWorkflowRunner()`
+   - `await handle.result()` returns an `EpicStatus` instance.
+   - Both COMPLETED and KILLED conclusions pass `type(result) is EpicStatus`.
+   - The local test environment does NOT reproduce the live `binary/null` result.
+
+2. `SandboxedWorkflowRunner()`
+   - Same outcome: `handle.result()` returns a real `EpicStatus`.
+
+3. Temporarily changed `return self.epic_status()` to `return None`
+   - Both US3 tests fail with the expected `AssertionError`.
+   - Log: tests/test_epic_returns_status_broken_return.log
+
+## Conclusion
+
+The local Temporal test environment cannot reproduce the null-return symptom
+observed in production on 2026-08-19. The cause remains unexplained in this
+attempt. The committed test is a contract test: it will fail if the return
+value is ever None or not an `EpicStatus`, which is the failure mode the
+incidents exposed.
+
+Per US3-S3, this attempt states explicitly that the root cause was not found.
