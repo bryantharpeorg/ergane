@@ -73,8 +73,8 @@ def _installed_layout(root: Path, *, with_registry: bool) -> Path:
     """Build `<root>/site-packages/factory/` the way a wheel install does.
 
     Only the modules `factory.config` actually needs are copied — it imports
-    nothing from its own package — so this stays a file copy rather than a
-    build. The point of the layout is what it *omits*: there is no
+    ``factory.env`` for path-variable resolution, so that module travels too.
+    The point of the layout is what it *omits*: there is no
     `site-packages/personas.yaml`, because no wheel has ever installed one.
     """
     site = root / "site-packages"
@@ -82,6 +82,7 @@ def _installed_layout(root: Path, *, with_registry: bool) -> Path:
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     shutil.copy(FACTORY_DIR / "config.py", package / "config.py")
+    shutil.copy(FACTORY_DIR / "env.py", package / "env.py")
     if with_registry:
         # What `[tool.hatch.build.targets.wheel.force-include]` does at build time.
         shutil.copy(REGISTRY, package / "personas.yaml")

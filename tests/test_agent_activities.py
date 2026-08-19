@@ -305,6 +305,8 @@ def _write_registry(tmp_path: Path, personas: dict[str, object]) -> Path:
     return path
 
 
+
+
 #: The shipped registry text with the implementer ``context_window`` set to
 #: 262144 (kimi's card window). Built from the real file so scenario 2 proves
 #: the *shipped* file plus the dial stays green.
@@ -553,6 +555,7 @@ async def test_context_window_is_resolved_onto_the_node_from_any_registry(
     # `resolve_graph` reads the shipped registry internally; point its loader at
     # the fixture copy for this test only, without changing the production API.
     monkeypatch.setattr(factory.config, "DEFAULT_REGISTRY_PATH", registry_path)
+    monkeypatch.setenv("ERGANE_PERSONAS_PATH", str(registry_path))
 
     registry = load_personas()
     nodes = (
@@ -605,6 +608,7 @@ async def test_context_window_is_none_when_omitted(
     )
 
     monkeypatch.setattr(factory.config, "DEFAULT_REGISTRY_PATH", registry_path)
+    monkeypatch.setenv("ERGANE_PERSONAS_PATH", str(registry_path))
 
     registry = load_personas()
     nodes = (
