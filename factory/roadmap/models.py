@@ -380,6 +380,13 @@ def _cross_validate(
 def read_roadmap(specs_root: str | Path) -> Roadmap:
     """Read a `specs/` corpus into a roadmap graph, or raise naming every fault.
 
+    An absent `specs_root` is treated as an empty corpus: it returns a roadmap
+    with zero entries (FR-005). An existing but empty root also returns an empty
+    roadmap. A malformed corpus — one where any spec's frontmatter fails the
+    grammar — still raises `RoadmapError` naming every fault, and yields no
+    partial roadmap (FR-006): the "emits nothing on failure" discipline is not
+    weakened by the absent/empty cases.
+
     Walks `<specs_root>/<spec-dir>/spec.md` for every direct child directory,
     parses each spec's leading frontmatter (or reads `draft` when none is
     present, FR-002), shapes every entry, then cross-validates the corpus
@@ -393,6 +400,10 @@ def read_roadmap(specs_root: str | Path) -> Roadmap:
     root = Path(specs_root)
     findings = _Findings()
     entries: dict[str, SpecEntry] = {}
+
+    # FR-005: a missing specs root is an empty corpus, not an error.
+    if not root.exists():
+        return Roadmap(specs_root=str(root), entries=[])
 
     spec_dirs = sorted(
         path for path in root.iterdir() if path.is_dir() and not path.name.startswith(".")
