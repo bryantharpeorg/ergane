@@ -475,6 +475,7 @@ async def run_roadmap(
     on_complete: Callable[[str], None] | None = None,
     child_starts: list[ChildStartRecord] | None = None,
     extra_workflows: list = (),
+    interceptors: list[Interceptor] | None = None,
 ) -> AsyncIterator[Any]:
     """Start the roadmap and hold the worker open while the test steers it.
 
@@ -525,7 +526,9 @@ async def run_roadmap(
         send_roadmap_notice,
         send_escalation,
     ]
-    interceptors = [_RecordingInterceptor(child_starts)] if child_starts is not None else []
+    interceptors = (
+        [_RecordingInterceptor(child_starts)] if child_starts is not None else list(interceptors or [])
+    )
     try:
         async with Worker(
             env.client,
@@ -550,6 +553,7 @@ async def run_roadmap(
             # serialized across the boundary — rather than a workflow; the
             # roadmap's child is a workflow, so it needs the shared state.)
             workflow_runner=UnsandboxedWorkflowRunner(),
+            workflow_failure_exception_types=[Exception],
         ):
             input_kwargs: dict[str, Any] = {
                 "specs_root": specs_root,
