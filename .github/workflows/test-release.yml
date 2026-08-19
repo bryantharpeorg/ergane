@@ -1,0 +1,67 @@
+# TestPyPI rehearsal for the ergane-cli distribution.
+#
+# The operator registered a trusted publisher on test.pypi.org naming this
+# repository and THIS FILENAME (bryantharpeorg/ergane, test-release.yml), so the
+# name of this file is part of the credential. Renaming it revokes publishing.
+#
+# It exists so the first real publish is not the first publish. PyPI and TestPyPI
+# both refuse reuse of a name-and-version pair forever, so a mistake found on
+# test.pypi.org costs a version number in a sandbox instead of on the index
+# people install from.
+#
+# FR-011: publishing is an explicit operator action. This workflow is reachable
+# ONLY by `workflow_dispatch` -- no push, no pull_request, no merge_group -- so
+# no dispatched agent and no ordinary CI run can reach it by doing its job.
+name: test-release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-publish-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Trusted publishing is an OIDC exchange, not a stored secret: this token
+      # is the whole credential, and no PyPI token exists in this repository.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build distribution
+        run: uv build --wheel
+
+      - name: Validate wheel metadata and contents
+        shell: bash
+        run: |
+          WHEEL=$(ls dist/*.whl | head -n1)
+          if [ -z "${WHEEL}" ]; then
+            echo "VALIDATION-FAIL: no wheel produced" >&2
+            exit 1
+          fi
+
+          NAME=$(unzip -p "${WHEEL}" '*.dist-info/METADATA' | grep -m1 '^Name:' | sed 's/^Name: //')
+          if [ "${NAME}" != "ergane-cli" ]; then
+            echo "VALIDATION-FAIL: wheel Name is ${NAME}, expected ergane-cli" >&2
+            exit 1
+          fi
+
+          if ! unzip -l "${WHEEL}" | grep -q 'factory/personas.yaml'; then
+            echo "VALIDATION-FAIL: personas.yaml missing from wheel" >&2
+            exit 1
+          fi
+
+          echo "Validation passed for ${WHEEL}"
+          unzip -p "${WHEEL}" '*.dist-info/METADATA' | sed -n '1,20p'
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
+          # A rehearsal that is run twice should report, not explode: TestPyPI
+          # refuses a name-and-version pair it already holds, and that refusal is
+          # expected on a re-run rather than a failure of this workflow.
+          skip-existing: true
