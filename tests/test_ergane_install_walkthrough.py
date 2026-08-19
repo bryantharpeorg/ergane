@@ -497,6 +497,28 @@ def test_walkthrough_on_a_blank_host_writes_a_parsing_config_and_ends_with_findi
     assert prompter.answers == []
 
 
+def test_walkthrough_can_select_none_escalation_adapter(
+    walkthrough: Callable[..., tuple[Run, ScriptedPrompter]],
+    config_path: Path,
+) -> None:
+    """US3 / T029: the interactive path offers `none` and reaches the same state."""
+    answers = _answers(escalation_adapter="none")
+    # `none` needs no bot token or chat id, so those two answers go unused.
+    del answers[-2:]
+    _, prompter = walkthrough(answers)
+
+    config = load_controlplane_config(str(config_path))
+    assert config.escalation.adapter == "none"
+    assert config.escalation.bot_token_env is None
+    assert config.escalation.chat_id_env is None
+
+    prompts = prompter.prompts
+    assert any("escalation adapter (telegram|none)" in prompt for prompt in prompts)
+    assert not any("escalation bot token" in prompt for prompt in prompts)
+    assert not any("escalation chat id" in prompt for prompt in prompts)
+    assert prompter.answers == []
+
+
 def test_walkthrough_asks_only_the_fields_the_chosen_mode_needs(
     walkthrough: Callable[..., tuple[Run, ScriptedPrompter]],
 ) -> None:

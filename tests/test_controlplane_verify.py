@@ -113,6 +113,7 @@ from temporalio.testing import WorkflowEnvironment
 import factory.controlplane.verify as verify_module
 from factory.cli.main import main as ergane_main
 from factory.controlplane.config import ControlPlaneConfig as Cfg
+from factory.controlplane.config import KNOWN_ESC_ADAPTERS, load_controlplane_config
 from factory.mergequeue.models import Finding
 
 
@@ -892,6 +893,29 @@ def _raising_telegram_factory(config: Cfg.Escalation, **kwargs: Any) -> Any:
     raise verify_module.ServiceNotAnswering("escalation", reason="no telegram in this test")
 
 
+def _raising_memory_factory(config: Cfg.Memory) -> Any:
+    raise verify_module.ServiceNotAnswering("memory", reason="no memory backend in this test")
+
+
+class _FakeLiteLLMClient:
+    """A stand-in for the LLM endpoint that returns a tiny completion."""
+
+    def __init__(self, *, persona_model: str | None = None) -> None:
+        self.persona_model = persona_model or "fake-model"
+        self.completion_calls: list[dict[str, Any]] = []
+
+    async def chat_completion(self, request: dict[str, Any]) -> dict[str, Any]:
+        self.completion_calls.append(request)
+        return {"choices": [{"message": {"content": "pong"}}]}
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _fake_llm_factory(config: Cfg.LLM) -> Any:
+    return _FakeLiteLLMClient()
+
+
 def _passing_host_seam() -> dict[str, Any]:
     """Simulate a host with every prerequisite present and usable.
 
@@ -1059,6 +1083,132 @@ async def test_verify_escalation_gather_against_live_double(
     assert "telegram" in finding.detail
     assert "message_id=42" in finding.detail
     assert "deferred to epic 041" in finding.detail
+
+
+
+# ---------------------------------------------------------------------------
+# T022-T026 [060-US3] escalation can be declared off, and says so
+# ---------------------------------------------------------------------------
+
+
+def _none_escalation_config_toml(**overrides: Any) -> str:
+    """A config whose escalation block declares adapter = "none"."""
+    base_overrides: dict[str, Any] = {
+        "memory_backend": "none",
+        "telemetry_endpoint": None,
+        "escalation_bot_token_env": "ERGANE_TELEGRAM_BOT_TOKEN",
+        "escalation_chat_id_env": "ERGANE_TELEGRAM_CHAT_ID",
+    }
+    base_overrides.update(overrides)
+    return _full_config_toml(
+        **base_overrides,
+    ).replace(
+        'adapter = "telegram"\n',
+        'adapter = "none"\n',
+    ).replace(
+        'mode = "external"\n',
+        'mode = "managed"\n',
+    ).replace(
+        'address = "temporal.local:7233"\n',
+        '',
+    ).replace(
+        'namespace = "ergane"\n',
+        '',
+    )
+
+
+@pytest.mark.asyncio
+async def test_escalation_none_parses_and_is_known_to_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S1 / T022 / T025: `escalation.adapter = "none"` parses.
+
+    The conformance contract at factory/controlplane/config.py:48 requires the
+    name to be known to the config roster and to factory.notify.adapter's
+    registry in both directions.
+    """
+    from factory.notify.adapter import registered_adapters
+
+    assert "none" in KNOWN_ESC_ADAPTERS
+    assert "none" in registered_adapters()
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_none_escalation_config_toml(), encoding="utf-8")
+    cfg = load_controlplane_config(str(config_path))
+    assert cfg.escalation.adapter == "none"
+
+
+@pytest.mark.asyncio
+async def test_escalation_none_emits_a_non_failing_dropped_finding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S2 / T023: `--verify` emits a finding stating escalations will be dropped."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_none_escalation_config_toml(), encoding="utf-8")
+    monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
+
+    monkeypatch.setattr(verify_module, "_temporal_client_factory", _raising_temporal_factory)
+    monkeypatch.setattr(verify_module, "_llm_client_factory", _raising_llm_factory)
+
+    findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
+
+    escalation_finding = next(f for f in findings if f.check == "escalation")
+    assert "dropped" in escalation_finding.detail.lower()
+    assert "fail" in escalation_finding.detail.lower() or "fails" in escalation_finding.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_escalation_none_does_not_fail_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S3 / T024: the dropped-escalation finding must not fail the run."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        _none_escalation_config_toml(
+            llm_base_url="http://llm.local/v1",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
+
+    monkeypatch.setattr(verify_module, "_llm_client_factory", _fake_llm_factory)
+    monkeypatch.setattr(verify_module, "_host_seam_factory", _passing_host_seam)
+
+    findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
+
+    escalation_finding = next(f for f in findings if f.check == "escalation")
+    assert escalation_finding.passed is True
+    assert exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_escalation_none_is_not_upgraded_when_telegram_token_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3 edge case / T026: an explicit "none" stays none even if Telegram env is present."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(_none_escalation_config_toml(), encoding="utf-8")
+    monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
+    # Telegram credentials are in the environment, but the adapter is "none".
+    monkeypatch.setenv("ERGANE_TELEGRAM_BOT_TOKEN", "123456:AAAA")
+    monkeypatch.setenv("ERGANE_TELEGRAM_CHAT_ID", "-1")
+
+    monkeypatch.setattr(verify_module, "_temporal_client_factory", _raising_temporal_factory)
+    monkeypatch.setattr(verify_module, "_llm_client_factory", _raising_llm_factory)
+
+    findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
+
+    escalation_finding = next(f for f in findings if f.check == "escalation")
+    assert escalation_finding.passed is True
+    assert "dropped" in escalation_finding.detail.lower()
+    assert "telegram" not in escalation_finding.detail.lower()
 
 
 # Keep additional CLI integration tests for a later commit.

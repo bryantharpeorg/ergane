@@ -659,6 +659,16 @@ class EscalationProbe:
     name = "escalation"
 
     async def gather(self, config: ControlPlaneConfig) -> EscalationSnapshot:
+        if config.escalation.adapter == "none":
+            return EscalationSnapshot(
+                adapter="none",
+                delivered=False,
+                detail=(
+                    "escalations will be dropped: escalation.adapter is `none`; "
+                    "a node that would have asked a question fails instead of waiting"
+                ),
+            )
+
         if config.escalation.adapter != "telegram":
             return EscalationSnapshot(
                 adapter=config.escalation.adapter,
@@ -699,6 +709,8 @@ class EscalationProbe:
             )
 
     def evaluate(self, snapshot: EscalationSnapshot) -> Finding:
+        if snapshot.adapter == "none":
+            return Finding(check="escalation", passed=True, detail=snapshot.detail)
         passed = snapshot.delivered
         detail = snapshot.detail
         if passed and "deferred" not in detail.lower():
