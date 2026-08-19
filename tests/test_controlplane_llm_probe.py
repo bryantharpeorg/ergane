@@ -39,6 +39,7 @@ class _AliasRecordingLLMClient:
 
     def __init__(self) -> None:
         self.calls: list[_ProbeRecord] = []
+        self._issued_models: list[str] = []
 
     async def chat_completion(self, request: dict[str, Any]) -> dict[str, Any]:
         # The request carries the model alias the probe resolved.
@@ -48,6 +49,34 @@ class _AliasRecordingLLMClient:
         persona = _current_probe_persona.get("persona", "unknown")
         self.calls.append(_ProbeRecord(alias=alias, persona=persona, request_model=alias))
         return {"choices": [{"message": {"content": "pong"}}]}
+
+    async def issue_key(
+        self,
+        *,
+        key_alias: str,
+        models: list[str],
+        metadata: dict[str, Any] | None = None,
+        ttl: str | None = None,
+    ) -> str:
+        self._issued_models = list(models)
+        return "sk-fake-verify-key"
+
+    async def get_key_info(self, key: str) -> dict[str, Any]:
+        return {
+            "key": key,
+            "info": {
+                "key_alias": "verify-probe",
+                "models": list(self._issued_models),
+                "metadata": {},
+                "spend": 0.0,
+            },
+        }
+
+    async def fetch_spend_log_rows(self, key: str, *, issued_at: str) -> list[dict[str, Any]]:
+        return []
+
+    async def revoke_key_by_tokens(self, keys: list[str]) -> bool:
+        return True
 
     async def aclose(self) -> None:
         pass
@@ -232,6 +261,7 @@ class _RefusingForOneAliasLLMClient:
     def __init__(self, unknown_alias: str) -> None:
         self.unknown_alias = unknown_alias
         self.calls: list[_ProbeRecord] = []
+        self._issued_models: list[str] = []
 
     async def chat_completion(self, request: dict[str, Any]) -> dict[str, Any]:
         alias = request.get("model", "unknown")
@@ -240,6 +270,34 @@ class _RefusingForOneAliasLLMClient:
         if alias == self.unknown_alias:
             raise RuntimeError(f"gateway does not know alias `{alias}`")
         return {"choices": [{"message": {"content": "pong"}}]}
+
+    async def issue_key(
+        self,
+        *,
+        key_alias: str,
+        models: list[str],
+        metadata: dict[str, Any] | None = None,
+        ttl: str | None = None,
+    ) -> str:
+        self._issued_models = list(models)
+        return "sk-fake-verify-key"
+
+    async def get_key_info(self, key: str) -> dict[str, Any]:
+        return {
+            "key": key,
+            "info": {
+                "key_alias": "verify-probe",
+                "models": list(self._issued_models),
+                "metadata": {},
+                "spend": 0.0,
+            },
+        }
+
+    async def fetch_spend_log_rows(self, key: str, *, issued_at: str) -> list[dict[str, Any]]:
+        return []
+
+    async def revoke_key_by_tokens(self, keys: list[str]) -> bool:
+        return True
 
     async def aclose(self) -> None:
         pass
