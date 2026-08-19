@@ -86,10 +86,19 @@ forever and the execution stays `RUNNING`. So:
 
 - The roadmap **reports healthy** to anything that asks whether it is running.
 - Nothing is dispatched again, for the life of the run.
-- **No page fires.** `_report_roadmap_failure` (`:955`) is reached from activity
-  failures. This is an exception in workflow code, on a path that never reaches
-  the notifier — the workflow cannot report its own crash, because reporting is
-  the thing that crashed.
+- **~~No page fires.~~ WRONG — corrected 2026-08-19 4:35 PM CT, after this spec
+  had landed 3/3.** The operator's Telegram channel shows the wedge paging
+  correctly at 8:49 AM (`1 consecutive run`) and again at 4:05 PM
+  (`3 consecutive runs`), both reading
+  `'NoneType' object has no attribute 'epic_state'`. The reasoning below was
+  built from reading `_report_roadmap_failure` (`:955`) and concluding that a
+  workflow-code exception never reaches the notifier. It does.
+  **The real defect is worse than the one this bullet claimed.** The operator was
+  told, twice, hours apart, and acted on neither — because a Python exception
+  repr does not tell a person that their factory has stopped building, or what to
+  do about it. Not being told would at least have been an honest silence; being
+  told uselessly cost 1h49m in the morning and ~1h38m in the afternoon. That is
+  spec 066's subject, and it exists because of this error.
 - `ergane roadmap status` stops working entirely, returning Temporal's own
   words: `Unable to query workflow due to Workflow Task in failed state`.
 - The run cannot be recovered by restarting the worker, because the null is
