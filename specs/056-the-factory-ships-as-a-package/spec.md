@@ -1,5 +1,44 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-18. US1 bb1ece6cd751 (#200), US2 6a8cb67645a9 (#201),
+# US3 be894e7ab30a (#202) -- all three observed on ergane-buildout.
+#
+# PUBLISHED: ergane-cli 0.1.0 is live on PyPI, tagged v0.1.0 at f678730fd34f,
+# uploaded by .github/workflows/release.yml over OIDC trusted publishing (no
+# token exists on the worker host). Proven from the real index, not from a local
+# build: `uv tool install ergane-cli` into a temp dir with no personas.yaml on
+# any ancestor path gives `ergane 0.1.0` and resolves 7 personas from inside the
+# installed package. The portability principle's first verb no longer rests on
+# `git clone`.
+#
+# THE ESCAPE HATCH WAS AUTHORISED AND NOT NEEDED. The operator opened the night
+# by asking for 035's hand-back path for speed; `ergane build external-completion-
+# count` still reads 0. The factory built all three stories -- US1 and US2 first
+# attempt, US3 on the debugger rung after the judge correctly caught a broken
+# helper. Two operator commits DID land outside the hatch (#203, #204) and are
+# recorded as such in their own messages: the hatch refuses any node outside a
+# running epic, and both defects were found after epic-056 had COMPLETED. That
+# is a real gap in 035 -- the hatch cannot repair what is discovered late.
+#
+# TWO VERIFICATION GAPS FOUND, both filed critical, both the same disease -- a
+# check that can only say yes:
+#   install/published-metadata-points-at-a-repository-that-does-not-exist
+#     US3 declared every project URL under github.com/ergane/ergane, which is a
+#     404; this repo is bryantharpeorg/ergane. The judge confirmed four URLs were
+#     PRESENT, verify_wheel.py passed the same wheel 22/22, and
+#     tests/test_release_path.py:103 asserts `"Project-URL" in metadata`. Nothing
+#     checked that a declared URL RESOLVES. Fixed by #203 before the publish,
+#     which was the only moment it was cheap.
+#   verify/publish-guard-test-cannot-fail
+#     PyYAML renders a GitHub Actions `on:` key as the BOOLEAN True, so
+#     _workflow_is_operator_tag_trigger_only's `workflow.get("on")` is None and
+#     its `"true" in workflow` fallback never fires (the key is True, not "true").
+#     The function returns "permitted" for EVERY workflow. Proved by control: a
+#     workflow with `on: push: branches: [main]` -- exactly what the test forbids
+#     -- is reported operator-tag-only. FR-011/SC-005 are unproven. release.yml
+#     itself is correct, verified by reading it; the guard holds by authorship,
+#     not by verification.
+#
 # FLIPPED READY 2026-08-18 ~7:15 PM CT: publishing to PyPI and installing on
 # an Azure VM is the operator's stated goal for tonight, and US1 is its whole
 # critical path. Dispatched by hand at a one-attempt ladder; the roadmap stays
