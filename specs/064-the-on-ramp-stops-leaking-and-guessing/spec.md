@@ -1,5 +1,24 @@
 ---
-state: ready
+state: draft
+# HELD ready -> draft 2026-08-19 5:15 PM CT at the operator's instruction, to let
+# the P0 specs drafted from the build-session feedback (067, 068, 069) reach the
+# floor first. A QUEUE-ORDER edit only; the spec is unchanged and still correct.
+# The roadmap dispatches in numeric order, so holding a lower number at draft is
+# the only way to let a higher-numbered, more urgent spec through.
+#
+# READ THIS BEFORE LEAVING IT HELD FOR LONG. US1 is a live credential leak -- the
+# Telegram bot token reaches the worker's log records -- and holding this spec
+# means that leak persists behind three P0 specs. It was weighed against the
+# thing that jumped it (`install/the-sandbox-mount-set-is-aarch64-only-so-no-
+# agent-can-exec-on-x86-64`, which makes the published package unable to exec an
+# agent on any x86_64 host) and judged the lesser of the two, on three grounds:
+# the token is the operator's own, it leaks into local logs rather than to a
+# third party, and it is rotatable in about two minutes. Rotating the bot token
+# is the mitigation available while this waits, and it does not need this spec.
+#
+# Restore to `ready` once the P0 set has landed. Nothing restores it
+# automatically.
+#
 # Flipped draft -> ready 2026-08-19 ~12:15 AM CT at the operator's instruction.
 # Ready is eligibility, not dispatch. No dependencies in either direction, and
 # no internal edges -- the most parallelisable spec in the on-ramp set. US1 is a
