@@ -378,6 +378,13 @@ async def roadmap_status_command(args: argparse.Namespace) -> int:
     try:
         status = await handle.query("roadmap_status", result_type=RoadmapStatus)
     except RPCError as error:
+        if _is_wedged_workflow_task(error):
+            raise OperatorError(
+                f"roadmap '{Path(args.specs_root).name}' is wedged "
+                f"(run {location.workflow_id} has a failing workflow task). "
+                "Terminate the run and let the schedule start a fresh one.",
+                EXIT_TRANSPORT,
+            ) from error
         raise OperatorError(
             f"cannot query roadmap '{Path(args.specs_root).name}': {error}",
             EXIT_TRANSPORT,
@@ -391,6 +398,11 @@ async def roadmap_status_command(args: argparse.Namespace) -> int:
     else:
         print(_render_disposition(location) + _render_status(status))
     return EXIT_OK
+
+
+def _is_wedged_workflow_task(error: RPCError) -> bool:
+    """Temporal's query fails when the workflow task is in a failed state."""
+    return "Workflow Task in failed state" in str(error)
 
 
 def _render_disposition(location: RoadmapLocation) -> str:

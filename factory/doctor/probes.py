@@ -26,6 +26,10 @@ from factory.usage.litellm_client import LiteLLMClient, LiteLLMError
 from factory.workgraph.cli import workflow_id
 from factory.workgraph.worktree import resolve_factory_root, worktree_path
 
+#: The default specs corpus the production roadmap scheduler watches.  Tests
+#: and other deployments can override with `ERGANE_SPECS_ROOT`.
+DEFAULT_SPECS_ROOT = "/srv/factory/ergane/specs"
+
 
 class ServiceNotAnswering(Exception):
     """A probe's dependency would not answer — the probe is skipped, not silent."""
@@ -109,6 +113,16 @@ class StoreIntegritySnapshot:
     """The store-integrity probe's snapshot."""
 
     stores: list[tuple[Path, str]]
+
+
+@dataclass(frozen=True)
+class RoadmapWedgeSnapshot:
+    """The roadmap-wedge probe's snapshot."""
+
+    specs_root: str
+    workflow_id: str | None
+    wedged: bool
+    error_message: str | None = None
 
 
 # --- helpers ------------------------------------------------------------------
@@ -457,6 +471,103 @@ class StoreIntegrityProbe:
         return findings
 
 
+class RoadmapWedgeProbe:
+    """A roadmap whose workflow task is failing is a silent stall; surface it."""
+
+    name = "roadmap-wedge"
+
+    async def _gather_async(self) -> RoadmapWedgeSnapshot:
+        from temporalio.client import Client
+        from temporalio.service import RPCError, RPCStatusCode
+
+        from factory.controlplane.resolve import resolve_temporal_target
+        from factory.roadmap.discovery import resolve_roadmap
+
+        specs_root = os.environ.get("ERGANE_SPECS_ROOT", DEFAULT_SPECS_ROOT)
+        target = resolve_temporal_target()
+        address, namespace = target.address, target.namespace
+
+        try:
+            client = await Client.connect(address, namespace=namespace)
+        except (RPCError, RuntimeError, OSError) as exc:
+            raise ServiceNotAnswering(
+                "temporal", reason=f"cannot connect to {address}: {exc}"
+            ) from exc
+
+        try:
+            location = await resolve_roadmap(client, specs_root)
+        except RPCError as exc:
+            raise ServiceNotAnswering(
+                "temporal", reason=f"resolve roadmap failed: {exc}"
+            ) from exc
+
+        if not location.found or location.workflow_id is None:
+            # No run at all means there is nothing wedged to report.
+            return RoadmapWedgeSnapshot(
+                specs_root=specs_root,
+                workflow_id=location.workflow_id,
+                wedged=False,
+            )
+
+        handle = client.get_workflow_handle(location.workflow_id)
+        try:
+            await handle.query("roadmap_status")
+        except RPCError as exc:
+            if "Workflow Task in failed state" in str(exc):
+                return RoadmapWedgeSnapshot(
+                    specs_root=specs_root,
+                    workflow_id=location.workflow_id,
+                    wedged=True,
+                    error_message=str(exc),
+                )
+            # A completed/closed run is not wedged; schedule runs drain and exit
+            # by design. Only an unexpected query failure becomes a skip.
+            if (
+                exc.status is RPCStatusCode.NOT_FOUND
+                or "completed" in str(exc).lower()
+                or "not found" in str(exc).lower()
+            ):
+                return RoadmapWedgeSnapshot(
+                    specs_root=specs_root,
+                    workflow_id=location.workflow_id,
+                    wedged=False,
+                )
+            raise ServiceNotAnswering(
+                "temporal", reason=f"query roadmap failed: {exc}"
+            ) from exc
+
+        return RoadmapWedgeSnapshot(
+            specs_root=specs_root,
+            workflow_id=location.workflow_id,
+            wedged=False,
+        )
+
+    def gather(self) -> RoadmapWedgeSnapshot:
+        return asyncio.run(self._gather_async())
+
+    def evaluate(self, snapshot: RoadmapWedgeSnapshot) -> list[FindingReport]:
+        if not snapshot.wedged or snapshot.workflow_id is None:
+            return []
+        run_id = snapshot.workflow_id
+        return [
+            FindingReport(
+                key=f"ops/roadmap-wedged/{run_id}",
+                category="ops",
+                severity=Severity.CRITICAL,
+                summary=(
+                    f"roadmap run `{run_id}` has a failing workflow task; "
+                    "terminate the run and let the schedule start a fresh one"
+                ),
+                refs=[f"roadmap/run:{run_id}"],
+                notes=(
+                    "A workflow task that fails is retried forever, so the run "
+                    "stays RUNNING while dispatching nothing. The only recovery is "
+                    "to terminate the run."
+                ),
+            )
+        ]
+
+
 # --- registry -----------------------------------------------------------------
 
 
@@ -519,4 +630,5 @@ REGISTRY: list[Probe] = [
     StaleWorkerProbe(),
     StaleWorktreeProbe(),
     StoreIntegrityProbe(),
+    RoadmapWedgeProbe(),
 ]
