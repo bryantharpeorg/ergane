@@ -1,5 +1,19 @@
 ---
-state: ready
+state: landed
+# LANDED, attested 2026-08-19 1:20 PM CT. US1 aa9ff4384b5c (#206), US2
+# 7f74ddfba59c (#208), US3 06b971567c76 (#209) -- all three observed on
+# ergane-buildout by `ergane spec landed --default-branch ergane-buildout`.
+# Every story passed on its first attempt; the epic spent $12.58 across six
+# ledger rows, which is the cheapest epic of the on-ramp set by a factor of
+# three.
+#
+# Attested because `depends_on_landed` reads THIS FLAG, not git. 061 declares a
+# dependency on this spec and on 060, and stayed `blocked by:` both while the
+# work was demonstrably merged -- so leaving an epic unattested holds up its
+# dependents no matter what the tree says. The roadmap also re-derived this
+# spec on every pass and parked it as "delta is empty: all stories are
+# satisfied", which is correct and noisy.
+#
 # Flipped draft -> ready 2026-08-19 ~12:15 AM CT at the operator's instruction.
 # Ready is eligibility, not dispatch. This is the first of the six on-ramp specs
 # and should be dispatched first: every other spec's end-to-end verification

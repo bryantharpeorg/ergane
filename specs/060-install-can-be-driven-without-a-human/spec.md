@@ -1,5 +1,28 @@
 ---
-state: ready
+state: landed
+# LANDED, attested 2026-08-19 1:20 PM CT. US1 2a8e65e730f5 (#210), US2
+# 4efef8a8dc08 (#211), US3 5aa0aae85fa8 (#212) -- all three observed on
+# ergane-buildout. Every story passed on its first attempt, but this epic cost
+# $44.61 against 059's $12.58 for the same story count, and US1 alone took 50
+# minutes of wall time against 059's 19-25 minute stories.
+#
+# US2 landed LAST despite being second, because PR #211 came up `DIRTY`. The
+# cause is worth recording, because the topology that produced it is declared
+# and will recur: US2 has a PASS edge on US1, so its branch was built on US1's
+# node branch and carried US1's four commits; US1 then landed as a SQUASH, same
+# content, no shared ancestry. Git saw `factory/cli/install.py` modified twice
+# from one merge base and refused. The factory recovered it on its own -- the
+# poller classified `DIRTY` as CONFLICT and the debugger persona synced -- which
+# is the first observed proof that path works end to end.
+#
+# The spec's own Work Graph note claimed "US3 shares nothing with either... it
+# edits factory/controlplane/config.py and the notify registry, while US1 and
+# US2 edit factory/cli/". That was WRONG: US3's diff also touched
+# `tests/test_ergane_install_walkthrough.py`, which US2 touched too. It landed
+# before US2 so no second conflict fired, but the claim was asserted from the
+# plan rather than checked against a diff. `depends_on` models what a story
+# needs to EXIST, never what it will TOUCH.
+#
 # Flipped draft -> ready 2026-08-19 ~12:15 AM CT at the operator's instruction.
 # Ready is eligibility, not dispatch. 061 declares a hard `depends_on_landed` on
 # this spec, so it is on the critical path even though it reads as convenience.
