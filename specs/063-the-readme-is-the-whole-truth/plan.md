@@ -19,9 +19,12 @@
   path sweep (:103), path anti-vacuity (:112), no-secret (:119), no-spec-status
   (:136), no-spend (:152). FR-008 says all of these keep passing.
 - `tests/test_claude_md.py` — imports the same helper; inherits the fix.
-- `README.md:105`, `README.md:111` — the two `nergane` typos.
-- `README.md:13–27` — the prerequisites section US2 extends.
-- `README.md:46–50` — the `uv venv` / `uv pip install -e .` block US2 reframes.
+- `README.md` — **rewritten by the operator on 2026-08-19; every line number this
+  plan used to cite is dead.** Do not anchor to line numbers here. Anchor to the
+  headings, which are stable: "What you must already have" (with the
+  "A LiteLLM gateway, backed by a database" subsection), "Installing Ergane"
+  (with "The difference that will bite you"), and "Leaving". The six statements
+  US2 must guard all live under the first two.
 - `factory/controlplane/verify.py:296` — `LLMProbe.gather`'s alias derivation.
   FR-010 requires `--requirements` to use the same one. Note 061/US1 also edits
   this function; if 061 has landed, re-read it before extracting the derivation.
@@ -52,16 +55,38 @@ stale exactly like the page it is checking, and with less visibility.
 load-bearing for two pages. FR-003 and US1-S4 require the logic in the shared
 helper. Two extractors is how the pages drift apart with both suites green.
 
-**5. Fixing the typos is part of US1, not a separate cleanup.** US1-S3 requires
-both pages to pass the fixed sweep, which is impossible while
-`README.md:105` and `:111` say `nergane`. If you write the detector without
-fixing the page, your own story fails — which is the correct behaviour and worth
-expecting rather than debugging.
+**5. The typos are already fixed — prove the detector on a fixture.** The
+operator corrected both `nergane` spans on 2026-08-19, so the real pages can no
+longer demonstrate that your detector fires. If your only evidence is "both pages
+pass", you have proven the absence of false positives and nothing else, and a
+detector that never fires passes that test perfectly. Build the fixture page
+(T001) and assert the **failure** on it. This is FR-004 and it is the single
+easiest way to rebuild the exact defect this spec exists to remove.
 
 **6. `README.md` is an entry page, not a second standards channel.** 054's trap
-7, and `tests/test_claude_md.py` holds `CLAUDE.md` to the same line. US2 adds
+7, and `tests/test_claude_md.py` holds `CLAUDE.md` to the same line. US2 guards
 prerequisites and install paths. It does not add requirements for how code is
 written; those belong to the standards path `factory.yaml` names.
+
+**12. US2 is now a guarding story, not a writing story, and the difference is
+the whole point.** The prose already exists. If you re-word it, you will spend
+the story arguing with a page that is already correct and land nothing that
+survives the next edit. What is missing is that **nothing asserts any of it** —
+delete the database sentence today and the full suite is green. Write the
+mutation tests. Each one takes a copy of the page text, removes one protected
+statement, and asserts the check fails. If your test instead reads the real
+`README.md` and asserts a substring is present, you have written a test that
+cannot fail on any page anyone would actually write, which is the fifth instance
+of this spec set's defect class wearing a sixth hat.
+
+**13. Guard the meaning, not the sentence.** FR-011 and US2-S5. A test keyed to
+the literal string "must be backed by a database" fails the moment someone
+improves the wording to "requires a database-backed proxy", and the person whose
+build it breaks will delete it rather than fix it. Assert over a small set of
+required concepts — that the page says a database is required, that it names the
+key-management endpoints, that it warns a config-only proxy still answers chat
+completions — in a way a reworded page still satisfies. Then demonstrate that:
+US2-S5 requires a committed test showing a reworded equivalent passes.
 
 **7. No status in the page.** Spec states, story counts and spend figures have
 live sources and rot between writing and reading. US3-S5 exists partly for this
@@ -80,15 +105,17 @@ distinct.
 running a deliberately-broken page and observing the failure — **paste that
 output into the diff.**
 
-**11. Story edges.** US1 edits `tests/page_holds_true.py` and `README.md`; US2
-edits `README.md`; both touch the page, so serialise US1 → US2. US3 edits
-`factory/cli/install.py` and then `README.md`, so it follows US2.
+**11. Story edges.** US1 edits `tests/page_holds_true.py` and adds a fixture; US2
+adds tests that read `README.md`; both land on the shared test surface, so
+serialise US1 → US2. US3 edits `factory/cli/install.py` and then `README.md`, so
+it follows US2 — otherwise it edits the page out from under an assertion that has
+not been written yet.
 
 ## Sizing
 
-Three small stories. US1 is one function in a shared helper, a fixture page, and
-two one-character corrections. US2 is prose plus assertions. US3 is a flag, an
-extraction of an existing derivation, and tests.
+Three small stories. US1 is one function in a shared helper plus a fixture page.
+US2 is a set of mutation tests over page text — no prose, the prose already
+landed. US3 is a flag, an extraction of an existing derivation, and tests.
 
 The only real risk is trap 2 — a detector tuned too tightly generates false
 positives on the many legitimate non-Ergane commands these pages name, and a
@@ -104,10 +131,16 @@ done.
 - **Prove US1-S2 by counting false positives.** Run the detector over both pages
   as they stand and confirm zero flags on `git`, `uv`, `gh` and every other
   legitimate tool they name.
-- **Prove US2 by following the page.** On a host meeting the stated
-  prerequisites, follow `README.md` top to bottom, including standing up a
+- **Prove US2 by deleting sentences.** Remove each of the six protected
+  statements from `README.md` in turn, run the suite, and watch it fail with a
+  message that names what went missing. Six runs, six failures, all six pasted
+  into the diff. SC-005. A guard nobody has watched fail is a guard nobody has
+  tested.
+- **Prove US2's prose separately, and by following it.** On a host meeting the
+  stated prerequisites, follow `README.md` top to bottom, including standing up a
   gateway from its description alone. SC-002 and SC-003. The reporter needed
-  three source files; the test of this story is that the next reader needs none.
+  three source files; the test of the page is that the next reader needs none.
+  This one is the operator's to run and is not the implementer's story.
 - **Prove US3 by agreement.** Run `ergane install --requirements` and `ergane
   install --verify` against the same registry and confirm the alias sets match.
   SC-004.

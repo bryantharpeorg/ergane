@@ -45,6 +45,15 @@ between the day it was written and the day you read it.
 | What a running workflow is actually doing | Temporal's Web UI on `:8233` |
 
 `scripts/ergane-env.sh` puts the environment those commands need into your shell.
+It **prints** `export` lines rather than setting them, so it must be eval'd, not
+sourced and not run bare:
+
+```bash
+eval "$(scripts/ergane-env.sh)"
+```
+
+Sourcing it appears to work and sets nothing, which then presents as a CLI that
+cannot reach Temporal for no visible reason.
 
 One trap in that table: `ergane spec landed` scans `main` unless told otherwise, and the
 factory does not land on `main` — it lands on the buildout branch, and `main` moves only

@@ -24,7 +24,9 @@ Edges: US1 → US2 → US3 (all three touch `README.md`).
 - [ ] T003 [P] [US1] (spec US1-S4) Assert `tests/test_claude_md.py` and `tests/test_readme.py`
       exercise the same shared code path (traps 3, 4).
 - [ ] T004 [P] [US1] (spec US1-S3) Assert both `README.md` and `CLAUDE.md` pass the fixed
-      sweep. This test cannot pass until T006 lands (trap 5).
+      sweep. Both pages are already clean, so this proves the absence of false
+      positives and nothing more — T001 is what proves the detector fires
+      (trap 5).
 - [ ] T005 [P] [US1] (spec Edge Cases) Assert a code span beginning with a shell pipeline whose
       first word is a legitimate non-Ergane command does not trip the detector,
       and that a correctly-spelled but nonexistent command still fails through
@@ -32,8 +34,11 @@ Edges: US1 → US2 → US3 (all three touch `README.md`).
 
 ### Implementation for this story
 
-- [ ] T006 [US1] (FR-004) Correct `README.md:105` and `README.md:111`: `nergane` →
-      `ergane`.
+- [ ] T006 [US1] (FR-004) Commit the near-miss fixture page under `tests/` as the
+      story's own evidence, so the detector stays provable once the committed
+      pages are clean. The two `nergane` spans this task originally corrected were
+      fixed by the operator on 2026-08-19; there is nothing left to correct in
+      `README.md` and looking for it wastes the attempt (trap 5).
 - [ ] T007 [US1] (FR-001, FR-002, FR-003) Add near-miss detection to
       `tests/page_holds_true.py`, replacing the silent `continue` at :54. Derive
       the known-entrypoint set from the CLI's own help output using the existing
@@ -43,36 +48,48 @@ Edges: US1 → US2 → US3 (all three touch `README.md`).
 - [ ] T008 [US1] Tune the detector against both real pages and confirm zero false
       positives before declaring the story done (trap 2).
 
-## Phase 2: User Story 2 — The page states every prerequisite that decides whether the gateway works
+## Phase 2: User Story 2 — The prerequisites cannot be deleted without the suite noticing
+
+The prose these tasks guard already exists in `README.md`. This story writes no
+prose (trap 12); it writes the mutation tests that make the prose impossible to
+lose silently.
 
 ### Tests for this story (write FIRST, must fail)
 
-- [ ] T009 [P] [US2] (spec US2-S1) Assert the prerequisites section states the gateway must be
-      database-backed, names the dependent endpoints, and says a config-only
-      proxy answers `/v1/models` and 404s the rest.
-- [ ] T010 [P] [US2] (spec US2-S2) Assert the page states the gateway must serve every
-      `model` and `fallback` alias the registry declares.
-- [ ] T011 [P] [US2] (spec US2-S3) Assert both install paths are named and distinguished:
-      published package as primary, checkout for working on Ergane.
-- [ ] T012 [P] [US2] (spec US2-S4) Assert the page states the two paths resolve the persona
-      registry differently.
-- [ ] T013 [P] [US2] (spec US2-S5) Assert every existing 054 sweep still passes: no secret
+- [ ] T009 [P] [US2] (spec US2-S1) Take a copy of the page text with the database
+      requirement removed and assert the check **fails**, naming what went
+      missing. Not "assert the sentence is present" — that passes forever on a
+      page nobody edits (trap 12).
+- [ ] T010 [P] [US2] (spec US2-S2) The same mutation test for each of: the dependent
+      key-management endpoints, the warning that a config-only proxy still
+      answers chat completions, and the requirement that the gateway serve every
+      `model` and `fallback` alias.
+- [ ] T011 [P] [US2] (spec US2-S3) The same mutation test for the published-package
+      install being named as the primary path, and for the checkout path being
+      distinguished from it.
+- [ ] T012 [P] [US2] (spec US2-S4) The same mutation test for the statement that the two
+      install paths resolve the persona registry differently.
+- [ ] T029 [P] [US2] (spec US2-S5) (FR-011) Assert a **reworded but equivalent** page
+      still passes every guard above, so the guards key on meaning rather than on
+      one literal string (trap 13).
+- [ ] T013 [P] [US2] (spec US2-S6) Assert every existing 054 sweep still passes: no secret
       value, no spec state, no story count, no spend figure, all paths exist
       (FR-008).
 
 ### Implementation for this story
 
-- [ ] T014 [US2] (FR-005, FR-006) Extend `README.md:13–27` with the database requirement,
-      the dependent endpoints, and the alias-coverage requirement. Suggested
-      wording for the first: "The gateway must be backed by a database. Ergane
-      mints, inspects and revokes a virtual key per attempt and reads
-      `/spend/logs/v2`; a config-only proxy answers `/v1/models` and 404s all of
-      it."
-- [ ] T015 [US2] (FR-007) Reframe `README.md:46–50`: `uv tool install ergane-cli` as the
-      primary path, the checkout as the path for working on Ergane, and a note
-      that the two resolve the registry differently.
-- [ ] T016 [US2] Keep the page an entry page. No requirements for how code is written
-      (trap 6); no status figures (trap 7).
+- [ ] T014 [US2] (FR-005, FR-006, FR-007) Implement the six guards in
+      `tests/test_readme.py`, sharing one helper that takes page text and returns
+      which protected concepts it fails to state — so each mutation test is one
+      line and a seventh concept is cheap to add.
+- [ ] T015 [US2] (SC-005) Run each of the six deliberately-broken pages, capture the
+      failure output, and paste all six into the diff. The judge sees the diff and
+      the criteria and nothing else (trap 10); a description of the failure is not
+      evidence of it.
+- [ ] T016 [US2] Change no prose in `README.md` unless a guard cannot be written
+      against it as written, and say so in the commit message if you do. The page
+      is an entry page: no requirements for how code is written (trap 6), no
+      status figures (trap 7).
 
 ## Phase 3: User Story 3 — The CLI can print what the gateway must serve
 
@@ -97,8 +114,13 @@ Edges: US1 → US2 → US3 (all three touch `README.md`).
       `--requirements` to `add_install_arguments`
       (`factory/cli/install.py:118`). If 061 has landed, re-read `gather` first —
       061/US1 changes it.
-- [ ] T024 [US3] (FR-006, US3-S5) Replace any inline alias list in `README.md` with a
-      reference to the command, so the page cannot go stale (trap 7).
+- [ ] T024 [US3] (FR-009, US3-S5) Name `ergane install --requirements` in `README.md`
+      where the gateway's alias requirement is stated, so the list stays live
+      rather than becoming prose that goes stale (trap 7). US2's guards are on
+      that section by then: run the full suite after editing, because the guard
+      asserts the alias requirement is still *stated*, and replacing the sentence
+      with a bare command reference would delete the fact it protects. Add the
+      command reference beside the requirement, not instead of it.
 
 ## Verification
 
@@ -112,3 +134,8 @@ Edges: US1 → US2 → US3 (all three touch `README.md`).
       requirement.
 - [ ] T028 (SC-004) Run `--requirements` and `--verify` against the same registry and
       confirm the alias sets match.
+- [ ] T030 (SC-005) Delete each of the six protected statements from `README.md` in
+      turn, run the suite, confirm each deletion fails it, and revert. Six runs,
+      six failures, **all six pasted into the diff** (trap 10). This is the
+      criterion that separates this story from the prose edit that already
+      landed; without the pasted output it is unproven.

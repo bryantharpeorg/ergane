@@ -125,3 +125,26 @@ being discovered six hours later by a burned attempt.
 - The HOME-inheritance defect (`hardening/agents-inherit-operator-home`) is what makes the
   token cost of an inherited CLAUDE.md relatively small. If it is fixed first, revisit
   whether the scope fence is still the right trade against moving the worktree root.
+
+## What has changed since — read this before trusting anything above
+
+Reviewed 2026-08-19. This is a record of reasoning taken on 2026-08-08 and is kept
+unedited above that line, because an ADR that is quietly rewritten stops being
+evidence of what was decided. Three of its factual premises have since moved:
+
+- **The worktree root was renamed.** Section 2 cites
+  `DEFAULT_FACTORY_ROOT = Path(".factory")`. The constant is now
+  `DEFAULT_RUNTIME_ROOT = Path(".ergane")` in `factory/workgraph/worktree.py`, with
+  the old name still recognised and `ergane repo migrate-runtime-root` available to
+  move an existing installation. The argument is unaffected — a node worktree is
+  still nested inside the operator's checkout, so a root `CLAUDE.md` is still an
+  ancestor of every attempt, which is the only thing the scope fence rested on.
+- **Both open items are closed.** The `doctor` crash and the HOME-inheritance
+  defect are resolved in the findings ledger; ask `ergane findings list` rather
+  than reading their status here.
+- **The HOME fix landed, which triggers this plan's own revisit clause.** Agents now
+  get a per-node `HOME` seeded with git identity alone, so they no longer inherit the
+  operator's MCP tool schemas. The token-cost argument that made an inherited
+  `CLAUDE.md` look cheap by comparison is therefore weaker than it was, and the
+  last bullet above asks for exactly this to be reconsidered. It has not been.
+  That is a live question, not a settled one.

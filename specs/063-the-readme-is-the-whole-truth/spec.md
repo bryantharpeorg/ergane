@@ -41,6 +41,34 @@ state: ready
 
 **Created**: 2026-08-19
 
+## AMENDED 2026-08-19 7:45 AM CT — the operator wrote the prose by hand
+
+The operator asked for the README to be corrected immediately, ahead of this
+spec's turn in the queue. It was, in commit `docs: README, architecture and the
+CLAUDE.md plan tell the truth again`. So as of that commit:
+
+- Both `nergane` typos are corrected.
+- The prerequisites section states the database requirement, names the dependent
+  endpoints, and states the alias requirement.
+- The published-package install is documented as the primary path, the checkout
+  as the path for working on Ergane, and the registry-resolution difference
+  between them is stated.
+
+**That does not close US2 — it inverts it.** Under Principle VIII the judge sees
+only the diff, so an implementer cannot prove "the README states X" when X was
+already stated before their branch existed. More importantly, prose written by
+hand is exactly the thing this spec set exists to distrust: **nothing asserts any
+of it.** Remove the database sentence today and every suite stays green.
+
+So US2 is no longer "write the prose". It is "commit the guards that make the
+prose impossible to lose", and it must prove them by mutation rather than by
+presence — the same standard US1 is held to. That is a better story than the one
+it replaces, and it is the one this spec set was written to demand.
+
+US1 and US3 are unchanged in substance. US1 loses only its dependency on the
+typos still being present: it must now be proven against a fixture page, which
+US1-S1 already required.
+
 ## The gap, stated precisely
 
 054 established the right principle: a getting-started page that nobody checks
@@ -67,14 +95,21 @@ a command at all, so it is skipped in silence. The guard that exists specificall
 to prove every command the page names resolves is structurally blind to the
 likeliest defect a page like this can have — a typo in the command name itself.
 
-`README.md:105` and `README.md:111` are the proof, both in the "Leaving" section,
-both reachable by a first-time operator doing exactly what the heading invites.
+`README.md:105` and `README.md:111` were the proof — `nergane repo forget` and
+`nergane worker uninstall`, both in the "Leaving" section, both reachable by a
+first-time operator doing exactly what the heading invites. **Both were corrected
+by hand on 2026-08-19**, so do not go looking for them; the hole in the helper is
+untouched and is still the whole of US1.
 
 `tests/test_claude_md.py` imports the same helper and has the same hole.
 
 ## The page omits what an operator most needs
 
-Three omissions, in descending order of what they cost:
+**Read this section in the past tense.** All three omissions were closed by hand
+on 2026-08-19; they are recorded here because they are the evidence for what US2
+must now guard, and because a guard written without knowing what it is guarding
+against tends to assert the wrong thing. Three omissions, in descending order of
+what they cost:
 
 **The gateway must be database-backed, and the page never says so.** Ergane mints
 a virtual key per attempt, reads it back via `/key/info` and `/spend/logs/v2`,
@@ -118,8 +153,9 @@ command and assert it fails.
    **Then** it passes — proven by a committed test. A near-miss detector that
    flags every non-Ergane command makes the sweep unusable and will be disabled.
 3. **Given** the diff, **When** `README.md` and `CLAUDE.md` are swept, **Then**
-   both pass — proven by the committed sweep running over both, which requires
-   `README.md:105` and `README.md:111` to be corrected in this diff.
+   both pass — proven by the committed sweep running over both. Neither page
+   contains a near-miss today, so this scenario proves the absence of false
+   positives on the real pages; US1-S1 is what proves the detector fires.
 4. **Given** the diff, **When** the near-miss logic is inspected, **Then** it
    lives in the shared helper `tests/page_holds_true.py` and both pages' suites
    use it — proven by a committed test asserting `tests/test_claude_md.py` and
@@ -132,40 +168,48 @@ command and assert it fails.
 
 ---
 
-### User Story 2 - The page states every prerequisite that decides whether the gateway works (Priority: P1)
+### User Story 2 - The prerequisites cannot be deleted without the suite noticing (Priority: P1)
 
-As a new operator, I can read one page and know what my gateway must do, before
-I build it.
+As a maintainer, the sentences a new operator most needs are held in place by
+assertions rather than by whoever last edited the page.
 
-**Why this priority**: P1. This is the omission that turned a twenty-minute
-setup into a source-reading expedition, and it is one sentence.
+**Why this priority**: P1. The prose exists as of this spec's amendment, and
+nothing whatsoever protects it. A single careless edit returns the page to the
+state that cost the reporter three source files, and every suite stays green
+while it happens. Prose without a guard is the presence-not-capability disease
+applied to documentation.
 
-**Independent Test**: assert the required statements are present, and that the
-install command the page recommends is the one the package ships.
+**Independent Test**: delete each protected statement from a copy of the page in
+turn and assert the suite fails, naming what went missing.
 
 **Acceptance Scenarios**:
 
-1. **Given** the diff, **When** the prerequisites section is read, **Then** it
-   states that the gateway must be backed by a database, names the endpoints
-   Ergane depends on, and says plainly that a config-only proxy answers
-   `/v1/models` and 404s the rest — proven by a committed test asserting the
-   statement is present.
-2. **Given** the diff, **When** the prerequisites section is read, **Then** it
-   states that the gateway must serve every `model` and `fallback` alias the
-   persona registry declares — proven by a committed test.
-3. **Given** the diff, **When** the installation section is read, **Then** it
-   documents installing the published package as the primary path, and the
-   source checkout as the path for working *on* Ergane — proven by a committed
-   test asserting both are named and distinguished.
-4. **Given** the diff, **When** the two install paths are described, **Then** the
-   page states that they resolve the persona registry differently — proven by a
-   committed test. An operator who installed from PyPI and reads checkout
-   instructions edits a file nothing loads.
-5. **Given** the diff, **When** every existing 054 sweep runs, **Then** all still
+1. **Given** a copy of `README.md` with the database requirement removed,
+   **When** the suite runs, **Then** it **fails**, naming the missing
+   requirement — proven by a committed test that mutates the page text and
+   asserts the failure. A test asserting the sentence is present today passes
+   forever on a page nobody edits and proves nothing about the page's future.
+2. **Given** copies with, in turn, the dependent endpoints removed, the
+   `/v1/models`-answers-anyway warning removed, and the alias requirement
+   removed, **When** the suite runs, **Then** each **fails** — proven by
+   committed tests over each mutation.
+3. **Given** a copy in which the published-package install is removed, or the
+   checkout path is no longer distinguished from it, **When** the suite runs,
+   **Then** it **fails** — proven by committed tests over each mutation.
+4. **Given** a copy in which the statement that the two install paths resolve the
+   persona registry differently is removed, **When** the suite runs, **Then** it
+   **fails** — proven by a committed test. An operator who installed from PyPI
+   and follows checkout instructions edits a file nothing loads; that sentence is
+   the only thing standing between them and an hour lost.
+5. **Given** the diff, **When** the guards are inspected, **Then** they assert
+   meaning rather than an exact sentence — proven by a committed test showing a
+   reworded but equivalent statement still passes. A guard keyed to one literal
+   string is a guard against editing, not a guard against losing the fact, and it
+   will be deleted by the first person who improves the wording.
+6. **Given** the diff, **When** every existing 054 sweep runs, **Then** all still
    pass: no secret value, no spec state, no story count, no spend figure, every
    path exists — proven by the committed tests already in
-   `tests/test_readme.py`. This story adds to the page; it must not regress what
-   holds it true.
+   `tests/test_readme.py`.
 
 ---
 
@@ -224,15 +268,21 @@ printed alias set.
 - **FR-002**: It MUST NOT fail on legitimate non-Ergane commands.
 - **FR-003**: The near-miss logic MUST live in `tests/page_holds_true.py` and be
   used by both pages' suites.
-- **FR-004**: `README.md:105` and `README.md:111` MUST be corrected.
-- **FR-005**: The README MUST state the gateway's database requirement and name
-  the dependent endpoints.
-- **FR-006**: The README MUST state that the gateway must serve every `model` and
-  `fallback` alias the registry declares.
-- **FR-007**: The README MUST document the published-package install as the
-  primary path and the checkout as the path for working on Ergane, noting that
-  they resolve the registry differently.
+- **FR-004**: The near-miss guard MUST be proven against a fixture page rather
+  than against either committed page, so that it stays provable once both pages
+  are clean.
+- **FR-005**: A committed test MUST fail when the README's statement of the
+  gateway's database requirement, or of the endpoints Ergane depends on, is
+  removed.
+- **FR-006**: A committed test MUST fail when the README's statement that the
+  gateway must serve every `model` and `fallback` alias is removed.
+- **FR-007**: A committed test MUST fail when the README stops documenting the
+  published-package install as the primary path, stops distinguishing it from the
+  checkout path, or stops stating that the two resolve the registry differently.
 - **FR-008**: All existing 054 sweeps MUST continue to pass.
+- **FR-011**: The guards in FR-005 through FR-007 MUST assert meaning rather than
+  an exact string, and MUST be demonstrated to pass on a reworded equivalent
+  statement.
 - **FR-009**: `ergane install --requirements` MUST print the distinct alias set
   and the required endpoints.
 - **FR-010**: `--requirements` MUST derive aliases identically to `--verify`.
@@ -246,21 +296,24 @@ US1:
 US2:
   depends_on: []
   depends_on_merged: [US1]
-  implements: [FR-005, FR-006, FR-007, FR-008]
+  implements: [FR-005, FR-006, FR-007, FR-008, FR-011]
 US3:
   depends_on: [US2]
   implements: [FR-009, FR-010]
 ```
 
-US2's edge on US1 is a **merge** edge for contention on `README.md`, but it is
-close to a pass edge for a second reason worth stating: US1's story cannot pass
-until the two `nergane` typos are corrected, and US2 rewrites the sections
-around them. Landing US2 first would leave US1 fixing a page that has moved.
+US2's edge on US1 is a **merge** edge for contention on the shared test surface.
+Both stories add tests that read `README.md`, and US1 changes the helper both
+suites import. The amendment weakened this edge — US2 no longer rewrites the page
+US1 is fixing, because the page is already fixed — but it did not remove it, and
+an edge that costs one serialisation is cheaper than two branches racing on
+`tests/page_holds_true.py`.
 
 US3's edge on US2 is a **pass** edge. US3-S5 requires `README.md` to name
-`ergane install --requirements` in place of an inline alias list, which means the
-page must already have been reshaped by US2 — and the sweep will only resolve the
-command once it exists.
+`ergane install --requirements` in place of an inline alias list, which means
+US2's guards must already exist — otherwise US3 edits the page out from under an
+assertion that has not been written yet, and US2 then writes a guard against
+whatever US3 happened to leave.
 
 ## Success Criteria
 
@@ -273,6 +326,11 @@ command once it exists.
   stated prerequisites.
 - **SC-003**: An operator can determine every gateway requirement from the README
   and `ergane install --requirements`, without opening a source file.
+- **SC-005**: Deleting any one of the six protected statements from `README.md`
+  fails the suite — evidenced by committed output of each deliberately-broken
+  run, not by a description of what would happen. This is the criterion the
+  amendment added, and it is the one that distinguishes this story from the prose
+  edit that already landed.
 - **SC-004**: `--requirements` and `--verify` agree on the alias set for the same
   registry.
 
