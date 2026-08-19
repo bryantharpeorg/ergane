@@ -115,9 +115,11 @@ looks. Escaping requires terminating the epic by hand.
 child is what keeps it active. So the sanctioned recovery verb is unavailable in
 precisely the state that needs it.
 
-`reset` is also the only build verb keyed by a **compiled-artifact path** rather
-than an epic id (`factory/cli/nouns/build.py:1158`), while `status`, `pause`,
-`resume`, `kill`, `answer`, `resolve` and `salvage` all take `epic_id`. So
+`reset` is keyed by a **compiled-artifact path** (`factory/cli/nouns/build.py:1158`)
+while every verb that signals or queries a *live* epic takes `epic_id` —
+`status` (`:1091`), `pause`/`resume`/`kill` (`:1106`), `answer` (`:1124`),
+`resolve` (`:1141`), `complete-node-externally` (`:1186`). `start` (`:1078`) and
+`salvage` (`:1173`) also take a graph, both by design. So
 `ergane build reset 001-trip-expenses` fails with `cannot read
 001-trip-expenses`, and the operator must keep the derive artifact for the life
 of the epic or re-derive one purely to reset.
@@ -153,11 +155,14 @@ rewrites, apply a RETRY resolution, and assert the decided action is a retry.
    becomes KILLED as today — proven by a committed test. The caller's
    second-ESCALATE-means-KILLED rule at `factory/workgraph/workflow.py:1459` is
    correct for the case it was written for and must survive.
-4. **Given** an operator's grant, **When** the judge-rewrite cap is evaluated,
-   **Then** the cap does not suppress the granted attempt — proven by a committed
-   test asserting the cap still applies to judge-driven retries in the same node
-   with no grant present. Both halves in one test file, because the fix is a
-   distinction and a test of only one half cannot show a distinction was made.
+4. **Given** the same exhausted history, **When** the action is decided once with
+   `escalations=[EscalationChoice.RETRY]` and once with `escalations=()` **under a
+   config that raises `max_attempts` above the attempts spent**, **Then** the
+   first returns a retry and the second does not — proven by a single committed
+   test asserting both results side by side, with both decided actions pasted
+   into the diff. Under the shipped defaults the attempt budget expires together
+   with the cap (`factory/verify/ladder.py:17-22`), so a control at defaults
+   cannot fail and proves nothing.
 5. **Given** repeated RETRY presses, **When** each is applied, **Then** each buys
    exactly one attempt and no more — proven by a committed test asserting the
    budget after two grants. An operator must be able to keep granting; they must
@@ -216,18 +221,31 @@ graph itself.
 **Acceptance Scenarios**:
 
 1. **Given** an epic id, **When** `ergane build reset` runs, **Then** it resolves
-   that epic's graph from the workflow input and resets it — proven by a
-   committed test asserting the reset reached the right nodes.
+   that epic's compiled graph from `<specs_root>/<epic_id>/workgraph.json`
+   **without requiring Temporal history** and resets it — proven by a committed
+   test asserting the reset reached the right nodes with the epic's workflow
+   absent from Temporal. The workflow record carries no input (`describe()`
+   exposes memo and static details only, and `build.py:500-511` sets no memo) and
+   `fetch_history()` is gone past retention, which is the state reset exists for.
 2. **Given** an epic id naming no known epic, **When** `reset` runs, **Then** it
    fails naming the epic id and where it looked — proven by a committed test.
-3. **Given** the diff, **When** every `build` subcommand's first positional
-   argument is inspected, **Then** each is an epic id — proven by a committed
-   test enumerating the subparsers. The defect was a single inconsistency in a
-   family, and a test over the family is what stops the next one.
+3. **Given** the diff, **When** the first positional argument of every `build`
+   subcommand **that acts on an already-started epic** — `status`, `pause`,
+   `resume`, `kill`, `answer`, `resolve`, `reset`, `complete-node-externally` —
+   is inspected, **Then** each is `epic_id` — proven by a committed test that
+   enumerates the subparsers, names `start`, `salvage` and
+   `external-completion-count` as declared exclusions **with the reason stated in
+   the test**, and fails if a new subcommand appears outside both lists.
 4. **Given** an operator who supplies a graph path, **When** `reset` runs,
-   **Then** the behaviour is defined and stated — either still accepted, or
-   refused naming the epic-id form — proven by a committed test. A silent change
-   of meaning for an argument that used to work is its own defect.
+   **Then** it is still accepted — proven by a committed test.
+   `tests/test_ergane_build.py:1284, 1297, 1342, 1363, 1378, 1422` all pass one,
+   and a silent change of meaning for an argument that used to work is its own
+   defect.
+5. **Given** an epic id whose workflow is gone from Temporal, **When** `reset`
+   runs, **Then** it still archives the survivors — proven by a committed test.
+   `factory/cli/nouns/build.py:882-891` proceeds on `NOT_FOUND` today and
+   `tests/test_ergane_build.py:1363` pins it; that behaviour must survive the
+   argument change.
 
 ---
 
@@ -269,8 +287,12 @@ graph itself.
   operator choices.
 - **FR-009**: `ergane build reset` MUST accept an epic id and resolve the graph
   itself.
-- **FR-010**: Every `build` subcommand's first positional argument MUST be an
-  epic id.
+- **FR-010**: Every `build` subcommand that acts on an already-started epic MUST
+  take `epic_id` as its first positional argument. `start` and `salvage` are
+  declared exceptions — both are keyed by a compiled artifact by design (`start`
+  creates the epic; `salvage` deliberately needs no Temporal,
+  `factory/cli/nouns/build.py:918-935`) — and `external-completion-count` takes
+  no positional at all.
 
 ## Work Graph
 

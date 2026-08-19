@@ -22,9 +22,10 @@ rely on it.
   is closer to hand than it looks.
 - `factory/workgraph/workflow.py:286` — "return a rejected landing to ENQUEUED."
 - `factory/workgraph/workflow.py:462` — the queue history an operator reads.
-- `factory/verify/ladder.py:122-130` — `_attempts_spent`, counting every
+- `factory/verify/ladder.py:111-119` — `_attempts_spent`, counting every
   non-debugger record.
-- `factory/verify/ladder.py:127-145` — `_debugger_cycles_spent`.
+- `factory/verify/ladder.py:122-124` — `_debugger_cycles_spent`. (`:127-145` is
+  `_judge_rewrites_spent`, a different cap — not this story's.)
 - `factory/verify/models.py:645-647` — `max_attempts: 3`, `max_judge_retries: 2`,
   `debugger_cycles: 1`.
 

@@ -33,7 +33,8 @@ rely on it — 060 proved that a plan citing a moved anchor costs the attempt.
 
 **US2 — the ladder:**
 
-- `factory/verify/ladder.py:122-130` — `_attempts_spent`, which counts every
+- `factory/verify/ladder.py:111-119` — `_attempts_spent`, whose counting line is
+  `:119`. It counts every
   record whose `persona` is not `DEBUGGER_PERSONA`. This is where a launch
   failure gets charged.
 - `factory/verify/ladder.py:63-97` — `next_action`. Note `allowed =
@@ -46,9 +47,28 @@ rely on it — 060 proved that a plan citing a moved anchor costs the attempt.
 
 **US3 — the compiled artifact:**
 
-- `factory/workgraph/cli.py` and `factory/cli/nouns/spec.py` — the two derive
-  entry points. `specs_root` is written into the artifact by whichever one the
-  operator used; both must resolve.
+- `factory/workgraph/cli.py:219` — `derive_command`, the **single** derive
+  handler. It writes the artifact at `:273-279` from `args.specs_root` /
+  `args.target_repo`. `factory/cli/nouns/spec.py:203-207` only delegates to it
+  and needs no change; its argparse defaults live at `spec.py:135-144`, and the
+  relative default itself is `factory/workgraph/cli.py:51` —
+  `DEFAULT_SPECS_ROOT = "specs"`. **Do not touch `_validate_command`'s
+  `derive_workgraph` call at `spec.py:251`** — it writes no artifact.
+- **Resolve in the command, not in the deriver.** `factory/workgraph/derive.py:148-152`
+  states the deriver "is handed text, not a path … and must not guess", and
+  `derive_workgraph` / `derive_delta` are also called by
+  `factory/activities/roadmap_activities.py:202` on the roadmap's dispatch path.
+  Resolving inside them breaks that contract and reds `tests/test_derive.py` and
+  `tests/test_delta.py`, which pin `specs_root="specs"` through unchanged.
+- `factory/cli/nouns/build.py:196-223` — `load_workgraph`, **the read-for-dispatch
+  site** (`ergane build start` → `start_command:396` → `:404`; also
+  `reset_command:872`, salvage `:937`). This is where FR-009 must land.
+  `build.py:264` then does `Path(graph.specs_root) / graph.feature` — the
+  cwd-relative resolution the spec reports.
+- `factory/workgraph/cli.py:526-560` — a **stale duplicate** `load_workgraph`,
+  reachable only from the unwired `start_command` at `:426`. Fix or delete it,
+  but **FR-009 is unmet unless `factory/cli/nouns/build.py:196` refuses.** Filed
+  as `interpreter/load-workgraph-is-defined-twice-and-the-dispatch-path-uses-the-second`.
 - `target_repo` is already an absolute worker-host path in practice. Confirm
   before claiming it in a test — the spec asserts it *should* be, not that it is.
 
@@ -82,7 +102,21 @@ code.
 An agent that emitted one token and then died IS an attempt. A fix keyed on
 elapsed time, exit code, or transcript size below some threshold will
 mis-classify real failures and stop charging them, which silently doubles every
-node's budget. Key it on whether the agent process was ever entered.
+node's budget.
+
+**No such signal exists today — read this before you design.** `adapter.py:611-626`
+raises `AdapterError` only on an `OSError` from `create_subprocess_exec`; bwrap
+failing to exec the runner *inside* the namespace is exit 127, which
+`adapter.py:1116-1120` classifies as `AGENT_ERROR`, identical in shape to a real
+agent failure. **You must create the signal.** The sanctioned one is bwrap's own
+diagnostic: bwrap writes `bwrap: ...` to stderr, which `adapter.py:616` merges
+into the archived stdout, and it emits nothing on a clean namespace entry.
+Classifying on a `bwrap:`-prefixed line at process exit is a fact about the
+container, not a proxy for elapsed time, exit code or transcript size — those
+three are what US2-S4's control exists to reject. If you choose a different
+signal, state in the diff why it cannot fire for an agent that started. A fix
+keyed only on `AdapterError` passes every US2 scenario and leaves the motivating
+defect in place.
 
 **6. An unbudgeted retry path needs its own bound.** US2-S5. Moving launch
 failures off the attempt budget without a separate limit converts a bounded
@@ -116,6 +150,21 @@ is available. That is not a reason to skip proof — it is the reason trap 1 is
 trap 1. The supplied-layout test is *stronger* than a real-host test would be,
 because it exercises both branches on any machine. Say so in the commit rather
 than apologising for the absence.
+
+**12. The charge you are removing is not in the adapter.**
+`factory/activities/agent_activities.py:492-497` already raises non-retryable
+`AGENT_LAUNCH_FAILED` for every `AdapterError`, with a comment stating this
+story's requirement verbatim — "the ladder must not spend one of the node's
+attempts discovering that". It is then **discarded** at
+`factory/workgraph/workflow.py:1603-1606`, where `_attempt` catches *any*
+`ActivityError` and `_attempt_timeout` (`:1610-1641`) returns
+`Termination.TIMEOUT` whatever the cause; that result is verified and appended as
+an `AttemptRecord` at `workflow.py:1427-1434`, which is what `_attempts_spent`
+counts. **Do not build a second classifier in the adapter.** Branch in `_attempt`
+on `exc.cause` being an `ApplicationError` whose `.type` is
+`AGENT_LAUNCH_FAILED`, following the pattern already used for
+`JUDGE_UNAVAILABLE` at `workflow.py:1990`. That branch is a pure read of the
+exception — no clock, no environment, no filesystem — so trap 7 is satisfied.
 
 ## Sizing
 

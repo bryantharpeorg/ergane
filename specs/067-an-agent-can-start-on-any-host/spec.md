@@ -62,7 +62,7 @@ state: draft
 #     applies to a second surface, and states it about THIS EXACT FAILURE MODE:
 #     literals that "carried two things that are not facts about software, only
 #     facts about one machine on one afternoon."
-#   - `factory/verify/ladder.py:60-97` -- `_attempts_spent` counts every record
+#   - `factory/verify/ladder.py:111-119` -- `_attempts_spent` counts every record
 #     whose persona is not the debugger. A launch that never produced a token is
 #     such a record.
 #
@@ -120,7 +120,7 @@ It fixed the executables. The mounts kept the literals.
 
 ## A launch that never happened is charged as an attempt
 
-`factory/verify/ladder.py:122` counts attempts as records whose persona is not
+`factory/verify/ladder.py:111-119` counts attempts as records whose persona is not
 the debugger. A bwrap exec failure produces such a record, indistinguishable
 from an agent that ran and wrote a bad diff. So the ladder charges it, offers
 the debugger rung a 48-byte transcript containing only the `execvp` line, and
@@ -189,11 +189,15 @@ and against one that does not, and assert the argv follows each.
    it does not assert a fact about any particular host — proven by the absence of
    the phrase it replaces. The stale comment is the defect's documentation and
    must not survive the fix.
-6. **Given** a host on which a required system path is neither a symlink nor a
-   directory, **When** the sandbox is built, **Then** it refuses by name before
-   forking — proven by a committed test. `ToolchainError`'s precedent
-   (`factory/verify/toolchain.py`) is a named refusal before the fork, not a
-   mount error from a process that already forked.
+6. **Given** a layout in which `/usr` is absent, or in which one of `/bin`,
+   `/lib`, `/lib64`, `/sbin` exists and is neither a symlink nor a bindable
+   directory, **When** the mount set is derived, **Then** the derivation raises a
+   named error identifying the path and what was found there, and no subprocess
+   is created — proven by a committed test that calls the derivation directly.
+   **A path that simply does not exist is US1-S2's case and MUST NOT refuse**:
+   `/lib64` is absent on the aarch64 host this is developed on, and a refusal
+   there disables every dispatch on this machine. `ToolchainError`
+   (`factory/verify/toolchain.py`) is the precedent for the refusal's shape.
 
 ---
 
@@ -270,9 +274,7 @@ artifact carries an absolute path.
 - **A host where `/usr` itself is not merged.** Older or unusual distributions
   have real `/bin` and `/lib` directories rather than symlinks. US1-S3 covers it:
   emit an entry only where the host has a symlink, and the un-merged host gets
-  none — its `/bin` content already arrives with a genuine `/usr` bind or needs
-  its own bind, and US1-S6's named refusal is the honest outcome rather than a
-  silent half-container.
+  none and no refusal; only `/usr` is required, and its bind carries the content.
 - **A launch failure that is really a transient.** A gateway 503 at key-mint
   time is a launch fault by this story's definition, and US2-S5's bound is what
   stops it becoming an infinite unbudgeted loop.
@@ -291,8 +293,11 @@ artifact carries an absolute path.
   target.
 - **FR-003**: Both the agent boundary and the gate boundary MUST obtain the
   system-tree mount set from one shared implementation.
-- **FR-004**: A required system path that can be neither bound nor linked MUST
-  produce a named refusal before the sandbox forks.
+- **FR-004**: `/usr` MUST exist and be bindable. `/bin`, `/lib`, `/lib64` and
+  `/sbin` are mirrored only where the host has a symlink; **absence is never a
+  refusal**. A path among those four that exists but is neither a symlink nor a
+  bindable directory MUST produce a named refusal, raised by the mount-set
+  derivation before any subprocess is created.
 - **FR-005**: A sandbox launch that fails before the agent produces output MUST
   NOT consume the node's attempt budget.
 - **FR-006**: Such a failure MUST be reported as a launch failure, distinct from
