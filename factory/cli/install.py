@@ -32,8 +32,9 @@ from __future__ import annotations
 import argparse
 import copy
 import dataclasses
+import tomllib
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator, Mapping
 
 from factory.cli import init as init_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
@@ -42,6 +43,7 @@ from factory.controlplane.config import (
     KNOWN_LL_MODES,
     RULE_SECRET_VALUE_NOT_REFERENCE,
     ControlPlaneConfigError,
+    _SECRET_PATTERNS,
     controlplane_document,
     load_controlplane_config,
     parse_controlplane_config,
@@ -64,15 +66,111 @@ DEFAULT_LOCK_TIMEOUT_S = 30.0
 #: The answer that clears an optional field that currently has a value.
 CLEAR = "-"
 
-#: What a blank host is offered before it has answered anything. Every value is
-#: valid, so the whole interview can be completed by pressing Enter.
-#:
-#: The Temporal namespace is *named*, not spelled (051-US2, FR-006/FR-007). It
-#: used to be a second `"ergane"` literal here while
-#: `factory/notify/service.py` said `"factory"`, so pressing Enter declared one
-#: namespace and every unconfigured command fell back to another — which on
-#: 2026-08-16 created a live schedule in a namespace nobody had named. One name
-#: cannot disagree with itself.
+#: Sentinel returned by `_controlplane_default` when an interview field has no
+#: safe documented default. A non-interactive path that omits such a field must
+#: refuse before writing anything (FR-004).
+_NO_DEFAULT = object()
+
+
+#: Optional interview fields: an empty or omitted answer means "leave absent".
+_OPTIONAL_INTERVIEW_FIELDS = frozenset(
+    {
+        ("memory", "api_key_env"),
+        ("temporal", "api_key_env"),
+        ("telemetry", "otlp_endpoint"),
+        ("escalation", "bot_token_env"),
+        ("escalation", "chat_id_env"),
+    }
+)
+
+
+def _deep_get(document: Mapping[str, Any], path: tuple[str, ...]) -> Any:
+    """Return the value at `path`, or `None` if any step is missing."""
+    target: Any = document
+    for step in path:
+        if not isinstance(target, dict) or step not in target:
+            return None
+        target = target[step]
+    return target
+
+
+def _deep_set(document: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    """Create intermediate dicts as needed and set `path` to `value`."""
+    target: Any = document
+    for step in path[:-1]:
+        if step not in target or not isinstance(target[step], dict):
+            target[step] = {}
+        target = target[step]
+    target[path[-1]] = value
+
+
+def _controlplane_default(document: Mapping[str, Any], field: tuple[str, ...]) -> Any:
+    """Return the documented default for an interview field.
+
+    This is the shared defaults source the non-interactive paths read.  The
+    interactive path displays the same values through `BLANK_DOCUMENT` for fields
+    that have a safe default; fields with no safe default keep a placeholder in
+    `BLANK_DOCUMENT` only so the full-parser checks in `_ask` stay valid while
+    the interview is in progress (FR-006).
+
+    A returned value of `_NO_DEFAULT` means the field is required and must be
+    supplied by the operator or the answer file.
+    """
+    if field == ("version",):
+        return 1
+
+    if field == ("llm", "mode"):
+        return "gateway"
+    if field == ("llm", "base_url"):
+        return "http://127.0.0.1:4000"
+
+    llm_mode = _deep_get(document, ("llm", "mode")) or "gateway"
+    if field == ("llm", "master_key_env") and llm_mode == "gateway":
+        return "ERGANE_LLM_MASTER_KEY"
+    if field == ("llm", "api_key_env") and llm_mode == "direct":
+        return "ERGANE_LLM_API_KEY"
+
+    if field == ("memory", "backend"):
+        return "none"
+
+    memory_backend = _deep_get(document, ("memory", "backend")) or "none"
+    if field == ("memory", "url") and memory_backend == "hindsight":
+        return "http://127.0.0.1:8888"
+
+    if field == ("temporal", "mode"):
+        return "external"
+
+    temporal_mode = _deep_get(document, ("temporal", "mode")) or "external"
+    if field == ("temporal", "address") and temporal_mode == "external":
+        return "127.0.0.1:7233"
+    if field == ("temporal", "namespace") and temporal_mode == "external":
+        return DEFAULT_TEMPORAL_NAMESPACE
+    if field == ("temporal", "tls_enabled"):
+        return False
+
+    if field == ("telemetry", "otlp_endpoint"):
+        return None
+
+    # Escalation has no safe default: every adapter requires standing up a
+    # third-party service.  US3 adds `"none"` as a *selectable* value, not a
+    # default.
+    if field == ("escalation", "adapter"):
+        return _NO_DEFAULT
+
+    # The remaining fields are optional and default to "absent".
+    if field in _OPTIONAL_INTERVIEW_FIELDS:
+        return None
+
+    return _NO_DEFAULT
+
+
+#: What a blank host is offered before it has answered anything. The values
+#: here are the defaults the interactive path displays; the non-interactive
+#: path resolves the same fields from `_controlplane_default` (FR-006).  Fields
+#: whose only safe value is operator-supplied keep a placeholder so the
+#: full-parser checks in `_ask` stay valid while the interview is in progress;
+#: that placeholder-escape issue is pre-existing and is fixed from the shared
+#: defaults source in 061/US3.
 BLANK_DOCUMENT: dict[str, Any] = {
     "version": 1,
     "llm": {
@@ -118,6 +216,16 @@ _scan_endpoints = scan_endpoints
 def add_install_arguments(parser: argparse.ArgumentParser) -> None:
     """Add the walkthrough's own flags to the `install` subparser."""
     parser.add_argument(
+        "--from-file",
+        metavar="PATH",
+        dest="from_file",
+        help=(
+            "read interview answers from a TOML file instead of stdin; "
+            "documented defaults fill omitted fields, and fields with no safe "
+            "default cause a refusal"
+        ),
+    )
+    parser.add_argument(
         "--lock-timeout",
         type=float,
         default=DEFAULT_LOCK_TIMEOUT_S,
@@ -133,6 +241,9 @@ def install_command(args: argparse.Namespace) -> int:
     """Run the interview, write the config, and verify what was written."""
     path = resolve_config_path()
     timeout_s = float(getattr(args, "lock_timeout", DEFAULT_LOCK_TIMEOUT_S))
+
+    if getattr(args, "from_file", None) is not None:
+        return _install_from_file(Path(args.from_file), path, timeout_s)
 
     try:
         with exclusive_lock(path, timeout_s=timeout_s):
@@ -162,14 +273,303 @@ def _write_config(path: Path, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Answer-file driven path (US1)
+# ---------------------------------------------------------------------------
+
+
+class _FilePrompter:
+    """A prompter that returns answers planned from an answer file.
+
+    It satisfies the same contract as `factory.cli.init._prompter()`: an
+    `ask(prompt, *, default, error)` method returning a string.  Because the
+    answer file is pre-validated before the interview begins, an `error`
+    argument reaching here means the planned answers do not parse — a drift
+    between the planner and the interview that must fail loudly rather than loop.
+    """
+
+    def __init__(self, answers: list[str]) -> None:
+        self._answers = answers
+        self._index = 0
+
+    def ask(
+        self, prompt: str, *, default: str | None = None, error: str | None = None
+    ) -> str:
+        if error is not None:
+            raise AssertionError(
+                f"file-driven answer was refused by the parser: {error}"
+            )
+        if self._index >= len(self._answers):
+            raise AssertionError(
+                f"file-driven prompter ran out of answers at {prompt!r}"
+            )
+        answer = self._answers[self._index]
+        self._index += 1
+        return answer
+
+
+def _install_from_file(answer_path: Path, path: Path, timeout_s: float) -> int:
+    """Read answers from a file, validate, and run the same interview."""
+    raw_doc = _load_answer_file(answer_path)
+    answers, reports, missing, completed = _plan_file_answers(raw_doc)
+
+    for line in reports:
+        print(line)
+
+    if missing:
+        raise OperatorError(
+            "answer file is missing required fields with no safe default: "
+            + ", ".join(sorted(missing)),
+            code=EXIT_USER,
+        )
+
+    # Validate the completed document with the parser before taking the lock or
+    # touching the write path.  This is where the secret-shape guard fires for
+    # file-supplied values (FR-007).
+    try:
+        parse_controlplane_config(
+            render_controlplane_document(completed), source=str(path)
+        )
+    except ControlPlaneConfigError as refusal:
+        raise OperatorError(
+            _redact_parser_error(refusal, completed), code=EXIT_USER
+        ) from None
+
+    try:
+        with exclusive_lock(path, timeout_s=timeout_s):
+            document = _interview(path, prompter=_FilePrompter(answers))
+            text = render_controlplane_document(document)
+            _write_config(path, text)
+            print(f"wrote {path}")
+            print("")
+            print("verifying the control plane...")
+            findings, exit_code = verify_controlplane(str(path))
+            print(render_findings(findings))
+            return EXIT_OK if exit_code == 0 else EXIT_USER
+    except LockUnavailable as error:
+        raise OperatorError(
+            f"another `ergane install` holds the lock on {path} "
+            f"(waited {error.timeout_s:g}s); wait for it to finish, or remove "
+            f"{error.target.name}.lock if no install is running",
+            code=EXIT_USER,
+        ) from None
+
+
+def _load_answer_file(path: Path) -> dict[str, Any]:
+    """Read an answer file and return its top-level table."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise OperatorError(
+            f"answer file not found: {path} ({error.strerror or 'No such file or directory'})",
+            code=EXIT_USER,
+        ) from None
+    except OSError as error:
+        raise OperatorError(
+            f"cannot read answer file {path}: {error}", code=EXIT_USER
+        ) from None
+
+    try:
+        document = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise OperatorError(
+            f"answer file {path} is not valid TOML: {_one_line(error)}",
+            code=EXIT_USER,
+        ) from None
+
+    if not isinstance(document, dict):
+        raise OperatorError(
+            f"answer file {path} must contain a TOML table at the top level, "
+            f"not {_kind(document)}",
+            code=EXIT_USER,
+        ) from None
+
+    return document
+
+
+def _plan_file_answers(
+    document: Mapping[str, Any],
+) -> tuple[list[str], list[str], list[str], dict[str, Any]]:
+    """Resolve an answer document into a string answer list and a completed doc.
+
+    Returns `(answers, report_lines, missing_fields, completed_document)`.
+    Documented defaults are applied to omitted fields and reported (FR-003);
+    fields with no safe default are collected (FR-004).  The returned
+    `completed_document` is the document the interview would produce from those
+    answers, and is used for pre-validation.
+    """
+    completed: dict[str, Any] = copy.deepcopy(dict(document))
+    _ensure_block(completed, "llm")
+    _ensure_block(completed, "memory")
+    _ensure_block(completed, "temporal")
+    _ensure_block(completed, "telemetry")
+    _ensure_block(completed, "escalation")
+
+    explicit = _explicit_field_paths(completed)
+    answers: list[str] = []
+    reports: list[str] = []
+    missing: list[str] = []
+
+    def take(field: tuple[str, ...], *, required: bool) -> Any:
+        """Return the value for `field`, applying a documented default if needed."""
+        raw = _deep_get(completed, field)
+        if raw is None or (isinstance(raw, str) and raw == ""):
+            if field in _OPTIONAL_INTERVIEW_FIELDS:
+                # Optional and absent/empty: keep absent.
+                return None if raw is None else ""
+            default = _controlplane_default(completed, field)
+            if default is _NO_DEFAULT:
+                missing.append(".".join(field))
+                return ""
+            if field not in explicit:
+                reports.append(_report_default(".".join(field), default))
+            _deep_set(completed, field, default)
+            return default
+        return raw
+
+    def take_optional(field: tuple[str, ...]) -> Any:
+        """Return the optional value, or empty string when absent."""
+        raw = _deep_get(completed, field)
+        if raw is None or (isinstance(raw, str) and raw == ""):
+            return ""
+        return raw
+
+    # LLM
+    llm_mode = take(("llm", "mode"), required=True)
+    answers.append(_answer_text(llm_mode))
+    base_url = take(("llm", "base_url"), required=True)
+    answers.append(_answer_text(base_url))
+    if llm_mode == "gateway":
+        master_key_env = take(("llm", "master_key_env"), required=True)
+        answers.append(_answer_text(master_key_env))
+    elif llm_mode == "direct":
+        api_key_env = take(("llm", "api_key_env"), required=True)
+        answers.append(_answer_text(api_key_env))
+
+    # Memory
+    memory_backend = take(("memory", "backend"), required=True)
+    answers.append(_answer_text(memory_backend))
+    if memory_backend == "hindsight":
+        memory_url = take(("memory", "url"), required=True)
+        answers.append(_answer_text(memory_url))
+        memory_api_key = take_optional(("memory", "api_key_env"))
+        answers.append(_answer_text(memory_api_key))
+
+    # Temporal
+    temporal_mode = take(("temporal", "mode"), required=True)
+    answers.append(_answer_text(temporal_mode))
+    if temporal_mode == "external":
+        temporal_address = take(("temporal", "address"), required=True)
+        answers.append(_answer_text(temporal_address))
+        temporal_namespace = take(("temporal", "namespace"), required=True)
+        answers.append(_answer_text(temporal_namespace))
+        temporal_api_key = take_optional(("temporal", "api_key_env"))
+        answers.append(_answer_text(temporal_api_key))
+        tls_enabled = take(("temporal", "tls_enabled"), required=True)
+        answers.append(_answer_text(tls_enabled))
+
+    # Telemetry
+    otlp_endpoint = take_optional(("telemetry", "otlp_endpoint"))
+    answers.append(_answer_text(otlp_endpoint))
+
+    # Escalation
+    escalation_adapter = take(("escalation", "adapter"), required=True)
+    answers.append(_answer_text(escalation_adapter))
+    bot_token_env = take_optional(("escalation", "bot_token_env"))
+    answers.append(_answer_text(bot_token_env))
+    chat_id_env = take_optional(("escalation", "chat_id_env"))
+    answers.append(_answer_text(chat_id_env))
+
+    return answers, reports, missing, completed
+
+
+def _ensure_block(document: dict[str, Any], name: str) -> None:
+    """Make sure `document` contains a dict for the named subsystem."""
+    if name not in document or not isinstance(document[name], dict):
+        document[name] = {}
+
+
+def _explicit_field_paths(document: Mapping[str, Any]) -> set[tuple[str, ...]]:
+    """Return the field paths that were explicitly present in the input."""
+    explicit: set[tuple[str, ...]] = set()
+    for top_key, top_value in document.items():
+        if top_key == "version":
+            explicit.add(("version",))
+        elif isinstance(top_value, dict):
+            for nested_key in top_value:
+                explicit.add((top_key, nested_key))
+    return explicit
+
+
+def _answer_text(value: Any) -> str:
+    """Render a planned value the way `_ask` expects it as an answer string."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _report_default(field: str, value: Any) -> str:
+    """One line reporting that a documented default was applied (FR-003)."""
+    if isinstance(value, bool):
+        rendered = "true" if value else "false"
+    elif isinstance(value, str):
+        rendered = f'"{value}"'
+    elif isinstance(value, int):
+        rendered = str(value)
+    else:
+        rendered = repr(value)
+    return f"applied default: {field} = {rendered}"
+
+
+def _redact_parser_error(
+    refusal: ControlPlaneConfigError, document: dict[str, Any]
+) -> str:
+    """The parser's message, with any credential from the file taken back out."""
+    message = str(refusal)
+    if refusal.rule != RULE_SECRET_VALUE_NOT_REFERENCE:
+        return message
+    return _redact_secret_values(message, document)
+
+
+def _redact_secret_values(message: str, document: Any) -> str:
+    """Replace every secret-looking string found in `document` with `<value withheld>`."""
+    for value in _walk_strings(document):
+        if _looks_like_secret(value):
+            message = message.replace(repr(value), _WITHHELD).replace(value, _WITHHELD)
+    return message
+
+
+def _walk_strings(value: Any) -> Iterator[str]:
+    """Yield every string leaf in a nested document."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from _walk_strings(nested)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_strings(item)
+
+
+def _looks_like_secret(value: str) -> bool:
+    """True when `value` matches a shape the parser treats as a credential."""
+    for pattern in _SECRET_PATTERNS:
+        if pattern.search(value):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # The interview
 # ---------------------------------------------------------------------------
 
 
-def _interview(path: Path) -> dict[str, Any]:
+def _interview(path: Path, prompter: Any | None = None) -> dict[str, Any]:
     """Ask every subsystem in order and return the validated document."""
     document = _starting_document(path)
-    prompter = init_module._prompter()
+    if prompter is None:
+        prompter = init_module._prompter()
 
     # US3: discover what is reachable before asking. The scan is advisory: a
     # failure, absence or classification may never prevent the operator from
@@ -483,7 +883,10 @@ def _ask(
 
 
 #: Shown in place of a credential the operator pasted where a reference belongs.
-WITHHELD = "<value withheld>"
+_WITHHELD = "<value withheld>"
+
+#: Backwards-compatible alias for existing references in this module.
+WITHHELD = _WITHHELD
 
 
 def _redacted(refusal: ControlPlaneConfigError, value: Any) -> str:
