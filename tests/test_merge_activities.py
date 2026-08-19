@@ -508,7 +508,7 @@ def _fake_gh_conforming(fake: FakeGh, repo: Path, default_branch: str = "main", 
     `squash_merge_commit_title`.
     """
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={
             "nameWithOwner": "OWNER/REPO",
             "visibility": "PUBLIC",
@@ -591,7 +591,7 @@ async def test_validate_target_repo_reports_a_queue_missing_repo_as_failing(
     """
     fake = FakeGh()
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     fake.expect_json(
@@ -631,7 +631,7 @@ async def test_validate_target_repo_falls_back_to_classic_protection_for_checks(
     """
     fake = FakeGh()
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     fake.expect_json(
@@ -682,7 +682,7 @@ async def test_validate_target_repo_treats_unprotected_classic_as_no_checks(
     """
     fake = FakeGh()
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     fake.expect_json(
@@ -727,7 +727,7 @@ async def test_validate_target_repo_a_gh_failure_is_a_failed_validation_not_a_pa
     """
     fake = FakeGh()
     fake.expect_error(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         stderr="gh: not found", returncode=1,
     )
     monkeypatch.setattr(merge_activities, "_client_factory", _onboard_client_factory(fake, repo_with_origin))
@@ -752,7 +752,7 @@ async def test_validate_target_repo_loads_the_clones_factory_yaml(
     """The manifest is read from the target clone itself, via the 002 loader."""
     fake = FakeGh()
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     fake.expect_json(
@@ -812,7 +812,7 @@ async def test_validate_target_repo_missing_squash_title_fails_closed(
     """A merge-settings payload that omits squash_merge_commit_title fails closed."""
     fake = FakeGh()
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     fake.expect_json(
@@ -848,7 +848,7 @@ async def test_validate_target_repo_squash_title_gh_failure_is_failed_validation
     """A gh failure on the merge-settings read yields a failed validation, never a pass."""
     fake = FakeGh()
     fake.expect_json(
-        "repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef",
+        "repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef",
         payload={"nameWithOwner": "OWNER/REPO", "visibility": "PUBLIC", "defaultBranchRef": {"name": "main"}},
     )
     fake.expect_error(

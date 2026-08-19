@@ -122,6 +122,7 @@ class FakeGitHub:
 
     owner_repo: str = "acme/app"
     visibility: str = "PUBLIC"
+    is_in_organization: bool = True
     default_branch: str = "main"
     squash_merge_commit_title: str = "COMMIT_OR_PR_TITLE"
     allow_auto_merge: bool = False
@@ -168,6 +169,7 @@ class FakeGitHub:
                 {
                     "nameWithOwner": self.owner_repo,
                     "visibility": self.visibility,
+                    "isInOrganization": self.is_in_organization,
                     "defaultBranchRef": {"name": self.default_branch},
                 }
             )
@@ -517,17 +519,17 @@ def test_rewiring_reports_already_satisfied_and_changes_nothing(
 def test_a_private_repo_is_refused_at_the_visibility_check_citing_d007(
     wired: Callable[..., Run], tmp_path: Path
 ) -> None:
-    """S3: refused with D-007 and both remedies; the scaffold half is still usable."""
+    """S3: refused naming Enterprise Cloud and Team's insufficiency; the scaffold half is still usable."""
     repo = make_bare_repo(tmp_path, {"pyproject.toml": "[project]\nname='app'\n"})
     github = FakeGitHub(visibility="PRIVATE")
 
     result = wired("init", "--wire", str(repo), script=answers(), github=github)
 
     assert result.code == EXIT_USER
-    assert "D-007" in result.stderr
+    assert "Enterprise Cloud" in result.stderr
+    assert "Team" in result.stderr
     # Both remedies, named.
     assert "public" in result.stderr.lower()
-    assert "plan" in result.stderr.lower()
 
     # Refused at the check, before anything was changed.
     assert github.mutations() == []
@@ -714,7 +716,7 @@ def test_plain_init_wires_nothing_and_only_reads_for_the_check(
     assert github.snapshot() == before
     assert github.mutations() == []
     assert github.calls == [
-        ("repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef"),
+        ("repo", "view", "--json", "nameWithOwner,visibility,isInOrganization,defaultBranchRef"),
         ("api", "repos/acme/app"),
         ("api", "repos/acme/app/rules/branches/main"),
     ]

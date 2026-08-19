@@ -233,6 +233,25 @@ def wire_repo(
         view = client.repo_view()
         owner_repo = str(view.get("nameWithOwner") or "")
         visibility = str(view.get("visibility") or "")
+        org_flag = view.get("isInOrganization")
+        if org_flag is None:
+            raise WiringRefused(
+                "`gh repo view` did not return `isInOrganization`, which this "
+                "wiring step needs to decide whether the repository can host a "
+                "merge queue; upgrade `gh` to a version that supports the "
+                "`isInOrganization` field (GitHub CLI 2.55 or later)",
+                remedies=(
+                    "upgrade `gh` to a version that supports `isInOrganization` "
+                    "(run: gh --version and update from https://cli.github.com), or",
+                    "run the manual wiring steps below on a host with a current `gh`",
+                ),
+                manual=manual_steps(
+                    landing_branch=landing_branch,
+                    gates=gate_names,
+                    owner_repo=owner_repo or "<owner>/<repo>",
+                ),
+            )
+        is_in_organization = bool(org_flag)
         reference = view.get("defaultBranchRef") or {}
         default_branch = (
             str(reference.get("name") or "")
@@ -241,8 +260,9 @@ def wire_repo(
         )
         # A `WiringRefused` from here is the operator's answer, not gh's, and
         # passes straight through the handler below.
-        _require_public(
-            visibility,
+        _require_eligible(
+            is_in_organization=is_in_organization,
+            visibility=visibility,
             owner_repo=owner_repo,
             landing_branch=landing_branch,
             gates=gate_names,
@@ -306,26 +326,69 @@ def _require_gh(client: Any, *, landing_branch: str, gates: Sequence[str]) -> No
         ) from None
 
 
-def _require_public(
-    visibility: str,
+def _require_eligible(
     *,
+    is_in_organization: bool,
+    visibility: str,
     owner_repo: str,
     landing_branch: str,
     gates: Sequence[str],
 ) -> None:
-    """D-007: the merge queue is available on every plan only for public repos."""
-    if visibility.strip().lower() == "public":
+    """US2: decide eligibility from owner type and visibility together (FR-004).
+
+    A user-owned repository is refused regardless of visibility (FR-005). A
+    private repository's remedy names GitHub Enterprise Cloud and states that
+    GitHub Team is insufficient (FR-006). A repository failing on both
+    properties has both named in one refusal (FR-007).
+    """
+    vis = visibility.strip().lower()
+    is_public = vis == "public"
+    missing: list[str] = []
+    if not is_in_organization:
+        missing.append("organization ownership")
+    if not is_public:
+        missing.append("public visibility")
+
+    if not missing:
         return
+
+    if len(missing) == 2:
+        headline = (
+            f"{owner_repo} cannot host a merge queue: it is "
+            f"user-owned and {vis}, but the merge queue requires organization "
+            f"ownership and a public repository"
+        )
+    elif not is_in_organization:
+        headline = (
+            f"{owner_repo} cannot host a merge queue: it is user-owned, but the "
+            f"merge queue requires organization ownership"
+        )
+    else:
+        headline = (
+            f"{owner_repo} is {vis}, and GitHub's merge queue for private "
+            f"repositories is available on GitHub Enterprise Cloud — GitHub Team "
+            f"does not include it"
+        )
+
+    remedies: list[str] = []
+    if not is_public:
+        remedies.append(f"make {owner_repo} public, or")
+        remedies.append(
+            "move to GitHub Enterprise Cloud (GitHub Team does not cover merge "
+            "queue for private repositories)"
+        )
+    if not is_in_organization:
+        remedies.append(
+            "transfer the repository to an organization, or create it under one"
+        )
+
     raise WiringRefused(
-        f"{owner_repo} is {visibility.lower()}, and GitHub's merge queue is available "
-        f"on any plan only for public repositories (D-007) — a queue wired here would "
-        f"be a queue that can never accept an enqueue",
-        remedies=(
-            f"make {owner_repo} public, or",
-            "move to a GitHub plan whose merge queue covers private repositories",
-        ),
+        headline,
+        remedies=tuple(remedies),
         manual=manual_steps(
-            landing_branch=landing_branch, gates=gates, owner_repo=owner_repo or "<owner>/<repo>"
+            landing_branch=landing_branch,
+            gates=gates,
+            owner_repo=owner_repo or "<owner>/<repo>",
         ),
     )
 
