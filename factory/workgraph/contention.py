@@ -147,7 +147,7 @@ def named_files(text: str) -> frozenset[str]:
         token = match.group(0).rstrip("./-").removeprefix("./")
         if not token:
             continue
-        head, slash, tail = token.rpartition("/")
+        _directory, slash, tail = token.rpartition("/")
         if _FILENAME_RE.match(tail) is None:
             continue
         if not slash:
@@ -184,7 +184,7 @@ def infer_contention_edges(
     graph: WorkGraph,
     *,
     tasks_text: str,
-    waived: Mapping[str, Sequence[str]] = {},
+    waived: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[list[InferredEdge], list[ContentionRefusal]]:
     """The ordering edges the slices imply, and the overlaps with no safe answer.
 
@@ -283,7 +283,7 @@ def apply_contention_edges(
     graph: WorkGraph,
     *,
     tasks_text: str,
-    waived: Mapping[str, Sequence[str]] = {},
+    waived: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[WorkGraph, list[ContentionRefusal]]:
     """The same graph with the inferred edges hooked up, and any refusals.
 
