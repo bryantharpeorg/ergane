@@ -375,7 +375,7 @@ REJECTIONS = [
     ("no_section", "section_missing", None, "Work Graph"),
     ("two_blocks", "section_missing", None, "Work Graph"),
     ("non_mapping", "mapping", None, "mapping"),
-    ("unknown_key", "unknown_key", "US2", "persona"),
+    ("unknown_key", "unknown_key", "US2", "unknown_key"),
     ("bad_timeout", "timeout", "US2", "US2"),
 ]
 
