@@ -29,50 +29,78 @@ architecture, including one that cannot reproduce the bug, which makes these
 assertions stronger than a real-root test could be rather than a substitute
 for one.
 
-**The expected new entry on this host.** Walking all four paths adds
-`--symlink usr/sbin /sbin` to every sandbox here, because `/sbin` is a symlink
-the two-entry literal never mounted. That is a second latent gap closed, not a
-regression; a reviewer diffing the assembled argv before and after on this
-machine sees it and should. Measured with the real root, agent boundary:
+**What this file could and could not measure.** The attempt that wrote it runs
+*inside* the agent boundary, whose root is the very mount set being replaced:
 
-    $ python -c "from factory.verify.toolchain import system_tree_argv; \
-                 print(system_tree_argv())"
+    $ ls -la /
+    lrwxrwxrwx  bin -> usr/bin
+    lrwxrwxrwx  lib -> usr/lib
+    drwxr-xr-x  usr
+    (no /lib64, no /sbin — the literal never mounted them)
+
+    $ python -c 'from factory.verify.toolchain import system_tree_argv;
+                 print(system_tree_argv())'
     ['--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin',
-     '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/sbin', '/sbin']
+     '--symlink', 'usr/lib', '/lib']
 
-**Mutation ledger.** "What would make this file pass if the production code
-did nothing?" — answered by breaking the production code four ways and running
-this file against each. Verbatim:
+So the real-root reading available here is a reading of the sandbox, and what
+it shows is that the derivation reproduces exactly the layout it is shown — the
+old two-entry literal, byte for byte. The worker host outside this boundary has
+`/sbin -> usr/sbin` (measured by the operator, 2026-08-20), so there the same
+code emits a third entry, `--symlink usr/sbin /sbin`. That addition is expected
+and closes a second latent gap: `/sbin` is a symlink the literal never mounted.
+It is not a regression, and narrowing the walk back to the two paths that were
+already mounted, to make the before/after diff on that host empty, would
+reintroduce the defect.
 
-    M1  the literal system tree restored in both boundaries
-        (`--ro-bind /usr /usr`, `--symlink usr/bin /bin`, `--symlink usr/lib /lib`)
-        6 failed, 2 passed
+**Mutation ledger.** "What would make this file pass if the production code did
+nothing?" — answered by breaking the production code four ways and running this
+file against each. Verbatim `-rf` output, edited only to drop the repeated
+`FAILED tests/test_sandbox_mount_set.py::` prefix:
+
+    M1  the derivation replaced by the literal it used to be: the old three
+        entries returned unconditionally, the supplied root ignored, no refusal
+        7 failed, 2 passed
           test_a_host_with_lib64_gets_a_lib64_symlink_with_its_own_target
           test_the_four_paths_are_each_read_rather_than_assumed
           test_both_boundaries_derive_the_same_system_tree
           test_a_system_path_that_can_be_neither_linked_nor_bound_refuses
+          test_a_host_with_no_usr_refuses_by_name
           test_the_gate_refuses_a_broken_system_tree_before_it_forks
           test_the_agent_refuses_a_broken_system_tree_before_it_forks
-        — only the two negative tests survive, which is the point of M2.
+        — the two survivors are the no-`/lib64` test and the stale-comment
+        test, which is this defect's whole history: on the aarch64 machine the
+        literal was written on, the literal passes.
 
-    M2  the four paths hardcoded as symlinks whenever `/usr` exists
-        (the over-correction: emit all four unconditionally)
-        3 failed, 5 passed
+    M2  the over-correction — all four emitted as `usr/<name>` symlinks
+        whenever `/usr` exists, nothing read off the host
+        7 failed, 2 passed
           test_a_host_without_lib64_gets_no_lib64_entry
           test_the_four_paths_are_each_read_rather_than_assumed
           test_both_boundaries_derive_the_same_system_tree
-        — `bwrap: Can't find source path` is what this mutation ships.
+          test_a_system_path_that_can_be_neither_linked_nor_bound_refuses
+          test_a_host_with_no_usr_refuses_by_name
+          test_the_gate_refuses_a_broken_system_tree_before_it_forks
+          test_the_agent_refuses_a_broken_system_tree_before_it_forks
+        — the mutation that ships `bwrap: Can't find source path`, and the one
+        M1's two survivors cannot catch.
 
-    M3  the refusal dropped: a regular file at a mirrored path is skipped
-        3 failed, 5 passed
+    M3  the refusal alone dropped: a path that is neither symlink nor
+        directory is skipped instead of raising
+        3 failed, 6 passed
           test_a_system_path_that_can_be_neither_linked_nor_bound_refuses
           test_the_gate_refuses_a_broken_system_tree_before_it_forks
           test_the_agent_refuses_a_broken_system_tree_before_it_forks
+        — the two boundary cases failed as `AssertionError: an agent forked
+        despite an underivable system tree`, the detonator doing its job rather
+        than a shape assertion passing.
 
-    M4  the gate boundary given its own private copy of the derivation
-        (one entry dropped from the copy — how the two drifted the first time)
-        1 failed, 7 passed
+    M4  the gate boundary drifted one entry from the agent's — a private copy
+        that lost its last line, which is how the two disagreed in the first
+        place
+        1 failed, 8 passed
           test_both_boundaries_derive_the_same_system_tree
+        — `Left contains one more item: ('--symlink', 'usr/sbin', '/sbin')`.
 
 The three refusal tests are the ones that would otherwise be theatre: two of
 them replace the spawn with a detonator, so "before any subprocess is created"
