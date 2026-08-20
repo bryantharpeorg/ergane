@@ -59,6 +59,11 @@ from factory.verify.models import (
 #: debugger's attempt can join the history without spending the attempt budget.
 DEBUGGER_PERSONA = "debugger"
 
+#: The role constant for the optional promotion rung.  The actual persona name
+#: is operator-configured; this constant is only used as a placeholder when no name
+#: has been configured.  It must not collide with any real registry name.
+PROMOTION_PERSONA = "__promotion__"
+
 
 def next_action(
     history: Sequence[AttemptRecord],
@@ -87,9 +92,12 @@ def next_action(
     # Every resolution that survived the check above is a grant, and each buys
     # exactly one attempt (contracts/verification-flow.md).
     allowed = config.max_attempts + len(escalations)
-    attempts_left = _attempts_spent(history) < allowed
+    attempts_left = _attempts_spent(history, config) < allowed
     if attempts_left and not _judge_rewrites_spent(history, config):
         return NextAction.RETRY
+
+    if _promotion_available(history, config):
+        return NextAction.PROMOTE
 
     if _debugger_cycles_spent(history) < config.debugger_cycles:
         return NextAction.DEBUGGER
@@ -108,20 +116,66 @@ def _ends_the_node(resolution: EscalationChoice | str) -> bool:
     return resolution != EscalationChoice.RETRY
 
 
-def _attempts_spent(history: Sequence[AttemptRecord]) -> int:
+def _attempts_spent(
+    history: Sequence[AttemptRecord], config: VerificationConfig | None = None
+) -> int:
     """How much of the ordinary attempt budget this node has consumed.
 
     Records, not attempt numbers: the number keys the evidence-store row and the
     component-1 attribution key, and a node whose numbering continues from
     elsewhere still gets its full budget. The debugger's cycle is excluded — it
-    is a rung of its own, limited by `debugger_cycles`.
+    is a rung of its own, limited by `debugger_cycles`.  A promoted attempt is
+    also excluded when a promotion persona is configured, because it belongs to
+    its own rung (US5-S5).
     """
-    return sum(1 for record in history if record.persona != DEBUGGER_PERSONA)
+    promotion_target = config.promotion_persona if config is not None else None
+    excluded = {DEBUGGER_PERSONA, promotion_target} if promotion_target else {DEBUGGER_PERSONA}
+    return sum(1 for record in history if record.persona not in excluded)
 
 
 def _debugger_cycles_spent(history: Sequence[AttemptRecord]) -> int:
     """How many debugger cycles have already run."""
     return sum(1 for record in history if record.persona == DEBUGGER_PERSONA)
+
+
+def _promotion_cycles_spent(
+    history: Sequence[AttemptRecord], config: VerificationConfig
+) -> int:
+    """How many promotion cycles have already run.
+
+    A promoted attempt is recorded under the configured promotion persona, so it
+    is counted by matching that persona name.  When no persona is configured we
+    fall back to the synthetic placeholder, which never appears in real history.
+    """
+    target = config.promotion_persona or PROMOTION_PERSONA
+    return sum(1 for record in history if record.persona == target)
+
+
+def _promotion_available(
+    history: Sequence[AttemptRecord], config: VerificationConfig
+) -> bool:
+    """Whether the promotion rung is configured and still has budget.
+
+    The rung fires only when ordinary attempts are exhausted, it is configured
+    with a persona, and the latest failing attempt was not already made by that
+    persona — promoting to the same builder again would be a plain retry, not a
+    stronger one (US5 edge case).
+    """
+    if config.promotion_persona is None:
+        return False
+    if config.promotion_cycles == 0:
+        return False
+    if _attempts_spent(history, config) < config.max_attempts:
+        # Ordinary attempts still remain; the promotion rung sits above them.
+        return False
+    # Never promote when the latest failure is already the stronger persona:
+    # that would be a plain retry, not a promotion.
+    latest = history[-1] if history else None
+    if latest is not None and latest.persona == config.promotion_persona:
+        return False
+    if _promotion_cycles_spent(history, config) >= config.promotion_cycles:
+        return False
+    return True
 
 
 def _judge_rewrites_spent(

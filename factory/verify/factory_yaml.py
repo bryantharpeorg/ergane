@@ -118,7 +118,20 @@ _V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify")
 _ROADMAP_KEYS = ("cadence_s", "max_concurrent_epics", "max_concurrent_nodes")
 
 #: The ladder fields a v2 manifest may declare, with their platform ceilings.
-_LADDER_KEYS = ("max_attempts", "max_judge_retries", "debugger_cycles", "escalation_timeout_s")
+#: `promotion_persona` is not a ladder dial — it names a registry persona and is
+#: therefore a string, not an integer.  A fourth integer dial would repeat the
+#: `max_recovery_cycles` defect; instead the budget (`promotion_cycles`) lives
+#: here and the persona name is read separately (US5-S4).
+_LADDER_KEYS = (
+    "max_attempts",
+    "max_judge_retries",
+    "debugger_cycles",
+    "escalation_timeout_s",
+    "promotion_cycles",
+)
+
+#: Recognised `ladder:` keys that are not integer dials.
+_LADDER_STRING_KEYS = ("promotion_persona",)
 
 #: (min, max) inclusive bounds for each ladder dial.
 _LADDER_BOUNDS = {
@@ -126,6 +139,7 @@ _LADDER_BOUNDS = {
     "max_judge_retries": (0, 10),
     "debugger_cycles": (0, 3),
     "escalation_timeout_s": (60, 86400),
+    "promotion_cycles": (0, 3),
 }
 
 #: Reserved gate names in schema v2. They collide with step names or the
@@ -557,12 +571,13 @@ def _read_ladder(document: Mapping[Any, Any], source: str) -> "VerificationConfi
             source=source,
         )
 
-    unknown = [key for key in block if key not in _LADDER_KEYS]
+    known = set(_LADDER_KEYS) | set(_LADDER_STRING_KEYS)
+    unknown = [key for key in block if key not in known]
     if unknown:
         raise FactoryConfigError(
             "unknown_ladder_key",
-            f"declares {_names(unknown)} under `ladder`; the ladder dials are "
-            f"{_names(_LADDER_KEYS)}",
+            f"declares {_names(unknown)} under `ladder`; the ladder keys are "
+            f"{_names(sorted(known))}",
             source=source,
         )
 
@@ -596,13 +611,40 @@ def _read_ladder(document: Mapping[Any, Any], source: str) -> "VerificationConfi
             )
         values[key] = value
 
+    promotion_persona = _read_promotion_persona(block, source)
+
     return VerificationConfig(
         max_attempts=values["max_attempts"],
         max_judge_retries=values["max_judge_retries"],
         debugger_cycles=values["debugger_cycles"],
         gate_timeout_s=defaults.gate_timeout_s,
         escalation_timeout_s=values["escalation_timeout_s"],
+        promotion_persona=promotion_persona,
+        promotion_cycles=values["promotion_cycles"],
     )
+
+
+def _read_promotion_persona(
+    block: Mapping[Any, Any], source: str
+) -> str | None:
+    """The operator-configured stronger persona, if any.
+
+    This is intentionally not a ladder dial: ladder dials are integer budgets,
+    and `_LADDER_BOUNDS` raises on unknown keys.  The persona name is a string
+    that names a registry entry (constitution VII), so it lives beside the budget
+    dials rather than inside them (US5-S4).
+    """
+    if "promotion_persona" not in block:
+        return None
+    value = block["promotion_persona"]
+    if not isinstance(value, str) or not value.strip():
+        raise FactoryConfigError(
+            "ladder_promotion_persona",
+            f"gives `ladder.promotion_persona` the value {value!r}; when declared "
+            "it must be a non-empty persona name from the registry",
+            source=source,
+        )
+    return value
 
 
 def _read_verify(document: Mapping[Any, Any], source: str) -> tuple[str, ...]:

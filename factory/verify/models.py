@@ -116,6 +116,7 @@ class NextAction(StrEnum):
 
     PASSED = "PASSED"
     RETRY = "RETRY"
+    PROMOTE = "PROMOTE"
     DEBUGGER = "DEBUGGER"
     ESCALATE = "ESCALATE"
     KILLED = "KILLED"
@@ -584,6 +585,7 @@ _LOOP_DIGEST_LADDER_FIELDS = (
     "max_judge_retries",
     "debugger_cycles",
     "escalation_timeout_s",
+    "promotion_cycles",
 )
 
 
@@ -624,7 +626,8 @@ def loop_summary(
     steps = ", ".join(verify_order)
     ladder = (
         f"attempts={config.max_attempts}, judge_retries={config.max_judge_retries}, "
-        f"debugger={config.debugger_cycles}, deadline={config.escalation_timeout_s}s"
+        f"promotion={config.promotion_cycles}, debugger={config.debugger_cycles}, "
+        f"deadline={config.escalation_timeout_s}s"
     )
     judge = "judge present" if "judge" in verify_order else "no judge"
     gates = ", ".join(gate_names) if gate_names else "no gates"
@@ -640,6 +643,11 @@ class VerificationConfig:
 
     `max_judge_retries` is bounded *inside* `max_attempts`, not on top of it:
     exhausted judge retries consume attempts as ordinary failures (SC-003).
+
+    `promotion_persona` is the operator-configured stronger persona a node is
+    retried on after ordinary attempts are spent; `None` means no promotion
+    rung is configured and the ladder behaves exactly as today (US5-S3).
+    `promotion_cycles` bounds the rung like `debugger_cycles`.
     """
 
     max_attempts: int = 3
@@ -647,6 +655,8 @@ class VerificationConfig:
     debugger_cycles: int = 1
     gate_timeout_s: int = 600
     escalation_timeout_s: int = 3600
+    promotion_persona: str | None = None
+    promotion_cycles: int = 1
 
 
 #: The digest of the unconfigured default loop: v1, default gate names, default
