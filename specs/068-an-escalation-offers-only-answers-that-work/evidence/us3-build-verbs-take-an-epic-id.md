@@ -121,6 +121,48 @@ The six pre-existing `reset` call sites that pass a graph path
 (`tests/test_ergane_build.py:1284, 1297, 1342, 1363, 1378, 1422`) are inside
 that total and were not edited.
 
+### The gate, re-run, and the one flake that has to be named
+
+A verification run of the same commit failed the gate on a test this diff does
+not touch and does not import — `tests/test_roadmap_prompt_assembly.py::
+test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it`, an 044
+US2 test — with a dispatch **order** assertion inverted:
+
+```
+E       AssertionError: assert ['001-runtime..., '002-bravo'] == ['002-bravo',...runtime-root']
+E         At index 0 diff: '001-runtime-root' != '002-bravo'
+1 failed, 3823 passed, 48 skipped, 6 warnings in 303.79s (0:05:03)
+```
+
+Re-run whole, unchanged tree, same commit:
+
+```
+3823 passed, 49 skipped, 6 warnings in 302.32s (0:05:02)
+```
+
+The file alone, twelve consecutive runs: `8 passed` every time. The single test,
+twenty-five consecutive runs *while the full suite ran beside it* for CPU
+contention: `1 passed` every time. It is rare, not load-triggered in any way
+this worktree could provoke on demand.
+
+The mechanism is in the test, not in the code under it. Its `env` fixture is
+`WorkflowEnvironment.start_time_skipping()` (`tests/test_roadmap_scheduler.py`,
+the `env` fixture), so the server jumps the clock whenever every workflow is
+blocked. `_await_running` returns as soon as `roadmap_status` reports the child
+**started**, which is strictly earlier than the child's first workflow task —
+and that first task is where `ScriptedEpicWorkflow.run` calls `on_dispatch`
+(`tests/roadmap_script.py`). So after the `unpark_spec` signal the skipped clock
+can carry the roadmap into its next tick and run `001-runtime-root`'s child to
+completion before the held `002-bravo` child has executed its first task, and
+the list the assertion reads is in start-*execution* order rather than
+start order. Two elements, inverted — exactly the observed failure.
+
+Left alone deliberately: it belongs to 044, not to this story, and the plan's
+trap 9 says to say so rather than edit across the line. Reordering another
+story's assertion to reach a green run is the shape of change the outer loop
+exists to refuse. It is reported here so the next reader does not read a red
+gate on this branch as US3 having broken the roadmap scheduler.
+
 ## Before the change: the red run
 
 `tests/test_build_verbs_take_an_epic_id.py` against the unmodified
