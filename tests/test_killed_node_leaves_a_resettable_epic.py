@@ -309,7 +309,11 @@ async def test_a_kill_resolution_leaves_no_living_escalation_child(
         result = await handle.result()
 
     assert states(result)["us1"] == NodeState.KILLED
-    assert await execution_status(env, row.workflow_id) != "RUNNING"
+    # `COMPLETED`, not merely "not RUNNING": a child the epic stranded is
+    # terminated by the parent-close policy when the epic ends, so "not running
+    # afterwards" is true of a stranded child too and would prove nothing. This
+    # says the child ended by settling its own escalation.
+    assert await execution_status(env, row.workflow_id) == "COMPLETED"
     assert pending(db_path) == [], "no escalation may outlive the node it paged for"
     settled = read(db_path, store.get_escalation, row.escalation_id)
     assert settled.resolution == EscalationChoice.KILL.value
