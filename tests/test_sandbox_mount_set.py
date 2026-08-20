@@ -105,6 +105,14 @@ file against each. Verbatim `-rf` output, edited only to drop the repeated
 The three refusal tests are the ones that would otherwise be theatre: two of
 them replace the spawn with a detonator, so "before any subprocess is created"
 is measured rather than asserted.
+
+**Green, unmutated.** This file, and then the repository's declared gate whole:
+
+    $ uv run pytest -q tests/test_sandbox_mount_set.py
+    9 passed in 0.03s
+
+    $ uv run pytest -q
+    3802 passed, 49 skipped, 6 warnings in 299.49s (0:04:59)
 """
 
 from __future__ import annotations
