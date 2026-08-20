@@ -162,7 +162,31 @@ async def test_launch_failure_is_reported_distinctly_naming_the_fault(
     # No verification result was recorded: this is a launch failure, not a
     # failed attempt.
     assert not [r for r in script.records if r.node_id == "us1"]
-    # The notifier is reached because the condition is operator-facing (T012 will
-    # tighten the timing).
+    # The notifier is reached because the condition is operator-facing.
     assert len(script.escalation_requests) == 1
     assert "launch" in script.escalation_requests[0].history_summary.lower()
+
+
+# --- T012 [P] [US2] (spec US2-S3) --------------------------------------------
+
+
+async def test_launch_failure_reaches_notifier_before_ladder_exhausts(
+    env: WorkflowEnvironment,
+) -> None:
+    """A launch fault pages the operator immediately, not after spending the budget."""
+    script = launch_world(client=env.client)
+
+    status = await run_epic(env, script, graph=one_node_graph())
+
+    # Only one escalation: the launch fault, not three failed attempts + debugger.
+    assert len(script.escalation_requests) == 1, (
+        "launch failure should page exactly once, not after exhausting attempts"
+    )
+    escalation = script.escalation_requests[0]
+    assert escalation.epic_id == EPIC_ID
+    assert escalation.node_id == "us1"
+    # The history summary names the launch condition, not gate failure evidence.
+    assert "launch" in escalation.history_summary.lower()
+    # No attempt records means no budget was spent before paging.
+    assert not [r for r in script.records if r.node_id == "us1"]
+    assert status.nodes["us1"].state == NodeState.KILLED
