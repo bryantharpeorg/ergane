@@ -787,7 +787,7 @@ def _escalation_record(choices: list[EscalationChoice]) -> EscalationRecord:
 #     mutation 1 above.
 #
 # After, the whole suite:
-#     3817 passed, 49 skipped, 6 warnings in 307.19s (0:05:07)
+#     3817 passed, 49 skipped, 6 warnings in 305.67s (0:05:05)
 #
 # +15, of which 9 are the tests in this file. The other 6 are cases that existing
 # parametrized suites gained from the new enum member: one in
