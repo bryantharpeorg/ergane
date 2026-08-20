@@ -31,6 +31,7 @@ from factory.usage.models import UsageSnapshot
 from factory.workgraph.delta import DeltaResult, derive_delta
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.landed import LandedKind, fingerprint, landed_facts
+from factory.workgraph.prompt import TASKS_DOCUMENT
 from factory.workgraph.worktree import landing_branch
 from factory.workgraph.models import (
     WorkGraph,
@@ -255,6 +256,7 @@ def derive_command(args: argparse.Namespace) -> int:
     target_repo = _resolve_identity_path(
         args.target_repo, "--target-repo", must_exist=True
     )
+    tasks_text = _tasks_text(spec_dir)
     if args.delta:
         # The caller wants the remainder graph. Build a baseline from default-branch
         # landed facts: every landed story pinned at its landing commit.
@@ -267,6 +269,7 @@ def derive_command(args: argparse.Namespace) -> int:
                 feature=epic_id,
                 specs_root=specs_root,
                 target_repo=target_repo,
+                tasks_text=tasks_text,
             )
         except DerivationError as error:
             raise _OperatorError(f"{spec_path}: {error}") from error
@@ -288,6 +291,7 @@ def derive_command(args: argparse.Namespace) -> int:
                 feature=epic_id,
                 specs_root=specs_root,
                 target_repo=target_repo,
+                tasks_text=tasks_text,
             )
         except DerivationError as error:
             # The whole list, at the point the author can act on all of it at once.
@@ -309,8 +313,44 @@ def derive_command(args: argparse.Namespace) -> int:
     else:
         if args.delta and "result" in locals():
             _print_provenance(result)
+        _print_inferred_edges(graph, tasks_text is None)
         print(destination)
     return EXIT_OK
+
+
+def _tasks_text(spec_dir: Path) -> str | None:
+    """The epic's `tasks.md`, or None when there is none to read (069-US2).
+
+    None is **not checked**, never "nothing collides": treating the two alike
+    would report a clean bill of health for a document nobody opened, so `derive`
+    says so on stderr rather than inventing an answer.
+    """
+    try:
+        return (spec_dir / TASKS_DOCUMENT).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _print_inferred_edges(graph: WorkGraph, unread: bool) -> None:
+    """Say which edges the deriver added that nobody wrote (069-US2 FR-008).
+
+    On stderr and never a refusal: an inferred edge is a graph the operator can
+    dispatch, not a defect. But it is a change to the schedule the author did not
+    write, so it is stated when compiled rather than discovered in the artifact.
+    """
+    if unread:
+        print(
+            f"ergane spec derive — no {TASKS_DOCUMENT} beside the spec, so no "
+            "task-slice contention was checked and no ordering edge was inferred",
+            file=sys.stderr,
+        )
+        return
+    for edge in graph.inferred_edges:
+        print(
+            f"ergane spec derive — inferred edge: {edge.node_id} waits for the "
+            f"merge of {edge.depends_on_merged}. {edge.reason}",
+            file=sys.stderr,
+        )
 
 
 def _build_baseline(

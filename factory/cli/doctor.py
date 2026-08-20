@@ -467,6 +467,9 @@ def findings_promote_command(args: argparse.Namespace, conn: sqlite3.Connection)
                 feature=slug,
                 specs_root=str(specs_root),
                 target_repo=str(target_repo),
+                # The scaffold's own task list, so this compiles it the way
+                # `ergane spec derive` will (069-US2).
+                tasks_text=tasks_text,
             )
         except DerivationError as error:
             raise OperatorError(f"scaffold does not compile: {error}") from error

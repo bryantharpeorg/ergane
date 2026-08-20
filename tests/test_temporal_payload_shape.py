@@ -527,6 +527,10 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
         "epic_id", "node_id", "attempt", "prompt", "worktree_path", "home_path",
         "proxy_url", "virtual_key", "model_alias", "session_id", "timeout_s"
     ),
+    # Kind 1, coordinates: both fields address a node of the graph. A default
+    # would attribute an inferred edge to whatever node sorts first, and an
+    # operator reading provenance would go and edit the wrong story.
+    "factory.workgraph.models.InferredEdge": ("node_id", "depends_on_merged"),
     "factory.workgraph.models.ResolvedNode": (
         "node", "model_alias", "models", "write_scope", "timeout_s"
     ),

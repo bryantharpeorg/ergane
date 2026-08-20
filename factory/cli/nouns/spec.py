@@ -40,6 +40,7 @@ from factory.workgraph.cli import (
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkGraphError, WorkNode, validate_workgraph
 from factory.workgraph.preflight import check_prompt_assembly, check_slice_coverage
+from factory.workgraph.prompt import TASKS_DOCUMENT
 from factory.workgraph.worktree import landing_branch
 
 #: The id grammar the criteria parser mints for acceptance scenarios.
@@ -246,6 +247,11 @@ def _validate_command(args: argparse.Namespace) -> int:
     _check_frontmatter(spec_dir, epic_id, findings)
 
     # 2. Work-graph derivation.
+    #
+    # Derived against `tasks.md` when there is one (069-US2): an overlap whose
+    # only ordering would close a cycle is a refusal an author must meet here
+    # rather than at `spec derive`.
+    tasks_text = _tasks_text(spec_dir)
     graph: WorkGraph | None = None
     try:
         graph = derive_workgraph(
@@ -254,6 +260,7 @@ def _validate_command(args: argparse.Namespace) -> int:
             feature=epic_id,
             specs_root=args.specs_root,
             target_repo=args.target_repo,
+            tasks_text=tasks_text,
         )
     except DerivationError as error:
         findings.append(_ValidateFinding("workgraph", str(error)))
@@ -311,7 +318,11 @@ def _validate_command(args: argparse.Namespace) -> int:
     # slice is not every node being handed its work. A task written for one
     # story and left outside that story's slice is a defect; a task in no
     # slice naming no story is stated and costs nothing.
-    coverage = None if graph is None else check_slice_coverage(graph, spec_dir)
+    coverage = (
+        None
+        if graph is None
+        else check_slice_coverage(graph, spec_dir, tasks_text=tasks_text)
+    )
     if coverage is not None:
         for entry in coverage:
             target = information if entry.informational else findings
@@ -327,6 +338,33 @@ def _validate_command(args: argparse.Namespace) -> int:
                     if graph is None
                     else "tasks.md could not be read, so it holds no slice to "
                     "measure a task against"
+                ),
+            }
+        )
+
+    # 7. Stories the spec declares disjoint whose task slices are not (069-US2
+    #    FR-009).
+    #
+    # The check 060 needed: it asserted its stories were file-disjoint, its
+    # diffs contradicted that, and only landing order saved it. An advisory, not
+    # a refusal — derivation has already ordered the pair — because what the
+    # author is owed is that their declared independence and their own task
+    # prose disagree.
+    if graph is not None and tasks_text is not None:
+        for edge in graph.inferred_edges:
+            findings.append(
+                _ValidateFinding("slice_contention", edge.reason, severity="advisory")
+            )
+        checked.append("slice_contention")
+    else:
+        skipped.append(
+            {
+                "layer": "slice_contention",
+                "reason": (
+                    "the work graph did not compile, so there are no stories to "
+                    "compare slices for"
+                    if graph is None
+                    else "tasks.md could not be read, so no story has a slice"
                 ),
             }
         )
@@ -388,6 +426,20 @@ def _validate_command(args: argparse.Namespace) -> int:
             )
 
     return EXIT_USER if has_refusal else EXIT_OK
+
+
+def _tasks_text(spec_dir: Path) -> str | None:
+    """The epic's `tasks.md`, or None when there is none to read (069-US2).
+
+    None means **not read**, and every layer that takes it reports a skip rather
+    than a pass: a document nobody opened has no findings, and calling that a
+    clean bill of health is how a check comes to be trusted for something it
+    never did (044 plan trap 5).
+    """
+    try:
+        return (spec_dir / TASKS_DOCUMENT).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 def _check_frontmatter(spec_dir: Path, epic_id: str, findings: list[_ValidateFinding]) -> None:
