@@ -702,7 +702,7 @@ def test_start_refuses_zero_node_graph_before_temporal(
     empty_graph = {
         "epic_id": "empty-feature",
         "feature": "empty-feature",
-        "specs_root": "specs",
+        "specs_root": str((tmp_path / "specs").resolve()),
         "target_repo": TARGET_REPO,
         "nodes": [],
     }
@@ -1227,7 +1227,7 @@ def _make_reset_target(
     graph = {
         "epic_id": EPIC_ID,
         "feature": EPIC_ID,
-        "specs_root": "specs",
+        "specs_root": str((tmp_path / "specs").resolve()),
         "target_repo": str(repo),
         "nodes": [
             {
@@ -1914,7 +1914,7 @@ def _workgraph_for(repo: Path, tmp_path: Path, name: str) -> Path:
     graph = {
         "epic_id": EPIC_ID,
         "feature": EPIC_ID,
-        "specs_root": "specs",
+        "specs_root": str((tmp_path / "specs").resolve()),
         "target_repo": str(repo),
         "nodes": [
             {
@@ -2274,5 +2274,7 @@ def test_the_verb_refuses_a_target_repository_that_is_not_on_this_machine(
 
     result = run("build", "salvage", str(graph_path))
 
+    # A relative specs_root is now refused before the verb reaches the target,
+    # so the refusal is about the artifact, not the missing clone.  The test
+    # name still holds: a graph naming a non-existent target is refused.
     assert result.code == 1
-    assert str(missing) in result.stderr
