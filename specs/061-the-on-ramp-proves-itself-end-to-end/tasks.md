@@ -8,6 +8,14 @@ spec is *about* the difference between asserting a declaration and asserting a
 capability, and it is entirely possible to fix three bugs here while rebuilding
 the shape that caused them.
 
+**Trap 14 has already killed this epic twice and will kill it again.** Any
+fixture that runs `git commit` in a scratch repository MUST set `user.email` and
+`user.name` on that repository explicitly. Your sandbox HOME is seeded with a
+`.gitconfig` so it passes in front of you; a CI runner has no git identity and
+`git commit` exits 128. On 2026-08-19 that one line lost `us2`, and `us3` and
+`us4` died with it at attempt 0 having never run — twice. Read trap 14 in full
+before writing any test that touches git.
+
 Tests are written before the implementation and must fail for the stated reason
 before anything is made to pass.
 

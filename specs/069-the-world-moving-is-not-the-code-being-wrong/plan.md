@@ -29,12 +29,65 @@ rely on it.
 - `factory/verify/models.py:645-647` — `max_attempts: 3`, `max_judge_retries: 2`,
   `debugger_cycles: 1`.
 
+**US1 — THERE ARE TWO BUDGETS HERE AND A FIX THAT NAMES ONLY ONE IS WRONG.**
+This was got wrong once already during refinement, in both directions, so it is
+spelled out. Verify each of these lines yourself before you rely on it.
+
+- `factory/workgraph/workflow.py:2317` —
+  `if not granted and landing.recovery_cycles >= config.max_recovery_cycles:`.
+  **This is what BOUNDS the recovery loop.** The ladder is not consulted to
+  decide whether a recovery happens at all; this counter is.
+- `factory/mergequeue/models.py:134` — `recovery_cycles: int = 0` on the landing.
+- `factory/mergequeue/models.py:292` — `max_recovery_cycles: int = 1`. **The
+  shipped default is ONE**, it is constructed bare at every call site, and unlike
+  the four `_LADDER_KEYS` dials it has no operator-facing config surface at all.
+  That is a separate open finding; do not fix it here, but do not write a test
+  that silently depends on it either.
+- `factory/workgraph/workflow.py:2325` — `recovery_cycles=landing.recovery_cycles + 1`,
+  the increment.
+- `factory/workgraph/workflow.py:2502-2508` — **and this is the half that is easy
+  to miss.** `_recovery_attempt` ends by appending an `AttemptRecord` to
+  `record.history` with `persona=persona`. `persona` is `resolved.node.persona`
+  on a clean sync and `DEBUGGER_PERSONA` on a conflicted one (set just above, at
+  `:2374-2379`). So a recovery **also spends a LADDER slot**: an ordinary attempt
+  after a clean sync, a debugger cycle after a conflicted one.
+
+Put together: a moved-base rejection today costs the node **one recovery cycle
+out of one, AND one ordinary attempt out of three**. US1 must make it cost
+neither, and the tests must assert both. Asserting only `recovery_cycles` leaves
+the node still being charged for the world moving; asserting only the ladder
+counts leaves it dying at the recovery bound with attempts to spare.
+
 **US2 — derivation and slices:**
 
-- The slice-coverage machinery already parses per-story file paths from
-  `tasks.md`; `ergane spec validate` reports on it (its `[slice_coverage]`
-  advisory names task ids per story). Find where that parse lives and reuse it —
-  do not write a second task parser.
+**CORRECTED 2026-08-19 after checking the tree. An earlier draft of this plan
+said "the slice-coverage machinery already parses per-story file paths from
+`tasks.md` … reuse it". IT DOES NOT, AND THERE IS NO SUCH PARSER ANYWHERE.**
+Sending an implementer to find and reuse a function that does not exist costs an
+attempt in search alone. What actually exists:
+
+- `factory/workgraph/prompt.py:558` — `def task_slice_bounds(node, tasks_text)`,
+  returning half-open line indices into `tasks_text.splitlines()`. **This is the
+  real reusable piece**, and its docstring says why: it is the assembler's own
+  scan, so the lines it calls a story's slice are exactly the lines dispatch
+  cuts. Anything that decides "which lines belong to which story" must go through
+  this and not re-derive it.
+- `factory/workgraph/preflight.py:400` — `def slice_coverage_findings(graph, *, tasks_text)`.
+  What `ergane spec validate`'s `[slice_coverage]` advisory comes from. It maps
+  **task id → story → slice**. Its regexes are
+  `_TASK_LINE_RE` (`:298`, task ids), `_STORY_TAG_RE` (`:304`, `[US1]`) and
+  `_STORY_CITATION_RE` (`:305`, `spec US1-`). **None of them looks at a file
+  path.** It answers "does this task reach an agent", not "what does it touch".
+- `factory/verify/diffbounds.py:52` — `_FILE_HEADER_RE`, which does parse file
+  paths — out of a **unified diff**, not out of prose. Not reusable for a
+  `tasks.md` scan, and a diff does not exist before dispatch anyway.
+
+So **extracting file paths from task prose is NEW code with no precedent in this
+tree.** Say so in your own reasoning rather than hunting for the function this
+plan used to promise. Build it on top of `task_slice_bounds` so the slicing half
+still cannot drift from dispatch, and keep the path-recognition half small and
+testable on its own.
+
 - `depends_on_merged` is the existing contention edge type. US2 infers edges of
   that kind; it does not invent a third.
 
@@ -78,9 +131,19 @@ readily removes the concurrency the factory exists to provide, and it will be
 switched off — the same failure shape as 065's trap 7 about a probe that cannot
 tell idle from wedged. The test over disjoint stories is not optional.
 
-**7. Reuse the slice parser.** US2 needs per-story file paths and the
-slice-coverage machinery already produces them. A second parser that disagrees
-with `spec validate` is worse than no inference.
+**7. Reuse the SLICING; the path extraction does not exist and you are writing
+it.** This trap previously claimed the slice-coverage machinery already produces
+per-story file paths. It does not — see the corrected US2 anchors above, where
+each regex is named. Two halves, and they have different answers:
+- *Which lines are this story's?* — already solved, by
+  `task_slice_bounds` (`factory/workgraph/prompt.py:558`). Go through it. A
+  second slicer that disagrees with `spec validate` is worse than no inference,
+  and it will disagree at exactly the boundary cases that matter.
+- *Which file paths do those lines name?* — **new code.** Nothing in the tree
+  does it. Keep it a small pure function over a block of text so it can be tested
+  against the corpus's real spelling variety (backticked paths, bare paths, paths
+  inside prose, paths that are directories, paths that do not exist yet because
+  the story creates them) rather than only against the shape you had in mind.
 
 **8. US3 must not reach outside `factory/<epic>/<node>`.** US3-S4. A cleanup verb
 that closes a pull request an operator opened by hand is a far worse defect than

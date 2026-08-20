@@ -128,15 +128,23 @@ ladder's spent counts are unchanged.
 **Acceptance Scenarios**:
 
 1. **Given** an enqueued landing rejected because the base moved, **When** the
-   node recovers, **Then** neither the attempt count nor the debugger-cycle count
-   increases — proven by a committed test asserting both counts directly.
+   node recovers, **Then** **all three** of the ladder's attempt count, the
+   debugger-cycle count and the landing's `recovery_cycles` are unchanged —
+   proven by a committed test asserting all three directly. There are two
+   budgets on this path and today a moved base spends one of each: a recovery
+   increments `recovery_cycles` (`factory/workgraph/workflow.py:2325`) **and**
+   appends an `AttemptRecord` the ladder counts (`:2502-2508`). A fix that
+   frees only one leaves the node dying at the other.
 2. **Given** the same, **When** the node recovers, **Then** it rebases and
    requeues — proven by a committed test asserting the requeue happened, not
    merely that no budget was spent. A node that stops cheaply is not a fix.
 3. **Given** a landing rejected because the node's own tree is wrong — a failing
    required check on unchanged code — **When** it recovers, **Then** it IS
-   charged as today — proven by a committed test. This is the control, and
-   without it the story could be satisfied by never charging anything.
+   charged exactly as today, on **both** budgets: `recovery_cycles` increments
+   and the ladder records the attempt — proven by a committed test asserting
+   both. This is the control, and without it the story could be satisfied by
+   never charging anything. Assert both, or the control only covers the budget
+   the implementer happened to think about.
 4. **Given** a rejection whose recovery would produce a tree identical to the one
    the queue already rejected, **When** the node decides, **Then** it does not
    requeue the same tree — proven by a committed test. The existing reasoning at
@@ -242,7 +250,9 @@ branch, and assert a rebuilt node can push.
 ### Functional Requirements
 
 - **FR-001**: A landing rejection whose only cause is a moved base MUST NOT
-  consume an attempt or a debugger cycle.
+  consume an attempt, a debugger cycle, or a recovery cycle. All three, because
+  the recovery path spends from two independent budgets and freeing one leaves
+  the node exhausted by the other.
 - **FR-002**: Such a rejection MUST route to a rebase-and-requeue path.
 - **FR-003**: A rejection caused by the node's own code MUST continue to be
   charged as today.
@@ -283,8 +293,9 @@ US3:
 
 ### Measurable Outcomes
 
-- **SC-001**: Reject a landing for a moved base and paste the attempt and
-  debugger counts before and after. Neither may move.
+- **SC-001**: Reject a landing for a moved base and paste the attempt count, the
+  debugger-cycle count **and** `recovery_cycles` before and after. None of the
+  three may move.
 - **SC-002**: Paste the control — a code-fault rejection, still charged. Without
   it SC-001 is satisfiable by charging nothing.
 - **SC-003**: Land a three-way fan-out sharing one file at the shipped default

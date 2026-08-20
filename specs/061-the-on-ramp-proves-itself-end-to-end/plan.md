@@ -111,6 +111,45 @@ US3 edits `onboard.py` and `init.py`. US2 and US3 both touch
 `factory/cli/init.py`, so declare an edge between them. US4 depends on all three
 and on 059 and 060 having landed.
 
+**14. A FIXTURE THAT RUNS `git commit` MUST SET A GIT IDENTITY. THIS EXACT
+DEFECT HAS ALREADY KILLED THIS EPIC TWICE.** Read this one before you write a
+line; it is not a hypothetical and it is not a style note.
+
+On 2026-08-19 this spec was dispatched, `us2` built cleanly, its own gates were
+green in its worktree, and the required `test` check went red in CI with:
+
+    FAILED tests/test_ergane_init_creates_specs.py::test_init_creates_specs_directory
+      subprocess.CalledProcessError: Command '['git','-C',<tmpdir>,'commit',
+      '--quiet','-m','initial commit']' returned non-zero exit status 128.
+
+Exit 128 from `git commit` in a freshly `git init`-ed directory means **git has
+no `user.email` / `user.name`**. The node was killed, and `us3` and `us4` died
+with it at attempt 0, never having run. The epic was re-dispatched and died the
+same way. Three of four stories, twice, for this.
+
+WHY IT PASSES LOCALLY AND FAILS IN CI, which is the whole trap. Your sandbox's
+per-node HOME is seeded with a `.gitconfig`
+(`factory/workgraph/adapter.py:740`), so `git commit` finds an identity and the
+fixture is green in front of you. **A GitHub Actions runner has no git
+identity at all.** Your green local run is not evidence about CI; it is
+evidence that the seeding works.
+
+WHAT TO DO. Any fixture that creates a scratch repository and commits in it must
+set the identity explicitly on that repository before committing — `git -C <dir>
+config user.email` and `user.name`, or the equivalent `-c` flags on the commit
+itself, or `GIT_AUTHOR_*`/`GIT_COMMITTER_*` in the subprocess environment. Pick
+one and apply it to **every** such fixture you add, not only the one you were
+thinking about. Do not rely on a global config, on `HOME`, or on anything the
+host happens to provide.
+
+WHY YOU WILL NOT SIMPLY BE TOLD THIS WHEN IT BREAKS. The recovery attempt that
+would normally receive the failing check's log received `log unavailable: could
+not list checks (GH_REFUSED)` instead, because `factory/mergequeue/gh.py:210`
+issues `gh pr checks --json`, a flag `gh` does not have. That is spec 071 and it
+is not yours to fix. Until it lands, a red CI check reaches you as a check name
+and nothing else — so the cost of getting this wrong is the whole node, with no
+diagnosis on the way down.
+
 ## Sizing
 
 Four stories, three small and one large.
