@@ -142,6 +142,12 @@ DEFAULT_REGISTRY_PATH = _resolve_default_registry_path()
 #: Sentinel `agent` value marking a persona as deterministic (no LLM, no key).
 DETERMINISTIC_AGENT = "none"
 
+#: Sentinel `agent` value marking a persona that runs against the operator's
+#: subscription rather than the gateway (US2 FR-005). It is still an LLM — it
+#: still spends tokens and still runs the same `claude` binary — but it routes
+#: through the CLI's own credential instead of the LiteLLM proxy.
+SUBSCRIPTION_AGENT = "subscription"
+
 _REQUIRED_FIELDS = ("agent", "model", "write_scope", "needs_worktree")
 _OPTIONAL_FIELDS = ("fallback", "skills", "timeout", "context_window")
 
@@ -189,8 +195,25 @@ class Persona:
 
     @property
     def is_llm(self) -> bool:
-        """Whether this persona spends tokens — and so needs a virtual key."""
+        """Whether this persona spends tokens: deterministic personas do not;
+        gateway and subscription personas both do."""
         return self.agent != DETERMINISTIC_AGENT
+
+    @property
+    def routes_through_gateway(self) -> bool:
+        """Whether this persona's model aliases must resolve on the gateway and
+        whether its attempts should be preflight-checked against the proxy's
+        served-alias list. Deterministic and subscription personas do not route
+        through the gateway (US2 FR-016)."""
+        return self.agent not in (DETERMINISTIC_AGENT, SUBSCRIPTION_AGENT)
+
+    @property
+    def needs_virtual_key(self) -> bool:
+        """Whether this persona's attempts need a model-constrained virtual key
+        minted at dispatch. Only gateway personas do; deterministic personas run
+        no agent, and subscription personas authenticate through the operator's
+        own credential (US2 FR-006)."""
+        return self.agent == "claude-code"
 
 
 def load_personas(path: Path | str | None = None) -> dict[str, Persona]:
@@ -251,7 +274,9 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
     timeout_s = _optional_timeout(entry.get("timeout"), fail)
     context_window = _optional_context_window(entry.get("context_window"), fail)
 
-    # data-model.md § Persona: model required iff agent != "none".
+    # data-model.md § Persona: model required iff agent runs an LLM.
+    # A subscription persona is like a gateway persona here: it runs the agent
+    # and needs a model (the CLI-side name), so the model rule applies.
     if agent == DETERMINISTIC_AGENT:
         if model is not None:
             raise fail(

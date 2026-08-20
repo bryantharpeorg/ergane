@@ -587,6 +587,7 @@ def test_the_attempt_context_carries_exactly_the_adapters_inputs() -> None:
         "timeout_s",
         "context_window",
         "target_repo",
+        "agent",
     }
 
 

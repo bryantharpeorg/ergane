@@ -755,9 +755,12 @@ def project_dir_name(cwd: Path | str) -> str:
 
 
 def attempt_env(
-    context: AttemptContext, environ: Mapping[str, str] | None = None
+    context: AttemptContext,
+    environ: Mapping[str, str] | None = None,
+    *,
+    routes_through_gateway: bool = True,
 ) -> dict[str, str]:
-    """The agent's entire environment: two attempt values plus the passthrough.
+    """The agent's entire environment: gateway variables and the passthrough.
 
     An allowlist, so `LITELLM_MASTER_KEY` and `TELEGRAM_BOT_TOKEN` are absent by
     omission rather than by redaction (constitution V) — as is every other
@@ -768,13 +771,18 @@ def attempt_env(
     `HOME` is a constructed value, not a passthrough: it is the factory's
     per-node home under `factory_root` (US1), and the child receives it even when
     the worker environment carries no `HOME` at all (FR-002).
+
+    Subscription-routed personas run against the operator's own credential via
+    the CLI's normal login, so they receive neither the proxy URL nor a virtual
+    key (US2 FR-006). The caller decides this with `routes_through_gateway`.
     """
     source = os.environ if environ is None else environ
-    env = {
-        "ANTHROPIC_BASE_URL": context.proxy_url,
-        "ANTHROPIC_AUTH_TOKEN": context.virtual_key,
+    env: dict[str, str] = {
         "HOME": str(context.home_path),
     }
+    if routes_through_gateway:
+        env["ANTHROPIC_BASE_URL"] = context.proxy_url
+        env["ANTHROPIC_AUTH_TOKEN"] = context.virtual_key
     if context.context_window is not None:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context.context_window)
     env.update({name: source[name] for name in PASSTHROUGH_ENV if source.get(name)})
@@ -862,13 +870,14 @@ class ClaudeCodeAdapter:
 
         worktree = Path(context.worktree_path).resolve()
         target_repo = Path(context.target_repo) if context.target_repo else None
-        # `ATTEMPT_ARCHIVE` is the one constructed env var beyond the two
-        # attempt credentials and the four passthroughs: the agent's ferry files
-        # live in the archive directory (never the worktree, where salvage would
-        # commit them — FR-007), so the agent has to know where it is. Built here
-        # rather than in `attempt_env` because the archive path is the adapter's
-        # knowledge, derived from the same identity the transcript directory is.
-        env = attempt_env(context)
+        # `ATTEMPT_ARCHIVE` is the one constructed env var beyond the gateway
+        # variables and the four passthroughs: the agent's ferry files live in the
+        # archive directory (never the worktree, where salvage would commit them —
+        # FR-007), so the agent has to know where it is. Built here rather than in
+        # `attempt_env` because the archive path is the adapter's knowledge,
+        # derived from the same identity the transcript directory is.
+        routes_through_gateway = context.agent != "subscription"
+        env = attempt_env(context, routes_through_gateway=routes_through_gateway)
         env[ATTEMPT_ARCHIVE_ENV] = str(archive)
 
         # US1: capture the target repository's tracked-file state before the agent runs.
