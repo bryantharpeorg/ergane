@@ -103,6 +103,10 @@ WORKFLOW_ID = "ergane-epic-002-verification-gating-interpreter-run-0000000001"
 ALL_CHOICES = [
     EscalationChoice.RETRY,
     EscalationChoice.KILL,
+    # 068-US2: the longest value in the enum, and therefore the one the 64-byte
+    # `callback_data` contract is tightest against. A list called ALL_CHOICES
+    # that stopped covering every choice is how a new button ships untested.
+    EscalationChoice.KILL_EPIC,
     EscalationChoice.PAUSE_EPIC,
 ]
 

@@ -45,19 +45,13 @@ import pytest
 from temporalio.testing import WorkflowEnvironment
 
 from factory.activities.agent_activities import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV
-from factory.activities.notify_activities import (
-    DEFAULT_CHOICES,
-    expire_escalation,
-    expire_question,
-    find_ferried_question,
-    send_escalation,
-    send_question,
-)
+from factory.activities.notify_activities import DEFAULT_CHOICES
 from factory.activities.verify_activities import (
     ERGANE_VERIFICATION_DB_PATH_ENV,
     VERIFICATION_DB_PATH_ENV,
 )
 from factory.cli.main import main as ergane_main
+from factory.cli.nouns.build import _resolve
 from factory.notify.adapter import (
     ESCALATION_ADAPTER_ENV,
     register_adapter,
@@ -541,38 +535,50 @@ def test_the_offered_buttons_read_as_four_distinct_answers() -> None:
 
 
 async def test_a_kill_epic_press_ends_the_epic_and_a_kill_press_does_not(
-    env: WorkflowEnvironment, db_path: Path, adapter: FakeAdapter
+    env: WorkflowEnvironment, db_path: Path, adapter: FakeAdapter, dialled: None
 ) -> None:
     """US2-S5's other half: the distinction is real at runtime, both directions.
 
-    Two epics, identical but for the button pressed. `KILL` ends `us1` and lets
-    `us2` run to `MERGED`; `KILL_EPIC` ends the whole thing, `us2` included. One
+    Two epics, identical but for the choice made. `KILL` ends `us1` and lets `us2`
+    run to `MERGED`; `KILL_EPIC` ends the whole thing, `us2` included. One
     direction alone proves nothing — a `KILL` wired to kill the epic passes the
     `KILL_EPIC` half, and a `KILL_EPIC` wired to kill only the node passes the
     `KILL` half.
+
+    Made through `ergane build resolve` rather than through a raw signal, because
+    a choice the operator's own verb will not accept is not an operator choice:
+    the verb validates the pressed value against the row's offered set, so this
+    is also where a `KILL_EPIC` that never reached `DEFAULT_CHOICES` would be
+    caught. Both resolutions are asserted settled in the store afterwards, which
+    is where a value the schema still refused would surface.
     """
     graph = make_graph([make_node("us1", "US1"), make_node("us2", "US2")])
 
-    async def press(choice: EscalationChoice, workflow_id: str) -> Any:
+    async def resolve_with(choice: EscalationChoice, epic_workflow_id: str) -> Any:
         script = RealNotifyWorld(
             {"us1": ladder_fails(), "us2": [passing()]},
             client=env.client,
             dispatch_delay_s={"us2": HELD_DISPATCH_S},
         )
         async with start_epic(
-            env, script, graph=graph, workflow_id=workflow_id, max_concurrent_nodes=2
+            env,
+            script,
+            graph=graph,
+            workflow_id=epic_workflow_id,
+            max_concurrent_nodes=2,
         ) as handle:
             [row] = await until(
                 "the escalation row",
                 lambda: [r for r in pending(db_path) if r.node_id == "us1"] or None,
             )
-            await env.client.get_workflow_handle(row.workflow_id).signal(
-                SIGNAL_NAME, args=[row.escalation_id, choice.value]
-            )
-            return await handle.result()
+            assert await _resolve(EPIC_ID, row.escalation_id, choice.value) == 0
+            result = await handle.result()
+            settled = read(db_path, store.get_escalation, row.escalation_id)
+            assert settled.resolution == choice.value
+            return result
 
-    killed_node = await press(EscalationChoice.KILL, "epic-kill-node")
-    killed_epic = await press(EscalationChoice.KILL_EPIC, "epic-kill-epic")
+    killed_node = await resolve_with(EscalationChoice.KILL, "epic-kill-node")
+    killed_epic = await resolve_with(EscalationChoice.KILL_EPIC, "epic-kill-epic")
 
     assert killed_node.epic_state == EpicState.COMPLETED
     assert states(killed_node)["us1"] == NodeState.KILLED
@@ -714,3 +720,92 @@ def _escalation_record(choices: list[EscalationChoice]) -> EscalationRecord:
         sent_at="2026-08-20T00:00:00Z",
         expires_at="2026-08-20T01:00:00Z",
     )
+
+
+# --- runtime evidence, pasted verbatim (constitution VIII / D-037) -----------
+#
+# Baseline before anything was touched, at f4bd92e:
+#     3802 passed, 49 skipped, 7 warnings in 299.29s (0:04:59)
+#
+# Red, before the implementation existed — the file could not even import,
+# because `epic_effect` and `EpicEffect` did not exist:
+#     $ uv run pytest -q tests/test_killed_node_leaves_a_resettable_epic.py
+#     E   ImportError: cannot import name 'EpicEffect' from 'factory.verify.models'
+#     1 error in 0.15s
+#
+# Seven mutations, one per claim, each reverted before the next. An import error
+# proves only that a name is missing, so each claim is re-checked against the
+# finished tree with the thing it guards removed:
+#
+#  1. `_escalate`'s wait drops `self._kill_requested` (the state before this
+#     story: the child is simply awaited):
+#     E   AssertionError: a stopped epic is neither a press nor a burn
+#     E   assert 'EXPIRED' is None
+#     -- the epic waited out the escalation's hour, exactly as the deadlock does.
+#     1 failed, 8 passed
+#
+#  2. `_reset_epic` restored to the flat `status.name == "RUNNING"` refusal:
+#     E   AssertionError: assert 0 == 1   (US2-S3: reset refused the stalled epic)
+#     E   AssertionError: the refusal must name what is running
+#     2 failed, 7 passed
+#
+#  3. THE CONTROL (plan trap 7). `_refuse_if_epic_is_working` returns at once —
+#     the naive widening, where a RUNNING epic is always resettable:
+#     E   assert 0 == 1
+#     E    +  where 0 = Run(code=0, stdout='us1: committed dirty state, removed
+#     E        worktree, archived branch\n', stderr='').code
+#     -- it yanked the worktree out from under a live agent. 1 failed, 8 passed.
+#
+#  4. `epic_effect(KILL_EPIC)` returns `CONTINUE` (collapsed into `KILL`):
+#     E   AssertionError: assert <EpicState.COMPLETED> == <EpicState.KILLED>
+#     2 failed, 7 passed
+#
+#  5. The schema-7 migration never runs:
+#     E   sqlite3.IntegrityError: CHECK constraint failed:
+#     E       resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')
+#     -- the operator's press, taken and then discarded. 1 failed.
+#
+#  6. The migration keeps its rebuild but drops the two `DROP INDEX` lines:
+#     E   assert {'idx_esc_node', 'idx_esc_pending'} <= {'sqlite_autoindex_escalations_1'}
+#     -- SQLite carries an index along with the table it is renamed with, so the
+#     rebuilt table would have been left unindexed. 1 failed.
+#
+#  7. `_escalate` answers `KILL` without ever awaiting its child:
+#     3 failed, 6 passed
+#     -- and `test_a_kill_resolution_leaves_no_living_escalation_child` was NOT
+#     among them. That is honest and worth stating: FR-006 was already true for
+#     the *answered* path before this diff (the child was awaited, so it had
+#     settled by the time its resolution was read), and that test is a
+#     characterization of it. The half that was broken is the stalled path,
+#     which is `test_build_kill_ends_an_epic_stalled_on_an_escalation` and
+#     mutation 1 above.
+#
+# After, the whole suite:
+#     3817 passed, 49 skipped, 6 warnings in 307.19s (0:05:07)
+#
+# +15, of which 9 are the tests in this file. The other 6 are cases that existing
+# parametrized suites gained from the new enum member: one in
+# `tests/test_verify_store.py` (`parametrize("choice", list(EscalationChoice))`)
+# and five in `tests/test_notify.py`, whose `ALL_CHOICES` list this diff had to
+# extend — a hand-written list called ALL_CHOICES that had stopped covering every
+# choice is how a new button ships without its 64-byte `callback_data` contract
+# ever being checked.
+#
+# --- plan trap 8a: the answer this story owes -------------------------------
+#
+# US2 and US3 both edit `factory/cli/nouns/build.py` and both declare
+# `depends_on: []`. This diff touches `_reset_epic` and the block above it
+# (`_WORKING_STATES`, `_refuse_if_epic_is_working`) — around what was
+# `build.py:879-915` — plus one entry each in two registries in
+# `tests/test_ergane_status.py`. US3 rewrites the subparser registrations
+# (`build.py:1067-1219`), a region this diff does not touch.
+#
+# **The choice this story makes: US3 gets `depends_on: [us2]`.** Dispatching the
+# epic at `--max-concurrent-nodes 1` also works and is the cheaper edit, but it
+# serializes US1 behind US2 for a hazard that has nothing to do with US1 — and
+# it is a dispatch-time flag nobody reading the graph later can see, so the next
+# operator re-runs the epic without it. The edge is in the artifact.
+#
+# Nothing here can make that edit: `workgraph.json` and `tasks.md` belong to the
+# epic, not to a node's worktree. This is the node saying which, as the plan
+# asks, so the operator sets it before the next dispatch.
