@@ -74,15 +74,12 @@ def make_record(**overrides: Any) -> EscalationRecord:
         "workflow_id": WORKFLOW_ID,
         "epic_id": EPIC_ID,
         "node_id": NODE_ID,
-        "choices": list(
-            (
-                EscalationChoice.RETRY,
-                EscalationChoice.KILL,
-                EscalationChoice.PAUSE_EPIC,
-                # 068-US2 (FR-008): ending the epic is its own answer.
-                EscalationChoice.KILL_EPIC,
-            )
-        ),
+        "choices": [  # 068-US2 (FR-008) added the fourth
+            EscalationChoice.RETRY,
+            EscalationChoice.KILL,
+            EscalationChoice.PAUSE_EPIC,
+            EscalationChoice.KILL_EPIC,
+        ],
         "history_summary": render_landing_history(make_landing()),
         "sent_at": "2026-08-06T10:11:00Z",
         "expires_at": "2026-08-06T11:11:00Z",

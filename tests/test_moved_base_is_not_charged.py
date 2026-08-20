@@ -473,7 +473,6 @@ async def test_a_node_whose_siblings_land_forever_eventually_stops(
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
-        # 068-US2 (FR-008): ending the epic joined the menu as its own answer.
         EscalationChoice.KILL_EPIC,
     ]
     # And it stopped at the bounds it was given: one free rebase, one charged

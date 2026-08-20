@@ -272,7 +272,6 @@ async def test_the_press_dispatches_an_attempt_and_the_node_leaves_the_escalatio
         "RETRY",
         "KILL",
         "PAUSE_EPIC",
-        # 068-US2 (FR-008): ending the epic joined the menu as its own answer.
         "KILL_EPIC",
     }
     assert [context.attempt for context in script.attempts] == [1, 2, 3, 4, 5]

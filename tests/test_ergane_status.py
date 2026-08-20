@@ -1504,14 +1504,11 @@ EXPECTED_GUARDS: dict[str, dict[str, set[tuple[str, ...]]]] = {
         "_run_preflight": set(),
         "_live_spend": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",), ("Exception",)},
         "_query_status": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
-        # 068-US2: `reset`'s precondition reads the epic's own status, so it is
-        # a query call site and carries both guards. A refused query is reported
-        # as a refusal to reset rather than as "nothing is running".
-        "_epic_status_document": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
         "_send_signal": {("RPCError",)},
         "_send_signal_with_args": {("RPCError",)},
         "_answer": {("RPCError",)},
-        "_reset_epic": {("RPCError",)},
+        # 068-US2: reset's precondition queries the epic, so it guards both.
+        "_reset_epic": {("RPCError",), ("QUERY_REFUSED",)},
         "_resolve": {("RPCError",)},
         "_start_epic": {("ConfigError",), ("WorkflowAlreadyStartedError",)},
     },
@@ -1813,7 +1810,6 @@ def test_no_temporal_call_site_catches_the_transport_failure_alone(
     assert sorted(guards_transport) == [
         ("factory/cli/nouns/__init__.py", "_open_client"),
         ("factory/cli/nouns/build.py", "_answer"),
-        ("factory/cli/nouns/build.py", "_epic_status_document"),
         ("factory/cli/nouns/build.py", "_live_spend"),
         ("factory/cli/nouns/build.py", "_query_status"),
         ("factory/cli/nouns/build.py", "_reset_epic"),

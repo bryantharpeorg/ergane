@@ -129,15 +129,12 @@ class EscalationChoice(StrEnum):
     (`esc:<12-hex>:<choice>`), which Telegram caps at 64 bytes.
 
     Three of the four end the node — everything that is not `RETRY` does, see
-    `factory.verify.ladder._ends_the_node` — and they differ in what they do to
-    the *epic*, which is the distinction 068 FR-008 exists to make:
-
-    - `KILL` ends this node and leaves the epic running its other nodes.
-    - `KILL_EPIC` ends the epic. Before it existed, an operator who wanted the
-      epic gone had to press `KILL` on every node's page in turn and then reach
-      for `temporal workflow terminate` anyway, which is what four sessions did.
-    - `PAUSE_EPIC` is neither: the epic parks, resumable, with its undispatched
-      nodes still ahead of it (spec § Edge Cases).
+    `ladder._ends_the_node` — and they differ in what they do to the *epic*,
+    which is the distinction 068 FR-008 exists to make. `KILL` leaves the epic
+    running its other nodes; `KILL_EPIC` ends it, which before now meant
+    pressing `KILL` on every node's page and reaching for `temporal workflow
+    terminate` anyway; `PAUSE_EPIC` is neither, parking the epic resumably with
+    its undispatched nodes still ahead of it (spec § Edge Cases).
     """
 
     RETRY = "RETRY"

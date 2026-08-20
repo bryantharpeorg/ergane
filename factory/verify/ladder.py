@@ -35,17 +35,17 @@ obvious from the caps alone:
   once a human has answered, the retries are theirs and not the judge's, so the
   rewrite cap stops applying (068 FR-002) while the attempt total still bounds
   them.
-- **Nothing but an explicit grant produces more work.** `KILL`, `KILL_EPIC`, the
-  store's `EXPIRED` timeout value, `PAUSE_EPIC`, and any resolution this module
-  has never heard of all end the node, and they outrank a trailing PASS. That asymmetry is
+- **Nothing but an explicit grant produces more work.** `KILL`, `KILL_EPIC`, the store's
+  `EXPIRED` timeout value, `PAUSE_EPIC`, and any resolution this module has never
+  heard of all end the node, and they outrank a trailing PASS. That asymmetry is
   deliberate: losing work an operator killed is recoverable (the branch and
   worktree are preserved by the lifecycle owner), unlocking a downstream edge
   after they killed it is not.
 
-`PAUSE_EPIC` and `KILL_EPIC` end the node here for the same reason: ending it is
-the most a per-node decision can say about an epic-level suspension or stop, and
-the interpreter that owns releasing nodes is what distinguishes a park from a
-kill and a killed node from a killed epic (068 FR-008).
+`PAUSE_EPIC` ends the node here for the same reason: parking it is the most a
+per-node decision can say about an epic-level suspension, and the interpreter
+that owns releasing nodes is what distinguishes a park from a kill — and, since
+068 FR-008, a killed node from a killed epic.
 """
 
 from __future__ import annotations

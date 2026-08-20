@@ -110,11 +110,10 @@ ESCALATION_TIMEOUT_S = 3600
 
 #: What the ladder offers when the dispatch does not narrow it (FR-008).
 #:
-#: 068-US2 added `KILL_EPIC`, and put it last on purpose: it is the one press
-#: that cannot be undone by another press, and the buttons render in this order.
-#: Ending the node and ending the epic are two answers rather than one, which is
-#: what the operator who pressed KILL four times and then terminated the
-#: workflow by hand was missing.
+#: 068-US2 added `KILL_EPIC` last on purpose — the buttons render in this order
+#: and it is the one press no other press undoes. Ending the node and ending the
+#: epic are two answers now, which is what the operator who pressed KILL four
+#: times and then terminated the workflow by hand was missing.
 DEFAULT_CHOICES = (
     EscalationChoice.RETRY,
     EscalationChoice.KILL,

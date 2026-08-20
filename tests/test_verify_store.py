@@ -400,10 +400,9 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 7 since 068-US2 widened `escalations.resolution` to admit `KILL_EPIC`.
-    # The literal is here on purpose: a bump is a claim that every existing
-    # store has a migration path, and `tests/test_escalation_record.py` is
-    # where that claim is checked against a store built in the previous shape.
+    # 7 since 068-US2 widened `escalations.resolution` to admit `KILL_EPIC`. The
+    # literal is deliberate: a bump claims every existing store has a migration
+    # path, and `tests/test_escalation_record.py` checks that against one.
     assert SCHEMA_VERSION == 7
     assert versions == [SCHEMA_VERSION]
 

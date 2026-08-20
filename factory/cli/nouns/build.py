@@ -56,16 +56,14 @@ from factory.activities.verify_activities import (
     DEFAULT_VERIFICATION_DB_PATH,
     VERIFICATION_DB_PATH_ENV,
 )
+# `EXIT_TRANSPORT` hoisted: `_reset_epic` has named it since it was written
+# without importing it, so a non-NOT_FOUND RPC failure on `describe` raised
+# `NameError` instead of the operator error it meant to.
 from factory.cli.errors import (
-    # `_reset_epic` has referred to `EXIT_TRANSPORT` since it was written and
-    # every other user of it imports it in the function body, so the one path
-    # that reached it — a non-NOT_FOUND RPC failure on `describe` — raised
-    # `NameError` instead of the operator error it meant to. Hoisted here
-    # because 068-US2 adds a second reader of it on the same path.
-    EXIT_TRANSPORT,
     EXIT_OK,
-    EXIT_USER,
+    EXIT_TRANSPORT,
     EXIT_USAGE,
+    EXIT_USER,
     OperatorError,
 )
 from factory.env import (
@@ -962,12 +960,10 @@ def reset_command(args: argparse.Namespace) -> int:
     return asyncio.run(_reset_epic(resolve_reset_graph(args.epic_id, args.specs_root)))
 
 
-#: The node states in which something is actually being done — a key issued, an
-#: agent writing, gates running, a PR riding the merge queue. A node in one of
-#: these is work `reset` must not archive out from under.
-#:
-#: `WAITING_OPERATOR` and `PENDING` are deliberately absent, and so is every
-#: terminal: a parked question is a wait, and a node that has not started has
+#: States in which something is actually being done — a key issued, an agent
+#: writing, gates running, a PR riding the queue — and so work `reset` must not
+#: archive out from under. `WAITING_OPERATOR`, `PENDING` and the terminals are
+#: absent on purpose: a parked question is a wait, and an undispatched node has
 #: nothing in flight to interrupt.
 _NODE_STATES_AT_WORK = frozenset(
     {
@@ -984,16 +980,12 @@ _NODE_STATES_AT_WORK = frozenset(
 def nodes_at_work(document: Mapping[str, Any]) -> tuple[str, ...]:
     """Which of an epic's nodes are in flight, as opposed to waiting on a human.
 
-    A node parked on a page reads `VERIFYING`, exactly as a node whose gates are
-    running does — the ladder sets that state before it decides anything — so
-    `state` alone cannot tell work from waiting and `awaiting_operator` is what
-    does. That is the distinction 068 trap 7 insists the widening be keyed on.
-
-    Read off the query's raw document — the same untyped mapping `status`
-    renders from — so an epic whose history predates a field still answers. A
-    node that reports no `awaiting_operator` at all is counted as working, which
-    is the safe direction: refusing a reset costs the operator a `kill`, and the
-    other way round archives a worktree an agent is writing to.
+    A node parked on a page reads `VERIFYING`, exactly as one whose gates run
+    does, so `state` alone cannot tell work from waiting and `awaiting_operator`
+    is what does — the distinction 068 trap 7 insists on. Read off the query's
+    raw document, so an epic whose history predates the field still answers: no
+    field counts as working, the safe direction, because the other one archives
+    a worktree an agent is writing to.
     """
     nodes = document.get("nodes") or {}
     return tuple(
@@ -1017,28 +1009,18 @@ def nodes_awaiting_operator(document: Mapping[str, Any]) -> tuple[str, ...]:
 def reset_refusal(epic_id: str, document: Mapping[str, Any]) -> str | None:
     """Why a *running* epic may not be reset, or `None` when it may (FR-007).
 
-    The whole widening, as one rule. `reset` used to refuse every epic whose
-    workflow was RUNNING — and a stalled escalation is precisely what keeps one
-    running, so the sanctioned recovery verb was unavailable in the one state it
-    exists for and the operator reached for `temporal workflow terminate`.
+    `reset` used to refuse every epic whose workflow was RUNNING, and a stalled
+    escalation is precisely what keeps one running. What replaces that is
+    narrower than "no node is working": a running epic is reset **only** when
+    somebody is being waited on *and* nothing is in flight behind them.
 
-    What replaces it is narrow on purpose, and narrower than "no node is
-    working": a running epic is reset **only** when somebody is being waited on
-    and nothing is in flight behind them. Both halves are load-bearing.
-
-    - Without the first, an epic that has started and not yet dispatched — nodes
-      all `PENDING`, or not reported at all — would pass, and reset would
-      archive the worktrees it is about to prepare. `PENDING` is not counted as
-      work because a node that never dispatched holds no worktree to interrupt;
-      the guard against that race is the *presence of a waiter*, not the absence
-      of work.
-    - Without the second, US2-S4's control is gone: an epic that pages about one
-      node while another is genuinely building would be reset out from under the
-      live one.
-
-    The fall-through message is the one this verb has always printed, unchanged,
-    because an operator who has seen a reset refused before should read the same
-    sentence for the same reason.
+    Without the first half, an epic that started and has not yet dispatched (all
+    `PENDING`, or nothing reported) would pass, and reset would archive the
+    worktrees it is about to prepare — `PENDING` is not itself work, so the
+    guard against that race is the *presence of a waiter*. Without the second,
+    US2-S4's control is gone: an epic paging about one node while another builds
+    would be reset out from under the live one. The fall-through message is the
+    one this verb has always printed, so a refusal reads the same as before.
     """
     refusal = (
         f"epic '{epic_id}' is running (workflow id {workflow_id(epic_id)}); "
@@ -1073,7 +1055,19 @@ async def _reset_epic(graph: WorkGraph) -> int:
     waiting: tuple[str, ...] = ()
     if described is not None and described.status is not None:
         if described.status.name == "RUNNING":
-            document = await _epic_status_document(handle, graph.epic_id)
+            try:
+                document = await handle.query("epic_status")
+            except QUERY_REFUSED:
+                document = None
+            # A query refused, or answered unreadably, is never read as
+            # "nothing is running": the alternative is archiving the worktree of
+            # an epic that could not be asked what it was doing.
+            if not isinstance(document, Mapping):
+                raise OperatorError(
+                    f"epic '{graph.epic_id}' is running (workflow id "
+                    f"{workflow_id(graph.epic_id)}) and would not say what it "
+                    "is doing; refusing to reset while the workflow is active"
+                )
             refusal = reset_refusal(graph.epic_id, document)
             if refusal is not None:
                 raise OperatorError(refusal)
@@ -1093,11 +1087,10 @@ async def _reset_epic(graph: WorkGraph) -> int:
         print(f"{node.id}: {', '.join(actions)}")
 
     if waiting:
-        # The survivors are archived, and the epic is still alive holding an
-        # unanswered page. Say so and name the verb that ends it, rather than
-        # ending it here: FR-008 makes ending the epic the operator's own
-        # choice, and a `reset` that quietly killed would be the same button
-        # pressed on their behalf that this spec forbids.
+        # Archived, and the epic is still alive holding an unanswered page. Name
+        # the verb that ends it rather than ending it here: FR-008 makes that
+        # the operator's own choice, and a reset that quietly killed would press
+        # the button for them.
         print(
             f"note: epic '{graph.epic_id}' is still running, waiting on an "
             f"operator for {', '.join(waiting)}; "
@@ -1107,33 +1100,6 @@ async def _reset_epic(graph: WorkGraph) -> int:
 
     return EXIT_OK
 
-
-async def _epic_status_document(handle: Any, epic_id: str) -> Mapping[str, Any]:
-    """The epic's own account of its nodes, for the reset precondition.
-
-    A refused or unreadable query is not treated as "nothing is running": it is
-    reported as a refusal to reset, because the alternative is archiving the
-    worktree of an epic that could not be asked what it was doing.
-    """
-    try:
-        document = await handle.query("epic_status")
-    except QUERY_REFUSED as error:
-        raise OperatorError(
-            f"epic '{epic_id}' is running (workflow id {workflow_id(epic_id)}) "
-            f"and would not say what it is doing ({error or type(error).__name__}); "
-            "refusing to reset while the workflow is active"
-        ) from error
-    except TRANSPORT_FAILED as error:
-        raise OperatorError(
-            f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
-        ) from error
-    if not isinstance(document, Mapping):
-        raise OperatorError(
-            f"epic '{epic_id}' is running (workflow id {workflow_id(epic_id)}) "
-            "and answered its status query with something unreadable; "
-            "refusing to reset while the workflow is active"
-        )
-    return document
 
 
 def salvage_command(args: argparse.Namespace) -> int:
