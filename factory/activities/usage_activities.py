@@ -514,6 +514,16 @@ async def _read_final_usage(
     return _ConfirmedUsage(spend_usd=spend_usd, aggregate=aggregate_rows(rows))
 
 
+def _is_subscription_lease(lease: KeyLease) -> bool:
+    """Whether the lease belongs to a subscription-routed attempt.
+
+    The key is empty for subscription personas (US2 FR-006).  That is the only
+    signal: the persona name is operator-configured, while an empty key is the
+    contract this component wrote.
+    """
+    return lease.key == ""
+
+
 def _record_for(
     request: TeardownInput, confirmed: _ConfirmedUsage | None
 ) -> UsageRecord:
@@ -521,14 +531,30 @@ def _record_for(
 
     The dimensions come from the lease — the proxy does not carry persona or
     spec_ref back (R1), so attribution is factory-side by construction.
+
+    For subscription-routed attempts there is no proxy spend data to read,
+    so the row is marked as carrying no gateway spend data: NULL tokens,
+    NULL spend, and ``final_usage_confirmed=False`` (US4 FR-009).  A row that
+    says ``$0`` would be indistinguishable from a free call.
     """
     lease = request.lease
     snapshot = request.last_snapshot
 
-    if confirmed is None:
+    if _is_subscription_lease(lease):
+        # US4 FR-009: subscription attempts spend the operator's own quota,
+        # not gateway tokens.  Record that no gateway spend data exists.
+        usage: dict[str, int | float | None] = {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+            "request_count": None,
+            "spend_usd": None,
+        }
+    elif confirmed is None:
         # Flagged, not fabricated: the tokens are unknown and say so, and the
         # dollar figure is the last one actually measured (FR-005).
-        usage: dict[str, int | float | None] = {
+        usage = {
             "prompt_tokens": None,
             "completion_tokens": None,
             "cache_read_tokens": None,
