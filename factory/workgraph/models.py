@@ -195,6 +195,13 @@ class InferredEdge:
     without the edge. Both are carried rather than recomputed, so the artifact on
     disk answers the question without re-reading the `tasks.md` it was derived
     from — which may since have been edited.
+
+    It is evidence, never an input to a decision: nothing schedules, validates or
+    dispatches from this list, and `load_workgraph` reads the compiled artifact
+    back without it. The surfaces that answer US2-S3 are the artifact itself,
+    `ergane spec derive` and `ergane spec validate` — all three of them the
+    moment the graph is compiled, which is the moment an operator can still
+    change what it says.
     """
 
     #: The node that waits — the later-declared story of the colliding pair.

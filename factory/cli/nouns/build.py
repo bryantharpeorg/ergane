@@ -87,7 +87,6 @@ from factory.activities.agent_activities import (
 )
 from factory.workgraph.worktree import resolve_factory_root
 from factory.workgraph.models import (
-    InferredEdge,
     WorkGraph,
     WorkGraphError,
     WorkNode,
@@ -234,13 +233,6 @@ def load_workgraph(path: str | Path) -> WorkGraph:
             specs_root=document["specs_root"],
             target_repo=document["target_repo"],
             nodes=[WorkNode(**node) for node in document["nodes"]],
-            # Optional: an artifact compiled before 069-US2, or one compiled
-            # without a `tasks.md`, carries no inferred edges. Read rather than
-            # dropped so provenance survives the round trip an operator makes
-            # when they open the artifact after `build start` refused it.
-            inferred_edges=[
-                InferredEdge(**edge) for edge in document.get("inferred_edges", [])
-            ],
         )
     except (KeyError, TypeError) as error:
         raise WorkGraphError(
