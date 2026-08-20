@@ -55,6 +55,38 @@ from tests.stub_agent import (
 )
 from tests.conftest import FakeLiteLLM
 
+
+#: Minimal synthetic credential for US3-aware tests. US2 does not assert the
+#: credential itself, but the adapter now refuses to fork a subscription-routed
+#: node without one (US3-S3), so the routing tests must provide it.
+_FAKE_CREDENTIAL = {
+    "accessToken": "fake-access-token",
+    "refreshToken": "fake-refresh-token",
+    "expiresAt": "2026-08-20T12:00:00.000Z",
+    "refreshTokenExpiresAt": "2026-08-21T12:00:00.000Z",
+    "scopes": ["claude_code"],
+    "subscriptionType": "pro",
+    "rateLimitTier": "default",
+}
+
+
+def _write_credential(home: Path) -> Path:
+    path = home / ".claude" / ".credentials.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_FAKE_CREDENTIAL, indent=2), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def _stub_operator_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Provide a fake operator home with a credential so US3's pre-fork refusal
+    does not block US2's routing assertions."""
+    home = tmp_path / "operator-home"
+    home.mkdir(parents=True)
+    _write_credential(home)
+    monkeypatch.setattr("factory.workgraph.adapter._operator_home", lambda: home)
+    return home
+
 EPIC = "070-subscription-routing"
 NODE = "us2"
 ATTEMPT = 1
@@ -168,10 +200,12 @@ async def test_subscription_environment_omits_gateway_variables(
     factory_root: Path,
     worktree: Path,
     stub_home: Path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A subscription-routed node gets neither ANTHROPIC_BASE_URL nor
     ANTHROPIC_AUTH_TOKEN in its environment."""
+    _stub_operator_home(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", os.environ["PATH"])
     monkeypatch.setenv("LANG", "en_US.UTF-8")
     monkeypatch.setenv("TERM", "dumb")
@@ -426,10 +460,12 @@ async def test_subscription_argv_carries_cli_accepted_model_name(
     factory_root: Path,
     worktree: Path,
     stub_home: Path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A subscription-routed node's argv carries the CLI name `opus`, not the
     proxy alias `anthropic/claude-opus-5`."""
+    _stub_operator_home(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", os.environ["PATH"])
     monkeypatch.setenv("LANG", "en_US.UTF-8")
     monkeypatch.setenv("TERM", "dumb")

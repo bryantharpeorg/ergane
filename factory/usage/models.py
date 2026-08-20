@@ -52,6 +52,10 @@ class Termination(StrEnum):
     #: QUESTION. Its ladder routing is park — never a verdict — so it is the one
     #: termination that does not run the gates (FR-010).
     QUESTION = "question"
+    #: A subscription-routed attempt whose credential was seeded but rejected by
+    #: the CLI (US3-S5/FR-013). The CLI prints the refusal on stdout and exits 1;
+    #: without this class the attempt would be a diffless AGENT_ERROR.
+    AUTH_FAILURE = "auth_failure"
 
 
 @dataclass(frozen=True)
