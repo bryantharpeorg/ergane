@@ -78,6 +78,10 @@ class RepositoryModel:
     #: world, and only the second one can fail.
     mutations: list[str] = field(default_factory=list)
     branches: dict[str, BranchPolicy] = field(default_factory=dict)
+    #: 069-US3: the heads this repository holds, name → tip. A *ref store*, not a
+    #: policy table (`branches` above is what a branch does to a proposal), and
+    #: the thing a rebuilt node's push collides with when a reset left it behind.
+    heads: dict[str, str] = field(default_factory=dict)
     #: US3: the proposals offered to this repository. The factory is deferred
     #: through a lambda so `LandingModel` can live at the module's end, where a
     #: diff cannot shadow the two siblings building against it (trap 14).
@@ -99,6 +103,25 @@ class RepositoryModel:
             landing_title_from_proposal=title_source is not None,
             landing_title_source=title_source,
         )
+
+    def push_head(self, name: str, tip: str) -> None:
+        """Somebody pushed `name` here — the repository's own act, as `gate_on` is."""
+        self.heads[name] = tip
+
+    def retire(self, name: str, archive_prefix: str) -> str:
+        """Keep `name`'s tip under `archive_prefix`, then stop holding `name`.
+
+        The archive name embeds the tip, so running this twice on a repository
+        that already lost the head leaves it exactly as it was — which is what
+        makes "a second reset changed nothing" a claim about the repository
+        rather than about how many times a method ran.
+        """
+        tip = self.heads.pop(name, None)
+        if tip is None:
+            return ""
+        archive = f"{archive_prefix}/{tip[:12]}"
+        self.heads[archive] = tip
+        return f"{name} archived at {archive} and removed"
 
     def policy_for(self, branch: str) -> BranchPolicy:
         """The branch's policy, or the unconfigured default — never a mutation."""
@@ -139,6 +162,13 @@ class FakeForge:
 
     def __init__(self, model: RepositoryModel) -> None:
         self.model = model
+
+    def _must_be_reachable(self) -> None:
+        """A forge nobody can reach answers nothing — the FR-011 case."""
+        if self.model.unreachable:
+            raise ForgeError(
+                "FORGE_NOT_FOUND", self.model.unreachable, self.model.unreachable
+            )
 
     def describe_repository(self) -> RepositoryDescription:
         if self.model.unreachable:
@@ -198,6 +228,7 @@ class FakeForge:
     # called would pass if the method did nothing.
 
     def find_proposal(self, head: str) -> Proposal | None:
+        self._must_be_reachable()
         found = self.model.landings.by_head(head)
         return None if found is None else Proposal(found.number, found.url)
 
@@ -236,6 +267,16 @@ class FakeForge:
     def withdraw_landing(self, proposal: int) -> None:
         self.model.landings.require(proposal).landing_requested = False
 
+    # --- the cleanup half (069-US3) -----------------------------------------
+
+    def close_proposal(self, proposal: int, *, note: str) -> None:
+        self._must_be_reachable()
+        self.model.landings.close(proposal, note=note)
+
+    def retire_head(self, head: str, *, archive_prefix: str) -> str:
+        self._must_be_reachable()
+        return self.model.retire(head, archive_prefix)
+
     def failing_check_evidence(
         self, proposal: int, check_names: tuple[str, ...]
     ) -> tuple[CheckFailure, ...]:
@@ -272,6 +313,11 @@ class ProposalState:
     #: it. `None` models a forge that does not report one at all — the case the
     #: classifier has to charge rather than guess about.
     base_sha: str | None = None
+    #: 069-US3: what was said on this proposal, in order. A close that leaves no
+    #: note is indistinguishable from a person's mistake to whoever finds it, so
+    #: the note is state the repository holds rather than an argument that went
+    #: past.
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -318,6 +364,12 @@ class LandingModel:
         """The forge landed it."""
         proposal = self.require(number)
         proposal.state, proposal.merged_at = "MERGED", at
+
+    def close(self, number: int, *, note: str) -> None:
+        """069-US3: it was closed without landing, and this is what was said."""
+        proposal = self.require(number)
+        proposal.state = "CLOSED"
+        proposal.notes.append(note)
 
     def fail_checks(self, number: int, checks: tuple[str, ...], *, log: str = "") -> None:
         """The named gates failed, and this is what they left behind."""

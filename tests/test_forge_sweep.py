@@ -323,7 +323,10 @@ def test_nothing_the_seam_declares_spells_a_reserved_word() -> None:
             for field in dataclasses.fields(record)
         ),
     ]
-    assert len(declared) == 25, sorted(declared)
+    # 25 until 069-US3 added the cleanup half's two operations. Pinned as a
+    # literal so a seam that quietly stopped declaring names fails here rather
+    # than passing over an empty list.
+    assert len(declared) == 27, sorted(declared)
 
     spoken = sorted(
         {

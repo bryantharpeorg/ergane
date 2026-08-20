@@ -129,6 +129,21 @@ def _extract_argvs(method_name: str) -> list[list[str]]:
             method("owner/repo", {"name": "test"})
         elif method_name == "update_ruleset":
             method("owner/repo", 1, {"name": "test"})
+        # 069-US3's reset cleanup. The head is spelled in full, slashes and all,
+        # because that is what the git-refs endpoints have to accept: a branch
+        # named `factory/<epic>/<node>` is three path segments inside the URL.
+        elif method_name == "close_pr":
+            method(7, comment="closed by `ergane build reset`")
+        elif method_name == "ref_sha":
+            method("owner/repo", "heads/factory/069-epic/us1")
+        elif method_name == "create_ref":
+            method(
+                "owner/repo",
+                "heads/archive/factory/069-epic/us1/0123456789ab",
+                "0123456789abcdef0123456789abcdef01234567",
+            )
+        elif method_name == "remove_ref":
+            method("owner/repo", "heads/factory/069-epic/us1")
         else:
             raise AssertionError(f"_extract_argvs does not know how to call {method_name}")
     finally:
