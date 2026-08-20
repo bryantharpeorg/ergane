@@ -231,14 +231,18 @@ def test_poll_pr_uses_the_full_json_field_set() -> None:
 
 
 def test_pr_checks_parses_name_state_and_link() -> None:
-    """`gh pr checks` becomes a list of (name, state, link) entries."""
+    """`gh pr view --json statusCheckRollup` becomes (name, state, link) entries."""
     gh = FakeGh()
     gh.expect_json(
-        "pr", "checks", "7", "--json", "name,state,link",
-        payload=[
-            {"name": "lint", "state": "FAIL", "link": "https://github.com/acme/target/actions/runs/123/job/456"},
-            {"name": "test", "state": "PASS", "link": "https://github.com/acme/target/actions/runs/124/job/457"},
-        ],
+        "pr", "view", "7", "--json", "statusCheckRollup",
+        payload={
+            "statusCheckRollup": [
+                {"__typename": "CheckRun", "name": "lint", "conclusion": "FAIL",
+                 "detailsUrl": "https://github.com/acme/target/actions/runs/123/job/456"},
+                {"__typename": "CheckRun", "name": "test", "conclusion": "SUCCESS",
+                 "detailsUrl": "https://github.com/acme/target/actions/runs/124/job/457"},
+            ],
+        },
     )
     client = GhClient(runner=gh, repo=TARGET_CLONE)
 
@@ -249,10 +253,10 @@ def test_pr_checks_parses_name_state_and_link() -> None:
         name="lint", state="FAIL", link="https://github.com/acme/target/actions/runs/123/job/456"
     )
     assert checks[1] == PrCheckEntry(
-        name="test", state="PASS", link="https://github.com/acme/target/actions/runs/124/job/457"
+        name="test", state="SUCCESS", link="https://github.com/acme/target/actions/runs/124/job/457"
     )
     assert [(c.args, c.cwd) for c in gh.calls] == [
-        (("pr", "checks", "7", "--json", "name,state,link"), TARGET_CLONE),
+        (("pr", "view", "7", "--json", "statusCheckRollup"), TARGET_CLONE),
     ]
 
 
