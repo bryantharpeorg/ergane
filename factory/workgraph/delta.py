@@ -79,10 +79,16 @@ def derive_delta(
     feature: str,
     specs_root: str,
     target_repo: str,
+    tasks_text: str | None = None,
 ) -> DeltaResult:
     """Derive a workgraph containing only work that remains.
 
     `baseline` maps story key -> {"commit": str, "fingerprint": Fingerprint-like}.
+
+    `tasks_text` is passed straight through to the full derivation (069-US2), so
+    a remainder graph is ordered by task-slice contention exactly as a fresh one
+    is. It has to be: a rebuild is *when* siblings race — the stories left over
+    are the ones that did not land, and they are dispatched together.
     """
     full = derive_workgraph(
         spec_text,
@@ -90,6 +96,7 @@ def derive_delta(
         feature=feature,
         specs_root=specs_root,
         target_repo=target_repo,
+        tasks_text=tasks_text,
     )
 
     derived_by_key: dict[str, WorkNode] = {node.story_key: node for node in full.nodes}
@@ -244,6 +251,16 @@ def derive_delta(
             specs_root=full.specs_root,
             target_repo=full.target_repo,
             nodes=kept_nodes,
+            # Provenance follows its edge: an inferred edge to a story that has
+            # already landed was just subtracted above, so keeping its
+            # explanation would describe an edge the remainder graph does not
+            # carry (069-US2).
+            inferred_edges=[
+                edge
+                for edge in full.inferred_edges
+                if edge.node_id not in subtracted
+                and edge.depends_on_merged not in subtracted
+            ],
         ),
         provenance=provenance,
     )

@@ -452,11 +452,15 @@ CHAINED = (
 def test_an_inference_that_would_cycle_refuses_naming_both_stories() -> None:
     """Edge case: refuse by name rather than emit an uncompilable graph.
 
-    US1 waits on US2 waits on US3, and US1's slice and US3's name one file. The
-    ordering the overlap asks for — US3 after US1 — closes the cycle the author
-    already wrote, so there is no edge to add and no direction that is safe. The
+    US1 waits on US2 waits on US3 — on their *verification*, which is not their
+    merge — and US1's slice and US3's name one file. So the collision is real:
+    US1 is cut from a base US3 has not landed in, and whichever lands second is
+    rejected. But the edge that would fix it, US3 after US1, closes the cycle the
+    author already wrote. There is no safe direction and no graph to emit, so the
     refusal names both stories and the file, because the fix is one line and the
-    author has to know which line.
+    author has to know which line. (The same chain written with
+    `depends_on_merged` collides with nothing and is left alone — the test above
+    this one.)
     """
     with pytest.raises(DerivationError) as caught:
         derive(
@@ -479,11 +483,11 @@ def test_an_inference_that_would_cycle_refuses_naming_both_stories() -> None:
 def test_a_pair_already_ordered_through_a_third_story_gains_no_edge() -> None:
     """The other side of the same check: no cycle, no edge, no noise.
 
-    US3 already waits on US2, which already waits on US1, so US3 already lands
-    after US1 — the ordering the overlap wants is in force. Adding a second edge
-    that says so would be a redundant edge with an inferred label, and an
-    operator reading the provenance would go looking for a collision that the
-    graph already handles.
+    US2 waits for US1 to *merge* and US3 waits on US2, so US3 dispatches after
+    US1 has landed — the ordering the overlap wants is already in force, and the
+    edge kinds above the merge edge do not matter. Adding a second edge saying so
+    would be a redundant edge with an inferred label, and an operator reading the
+    provenance would go looking for a collision the graph already handles.
     """
     chained_forward = (
         "US1:\n  depends_on: []\n  implements: [FR-001, FR-002]\n"
@@ -494,6 +498,34 @@ def test_a_pair_already_ordered_through_a_third_story_gains_no_edge() -> None:
 
     graph = derive(
         chained_forward, tasks_text=tasks({"US1": [SHARED], "US3": [SHARED]})
+    )
+
+    assert graph.inferred_edges == []
+    assert node(graph, "us3").depends_on_merged == []
+
+
+def test_a_merge_gated_chain_running_the_other_way_is_left_alone() -> None:
+    """017-peer-channel's shape, which the corpus caught this check failing.
+
+    A serial `depends_on_merged` chain whose *earlier-declared* story lands
+    last, with the shared file at the two ends: US1 waits for US3's merge, so
+    the pair provably cannot be in flight against one base. The ordering runs
+    opposite to the one the inference would pick, and the edge it would add
+    would close a cycle — but there is no collision to prevent, so refusing here
+    would fail a correct spec. A check that cries wolf on correct specs gets
+    switched off, which leaves every real collision unhandled.
+    """
+    merge_chained_backwards = (
+        "US1:\n  depends_on: []\n  depends_on_merged: [US2]\n"
+        "  implements: [FR-001, FR-002]\n"
+        "US2:\n  depends_on: []\n  depends_on_merged: [US3]\n"
+        "  implements: [FR-003]\n"
+        "US3:\n  depends_on: []\n  implements: [FR-004]\n"
+    )
+
+    graph = derive(
+        merge_chained_backwards,
+        tasks_text=tasks({"US1": [SHARED], "US3": [SHARED]}),
     )
 
     assert graph.inferred_edges == []

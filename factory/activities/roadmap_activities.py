@@ -206,12 +206,36 @@ async def derive_spec(request: DeriveInput) -> WorkGraph:
             feature=request.feature,
             specs_root=request.specs_root,
             target_repo=request.target_repo,
+            # 069-US2: the task slices, read here rather than carried in the
+            # payload. This is the path that dispatches epics *by itself*, so it
+            # is the path where siblings actually race — an inference wired only
+            # into the operator's `spec derive` would never reach the fan-out it
+            # exists to order. The activity reads them (the workflow cannot) from
+            # the same `specs_root/spec_dir` the preflight opens a moment later.
+            tasks_text=_tasks_text(request.specs_root, request.epic_id),
         )
         return delta.graph
     except DerivationError as exc:
         from temporalio.exceptions import ApplicationError
 
         raise ApplicationError(str(exc), non_retryable=True, type="DerivationError")
+
+
+def _tasks_text(specs_root: str, spec_dir: str) -> str | None:
+    """The spec's `tasks.md` beside its `spec.md`, or None (069-US2).
+
+    None is "there was nothing to read", never "nothing collides": with no task
+    slices there is no contention to infer, and derivation compiles the graph
+    the spec declares. A spec with no `tasks.md` cannot dispatch anyway — the
+    prompt-assembly preflight two steps down parks it by name — so this stays
+    silent rather than growing a second voice for the same defect.
+    """
+    from pathlib import Path
+
+    try:
+        return (Path(specs_root) / spec_dir / "tasks.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 #: Test seam for derive_spec: production is `None` so the real delta path runs;

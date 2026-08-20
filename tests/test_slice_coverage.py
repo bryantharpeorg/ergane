@@ -449,7 +449,10 @@ def test_a_well_formed_trio_reports_slice_coverage_checked_and_silent(
     document = result.json
     assert document["findings"] == []
     assert document["information"] == []
-    assert document["checked"][-1] == "slice_coverage"
+    # Membership rather than position: 069-US2 added a layer that runs after
+    # this one, and what US3-S4 asserts is that slice coverage *ran* and said
+    # nothing — not where in the list it landed.
+    assert "slice_coverage" in document["checked"]
     assert document["skipped"] == []
 
 

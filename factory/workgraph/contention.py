@@ -54,15 +54,23 @@ text (069 plan trap 2).
 
 **The author outranks the inference** (FR-008). A pair with any declared
 relationship — an edge in either direction, or an explicit `concurrent_with`
-waiver — is left exactly as written. A pair the graph already orders through
-some third story gains nothing either: the ordering the overlap asks for is
-already in force, and a redundant edge labelled "inferred" would send an
-operator looking for a collision the graph handles.
+waiver — is left exactly as written.
 
-What is left is the one case with no safe answer: the overlap asks for an
-ordering the declared graph contradicts. That would close a cycle, so it is
-refused by name (spec § Edge Cases) rather than emitted as a graph no epic can
-compile.
+**A pair the graph already lands in order gains nothing either**, and "in
+order" means *merge* order, not reachability: a story that waits on a sibling's
+verification is still cut from a base that sibling has not landed in. The
+predicate is `_merge_ordered`, and the corpus is what settled its shape —
+017-peer-channel chains five stories with `depends_on_merged` and two of them
+name `docs/architecture.md`, which a coarser rule refused as contention. That
+would have failed a spec whose stories provably cannot collide, and a check that
+cries wolf on correct specs is a check that gets switched off.
+
+What is left is the one case with no safe answer: the slices overlap, nothing
+guarantees a merge order, *and* the declared graph runs the other way, so the
+edge the overlap needs would close a cycle. That is refused by name (spec
+§ Edge Cases) rather than emitted as a graph no epic can compile — with the fix
+that is usually right named first, which is to make the declared edge
+merge-gated.
 """
 
 from __future__ import annotations
@@ -199,6 +207,8 @@ def infer_contention_edges(
         node.id: [*node.depends_on, *node.depends_on_merged] for node in graph.nodes
     }
 
+    merged_edges = {node.id: set(node.depends_on_merged) for node in graph.nodes}
+
     edges: list[InferredEdge] = []
     refusals: list[ContentionRefusal] = []
     for position, earlier in enumerate(order):
@@ -208,9 +218,13 @@ def infer_contention_edges(
                 continue
             if _declared_between(by_id[earlier], by_id[later], waived):
                 continue
-            if _reaches(adjacency, later, earlier):
-                # Already lands after it. The ordering the overlap wants is in
-                # force, so there is nothing to add and nothing to say.
+            if _merge_ordered(adjacency, merged_edges, later, earlier) or _merge_ordered(
+                adjacency, merged_edges, earlier, later
+            ):
+                # One of them already lands before the other *merges*, in one
+                # direction or the other. Either way they cannot both be in
+                # flight against the same base, so there is nothing to add and
+                # nothing to say.
                 continue
             names = ", ".join(f"`{name}`" for name in sorted(shared))
             keys = (by_id[earlier].story_key, by_id[later].story_key)
@@ -225,17 +239,22 @@ def infer_contention_edges(
                         problem=(
                             f"{keys[0]} and {keys[1]} both name {names} in their task "
                             f"slices, so whichever lands second is rejected for the "
-                            f"other's change — but {keys[0]} already waits on "
-                            f"{keys[1]} ({path}), so ordering {keys[1]} after "
-                            f"{keys[0]} would close a cycle and the graph could "
-                            f"never compile. Move the shared file into one story, or "
-                            f"declare `concurrent_with: [{keys[0]}]` on {keys[1]} if "
-                            "they touch it safely"
+                            f"other's change. {keys[0]} already waits on {keys[1]} "
+                            f"({path}), but on its *verification*, which is not its "
+                            f"merge — so the collision stands, and the edge that "
+                            f"would fix it ({keys[1]} after {keys[0]}) would close a "
+                            f"cycle the graph could never compile. Three fixes, and "
+                            f"the first is usually the one: make that edge "
+                            f"`depends_on_merged` so {keys[0]} waits for {keys[1]} to "
+                            f"land; move the shared file into one story; or declare "
+                            f"`concurrent_with: [{keys[0]}]` on {keys[1]} if they "
+                            "touch it safely"
                         ),
                     )
                 )
                 continue
             adjacency[later].append(earlier)
+            merged_edges[later].add(earlier)
             edges.append(
                 InferredEdge(
                     node_id=later,
@@ -309,6 +328,55 @@ def _declared_between(
         if other.id in waived.get(one.id, ()):
             return True
     return False
+
+
+def _merge_ordered(
+    adjacency: Mapping[str, Sequence[str]],
+    merged_edges: Mapping[str, set[str]],
+    waiter: str,
+    target: str,
+) -> bool:
+    """Does `waiter` dispatch only after `target` has *merged*?
+
+    This, not plain reachability, is what makes a pair safe — and getting it
+    wrong in either direction is expensive, so the reasoning is written out.
+
+    A `depends_on` edge unlocks on *verification*. A story that waits only on a
+    sibling's verification is cut from a base that sibling's change has not
+    landed in, so both are in flight against the same base and the second to
+    land is still rejected. Reachability alone would therefore call a colliding
+    pair safe.
+
+    But a *merge* edge anywhere upstream is enough, whatever the edges above it
+    are: if any node `waiter` transitively waits for lists `target` in its
+    `depends_on_merged`, then that node dispatched after `target` landed, and
+    everything waiting on that node dispatched later still. So the question is
+    "can `waiter` reach a node that waits for `target`'s merge", and the kinds
+    of the edges along the way do not matter.
+
+    The corpus is what settled this: 017-peer-channel chains five stories with
+    `depends_on_merged` and two of them name `docs/architecture.md`. Treating
+    that as contention refused a spec whose stories provably cannot collide —
+    a false alarm on the one shape the check is least entitled to be wrong
+    about, since a check that cries wolf on correct specs gets switched off.
+    """
+    for node_id in _reachable(adjacency, waiter):
+        if target in merged_edges.get(node_id, ()):
+            return True
+    return False
+
+
+def _reachable(adjacency: Mapping[str, Sequence[str]], start: str) -> set[str]:
+    """`start` and every node it transitively waits on, by any edge kind."""
+    seen: set[str] = set()
+    stack = [start]
+    while stack:
+        node_id = stack.pop()
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        stack.extend(adjacency.get(node_id, ()))
+    return seen
 
 
 def _reaches(adjacency: Mapping[str, Sequence[str]], start: str, goal: str) -> bool:
