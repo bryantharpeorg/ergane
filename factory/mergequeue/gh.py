@@ -51,8 +51,15 @@ GH_REFUSED = "GH_REFUSED"
 GH_UNAVAILABLE = "GH_UNAVAILABLE"
 
 #: The `gh pr view` field set that `poll_landing` needs — exactly the classifier's
-#: inputs, nothing wider.
-_VIEW_FIELDS = "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,statusCheckRollup"
+#: inputs, nothing wider. `baseRefOid` is 069-US1's: the head this PR is offered
+#: against right now, which is what says whether a sibling landed under a tree
+#: the queue was already testing. Without it every rejection reads as the node's
+#: own fault and the free rebase never fires in production, however green the
+#: suite is.
+_VIEW_FIELDS = (
+    "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,"
+    "statusCheckRollup,baseRefOid"
+)
 
 #: How much of a refused command's stderr is kept for the escalation to quote.
 _STDERR_TAIL_LIMIT = 2048

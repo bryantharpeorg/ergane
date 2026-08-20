@@ -253,7 +253,9 @@ async def test_poll_landing_returns_a_pr_snapshot(
     fake = FakeGh()
     fake.expect_json(
         "pr", "view", str(PR_NUMBER), "--json",
-        "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,statusCheckRollup",
+        # 069-US1: `baseRefOid` joined the set — see `test_gh_client.py`.
+        "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,"
+        "statusCheckRollup,baseRefOid",
         payload=payload,
     )
     monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
