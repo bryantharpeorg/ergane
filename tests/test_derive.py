@@ -258,8 +258,9 @@ def test_spec_ref_is_feature_and_story_key() -> None:
 def test_every_derived_node_is_an_implementer() -> None:
     """Persona is not authored per story yet — the grammar has no key for it.
 
-    `unknown_key` refuses `persona: debugger` rather than honouring it, so the
-    only persona a derived node can carry is this one (contracts/…schema.md).
+    `unknown_key` refuses `model: example/your-debugger-model` rather than
+    honouring it, so the only persona a derived node can carry is this one
+    (contracts/…schema.md).
     """
     assert {node.persona for node in derive().nodes} == {IMPLEMENTER}
 
@@ -375,7 +376,7 @@ REJECTIONS = [
     ("no_section", "section_missing", None, "Work Graph"),
     ("two_blocks", "section_missing", None, "Work Graph"),
     ("non_mapping", "mapping", None, "mapping"),
-    ("unknown_key", "unknown_key", "US2", "persona"),
+    ("unknown_key", "unknown_key", "US2", "model"),
     ("bad_timeout", "timeout", "US2", "US2"),
 ]
 

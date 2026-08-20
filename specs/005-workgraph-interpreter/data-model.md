@@ -47,7 +47,7 @@ One user story, compiled (FR-011: one node per story, never hand-authored).
 |---|---|---|
 | `id` | str | lowercased story key, e.g. `us1`; names the branch and worktree |
 | `story_key` | str | `US1` — the criteria-parser key |
-| `persona` | str | registry name; bootstrap epics use `implementer` |
+| `persona` | str | declared persona, or `implementer` when none is declared |
 | `spec_ref` | str | `<feature>:<story_key>` — component 1's attribution string |
 | `requirement_keys` | list[str] | `[story_key, *implements]` — what `snapshot_criteria` filters to |
 | `depends_on` | list[str] | node ids (lowercased story ids) |

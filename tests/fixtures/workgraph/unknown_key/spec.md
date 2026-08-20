@@ -7,7 +7,7 @@
 **Status**: Draft
 
 **Input**: Deriver fixture — rejection (`unknown_key`): US2's declaration carries a
-`persona` key. Per-story personas are post-bootstrap grammar, so the key is refused
+`model` key. Per-story model aliases are registry-only, so the key is refused
 rather than ignored; the error names US2.
 
 ## User Scenarios & Testing *(mandatory)*
@@ -91,7 +91,7 @@ US1:
 US2:
   depends_on: [US1]
   implements: [FR-003]
-  persona: debugger
+  model: example/your-debugger-model
 US3:
   depends_on: []
   implements: [FR-004]

@@ -22,6 +22,7 @@ US2:
   depends_on: [US1]
   implements: [FR-003]
   timeout: 7200        # optional per-story override, seconds
+  persona: debugger    # optional per-story persona; default is implementer
 ​```
 ```
 
@@ -36,6 +37,7 @@ Shape rules (violations name the story and emit nothing):
 | `depends_on` | present, a list (may be empty) of declared story ids; no self-dependency |
 | `implements` | present, a list (may be empty) of `FR-###` keys declared in this spec |
 | `timeout` | absent, or a positive integer of seconds |
+| `persona` | absent, or a non-empty string naming a persona in the registry |
 | `unknown_key` | no other keys in a declaration |
 | `acyclic` | the `depends_on` relation has no cycle (error names one cycle's members) |
 
@@ -45,8 +47,7 @@ Shape rules (violations name the story and emit nothing):
 - `requirement_keys` = `[story_key, *implements]` — the exact filter later handed
   to `snapshot_criteria`.
 - `spec_ref` = `<feature>:<story_key>` (component 1's attribution string).
-- `persona`: `implementer` for every derived node in the minimal interpreter
-  (verifier nodes and per-story personas are post-bootstrap grammar).
+- `persona`: the declared persona, or `implementer` if none is declared.
 - `depends_on` story ids are lowercased to node ids.
 - Node order in the output = story order in the spec (scheduling order, R10).
 - `epic_id` = the feature directory name; `feature`, `specs_root`, `target_repo`

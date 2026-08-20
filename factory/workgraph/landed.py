@@ -391,7 +391,12 @@ def _story_parts(
 
 
 def _declaration_text(spec_text: str, story_key: str) -> str | None:
-    """The raw YAML text of one story's work-graph declaration, if present."""
+    """The raw YAML text of one story's work-graph declaration, if present.
+
+    `persona` is routing/metaconfig, not part of what the story means, so it is
+    excluded from the fingerprint declaration component. Adding `persona:` to a
+    landed story must not reopen it (US1-S7, trap 16).
+    """
     try:
         block = _work_graph_block(spec_text)
     except Exception:
@@ -399,12 +404,16 @@ def _declaration_text(spec_text: str, story_key: str) -> str | None:
     if not isinstance(block, dict):
         return None
     body = block.get(story_key)
-    if body is None:
+    if body is None or not isinstance(body, dict):
         return None
+    # Copy so we do not mutate the parsed block; drop the persona key.
+    fingerprint_body = {k: v for k, v in body.items() if k != "persona"}
     try:
-        return yaml.safe_dump({story_key: body}, sort_keys=True, default_flow_style=False)
+        return yaml.safe_dump(
+            {story_key: fingerprint_body}, sort_keys=True, default_flow_style=False
+        )
     except yaml.YAMLError:
-        return str(body)
+        return str(fingerprint_body)
 
 
 def _work_graph_block(spec_text: str) -> dict | None:
