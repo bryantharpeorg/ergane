@@ -1,14 +1,27 @@
 ---
-state: draft
+state: ready
+# Flipped draft -> ready 2026-08-19 7:12 PM CT at the operator's instruction
+# ("yes arm for build"), WITHOUT the adversarial pre-dispatch review that was
+# made mandatory earlier the same evening. Recorded here rather than left
+# implicit, because that rule exists for a measured reason: a twelve-agent
+# review found 68 attempt-costing defects across the three specs drafted ninety
+# minutes before this one.
+#
+# WHAT MAKES THIS A DEFENSIBLE EXCEPTION, stated so the exception does not
+# quietly become the rule:
+#   - Every line anchor in the plan was verified by printing that exact line
+#     individually (`sed -n '<n>p' <file>`) rather than by counting `grep -A`
+#     context -- which is precisely the step whose absence produced the 68.
+#   - The remedy was run END TO END BY HAND against a real pull request before
+#     the spec was written, and its output is pasted into the plan. No other
+#     story on this floor has had its fix demonstrated before dispatch.
+#   - US1 is roughly fifteen lines of production code.
+# If this needs a second attempt, the cause is almost certainly trap 1 --
+# rebuilding 025, which is built and works.
+#
 # Drafted 2026-08-19 ~7:15 PM CT by an operator session, from a root cause found
 # by control the same evening while investigating why epic 061 lost three of its
 # four stories.
-#
-# HELD AT DRAFT, like everything else on the floor tonight. It goes to `ready`
-# only after an adversarial pre-dispatch review comes back clean. That rule was
-# made after a twelve-agent review found 68 attempt-costing defects in three
-# specs written ninety minutes earlier, and it is not suspended for a spec whose
-# fix looks small.
 #
 # THIS ONE IS DIFFERENT FROM ITS NEIGHBOURS AND THE DIFFERENCE IS THE POINT.
 # 067-070 are features. This is ten lines that restore a capability the factory
