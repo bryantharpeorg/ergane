@@ -168,18 +168,29 @@ class GhClient:
         title: str,
         body_file: str,
     ) -> CreatedPr:
-        """Open a ready (never draft) PR; the body is passed via file (plan.md)."""
-        payload = self._run_json(
+        """Open a ready (never draft) PR; the body is passed via file (plan.md).
+
+        `gh pr create` prints the created PR's URL on stdout, not JSON, so the
+        number is derived from that URL. A follow-up `find_existing_pr(head)` is
+        avoided here: it is a second network round-trip and a second chance to
+        fail, and the URL `gh` prints is the authoritative answer (FR-008).
+        """
+        result = self._run(
             "pr", "create",
             "--base", base,
             "--head", head,
             "--title", title,
             "--body-file", body_file,
         )
-        return CreatedPr(
-            number=int(payload["number"]),
-            url=str(payload["url"]),
-        )
+        url = result.stdout.strip()
+        number = _pr_number_from_url(url)
+        if number is None:
+            raise GhError(
+                GH_REFUSED,
+                f"gh pr create printed an unrecognised URL: {url!r}",
+                _tail(result.stderr),
+            )
+        return CreatedPr(number=number, url=url)
 
     def enqueue_pr(self, pr_number: int, *, merge_method: str) -> None:
         """Enqueue the PR through GitHub's merge queue (FR-002).
@@ -493,6 +504,9 @@ def _tail(text: str, limit: int = _STDERR_TAIL_LIMIT) -> str:
 
 _RUN_ID_RE = __import__("re").compile(r"/actions/runs/(\d+)")
 
+#: US2: extract the PR number from the URL `gh pr create` prints on stdout.
+_PR_NUMBER_RE = __import__("re").compile(r"/pull/(\d+)")
+
 
 def _parse_run_id(link: str) -> str | None:
     """US2: extract the run id from a GitHub Actions run link, if present."""
@@ -500,6 +514,14 @@ def _parse_run_id(link: str) -> str | None:
     if match is None:
         return None
     return match.group(1)
+
+
+def _pr_number_from_url(url: str) -> int | None:
+    """US2: extract the PR number from the URL `gh pr create` prints."""
+    match = _PR_NUMBER_RE.search(url)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def _now_utc() -> str:

@@ -127,9 +127,10 @@ async def test_open_landing_pr_pushes_then_creates_a_ready_pr(
         "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number,url",
         payload=[],
     )
-    fake.expect_json(
+    fake.expect(
         "pr", "create", "--base", BASE, "--head", BRANCH, "--title", TITLE,
-        "--body-file", "/tmp/body.md", payload={"number": PR_NUMBER, "url": "https://x/pull/7"},
+        "--body-file", "/tmp/body.md",
+        stdout="https://x/pull/7\n",
     )
     monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, repo_with_origin))
 
