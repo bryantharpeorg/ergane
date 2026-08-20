@@ -136,3 +136,33 @@ async def test_launch_failure_does_not_consume_attempt_budget(
     assert _attempts_spent(history, VerificationConfig()) == 0, (
         "a launch fault consumed the attempt budget"
     )
+
+
+# --- T011 [P] [US2] (spec US2-S2) --------------------------------------------
+
+
+async def test_launch_failure_is_reported_distinctly_naming_the_fault(
+    env: WorkflowEnvironment,
+) -> None:
+    """A launch fault surfaces as its own condition, distinct from an attempt failure."""
+    script = launch_world(client=env.client)
+
+    status = await run_epic(env, script, graph=one_node_graph())
+
+    node_status = status.nodes["us1"]
+    assert node_status.state == NodeState.KILLED
+    assert node_status.terminal_reason is not None
+    assert "launch" in node_status.terminal_reason.lower(), (
+        "the terminal reason must name the launch fault"
+    )
+    assert "AGENT_LAUNCH_FAILED" in node_status.terminal_reason, (
+        "the terminal reason must carry the launch failure type"
+    )
+
+    # No verification result was recorded: this is a launch failure, not a
+    # failed attempt.
+    assert not [r for r in script.records if r.node_id == "us1"]
+    # The notifier is reached because the condition is operator-facing (T012 will
+    # tighten the timing).
+    assert len(script.escalation_requests) == 1
+    assert "launch" in script.escalation_requests[0].history_summary.lower()
