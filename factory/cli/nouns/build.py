@@ -974,9 +974,14 @@ async def _refuse_if_epic_is_working(handle: Any, graph: WorkGraph) -> None:
             "refusing to reset while the workflow is active"
         )
 
+    # Said out loud, because the epic is still running when this returns: the
+    # reset archives the survivors, it does not answer the escalation or stop
+    # the workflow. Naming the verb that does is the rest of the closed loop —
+    # and it is the operator's to press, never this command's.
     print(
         f"epic '{graph.epic_id}' is stalled on an unanswered escalation "
-        f"({', '.join(stalled)}); resetting its survivors"
+        f"({', '.join(stalled)}); resetting its survivors. The epic is still "
+        f"running — end it with `ergane build kill {graph.epic_id}`."
     )
 
 

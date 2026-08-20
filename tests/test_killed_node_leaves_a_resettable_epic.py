@@ -411,6 +411,12 @@ async def test_reset_succeeds_against_an_epic_stalled_on_an_escalation(
         outcome = await reset_cli(plant.graph_path)
 
         assert outcome.code == 0, outcome.stderr
+        # The verb says what it did and what it did not: the survivors are
+        # archived, the escalation is still unanswered, and the epic is still
+        # running. Pressing the escalation on the operator's behalf is not this
+        # command's to do — naming the verb that ends the epic is.
+        assert "stalled on an unanswered escalation" in outcome.stdout
+        assert "ergane build kill" in outcome.stdout
         assert pending(db_path) == [row], "the epic was mid-escalation throughout"
         live = await handle.query(EpicWorkflow.epic_status)
         assert live.epic_state == EpicState.RUNNING
