@@ -118,6 +118,7 @@ from temporalio.exceptions import (
 
 with workflow.unsafe.imports_passed_through():
     from factory.activities.agent_activities import (
+        AGENT_LAUNCH_FAILED,
         GRAPH_INVALID,
         HEARTBEAT_INTERVAL_S,
         LoadPromptSourcesInput,
@@ -510,6 +511,15 @@ class _Escalation:
     escalation_id: str
     delivered: bool
     resolution: str
+
+
+class _LaunchFailed(Exception):
+    """A pre-first-token launch fault: the agent never started.
+
+    Raised from `_attempt` when the adapter reports `AGENT_LAUNCH_FAILED`.  This
+    is a workflow-internal signal, not an activity error to propagate: it tells
+    `_run_node` to treat the node as launch-failed, outside the ordinary ladder.
+    """
 
 
 @workflow.defn
@@ -1574,6 +1584,28 @@ class EpicWorkflow:
                 persona = (
                     DEBUGGER_PERSONA if action == NextAction.DEBUGGER else node.persona
                 )
+            except _LaunchFailed as exc:
+                # FR-005: a pre-first-token launch fault is not an attempt.  Record
+                # it as launch evidence so the next prompt can name it, but do not
+                # append an AttemptRecord — that is what `_attempts_spent` counts.
+                # FR-006 is handled by the post-loop terminal_reason.
+                record.launch_failures += 1
+                evidence.append(
+                    AttemptEvidence(termination=Termination.AGENT_ERROR, result=None)
+                )
+                # FR-007: bound launch retries independently of the attempt budget.
+                # Exceeding the bound ends the node rather than looping forever.
+                if record.launch_failures >= request.config.max_launch_retries:
+                    action = NextAction.KILLED
+                    record.terminal_reason = (
+                        f"launch failed {record.launch_failures} time(s) "
+                        f"(AGENT_LAUNCH_FAILED): {exc}"
+                    )
+                    break
+                action = NextAction.RETRY
+                # Continue the loop, which increments attempt and re-dispatches.
+                # The retry is bounded above, so this cannot loop forever.
+                continue
             except asyncio.CancelledError:
                 # SDK eviction/cancellation: the worker is reclaiming this workflow
                 # coroutine. Do not emit any further commands — `teardown_attempt`
@@ -1663,6 +1695,12 @@ class EpicWorkflow:
         that figure off it and reports the attempt TIMEOUT so it is verified like
         any other (FR-012). `None` is returned for the attempt a kill cancelled —
         there is no result, and the caller supplies the classification.
+
+        A pre-first-token launch fault is the other `ActivityError` this method
+        distinguishes: the adapter raised `AGENT_LAUNCH_FAILED`, which means no
+        agent ever started.  It must not be recorded as an attempt (FR-005), so it
+        is signalled to the caller as a launch failure rather than as an
+        `AdapterResult`.
         """
         record.state = NodeState.RUNNING
         agent = workflow.start_activity(
@@ -1701,6 +1739,12 @@ class EpicWorkflow:
         try:
             result = await agent
         except ActivityError as exc:
+            cause = exc.cause
+            if (
+                isinstance(cause, ApplicationError)
+                and cause.type == AGENT_LAUNCH_FAILED
+            ):
+                raise _LaunchFailed(cause.message) from exc
             return self._attempt_timeout(record, exc)
         record.last_snapshot = result.last_snapshot
         return result

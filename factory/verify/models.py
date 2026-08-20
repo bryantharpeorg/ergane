@@ -648,6 +648,11 @@ class VerificationConfig:
     retried on after ordinary attempts are spent; `None` means no promotion
     rung is configured and the ladder behaves exactly as today (US5-S3).
     `promotion_cycles` bounds the rung like `debugger_cycles`.
+
+    `max_launch_retries` bounds how many times a pre-first-token launch fault may
+    be retried independently of the attempt budget (US2 FR-007).  A launch that
+    never reached the agent is not an attempt, so it must not consume the ladder
+    budget, but it also must not loop forever.
     """
 
     max_attempts: int = 3
@@ -657,10 +662,13 @@ class VerificationConfig:
     escalation_timeout_s: int = 3600
     promotion_persona: str | None = None
     promotion_cycles: int = 1
+    max_launch_retries: int = 2
 
 
 #: The digest of the unconfigured default loop: v1, default gate names, default
 #: order, default ladder, judge present. Stored explicitly for v1 repos (US4-S3).
+#: US2 adds `max_launch_retries` but it is not part of the loop digest: a
+#: launch retry is infrastructure recovery, not a verdict-shaping loop parameter.
 DEFAULT_LOOP_DIGEST = loop_digest(
     VerificationConfig(), ("gates", "diff_check", "judge"), ("test", "lint", "typecheck")
 )

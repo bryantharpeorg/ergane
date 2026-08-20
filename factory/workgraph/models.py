@@ -280,6 +280,11 @@ class NodeRecord:
     #: the expiry) back to *this* node on un-park. `None` unless the node is
     #: parked, and cleared on re-dispatch.
     pending_question_id: str | None = None
+    #: US2: how many pre-first-token launch faults this node has hit.  Kept
+    #: outside `history` because launch failures are not attempts and must not be
+    #: counted by `_attempts_spent` (FR-005).  Bounded by `max_launch_retries`
+    #: (FR-007).
+    launch_failures: int = 0
     #: Set only when a node ended for a reason the ladder did not produce (US1):
     #: today that means one thing, a crashed node coroutine. The text is surfaced
     #: in `ergane build status` for the KILLED node.
