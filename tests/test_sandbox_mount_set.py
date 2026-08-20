@@ -106,13 +106,57 @@ The three refusal tests are the ones that would otherwise be theatre: two of
 them replace the spawn with a detonator, so "before any subprocess is created"
 is measured rather than asserted.
 
-**Green, unmutated.** This file, and then the repository's declared gate whole:
+**The bwrap coupling, and why the ledger above is measured twice.** The first
+version of the two detonator tests read the host one last time after all, in a
+place the fake root does not cover: both boundaries check that the bwrap binary
+exists *before* they derive the mount set, and neither test supplied one. On
+this machine `/usr/bin/bwrap` is installed, so the check passed and the
+derivation ran; on the CI runner it is not, so the check answered first and the
+tests reported `sandbox backend 'bwrap' not available` instead of the refusal
+they exist to measure. That is this file's own thesis turned back on it — an
+assertion about the machine it runs on — and it is why `_plant_bwrap` now
+supplies that binary too, taking the last host fact out of the question. The
+production ordering is correct and is deliberately left alone: there is no
+point deriving a layout for an argv nothing can exec.
+
+So every measurement in this file is now recorded under both hosts — with this
+machine's real bwrap, and with the binary patched to a path that does not
+exist, which is the runner's condition. The second host is supplied by a
+throwaway pytest plugin, four lines, kept out of the tree because it belongs to
+the measurement rather than to the suite:
+
+    # /tmp/no_bwrap_plugin.py
+    from pathlib import Path
+    from factory.workgraph import adapter as adapter_module
+    from factory.verify import gates as gates_module
+    adapter_module.BWRAP_BACKEND_BINARY = Path("/nonexistent/bwrap")
+    gates_module.BWRAP_BACKEND_BINARY = Path("/nonexistent/bwrap")
+
+    $ PYTHONPATH=/tmp uv run pytest -q tests/test_sandbox_mount_set.py \
+        -p no_bwrap_plugin
+
+Each of M1–M4 above produces the identical failure set under both hosts, and
+the unmutated file is 9 passed under both. Before `_plant_bwrap`, that
+bwrap-less run was `2 failed, 7 passed` — the two detonator tests, with the
+messages the merge queue reported verbatim.
+
+**Green, unmutated.** This file under both hosts, and then the repository's
+declared gate whole:
 
     $ uv run pytest -q tests/test_sandbox_mount_set.py
     9 passed in 0.03s
 
+    $ PYTHONPATH=/tmp uv run pytest -q tests/test_sandbox_mount_set.py \
+        -p no_bwrap_plugin
+    9 passed in 0.03s
+
     $ uv run pytest -q
-    3802 passed, 49 skipped, 6 warnings in 299.49s (0:04:59)
+    3802 passed, 49 skipped, 6 warnings in 300.82s (0:05:00)
+
+That total is this host's. The runner skips sixteen bwrap-dependent tests this
+machine runs, so the same tree reports `3786 passed, 65 skipped` there — the
+rejection's own log read `3784 passed, 65 skipped` alongside the two failures,
+which is the same arithmetic with these two on the other side of the ledger.
 """
 
 from __future__ import annotations
@@ -220,6 +264,28 @@ def planted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PlantedHost:
         host.plant(name)
     host.activate(monkeypatch)
     return host
+
+
+def _plant_bwrap(host: PlantedHost, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point both boundaries at a bubblewrap of this test's own.
+
+    Whether `/usr/bin/bwrap` is installed is a fact about the machine running
+    the suite, and both boundaries answer it *before* deriving the mount set —
+    deliberately, since there is no point reading a host layout for an argv
+    nothing can exec. On a runner without the binary that check answers first,
+    so the two tests below would report the absent binary instead of the
+    refusal they exist to measure: the system-tree derivation would never run
+    at all. Planting one takes the host back out of the question and leaves the
+    refusal under test as the only thing that can fire.
+
+    Nothing ever execs it. Both callers replace the spawn with a detonator, and
+    that detonator is what proves "before any subprocess is created" — this
+    helper only ensures the code reaches the point where it could have forked.
+    """
+    binary = host.plant("bwrap")
+    monkeypatch.setattr(adapter_module, "BWRAP_BACKEND_BINARY", binary)
+    monkeypatch.setattr(gates_module, "BWRAP_BACKEND_BINARY", binary)
+    return binary
 
 
 # --- the four paths, read off the supplied host ------------------------------
@@ -396,6 +462,7 @@ def test_the_gate_refuses_a_broken_system_tree_before_it_forks(
 ) -> None:
     """US1-S6. "Before any subprocess is created", measured with a detonator."""
     root = _fake_root(tmp_path, "gate-file-at-lib", {"/lib": A_FILE})
+    _plant_bwrap(planted, monkeypatch)
 
     def detonate(*args: object, **kwargs: object) -> None:
         raise AssertionError("a gate forked despite an underivable system tree")
@@ -423,6 +490,7 @@ def test_the_agent_refuses_a_broken_system_tree_before_it_forks(
 ) -> None:
     """US1-S6. The same, on the boundary whose failure costs an attempt."""
     root = _fake_root(tmp_path, "agent-file-at-lib", {"/lib": A_FILE})
+    _plant_bwrap(planted, monkeypatch)
 
     async def detonate(*args: object, **kwargs: object) -> None:
         raise AssertionError("an agent forked despite an underivable system tree")
