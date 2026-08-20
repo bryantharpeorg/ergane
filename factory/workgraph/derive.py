@@ -52,6 +52,7 @@ from factory.verify.criteria import (
     section_end,
 )
 from factory.verify.models import RequirementKind
+from factory.workgraph.contention import apply_contention_edges
 from factory.workgraph.models import (
     WorkGraph,
     WorkGraphDeclaration,
@@ -76,7 +77,9 @@ _STORY_ID_RE = re.compile(r"^US\d+$")
 _REQUIRED_KEYS = ("depends_on", "implements")
 #: Optional keys. `depends_on_merged` (FR-009) is optional the way `timeout` is —
 #: a declaration without it stays valid, unlike omitting a required edge.
-_OPTIONAL_KEYS = ("timeout", "depends_on_merged", "persona")
+#: `concurrent_with` (069-US2 FR-008) is the author's override of the
+#: slice-contention inference: "I know these two name one file, and it is safe."
+_OPTIONAL_KEYS = ("timeout", "depends_on_merged", "persona", "concurrent_with")
 
 #: The persona every derived node names in the minimal interpreter
 #: (contracts/workgraph-schema.md § Derivation semantics).
@@ -143,6 +146,7 @@ def derive_workgraph(
     feature: str,
     specs_root: str,
     target_repo: str,
+    tasks_text: str | None = None,
 ) -> WorkGraph:
     """Compile one epic spec into the graph the interpreter runs (FR-011, R7).
 
@@ -151,13 +155,22 @@ def derive_workgraph(
     guess. Everything else is read out of the spec: one node per story in spec
     order, ids lowercased, `requirement_keys` = `[story_key, *implements]`.
 
+    `tasks_text` is the second authored document, and it is **optional in the
+    signature and load-bearing when present** (069-US2). With it, two stories
+    whose task slices name a common file are ordered before either dispatches,
+    so the collision that costs the second-to-land a ladder rung never happens
+    (FR-007). Without it the graph is exactly what the spec declares: purity is
+    unchanged — text in, graph out, no file is opened here either way — and every
+    caller that has not read `tasks.md` gets the graph it always got, rather than
+    an inference made from a document nobody supplied.
+
     Raises `DerivationError` carrying every rejection; nothing is emitted.
     """
     stories = _spec_stories(spec_text)
     declarations = _declarations(spec_text)
     _cross_validate(declarations, stories)
 
-    return WorkGraph(
+    graph = WorkGraph(
         epic_id=epic_id,
         feature=feature,
         specs_root=specs_root,
@@ -167,6 +180,43 @@ def derive_workgraph(
             for key in stories
         ],
     )
+    if tasks_text is None:
+        return graph
+    return _with_contention_edges(graph, declarations, tasks_text)
+
+
+def _with_contention_edges(
+    graph: WorkGraph,
+    declarations: Mapping[str, WorkGraphDeclaration],
+    tasks_text: str,
+) -> WorkGraph:
+    """Order the siblings whose slices collide, or refuse naming both (069-US2).
+
+    The refusal is a `Rejection` like every other, so an overlap with no safe
+    ordering reaches the author in the same list — and by the same route — as a
+    dangling edge or a cycle: all of them at once, nothing emitted.
+    """
+    waived = {
+        declaration.story_id.lower(): [
+            other.lower() for other in declaration.concurrent_with
+        ]
+        for declaration in declarations.values()
+    }
+    ordered, refusals = apply_contention_edges(
+        graph, tasks_text=tasks_text, waived=waived
+    )
+    if refusals:
+        raise DerivationError(
+            [
+                Rejection(
+                    rule="slice_contention",
+                    story=refusal.stories[1],
+                    problem=refusal.problem,
+                )
+                for refusal in refusals
+            ]
+        )
+    return ordered
 
 
 def _node(
@@ -458,6 +508,17 @@ def _declaration(
         )
         return None
 
+    concurrent = body.get("concurrent_with", [])
+    if not isinstance(concurrent, list) or not all(
+        isinstance(item, str) for item in concurrent
+    ):
+        rejections.add(
+            "concurrent_with",
+            key,
+            f"'concurrent_with' must be a list of ids, got {concurrent!r}",
+        )
+        return None
+
     return WorkGraphDeclaration(
         story_id=key,
         depends_on=lists["depends_on"],
@@ -465,6 +526,7 @@ def _declaration(
         timeout=timeout,
         depends_on_merged=list(merged),
         persona=persona,
+        concurrent_with=list(concurrent),
     )
 
 
@@ -590,6 +652,45 @@ def _check_edges(
             declaration.story_id,
             f"depends on the merge of {_quoted(unknown_merged)}, which no "
             "declaration names",
+        )
+
+    _check_waiver(declaration, declarations, rejections)
+
+
+def _check_waiver(
+    declaration: WorkGraphDeclaration,
+    declarations: Mapping[str, WorkGraphDeclaration],
+    rejections: _Rejections,
+) -> None:
+    """`concurrent_with` names declared stories, and never the story itself.
+
+    Checked rather than ignored for the reason the key exists at all: to its
+    author, `concurrent_with: [US9]` reads as a collision they have considered
+    and accepted. A typo that silently waived nothing would leave the collision
+    in place *and* the author believing it was handled — strictly worse than
+    never offering the key (069-US2 FR-008).
+    """
+    if declaration.story_id in declaration.concurrent_with:
+        rejections.add(
+            "concurrent_with",
+            declaration.story_id,
+            "declares itself safe to run concurrently with itself; a story never "
+            "races itself, so this waives nothing",
+        )
+        return
+
+    unknown = [
+        story
+        for story in declaration.concurrent_with
+        if story not in declarations
+    ]
+    if unknown:
+        rejections.add(
+            "concurrent_with",
+            declaration.story_id,
+            f"declares it may run concurrently with {_quoted(unknown)}, which no "
+            "declaration names — the waiver would apply to nothing while reading "
+            "as though a collision had been accepted",
         )
 
 
