@@ -49,6 +49,7 @@ from tests.test_interpreter import (
     Attempt,
     ScriptedWorld,
     env,  # noqa: F401  — pytest fixture, re-exported for this module
+    gate_fail,
     gate_pass,
     make_graph,
     make_node,
@@ -190,3 +191,43 @@ async def test_launch_failure_reaches_notifier_before_ladder_exhausts(
     # No attempt records means no budget was spent before paging.
     assert not [r for r in script.records if r.node_id == "us1"]
     assert status.nodes["us1"].state == NodeState.KILLED
+
+
+# --- T013 [P] [US2] (spec US2-S4) --------------------------------------------
+
+
+async def test_agent_that_started_and_failed_is_still_charged(
+    env: WorkflowEnvironment,
+) -> None:
+    """Control: an agent that produced output and then failed IS an attempt.
+
+    The distinction is "did the agent start", not "did it fail quickly".  A
+    scripted attempt that returns an AGENT_ERROR termination after writing a
+    diff must consume one attempt, otherwise every real agent failure would
+    silently double the node's budget.
+    """
+    started_then_failed = Attempt(
+        gates=[gate_fail(1)],
+        termination=Termination.AGENT_ERROR,
+    )
+    script = ScriptedWorld(
+        {"us1": [started_then_failed]},
+        client=env.client,
+    )
+
+    status = await run_epic(env, script, graph=one_node_graph())
+
+    # The node failed, but it failed as an attempt and is charged as one.
+    history = [
+        AttemptRecord(
+            attempt=record.attempt,
+            persona="implementer",
+            verdict=record.verdict,
+        )
+        for record in script.records
+        if record.node_id == "us1"
+    ]
+    assert _attempts_spent(history, VerificationConfig()) >= 1, (
+        "an agent that started and failed was not charged as an attempt"
+    )
+    assert status.nodes["us1"].state != NodeState.MERGED
