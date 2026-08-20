@@ -224,6 +224,7 @@ with workflow.unsafe.imports_passed_through():
         loop_summary,
     )
     from factory.workgraph.adapter import home_path
+    from factory.config import Persona, SUBSCRIPTION_AGENT
     from factory.workgraph.models import (
         AdapterResult,
         AttemptContext,
@@ -429,6 +430,14 @@ class EpicInput:
     #: gets today's sequential behaviour exactly. Validated here as well as in
     #: the CLI, because `EpicInput` can be constructed without the CLI.
     max_concurrent_nodes: int = 1
+    #: US4 FR-010: how many subscription-routed ready nodes may run at once.
+    #: A subscription persona shares one operator credential, so virtual keys do
+    #: not isolate concurrent attempts.  `None` (the default) means no additional
+    #: subscription-specific cap: subscription-routed nodes are constrained only
+    #: by `max_concurrent_nodes`.  A declared positive integer lower than that
+    #: general cap caps subscription nodes specifically; a higher value is harmless
+    #: because the general cap is still enforced first.
+    max_concurrent_subscription_nodes: int | None = None
     #: 053 US3: the revision of the worker code that imported this workflow,
     #: captured once at worker boot and carried in the query answer. `None` when
     #: the worker predates this story or runs from a non-git tree. It is part of
@@ -516,6 +525,11 @@ class EpicWorkflow:
         #: captured once at worker boot and supplied in `EpicInput`. `None` when
         #: the worker predates this story or runs outside a git checkout.
         self._worker_revision: str | None = None
+
+        #: US4 FR-010: the registry snapshot, kept so the scheduler can tell
+        #: subscription-routed nodes from gateway-routed ones when applying the
+        #: per-subscription concurrency limit.  Filled during `_resolve`.
+        self._personas: dict[str, Persona] = {}
 
         #: One background poll task per open landing, keyed by node id. Started
         #: when a PASS node's landing enqueues (US1) and reaped when the landing
@@ -639,6 +653,21 @@ class EpicWorkflow:
                 type=GRAPH_INVALID,
                 non_retryable=True,
             )
+        # US4 FR-010: a declared subscription-specific limit must be a positive
+        # integer, or absent.  An absent limit means "no additional cap beyond
+        # max_concurrent_nodes"; a present one caps subscription-routed nodes
+        # specifically.
+        if request.max_concurrent_subscription_nodes is not None and (
+            not isinstance(request.max_concurrent_subscription_nodes, int)
+            or isinstance(request.max_concurrent_subscription_nodes, bool)
+            or request.max_concurrent_subscription_nodes < 1
+        ):
+            raise ApplicationError(
+                f"max_concurrent_subscription_nodes must be a positive integer or "
+                f"None, got {request.max_concurrent_subscription_nodes!r}",
+                type=GRAPH_INVALID,
+                non_retryable=True,
+            )
         # US3 onboarding gate (FR-010, SC-005): the target repo must conform to
         # the factory's assumptions — public, merge queue enabled on the default
         # branch, required checks matching factory.yaml's gates — before a single
@@ -648,6 +677,10 @@ class EpicWorkflow:
         # cached (spec § US3 IT).
         await self._onboard_target(graph)
         resolved = await self._resolve(graph)
+        # US4 FR-010: a stable lookup from node id to persona name so the
+        # scheduler can count in-flight subscription-routed nodes without recomputing
+        # it on every dispatch decision.
+        self._persona_by_node_id = {item.node.id: item.node.persona for item in resolved}
         # The one persona no node names, read in the same breath as the graph and
         # under the same snapshot rule: an epic with nobody to score its stories
         # fails here, not four attempts and one spent key later.
@@ -747,6 +780,20 @@ class EpicWorkflow:
                     break
                 if item.node.id in in_flight:
                     continue
+                # US4 FR-010: a declared subscription-specific cap bounds how many
+                # subscription-routed nodes may be in flight at once.  When no limit
+                # is declared, subscription nodes are constrained only by the
+                # general cap above.  A non-subscription node that appears later in
+                # the ready set still gets its slot, so this check is a `continue`
+                # rather than a `break`.
+                if self._is_subscription_node(item.node.persona):
+                    limit = request.max_concurrent_subscription_nodes
+                    if limit is not None:
+                        subscription_in_flight = self._subscription_nodes_in_flight(
+                            in_flight
+                        )
+                        if subscription_in_flight >= limit:
+                            continue
                 landing = self._nodes[item.node.id].landing
                 if landing is not None and landing.state == LandingState.REJECTED:
                     in_flight[item.node.id] = asyncio.create_task(
@@ -852,7 +899,7 @@ class EpicWorkflow:
         charge it to.
         """
         try:
-            return await workflow.execute_activity(resolve_graph, graph, **_FAST)
+            resolved = await workflow.execute_activity(resolve_graph, graph, **_FAST)
         except ActivityError as exc:
             invalid = exc.cause
             if isinstance(invalid, ApplicationError) and invalid.type == GRAPH_INVALID:
@@ -860,6 +907,49 @@ class EpicWorkflow:
                     invalid.message, type=GRAPH_INVALID, non_retryable=True
                 ) from exc
             raise
+
+        # US4 FR-010: keep the registry snapshot for the scheduler's subscription
+        # concurrency bound.  `_run_node` also uses it to pass the resolved agent
+        # value to key issuance and the adapter.
+        self._personas = {item.node.persona: self._resolve_persona(item.node.persona) for item in resolved}
+        return resolved
+
+    def _resolve_persona(self, persona_name: str) -> Persona | None:
+        """Read one registry entry by name, returning None if it cannot be loaded.
+
+        This is a workflow-side helper only: the authoritative read happens in
+        `resolve_graph`.  We use it to recover the `agent` value for nodes
+        because `ResolvedNode` intentionally does not carry it (constitution VII:
+        only the model alias crosses the boundary).  A missing registry is handled
+        gracefully because `_is_subscription_node` tolerates None.
+        """
+        from factory.config import load_personas
+
+        try:
+            registry = load_personas()
+        except Exception:
+            return None
+        return registry.get(persona_name)
+
+    def _is_subscription_node(self, persona_name: str) -> bool:
+        """Whether a node routed to this persona runs against the operator's subscription.
+
+        The registry snapshot is filled during `_resolve`; an unknown persona is
+        treated as non-subscription so a routing misconfiguration fails the node
+        on its own terms rather than being silently counted here.
+        """
+        persona = self._personas.get(persona_name)
+        return persona is not None and persona.agent == SUBSCRIPTION_AGENT
+
+    def _subscription_nodes_in_flight(
+        self, in_flight: dict[str, asyncio.Task[None]]
+    ) -> int:
+        """How many in-flight nodes are routed through the operator's subscription."""
+        return sum(
+            1
+            for node_id in in_flight
+            if self._is_subscription_node(self._persona_by_node_id.get(node_id, ""))
+        )
 
     def _next_recovery(self, resolved: Sequence[ResolvedNode]) -> ResolvedNode | None:
         """The first node whose landing is REJECTED and pending a recovery cycle.
@@ -1212,6 +1302,12 @@ class EpicWorkflow:
             # answer section (the operator never engaged, FR-004).
             record.operator_answer = None
 
+            # Resolve the persona registry entry for this node so key issuance
+            # and the adapter both know whether this attempt routes through the
+            # gateway or the operator's subscription (US2 FR-005).
+            persona_entry = self._personas.get(node.persona)
+            agent = persona_entry.agent if persona_entry is not None else ""
+
             lease = await workflow.execute_activity(
                 issue_attempt_key,
                 IssueKeyInput(
@@ -1225,6 +1321,7 @@ class EpicWorkflow:
                     persona=persona,
                     spec_ref=node.spec_ref,
                     models=list(resolved.models),
+                    agent=agent,
                 ),
                 start_to_close_timeout=_PROXY["start_to_close_timeout"],
                 retry_policy=_ISSUE_KEY_RETRIES,
@@ -1252,6 +1349,7 @@ class EpicWorkflow:
                         timeout_s=resolved.timeout_s,
                         context_window=resolved.context_window,
                         target_repo=graph.target_repo,
+                        agent=agent,
                     ),
                 )
                 # `None` is the attempt the kill cancelled: the adapter re-raises on
@@ -1838,6 +1936,9 @@ class EpicWorkflow:
                 # else: a key that could call anything is attribution
                 # without constraint (constitution V).
                 models=list(judge.models),
+                # The judge is a gateway persona by registry contract; it is
+                # resolved by name, not routed, so agent is not required here.
+                agent="",
             ),
             start_to_close_timeout=_PROXY["start_to_close_timeout"],
             retry_policy=_ISSUE_KEY_RETRIES,
@@ -2452,6 +2553,11 @@ class EpicWorkflow:
             ),
         )
 
+        # Recovery re-uses the same persona as the original node; resolve its
+        # agent value the same way `_run_node` does.
+        recovery_persona_entry = self._personas.get(persona)
+        recovery_agent = recovery_persona_entry.agent if recovery_persona_entry is not None else ""
+
         lease = await workflow.execute_activity(
             issue_attempt_key,
             IssueKeyInput(
@@ -2461,6 +2567,7 @@ class EpicWorkflow:
                 persona=persona,
                 spec_ref=node.spec_ref,
                 models=list(resolved.models),
+                agent=recovery_agent,
             ),
             start_to_close_timeout=_PROXY["start_to_close_timeout"],
             retry_policy=_ISSUE_KEY_RETRIES,
@@ -2485,6 +2592,7 @@ class EpicWorkflow:
                     timeout_s=resolved.timeout_s,
                     context_window=resolved.context_window,
                     target_repo=graph.target_repo,
+                    agent=recovery_agent,
                 ),
             )
             if adapter_result is None or self._kill_requested:
