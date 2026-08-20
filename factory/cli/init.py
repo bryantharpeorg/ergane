@@ -927,6 +927,9 @@ def _write_scaffold(repo_root: Path, manifest_text: str) -> None:
     runtime_root = repo_root / RUNTIME_ROOT
     runtime_root.mkdir(exist_ok=True)
 
+    specs_root = repo_root / "specs"
+    specs_root.mkdir(exist_ok=True)
+
 
 # --- US4: readiness is judged, not assumed ------------------------------------
 
