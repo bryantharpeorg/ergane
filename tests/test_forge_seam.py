@@ -57,7 +57,15 @@ LANDING_OPERATIONS = {
 #: The wiring half (049-US4, FR-012): one operation, the write side of
 #: `landing_policy`, and the only one on this seam that changes a repository.
 WIRING_OPERATIONS = {"apply_landing_policy"}
-SEAM_OPERATIONS = READING_OPERATIONS | LANDING_OPERATIONS | WIRING_OPERATIONS
+
+#: The cleanup half (069-US3, FR-010): what a reset undoes on a forge, extending
+#: this set exactly as the two halves above did. They are not landing operations
+#: — nothing here runs while an epic is alive, and `ergane build reset` refuses
+#: to run while its workflow is.
+RESET_OPERATIONS = {"close_proposal", "retire_head"}
+SEAM_OPERATIONS = (
+    READING_OPERATIONS | LANDING_OPERATIONS | WIRING_OPERATIONS | RESET_OPERATIONS
+)
 
 #: Verbs that would mean a forge had started deciding. Classifying, settling and
 #: judging stay factory-side (FR-001), as `factory/notify/adapter.py` requires.

@@ -197,6 +197,40 @@ class GithubForge:
         except GhError as error:
             raise _refused(error) from error
 
+    # --- the cleanup half (069-US3, FR-010) ----------------------------------
+
+    def close_proposal(self, proposal: int, *, note: str) -> None:
+        """`gh pr close <n> --comment <note>` — ended, and saying what ended it."""
+        try:
+            self.client.close_pr(proposal, comment=note)
+        except GhError as error:
+            raise _refused(error) from error
+
+    def retire_head(self, head: str, *, archive_prefix: str) -> str:
+        """Archive `head`'s tip under `archive_prefix`, then remove the head.
+
+        Three GitHub-shaped facts live here and nowhere above. The tip has to be
+        read before anything is written, because the archive name embeds it — the
+        same convention `worktree.py` uses locally, which makes the write
+        idempotent by construction rather than by a flag. An archive ref that
+        already exists is left alone: its name names its own content, so a second
+        run finds the same ref rather than a conflict. And an absent head is
+        `""`, never an error, because that is what a second reset meets.
+        """
+        address = self.describe_repository().address
+        ref = f"heads/{head}"
+        try:
+            tip = self.client.ref_sha(address, ref)
+            if tip is None:
+                return ""
+            archive = f"{archive_prefix}/{tip[:12]}"
+            if self.client.ref_sha(address, f"heads/{archive}") is None:
+                self.client.create_ref(address, f"heads/{archive}", tip)
+            self.client.remove_ref(address, ref)
+        except GhError as error:
+            raise _refused(error) from error
+        return f"{head} archived at {archive} and removed"
+
     # --- the wiring half (049-US4, FR-012/FR-013) ----------------------------
 
     def apply_landing_policy(

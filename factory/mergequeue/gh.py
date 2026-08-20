@@ -21,9 +21,18 @@ source so a future edit cannot silently widen the surface:
 - **The only merge invocation is the queue's** (FR-002). `enqueue_pr` issues
   `gh pr merge --auto --<method>`; `disable_auto_merge` issues `--disable-auto`.
   There is no direct-merge form anywhere in this module.
-- **No path ever requests branch deletion** (FR-008). The branch is the queue's
-  to land; the node's cleanup never deletes it — the string the structural
-  guard greps for must never appear in the commands this module builds.
+- **No path ever asks a landing command to take the branch with it** (FR-008).
+  The branch is the queue's to land; the node's cleanup never deletes it. `gh`'s
+  delete-branch flag is what would, so that flag must never appear in the
+  commands this module builds — the structural guard greps for the literal, and
+  this file may not spell it even in prose.
+
+  069-US3 added the one act that removes a ref, and it is deliberately none of
+  the above: `remove_ref` addresses `refs/heads/factory/<epic>/<node>` by name,
+  on the reset path, after the epic is terminated (`ergane build reset` refuses
+  while the workflow is running) and after `create_ref` has put the tip beyond
+  reach of loss. It is not a flag riding along with a landing, which is the
+  thing the guard exists to keep out.
 
 Failures are classified into a small taxonomy rather than raised as generic
 crashes, so an activity can catch them and return the refusal as data — an
@@ -266,6 +275,49 @@ class GhClient:
         """The failing-step log for one run, bounded to the per-check limit."""
         result = self._run("run", "view", str(run_id), "--log-failed")
         return _tail(result.stdout, _FAILED_LOG_PER_CHECK_LIMIT)
+
+    # --- 069-US3 reset cleanup (FR-010) --------------------------------------
+
+    def close_pr(self, pr_number: int, *, comment: str) -> None:
+        """`gh pr close <n> --comment <text>` — end it, and say what ended it.
+
+        The comment is a parameter rather than a default because the only caller
+        is a reset, and an operator who finds a closed PR has to be able to read
+        which one closed it. `gh`'s delete-branch flag is not passed and never
+        may be (FR-008): the ref is removed by name below, after its tip is
+        archived.
+        """
+        self._run("pr", "close", str(pr_number), "--comment", comment)
+
+    def ref_sha(self, owner_repo: str, ref: str) -> str | None:
+        """What `refs/<ref>` points at, or `None` when the repo has no such ref.
+
+        `ref` is spelled the way the git-refs API wants it — `heads/<branch>` —
+        so a branch name carrying slashes needs no escaping. A 404 is an answer
+        here, not a failure: "the head is already gone" is the state a second
+        reset finds.
+        """
+        try:
+            payload = self._run_json("api", f"repos/{owner_repo}/git/ref/{ref}")
+        except GhError as error:
+            if error.kind == GH_NOT_FOUND:
+                return None
+            raise
+        obj = payload.get("object") if isinstance(payload, dict) else None
+        sha = obj.get("sha") if isinstance(obj, dict) else None
+        return str(sha) if sha else None
+
+    def create_ref(self, owner_repo: str, ref: str, sha: str) -> None:
+        """Point `refs/<ref>` at `sha` for the first time — the archive write."""
+        self._run(
+            "api", "-X", "POST", f"repos/{owner_repo}/git/refs",
+            "-f", f"ref=refs/{ref}", "-f", f"sha={sha}",
+        )
+
+    def remove_ref(self, owner_repo: str, ref: str) -> None:
+        """Remove `refs/<ref>`. Issued only by reset, only for a node head, and
+        only once that head's tip is reachable from an archive ref (FR-010)."""
+        self._run("api", "-X", "DELETE", f"repos/{owner_repo}/git/refs/{ref}")
 
     # --- US3 onboarding (FR-010) ---------------------------------------------
 
