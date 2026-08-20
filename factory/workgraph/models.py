@@ -314,6 +314,14 @@ class NodeRecord:
     #: the expiry) back to *this* node on un-park. `None` unless the node is
     #: parked, and cleared on re-dispatch.
     pending_question_id: str | None = None
+    #: 068-US2: the escalation child this node is currently paged on, set the
+    #: moment the child starts and cleared the moment it settles or is cancelled.
+    #: `None` whenever nobody is being waited on. It is what tells an operator
+    #: surface that a node in a live-looking state — `VERIFYING`, most often — is
+    #: not working but waiting, which is the distinction `ergane build reset`
+    #: needs to make (FR-007): a node genuinely mid-attempt must still refuse a
+    #: reset, and a node parked on a page must not.
+    pending_escalation_id: str | None = None
     #: US2: how many pre-first-token launch faults this node has hit.  Kept
     #: outside `history` because launch failures are not attempts and must not be
     #: counted by `_attempts_spent` (FR-005).  Bounded by `max_launch_retries`

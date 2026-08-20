@@ -2208,6 +2208,8 @@ async def test_the_ladder_exhausts_into_an_escalation_the_operator_kills(
         "RETRY",
         "KILL",
         "PAUSE_EPIC",
+        # 068-US2 (FR-008): ending the epic joined the menu as its own answer.
+        "KILL_EPIC",
     }
     assert script.expirations == []
     assert "overrun" not in script.calls
@@ -4497,7 +4499,8 @@ async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
 
     With `max_recovery_cycles = 1`, a recovery that fails again exhausts the
     automatic budget and fires the Telegram escalation with the queue history
-    rendered and choices [RETRY | KILL | PAUSE_EPIC] (FR-007). An operator press
+    rendered and choices [RETRY | KILL | PAUSE_EPIC | KILL_EPIC] (FR-007). An
+    operator press
     of RETRY grants exactly one more cycle; a clean re-verify then re-enqueues.
     """
     script = ScriptedWorld(
@@ -4523,6 +4526,8 @@ async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
+        # 068-US2 (FR-008): ending the epic joined the menu as its own answer.
+        EscalationChoice.KILL_EPIC,
     ]
 
 
@@ -4557,6 +4562,8 @@ async def test_recovery_escalation_kill_preserves_the_branch(
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
+        # 068-US2 (FR-008): ending the epic joined the menu as its own answer.
+        EscalationChoice.KILL_EPIC,
     ]
 
 
@@ -5679,6 +5686,8 @@ async def test_checks_failed_futile_recovery_escalates_before_second_enqueue(
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
+        # 068-US2 (FR-008): ending the epic joined the menu as its own answer.
+        EscalationChoice.KILL_EPIC,
     ]
     # The history summary names the futility — identical tree, not just queue history.
     assert "identical" in escalation.history_summary.lower()

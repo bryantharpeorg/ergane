@@ -95,10 +95,16 @@ _NO_HISTORY = "No verification attempts were recorded for this node."
 
 #: Button faces, one per choice. Distinct on sight, because the operator is
 #: usually reading them on a phone with a failing build in the message above.
+#:
+#: 068 FR-008: the last two are the pair the story exists to separate, so they
+#: get different verbs as well as different emoji — "kill *the node*" against
+#: "end *the whole epic*". Two faces that differed only in their last word would
+#: satisfy the enum and still be one button as far as a thumb is concerned.
 _CHOICE_LABELS = {
     EscalationChoice.RETRY: "🔁 Retry the node",
     EscalationChoice.KILL: "🛑 Kill the node",
     EscalationChoice.PAUSE_EPIC: "⏸️ Pause the epic",
+    EscalationChoice.KILL_EPIC: "💥 End the whole epic",
 }
 
 

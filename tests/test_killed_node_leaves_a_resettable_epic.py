@@ -23,6 +23,18 @@ Nothing here fakes the lifecycle under test. The epic, the escalation children,
 the notify activities and the store are real; the target repositories, their
 worktrees and their branches are real git; the only fakes are the agent and the
 socket, neither of which any claim here is about.
+
+**Plan trap 8a, answered rather than left implicit.** US2 and US3 both declare
+`depends_on: []` and both edit `factory/cli/nouns/build.py` — US3 the subparser
+registrations, US2 the `_reset_epic` precondition — so at a concurrency above
+one they would build against the same base in separate worktrees and land in
+whichever order the queue picked. The plan offered two ways out and asked that
+one be named in the diff. **The ordering option was taken, and by history rather
+than by declaration: US3 landed first (`a76c0ee`), so this story is built on top
+of it** — `reset` already resolves an epic id through `resolve_reset_graph`, and
+nothing here touches a subparser. That is why the file is only edited by one
+live node, and why `tests/test_build_verbs_take_an_epic_id.py` is US3's and is
+not edited here.
 """
 from __future__ import annotations
 
@@ -44,7 +56,12 @@ from factory.activities.verify_activities import (
     VERIFICATION_DB_PATH_ENV,
 )
 from factory.cli.errors import OperatorError
-from factory.cli.nouns.build import _reset_epic, nodes_at_work, nodes_awaiting_operator
+from factory.cli.nouns.build import (
+    _reset_epic,
+    nodes_at_work,
+    nodes_awaiting_operator,
+    reset_refusal,
+)
 from factory.env import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV
 from factory.notify.adapter import (
     ESCALATION_ADAPTER_ENV,
@@ -460,7 +477,10 @@ async def test_reset_refuses_an_epic_with_a_node_at_work(
     async with start_epic(env, script, graph=graph) as handle:
         await wait_for_status(
             handle,
-            lambda status: status.nodes["us1"].state == NodeState.RUNNING,
+            lambda status: (
+                status.nodes.get("us1") is not None
+                and status.nodes["us1"].state == NodeState.RUNNING
+            ),
             what="us1 dispatched and working",
             timeout=30.0,
         )
@@ -591,6 +611,140 @@ def test_the_precondition_separates_work_from_waiting() -> None:
     # epic it cannot interrogate.
     old = status_document(us1={"state": "VERIFYING"})
     assert nodes_at_work(old) == ("us1",)
+
+
+def test_a_running_epic_is_reset_only_when_it_is_waiting_on_a_human() -> None:
+    """FR-007's rule, both directions, as a table over the whole decision.
+
+    `nodes_at_work` on its own would widen too far: an epic that has started and
+    not yet dispatched reports no work either, and archiving the worktrees it is
+    about to prepare is the race the old blanket refusal accidentally prevented.
+    So the rule needs a waiter present, not merely work absent — and asserting
+    the two halves separately is what stops one of them being deleted.
+    """
+    stalled = status_document(
+        us1={"state": "VERIFYING", "awaiting_operator": True},
+        us2={"state": "PENDING", "awaiting_operator": False},
+    )
+    assert reset_refusal(EPIC_ID, stalled) is None, "the deadlock's own shape"
+
+    live = status_document(
+        us1={"state": "VERIFYING", "awaiting_operator": True},
+        us2={"state": "RUNNING", "awaiting_operator": False},
+    )
+    refused = reset_refusal(EPIC_ID, live)
+    assert refused is not None and "us2" in refused, refused
+    assert "us1" not in refused, "the waiting node is not what is refused for"
+
+    # Started, nothing dispatched, nobody paged: still a refusal, and the same
+    # sentence the verb has always printed.
+    fresh = status_document(us1={"state": "PENDING", "awaiting_operator": False})
+    assert reset_refusal(EPIC_ID, fresh) == (
+        f"epic '{EPIC_ID}' is running (workflow id epic-{EPIC_ID}); "
+        "refusing to reset while the workflow is active"
+    )
+    assert reset_refusal(EPIC_ID, {"nodes": {}}) is not None, (
+        "an epic that has reported no node at all has not said it is idle"
+    )
+
+
+# --- the store has to admit the fourth answer ------------------------------
+
+
+#: The `escalations` table exactly as every store in the world holds it today:
+#: `resolution` CHECK-pinned to the three buttons that existed before this
+#: story, plus `EXPIRED`.
+_PRE_068_ESCALATIONS_DDL = """
+CREATE TABLE escalations (
+    escalation_id  TEXT PRIMARY KEY,
+    workflow_id    TEXT NOT NULL,
+    epic_id        TEXT NOT NULL,
+    node_id        TEXT NOT NULL,
+    choices        TEXT NOT NULL,
+    history_summary TEXT NOT NULL,
+    delivered      INTEGER NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1)),
+    sent_at        TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')),
+    resolved_at    TEXT,
+    resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
+    check_evidence TEXT NOT NULL DEFAULT '[]',
+    CHECK ((resolution IS NULL) = (resolved_at IS NULL))
+);
+
+INSERT INTO escalations (
+    escalation_id, workflow_id, epic_id, node_id, choices, history_summary,
+    delivered, sent_at, expires_at, resolution, resolved_at, resolved_via
+) VALUES (
+    'deadbeef0068', 'escalation-deadbeef0068', 'demo-loans', 'us1',
+    '["RETRY", "KILL"]', 'a row written before the fourth button existed',
+    1, '2026-08-19T14:55:00Z', '2026-08-19T15:55:00Z',
+    'KILL', '2026-08-19T15:00:00Z', 'BUTTON'
+);
+"""
+
+
+def test_an_existing_store_learns_to_hold_the_new_answer(tmp_path: Path) -> None:
+    """FR-008's other half: a button the store rejects is a button that does nothing.
+
+    The choice rides into `settle_escalation` as text and lands in a column
+    whose CHECK constraint predates it, and SQLite cannot alter a CHECK — so
+    without the rebuild, `KILL_EPIC` renders, sends, is pressed, and then fails
+    the write. The escalation stays pending and the epic stays exactly where the
+    press was meant to get it out of, which is the defect wearing a new hat.
+
+    Asserted by writing the value, not by reading the DDL: the constraint is
+    only interesting because of what it refuses.
+    """
+    import sqlite3
+
+    db = tmp_path / "verification.db"
+    old = sqlite3.connect(db)
+    try:
+        old.executescript(_PRE_068_ESCALATIONS_DDL)
+        old.commit()
+    finally:
+        old.close()
+
+    with closing(store.connect(db)) as migrated:
+        migrated.execute(
+            "INSERT INTO escalations (escalation_id, workflow_id, epic_id, "
+            "node_id, choices, history_summary, delivered, sent_at, expires_at, "
+            "resolution, resolved_at, resolved_via) VALUES "
+            "(?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 'BUTTON')",
+            (
+                "0123456789ab",
+                "escalation-0123456789ab",
+                EPIC_ID,
+                "us2",
+                '["RETRY", "KILL", "PAUSE_EPIC", "KILL_EPIC"]',
+                "the epic the operator ended",
+                "2026-08-20T11:00:00Z",
+                "2026-08-20T12:00:00Z",
+                EscalationChoice.KILL_EPIC.value,
+                "2026-08-20T11:05:00Z",
+            ),
+        )
+        written = store.get_escalation(migrated, "0123456789ab")
+        assert written is not None
+        assert written.resolution == EscalationChoice.KILL_EPIC.value
+
+        # The rebuild is a copy, so the row that was already there survives it
+        # whole — a migration that lost a settled escalation would be a worse
+        # outage than the one this story fixes.
+        kept = store.get_escalation(migrated, "deadbeef0068")
+        assert kept is not None
+        assert kept.resolution == EscalationChoice.KILL.value
+        assert kept.history_summary == "a row written before the fourth button existed"
+        assert kept.check_evidence == ()
+
+        # Still closed against everything that is not an answer.
+        with pytest.raises(sqlite3.IntegrityError):
+            migrated.execute(
+                "UPDATE escalations SET resolution = 'KILL_THE_WHOLE_FACTORY' "
+                "WHERE escalation_id = ?",
+                ("0123456789ab",),
+            )
 
 
 # --- runtime evidence, pasted verbatim (constitution VIII / D-037) ----------

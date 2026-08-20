@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS escalations (
     delivered      INTEGER NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1)),
     sent_at        TEXT NOT NULL,
     expires_at     TEXT NOT NULL,          -- sent_at + 1h
-    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')),
+    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'KILL_EPIC', 'EXPIRED')),
     resolved_at    TEXT,
     resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
     -- 041-US2 (schema 3): the failing merge-queue checks the escalation was

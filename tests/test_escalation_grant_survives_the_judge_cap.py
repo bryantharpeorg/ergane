@@ -272,6 +272,8 @@ async def test_the_press_dispatches_an_attempt_and_the_node_leaves_the_escalatio
         "RETRY",
         "KILL",
         "PAUSE_EPIC",
+        # 068-US2 (FR-008): ending the epic joined the menu as its own answer.
+        "KILL_EPIC",
     }
     assert [context.attempt for context in script.attempts] == [1, 2, 3, 4, 5]
     assert len(script.prompts_for("us1")) == 5
@@ -464,7 +466,12 @@ def test_every_offered_option_can_change_the_nodes_state() -> None:
     history = exhausted_by_the_judge()
     offered = offered_choices()
 
-    assert offered == ["RETRY", "KILL", "PAUSE_EPIC"]
+    # 068-US2 added `KILL_EPIC` (FR-008): ending the node and ending the epic
+    # became two answers rather than one. It is a non-grant, so the ladder ends
+    # the node on it exactly as it does on KILL — the epic-level half is the
+    # interpreter's, and `tests/test_killed_node_leaves_a_resettable_epic.py`
+    # is where the two are held apart.
+    assert offered == ["RETRY", "KILL", "PAUSE_EPIC", "KILL_EPIC"]
 
     decided = {
         choice: next_action(history, DEFAULTS, escalations=(choice,))
@@ -476,6 +483,7 @@ def test_every_offered_option_can_change_the_nodes_state() -> None:
         "RETRY": NextAction.RETRY,
         "KILL": NextAction.KILLED,
         "PAUSE_EPIC": NextAction.KILLED,
+        "KILL_EPIC": NextAction.KILLED,
     }
     # The retry button and the kill button must not be the same button.
     assert decided["RETRY"] is not decided["KILL"]

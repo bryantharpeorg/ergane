@@ -229,8 +229,8 @@ def test_the_schema_version_records_the_new_shape(db_path: Path) -> None:
     with closing(store.connect(db_path)) as conn:
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
 
-    # 6 since 023-US4 added `loop_digest` and `loop_summary`.
-    assert store.SCHEMA_VERSION == 6
+    # 7 since 068-US2 widened `escalations.resolution` to admit `KILL_EPIC`.
+    assert store.SCHEMA_VERSION == 7
     assert versions == [store.SCHEMA_VERSION]
 
 

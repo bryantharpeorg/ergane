@@ -707,7 +707,7 @@ async def test_the_escalation_carries_the_full_failure_history(
         assert GATE_TAIL[attempt] in escalation.history_summary
 
     offered = {str(choice) for choice in escalation.choices}
-    assert offered == {"RETRY", "KILL", "PAUSE_EPIC"}
+    assert offered == {"RETRY", "KILL", "PAUSE_EPIC", "KILL_EPIC"}
 
 
 async def test_every_attempt_is_recorded_before_anything_acts_on_it(
