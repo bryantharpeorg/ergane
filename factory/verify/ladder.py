@@ -19,7 +19,10 @@ obvious from the caps alone:
   distinction only shows under a config that raises `max_attempts`: once the
   judge has spent its rewrites, a further judge-RETRY stops granting attempts
   even with budget left. The cap binds on judge-driven failures only — a gate
-  failure is not judge spend, so it still retries on the ordinary budget.
+  failure is not judge spend, so it still retries on the ordinary budget, and
+  neither is an attempt an operator granted (068 FR-002): a cap on what the
+  judge may ask for cannot bound what a human asked for, and applying it to a
+  press left the escalation offering a button that could only kill the node.
 - **The debugger cycle is a rung, not an attempt.** It runs once the ordinary
   budget is gone and is limited by `debugger_cycles` alone, so an escalation that
   grants more attempts never calls it back for a second turn.
@@ -28,7 +31,10 @@ obvious from the caps alone:
   keyword-only sequence defaulting to empty so that `next_action(history, config)`
   — data-model.md's signature — stays the call for every decision made before
   anyone was paged. Each `RETRY` grants exactly one more attempt; a second grant
-  takes a second escalation.
+  takes a second escalation. A grant also settles which regime the ladder is in:
+  once a human has answered, the retries are theirs and not the judge's, so the
+  rewrite cap stops applying (068 FR-002) while the attempt total still bounds
+  them.
 - **Nothing but an explicit grant produces more work.** `KILL`, the store's
   `EXPIRED` timeout value, `PAUSE_EPIC`, and any resolution this module has never
   heard of all end the node, and they outrank a trailing PASS. That asymmetry is
@@ -90,10 +96,13 @@ def next_action(
         return NextAction.PASSED
 
     # Every resolution that survived the check above is a grant, and each buys
-    # exactly one attempt (contracts/verification-flow.md).
-    allowed = config.max_attempts + len(escalations)
+    # exactly one attempt (contracts/verification-flow.md). This is the only
+    # grant there is: adding a second one here would make one press buy two
+    # attempts (068 FR-003).
+    grants = len(escalations)
+    allowed = config.max_attempts + grants
     attempts_left = _attempts_spent(history, config) < allowed
-    if attempts_left and not _judge_rewrites_spent(history, config):
+    if attempts_left and not _judge_vetoes_a_retry(history, config, grants):
         return NextAction.RETRY
 
     if _promotion_available(history, config):
@@ -176,6 +185,30 @@ def _promotion_available(
     if _promotion_cycles_spent(history, config) >= config.promotion_cycles:
         return False
     return True
+
+
+def _judge_vetoes_a_retry(
+    history: Sequence[AttemptRecord], config: VerificationConfig, grants: int
+) -> bool:
+    """Whether the rewrite cap may stop the attempt the ladder is about to grant.
+
+    A distinction, not a wider number (068 FR-002). `max_judge_retries` bounds
+    *judge-driven* retries — the ladder granting itself another attempt because
+    the judge asked for another rewrite. An operator pressing RETRY on an
+    escalation is not the judge, and the attempt they bought is not a rewrite
+    anybody asked for, so the cap has no standing over it. Applying it anyway is
+    what made the retry button page the operator a second time and then kill the
+    node they had just asked to try again.
+
+    What bounds the granted attempts instead is `allowed` in `next_action`: one
+    attempt per press, and the operator is paged again when those run out. So
+    lifting the cap here cannot loop — it hands the decision back to the human
+    already holding it. With nobody paged (`grants == 0`) this is exactly the cap
+    as it has always been, which is the whole of the judge-driven regime.
+    """
+    if grants:
+        return False
+    return _judge_rewrites_spent(history, config)
 
 
 def _judge_rewrites_spent(

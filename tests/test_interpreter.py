@@ -3326,6 +3326,20 @@ async def test_a_marker_terminates_question_and_parks_waiting_operator(
         assert states(parked)["us2"] == NodeState.PENDING
         assert states(parked)["us3"] == NodeState.PENDING
 
+        # The pause is no longer a barrier for the send: since 041-US3 the
+        # question's lifecycle is a `QuestionWorkflow` child, so the parent starts
+        # the child, parks, pauses and returns — and `send_question` runs on the
+        # child's first task, after all of that is already visible to this query.
+        # Waiting on the park alone therefore samples `question_requests` while
+        # the send may still be in flight (the sibling test below records what
+        # that cost when the send was still the parent's). Wait for the thing
+        # being asserted; the claim underneath is unchanged — exactly one
+        # question, attributed to this epic, node and attempt.
+        await wait_for(
+            lambda: len(script.question_requests) == 1,
+            what="the question child to send its message",
+        )
+
         [question] = script.question_requests
         assert question.epic_id == EPIC_ID
         assert question.node_id == "us1"
@@ -3348,15 +3362,17 @@ async def test_a_question_attempt_salvages_and_preserves_committed_work(
 
     async with start_epic(env, script) as handle:
         # Wait for the pause, not just the park — this test asserts the question
-        # shipped, and the send happens *after* the node first reads
-        # WAITING_OPERATOR. `_close_out(..., state=WAITING_OPERATOR)` salvages and
-        # parks the node, and only then does the workflow dedup and send; the
-        # pause is the last thing the park block sets, after the send. A predicate
-        # that stops at the park can therefore win the race, exit this context
-        # manager, terminate the workflow before the send activity runs, and find
-        # `question_requests` empty — which is exactly what CI hit on 53eae60,
-        # and what cost 016/us1 an attempt on 2026-08-08. Observing the pause is
-        # a barrier for everything ordered before it.
+        # shipped, and a predicate that stops at the park can win the race, exit
+        # this context manager, terminate the workflow before the send runs, and
+        # find `question_requests` empty — which is exactly what CI hit on
+        # 53eae60, and what cost 016/us1 an attempt on 2026-08-08.
+        #
+        # The pause used to be a barrier for the send, because the send was the
+        # parent's own activity and ran before it. Since 041-US3 it is not: the
+        # send belongs to the `QuestionWorkflow` child the parent starts *before*
+        # parking, so the pause orders nothing about it. The wait below is the
+        # barrier now, and the pause wait stays because the park and the pause
+        # are claims of this test in their own right.
         await wait_for_status(
             handle,
             lambda status: (
@@ -3366,6 +3382,10 @@ async def test_a_question_attempt_salvages_and_preserves_committed_work(
             if hasattr(NodeState, "WAITING_OPERATOR")
             else False,
             what="us1 to park WAITING_OPERATOR and the epic to pause",
+        )
+        await wait_for(
+            lambda: len(script.question_requests) == 1,
+            what="the question child to send its message",
         )
 
     # Salvage precedes removal (FR-005, constitution VI) — the work is on the
