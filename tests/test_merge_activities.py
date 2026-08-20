@@ -876,17 +876,20 @@ async def test_validate_target_repo_squash_title_gh_failure_is_failed_validation
 async def test_fetch_check_failure_returns_per_check_evidence(
     env: ActivityEnvironment, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The activity turns `gh pr checks` + `gh run view` into (name, url, tail, note)."""
+    """The activity turns `gh pr view --json statusCheckRollup` + `gh run view` into (name, url, tail, note)."""
     fake = FakeGh()
     fake.expect_json(
-        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
-        payload=[
-            {
-                "name": "test",
-                "state": "FAIL",
-                "link": "https://github.com/acme/target/actions/runs/101/job/202",
-            },
-        ],
+        "pr", "view", str(PR_NUMBER), "--json", "statusCheckRollup",
+        payload={
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "test",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/acme/target/actions/runs/101/job/202",
+                },
+            ],
+        },
     )
     fake.expect(
         "run", "view", "101", "--log-failed",
@@ -925,14 +928,17 @@ async def test_fetch_check_failure_degrades_on_gh_error(
     """A `gh` outage or refusal returns degraded evidence, never a raise (US2-S3)."""
     fake = FakeGh()
     fake.expect_json(
-        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
-        payload=[
-            {
-                "name": "test",
-                "state": "FAIL",
-                "link": "https://github.com/acme/target/actions/runs/101/job/202",
-            },
-        ],
+        "pr", "view", str(PR_NUMBER), "--json", "statusCheckRollup",
+        payload={
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "test",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/acme/target/actions/runs/101/job/202",
+                },
+            ],
+        },
     )
     fake.expect(
         "run", "view", "101", "--log-failed",
@@ -968,14 +974,17 @@ async def test_fetch_check_failure_degrades_when_link_has_no_run_id(
     """A check link that does not parse to a run id degrades to name + link only."""
     fake = FakeGh()
     fake.expect_json(
-        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
-        payload=[
-            {
-                "name": "lint",
-                "state": "FAIL",
-                "link": "https://github.com/acme/target/checks",
-            },
-        ],
+        "pr", "view", str(PR_NUMBER), "--json", "statusCheckRollup",
+        payload={
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "lint",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/acme/target/checks",
+                },
+            ],
+        },
     )
     monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
 
@@ -1008,8 +1017,8 @@ async def test_fetch_check_failure_uses_asyncio_to_thread(
     """The activity never blocks the event loop: it mirrors sync_landing_branch (US2-S4)."""
     fake = FakeGh()
     fake.expect_json(
-        "pr", "checks", str(PR_NUMBER), "--json", "name,state,link",
-        payload=[],
+        "pr", "view", str(PR_NUMBER), "--json", "statusCheckRollup",
+        payload={"statusCheckRollup": []},
     )
     monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, Path(TARGET)))
 

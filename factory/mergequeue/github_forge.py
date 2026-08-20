@@ -47,6 +47,17 @@ from factory.mergequeue.gh import (
 from factory.mergequeue.models import CheckFailure, Finding, PrSnapshot
 from factory.mergequeue.wiring import wire_repo
 
+#: US1 (FR-004): degraded evidence paths are recorded here so an operator can see
+#: them without opening an agent transcript. The list is append-only and bounded
+#: in code by the number of checks requested in one call.
+_DEGRADED_PATH_RECORDS: list[tuple[str, str]] = []
+
+
+def degraded_path_records() -> tuple[tuple[str, str], ...]:
+    """The degraded-path notes recorded since process start."""
+    return tuple(_DEGRADED_PATH_RECORDS)
+
+
 #: What GitHub calls "title this landing from the proposal" (D-041), spelled
 #: once, here, where it is true.
 _TITLE_FROM_PROPOSAL = "PR_TITLE"
@@ -211,14 +222,18 @@ class GithubForge:
     def failing_check_evidence(
         self, proposal: int, check_names: tuple[str, ...]
     ) -> tuple[CheckFailure, ...]:
-        """`gh pr checks` plus one `gh run view --log-failed` per named check.
-        Came here whole from `merge_activities.py`, where the run-id parsing and
-        log bounds were GitHub detail in an activity module. Every `gh` failure
-        returns degraded evidence stating the absence, never a raise."""
+        """`gh pr view --json statusCheckRollup` plus one `gh run view --log-failed`
+        per named check. Came here whole from `merge_activities.py`, where the
+        run-id parsing and log bounds were GitHub detail in an activity module.
+        Every `gh` failure returns degraded evidence stating the absence, never a
+        raise."""
         try:
             entries = {entry.name: entry for entry in self.client.pr_checks(proposal)}
         except GhError as error:
             note = f"log unavailable: could not list checks ({error.kind})"
+            _DEGRADED_PATH_RECORDS.extend(
+                (name, note) for name in check_names
+            )
             return tuple(CheckFailure(name, "", "", note) for name in check_names)
 
         results: list[CheckFailure] = []
@@ -226,25 +241,22 @@ class GithubForge:
         for name in check_names:
             entry = entries.get(name)
             if entry is None:
-                results.append(CheckFailure(
-                    name, "", "",
-                    "log unavailable: check not present in gh pr checks",
-                ))
+                note = "log unavailable: check not present in gh pr checks"
+                _DEGRADED_PATH_RECORDS.append((name, note))
+                results.append(CheckFailure(name, "", "", note))
                 continue
             run_id = _parse_run_id(entry.link)
             if run_id is None:
-                results.append(CheckFailure(
-                    name, entry.link, "",
-                    "log unavailable: could not resolve run id from check link",
-                ))
+                note = "log unavailable: could not resolve run id from check link"
+                _DEGRADED_PATH_RECORDS.append((name, note))
+                results.append(CheckFailure(name, entry.link, "", note))
                 continue
             try:
                 log = self.client.run_failed_log(run_id)
             except GhError as error:
-                results.append(CheckFailure(
-                    name, entry.link, "",
-                    f"log unavailable: could not fetch run log ({error.kind})",
-                ))
+                note = f"log unavailable: could not fetch run log ({error.kind})"
+                _DEGRADED_PATH_RECORDS.append((name, note))
+                results.append(CheckFailure(name, entry.link, "", note))
                 continue
             if spent + len(log.encode("utf-8")) > _FAILED_LOG_TOTAL_LIMIT:
                 log = _tail(log, max(_FAILED_LOG_TOTAL_LIMIT - spent, 0))

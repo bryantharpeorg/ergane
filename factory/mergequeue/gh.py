@@ -97,7 +97,7 @@ class CreatedPr:
 
 @dataclass(frozen=True)
 class PrCheckEntry:
-    """US2: one row from `gh pr checks --json name,state,link`."""
+    """US1: one row from `gh pr view --json statusCheckRollup`."""
 
     name: str
     state: str
@@ -206,17 +206,35 @@ class GhClient:
     # --- US2 check-failure evidence (FR-005/006/007) -------------------------
 
     def pr_checks(self, pr_number: int) -> tuple[PrCheckEntry, ...]:
-        """The checks table for a PR: name, state, and run link."""
+        """The checks table for a PR: name, state, and run link.
+
+        `gh pr checks` has no `--json` flag, so this reads the same data from
+        `gh pr view --json statusCheckRollup`. The rollup mixes CheckRun entries
+        (`conclusion`, `detailsUrl`) with legacy StatusContext entries
+        (`state`, `targetUrl`); an unrecognised entry is skipped so the rest of
+        the batch still returns evidence (FR-005).
+        """
         payload = self._run_json(
-            "pr", "checks", str(pr_number), "--json", "name,state,link"
+            "pr", "view", str(pr_number), "--json", "statusCheckRollup"
         )
+        rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
+        if not isinstance(rollup, list):
+            return ()
         entries: list[PrCheckEntry] = []
-        for entry in payload:
+        for entry in rollup:
             if not isinstance(entry, dict):
                 continue
-            name = entry.get("name")
-            state = entry.get("state")
-            link = entry.get("link")
+            typename = entry.get("__typename")
+            if typename == "CheckRun":
+                name = entry.get("name")
+                state = entry.get("conclusion")
+                link = entry.get("detailsUrl")
+            elif typename in ("StatusCheckRollup", "StatusContext"):
+                name = entry.get("context")
+                state = entry.get("state")
+                link = entry.get("targetUrl")
+            else:
+                continue
             if name is None or state is None or link is None:
                 continue
             entries.append(
