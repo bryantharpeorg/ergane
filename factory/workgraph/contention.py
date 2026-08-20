@@ -197,22 +197,27 @@ def infer_contention_edges(
     that is what edges are spelled in; the deriver translates the author's story
     keys once, at the point it validates them.
     """
+    waived = waived if waived is not None else {}
     files = slice_files(graph, tasks_text=tasks_text)
     by_id = {node.id: node for node in graph.nodes}
     order = [node.id for node in graph.nodes]
-    # A working copy: inferred edges join it as they are decided, so the second
-    # inference sees the first (an overlap already ordered by an inferred edge
-    # needs no second one, and the cycle check must include them).
+    # Working copies, both of them: an inferred edge joins them the moment it is
+    # decided, so every later pair is judged against the ordering the edges
+    # before it already established — which is what makes the redundant third
+    # edge of a three-way collision disappear instead of being emitted.
     adjacency = {
         node.id: [*node.depends_on, *node.depends_on_merged] for node in graph.nodes
     }
-
     merged_edges = {node.id: set(node.depends_on_merged) for node in graph.nodes}
 
     edges: list[InferredEdge] = []
     refusals: list[ContentionRefusal] = []
-    for position, earlier in enumerate(order):
-        for later in order[position + 1 :]:
+    # Nearest sibling first: each story is ordered against the *closest*
+    # preceding story it collides with, and the ones behind that are then
+    # already covered by the chain. Three stories sharing one file get two
+    # edges rather than three, and the graph says the same thing with less.
+    for position, later in enumerate(order):
+        for earlier in reversed(order[:position]):
             shared = files.get(earlier, frozenset()) & files.get(later, frozenset())
             if not shared:
                 continue

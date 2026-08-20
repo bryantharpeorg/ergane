@@ -218,6 +218,24 @@ def test_a_directory_is_not_a_file() -> None:
     assert graph.inferred_edges == []
 
 
+def test_three_stories_over_one_file_are_chained_not_fully_connected() -> None:
+    """The minimum ordering that removes the race, and not one edge more.
+
+    All three name the same file, so all three must land in some order — but a
+    chain says that, and the third edge (US3 waiting on US1 as well as on US2)
+    says it twice. Every redundant edge is a line of graph an operator has to
+    read and account for, and the inference has to earn each one.
+    """
+    graph = derive(
+        tasks_text=tasks({"US1": [SHARED], "US2": [SHARED], "US3": [SHARED]})
+    )
+
+    assert [(edge.node_id, edge.depends_on_merged) for edge in graph.inferred_edges] == [
+        ("us2", "us1"),
+        ("us3", "us2"),
+    ]
+
+
 def test_no_tasks_text_infers_nothing() -> None:
     """No `tasks.md`, no slices, no opinion — never a guess.
 
