@@ -142,6 +142,7 @@ class WorkGraphDeclaration:
     implements: list[str]
     timeout: int | None = None
     depends_on_merged: list[str] = field(default_factory=list)
+    persona: str | None = None
 
 
 # The compiled graph ----------------------------------------------------------

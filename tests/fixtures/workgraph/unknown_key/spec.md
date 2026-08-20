@@ -6,9 +6,10 @@
 
 **Status**: Draft
 
-**Input**: Deriver fixture — rejection (`unknown_key`): US2's declaration carries a
-`persona` key. Per-story personas are post-bootstrap grammar, so the key is refused
-rather than ignored; the error names US2.
+**Input**: Deriver fixture — rejection (`unknown_key`): US2's declaration carries an
+`unknown_key` key. Per-story personas are now supported (US1), so this fixture uses
+a generic unknown key to keep the `unknown_key` rule under test; the error names
+US2.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -91,7 +92,7 @@ US1:
 US2:
   depends_on: [US1]
   implements: [FR-003]
-  persona: debugger
+  unknown_key: debugger
 US3:
   depends_on: []
   implements: [FR-004]

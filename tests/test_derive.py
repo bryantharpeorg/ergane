@@ -256,10 +256,10 @@ def test_spec_ref_is_feature_and_story_key() -> None:
 
 
 def test_every_derived_node_is_an_implementer() -> None:
-    """Persona is not authored per story yet — the grammar has no key for it.
+    """A graph without a `persona` key carries the default implementer.
 
-    `unknown_key` refuses `persona: debugger` rather than honouring it, so the
-    only persona a derived node can carry is this one (contracts/…schema.md).
+    The default persona is preserved for backwards compatibility; per-story
+    persona pinning (US1) is opt-in via the `persona:` declaration key.
     """
     assert {node.persona for node in derive().nodes} == {IMPLEMENTER}
 
@@ -375,7 +375,7 @@ REJECTIONS = [
     ("no_section", "section_missing", None, "Work Graph"),
     ("two_blocks", "section_missing", None, "Work Graph"),
     ("non_mapping", "mapping", None, "mapping"),
-    ("unknown_key", "unknown_key", "US2", "persona"),
+    ("unknown_key", "unknown_key", "US2", "unknown_key"),
     ("bad_timeout", "timeout", "US2", "US2"),
 ]
 

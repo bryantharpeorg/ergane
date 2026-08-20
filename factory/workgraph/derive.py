@@ -76,7 +76,7 @@ _STORY_ID_RE = re.compile(r"^US\d+$")
 _REQUIRED_KEYS = ("depends_on", "implements")
 #: Optional keys. `depends_on_merged` (FR-009) is optional the way `timeout` is —
 #: a declaration without it stays valid, unlike omitting a required edge.
-_OPTIONAL_KEYS = ("timeout", "depends_on_merged")
+_OPTIONAL_KEYS = ("timeout", "depends_on_merged", "persona")
 
 #: The persona every derived node names in the minimal interpreter
 #: (contracts/workgraph-schema.md § Derivation semantics).
@@ -183,7 +183,7 @@ def _node(
     return WorkNode(
         id=story_key.lower(),
         story_key=story_key,
-        persona=IMPLEMENTER,
+        persona=declaration.persona or IMPLEMENTER,
         spec_ref=f"{feature}:{story_key}",
         requirement_keys=[story_key, *declaration.implements],
         depends_on=[dependency.lower() for dependency in declaration.depends_on],
@@ -455,6 +455,7 @@ def _declaration(
         implements=lists["implements"],
         timeout=timeout,
         depends_on_merged=list(merged),
+        persona=body.get("persona"),
     )
 
 

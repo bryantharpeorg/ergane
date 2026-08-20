@@ -390,8 +390,21 @@ def _story_parts(
     return [title, *scenarios], implemented_bodies, declaration
 
 
+#: Work Graph keys that are routing annotations, not part of what the story
+#: means. They are excluded from the declaration component of a story's
+#: fingerprint so that a routing change does not silently reopen landed work
+#: (US1-S7, trap 16). This is a deliberate design choice: persona and timeout are
+#: operational overrides, not judgeable content.
+_FINGERPRINT_EXCLUDED_DECLARATION_KEYS = {"persona", "timeout"}
+
+
 def _declaration_text(spec_text: str, story_key: str) -> str | None:
-    """The raw YAML text of one story's work-graph declaration, if present."""
+    """The raw YAML text of one story's work-graph declaration, if present.
+
+    Routing-only keys (`persona`, `timeout`) are stripped before hashing, because
+    they describe who runs the story and how long they have, not what the story
+    means. A landed story whose operator adds a `persona:` key must stay landed.
+    """
     try:
         block = _work_graph_block(spec_text)
     except Exception:
@@ -401,10 +414,15 @@ def _declaration_text(spec_text: str, story_key: str) -> str | None:
     body = block.get(story_key)
     if body is None:
         return None
+    fingerprint_body = {
+        key: value for key, value in body.items() if key not in _FINGERPRINT_EXCLUDED_DECLARATION_KEYS
+    }
     try:
-        return yaml.safe_dump({story_key: body}, sort_keys=True, default_flow_style=False)
+        return yaml.safe_dump(
+            {story_key: fingerprint_body}, sort_keys=True, default_flow_style=False
+        )
     except yaml.YAMLError:
-        return str(body)
+        return str(fingerprint_body)
 
 
 def _work_graph_block(spec_text: str) -> dict | None:
