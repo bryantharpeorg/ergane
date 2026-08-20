@@ -483,32 +483,63 @@ def test_every_offered_option_can_change_the_nodes_state() -> None:
 
 # --- measured, not described (constitution VIII) ----------------------------
 #
-# The decisions this file turns on, run against the tree. `history` is
-# `exhausted_by_the_judge()` throughout; the script is pasted in the commit that
-# adds it and re-run after the change.
+# The decisions this file turns on, executed rather than reasoned about. The
+# history is `exhausted_by_the_judge()`; `G = (EscalationChoice.RETRY,)`.
 #
-#   uv run python -c "<the six decisions below>"
+#   uv run python -c "
+#   from factory.verify.ladder import next_action, _judge_rewrites_spent, _attempts_spent, DEBUGGER_PERSONA
+#   from factory.verify.models import AttemptRecord, EscalationChoice, JudgeOutcome, VerificationConfig, OverallVerdict
+#   def a(n, persona='implementer', judge=None):
+#       return AttemptRecord(attempt=n, persona=persona, verdict=OverallVerdict.FAIL, judge_outcome=judge)
+#   h=[a(1,DEBUGGER_PERSONA)]+[a(n,judge=JudgeOutcome.RETRY) for n in (2,3,4)]
+#   D=VerificationConfig(); R=VerificationConfig(max_attempts=5); U=VerificationConfig(max_attempts=5,max_judge_retries=99)
+#   G=(EscalationChoice.RETRY,)
+#   print('spent', _attempts_spent(h,D), ' judge rewrites spent', _judge_rewrites_spent(h,D))
+#   print('defaults, escalations=(RETRY,)          ->', repr(next_action(h,D,escalations=G)))
+#   print('defaults, escalations=()                ->', repr(next_action(h,D)))
+#   print('max_attempts=5, escalations=(RETRY,)    ->', repr(next_action(h,R,escalations=G)))
+#   print('max_attempts=5, escalations=()          ->', repr(next_action(h,R)))
+#   print('max_judge_retries=99, escalations=()    ->', repr(next_action(h,U)))
+#   print('over-spent history, escalations=(RETRY,)->', repr(next_action(h+[a(5),a(6)],D,escalations=G)))
+#   "
 #
-# BEFORE (357d227 + this test file, `factory/verify/ladder.py:96` unchanged):
+# BEFORE (the tree at the commit that added this file, ladder unchanged):
 #
 #   spent 3  judge rewrites spent True
-#   defaults, escalations=(RETRY,)         -> NextAction.ESCALATE   <- the defect
-#   defaults, escalations=()               -> NextAction.ESCALATE
-#   max_attempts=5, escalations=(RETRY,)   -> NextAction.ESCALATE   <- the defect
-#   max_attempts=5, escalations=()         -> NextAction.ESCALATE
-#   max_attempts=5, max_judge_retries=99   -> NextAction.RETRY
-#   over-spent history, escalations=(RETRY,) -> NextAction.ESCALATE
+#   defaults, escalations=(RETRY,)          -> <NextAction.ESCALATE: 'ESCALATE'>   <- the defect
+#   defaults, escalations=()                -> <NextAction.ESCALATE: 'ESCALATE'>
+#   max_attempts=5, escalations=(RETRY,)    -> <NextAction.ESCALATE: 'ESCALATE'>   <- the defect
+#   max_attempts=5, escalations=()          -> <NextAction.ESCALATE: 'ESCALATE'>
+#   max_judge_retries=99, escalations=()    -> <NextAction.RETRY: 'RETRY'>
+#   over-spent history, escalations=(RETRY,)-> <NextAction.ESCALATE: 'ESCALATE'>
 #
-# AFTER (the change at `factory/verify/ladder.py`):
+# AFTER (`_judge_vetoes_a_retry` in `factory/verify/ladder.py`):
 #
 #   spent 3  judge rewrites spent True
-#   defaults, escalations=(RETRY,)         -> NextAction.RETRY      <- FR-001
-#   defaults, escalations=()               -> NextAction.ESCALATE
-#   max_attempts=5, escalations=(RETRY,)   -> NextAction.RETRY      <- US1-S4
-#   max_attempts=5, escalations=()         -> NextAction.ESCALATE   <- US1-S4 control
-#   max_judge_retries=99, escalations=()   -> NextAction.RETRY      <- the cap still bites
-#   over-spent history, escalations=(RETRY,) -> NextAction.ESCALATE <- FR-004
+#   defaults, escalations=(RETRY,)          -> <NextAction.RETRY: 'RETRY'>         <- FR-001
+#   defaults, escalations=()                -> <NextAction.ESCALATE: 'ESCALATE'>
+#   max_attempts=5, escalations=(RETRY,)    -> <NextAction.RETRY: 'RETRY'>         <- US1-S4
+#   max_attempts=5, escalations=()          -> <NextAction.ESCALATE: 'ESCALATE'>   <- US1-S4 control
+#   max_judge_retries=99, escalations=()    -> <NextAction.RETRY: 'RETRY'>         <- the cap still bites
+#   over-spent history, escalations=(RETRY,)-> <NextAction.ESCALATE: 'ESCALATE'>   <- FR-004
 #
-# The two `max_attempts=5` lines are the pair SC-002 turns on: the ungranted one
-# is `ESCALATE` only because the judge cap is still there, and it becomes `RETRY`
-# the moment the cap is deleted — which is what makes it a control that can fail.
+# And the control can fail, which is the only thing that makes it a control
+# (SC-002, plan trap 1). `_judge_rewrites_spent` mutated to `return False` — the
+# cap deleted outright — then reverted:
+#
+#   env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID FACTORY_ROOT="$(mktemp -d)" \
+#     uv run pytest tests/test_escalation_grant_survives_the_judge_cap.py -q \
+#     -k "still_bounds or lifts_the_veto"
+#
+#   >       assert ungranted is not NextAction.RETRY
+#   E       AssertionError: assert <NextAction.RETRY: 'RETRY'> is not <NextAction.RETRY: 'RETRY'>
+#   >       assert next_action(history, bounded) is NextAction.ESCALATE
+#   E       AssertionError: assert <NextAction.RETRY: 'RETRY'> is <NextAction.ESCALATE: 'ESCALATE'>
+#   FAILED ...::test_the_grant_is_what_lifts_the_veto_and_nothing_else
+#   FAILED ...::test_the_judge_cap_still_bounds_the_retries_the_judge_asked_for
+#   2 failed, 12 deselected in 0.12s
+#
+# The same mutation at the *defaults* changes nothing at all — `attempts_left` is
+# already False, so the ladder leaves the retry path before the cap is consulted.
+# That is why every line above that carries a verdict about the cap is written
+# under `max_attempts=5`.
