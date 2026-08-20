@@ -1601,6 +1601,20 @@ class EpicWorkflow:
                         f"launch failed {record.launch_failures} time(s) "
                         f"(AGENT_LAUNCH_FAILED): {exc}"
                     )
+                    # FR-006: surface the launch failure as an operator-facing
+                    # condition at the time it happens, not after the ladder exhausts.
+                    # The escalation history names the launch fault and carries no
+                    # verification results, because no attempt ever ran.
+                    launch_summary = (
+                        f"Agent launch failure (AGENT_LAUNCH_FAILED): {exc}\n\n"
+                        f"The agent could not be started after "
+                        f"{record.launch_failures} attempt(s). No node attempt "
+                        f"was recorded and no attempt budget was spent."
+                    )
+                    escalation = await self._escalate(
+                        graph, node, [], request.config, history_summary=launch_summary
+                    )
+                    record.escalations.append(escalation.resolution)
                     break
                 action = NextAction.RETRY
                 # Continue the loop, which increments attempt and re-dispatches.
@@ -2153,6 +2167,8 @@ class EpicWorkflow:
         node: WorkNode,
         results: Sequence[VerificationResult],
         config: VerificationConfig,
+        *,
+        history_summary: str | None = None,
     ) -> _Escalation:
         """Page a human, then wait exactly as long as waiting is worth (FR-008).
 
@@ -2164,6 +2180,9 @@ class EpicWorkflow:
 
         041-US3: all of that is an `EscalationWorkflow` child's now, and this
         await parks no scheduler — `_run_node` is one task per node (FR-010).
+
+        US2: a launch failure may pass a custom `history_summary` naming the fault,
+        because there are no `VerificationResult`s to render.
         """
         outcome = await workflow.execute_child_workflow(
             EscalationWorkflow.run,
@@ -2173,7 +2192,7 @@ class EpicWorkflow:
                 # Every attempt, evidence and all (SC-005): the operator is being
                 # asked to decide, and one summarized failure hides the shape the
                 # decision turns on.
-                history_summary=render_history(results),
+                history_summary=history_summary or render_history(results),
                 choices=list(DEFAULT_CHOICES),
                 timeout_s=config.escalation_timeout_s,
             ),
