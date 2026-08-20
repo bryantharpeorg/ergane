@@ -72,6 +72,7 @@ from factory.verify.toolchain import (
     ToolchainError,
     container_path,
     resolve_toolchain,
+    system_tree_argv,
 )
 from factory.workgraph.detector import compare_and_report, capture_start
 from factory.workgraph.models import AdapterResult, AttemptContext
@@ -321,10 +322,12 @@ class HostAgentBackend:
 class BwrapBackend:
     """Bubblewrap containment: the agent's filesystem is its worktree, not the host.
 
-    The mount set is deliberately minimal (US3). `/usr` is read-only with the
-    usual `/bin` and `/lib` symlinks; there is no `/lib64` on this aarch64 host.
-    `/proc`, `/dev`, and a tmpfs `/tmp` give the shell and toolchain enough of a
-    runtime to function. The node worktree is bound writable at the same absolute
+    The mount set is deliberately minimal (US3). `/usr` is read-only, and each
+    of `/bin`, `/lib`, `/lib64` and `/sbin` is mirrored exactly where the host
+    keeps a symlink there — derived per host by `system_tree_argv`, because the
+    set differs by architecture and a written-down one starts no agent on a host
+    that disagrees with it. `/proc`, `/dev`, and a tmpfs `/tmp` give the shell
+    and toolchain enough of a runtime to function. The node worktree is bound writable at the same absolute
     path, and only the leaf worktree — never the runtime root that contains it.
 
     Git worktrees keep their metadata in the parent repository's `.git` tree:
@@ -354,8 +357,17 @@ class BwrapBackend:
 
     name = "bwrap"
 
-    def __init__(self, *, executable: str = DEFAULT_EXECUTABLE) -> None:
+    def __init__(
+        self,
+        *,
+        executable: str = DEFAULT_EXECUTABLE,
+        system_root: Path | str = Path("/"),
+    ) -> None:
         self.executable = executable
+        #: The host whose system layout the mount set is read from. The real
+        #: root in production; a supplied tree in a test, which is the only way
+        #: to assert both the `/lib64` and the no-`/lib64` branch on one machine.
+        self.system_root = Path(system_root)
 
     def _binary(self) -> Path:
         return BWRAP_BACKEND_BINARY
@@ -431,16 +443,25 @@ class BwrapBackend:
             # every `--setenv`: bwrap keeps what is set after it, and clears
             # what came before.
             "--clearenv",
-            # Minimal system tree: read-only /usr plus the symlinks Ubuntu uses
-            # on aarch64. No /lib64 on this host.
-            "--ro-bind", "/usr", "/usr",
-            "--symlink", "usr/bin", "/bin",
-            "--symlink", "usr/lib", "/lib",
-            # Runtime pseudo-filesystems.
+        ]
+
+        # The system tree is read off the host, never declared: `/usr` bound
+        # read-only, plus a symlink for each of `/bin`, `/lib`, `/lib64` and
+        # `/sbin` that this host itself keeps as one, with that link's own
+        # target. What stood here was a hand-written pair of entries under a
+        # comment asserting which of them exist — a fact about one machine,
+        # which is why the sandbox could not start on a host whose loader lives
+        # in `/lib64`. Emitted before `binds`: a symlink after a bind covering
+        # its path is a different bug. See `factory.verify.toolchain`.
+        argv.extend(system_tree_argv(self.system_root))
+
+        argv.extend([
+            # Runtime pseudo-filesystems. Genuinely host-independent, unlike
+            # the tree above.
             "--proc", "/proc",
             "--dev", "/dev",
             "--tmpfs", "/tmp",
-        ]
+        ])
 
         # Every filesystem bind is collected here and emitted by `ordered_binds`,
         # shallowest destination first, so a containing path can never overlay
@@ -606,8 +627,11 @@ class BwrapBackend:
                 f"{self._platform()}"
             )
 
-        # Toolchain discovery happens inside `_build_argv`, so a host missing a
-        # tool refuses here — by name, before anything forks. `AdapterError` is
+        # Toolchain discovery and system-tree derivation both happen inside
+        # `_build_argv`, so a host missing a tool — or holding something at a
+        # system path that can be neither mirrored nor bound — refuses here, by
+        # name, before anything forks. `SystemTreeError` is a `ToolchainError`
+        # so that one `except` covers both. `AdapterError` is
         # the right class for it: infrastructure the operator has to fix, never
         # a verdict, and never an attempt the ladder should spend.
         try:

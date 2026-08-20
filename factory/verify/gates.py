@@ -64,6 +64,7 @@ from factory.verify.toolchain import (
     container_path,
     find_install_root,
     resolve_toolchain,
+    system_tree_argv,
 )
 
 #: Deadline for a gate the manifest gives no `timeouts` entry. Sourced from
@@ -495,10 +496,22 @@ class BwrapGateExecutor:
     is intentionally not unshared — egress is out of scope — and the gate runs
     in its own PID namespace with `--die-with-parent` so the existing group-kill
     path reaches the whole tree.
+
+    "A read-only system tree" is derived per host, not declared: see
+    `system_tree_argv`, which this boundary and the agent's share.
     """
 
-    def __init__(self, *, grace_s: float = DEFAULT_KILL_GRACE_S) -> None:
+    def __init__(
+        self,
+        *,
+        grace_s: float = DEFAULT_KILL_GRACE_S,
+        system_root: Path | str = Path("/"),
+    ) -> None:
         self.grace_s = grace_s
+        #: The host whose system layout the mount set is read from — the real
+        #: root in production, a supplied tree in a test. Same seam, same
+        #: default, as the agent boundary's.
+        self.system_root = Path(system_root)
 
     def run(self, invocation: GateInvocation) -> ExecutionOutcome:
         started = time.monotonic()
@@ -514,8 +527,11 @@ class BwrapGateExecutor:
                 timed_out=False,
             )
 
-        # Discovery happens while the argv is assembled, so a host missing a
-        # tool is refused by name here — before the fork — instead of reaching
+        # Discovery happens while the argv is assembled — of the toolchain and
+        # of the system tree alike, `SystemTreeError` being a `ToolchainError`
+        # for exactly this reason — so a host missing a tool, or holding
+        # something unmountable at a system path, is refused by name here,
+        # before the fork, instead of reaching
         # the operator as bwrap's own `Can't find source path` from a process
         # that has already started. Same shape as the missing-binary refusal
         # above: a 127 outcome carrying the reason, not an exception the gate
@@ -581,18 +597,24 @@ class BwrapGateExecutor:
         worktree = invocation.cwd.resolve()
         home = Path("/tmp/ergane-gate-home")
 
-        argv: list[str] = [
-            str(BWRAP_BACKEND_BINARY),
-            # Minimal system tree: read-only /usr plus the symlinks Ubuntu uses
-            # on aarch64. No /lib64 on this host.
-            "--ro-bind", "/usr", "/usr",
-            "--symlink", "usr/bin", "/bin",
-            "--symlink", "usr/lib", "/lib",
-            # Runtime pseudo-filesystems.
+        argv: list[str] = [str(BWRAP_BACKEND_BINARY)]
+
+        # The system tree, read off the host by the same derivation the agent
+        # boundary uses (`system_tree_argv`) rather than written out here a
+        # second time. The two copies this replaces were byte-identical,
+        # including a comment claiming which system symlinks exist "on this
+        # host" — which is how both boundaries came to be wrong about the same
+        # machine at the same time. Emitted before `binds`, so no bind can
+        # cover a symlink's path first.
+        argv.extend(system_tree_argv(self.system_root))
+
+        argv.extend([
+            # Runtime pseudo-filesystems. Genuinely host-independent, unlike
+            # the tree above.
             "--proc", "/proc",
             "--dev", "/dev",
             "--tmpfs", "/tmp",
-        ]
+        ])
 
         # Every filesystem bind is collected here and emitted by `ordered_binds`,
         # shallowest destination first, so a containing path can never overlay
