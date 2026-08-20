@@ -391,7 +391,13 @@ def _story_parts(
 
 
 def _declaration_text(spec_text: str, story_key: str) -> str | None:
-    """The raw YAML text of one story's work-graph declaration, if present."""
+    """The raw YAML text of one story's work-graph declaration, if present.
+
+    The `persona` key is operational routing metadata, not judgeable story
+    content.  A change to which persona builds a landed story must not reopen
+    it, so persona is stripped before the declaration text enters the
+    fingerprint (US1-S7, trap 16).
+    """
     try:
         block = _work_graph_block(spec_text)
     except Exception:
@@ -401,10 +407,12 @@ def _declaration_text(spec_text: str, story_key: str) -> str | None:
     body = block.get(story_key)
     if body is None:
         return None
+    # Routing is not part of what the story means; keep it out of the digest.
+    filtered = {key: value for key, value in body.items() if key != "persona"}
     try:
-        return yaml.safe_dump({story_key: body}, sort_keys=True, default_flow_style=False)
+        return yaml.safe_dump({story_key: filtered}, sort_keys=True, default_flow_style=False)
     except yaml.YAMLError:
-        return str(body)
+        return str(filtered)
 
 
 def _work_graph_block(spec_text: str) -> dict | None:
