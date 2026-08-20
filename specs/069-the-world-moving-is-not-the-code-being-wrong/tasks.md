@@ -13,13 +13,21 @@ lands.
 ### Tests for this story (write FIRST, must fail)
 
 - [ ] T001 [P] [US1] (spec US1-S1) In `tests/test_moved_base_is_not_charged.py`,
-      reject an enqueued landing because the base moved and assert **both** the
-      attempt count and the debugger-cycle count are unchanged. Assert the counts
-      directly (`factory/verify/ladder.py:111-119` for attempts, `:122-124` for
-      debugger cycles).
+      reject an enqueued landing because the base moved and assert **all three**
+      counts are unchanged, directly: the ladder's attempt count
+      (`factory/verify/ladder.py:111-119`), its debugger-cycle count (`:122-124`),
+      and the landing's `recovery_cycles` (`factory/mergequeue/models.py:134`).
+      **THERE ARE TWO BUDGETS ON THIS PATH AND TODAY A MOVED BASE SPENDS ONE OF
+      EACH**: `factory/workgraph/workflow.py:2325` increments `recovery_cycles`,
+      and `:2502-2508` appends an `AttemptRecord` that
+      `_attempts_spent` counts (or `_debugger_cycles_spent`, if the sync was
+      conflicted — the persona is chosen at `:2374-2379`). A test asserting only
+      one budget passes while the node still dies of the other.
 - [ ] T002 [P] [US1] (spec US1-S3) **The control.** Reject a landing because the
       node's own code fails a required check on an unchanged tree, and assert it
-      IS charged as today (trap 1).
+      IS charged exactly as today on **both** budgets — `recovery_cycles`
+      increments and the ladder records the attempt (trap 1). A control that
+      checks one budget only covers the one the implementer thought about.
 - [ ] T003 [P] [US1] (spec US1-S2) Assert the node rebases and requeues, not merely
       that it spent nothing. A node that stops cheaply is not a fix.
 - [ ] T004 [P] [US1] (spec US1-S4) Assert a recovery that would produce a tree
@@ -37,7 +45,9 @@ lands.
       already present at `:2539-2565` — `rejected_tip` against the current base —
       rather than the forge's wording.
 - [ ] T008 [US1] (FR-001, FR-002) Route a moved-base rejection to rebase-and-requeue
-      without incrementing either counter.
+      without incrementing **either budget**: neither `recovery_cycles`
+      (`factory/workgraph/workflow.py:2325`) nor the ladder record appended at
+      `:2502-2508`. Both, not either.
 - [ ] T009 [US1] (FR-003) Leave the code-fault path charged exactly as today.
 - [ ] T010 [US1] (FR-004) Bound the free path.
 - [ ] T011 [US1] (FR-006) Confirm the identical-tree refusal still fires.
@@ -63,8 +73,15 @@ lands.
 ### Implementation for this story
 
 - [ ] T018 [US2] (FR-007) Infer a `depends_on_merged` edge between stories whose
-      task slices name a common file, reusing the existing slice parser rather
-      than writing a second one (trap 7).
+      task slices name a common file. **Slice through `task_slice_bounds`
+      (`factory/workgraph/prompt.py:558`) — do not re-derive slice boundaries.
+      But the file-path extraction itself does NOT exist anywhere in this tree
+      and you are writing it**: `slice_coverage_findings`
+      (`factory/workgraph/preflight.py:400`) maps task id → story → slice and
+      never looks at a path, and `_FILE_HEADER_RE`
+      (`factory/verify/diffbounds.py:52`) parses paths out of a unified diff,
+      which does not exist before dispatch. An earlier draft of the plan claimed
+      such a parser existed; it does not. See trap 7.
 - [ ] T019 [US2] (FR-008) Mark inferred edges, state the reason, and honour an
       explicit override.
 - [ ] T020 [US2] (FR-009) Report the declared-disjoint / actually-overlapping

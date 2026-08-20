@@ -166,13 +166,20 @@ assert that node carries it while its siblings carry the default.
 
 ---
 
-### User Story 2 - A persona can be run against an operator subscription instead of the gateway (Priority: P1)
+### User Story 2 - A persona can declare that it bills to a subscription (Priority: P1)
 
 As an operator, I can declare a persona that runs the Claude Code CLI against my
-existing subscription, so a stronger builder costs no per-token API billing.
+existing subscription rather than the gateway, so a stronger builder costs no
+per-token API billing.
 
 **Why this priority**: P1. Without it, US1 can only route between models the
 gateway already serves, and the one frontier alias in the registry returns 401.
+
+**Split note**: this was one story until 2026-08-19, covering the declaration,
+the credential, the accounting and the concurrency bound. A pre-dispatch review
+called it oversized and it is now US2, US3 and US4. US2 is the routing decision
+and touches no credential at all — it is testable end to end without one, which
+is exactly why it is separable.
 
 **Independent Test**: dispatch a node whose persona declares the subscription
 runner and assert no virtual key is minted and no gateway variables are set.
@@ -186,33 +193,93 @@ runner and assert no virtual key is minted and no gateway variables are set.
 2. **Given** the same, **When** the attempt is prepared, **Then** no virtual key
    is minted for it — proven by a committed test. A key minted and unused is a
    live credential with no purpose and an attribution row that will read zero.
-3. **Given** the same, **When** the node's HOME is seeded, **Then** it carries
-   the subscription credential in addition to the `.gitconfig` it already gets
-   (`adapter.py:740`) — proven by a committed test asserting what the seeded home
-   contains.
-4. **Given** a gateway persona, **When** a node routed to it is launched,
-   **Then** it gets its virtual key and both gateway variables exactly as today,
-   and **no** subscription credential is seeded — proven by a committed test.
-   This is the control: a change that seeds the credential for every node has
-   widened the operator-credential exposure that
+3. **Given** a gateway persona, **When** a node routed to it is launched,
+   **Then** it gets its virtual key and both gateway variables exactly as today
+   — proven by a committed test. This is the control: without it the story is
+   satisfiable by removing the variables for everyone.
+4. **Given** the split of `is_llm` into the two questions it conflates, **When**
+   each of its existing callers runs, **Then** each behaves exactly as today for
+   deterministic and gateway personas — proven by a committed test covering both
+   call sites. "Spends tokens" and "needs a virtual key" stop being the same
+   question the moment a subscription persona exists, and both callers mean only
+   one of them.
+
+---
+
+### User Story 3 - The subscription credential reaches the sandbox, and only where it should (Priority: P1)
+
+As an operator, a subscription-routed node finds my credential inside its
+sandbox, and every other node still cannot see it.
+
+**Why this priority**: P1 and it depends on US2. Routing without a credential
+produces a node that starts and immediately refuses; a credential without
+routing has nowhere to go.
+
+**Independent Test**: seed a node's home for a subscription persona and assert
+the credential is present; do the same for a gateway persona and assert it is
+absent.
+
+**Acceptance Scenarios**:
+
+1. **Given** a subscription-routed node, **When** its HOME is seeded, **Then** it
+   carries the subscription credential in addition to the `.gitconfig` it already
+   gets (`adapter.py:740`) — proven by a committed test asserting what the seeded
+   home contains.
+2. **Given** a gateway persona, **When** its node's HOME is seeded, **Then**
+   **no** subscription credential is present — proven by a committed test. This
+   is the control, and it is the one that keeps the exposure narrow: a change
+   that seeds the credential for every node has widened exactly what
    `factory/workgraph/adapter.py`'s own trap 13 exists to prevent.
-5. **Given** a subscription persona and no credential available on the host,
+3. **Given** a subscription persona and no credential available on the host,
    **When** the node is dispatched, **Then** it is refused by name before the
    sandbox forks — proven by a committed test. `ToolchainError`'s precedent: a
    named refusal before the fork, not a diffless `agent_error` afterwards.
-6. **Given** a subscription node's attempt, **When** it is recorded in the
+4. **Given** the credential's location, **When** it is resolved, **Then** it is
+   discovered rather than hardcoded — proven by a committed test that moves it
+   and asserts discovery still succeeds. Where the CLI keeps its credential is a
+   host fact, and a literal path encodes one machine on one afternoon.
+5. **Given** an unauthenticated subscription node that nonetheless reaches the
+   sandbox, **When** the CLI refuses, **Then** the attempt is recorded as a
+   named authentication failure rather than as an empty diff — proven by a
+   committed test. Measured 2026-08-19: the CLI exits **1** and prints
+   `Not logged in · Please run /login` **on stdout, not stderr**. A caller
+   watching stderr sees a silent, diffless success.
+
+---
+
+### User Story 4 - A subscription attempt is honest in the ledger and bounded in flight (Priority: P2)
+
+As an operator, an attempt that spent no gateway tokens says so rather than
+reporting zero, and my one subscription is not hammered by parallel nodes.
+
+**Why this priority**: P2 and it depends on US2. The factory works without it;
+the ledger lies without it. Splitting it out means US2 and US3 can land while
+this is still being argued about.
+
+**Independent Test**: record a subscription attempt and assert the ledger row is
+distinguishable from a genuinely free one.
+
+**Acceptance Scenarios**:
+
+1. **Given** a subscription node's attempt, **When** it is recorded in the
    ledger, **Then** it is marked as carrying no gateway spend data rather than
    recorded as costing zero — proven by a committed test asserting the recorded
    marker. A row that says `$0` is indistinguishable from a free call and will be
    read as one.
-7. **Given** more subscription-routed nodes than a declared concurrency limit,
+2. **Given** a gateway node's attempt, **When** it is recorded, **Then** it is
+   recorded exactly as today — proven by a committed test. The control.
+3. **Given** more subscription-routed nodes than a declared concurrency limit,
    **When** they are dispatched, **Then** no more than the limit run at once —
    proven by a committed test. A virtual key isolates concurrent nodes; one
    subscription does not, and its rate limits are per-account.
+4. **Given** no declared limit, **When** subscription nodes are dispatched,
+   **Then** the behaviour is the documented default and is stated — proven by a
+   committed test. An unbounded default here is a decision, not an oversight, and
+   must be made on purpose.
 
 ---
 
-### User Story 3 - The ladder can promote a struggling node to a stronger persona (Priority: P2)
+### User Story 5 - The ladder can promote a struggling node to a stronger persona (Priority: P2)
 
 As an operator, a node that has failed its ordinary attempts is retried by a
 stronger persona before I am paged, instead of being handed to the same builder
@@ -299,6 +366,11 @@ fire and assert the decided action names the stronger persona.
   ladder dials.
 - **FR-012**: A promoted attempt MUST be distinguishable in attempt history from
   an ordinary attempt and from a debugger cycle.
+- **FR-013**: A subscription-routed attempt whose credential is present but not
+  usable — expired, revoked, or logged out — MUST be recorded as a named
+  authentication failure rather than as an attempt that produced no diff.
+  FR-008 covers the credential being *absent* and is checkable before the fork;
+  this covers it being *present and refused*, which is only observable after it.
 
 ## Work Graph
 
@@ -308,11 +380,27 @@ US1:
   implements: [FR-001, FR-002, FR-003, FR-004]
 US2:
   depends_on: []
-  implements: [FR-005, FR-006, FR-007, FR-008, FR-009, FR-010]
+  implements: [FR-005, FR-006]
 US3:
+  depends_on: [US2]
+  implements: [FR-007, FR-008, FR-013]
+US4:
+  depends_on: [US2]
+  implements: [FR-009, FR-010]
+US5:
   depends_on: []
   implements: [FR-011, FR-012]
 ```
+
+The edges are logical, not merely contentious: US3 seeds a credential only for
+nodes US2 taught the system to recognise, and US4 records and bounds attempts it
+cannot identify until US2 lands. US2 and US3 also both edit
+`factory/workgraph/adapter.py`, so the edge is doing two jobs at once — which is
+fine, but means it must not be removed on the grounds that "the files could be
+kept apart".
+
+US1 and US5 are genuinely independent of all of this and of each other: US1 is
+derivation, US5 is the ladder.
 
 ## Success Criteria
 
@@ -326,21 +414,33 @@ US3:
 - **SC-003**: Paste the control: a gateway-routed node in the same epic, showing
   both variables present and no subscription credential seeded.
 - **SC-004**: Paste the ledger row for a subscription attempt, showing the
-  no-spend-data marker rather than a zero.
+  no-spend-data marker rather than a zero, beside a gateway row from the same
+  epic.
 - **SC-005**: Drive a node to the promotion rung and paste the decided action,
   then exhaust the promotion and paste the escalation.
 - **SC-006**: Run the existing ladder suite unchanged with no promotion persona
   configured and paste the result. Every test must pass.
+- **SC-007**: Paste the unauthenticated case: a subscription-routed node whose
+  credential is absent or expired, showing the named refusal rather than a
+  diffless attempt. The CLI's own behaviour is measured in the plan — exit 1,
+  message on stdout — so this criterion is checkable against a known answer.
 
 ## Assumptions
 
 - The operator has a working Claude Code subscription on the worker host. Where
   its credential lives is a host fact the implementer must discover rather than
   assume, in the manner of `factory/verify/toolchain.py`.
+- **The CLI authenticates from a seeded credential inside the factory's own
+  sandbox. This is no longer an assumption — it was run on 2026-08-19 and both
+  the positive case and its control are pasted in the plan's Sizing section.**
+  That was the single largest unknown in this spec and it resolved in the
+  favourable direction: no `~/.claude.json`, no onboarding state and no extra
+  environment variable is needed beyond the credential file itself.
 - `implementer` stays on `ollama-cloud/kimi-k2.7-code`. Nothing in this spec
   changes it, and the operator has explicitly declined Anthropic API billing.
 - Seeding a credential into a node HOME is a deliberate, narrow exception to the
   rule that no operator credential reaches an agent
   (`factory/workgraph/adapter.py`, trap 13). It applies only to personas that
-  declare the subscription runner, and US2-S4 is the test that keeps it narrow.
+  declare the subscription runner, and **US3-S2** is the test that keeps it
+  narrow.
 - 067/US2's launch-versus-attempt distinction is not duplicated here.

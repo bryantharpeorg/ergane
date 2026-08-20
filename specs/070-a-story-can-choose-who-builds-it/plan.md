@@ -33,7 +33,7 @@ in them. Check each against the tree anyway.
   operator editing `personas.yaml` mid-epic changes the next epic, never the one
   in flight.
 
-**US2 — the subscription runner:**
+**US2, US3, US4 — the subscription runner (split 2026-08-19; US2 routing, US3 credential, US4 accounting):**
 
 - `factory/config.py:143` — `DETERMINISTIC_AGENT = "none"`. **The sentinel to
   mirror.** A second sentinel on the same field is the established pattern.
@@ -58,9 +58,9 @@ in them. Check each against the tree anyway.
 - `factory/workgraph/adapter.py:740` — `(home / ".gitconfig").write_text(config, encoding="utf-8")`.
   **The seeding site.** The credential goes in beside this, conditionally.
 - `factory/verify/toolchain.py` — discover-don't-declare, and the `ToolchainError`
-  precedent US2-S5 wants: a named refusal before the fork.
+  precedent US3-S3 wants: a named refusal before the fork.
 
-**US3 — the promotion rung:**
+**US5 — the promotion rung:**
 
 - `factory/verify/models.py:114` — `class NextAction(StrEnum)`; members PASSED,
   RETRY, DEBUGGER, ESCALATE, KILLED.
@@ -75,7 +75,7 @@ in them. Check each against the tree anyway.
 - `factory/verify/factory_yaml.py:121` — `_LADDER_KEYS`, where `max_attempts`,
   `max_judge_retries`, `debugger_cycles` and `escalation_timeout_s` become
   operator-settable. FR-011's dial belongs here.
-- `personas.yaml:143` — the `closer` persona. Note its alias 401s today; US3 must
+- `personas.yaml:143` — the `closer` persona. Note its alias 401s today; US5 must
   work with **any** configured promotion persona and must not hardcode `closer`.
 
 ## Traps
@@ -102,26 +102,26 @@ reading both callers will silently change a preflight.
 **4. The credential must not arrive through `PASSTHROUGH_ENV`.** `adapter.py:90`
 is an allowlist of three variables and it is deliberate — widening it re-opens the
 whole class 018 closed. The credential belongs in the seeded HOME
-(`adapter.py:740`), conditionally, and US2-S4's control test is what proves it
+(`adapter.py:740`), conditionally, and US3-S2's control test is what proves it
 stays out of gateway nodes.
 
 **5. Discover the credential, do not declare its path.** `factory/verify/toolchain.py`
 exists because literal paths encoded "one machine on one afternoon". Where Claude
 Code keeps its subscription credential is a host fact. Find it, refuse by name if
-absent (US2-S5), and never write an operator's home path into code.
+absent (US3-S3), and never write an operator's home path into code.
 
 **6. A key minted and unused is worse than no key.** FR-006. If the subscription
 path still mints a virtual key "just in case", there is a live credential with no
 purpose and a spend row that will read zero — which is precisely what FR-009
 exists to prevent being confused with free.
 
-**7. Zero is not the same as unknown.** FR-009 and US2-S6. A ledger row recording
+**7. Zero is not the same as unknown.** FR-009 and US4-S1. A ledger row recording
 `$0` for a subscription attempt is indistinguishable from a free call, and
 `ergane usage` will report it as one. The record must say the data does not exist.
 This project already reports tokens rather than dollars as the effort signal; a
 flat-rate row that says so is honest, a zero is not.
 
-**8. The third rung must not corrupt the first two counts.** US3-S5.
+**8. The third rung must not corrupt the first two counts.** US5-S5.
 `_attempts_spent` (`ladder.py:111-119`) counts every record whose persona is not
 the debugger — so a promoted attempt is counted as an ordinary attempt today, by
 default, silently. Decide deliberately whether it should be, and test both
@@ -131,11 +131,11 @@ counters either way.
 `verify/the-ladders-two-caps-expire-together-at-defaults-so-a-control-test-cannot-see-either`,
 and proved by mutation: at `max_attempts=3` / `max_judge_retries=2`, a test of cap
 behaviour written at default config **passes whether the cap exists or is deleted
-outright**. Any US3 test that intends to observe a budget must raise
+outright**. Any US5 test that intends to observe a budget must raise
 `max_attempts` above the cap it is testing, or it is structurally unable to fail.
 `factory/verify/ladder.py:17-19` documents this.
 
-**10. Every existing ladder test must pass unchanged.** US3-S3, SC-006. A ladder
+**10. Every existing ladder test must pass unchanged.** US5-S3, SC-006. A ladder
 with no promotion persona configured behaves exactly as today. This is the
 cheapest possible regression check and the one a reviewer will run first.
 
@@ -145,14 +145,30 @@ in the workflow.
 
 **12. One test file per story, named here.**
 - US1 → `tests/test_story_persona_pinning.py`
-- US2 → `tests/test_subscription_runner.py`
-- US3 → `tests/test_promotion_rung.py`
+- US2 → `tests/test_subscription_routing.py`
+- US3 → `tests/test_subscription_credential.py`
+- US4 → `tests/test_subscription_accounting.py`
+- US5 → `tests/test_promotion_rung.py`
 If you need a file assigned to another story, the edge declaration is wrong — say
 so rather than editing across the line. The three specs before this one declared
 stories independent that shared files, in all three cases.
 
 **13. The judge sees the diff and the criteria, nothing else.** SC-001 through
-SC-006 require committed output. Redact the credential in SC-002 and say you did.
+SC-007 require committed output. Redact the credential in SC-002 and say you did.
+
+**14. US2 and US3 both edit `factory/workgraph/adapter.py`, and the declared edge
+is what keeps them apart.** US2 removes two lines from the constructed
+environment (`:774-775`); US3 adds a conditional write beside the `.gitconfig`
+seed (`:740`). Different functions, one file. The `depends_on: [US2]` edge is
+doing double duty — logical order *and* contention — and must not be dropped on
+the grounds that the two changes "do not really overlap". If you are US3 and the
+file does not look as this plan describes, US2 has landed: re-read it rather than
+assuming.
+
+**15. Do not re-run the feasibility spike.** It is answered, with its control,
+in Sizing below. Re-establishing it costs an attempt and a live subscription call
+to learn something already written down. If your reading of the tree contradicts
+what is recorded there, say so explicitly rather than quietly redoing it.
 
 ## Sizing
 
@@ -160,27 +176,75 @@ SC-006 require committed output. Redact the credential in SC-002 and say you did
 reaching an existing validation. `derive.py:193` is the worked example. Perhaps
 twenty lines plus tests.
 
-**US2 is the largest and the least certain.** Its floor is the environment change
-(two lines omitted) and the conditional seed. Its ceiling is unknown, because
-whether the Claude Code CLI accepts a seeded credential inside a bwrap sandbox
-with `--clearenv` and a synthetic HOME has not been established here. **Establish
-that first**, by hand, before writing production code — if it does not work, the
-story is a different shape and the operator needs to know within the hour rather
-than at the end of the attempt.
+**THE FEASIBILITY QUESTION IS ANSWERED. Do not spend an attempt re-establishing
+it.** An earlier draft of this plan said the ceiling of the subscription story
+was unknown because nobody had checked whether the Claude Code CLI would
+authenticate from a seeded credential inside a bwrap sandbox with `--clearenv`
+and a synthetic HOME. **It does.** Run by an operator session on 2026-08-19,
+against a sandbox built to mirror `adapter.py` — `--clearenv`, `--ro-bind /usr`,
+`--proc`/`--dev`/`--tmpfs`, `/etc/resolv.conf` and `/etc/ssl` from
+`_resolver_binds`, the agent binary bound at its link path, `--unshare-pid
+--die-with-parent`, and `--setenv` for HOME, PATH, LANG and TERM only:
 
-**US3 is medium** and its risk is entirely traps 8 and 9 — a new rung that quietly
+    $ bwrap --clearenv … --setenv HOME <synthetic> … claude -p "Reply with exactly: SPIKE-OK"
+    SPIKE-OK
+    EXIT=0
+
+The synthetic HOME contained exactly two files: `.gitconfig` and
+`.claude/.credentials.json`. **No `~/.claude.json`, no onboarding state, no
+cache, no extra environment variable.** The environment inside the namespace was
+verified to be `HOME`, `LANG`, `PATH`, `PWD`, `TERM` and nothing else — no
+`ANTHROPIC_BASE_URL`, no `ANTHROPIC_AUTH_TOKEN`.
+
+**And the control, because one green run proves less than it looks.** The same
+sandbox with the credential removed and nothing else changed:
+
+    Not logged in · Please run /login
+    TRUE EXIT = 1
+
+So the credential is what authenticated it — not an ambient fallback, not a
+cached session, not the operator's own login leaking through `--clearenv`.
+
+Three facts from that control that are cheaper to read here than to rediscover:
+1. **The failure exit code is 1**, so exit status is a usable signal.
+2. **The refusal is printed on STDOUT, not stderr.** A caller watching stderr
+   sees an empty error stream and a process that "ran". That is US3-S5's whole
+   point and FR-013 exists because of it.
+3. `.claude/.credentials.json` is `chmod 600` and 509 bytes on this host, holding
+   a `claudeAiOauth` object with `accessToken`, `refreshToken`, `expiresAt`,
+   `refreshTokenExpiresAt`, `scopes`, `subscriptionType`, `rateLimitTier`. The
+   presence of `expiresAt` and `refreshTokenExpiresAt` is why FR-013 is about a
+   credential that is present and *stale*, not only one that is absent.
+
+**US2 (declaration and routing) is now small.** Two lines omitted from the
+environment, one sentinel, one property split, and its callers read. No
+credential is involved at all, which is why it is a story of its own.
+
+**US3 (the credential) is small-to-medium and its risk is entirely the controls**
+— traps 4 and 5, and the negative test that keeps gateway nodes credential-free.
+
+**US4 (accounting and bound) is small** and is mostly a decision: what an
+unbounded default means. Make it deliberately.
+
+**US5 is medium** and its risk is entirely traps 8 and 9 — a new rung that quietly
 changes two existing counters, tested by an assertion that cannot fail.
 
 ## Verification the operator will run, independent of the gate
 
 - **Prove US1 by control.** One pinned story, siblings unpinned, in one real
   graph. Both halves asserted.
-- **Prove US2 by running a real node on the subscription**, and prove the control
-  in the same epic: a gateway node that still gets its key and its variables and
-  no credential.
-- **Prove US2's honesty by reading the ledger.** A row that says zero has failed
+- **Prove US2 by reading the constructed environment**, and prove the control in
+  the same epic: a gateway node that still gets its key and both variables.
+- **Prove US3 by running a real node on the subscription**, and prove its control
+  the same way: a gateway node in that epic with no credential in its home. The
+  sandbox is already known to work (Sizing); what US3 adds is doing it
+  conditionally and refusing when it cannot.
+- **Prove US3's failure path by taking the credential away.** The measured
+  behaviour is exit 1 with the message on stdout — if your handling watches
+  stderr it will read that as success.
+- **Prove US4's honesty by reading the ledger.** A row that says zero has failed
   even if the node succeeded.
-- **Prove US3 by mutation, at a raised `max_attempts`.** At defaults the test
+- **Prove US5 by mutation, at a raised `max_attempts`.** At defaults the test
   cannot fail — see trap 9.
 - **Prove nothing regressed** by running the existing ladder suite with no
   promotion persona configured.
