@@ -368,3 +368,44 @@ def find_install_root(
         if candidate.is_dir():
             return candidate
     return None
+
+
+def derive_system_tree_mounts(host_root: Path | str | None = None) -> list[str]:
+    """Return bwrap argv fragments for the read-only system tree.
+
+    The system tree is whatever the host actually has: ``/usr`` is bound
+    read-only, and each of ``/bin``, ``/lib``, ``/lib64`` and ``/sbin`` is
+    emitted as a ``--symlink`` fragment iff the host has a symlink at that
+    path, using the symlink's own target.  A required path that exists but is
+    neither a symlink nor a bindable directory raises `ToolchainError` before
+    the caller can fork.
+
+    Absence of any of the four symlink paths is allowed, because not every
+    Linux host carries all four.  ``/usr`` must exist and be a directory.
+    """
+    root = Path("/") if host_root is None else Path(host_root)
+    argv: list[str] = []
+
+    usr = root / "usr"
+    if not usr.is_dir():
+        raise ToolchainError(
+            f"system tree mount set cannot be built: {usr} is missing or "
+            f"not a directory, and /usr must be bindable"
+        )
+    argv.extend(["--ro-bind", "/usr", "/usr"])
+
+    for path_name in ("/bin", "/lib", "/lib64", "/sbin"):
+        host_path = root / path_name.lstrip("/")
+        if host_path.is_symlink():
+            argv.extend(["--symlink", os.readlink(host_path), path_name])
+            continue
+        if host_path.is_dir():
+            continue
+        if host_path.exists():
+            raise ToolchainError(
+                f"system tree mount set cannot be built: {host_path} exists but "
+                f"is neither a symlink nor a directory, so it cannot be mirrored "
+                f"into the sandbox"
+            )
+
+    return argv

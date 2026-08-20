@@ -62,6 +62,7 @@ from factory.verify.toolchain import (
     ResolvedTool,
     ToolchainError,
     container_path,
+    derive_system_tree_mounts,
     find_install_root,
     resolve_toolchain,
 )
@@ -497,8 +498,14 @@ class BwrapGateExecutor:
     path reaches the whole tree.
     """
 
-    def __init__(self, *, grace_s: float = DEFAULT_KILL_GRACE_S) -> None:
+    def __init__(
+        self,
+        *,
+        grace_s: float = DEFAULT_KILL_GRACE_S,
+        host_root: Path | str = "/",
+    ) -> None:
         self.grace_s = grace_s
+        self.host_root = Path(host_root)
 
     def run(self, invocation: GateInvocation) -> ExecutionOutcome:
         started = time.monotonic()
@@ -583,11 +590,10 @@ class BwrapGateExecutor:
 
         argv: list[str] = [
             str(BWRAP_BACKEND_BINARY),
-            # Minimal system tree: read-only /usr plus the symlinks Ubuntu uses
-            # on aarch64. No /lib64 on this host.
-            "--ro-bind", "/usr", "/usr",
-            "--symlink", "usr/bin", "/bin",
-            "--symlink", "usr/lib", "/lib",
+            # System tree: derived from the host's own layout.  /usr is bound
+            # read-only; each of /bin, /lib, /lib64 and /sbin is emitted only
+            # where the host has a symlink, using that symlink's own target.
+            *derive_system_tree_mounts(self.host_root),
             # Runtime pseudo-filesystems.
             "--proc", "/proc",
             "--dev", "/dev",
