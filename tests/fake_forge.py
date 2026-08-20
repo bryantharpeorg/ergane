@@ -235,6 +235,9 @@ class FakeForge:
     def withdraw_landing(self, proposal: int) -> None:
         self.model.landings.require(proposal).landing_requested = False
 
+    def close_proposal(self, proposal: int, *, note: str) -> None:
+        self.model.landings.close(proposal, note=note)
+
     def failing_check_evidence(
         self, proposal: int, check_names: tuple[str, ...]
     ) -> tuple[CheckFailure, ...]:
@@ -267,6 +270,10 @@ class ProposalState:
     in_conflict: bool = False
     failing_checks: tuple[str, ...] = ()
     logs: dict[str, str] = field(default_factory=dict)
+    #: What the last close said. Modelled rather than call-logged (069-US3): a
+    #: test asserting `close_proposal` was *called* would pass against a forge
+    #: that did nothing, and the note is the half an operator actually reads.
+    closing_note: str = ""
 
 
 @dataclass
@@ -308,6 +315,16 @@ class LandingModel:
         if found is None:
             raise ForgeError("FORGE_NOT_FOUND", f"no proposal {number} here", "")
         return found
+
+    def close(self, number: int, *, note: str = "") -> None:
+        """Somebody closed it, unlanded, and this is what they said (069-US3).
+
+        Idempotent by construction: closing what is already closed re-states the
+        note and stays closed, which is what a forge does and what a reset run
+        twice depends on.
+        """
+        proposal = self.require(number)
+        proposal.state, proposal.closing_note = "CLOSED", note
 
     def land(self, number: int, *, at: str = "2026-08-16T10:04:00Z") -> None:
         """The forge landed it."""

@@ -323,7 +323,9 @@ def test_nothing_the_seam_declares_spells_a_reserved_word() -> None:
             for field in dataclasses.fields(record)
         ),
     ]
-    assert len(declared) == 25, sorted(declared)
+    # The anti-vacuity count: a seam that declared nothing would spell nothing.
+    # 26 since 069-US3 added `close_proposal`, the landing half's seventh.
+    assert len(declared) == 26, sorted(declared)
 
     spoken = sorted(
         {

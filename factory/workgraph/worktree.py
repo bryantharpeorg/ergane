@@ -1056,6 +1056,149 @@ def trees_identical(repo: Path | str, ref_a: str, ref_b: str) -> bool:
     return tree_a == tree_b
 
 
+#: What `reset` reports when a node left nothing behind. Named because the CLI
+#: composes this verb's report with the forge half's (069-US3) and has to know
+#: which of its own lines means "nothing"; a second spelling of it there would
+#: print "nothing to do, closed pull request #42".
+NOTHING_TO_DO = "nothing to do"
+
+
+def declares_remote(target_repo: Path | str, remote: str = "origin") -> bool:
+    """Whether the target clone declares `remote`; False if git will not say (069-US3).
+
+    A target with no remote has no forge side at all: nothing was ever pushed, so
+    nothing on a forge can reject a rebuilt node's push. `reset` asks this before
+    it spends a forge call, which is the same posture `mirror_node_branch` takes
+    when it declines to invent a destination the target never named.
+    """
+    try:
+        return _has_remote(Path(target_repo), remote)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@dataclass(frozen=True)
+class RemoteBranchArchive:
+    """What the remote half of a reset did with the node branch — data, never an exception.
+
+    `cleared` is the only field a caller routes on, and it means *the node
+    namespace on that remote is clear* — true both when the branch was archived
+    and when there was nothing there to archive, because a rebuilt node's push
+    succeeds either way. `archived_as` is the ref the branch was renamed to, or
+    `""` when nothing moved. `detail` carries git's own words on a failure (the
+    rule `MirrorOutcome.detail` states: an operator re-driven on a summary
+    debugs the summary).
+    """
+
+    branch: str
+    remote: str
+    archived_as: str
+    cleared: bool
+    detail: str
+
+
+def archive_remote_node_branch(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    remote: str = "origin",
+) -> RemoteBranchArchive:
+    """Rename `factory/<epic>/<node>` out of the node namespace on `remote`; never raise.
+
+    The remote half of `reset` (069 FR-010). The local half archives the node's
+    branch in the clone, which is what made a relaunch *look* clean; the copy on
+    the remote survived, and a rebuilt node — branched from the target's current
+    head, so no descendant of what the remote still holds — had its landing push
+    refused as a non-fast-forward. Nothing said so until that push failed.
+
+    **Renamed, never deleted.** Constitution VI is unconditional and the clone
+    running the reset is not the only place that branch is read from, so the
+    remote tip is written to `archive/factory/<epic>/<node>/<sha12>` — the same
+    name `_archive_node` gives it locally — in the same atomic push that removes
+    the node ref. Nothing on the remote is overwritten: the name embeds the tip
+    it points at, so a repeat is a no-op rather than a conflict.
+
+    **Nothing outside the node namespace is read or written** (069 US3-S4). The
+    branch name is composed here rather than taken from a caller, the `ls-remote`
+    answer is matched against that exact refname rather than trusted to a
+    pattern, and the archive name is derived from it.
+
+    **Nothing here may raise** (FR-011). A remote that is not there, not
+    reachable, or that refuses the push must each leave the local reset finished
+    and the operator told what is still on the forge — a cleanup verb that aborts
+    on a network error strands them in the state it exists to clear.
+    """
+    repo = Path(target_repo)
+    branch = branch_name(epic_id, node_id)
+
+    if not declares_remote(repo, remote):
+        return RemoteBranchArchive(
+            branch,
+            remote,
+            "",
+            True,
+            f"no '{remote}' remote is configured in {repo}: nothing on a forge to clear",
+        )
+
+    try:
+        listed = _git(repo, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return RemoteBranchArchive(branch, remote, "", False, str(exc))
+
+    sha = _listed_sha(listed, f"refs/heads/{branch}")
+    if sha is None:
+        return RemoteBranchArchive(
+            branch, remote, "", True, f"{branch} is not on {remote}"
+        )
+
+    archive = f"archive/factory/{epic_id}/{node_id}/{sha[:12]}"
+    try:
+        if not _object_present(repo, sha):
+            # The tip the remote holds is not in this clone — a reset run from a
+            # machine that never fetched it, or after a `git gc` that collected
+            # it. Fetch it rather than push a name at an object nobody has.
+            _git(repo, "fetch", "--quiet", remote, f"refs/heads/{branch}")
+        _git(
+            repo,
+            "push",
+            "--atomic",
+            "--quiet",
+            remote,
+            f"{sha}:refs/heads/{archive}",
+            f":refs/heads/{branch}",
+        )
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return RemoteBranchArchive(branch, remote, archive, False, str(exc))
+
+    return RemoteBranchArchive(
+        branch, remote, archive, True, f"archived {branch} on {remote} as {archive}"
+    )
+
+
+def _listed_sha(listed: str, ref: str) -> str | None:
+    """The sha `git ls-remote` reported for exactly `ref`, or None.
+
+    Matched on the whole refname rather than on the pattern having been narrow:
+    the one thing this must never do is act on a ref the epic does not own, and a
+    tab-separated line is cheaper to check than a pattern is to reason about.
+    """
+    for line in listed.splitlines():
+        found, _, name = line.partition("\t")
+        if name.strip() == ref and found.strip():
+            return found.strip()
+    return None
+
+
+def _object_present(repo: Path, sha: str) -> bool:
+    """Whether this clone already holds `sha` as a commit."""
+    try:
+        _git(repo, "cat-file", "-e", f"{sha}^{{commit}}")
+    except (WorktreeError, OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def reset(
     target_repo: Path | str,
     epic_id: str,
@@ -1096,7 +1239,7 @@ def reset(
         actions.append("deleted sidecar")
 
     if not actions:
-        return ["nothing to do"]
+        return [NOTHING_TO_DO]
     return actions
 
 

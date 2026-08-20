@@ -49,9 +49,17 @@ READING_OPERATIONS = {"describe_repository", "landing_policy"}
 
 #: The landing half (049-US3, FR-009), extending the line above exactly as it
 #: promised. US4's wiring operation joins `SEAM_OPERATIONS` the same way.
+#:
+#: `close_proposal` is 069-US3's, and is the seventh rather than a rename of
+#: `withdraw_landing`: that one takes back a landing request and leaves the
+#: proposal open, which is the kill path, and `ergane build reset` needs the
+#: proposal gone because its head branch is about to be. Adding to this set is
+#: what enrols the operation in every conformance test below, so a forge that
+#: does not implement it stops being a forge.
 LANDING_OPERATIONS = {
     "find_proposal", "open_proposal", "request_landing",
     "observe_proposal", "withdraw_landing", "failing_check_evidence",
+    "close_proposal",
 }
 
 #: The wiring half (049-US4, FR-012): one operation, the write side of

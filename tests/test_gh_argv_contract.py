@@ -103,6 +103,8 @@ def _extract_argvs(method_name: str) -> list[list[str]]:
             method(7)
         elif method_name == "disable_auto_merge":
             method(7)
+        elif method_name == "close_pr":
+            method(7, comment="closed by `ergane build reset`")
         elif method_name == "pr_checks":
             method(7)
         elif method_name == "run_failed_log":

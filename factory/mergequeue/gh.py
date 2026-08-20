@@ -14,6 +14,7 @@ The command surface is exactly the plan's table:
 | enqueue | `gh pr merge <n> --auto --<merge_method>` |
 | poll | `gh pr view <n> --json state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,statusCheckRollup` |
 | kill cleanup | `gh pr merge <n> --disable-auto` |
+| reset cleanup | `gh pr close <n> --comment <c>` |
 
 Two structural guards hold here, and the tests assert them against the module
 source so a future edit cannot silently widen the surface:
@@ -213,6 +214,28 @@ class GhClient:
     def disable_auto_merge(self, pr_number: int) -> None:
         """Take the PR out of the queue — best-effort kill cleanup (FR-008)."""
         self._run("pr", "merge", str(pr_number), "--disable-auto")
+
+    def close_pr(self, pr_number: int, *, comment: str) -> None:
+        """Close the PR, leaving `comment` on it — the reset path (069 FR-010).
+
+        Deliberately not the kill path's cleanup. A killed epic's PR is left open
+        (`disable_auto_merge` takes it out of the queue and stops there) because
+        it is not the factory's to close while the operator may still want it.
+        A *reset* is the operator saying that node is being rebuilt from scratch,
+        and the PR it leaves behind holds a head branch that is about to stop
+        existing — a PR nobody can land, sitting on the epic's next attempt.
+
+        The comment is the point rather than a courtesy: a PR that simply closed
+        reads as somebody having clicked, and whoever debugs the rebuild later
+        needs it to say what closed it.
+
+        `gh pr close` takes a flag that removes the head branch as well, and this
+        does not pass it — FR-008's rule, which the structural guard reads off
+        this module's source, so the flag is not spelled here either. The branch
+        is archive-renamed by the reset's git side, which keeps every commit
+        reachable.
+        """
+        self._run("pr", "close", str(pr_number), "--comment", comment)
 
     # --- US2 check-failure evidence (FR-005/006/007) -------------------------
 

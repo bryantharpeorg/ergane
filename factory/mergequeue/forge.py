@@ -176,7 +176,12 @@ class ForgeError(RuntimeError):
 
 @runtime_checkable
 class Forge(Protocol):
-    """The seam: two reading operations, six landing ones, one wiring one, no tenth."""
+    """The seam: two reading operations, seven landing ones, one wiring one, no eleventh.
+
+    The seventh landing operation is `close_proposal`, added by 069-US3 because
+    `ergane build reset` has forge work to do that no existing operation
+    expressed — see its docstring for why it is not `withdraw_landing`.
+    """
 
     def describe_repository(self) -> RepositoryDescription:
         """Name this repository and report what only this forge can report.
@@ -196,9 +201,9 @@ class Forge(Protocol):
         """
         ...
 
-    # --- the landing half (049-US3, FR-009) ----------------------------------
+    # --- the landing half (049-US3, FR-009; 069-US3 added the seventh) --------
     #
-    # Six operations, one per thing a forge's vocabulary differs about when work
+    # Seven operations, one per thing a forge's vocabulary differs about when work
     # goes from a branch to the target. None decides: what an observation *means*
     # is `classify`'s call. Each raises `ForgeError` when the forge will not
     # answer — data the caller returns, not a fault.
@@ -237,6 +242,26 @@ class Forge(Protocol):
         """Take back the landing request, leaving the proposal open — the kill
         path. A killed epic must stop trying to land, and the proposal is not the
         factory's to close."""
+        ...
+
+    def close_proposal(self, proposal: int, *, note: str) -> None:
+        """Close `proposal` for good, leaving `note` on it saying what closed it.
+
+        The reset path (069 FR-010), and deliberately not the kill path's
+        `withdraw_landing` above: a killed epic keeps its proposal, because an
+        operator may still want it. A *reset* is the operator saying that node is
+        being rebuilt from scratch, which is the one case where the proposal is
+        the factory's to close — its head branch is about to stop existing, so
+        what is left behind is a proposal no forge could ever land.
+
+        `note` is not a courtesy. A proposal that simply went away reads as
+        somebody having clicked, and whoever debugs the rebuild afterwards needs
+        it to say otherwise.
+
+        Closing an already-closed proposal is a success, because the reset it
+        belongs to is run twice by operators who are not sure the first one
+        finished.
+        """
         ...
 
     def failing_check_evidence(

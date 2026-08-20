@@ -19,6 +19,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -98,8 +99,13 @@ from factory.workgraph.preflight import (
     prompt_assembly_preflight,
 )
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
+from factory.mergequeue.forge import Forge, ForgeError
 from factory.workgraph.worktree import (
+    NOTHING_TO_DO,
     NodeSalvage,
+    archive_remote_node_branch,
+    branch_name,
+    declares_remote,
     read_node_salvage,
     reset as reset_worktree,
 )
@@ -883,6 +889,116 @@ def resolve_command(args: argparse.Namespace) -> int:
     return asyncio.run(_resolve(args.epic_id, args.escalation_id, args.choice))
 
 
+#: The remote a reset clears. The landing path pushes the node branch to the
+#: target clone's `origin` (`push_branch`), so that is the one a rebuilt node's
+#: push collides with, and the only one this verb has any business touching.
+RESET_REMOTE = "origin"
+
+#: Printed under a node when part of the forge work did not happen (069 FR-011).
+#: A prefix rather than a sentence so the report stays greppable — an operator
+#: reading a many-node reset needs to find the lines that still need a hand.
+FORGE_NOT_CLEARED = "forge not cleared:"
+
+
+def reset_close_note(epic_id: str, node_id: str) -> str:
+    """What a reset leaves on the proposal it closes (069 US3-S1).
+
+    Names the verb, the epic and the node, because the reader is whoever finds
+    the closed pull request afterwards and has to tell "the factory reset this
+    epic" from "a person clicked close".
+    """
+    return (
+        f"Closed by `ergane build reset` for epic {epic_id}, node {node_id}. "
+        f"The node's branch has been archived out of `factory/{epic_id}/{node_id}` "
+        "so the epic can be rebuilt; a rebuilt node opens its own pull request."
+    )
+
+
+def _forge(target_repo: str) -> Forge:
+    """The forge `reset` clears, as the target repository declares it.
+
+    Resolved through the package-level seam rather than here, for the same reason
+    `_connect` reaches for `_open_client` there: noun modules are `exec_module`-d
+    into fresh module objects at discovery, so a patch on this module is not on
+    the module the parser dispatches into. A reset test that patched this one
+    would talk to the real forge.
+    """
+    from factory.cli.nouns import _open_forge
+
+    return _open_forge(target_repo)
+
+
+@dataclass(frozen=True)
+class ForgeReset:
+    """What the forge half of one node's reset did, and what it could not do.
+
+    Two lists rather than a success flag, because FR-011 makes the second one
+    load-bearing: the local reset completes either way, so what the operator
+    needs is a report of what is still on the forge, not an exit code that hides
+    the half that worked.
+    """
+
+    actions: tuple[str, ...]
+    undone: tuple[str, ...]
+
+
+def _reset_node_forge(target_repo: str, epic_id: str, node_id: str) -> ForgeReset:
+    """Close the node's proposal and archive its remote branch (069 FR-010).
+
+    Scoped to `factory/<epic>/<node>` by construction (US3-S4, trap 8): the head
+    branch is composed here, the proposal is the one the forge holds *for that
+    head*, and the branch archive derives its name from it. Nothing is read from
+    a wider list and filtered — a cleanup verb that closed a pull request an
+    operator opened by hand would be a far worse defect than the one this fixes.
+
+    A target that declares no remote reports nothing at all, done or undone: it
+    never pushed anything, so there is no forge state to clear, nothing an
+    operator has to finish by hand, and no reason to spawn `gh`.
+
+    Nothing here raises (FR-011, trap 9). A forge that cannot be reached, or that
+    refuses, becomes a line in `undone`.
+    """
+    if not declares_remote(target_repo, RESET_REMOTE):
+        return ForgeReset((), ())
+
+    branch = branch_name(epic_id, node_id)
+    actions: list[str] = []
+    undone: list[str] = []
+
+    try:
+        forge = _forge(target_repo)
+        existing = forge.find_proposal(branch)
+    except (ForgeError, OSError, subprocess.SubprocessError) as error:
+        undone.append(
+            f"the pull request for {branch}, if any, is still open: {error}"
+        )
+    else:
+        if existing is None:
+            actions.append(f"no open pull request for {branch}")
+        else:
+            try:
+                forge.close_proposal(
+                    existing.number, note=reset_close_note(epic_id, node_id)
+                )
+            except (ForgeError, OSError, subprocess.SubprocessError) as error:
+                undone.append(
+                    f"pull request #{existing.number} for {branch} is still "
+                    f"open: {error}"
+                )
+            else:
+                actions.append(f"closed pull request #{existing.number}")
+
+    archived = archive_remote_node_branch(
+        target_repo, epic_id, node_id, remote=RESET_REMOTE
+    )
+    if archived.cleared:
+        actions.append(archived.detail)
+    else:
+        undone.append(f"{branch} is still on {RESET_REMOTE}: {archived.detail}")
+
+    return ForgeReset(tuple(actions), tuple(undone))
+
+
 def reset_command(args: argparse.Namespace) -> int:
     """Archive the survivors of a terminated epic so it can be relaunched safely."""
     try:
@@ -894,7 +1010,19 @@ def reset_command(args: argparse.Namespace) -> int:
 
 
 async def _reset_epic(graph: WorkGraph) -> int:
-    """Reset every node the graph names, after one Temporal read proves it is safe."""
+    """Reset every node the graph names, after one Temporal read proves it is safe.
+
+    Both halves, since 069-US3: the local survivors, and the forge state that
+    would otherwise reject the epic's own rebuild. The forge half runs for every
+    node whether or not the local half found anything — the state that rejects a
+    push is the remote's, and an operator running this a second time has a clean
+    clone and a branch still sitting on `origin`.
+
+    Exit 0 even when the forge could not be reached (FR-011). The local reset is
+    complete by then, and what is still on the forge is printed under the node
+    that owns it rather than swapped for a non-zero code that would read as
+    "nothing happened".
+    """
     client = await _connect()
     handle = client.get_workflow_handle(workflow_id(graph.epic_id))
     try:
@@ -927,7 +1055,15 @@ async def _reset_epic(graph: WorkGraph) -> int:
             node.id,
             factory_root=factory_root,
         )
-        print(f"{node.id}: {', '.join(actions)}")
+        forge = _reset_node_forge(graph.target_repo, graph.epic_id, node.id)
+        # `reset_worktree` says "nothing to do" when the local side was already
+        # clean; that is only the whole answer if the forge side found nothing
+        # either, which is exactly the second-reset case.
+        local = [action for action in actions if action != NOTHING_TO_DO]
+        reported = [*local, *forge.actions] or [NOTHING_TO_DO]
+        print(f"{node.id}: {', '.join(reported)}")
+        for line in forge.undone:
+            print(f"{node.id}: {FORGE_NOT_CLEARED} {line}")
 
     return EXIT_OK
 
@@ -1170,7 +1306,10 @@ def add_parser(subparsers: Any) -> None:
 
     reset = commands.add_parser(
         "reset",
-        help="archive a terminated epic's survivors so it can be relaunched",
+        help=(
+            "archive a terminated epic's survivors, here and on the forge, so it "
+            "can be relaunched"
+        ),
     )
     reset.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
     reset.set_defaults(run=reset_command)

@@ -197,6 +197,18 @@ class GithubForge:
         except GhError as error:
             raise _refused(error) from error
 
+    def close_proposal(self, proposal: int, *, note: str) -> None:
+        """`gh pr close <n> --comment <note>` — the reset path (069 FR-010).
+
+        A pull request GitHub has already closed answers this the same way it
+        answers a first close, which is what makes a second `ergane build reset`
+        a success rather than a refusal.
+        """
+        try:
+            self.client.close_pr(proposal, comment=note)
+        except GhError as error:
+            raise _refused(error) from error
+
     # --- the wiring half (049-US4, FR-012/FR-013) ----------------------------
 
     def apply_landing_policy(
