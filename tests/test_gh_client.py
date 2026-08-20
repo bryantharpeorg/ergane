@@ -100,12 +100,17 @@ def test_no_existing_pr_is_none() -> None:
 
 
 def test_create_pr_uses_base_head_title_and_body_file_never_draft() -> None:
-    """Ready, never draft — a draft PR does not enter the queue (US1)."""
+    """Ready, never draft — a draft PR does not enter the queue (US1).
+
+    `gh pr create` prints the PR URL on stdout; the client extracts the number
+    from that URL rather than parsing JSON (US2, FR-008).
+    """
     gh = FakeGh()
-    gh.expect_json(
+    gh.expect(
         "pr", "create", "--base", "main", "--head", "factory/003-merge-queue/us1",
         "--title", "003-merge-queue/us1: story title", "--body-file",
-        "/tmp/pr-body.md", payload={"number": 7, "url": "https://x/pull/7"},
+        "/tmp/pr-body.md",
+        stdout="https://x/pull/7\n",
     )
     client = GhClient(runner=gh, repo=TARGET_CLONE)
 
@@ -117,6 +122,7 @@ def test_create_pr_uses_base_head_title_and_body_file_never_draft() -> None:
     )
 
     assert created.number == 7
+    assert created.url == "https://x/pull/7"
     assert "--draft" not in [a for c in gh.calls for a in c.args]
 
 
