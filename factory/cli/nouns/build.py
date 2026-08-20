@@ -9,6 +9,20 @@ surface over `EpicWorkflow`.  Almost every behaviour is a port from
 - The signal verbs (`pause`, `resume`, `kill`, `answer`, `resolve`) give the
   five signals the workflow already declared a typed CLI instead of a hand-typed
   `temporal workflow signal` invocation.
+
+One argument convention holds across the noun (068 FR-010): **every verb that
+acts on an epic already started takes `epic_id` as its first positional** —
+`status`, `pause`, `resume`, `kill`, `answer`, `resolve`, `reset`,
+`complete-node-externally`.  The id is what Temporal's own output prints and
+what an operator has to hand when something has gone wrong, and `reset` was the
+one verb that asked for something else, at exactly the moment it was hardest to
+produce.  Three verbs are declared exceptions, for reasons that are about what
+they *are* rather than about consistency: `start` is keyed by the compiled
+artifact because it creates the epic, `salvage` is keyed by it because it must
+work with no Temporal at all, and `external-completion-count` takes no
+positional because it reports a store-wide count.  The family is pinned by
+`tests/test_build_verbs_take_an_epic_id.py`, which fails if a new subcommand
+appears in neither list.
 """
 
 from __future__ import annotations
@@ -97,6 +111,7 @@ from factory.workgraph.preflight import (
     check_aliases,
     prompt_assembly_preflight,
 )
+from factory.workgraph.cli import DEFAULT_SPECS_ROOT
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
 from factory.workgraph.worktree import (
     NodeSalvage,
@@ -883,14 +898,56 @@ def resolve_command(args: argparse.Namespace) -> int:
     return asyncio.run(_resolve(args.epic_id, args.escalation_id, args.choice))
 
 
-def reset_command(args: argparse.Namespace) -> int:
-    """Archive the survivors of a terminated epic so it can be relaunched safely."""
+def names_a_compiled_artifact(argument: str) -> bool:
+    """Does this argument name a file on disk rather than an epic?
+
+    Structural, and deliberately not a filesystem probe.  A spec directory's
+    name is a single path component and no epic id ends in `.json`, so an
+    argument carrying a separator or that suffix is a path the operator typed
+    on purpose.  Deciding by "does this file exist?" instead is the one rule
+    that could silently reinterpret a mistyped path as an epic id (068 trap 8):
+    the path would miss, fall through to the epic-id branch, and be refused
+    against a specs root the operator never mentioned, with the typo invisible.
+
+    The two forms are therefore disjoint by construction, not by precedence.
+    """
+    return Path(argument).name != argument or argument.endswith(".json")
+
+
+def resolve_reset_graph(argument: str, specs_root: str) -> WorkGraph:
+    """The compiled graph `reset` acts on, from an epic id or an artifact path.
+
+    An epic id resolves `<specs_root>/<epic_id>/workgraph.json` off disk, and
+    nothing else: there is no Temporal read that could supply the graph
+    instead.  `describe()` exposes memo and static details only — no input —
+    `ergane build start` sets no memo, and `fetch_history()` is gone past
+    retention, which is precisely the state `reset` exists for.  `_reset_epic`
+    needs `graph.nodes` and `graph.target_repo`, not only the id, so the
+    artifact is the only source there has ever been.
+
+    An artifact path is still accepted, unchanged in meaning (US3-S4).
+    """
+    if names_a_compiled_artifact(argument):
+        location: Path = Path(argument)
+    else:
+        location = (Path(specs_root) / argument / ARTIFACT_NAME).resolve()
+        if not location.is_file():
+            raise OperatorError(
+                f"no epic '{argument}' is compiled here "
+                f"(looked for {location}); compile it with "
+                f"`ergane spec derive`, pass --specs-root, or give the path to "
+                f"a compiled {ARTIFACT_NAME} instead of an epic id"
+            )
+
     try:
-        graph = load_workgraph(args.graph)
+        return load_workgraph(location)
     except WorkGraphError as error:
         raise OperatorError(str(error)) from error
 
-    return asyncio.run(_reset_epic(graph))
+
+def reset_command(args: argparse.Namespace) -> int:
+    """Archive the survivors of a terminated epic so it can be relaunched safely."""
+    return asyncio.run(_reset_epic(resolve_reset_graph(args.epic_id, args.specs_root)))
 
 
 async def _reset_epic(graph: WorkGraph) -> int:
@@ -1171,8 +1228,32 @@ def add_parser(subparsers: Any) -> None:
     reset = commands.add_parser(
         "reset",
         help="archive a terminated epic's survivors so it can be relaunched",
+        description=(
+            "Keyed by the epic id, like every other verb that acts on an epic "
+            f"already started. The compiled {ARTIFACT_NAME} is resolved from "
+            f"<specs-root>/<epic-id>/{ARTIFACT_NAME} rather than read off the "
+            "workflow, because it cannot be read off the workflow: describe() "
+            "exposes no input, start sets no memo, and history is gone past "
+            "retention by the time a reset is wanted. A path to a compiled "
+            f"{ARTIFACT_NAME} is still accepted and still means what it did."
+        ),
     )
-    reset.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
+    reset.add_argument(
+        "epic_id",
+        help=(
+            "the epic id (the spec directory's name); a path to a compiled "
+            f"{ARTIFACT_NAME} is still accepted"
+        ),
+    )
+    reset.add_argument(
+        "--specs-root",
+        dest="specs_root",
+        default=DEFAULT_SPECS_ROOT,
+        help=(
+            "where this epic's compiled graph lives "
+            f"(default: {DEFAULT_SPECS_ROOT})"
+        ),
+    )
     reset.set_defaults(run=reset_command)
 
     salvage = commands.add_parser(
