@@ -112,7 +112,13 @@ from factory.verify.models import (
 #:
 #: 6 (023-US4): `verification_results.loop_digest` and `.loop_summary`. Additive
 #: text columns; pre-023 rows read as NULL, never backfilled.
-SCHEMA_VERSION = 6
+#:
+#: 7 (068-US2): `escalations.resolution` admits `KILL_EPIC`. The first migration
+#: here that is not additive — SQLite cannot ALTER a CHECK constraint, so
+#: `_migrate` rebuilds the table. Until it runs, a `KILL_EPIC` press would be
+#: refused by the constraint at `settle_escalation`, which is a button that pages
+#: an operator and then discards their answer.
+SCHEMA_VERSION = 7
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -137,6 +143,60 @@ TEST_SUITE_STORE_ISOLATION_FINDING = (
     "hardening/test-suite-writes-to-the-live-evidence-store"
 )
 
+
+#: The escalations table and its indexes, held apart from the rest of the DDL
+#: because 068-US2 has to be able to *rebuild* them: SQLite can add a column in
+#: place but cannot alter a CHECK constraint, and the `resolution` CHECK had to
+#: learn `KILL_EPIC`. One spelling for both jobs — a second copy inside the
+#: migration is a second thing to keep in step, and the one that drifts is
+#: always the copy a fresh database never exercises.
+_ESCALATIONS_DDL = """
+CREATE TABLE IF NOT EXISTS escalations (
+    escalation_id  TEXT PRIMARY KEY,       -- 12-hex token (callback_data key)
+    workflow_id    TEXT NOT NULL,
+    epic_id        TEXT NOT NULL,
+    node_id        TEXT NOT NULL,
+    choices        TEXT NOT NULL,          -- JSON: list[EscalationChoice]
+    history_summary TEXT NOT NULL,         -- full failure history (SC-005)
+    delivered      INTEGER NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1)),
+    sent_at        TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,          -- sent_at + 1h
+    -- 068-US2: `KILL_EPIC` joins the vocabulary. Ending the node and ending the
+    -- epic are distinct operator choices (FR-008), so they are distinct rows.
+    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'KILL_EPIC', 'PAUSE_EPIC', 'EXPIRED')),
+    resolved_at    TEXT,
+    resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
+    -- 041-US2: the failing merge-queue checks the escalation was raised over
+    -- (JSON: list[CheckFailure]). Written since 025 and read since never: the
+    -- column did not exist, so every read-back handed the caller an empty
+    -- tuple. Last in the table because ALTER TABLE ADD COLUMN appends, and a
+    -- migrated store must have the same column order as a fresh one.
+    check_evidence TEXT NOT NULL DEFAULT '[]',
+    CHECK ((resolution IS NULL) = (resolved_at IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_esc_pending ON escalations (resolution) WHERE resolution IS NULL;
+CREATE INDEX IF NOT EXISTS idx_esc_node    ON escalations (epic_id, node_id);
+"""
+
+#: Every column of `escalations`, in DDL order — what the 068-US2 rebuild copies
+#: across. Named rather than `SELECT *`, so a future column added to one side
+#: only fails loudly here instead of silently shifting a row's values along.
+_ESCALATION_COLUMNS = (
+    "escalation_id",
+    "workflow_id",
+    "epic_id",
+    "node_id",
+    "choices",
+    "history_summary",
+    "delivered",
+    "sent_at",
+    "expires_at",
+    "resolution",
+    "resolved_at",
+    "resolved_via",
+    "check_evidence",
+)
 
 #: Verbatim from `contracts/verification-store.sql`. Every statement is
 #: `IF NOT EXISTS`, so bootstrap is safe to run on every connect.
@@ -175,34 +235,9 @@ CREATE INDEX IF NOT EXISTS idx_vr_epic    ON verification_results (epic_id);
 CREATE INDEX IF NOT EXISTS idx_vr_node    ON verification_results (epic_id, node_id);
 CREATE INDEX IF NOT EXISTS idx_vr_specref ON verification_results (spec_ref);
 CREATE INDEX IF NOT EXISTS idx_vr_verdict ON verification_results (verdict);
-
-CREATE TABLE IF NOT EXISTS escalations (
-    escalation_id  TEXT PRIMARY KEY,       -- 12-hex token (callback_data key)
-    workflow_id    TEXT NOT NULL,
-    epic_id        TEXT NOT NULL,
-    node_id        TEXT NOT NULL,
-    choices        TEXT NOT NULL,          -- JSON: list[EscalationChoice]
-    history_summary TEXT NOT NULL,         -- full failure history (SC-005)
-    delivered      INTEGER NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1)),
-    sent_at        TEXT NOT NULL,
-    expires_at     TEXT NOT NULL,          -- sent_at + 1h
-    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')),
-    resolved_at    TEXT,
-    resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
-    -- 041-US2: the failing merge-queue checks the escalation was raised over
-    -- (JSON: list[CheckFailure]). Written since 025 and read since never: the
-    -- column did not exist, so every read-back handed the caller an empty
-    -- tuple. Last in the table because ALTER TABLE ADD COLUMN appends, and a
-    -- migrated store must have the same column order as a fresh one.
-    check_evidence TEXT NOT NULL DEFAULT '[]',
-    CHECK ((resolution IS NULL) = (resolved_at IS NULL))
-);
-
-CREATE INDEX IF NOT EXISTS idx_esc_pending ON escalations (resolution) WHERE resolution IS NULL;
-CREATE INDEX IF NOT EXISTS idx_esc_node    ON escalations (epic_id, node_id);
-
+""" + _ESCALATIONS_DDL + """
 -- 008-US1: a sibling to escalations for operator questions. The escalations
--- table's CHECK constraints (resolution IN RETRY/KILL/PAUSE_EPIC/EXPIRED) cannot
+-- table's CHECK constraints (resolution IN RETRY/KILL/KILL_EPIC/PAUSE_EPIC/EXPIRED) cannot
 -- hold a free-text answer, which is the whole reason this table exists (plan §
 -- Technical Context): an escalation path never touches it, and it is never
 -- touched by one. `message_id` is the Telegram message id the send returned —
@@ -357,6 +392,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "check_evidence TEXT NOT NULL DEFAULT '[]'"
         )
 
+    _widen_escalation_resolutions(conn)
+
     result_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(verification_results)")
     }
@@ -418,6 +455,45 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "CREATE INDEX idx_extcomp_counts_epic "
             "ON external_completion_counts (epic_id)"
         )
+
+
+def _widen_escalation_resolutions(conn: sqlite3.Connection) -> None:
+    """Teach an existing store's `resolution` CHECK the `KILL_EPIC` value (068-US2).
+
+    The one migration here that cannot be an `ADD COLUMN`: SQLite has no
+    `ALTER TABLE ... ALTER CONSTRAINT`, so widening a CHECK means rebuilding the
+    table around the rows. Keyed off the recorded DDL rather than off the version
+    number, for `_migrate`'s stated reason — a version is a claim and the schema
+    is the fact — and idempotent, because a table that already admits the value
+    is left entirely alone.
+
+    Order matters twice. The indexes are dropped *before* the rename, because
+    SQLite carries an index along with the table it belongs to and keeps its
+    name: leave them and the `CREATE INDEX IF NOT EXISTS` below is a no-op that
+    silently leaves the rebuilt table unindexed. And this runs *after* the
+    `check_evidence` migration above, so the old table has every column the copy
+    names by the time the copy runs.
+
+    Nothing is dropped until the rows are across. A store that dies mid-migration
+    is left with the old table under its interim name, which is recoverable; one
+    that dropped first would be a lost escalation history.
+    """
+    recorded = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'escalations'"
+    ).fetchone()
+    if recorded is None or EscalationChoice.KILL_EPIC.value in recorded[0]:
+        return
+
+    columns = ", ".join(_ESCALATION_COLUMNS)
+    conn.execute("DROP INDEX IF EXISTS idx_esc_pending")
+    conn.execute("DROP INDEX IF EXISTS idx_esc_node")
+    conn.execute("ALTER TABLE escalations RENAME TO escalations_pre_kill_epic")
+    conn.executescript(_ESCALATIONS_DDL)
+    conn.execute(
+        f"INSERT INTO escalations ({columns}) "
+        f"SELECT {columns} FROM escalations_pre_kill_epic"
+    )
+    conn.execute("DROP TABLE escalations_pre_kill_epic")
 
 
 # --- verification results ---------------------------------------------------

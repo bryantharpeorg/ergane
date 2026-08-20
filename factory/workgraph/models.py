@@ -280,6 +280,14 @@ class NodeRecord:
     #: the expiry) back to *this* node on un-park. `None` unless the node is
     #: parked, and cleared on re-dispatch.
     pending_question_id: str | None = None
+    #: 068-US2: the escalation child this node is parked on, set the moment the
+    #: child starts and cleared the moment it settles. `None` at every other
+    #: instant, which is the whole point: it is how a reader outside the workflow
+    #: — `ergane build reset`, through `epic_status` — tells an epic that is
+    #: *working* from one that is stalled on an answer nobody has given. Keyed on
+    #: what kind of child is alive rather than on the workflow's own execution
+    #: status, which says `RUNNING` for both (FR-007).
+    pending_escalation_id: str | None = None
     #: US2: how many pre-first-token launch faults this node has hit.  Kept
     #: outside `history` because launch failures are not attempts and must not be
     #: counted by `_attempts_spent` (FR-005).  Bounded by `max_launch_retries`

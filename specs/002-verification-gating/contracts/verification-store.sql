@@ -54,7 +54,11 @@ CREATE TABLE IF NOT EXISTS escalations (
     delivered      INTEGER NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1)),
     sent_at        TEXT NOT NULL,
     expires_at     TEXT NOT NULL,          -- sent_at + 1h
-    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')),
+    -- 068-US2 (schema 7): `KILL_EPIC` joins the vocabulary. Ending the node and
+    -- ending the epic are distinct operator choices (FR-008), so they are
+    -- distinct rows. Stores written before this version are rebuilt around
+    -- their rows, because SQLite cannot alter a CHECK in place.
+    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'KILL_EPIC', 'PAUSE_EPIC', 'EXPIRED')),
     resolved_at    TEXT,
     resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
     -- 041-US2 (schema 3): the failing merge-queue checks the escalation was

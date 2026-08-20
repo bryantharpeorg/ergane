@@ -188,7 +188,8 @@ finish their full ladders; `resume_epic` continues; `kill_epic` cancels every
 in-flight attempt, salvages each, tears down keys, and marks every non-terminal
 node `KILLED`. The notifier's `escalation_resolved` signal (§9) carries a human's
 answer back into the ladder — a `PAUSE_EPIC` resolution parks the node `FAILED`
-and pauses the epic. The `epic_status` query answers with the epic state plus
+and pauses the epic, and a `KILL_EPIC` one ends the node and stops the epic around
+it (068-US2: ending the node and ending the epic are distinct choices). The `epic_status` query answers with the epic state plus
 per-node status keyed in declaration order, so reading it top to bottom reads the
 epic in the order it was
 authored to run.
@@ -437,11 +438,12 @@ The pipeline, cheapest signal first:
    recorded attempts: retry-with-feedback within `max_attempts` (default 3, with the 2
    judge retries bounded *inside* that total), then the `debugger` persona once, then
    Telegram escalation (§9). Escalation `RETRY` grants exactly one further attempt;
-   `KILL`, `PAUSE_EPIC`, and the configured timeout end the node.
+   `KILL`, `KILL_EPIC`, `PAUSE_EPIC`, and the configured timeout end the node; `KILL_EPIC`
+   additionally stops the epic and `PAUSE_EPIC` parks it.
 
 ### 6.1 Evidence store (SQLite)
 
-`.ergane/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 6) —
+`.ergane/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 7) —
 the same single-designated-host topology as the 001 ledger, path overridable with
 `ERGANE_VERIFICATION_DB_PATH` or the legacy `FACTORY_VERIFICATION_DB_PATH`. Two tables:
 
@@ -558,9 +560,10 @@ more expensive kind of idle. One cycle:
    PR (`open_landing_pr` reuses it), starting a fresh poll; `recovery_cycles += 1`.
 4. **Exhaustion** — a cycle that fails again, `recovery_cycles >= max_recovery_cycles`, a
    refused sync, or a refused re-enqueue → a landing escalation (§9) with the queue history
-   rendered and choices `[RETRY | KILL | PAUSE_EPIC]` (FR-007). `RETRY` grants exactly one
-   more cycle; 1h silence or `KILL` ends the node KILLED with the branch preserved; a
-   `PAUSE_EPIC` parks the node and pauses the epic.
+   rendered and choices `[RETRY | KILL | KILL_EPIC | PAUSE_EPIC]` (FR-007). `RETRY` grants
+   exactly one more cycle; 1h silence or `KILL` ends the node KILLED with the branch
+   preserved; `KILL_EPIC` ends it the same way and stops the epic; a `PAUSE_EPIC` parks the
+   node and pauses the epic.
 
 A PR closed manually without merging is an operator kill: the node ends KILLED, the branch is
 preserved, and the notifier sends the **manual-intervention notice** (notify-only, no
@@ -742,19 +745,19 @@ factory/
   pressed again. Presses that lose the race with expiry, or arrive on an unknown or
   already-resolved id, are answered with a notice and change nothing.
 - **Messages** — pure rendering: the full failure history across attempts plus one inline
-  button per offered choice (`RETRY` / `KILL` / `PAUSE_EPIC`).
+  button per offered choice (`RETRY` / `KILL` / `KILL_EPIC` / `PAUSE_EPIC`).
 
 Escalations expire after 1h and **default to kill** — but only after salvage (principle VI),
 which the node-lifecycle owner performs. Used by: verify-fail-after-retries (§6), landing
 escalations on recovery exhaustion / refused sync or re-enqueue (§7, US2), and the
 manual-intervention notice when an operator closes a landing PR without merging — all rendered
 through `notify.messages`. The landing escalation is the *escalation* form (`RETRY`/`KILL`/
-`PAUSE_EPIC` inline buttons); the manual-intervention notice is the *notice* form
+`KILL_EPIC`/`PAUSE_EPIC` inline buttons); the manual-intervention notice is the *notice* form
 (no buttons — a fact to be told, not a decision to be asked).
 
 ### The operator-question channel (008)
 
-Escalations are **button presses**: a small fixed enum (`RETRY`/`KILL`/`PAUSE_EPIC`) that
+Escalations are **button presses**: a small fixed enum (`RETRY`/`KILL`/`KILL_EPIC`/`PAUSE_EPIC`) that
 cannot carry free text. When an agent's final message ends in a `## OPERATOR QUESTION`
 marker, it is asking something a button cannot answer, so a **sibling channel** carries
 the question out and the free-text reply back (spec 008, US1+US2). The two share the

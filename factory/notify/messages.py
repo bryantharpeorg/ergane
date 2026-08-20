@@ -98,6 +98,7 @@ _NO_HISTORY = "No verification attempts were recorded for this node."
 _CHOICE_LABELS = {
     EscalationChoice.RETRY: "🔁 Retry the node",
     EscalationChoice.KILL: "🛑 Kill the node",
+    EscalationChoice.KILL_EPIC: "🧨 Kill the whole epic",
     EscalationChoice.PAUSE_EPIC: "⏸️ Pause the epic",
 }
 

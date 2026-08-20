@@ -1507,6 +1507,10 @@ EXPECTED_GUARDS: dict[str, dict[str, set[tuple[str, ...]]]] = {
         "_send_signal": {("RPCError",)},
         "_send_signal_with_args": {("RPCError",)},
         "_answer": {("RPCError",)},
+        # 068-US2: `reset` reads what a RUNNING epic is actually doing before it
+        # refuses, so the query guard belongs here too — both clauses, because a
+        # query the epic will not answer is not the same as a server that is gone.
+        "_refuse_if_epic_is_working": {("QUERY_REFUSED",), ("TRANSPORT_FAILED",)},
         "_reset_epic": {("RPCError",)},
         "_resolve": {("RPCError",)},
         "_start_epic": {("ConfigError",), ("WorkflowAlreadyStartedError",)},
@@ -1811,6 +1815,8 @@ def test_no_temporal_call_site_catches_the_transport_failure_alone(
         ("factory/cli/nouns/build.py", "_answer"),
         ("factory/cli/nouns/build.py", "_live_spend"),
         ("factory/cli/nouns/build.py", "_query_status"),
+        # 068-US2: `reset`'s new read of what a RUNNING epic is doing.
+        ("factory/cli/nouns/build.py", "_refuse_if_epic_is_working"),
         ("factory/cli/nouns/build.py", "_reset_epic"),
         ("factory/cli/nouns/build.py", "_resolve"),
         ("factory/cli/nouns/build.py", "_send_signal"),

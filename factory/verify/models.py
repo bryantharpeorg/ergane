@@ -127,11 +127,52 @@ class EscalationChoice(StrEnum):
 
     Values stay short because they ride inside `callback_data`
     (`esc:<12-hex>:<choice>`), which Telegram caps at 64 bytes.
+
+    068-US2 adds `KILL_EPIC`. Until it existed the operator could end the *node*
+    and could *park* the epic, but never end the epic: an operator who wanted the
+    whole thing gone had to kill nodes one at a time and then reach for
+    `temporal workflow terminate` (FR-008). What each value means to the epic —
+    as distinct from what it means to the node — is `epic_effect` below.
     """
 
     RETRY = "RETRY"
     KILL = "KILL"
+    KILL_EPIC = "KILL_EPIC"
     PAUSE_EPIC = "PAUSE_EPIC"
+
+
+class EpicEffect(StrEnum):
+    """What one escalation resolution does to the *epic* (068-US2, FR-008).
+
+    The other half of a resolution's meaning. `factory.verify.ladder` decides
+    what it does to the node — every resolution but `RETRY` ends it — and that
+    reading alone cannot tell `KILL` from `KILL_EPIC` from `PAUSE_EPIC`, because
+    all three end the node and they differ only in what happens around it.
+    """
+
+    #: The epic keeps scheduling. `RETRY` and `KILL` are both per-node answers.
+    CONTINUE = "CONTINUE"
+    #: The epic stops dispatching and waits for a `resume_epic` (`PAUSE_EPIC`).
+    PAUSE = "PAUSE"
+    #: The epic ends, in-flight nodes drained and salvaged (`KILL_EPIC`).
+    END = "END"
+
+
+def epic_effect(resolution: EscalationChoice | str) -> EpicEffect:
+    """Read one resolution as an instruction to the epic. Pure, and total.
+
+    Total on purpose: `EXPIRED` is written by the timeout path rather than by
+    any button, and a resolution nobody here has heard of is a wiring bug. Both
+    must leave the epic running — the node they arrived for still ends, which is
+    `ladder._ends_the_node`'s call, but neither is consent to stop everything
+    else. Widening the epic-ending set by accident is how one node's timeout
+    takes an epic down.
+    """
+    if resolution == EscalationChoice.KILL_EPIC:
+        return EpicEffect.END
+    if resolution == EscalationChoice.PAUSE_EPIC:
+        return EpicEffect.PAUSE
+    return EpicEffect.CONTINUE
 
 
 # Criteria entities (parser output — pure, snapshot-able) --------------------

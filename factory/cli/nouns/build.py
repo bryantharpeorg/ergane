@@ -893,6 +893,93 @@ def reset_command(args: argparse.Namespace) -> int:
     return asyncio.run(_reset_epic(graph))
 
 
+#: The node states in which an epic is doing work a reset would destroy: a key
+#: is issued, an agent is running, gates or a judge are reading the tree, or a
+#: landing is on the queue. `PENDING` is absent because nothing has been
+#: dispatched for it, and every terminal state is absent because it is over.
+#:
+#: 068-US2: `WAITING_OPERATOR` is deliberately *in* this set. A parked question
+#: holds a live worktree its next attempt will resume on, so resetting it is the
+#: same lost work as resetting a running agent. Only the escalation park is
+#: widened here, and it is widened by `pending_escalation_id` rather than by a
+#: state, because an escalating node's state is `VERIFYING` — it is what the
+#: node was doing when it ran out of ladder.
+_WORKING_STATES = frozenset(
+    {
+        "KEY_ISSUED",
+        "RUNNING",
+        "VERIFYING",
+        "PASSED",
+        "PR_OPEN",
+        "ENQUEUED",
+        "WAITING_OPERATOR",
+    }
+)
+
+
+async def _refuse_if_epic_is_working(handle: Any, graph: WorkGraph) -> None:
+    """Refuse a reset against a RUNNING epic unless it is only stalled (FR-007).
+
+    Temporal's execution status says `RUNNING` for two situations an operator
+    tells apart instantly and this verb could not: an epic dispatching agents,
+    and an epic parked on an escalation nobody has answered. The second one is
+    doing nothing and will keep doing nothing for up to `escalation_timeout_s`
+    — and refusing it is what left `temporal workflow terminate` as the only way
+    out of a stalled epic, which is the whole deadlock this story removes.
+
+    So the refusal is keyed on *what kind of child is alive*, never on loosening
+    the status test (plan trap 7): a node genuinely in flight still refuses, and
+    says which node and what it is doing, because an operator told only "no"
+    cannot tell a stall from work in progress. A query the epic will not answer
+    refuses too — an unread epic is not a stalled one, and a reset is destructive.
+    """
+    try:
+        status = await handle.query(EpicWorkflow.epic_status)
+    except QUERY_REFUSED as error:
+        raise OperatorError(
+            f"epic '{graph.epic_id}' is running "
+            f"(workflow id {workflow_id(graph.epic_id)}) and would not say what "
+            f"it is doing ({error or type(error).__name__}); "
+            "refusing to reset while the workflow is active"
+        ) from error
+    except TRANSPORT_FAILED as error:
+        raise OperatorError(
+            f"cannot verify epic '{graph.epic_id}': {error}", EXIT_TRANSPORT
+        ) from error
+
+    working = sorted(
+        f"{node_id} ({node.state})"
+        for node_id, node in status.nodes.items()
+        if node.pending_escalation_id is None and str(node.state) in _WORKING_STATES
+    )
+    if working:
+        raise OperatorError(
+            f"epic '{graph.epic_id}' is running "
+            f"(workflow id {workflow_id(graph.epic_id)}): {', '.join(working)}; "
+            "refusing to reset while a node is working"
+        )
+
+    stalled = sorted(
+        node_id
+        for node_id, node in status.nodes.items()
+        if node.pending_escalation_id is not None
+    )
+    if not stalled:
+        # Running, nothing working, nothing stalled — a start-up or a shutdown
+        # caught mid-stride. Nothing here names a reason to proceed, and this
+        # verb rewrites the target repository, so it keeps the old answer.
+        raise OperatorError(
+            f"epic '{graph.epic_id}' is running "
+            f"(workflow id {workflow_id(graph.epic_id)}); "
+            "refusing to reset while the workflow is active"
+        )
+
+    print(
+        f"epic '{graph.epic_id}' is stalled on an unanswered escalation "
+        f"({', '.join(stalled)}); resetting its survivors"
+    )
+
+
 async def _reset_epic(graph: WorkGraph) -> int:
     """Reset every node the graph names, after one Temporal read proves it is safe."""
     client = await _connect()
@@ -910,11 +997,7 @@ async def _reset_epic(graph: WorkGraph) -> int:
 
     if described is not None and described.status is not None:
         if described.status.name == "RUNNING":
-            raise OperatorError(
-                f"epic '{graph.epic_id}' is running "
-                f"(workflow id {workflow_id(graph.epic_id)}); "
-                "refusing to reset while the workflow is active"
-            )
+            await _refuse_if_epic_is_working(handle, graph)
 
     factory_root = resolve_env_path(
         ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, DEFAULT_FACTORY_ROOT_PATH

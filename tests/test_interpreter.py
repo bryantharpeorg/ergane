@@ -2207,6 +2207,8 @@ async def test_the_ladder_exhausts_into_an_escalation_the_operator_kills(
     assert {str(choice) for choice in escalation.choices} == {
         "RETRY",
         "KILL",
+        # 068-US2: ending the node and ending the epic are distinct choices.
+        "KILL_EPIC",
         "PAUSE_EPIC",
     }
     assert script.expirations == []
@@ -4502,6 +4504,8 @@ async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
     assert script.escalation_requests[0].choices == [
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
+        # 068-US2: ending the node and ending the epic are distinct choices.
+        EscalationChoice.KILL_EPIC,
         EscalationChoice.PAUSE_EPIC,
     ]
 
@@ -4536,6 +4540,8 @@ async def test_recovery_escalation_kill_preserves_the_branch(
     assert escalation.choices == [
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
+        # 068-US2: ending the node and ending the epic are distinct choices.
+        EscalationChoice.KILL_EPIC,
         EscalationChoice.PAUSE_EPIC,
     ]
 
@@ -5658,6 +5664,8 @@ async def test_checks_failed_futile_recovery_escalates_before_second_enqueue(
     assert escalation.choices == [
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
+        # 068-US2: ending the node and ending the epic are distinct choices.
+        EscalationChoice.KILL_EPIC,
         EscalationChoice.PAUSE_EPIC,
     ]
     # The history summary names the futility — identical tree, not just queue history.
