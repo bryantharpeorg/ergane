@@ -203,8 +203,10 @@ with workflow.unsafe.imports_passed_through():
         LandingState,
         ObservedOutcome,
         QueueOutcome,
+        RejectionCause,
         TargetRepoProfile,
     )
+    from factory.mergequeue.rejection import rejection_cause
     from factory.notify.messages import render_history, render_landing_history
     from factory.usage.models import KeyLease, Termination, UsageSnapshot
     from factory.verify.ladder import DEBUGGER_PERSONA, next_action
@@ -474,6 +476,20 @@ class NodeStatus:
     landing_history: tuple[ObservedOutcome, ...] = ()
     #: US2: how many recovery cycles have been spent on this landing.
     recovery_cycles: int = 0
+    #: 069-US1: the ladder's own history for this node — the records
+    #: `factory.verify.ladder` counts attempts and debugger cycles from. The
+    #: docstring above says evidence belongs in the store, and it still does;
+    #: this is not evidence but the *other half of a budget reading*. A rejection
+    #: spends from two independent budgets, `recovery_cycles` is already here,
+    #: and a reader who can see only one of the pair cannot tell a node that
+    #: stopped being charged from one still dying of the other.
+    history: tuple[AttemptRecord, ...] = ()
+    #: 069-US1: how many free rebases this landing has taken — the bound on the
+    #: path that spends neither budget (FR-004).
+    free_rebases: int = 0
+    #: 069-US1: what the latest rejection was classified as, `None` when the
+    #: landing has not been rejected or predates the classification.
+    rejection_cause: RejectionCause | None = None
     #: US1: the reason a node ended KILLED when the ladder did not produce it.
     #: Set only when a node coroutine crashed; otherwise None.
     terminal_reason: str | None = None
@@ -628,6 +644,13 @@ class EpicWorkflow:
                     else 0,
                     terminal_reason=record.terminal_reason,
                     provenance=record.provenance,
+                    history=tuple(record.history),
+                    free_rebases=record.landing.free_rebases
+                    if record.landing is not None
+                    else 0,
+                    rejection_cause=record.landing.rejection_cause
+                    if record.landing is not None
+                    else None,
                 )
                 for node_id, record in self._nodes.items()
             },
@@ -2314,6 +2337,9 @@ class EpicWorkflow:
         )
         record.landing = landing
         record.state = NodeState.PR_OPEN
+        # 069-US1: the verdict this landing was opened on, kept so a rebase that
+        # spends no attempt can still re-render the body the node already earned.
+        record.last_result = result
 
         enqueued = await workflow.execute_activity(
             enqueue_landing,
@@ -2342,6 +2368,9 @@ class EpicWorkflow:
             landing,
             enqueued_at=_now(),
             enqueued_tip=opened.pushed_sha,
+            # 069-US1: the base half of what the queue is about to test. The tip
+            # says which tree; this says which world it was built for.
+            enqueued_base=prepared.base_ref,
             state=LandingState.ENQUEUED,
         )
         record.state = NodeState.ENQUEUED
@@ -2417,7 +2446,20 @@ class EpicWorkflow:
                 # Recovery-eligible (CHECKS_FAILED, CONFLICT): the landing is
                 # rejected but not finished — US2's bounded recovery cycle owns
                 # what happens next. Not terminal, so the epic parks on it.
-                record.landing = replace(record.landing, state=LandingState.REJECTED)
+                #
+                # 069-US1: and *why* it was rejected is decided here, at the one
+                # moment the snapshot exists. The recovery runs later, against a
+                # world that may have moved again; re-deriving the cause then
+                # would answer a question about a different moment.
+                record.landing = replace(
+                    record.landing,
+                    state=LandingState.REJECTED,
+                    rejection_cause=rejection_cause(
+                        outcome,
+                        enqueued_base=record.landing.enqueued_base,
+                        observed_base=snapshot.base_sha,
+                    ),
+                )
                 return
             # DEQUEUED_BY_HUMAN and STALLED: operator/queue rejections that are
             # terminal. Node ends killed, branch preserved.
@@ -2468,6 +2510,21 @@ class EpicWorkflow:
 
         A recovery cycle that PASSes re-pushes + re-enqueues the same PR and
         starts a fresh poll — the landing is back on the queue (FR-005).
+
+        069-US1 puts one route ahead of all of that. A rejection classified
+        `BASE_MOVED` is the world moving under a tree that was never wrong, and
+        the answer to it is a rebase, not an attempt: the branch syncs onto the
+        new head and goes straight back into the queue, spending neither of the
+        two budgets a recovery spends — no `recovery_cycles` increment here, and
+        no `AttemptRecord` from `_recovery_attempt` for the ladder to count.
+        Freeing one of those and not the other leaves the node dying at
+        whichever was left, which is why both are named in one sentence.
+
+        That path is bounded by `max_free_rebases` (FR-004) and it is narrow: a
+        sync that conflicts is *not* only a moved base — the node's work and the
+        sibling's overlap textually, and reconciling them is work, so it drops
+        back onto the charged cycle below and the debugger gets it exactly as it
+        always did.
         """
         graph = request.graph
         record = self._nodes[resolved.node.id]
@@ -2476,23 +2533,40 @@ class EpicWorkflow:
             return
         config = request.landing_config
 
-        # Exhaustion gates the automatic cycle. An operator's RETRY is not an
-        # automatic cycle — it is one more cycle, granted by hand.
-        if not granted and landing.recovery_cycles >= config.max_recovery_cycles:
-            resolution = await self._escalate_landing(graph, request, record)
-            await self._apply_landing_resolution(
-                graph, request, resolved, resolution, sources, judge
-            )
-            return
-
-        record.landing = replace(
-            landing, recovery_cycles=landing.recovery_cycles + 1
+        # 069-US1. `granted` is an operator who already answered an escalation:
+        # they asked for a cycle, and giving them a silent rebase instead would
+        # answer a different question than the one they pressed.
+        # A rebase re-offers the verdict the landing was opened on. Without one
+        # there is nothing to re-offer, and the charged cycle — which produces a
+        # fresh verdict — is the honest route.
+        earned = record.last_result
+        free = (
+            not granted
+            and landing.rejection_cause == RejectionCause.BASE_MOVED
+            and landing.free_rebases < config.max_free_rebases
+            and earned is not None
         )
+
+        if not free:
+            # Exhaustion gates the automatic cycle. An operator's RETRY is not an
+            # automatic cycle — it is one more cycle, granted by hand.
+            if not granted and landing.recovery_cycles >= config.max_recovery_cycles:
+                await self._escalate_and_apply(graph, request, resolved, sources, judge)
+                return
+
+            record.landing = replace(
+                landing, recovery_cycles=landing.recovery_cycles + 1
+            )
         last = record.landing.outcomes[-1].outcome
+
+        # The base the branch sat on before this sync — read before the sync
+        # answers, because the sync is what moves it.
+        base_before_sync = record.base_ref
 
         # The sync runs first for both recovery-eligible rejections: a
         # CHECKS_FAILED needs the new target head merged in, and a CONFLICT sync
-        # is what surfaces the conflicted file list the debugger resolves.
+        # is what surfaces the conflicted file list the debugger resolves. It is
+        # also the rebase 069-US1's free path consists of.
         sync = await workflow.execute_activity(
             sync_landing_branch,
             SyncLandingBranchInput(
@@ -2504,11 +2578,23 @@ class EpicWorkflow:
         )
         if sync.refused:
             # A recovery that could not run is not a silent pass — it escalates.
-            resolution = await self._escalate_landing(graph, request, record)
-            await self._apply_landing_resolution(
-                graph, request, resolved, resolution, sources, judge
-            )
+            await self._escalate_and_apply(graph, request, resolved, sources, judge)
             return
+
+        if free and not sync.clean:
+            # 069-US1: the base moved *and* the node's own work collides with
+            # what landed. That is not "only a moved base" (FR-001's word), and
+            # resolving it is work — so it is charged, and the gate the free
+            # route skipped applies now.
+            free = False
+            spent = record.landing.recovery_cycles
+            if not granted and spent >= config.max_recovery_cycles:
+                await self._escalate_and_apply(graph, request, resolved, sources, judge)
+                return
+            record.landing = replace(
+                record.landing,
+                recovery_cycles=record.landing.recovery_cycles + 1,
+            )
 
         # Carry the new branch point into re-verification (D-027 extended): the
         # diff and the judge see only the node's own work above the merged-in
@@ -2519,7 +2605,32 @@ class EpicWorkflow:
 
         # US3: remember whether the sync merged in nothing. This refutes the
         # stale-base hypothesis for the recovery attempt's prompt (FR-013).
-        base_unmoved = record.base_ref is not None and record.base_ref == sync.base_ref
+        #
+        # 069-US1 corrected the comparison: it read `record.base_ref` *after* the
+        # line above had already assigned `sync.base_ref` to it, so it answered
+        # "is the new head the new head" and was True whenever a head existed at
+        # all. The fact it is supposed to state — did this sync merge anything in
+        # — is the same fact the rejection classifier turns on, and a prompt that
+        # tells the agent the base did not move while the workflow classified the
+        # base as moved is two halves of one system disagreeing out loud.
+        base_unmoved = (
+            base_before_sync is not None and base_before_sync == sync.base_ref
+        )
+
+        if free and earned is not None:
+            # The rebase *is* the recovery. No key is issued, no agent runs, and
+            # no record joins `record.history`, so the ladder counts exactly what
+            # it counted before the queue said anything (FR-001). `_reenqueue`
+            # still runs the identical-tree refusal (FR-006): a rebase that
+            # changed nothing must not re-offer the tree the queue just refused,
+            # free or not.
+            record.landing = replace(
+                record.landing, free_rebases=landing.free_rebases + 1
+            )
+            await self._reenqueue(
+                graph, request, resolved, sources, judge, record, prepared, earned
+            )
+            return
 
         failing_checks: tuple[CheckFailure, ...] = ()
         if sync.clean and last == QueueOutcome.CHECKS_FAILED:
@@ -2569,6 +2680,27 @@ class EpicWorkflow:
                 resolved, request, sources, judge, granted=True
             )
             return
+        await self._apply_landing_resolution(
+            graph, request, resolved, resolution, sources, judge
+        )
+
+    async def _escalate_and_apply(
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        resolved: ResolvedNode,
+        sources: PromptSources,
+        judge: ResolvedPersona,
+    ) -> None:
+        """Page a human about a landing, then act on whatever comes back.
+
+        The pair every route out of `_run_recovery` that is not "try again" ends
+        in: exhaustion, a sync that could not run, a moved base whose rebase
+        collided. Extracted so the routing above reads as the decisions it makes
+        rather than as three copies of the same two calls.
+        """
+        record = self._nodes[resolved.node.id]
+        resolution = await self._escalate_landing(graph, request, record)
         await self._apply_landing_resolution(
             graph, request, resolved, resolution, sources, judge
         )
@@ -2809,9 +2941,14 @@ class EpicWorkflow:
             record.landing,
             enqueued_at=_now(),
             enqueued_tip=opened.pushed_sha,
+            # 069-US1: the world this re-offer was built for. Without moving it
+            # forward, the next rejection would be compared against the base of
+            # a landing two cycles old and read as moved forever.
+            enqueued_base=prepared.base_ref,
             state=LandingState.ENQUEUED,
         )
         record.state = NodeState.ENQUEUED
+        record.last_result = result
         self._landing_tasks[record.node_id] = asyncio.ensure_future(
             self._poll_landing(graph, record, config)
         )

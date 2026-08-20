@@ -483,6 +483,16 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
         "final_usage_confirmed", "termination", "issued_at", "torn_down_at"
     ),
     "factory.usage.models.UsageSnapshot": ("spend_usd", "captured_at",),
+    # 069-US1 put `AttemptRecord` on the boundary: `NodeStatus` now carries the
+    # node's ladder history, because a rejection spends from two budgets and a
+    # reader who can see only `recovery_cycles` cannot tell a node that stopped
+    # being charged from one still dying of the other. Its three required fields
+    # are kind 1 and kind 3: `attempt` addresses the evidence row and the spend
+    # key, `persona` decides which budget the record counts against
+    # (`factory/verify/ladder.py`), and `verdict` is the verdict itself. A
+    # defaulted persona would silently move a debugger cycle onto the attempt
+    # budget, which is the arithmetic this whole story turns on.
+    "factory.verify.models.AttemptRecord": ("attempt", "persona", "verdict",),
     "factory.verify.models.CriteriaSet": (
         "feature", "spec_ref", "requirements", "source_path", "source_sha256",
         "snapshotted_at"

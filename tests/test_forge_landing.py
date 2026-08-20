@@ -358,8 +358,14 @@ WORKFLOW_IMPORTS = {
     "factory.mergequeue.classify": {"classify"},
     "factory.mergequeue.models": {
         "CheckFailure", "Landing", "LandingConfig", "LandingState",
-        "ObservedOutcome", "QueueOutcome", "TargetRepoProfile",
+        "ObservedOutcome", "QueueOutcome", "RejectionCause", "TargetRepoProfile",
     },
+    # 069-US1: `rejection_cause` is the second pure decision the workflow makes
+    # over a poll — `classify` says what the queue answered, this says whose
+    # fault it was. Pinned here for the same reason `classify` is: it is a pure
+    # function the workflow calls, and a forge reached from that call site would
+    # be a side effect inside a deterministic sandbox.
+    "factory.mergequeue.rejection": {"rejection_cause"},
 }
 
 #: The seam's own modules; the workflow may not import any, since a forge

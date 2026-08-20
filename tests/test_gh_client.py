@@ -222,7 +222,13 @@ def test_poll_pr_uses_the_full_json_field_set() -> None:
     payload = FakeGh.pr_view_payload(auto_merge=False)
     gh.expect_json(
         "pr", "view", "7", "--json",
-        "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,statusCheckRollup",
+        # 069-US1 added `baseRefOid`: the head the PR is offered against, which
+        # is what tells a rejection caused by a sibling landing from one caused
+        # by the node's own tree. Asked for by name here because a field the
+        # classifier reads and `gh` was never asked for is `None` in production
+        # and green in the suite.
+        "state,isDraft,mergedAt,closedAt,mergeStateStatus,autoMergeRequest,"
+        "statusCheckRollup,baseRefOid",
         payload=payload,
     )
     client = GhClient(runner=gh, repo=TARGET_CLONE)

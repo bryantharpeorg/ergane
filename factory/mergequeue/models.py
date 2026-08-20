@@ -77,6 +77,24 @@ class QueueOutcome(StrEnum):
     STALLED = "STALLED"
 
 
+class RejectionCause(StrEnum):
+    """Why a landing was rejected — the fact the recovery routing turns on (069-US1).
+
+    Two members, because there are only two answers that change what the node
+    owes: either the world moved under a tree that was never wrong, or the tree
+    itself is what the queue refused. `factory.mergequeue.rejection` decides
+    which from structural facts; nothing here reads a forge's wording or a retry
+    count (FR-005).
+
+    `BASE_MOVED` is what a rebase answers, and it is charged to neither budget.
+    `NODE_CODE` is charged exactly as it always was — it is the reason a budget
+    exists.
+    """
+
+    BASE_MOVED = "BASE_MOVED"
+    NODE_CODE = "NODE_CODE"
+
+
 class LandingState(StrEnum):
     """Where one landing stands: `PR_OPEN → ENQUEUED → MERGED | REJECTED | KILLED`.
 
@@ -137,6 +155,24 @@ class Landing:
     #: US3: the commit the branch was pushed with when it was last enqueued.
     #: Default `None` keeps pre-spec histories replayable (FR-009).
     enqueued_tip: str | None = None
+    #: 069-US1: the target head the enqueued tree was built on — the *base* half
+    #: of what the queue tested, where `enqueued_tip` is the tree half. Compared
+    #: against the base the forge reports at the poll, it is the structural fact
+    #: that tells "a sibling landed under me" from "my tree is wrong" (FR-005).
+    #: `None` — a pre-069 history, or a forge that reports no base — reads as
+    #: "unknown", and an unknown cause is charged exactly as it was before.
+    enqueued_base: str | None = None
+    #: 069-US1: the cause the poll classified for the latest rejection, `None`
+    #: until one is classified. Recorded at the moment of observation because
+    #: that is the only moment the snapshot exists; the recovery routing reads it
+    #: rather than re-deriving it from a world that has moved again since.
+    rejection_cause: RejectionCause | None = None
+    #: 069-US1: how many times this landing has been rebased and requeued
+    #: without spending either budget. Bounded by
+    #: `LandingConfig.max_free_rebases` (FR-004): a node whose siblings land
+    #: forever must still eventually stop, and a free path with no bound turns a
+    #: bounded expensive failure into an unbounded cheap one.
+    free_rebases: int = 0
 
 
 @dataclass(frozen=True)
@@ -166,6 +202,12 @@ class PrSnapshot:
     #: kept as evidence an operator can read; nothing decides from it any more
     #: (FR-010). Defaulted so a pre-spec history deserializes — `__post_init__`.
     in_conflict: bool = False
+    #: 069-US1: the head of the branch this proposal is offered against, as the
+    #: forge reports it at this poll. Compared with `Landing.enqueued_base` it
+    #: says whether the world moved under the tree the queue was testing. `None`
+    #: is "this forge did not say", never "it did not move": an unknown base is
+    #: classified as the node's own fault and charged as it always was.
+    base_sha: str | None = None
 
     def __post_init__(self) -> None:
         """Carry a pre-049 history's conflict across, once, at the boundary.
@@ -206,6 +248,12 @@ class PrSnapshot:
             closed_at=_nullable_str(payload.get("closedAt")),
             failing_required_checks=failing,
             observed_at=observed_at,
+            # 069-US1: `baseRefOid` is GitHub's spelling of "the head this PR is
+            # offered against, right now". Read here rather than derived, because
+            # the whole point is to compare the base the queue is testing with the
+            # base the node built on, and a value we computed ourselves would be
+            # our opinion of the world rather than the forge's report of it.
+            base_sha=_nullable_str(payload.get("baseRefOid")),
         )
 
 
@@ -290,6 +338,13 @@ class LandingConfig:
     poll_interval_s: int = 60
     stall_after_s: int = 7200
     max_recovery_cycles: int = 1
+    #: 069-US1: how many times one landing may be rebased and requeued for a
+    #: moved base without spending an attempt, a debugger cycle or a recovery
+    #: cycle (FR-004). Three, because that is what survives an ordinary fan-out
+    #: — every sibling that lands ahead of a node bumps it once — while still
+    #: being a number a node reaches. Past it the rejection is charged like any
+    #: other, so the node ends at the bounds it always had rather than never.
+    max_free_rebases: int = 3
 
 
 # Helpers ----------------------------------------------------------------------

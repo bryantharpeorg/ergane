@@ -230,6 +230,7 @@ class FakeForge:
             failing_required_checks=state.failing_checks,
             observed_at=self.model.landings.observed_at,
             in_conflict=state.in_conflict,
+            base_sha=state.base_sha,
         )
 
     def withdraw_landing(self, proposal: int) -> None:
@@ -267,6 +268,10 @@ class ProposalState:
     in_conflict: bool = False
     failing_checks: tuple[str, ...] = ()
     logs: dict[str, str] = field(default_factory=dict)
+    #: 069-US1: the head this proposal is offered against, as this forge reports
+    #: it. `None` models a forge that does not report one at all — the case the
+    #: classifier has to charge rather than guess about.
+    base_sha: str | None = None
 
 
 @dataclass
@@ -323,3 +328,7 @@ class LandingModel:
     def target_moved(self, number: int) -> None:
         """The target moved under it: the change no longer applies."""
         self.require(number).in_conflict = True
+
+    def base_advanced(self, number: int, sha: str) -> None:
+        """Something landed: the head this proposal is offered against is now `sha`."""
+        self.require(number).base_sha = sha
