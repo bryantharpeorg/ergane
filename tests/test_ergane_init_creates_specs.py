@@ -31,10 +31,20 @@ def init(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Any]:
 def _git(repo: Path, *args: str) -> str:
     import subprocess
 
+    from tests.target_repo import git_env
+
+    # `env=git_env()` is not optional. Without it this inherits the caller's
+    # environment, and `git commit` needs an identity: the sandbox HOME carries a
+    # seeded `.gitconfig` so it passes on this host, while a CI runner has none
+    # and the commit exits 128. That is the split that killed 061's epic. The
+    # helper exists precisely to "ignore whatever the host operator has
+    # configured" (`tests/target_repo.py`), which is the same host-dependence
+    # rule 067 applies to the sandbox mount set.
     return subprocess.run(
         ["git", "-C", str(repo), *args],
         capture_output=True,
         text=True,
+        env=git_env(),
         check=True,
     ).stdout
 
