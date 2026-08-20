@@ -231,3 +231,42 @@ async def test_agent_that_started_and_failed_is_still_charged(
         "an agent that started and failed was not charged as an attempt"
     )
     assert status.nodes["us1"].state != NodeState.MERGED
+
+
+# --- T014 [P] [US2] (spec US2-S5) --------------------------------------------
+
+
+async def test_repeated_launch_failures_are_bounded(
+    env: WorkflowEnvironment,
+) -> None:
+    """A launch fault must stop retrying after a bounded number, not loop forever."""
+    script = LaunchFailingWorld(
+        {"us1": [passing()]},
+        client=env.client,
+    )
+
+    status = await run_epic(env, script, graph=one_node_graph())
+
+    # With a bound of N launch retries, there should be at most N launch attempts.
+    # The default config does not define a launch bound yet, so this test pins that
+    # FR-007 requires one.  We assert a small finite ceiling: any non-trivial loop
+    # that is unbounded will exceed this under the current code.
+    launch_attempts = [c for c in script.attempts if c.node_id == "us1"]
+    assert len(launch_attempts) <= 5, (
+        f"launch retries are unbounded: {len(launch_attempts)} attempts"
+    )
+    assert status.nodes["us1"].state == NodeState.KILLED
+
+    # No ordinary attempts were recorded: none of the retries reached verification.
+    history = [
+        AttemptRecord(
+            attempt=record.attempt,
+            persona="implementer",
+            verdict=record.verdict,
+        )
+        for record in script.records
+        if record.node_id == "us1"
+    ]
+    assert _attempts_spent(history, VerificationConfig()) == 0, (
+        "bounded launch retries leaked into the attempt budget"
+    )
