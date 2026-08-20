@@ -1,5 +1,11 @@
 ---
-state: draft
+state: ready
+# FLIPPED TO READY 2026-08-19 9:33 PM CT at the operator's explicit instruction,
+# after a second review that found one dispatch-blocker (US2-S6/FR-016) and two
+# gaps found by running the CLI rather than reading the tree (US2-S5/FR-014,
+# US3-S6/FR-015). All 50 cited anchors were re-verified line by line; the full
+# suite is green at 3705 passed / 47 skipped.
+#
 # Drafted 2026-08-19 6:00 PM CT by an operator session, at the operator's
 # direction, after a night in which the factory lost three stories to a missing
 # `git config user.email` in a fixture.
@@ -164,6 +170,19 @@ assert that node carries it while its siblings carry the default.
    committed test asserting a registry edit mid-epic does not change the running
    node. `models.py:199` makes this the existing discipline.
 
+7. **Given** a story that has already **landed**, **When** a `persona:` key is
+   added to its declaration, **Then** the story is not silently re-opened —
+   proven by a committed test. `fingerprint()` (`landed.py:319`) hashes the
+   story's raw declaration text, so re-opening is what happens by default and
+   costs no code to get wrong; a re-opened landed node branches from a base that
+   already contains its work and burns its ladder on an unjudgeable diff. Either
+   exclude the key from the fingerprint, or make `validate` warn by name that the
+   edit changed a landed story's fingerprint — the diff must say which was chosen
+   and why. This is the mechanism behind
+   `interpreter/editing-implements-on-a-landed-story-reopens-it-into-an-unwinnable-loop`,
+   field-confirmed 2026-08-19, and it decides whether this key can be applied to
+   the specs that already exist.
+
 ---
 
 ### User Story 2 - A persona can declare that it bills to a subscription (Priority: P1)
@@ -203,6 +222,44 @@ runner and assert no virtual key is minted and no gateway variables are set.
    call sites. "Spends tokens" and "needs a virtual key" stop being the same
    question the moment a subscription persona exists, and both callers mean only
    one of them.
+5. **Given** a subscription-routed node, **When** its argv is constructed,
+   **Then** `--model` carries a name the CLI itself accepts rather than the
+   registry's gateway alias — proven by a committed test asserting over the
+   constructed argv. `argv()` (`adapter.py:931`) passes `context.model_alias`
+   verbatim at `:938`, and the registry's `model` field (`config.py:178`) holds
+   *proxy* aliases. Measured 2026-08-19 against the signed-in CLI, cleared
+   environment, no `ANTHROPIC_*` set:
+
+       --model anthropic/claude-opus-5   exit 1   "There's an issue with the
+                                                   selected model ... It may not
+                                                   exist or you may not have
+                                                   access to it"
+       --model opus                      exit 0   "OK"
+
+   So a node built to US2 and US3 as they otherwise stand would authenticate
+   correctly and then die on its model name, with a message naming neither auth
+   nor the gateway. This spec does not prescribe the fix — a second registry
+   field, or a translation at the seam — but the diff must say which was chosen
+   and why. This scenario needs no credential, which keeps US2 testable on any
+   host.
+6. **Given** a graph containing a subscription-routed node, **When** dispatch
+   preflight collects the aliases it will check against the gateway, **Then** the
+   subscription persona's model is **not** among them — proven by a committed
+   test asserting over the collected set. This is the scenario that decides
+   whether the epic can dispatch at all, and it follows directly from US2-S5:
+   once `--model` carries a name the *CLI* accepts, that name is by construction
+   not a name the *proxy* serves. `aliases_to_check` (`preflight.py:544-556`)
+   collects `persona.model` for every persona where `is_llm` is true, and
+   `check_aliases` refuses any alias absent from `list_model_ids()`
+   (`preflight.py:594-614`). Measured 2026-08-19 — the proxy serves 16 aliases,
+   every one namespaced (`ollama-cloud/…`, `anthropic/…`, `local/…`); `opus`,
+   `claude-opus-5` and `sonnet` are **all absent**, and always will be, because
+   they are CLI-side names. A subscription persona declaring one would therefore
+   park the whole epic at preflight with a message about an unserved alias,
+   pointing the operator at the registry rather than at this split. The same
+   applies to the second `is_llm` caller: `ergane install verify`'s `LLMProbe`
+   (`factory/controlplane/verify.py:331`) completes a real token per alias and
+   would report the subscription persona as broken.
 
 ---
 
@@ -244,6 +301,20 @@ absent.
    committed test. Measured 2026-08-19: the CLI exits **1** and prints
    `Not logged in · Please run /login` **on stdout, not stderr**. A caller
    watching stderr sees a silent, diffless success.
+6. **Given** an attempt that can outlive its own access token, **When** the
+   credential's placement is chosen, **Then** the diff names the placement and
+   its consequence for refresh, and a committed test asserts the placement
+   actually made. Measured 2026-08-19: the credential carries both `expiresAt`
+   and `refreshTokenExpiresAt`, and the access token had **5.8 hours** of life
+   against an `implementer` timeout of **14400s — four hours**
+   (`personas.yaml:80`). An attempt outliving its own access token is therefore
+   ordinary, not an edge case. A *copy* — the shape US3-S1 describes — puts the
+   refreshed token in a directory discarded at teardown, so every attempt
+   re-refreshes from the same stored token; and if the provider rotates refresh
+   tokens on use, concurrent nodes invalidate each other **and the operator's own
+   login on this host**. Copy, bind-mount or broker: the diff must name which and
+   why. Nobody has measured the rotation behaviour, so an implementer who cannot
+   establish it must say so rather than assume the benign case.
 
 ---
 
@@ -323,10 +394,14 @@ fire and assert the decided action names the stronger persona.
 - **A pinned persona that is also the promotion target.** A node already built by
   the stronger persona has nothing to promote to; the rung must skip rather than
   promote to itself.
-- **A subscription credential that expires mid-epic.** It presents as an auth
-  failure at launch, which is 067/US2's launch-versus-attempt distinction. Until
-  067 lands it will consume an attempt, and this spec should not duplicate that
-  fix.
+- **A subscription credential that expires between attempts.** It presents as an
+  auth failure at launch, which is 067/US2's launch-versus-attempt distinction.
+  Until 067 lands it will consume an attempt, and this spec should not duplicate
+  that fix.
+- **A credential that expires *during* an attempt.** Not the case above, and not
+  a launch failure at all: the CLI is already running and refreshes itself. With
+  a four-hour timeout against a token measured at 5.8 hours of life, this is the
+  common case rather than the rare one. US3-S6 is where it is decided.
 - **A deterministic persona (`agent: none`) named in a `persona:` key.** It spends
   no tokens and needs no worktree; pinning a producing story to it must be
   refused at validation rather than dispatched to nothing.
@@ -371,6 +446,17 @@ fire and assert the decided action names the stronger persona.
   authentication failure rather than as an attempt that produced no diff.
   FR-008 covers the credential being *absent* and is checkable before the fork;
   this covers it being *present and refused*, which is only observable after it.
+- **FR-014**: A subscription-routed node MUST be launched with a `--model` value
+  the CLI accepts, never a gateway alias passed through unchanged. The registry's
+  `model` field holds proxy aliases, and `argv()` passes it verbatim today
+  (`adapter.py:938`).
+- **FR-015**: The seeded credential's placement MUST be chosen with respect to
+  token refresh and stated in the diff, and a node's refresh MUST NOT be capable
+  of invalidating the operator's own session on the worker host.
+- **FR-016**: A subscription-routed persona's model MUST NOT be checked against
+  the gateway's served-alias list — neither by dispatch preflight nor by install
+  verification. It names a model the CLI resolves, not one the proxy serves, so
+  checking it there refuses an epic that would have run.
 
 ## Work Graph
 
@@ -380,10 +466,11 @@ US1:
   implements: [FR-001, FR-002, FR-003, FR-004]
 US2:
   depends_on: []
-  implements: [FR-005, FR-006]
+  implements: [FR-005, FR-006, FR-014, FR-016]
 US3:
-  depends_on: [US2]
-  implements: [FR-007, FR-008, FR-013]
+  depends_on: []
+  depends_on_merged: [US2]
+  implements: [FR-007, FR-008, FR-013, FR-015]
 US4:
   depends_on: [US2]
   implements: [FR-009, FR-010]
@@ -424,6 +511,16 @@ derivation, US5 is the ladder.
   credential is absent or expired, showing the named refusal rather than a
   diffless attempt. The CLI's own behaviour is measured in the plan — exit 1,
   message on stdout — so this criterion is checkable against a known answer.
+- **SC-008**: Paste the constructed argv for a subscription-routed node showing
+  the `--model` value the CLI accepts, beside a gateway node's argv from the same
+  epic showing its proxy alias. Both are checkable against the answers measured
+  in US2-S5.
+- **SC-009**: Paste the chosen credential placement and state, in one sentence,
+  what becomes of a token refreshed at hour three of a four-hour attempt.
+- **SC-010**: Paste the alias set dispatch preflight collects for a graph holding
+  both a gateway node and a subscription node, showing the gateway node's alias
+  present and the subscription node's absent. This is the criterion that proves
+  the epic can dispatch at all.
 
 ## Assumptions
 
@@ -436,6 +533,11 @@ derivation, US5 is the ladder.
   That was the single largest unknown in this spec and it resolved in the
   favourable direction: no `~/.claude.json`, no onboarding state and no extra
   environment variable is needed beyond the credential file itself.
+  **What the spike did not cover, so that nobody reads it as wider than it is:**
+  it ran one trivial prompt to completion. It did not pass `--model` (US2-S5), and
+  it was far too short to reach a token refresh (US3-S6). Both were found
+  afterwards, on 2026-08-19 evening, by running the CLI again rather than by
+  reasoning about it.
 - `implementer` stays on `ollama-cloud/kimi-k2.7-code`. Nothing in this spec
   changes it, and the operator has explicitly declined Anthropic API billing.
 - Seeding a credential into a node HOME is a deliberate, narrow exception to the

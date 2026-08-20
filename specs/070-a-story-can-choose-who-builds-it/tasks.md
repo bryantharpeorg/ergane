@@ -8,7 +8,7 @@ Read the plan's traps before the first task. Trap 1 (do not touch the
 builder), trap 9 (a ladder test written at default config is structurally unable
 to fail), trap 12 (one test file per story) and trap 15 (**the feasibility spike
 is already done — do not re-run it**) are the four that decide whether an attempt
-lands.
+lands. Trap 16 (persona may reopen a LANDED story through the fingerprint) is new as of the 2026-08-19 field report and decides whether US1 is safe to use on existing specs at all.
 
 **Restructured 2026-08-19.** What was one oversized US2 covering declaration,
 credential, accounting and concurrency is now US2, US3 and US4; the promotion
@@ -48,6 +48,16 @@ control, is in the plan's Sizing section.
       existing `validate_workgraph` refusal.
 - [ ] T010 [US1] (FR-004) Confirm the snapshot discipline is unchanged.
 
+- [ ] T048 [P] [US1] (spec US1-S7, trap 16) **The landed-story guard.** Assert that
+      adding a `persona:` key to a story that has already landed does **not**
+      reopen it — or, if the chosen design keeps the key fingerprint-bearing,
+      assert `validate` warns by name that the edit changed a landed story's
+      fingerprint. One of these two tests must exist; which one depends on the
+      decision trap 16 forces. Read `fingerprint()`
+      (`factory/workgraph/landed.py:319`) and `_story_parts` (`:349`) first: the
+      declaration's raw YAML text is a fingerprint component today, so the
+      reopen is the DEFAULT and costs no code to get wrong.
+
 ## Phase 2: User Story 2 — A persona can declare that it bills to a subscription
 
 No credential is involved in this story. It is the routing decision only, which
@@ -80,6 +90,26 @@ is why it is separable and why it can be tested end to end on any host.
       callers first** (trap 3).
 - [ ] T017 [US2] (FR-006) Omit both gateway variables for a subscription node and
       mint no key.
+- [ ] T049 [P] [US2] (spec US2-S5) **The model-name test — write it with T011.**
+      Assert the constructed argv for a subscription-routed node carries a
+      `--model` value the CLI accepts, and that a gateway node's argv still
+      carries its proxy alias unchanged. Needs no credential, so it runs on any
+      host. Measured answers to check against: `anthropic/claude-opus-5` → exit 1
+      "may not exist or you may not have access to it"; `opus` → exit 0.
+- [ ] T053 [P] [US2] (spec US2-S6) **The dispatch-blocker test, and the one this
+      story is most likely to be shipped without.** Assert that the alias set
+      `aliases_to_check` collects for a graph containing a subscription-routed
+      node does **not** contain that persona's model. Note T014 is not this test:
+      it covers the two *old* persona kinds, so it passes whether or not the new
+      one is handled.
+- [ ] T054 [US2] (FR-016) Exclude subscription personas from the served-alias
+      check in `aliases_to_check` (`preflight.py:544-556`) and from `LLMProbe`
+      (`factory/controlplane/verify.py:331`). Both ask `is_llm` today; after the
+      T016 split they must ask "routes through the gateway", not "spends tokens".
+- [ ] T050 [US2] (FR-014) Stop passing the registry alias verbatim to `--model`
+      for subscription-routed nodes. `argv()` is `adapter.py:931`; the offending
+      line is `:938`, `context.model_alias`. A second registry field or a
+      translation at the seam — **say which in the diff, and why** (trap 17).
 
 ## Phase 3: User Story 3 — The credential reaches the sandbox, and only where it should
 
@@ -117,6 +147,18 @@ TERM and HOME only. Do not re-establish it (trap 15).
       Do not widen `PASSTHROUGH_ENV` at `:90` (trap 4).
 - [ ] T024 [US3] (FR-008) Discover the credential's location rather than declaring
       it, and refuse by name before the fork if absent (trap 5).
+- [ ] T051 [P] [US3] (spec US3-S6) **The placement test.** Assert the credential
+      placement the diff commits to is the one actually made in the node HOME
+      (a copy, a bind, or a broker handle — whichever T052 chose).
+- [ ] T052 [US3] (FR-015) Choose the placement **with respect to token refresh**
+      and state the consequence in the diff. Facts to reason from, measured
+      2026-08-19: the credential carries `expiresAt` and `refreshTokenExpiresAt`;
+      the access token had 5.8h of life; `implementer`'s timeout is 14400s
+      (`personas.yaml:80`), so attempts routinely outlive their own token. A
+      plain copy means the refresh is discarded at teardown and every attempt
+      re-refreshes from the same stored token. If you cannot establish whether
+      the provider rotates refresh tokens on use, **say so** — do not assume the
+      benign case (trap 18).
 - [ ] T025 [US3] (FR-013) Classify a present-but-refused credential as an
       authentication failure.
 
@@ -199,3 +241,11 @@ subscription-routed until the system can tell that it is.
 - [ ] T047 (SC-007) Paste the unauthenticated case: a subscription-routed node
       whose credential is absent or stale, showing the named refusal rather than
       a diffless attempt.
+- [ ] T055 (SC-008) Paste the constructed argv for a subscription node and for a
+      gateway node from the same epic, showing the CLI-accepted model name on one
+      and the proxy alias on the other.
+- [ ] T056 (SC-009) Paste the chosen credential placement and one sentence on
+      what becomes of a token refreshed at hour three of a four-hour attempt.
+- [ ] T057 (SC-010) Paste the alias set dispatch preflight collects for a graph
+      holding both node kinds, showing the gateway alias present and the
+      subscription persona's model absent.

@@ -80,10 +80,18 @@ in them. Check each against the tree anyway.
 
 ## Traps
 
-**1. Do not touch the `implementer` persona.** The operator declined Anthropic API
-billing and kimi stays the builder. A diff that edits `implementer` in
+**1. Do not touch the `implementer` persona.** A diff that edits `implementer` in
 `personas.yaml` — its model, its fallback, anything — has exceeded scope, whatever
 else it got right.
+
+*Rationale updated 2026-08-19 ~20:20 CT.* This trap used to say "the operator
+declined Anthropic API billing and kimi stays the builder". **That is no longer
+true** — the operator has since pointed `implementer` at `anthropic/claude-opus-5`
+so that every *not-yet-started* epic defaults to it. The trap itself stands, and
+now stands harder: the registry is the operator's live dial, it was just moved by
+hand, and a story that edits it is fighting the operator rather than building.
+Read `personas.yaml` for what it currently says instead of assuming either
+wiring.
 
 **2. Do not hardcode `closer`, or any persona name, in code.** Constitution
 Principle VII: code never names a model, and `personas.yaml` is the only place an
@@ -98,6 +106,21 @@ ask `is_llm` today and both mean something slightly different by it. One is aski
 A subscription persona spends tokens (so it is an LLM) and needs no key (so the
 key-minting path must not treat it as one). Splitting the property without
 reading both callers will silently change a preflight.
+
+*Made concrete 2026-08-19, and it is a dispatch-blocker rather than a nuance.*
+This trap and trap 17 are two ends of one problem. Once `--model` carries a name
+the CLI accepts, that name is **by construction** not one the proxy serves — and
+`aliases_to_check` (`preflight.py:544-556`) hands every `is_llm` persona's model
+to `check_aliases`, which refuses anything absent from `list_model_ids()`
+(`preflight.py:594-614`) with the words *"Nothing was dispatched."* Measured: the
+proxy serves 16 aliases, all namespaced; `opus`, `claude-opus-5` and `sonnet` are
+all absent and always will be. So a subscription persona declaring the model its
+own CLI needs would **park the entire epic at preflight**, with a message
+blaming the registry rather than this split. The correct split is therefore not
+"spends tokens" vs "needs a key" alone — the alias gate wants a third reading,
+**"routes through the gateway"**, and both callers must take that one. US2-S6 and
+T053 are the test; note that T014 passes either way, which is exactly why T053
+has to exist separately.
 
 **4. The credential must not arrive through `PASSTHROUGH_ENV`.** `adapter.py:90`
 is an allowlist of three variables and it is deliberate — widening it re-opens the
@@ -156,19 +179,103 @@ stories independent that shared files, in all three cases.
 **13. The judge sees the diff and the criteria, nothing else.** SC-001 through
 SC-007 require committed output. Redact the credential in SC-002 and say you did.
 
-**14. US2 and US3 both edit `factory/workgraph/adapter.py`, and the declared edge
-is what keeps them apart.** US2 removes two lines from the constructed
-environment (`:774-775`); US3 adds a conditional write beside the `.gitconfig`
-seed (`:740`). Different functions, one file. The `depends_on: [US2]` edge is
-doing double duty — logical order *and* contention — and must not be dropped on
-the grounds that the two changes "do not really overlap". If you are US3 and the
-file does not look as this plan describes, US2 has landed: re-read it rather than
-assuming.
+**14. US2 and US3 both edit `factory/workgraph/adapter.py`, and the edge that
+keeps them apart is `depends_on_merged`, not `depends_on`.** US2 removes two
+lines from the constructed environment (`:774-775`); US3 adds a conditional write
+beside the `.gitconfig` seed (`:740`). Different functions, one file.
+
+*Corrected 2026-08-19.* This trap originally declared `depends_on: [US2]` and
+claimed that edge was "doing double duty — logical order *and* contention". **It
+was not, and could not.** `validate_workgraph` says it plainly in its own refusal
+text: *"an edge gates on either verification or merge, never both (FR-009)"*
+(`factory/workgraph/models.py:413-419`). `depends_on` gates on US2 **passing**,
+so US3 would have started from a base that did not yet contain US2's
+`adapter.py` change while US2 sat in the merge queue — which is the exact
+contention the trap claimed to prevent. The declaration now reads
+`depends_on_merged: [US2]`, matching what 071's us2 does for the same reason.
+
+Do not "simplify" it back to `depends_on`. If you are US3 and the file does not
+look as this plan describes, US2 has landed: re-read it rather than assuming.
 
 **15. Do not re-run the feasibility spike.** It is answered, with its control,
 in Sizing below. Re-establishing it costs an attempt and a live subscription call
 to learn something already written down. If your reading of the tree contradicts
 what is recorded there, say so explicitly rather than quietly redoing it.
+
+**16. Decide, on purpose, whether `persona:` is fingerprint-bearing — and say so
+in the diff.** `fingerprint()` (`factory/workgraph/landed.py:319`) hashes four
+components, and one of them is `declaration` — the story's **raw declaration YAML
+text** from `## Work Graph` (`_story_parts`, `:349`). So adding a `persona:` key
+to a story that has already landed changes that text, changes the digest, and
+`delta` then **re-opens the landed story** (`factory/workgraph/delta.py:9`).
+Default behaviour, no code change required, and it is the exact mechanism behind
+`interpreter/editing-implements-on-a-landed-story-reopens-it-into-an-unwinnable-loop`.
+
+This is not hypothetical. Field-reported 2026-08-19 from a consumer install:
+re-partitioning `implements` across landed stories produced *"us1 reopened:
+fingerprint changed from c569195841... to 9b203a65cf..."*, and the reopened node
+branched from a base that **already contained its own work**. Its entire possible
+diff was a one-line docstring fix, unjudgeable against eight requirements, so it
+burned the ladder to exhaustion while the real story sat landed and green.
+
+The consequence lands on the operator's stated plan, which is to pin *existing*
+specs to a different persona — several of which have landed stories. Pinning one
+would silently reopen it.
+
+So US1 must not leave this to accident. Either:
+
+- **exclude `persona` from the declaration component** of the fingerprint, so a
+  routing change never reopens landed work — and add the test that proves a
+  landed story with a newly-added `persona:` key stays landed; or
+- **keep it fingerprint-bearing** because who built the code is part of what the
+  story means — and then `validate` must **warn by name** when an edit changes a
+  landed story's fingerprint, rather than discovering it at dispatch.
+
+Pick one, implement it, and state which in the diff. An implementation that
+simply adds the key and never mentions the fingerprint has made this choice by
+omission, and it is the expensive one.
+
+**17. The registry's `model` is a *proxy* alias, and `--model` does not take
+one.** `argv()` (`adapter.py:931`) passes `context.model_alias` verbatim at
+`:938`. That value comes from the persona registry's `model` field
+(`factory/config.py:178`), which holds LiteLLM aliases like
+`ollama-cloud/kimi-k2.7-code` — names the *proxy* resolves. Remove the proxy, as
+US2 does, and there is nothing left to resolve them.
+
+Measured 2026-08-19 against the signed-in CLI, cleared environment, no
+`ANTHROPIC_*`:
+
+    --model anthropic/claude-opus-5   exit 1   "There's an issue with the selected
+                                                model (anthropic/claude-opus-5). It
+                                                may not exist or you may not have
+                                                access to it."
+    --model opus                      exit 0   "OK"
+
+This is the trap because the failure looks like nothing it is. A node that
+authenticates perfectly then exits 1 on its model name, and the message names
+neither authentication nor the gateway — so the natural diagnosis is that US3's
+credential work is broken, which it would not be. Fix it in US2, where it is
+testable over the constructed argv with no credential at all.
+
+**18. An attempt routinely outlives its own access token, and a copied
+credential throws the refresh away.** Measured 2026-08-19: `.credentials.json`
+carries `expiresAt` and `refreshTokenExpiresAt`; the access token had **5.8
+hours** of life. `implementer`'s timeout is **14400s — four hours**
+(`personas.yaml:80`). So a long attempt crossing its own expiry is the ordinary
+case, not an edge, and the CLI will refresh itself mid-flight.
+
+Where that refreshed token lands is decided by how US3 places the credential. A
+plain copy into `.factory/homes/<epic>/<node>` puts it in a directory discarded
+at teardown: every attempt re-refreshes from the same stored token. Whether that
+is harmless or destructive depends on a fact **nobody has measured** — whether
+the provider rotates the refresh token on use. If it does, concurrent nodes
+invalidate each other and the operator's own login on this host, which is a
+failure that reaches well outside the factory.
+
+Do not resolve this by assuming the benign case. Either establish the rotation
+behaviour and say how, or state plainly that it is unestablished and choose the
+placement that is safe under both readings. US3-S6 and SC-009 are where the
+choice is recorded.
 
 ## Sizing
 
@@ -216,12 +323,29 @@ Three facts from that control that are cheaper to read here than to rediscover:
    presence of `expiresAt` and `refreshTokenExpiresAt` is why FR-013 is about a
    credential that is present and *stale*, not only one that is absent.
 
-**US2 (declaration and routing) is now small.** Two lines omitted from the
-environment, one sentinel, one property split, and its callers read. No
-credential is involved at all, which is why it is a story of its own.
+**US2 (declaration and routing) is medium, and it grew twice on 2026-08-19 — read
+this before assuming it is the small one.** It was "two lines omitted from the
+environment" when it was split out. It is now five implementation edits: the
+sentinel (`config.py`), the `is_llm` split (`config.py`), the omitted gateway
+variables (`adapter.py:774-775`), the `--model` translation (`adapter.py:938`,
+trap 17) and the alias-gate exclusion (`preflight.py` + `controlplane/verify.py`,
+trap 3). Both additions were found by *running* the CLI, not by reading the tree.
+
+They are cohesive — every one of them is the same idea, "a subscription persona
+is a different kind of thing from a gateway persona" — and none is individually
+large. But the story was already split once for being oversized, so if it fails,
+suspect size first: the natural second split is FR-014 (`--model`, which touches
+`argv()` alone and needs no credential) into a story of its own, leaving US2 as
+the declaration and the `is_llm` split with its two callers.
+
+No credential is involved in any of it, which is why it remains a story of its
+own and why it stays testable on any host.
 
 **US3 (the credential) is small-to-medium and its risk is entirely the controls**
 — traps 4 and 5, and the negative test that keeps gateway nodes credential-free.
+Trap 18 adds a decision rather than much code: where the credential is *placed*
+determines what happens to a token refreshed mid-attempt, and one of the two
+readings reaches outside the factory to the operator's own login.
 
 **US4 (accounting and bound) is small** and is mostly a decision: what an
 unbounded default means. Make it deliberately.
