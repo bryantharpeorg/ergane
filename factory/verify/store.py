@@ -114,10 +114,9 @@ from factory.verify.models import (
 #: text columns; pre-023 rows read as NULL, never backfilled.
 #:
 #: 7 (068-US2): `escalations.resolution` admits `KILL_EPIC`. The first migration
-#: here that is not additive — SQLite cannot ALTER a CHECK constraint, so
-#: `_migrate` rebuilds the table. Until it runs, a `KILL_EPIC` press would be
-#: refused by the constraint at `settle_escalation`, which is a button that pages
-#: an operator and then discards their answer.
+#: here that is not additive — SQLite cannot ALTER a CHECK, so `_migrate` rebuilds
+#: the table. Until it runs the press is refused at `settle_escalation`: a button
+#: that pages an operator and discards their answer.
 SCHEMA_VERSION = 7
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
@@ -144,12 +143,10 @@ TEST_SUITE_STORE_ISOLATION_FINDING = (
 )
 
 
-#: The escalations table and its indexes, held apart from the rest of the DDL
-#: because 068-US2 has to be able to *rebuild* them: SQLite can add a column in
-#: place but cannot alter a CHECK constraint, and the `resolution` CHECK had to
-#: learn `KILL_EPIC`. One spelling for both jobs — a second copy inside the
-#: migration is a second thing to keep in step, and the one that drifts is
-#: always the copy a fresh database never exercises.
+#: Held apart from the rest of the DDL because 068-US2 must be able to *rebuild*
+#: it: SQLite cannot alter a CHECK in place. One spelling for both jobs — a second
+#: copy in the migration is a second thing to keep in step, and the one that
+#: drifts is the copy a fresh database never exercises.
 _ESCALATIONS_DDL = """
 CREATE TABLE IF NOT EXISTS escalations (
     escalation_id  TEXT PRIMARY KEY,       -- 12-hex token (callback_data key)
@@ -179,24 +176,6 @@ CREATE INDEX IF NOT EXISTS idx_esc_pending ON escalations (resolution) WHERE res
 CREATE INDEX IF NOT EXISTS idx_esc_node    ON escalations (epic_id, node_id);
 """
 
-#: Every column of `escalations`, in DDL order — what the 068-US2 rebuild copies
-#: across. Named rather than `SELECT *`, so a future column added to one side
-#: only fails loudly here instead of silently shifting a row's values along.
-_ESCALATION_COLUMNS = (
-    "escalation_id",
-    "workflow_id",
-    "epic_id",
-    "node_id",
-    "choices",
-    "history_summary",
-    "delivered",
-    "sent_at",
-    "expires_at",
-    "resolution",
-    "resolved_at",
-    "resolved_via",
-    "check_evidence",
-)
 
 #: Verbatim from `contracts/verification-store.sql`. Every statement is
 #: `IF NOT EXISTS`, so bootstrap is safe to run on every connect.
@@ -460,23 +439,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def _widen_escalation_resolutions(conn: sqlite3.Connection) -> None:
     """Teach an existing store's `resolution` CHECK the `KILL_EPIC` value (068-US2).
 
-    The one migration here that cannot be an `ADD COLUMN`: SQLite has no
-    `ALTER TABLE ... ALTER CONSTRAINT`, so widening a CHECK means rebuilding the
-    table around the rows. Keyed off the recorded DDL rather than off the version
-    number, for `_migrate`'s stated reason — a version is a claim and the schema
-    is the fact — and idempotent, because a table that already admits the value
-    is left entirely alone.
+    The one migration here that cannot be an `ADD COLUMN`: SQLite has no `ALTER
+    TABLE ... ALTER CONSTRAINT`, so widening a CHECK means rebuilding the table
+    around the rows. Keyed off the recorded DDL rather than the version number —
+    a version is a claim, the schema is the fact — and idempotent.
 
     Order matters twice. The indexes are dropped *before* the rename, because
-    SQLite carries an index along with the table it belongs to and keeps its
-    name: leave them and the `CREATE INDEX IF NOT EXISTS` below is a no-op that
-    silently leaves the rebuilt table unindexed. And this runs *after* the
-    `check_evidence` migration above, so the old table has every column the copy
-    names by the time the copy runs.
-
-    Nothing is dropped until the rows are across. A store that dies mid-migration
-    is left with the old table under its interim name, which is recoverable; one
-    that dropped first would be a lost escalation history.
+    SQLite carries an index along with its table and keeps the name: leave them
+    and the `CREATE INDEX IF NOT EXISTS` below is a no-op that silently leaves the
+    rebuilt table unindexed. And this runs *after* the `check_evidence` migration,
+    so the old table has every column the copy names. Nothing is dropped until the
+    rows are across, so a store that dies mid-migration is recoverable.
     """
     recorded = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'escalations'"
@@ -484,7 +457,11 @@ def _widen_escalation_resolutions(conn: sqlite3.Connection) -> None:
     if recorded is None or EscalationChoice.KILL_EPIC.value in recorded[0]:
         return
 
-    columns = ", ".join(_ESCALATION_COLUMNS)
+    # The old table's own columns, in its order, named rather than `SELECT *` so
+    # the copy cannot silently shift a row's values along.
+    columns = ", ".join(
+        row[1] for row in conn.execute("PRAGMA table_info(escalations)")
+    )
     conn.execute("DROP INDEX IF EXISTS idx_esc_pending")
     conn.execute("DROP INDEX IF EXISTS idx_esc_node")
     conn.execute("ALTER TABLE escalations RENAME TO escalations_pre_kill_epic")

@@ -109,10 +109,8 @@ ESCALATION_NOT_RECORDED = "ESCALATION_NOT_RECORDED"
 ESCALATION_TIMEOUT_S = 3600
 
 #: What the ladder offers when the dispatch does not narrow it (FR-008).
-#:
 #: 068-US2 adds `KILL_EPIC`: ending the node and ending the epic are distinct
-#: operator choices, and until this offer carried both the second one did not
-#: exist on any surface — `PAUSE_EPIC` parks, it does not end.
+#: choices, and `PAUSE_EPIC` parks rather than ends (FR-008).
 DEFAULT_CHOICES = (
     EscalationChoice.RETRY,
     EscalationChoice.KILL,

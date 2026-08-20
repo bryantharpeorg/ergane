@@ -481,11 +481,8 @@ class NodeStatus:
     terminal_reason: str | None = None
     #: US2: external-completion provenance, or None for agent-built work.
     provenance: str | None = None
-    #: 068-US2: the escalation child this node is parked on, or `None` when it is
-    #: not waiting on one. The distinction `ergane build reset` is keyed on: an
-    #: epic whose only living child is a stalled escalation is doing no work, and
-    #: refusing to reset it is what left an operator with `temporal workflow
-    #: terminate` as their only move (FR-007).
+    #: 068-US2: the escalation child this node is parked on, or `None` — the
+    #: distinction `ergane build reset` is keyed on (FR-007).
     pending_escalation_id: str | None = None
 
 
@@ -519,11 +516,9 @@ class _Escalation:
     escalation_id: str
     delivered: bool
     resolution: str
-    #: 068-US2: the operator stopped the epic while this escalation was open, so
-    #: nobody ever answered it. `resolution` still ends the node — a stopped epic
-    #: ends every node it holds — but the caller must not record it as an
-    #: operator's press: the store row is left pending, and a grant the ladder
-    #: counts (`record.escalations`) would be a decision nobody made.
+    #: 068-US2: the epic was stopped while this escalation was open, so nobody
+    #: answered it. `resolution` still ends the node, but recording it as a press
+    #: would let the ladder count a grant nobody made.
     abandoned: bool = False
 
 
@@ -1570,24 +1565,18 @@ class EpicWorkflow:
                     else:
                         escalation = await self._escalate(graph, node, results, request.config)
                         if escalation.abandoned:
-                            # 068-US2: the operator stopped the epic while this
-                            # escalation was open. The node ends KILLED with
-                            # everything else in flight, and no resolution is
-                            # recorded — appending one would let the ladder count a
-                            # grant nobody made, and would tell a reader of
-                            # `record.escalations` that a human pressed KILL.
+                            # 068-US2: the epic was stopped while this page was
+                            # open. The node ends KILLED with everything else in
+                            # flight, and no resolution is recorded.
                             action = NextAction.KILLED
                             break
                         record.escalations.append(escalation.resolution)
                         # The half of a press the ladder cannot express: it decides
-                        # the node, and every resolution but `RETRY` ends it, so what
-                        # happens to the *epic* is this component's to supply
-                        # (contracts/workflow.md). `PAUSE_EPIC` parks and stops
-                        # dispatching; `KILL_EPIC` (068-US2, FR-008) ends the epic
-                        # outright, draining and salvaging what is in flight the way
-                        # `ergane build kill` does; `KILL` and `RETRY` leave the epic
-                        # alone. Three answers, three effects — routed through the
-                        # pure mapping so no fourth reading of a resolution exists.
+                        # the node, so the *epic* is this component's to supply
+                        # (contracts/workflow.md). `PAUSE_EPIC` parks; `KILL_EPIC`
+                        # (068-US2, FR-008) ends the epic; `KILL` and `RETRY` leave
+                        # it alone — through the pure mapping, so a resolution has
+                        # no second reading.
                         effect = epic_effect(escalation.resolution)
                         if effect is EpicEffect.PAUSE:
                             parked = True
@@ -1647,10 +1636,8 @@ class EpicWorkflow:
                         graph, node, [], request.config, history_summary=launch_summary
                     )
                     if not escalation.abandoned:
-                        # 068-US2: a kill that landed while this page was open is
-                        # not an answer to it. The node is already ending KILLED
-                        # for the launch fault; recording a resolution nobody gave
-                        # would only misattribute why.
+                        # 068-US2: a kill landing while this page was open is not
+                        # an answer to it.
                         record.escalations.append(escalation.resolution)
                     break
                 action = NextAction.RETRY
@@ -2221,16 +2208,7 @@ class EpicWorkflow:
         US2: a launch failure may pass a custom `history_summary` naming the fault,
         because there are no `VerificationResult`s to render.
 
-        068-US2: the child is *started* and then waited on alongside the operator's
-        kill, rather than awaited outright. An `execute_child_workflow` here read
-        `_kill_requested` never, so an epic holding an open escalation ignored
-        `ergane build kill` for up to `escalation_timeout_s` — an hour, by default
-        — and the operator's only remaining move was `temporal workflow
-        terminate`. The shape is the question park's, deliberately
-        (`_run_node`'s `wait_condition(question.done() or self._kill_requested)`):
-        cancel the child so its hour dies with the park, leave the store row
-        pending, and let the node end KILLED with the epic. A stopped epic is
-        neither a press nor a burn, so nothing is settled and nothing expires.
+        068-US2: parked on rather than awaited — see `_park_on_escalation`.
         """
         record = self._nodes[node.id]
         child = await workflow.start_child_workflow(
@@ -2248,36 +2226,50 @@ class EpicWorkflow:
             # Workflow scope, so a replay mints the same correlation id.
             id=child_correlation_id(),
         )
-        # The park is observable from outside for exactly as long as it lasts:
-        # `epic_status` reports it, and that is what tells `ergane build reset`
-        # an epic is stalled rather than working (FR-007).
-        record.pending_escalation_id = child.id
-        try:
-            # `Task.done()` is a pure read and the flag is a signal's, so this
-            # predicate replays identically and starts no timer of its own — the
-            # child owns the window (041-US3).
-            await workflow.wait_condition(
-                lambda: child.done() or self._kill_requested
+        outcome = await self._park_on_escalation(record, child)
+        if outcome is None:
+            # Every non-grant ends the node (`ladder._ends_the_node`), and a
+            # killed epic ends this one; `abandoned` says it was nobody's answer.
+            return _Escalation(
+                escalation_id=child.id,
+                delivered=False,
+                resolution=EscalationChoice.KILL.value,
+                abandoned=True,
             )
-            if not child.done():
-                child.cancel()
-                return _Escalation(
-                    escalation_id=child.id,
-                    delivered=False,
-                    # Every non-grant ends the node (`ladder._ends_the_node`), and
-                    # a killed epic ends this one. `abandoned` is how the caller
-                    # knows not to read it as an answer.
-                    resolution=EscalationChoice.KILL.value,
-                    abandoned=True,
-                )
-            outcome = await child
-        finally:
-            record.pending_escalation_id = None
         return _Escalation(
             escalation_id=outcome.escalation_id,
             delivered=outcome.delivered,
             resolution=outcome.resolution,
         )
+
+    async def _park_on_escalation(
+        self, record: NodeRecord, child: Any
+    ) -> Any | None:
+        """Wait out an escalation child, or the operator's kill — whichever first.
+
+        `None` means the epic was stopped while the page was open, so nobody
+        answered it. 068-US2: `execute_child_workflow` read `_kill_requested`
+        never, so an epic holding an open escalation ignored `ergane build kill`
+        for up to `escalation_timeout_s`, leaving `temporal workflow terminate` as
+        the operator's only move. The shape is the question park's: cancel the
+        child so its hour dies with the park, and leave the store row pending,
+        because a stopped epic is neither a press nor a burn. The park is
+        observable while it lasts — `epic_status` reports `pending_escalation_id`,
+        which is what tells `reset` a stall from work (FR-007).
+        """
+        record.pending_escalation_id = child.id
+        try:
+            # `Task.done()` is a pure read and the flag is a signal's, so this
+            # replays identically and starts no timer — the child owns the window.
+            await workflow.wait_condition(
+                lambda: child.done() or self._kill_requested
+            )
+            if not child.done():
+                child.cancel()
+                return None
+            return await child
+        finally:
+            record.pending_escalation_id = None
 
     async def _close_out(
         self,
@@ -2912,12 +2904,9 @@ class EpicWorkflow:
         the ordinary exhaustion case — e.g. a futile re-enqueue. The note is
         appended to the rendered history summary so the operator sees the reason.
 
-        068-US2: watched alongside the operator's kill, for the reason `_escalate`
-        gives at length — a landing parked on an answer nobody gives strands the
-        epic exactly as a verification escalation does, and it is the *same*
-        `execute_child_workflow` that did it. A kill returns `KILL`, which
-        `_apply_landing_resolution` reads as "end this node, branch preserved":
-        the right ending for a node whose epic is stopping.
+        068-US2: parked on rather than awaited (`_park_on_escalation`) — a landing
+        waiting on an answer nobody gives strands the epic the same way. A kill
+        reads as `KILL`: end this node, branch preserved.
         """
         history_summary = render_landing_history(record.landing)
         if note:
@@ -2934,20 +2923,8 @@ class EpicWorkflow:
             ),
             id=child_correlation_id(),
         )
-        record.pending_escalation_id = child.id
-        try:
-            await workflow.wait_condition(
-                lambda: child.done() or self._kill_requested
-            )
-            if not child.done():
-                # The child's hour dies with the park; the row stays pending,
-                # because a stopped epic is neither a press nor a burn.
-                child.cancel()
-                return EscalationChoice.KILL.value
-            outcome = await child
-        finally:
-            record.pending_escalation_id = None
-        if not outcome.delivered:
+        outcome = await self._park_on_escalation(record, child)
+        if outcome is None or not outcome.delivered:
             return EscalationChoice.KILL.value
         return outcome.resolution
 
@@ -2966,14 +2943,10 @@ class EpicWorkflow:
         with the branch preserved — removal takes the directory, never the branch
         (constitution VI). `PAUSE_EPIC` parks the node and pauses the epic,
         exactly as the verification ladder's escalation does. `KILL_EPIC` (068-US2,
-        FR-008) ends the node the same way `KILL` does and stops the epic around
-        it: the scheduler drains and salvages what is in flight, which is what
-        makes it an operator choice rather than a row of individual kills. `RETRY`
-        is not routed here — the caller grants one more recovery cycle.
-
-        Both epic-level effects are read through the one pure mapping the
-        verification ladder's branch uses, so a resolution cannot mean one thing
-        to a landing and another to an attempt.
+        FR-008) ends the node as `KILL` does and stops the epic around it. `RETRY`
+        is not routed here. Both epic-level effects read through the one pure
+        mapping the ladder's branch uses, so a resolution cannot mean one thing to
+        a landing and another to an attempt.
         """
         record = self._nodes[resolved.node.id]
         effect = epic_effect(resolution)

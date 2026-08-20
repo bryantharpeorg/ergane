@@ -893,17 +893,14 @@ def reset_command(args: argparse.Namespace) -> int:
     return asyncio.run(_reset_epic(graph))
 
 
-#: The node states in which an epic is doing work a reset would destroy: a key
-#: is issued, an agent is running, gates or a judge are reading the tree, or a
-#: landing is on the queue. `PENDING` is absent because nothing has been
-#: dispatched for it, and every terminal state is absent because it is over.
+#: The node states in which an epic is doing work a reset would destroy: a key is
+#: issued, an agent is running, gates or a judge are reading the tree, or a
+#: landing is on the queue. `PENDING` and every terminal state are absent.
 #:
-#: 068-US2: `WAITING_OPERATOR` is deliberately *in* this set. A parked question
-#: holds a live worktree its next attempt will resume on, so resetting it is the
-#: same lost work as resetting a running agent. Only the escalation park is
-#: widened here, and it is widened by `pending_escalation_id` rather than by a
-#: state, because an escalating node's state is `VERIFYING` — it is what the
-#: node was doing when it ran out of ladder.
+#: 068-US2: `WAITING_OPERATOR` is deliberately *in* this set — a parked question
+#: holds a live worktree its next attempt resumes on. Only the escalation park is
+#: widened, and by `pending_escalation_id` rather than by a state, because an
+#: escalating node's state is `VERIFYING`.
 _WORKING_STATES = frozenset(
     {
         "KEY_ISSUED",
@@ -920,18 +917,16 @@ _WORKING_STATES = frozenset(
 async def _refuse_if_epic_is_working(handle: Any, graph: WorkGraph) -> None:
     """Refuse a reset against a RUNNING epic unless it is only stalled (FR-007).
 
-    Temporal's execution status says `RUNNING` for two situations an operator
-    tells apart instantly and this verb could not: an epic dispatching agents,
-    and an epic parked on an escalation nobody has answered. The second one is
-    doing nothing and will keep doing nothing for up to `escalation_timeout_s`
-    — and refusing it is what left `temporal workflow terminate` as the only way
-    out of a stalled epic, which is the whole deadlock this story removes.
+    Temporal's execution status says `RUNNING` for two situations this verb could
+    not tell apart: an epic dispatching agents, and an epic parked on an escalation
+    nobody has answered. Refusing the second left `temporal workflow terminate` as
+    the only way out.
 
     So the refusal is keyed on *what kind of child is alive*, never on loosening
-    the status test (plan trap 7): a node genuinely in flight still refuses, and
-    says which node and what it is doing, because an operator told only "no"
-    cannot tell a stall from work in progress. A query the epic will not answer
-    refuses too — an unread epic is not a stalled one, and a reset is destructive.
+    the status test (trap 7): a node in flight still refuses, and names what it is
+    doing, because an operator told only "no" cannot tell a stall from work. A
+    query the epic will not answer refuses too — an unread epic is not a stalled
+    one, and a reset is destructive.
     """
     try:
         status = await handle.query(EpicWorkflow.epic_status)
@@ -965,9 +960,9 @@ async def _refuse_if_epic_is_working(handle: Any, graph: WorkGraph) -> None:
         if node.pending_escalation_id is not None
     )
     if not stalled:
-        # Running, nothing working, nothing stalled — a start-up or a shutdown
-        # caught mid-stride. Nothing here names a reason to proceed, and this
-        # verb rewrites the target repository, so it keeps the old answer.
+        # Running, nothing working, nothing stalled — a start-up or shutdown
+        # caught mid-stride. No reason to proceed, and this verb rewrites the
+        # target repository, so it keeps the old answer.
         raise OperatorError(
             f"epic '{graph.epic_id}' is running "
             f"(workflow id {workflow_id(graph.epic_id)}); "
@@ -975,9 +970,8 @@ async def _refuse_if_epic_is_working(handle: Any, graph: WorkGraph) -> None:
         )
 
     # Said out loud, because the epic is still running when this returns: the
-    # reset archives the survivors, it does not answer the escalation or stop
-    # the workflow. Naming the verb that does is the rest of the closed loop —
-    # and it is the operator's to press, never this command's.
+    # reset archives the survivors, it does not answer the escalation or stop the
+    # workflow. Naming the verb that does is the operator's to press, not ours.
     print(
         f"epic '{graph.epic_id}' is stalled on an unanswered escalation "
         f"({', '.join(stalled)}); resetting its survivors. The epic is still "

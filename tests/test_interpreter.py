@@ -2204,10 +2204,11 @@ async def test_the_ladder_exhausts_into_an_escalation_the_operator_kills(
     assert escalation.workflow_id != WORKFLOW_ID
     for attempt in (1, 2, 3, 4):
         assert GATE_TAIL[attempt] in escalation.history_summary
+    # 068-US2: `KILL_EPIC` joins the offer — ending the node and ending the epic
+    # are distinct operator choices (FR-008).
     assert {str(choice) for choice in escalation.choices} == {
         "RETRY",
         "KILL",
-        # 068-US2: ending the node and ending the epic are distinct choices.
         "KILL_EPIC",
         "PAUSE_EPIC",
     }
@@ -3328,6 +3329,11 @@ async def test_a_marker_terminates_question_and_parks_waiting_operator(
         assert states(parked)["us2"] == NodeState.PENDING
         assert states(parked)["us3"] == NodeState.PENDING
 
+        # The same barrier, for the same reason: the send is the child's.
+        await wait_for(
+            lambda: bool(script.question_requests),
+            what="the question to reach the bridge",
+        )
         [question] = script.question_requests
         assert question.epic_id == EPIC_ID
         assert question.node_id == "us1"
@@ -3349,16 +3355,11 @@ async def test_a_question_attempt_salvages_and_preserves_committed_work(
     script = questioning(env.client)
 
     async with start_epic(env, script) as handle:
-        # Wait for the pause, not just the park — this test asserts the question
-        # shipped, and the send happens *after* the node first reads
-        # WAITING_OPERATOR. `_close_out(..., state=WAITING_OPERATOR)` salvages and
-        # parks the node, and only then does the workflow dedup and send; the
-        # pause is the last thing the park block sets, after the send. A predicate
-        # that stops at the park can therefore win the race, exit this context
-        # manager, terminate the workflow before the send activity runs, and find
-        # `question_requests` empty — which is exactly what CI hit on 53eae60,
-        # and what cost 016/us1 an attempt on 2026-08-08. Observing the pause is
-        # a barrier for everything ordered before it.
+        # Wait for the pause, then for the send. The pause was a barrier for the
+        # send too until 041-US3 moved it into a child `QuestionWorkflow`, which
+        # `start_child_workflow` returns from before it has sent — so stopping at
+        # the pause can terminate the workflow first and find `question_requests`
+        # empty, the 53eae60 CI failure that cost 016/us1 an attempt.
         await wait_for_status(
             handle,
             lambda status: (
@@ -3368,6 +3369,10 @@ async def test_a_question_attempt_salvages_and_preserves_committed_work(
             if hasattr(NodeState, "WAITING_OPERATOR")
             else False,
             what="us1 to park WAITING_OPERATOR and the epic to pause",
+        )
+        await wait_for(
+            lambda: bool(script.question_requests),
+            what="the question to reach the bridge",
         )
 
     # Salvage precedes removal (FR-005, constitution VI) — the work is on the
@@ -4504,7 +4509,6 @@ async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
     assert script.escalation_requests[0].choices == [
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
-        # 068-US2: ending the node and ending the epic are distinct choices.
         EscalationChoice.KILL_EPIC,
         EscalationChoice.PAUSE_EPIC,
     ]
@@ -4540,7 +4544,6 @@ async def test_recovery_escalation_kill_preserves_the_branch(
     assert escalation.choices == [
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
-        # 068-US2: ending the node and ending the epic are distinct choices.
         EscalationChoice.KILL_EPIC,
         EscalationChoice.PAUSE_EPIC,
     ]
@@ -5664,7 +5667,6 @@ async def test_checks_failed_futile_recovery_escalates_before_second_enqueue(
     assert escalation.choices == [
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
-        # 068-US2: ending the node and ending the epic are distinct choices.
         EscalationChoice.KILL_EPIC,
         EscalationChoice.PAUSE_EPIC,
     ]
