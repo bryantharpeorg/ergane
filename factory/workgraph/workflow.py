@@ -1609,7 +1609,7 @@ class EpicWorkflow:
                         f"Agent launch failure (AGENT_LAUNCH_FAILED): {exc}\n\n"
                         f"The agent could not be started after "
                         f"{record.launch_failures} attempt(s). No node attempt "
-                        f"was recorded and no attempt budget was spent."
+                        f"was recorded and no ordinary attempt was consumed."
                     )
                     escalation = await self._escalate(
                         graph, node, [], request.config, history_summary=launch_summary
