@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     final_usage_confirmed  INTEGER NOT NULL CHECK (final_usage_confirmed IN (0, 1)),
     termination            TEXT    NOT NULL CHECK (termination IN
                                ('completed', 'agent_error', 'timeout', 'killed',
-                                'question')),
+                                'question', 'auth_failure')),
     issued_at              TEXT    NOT NULL,                 -- ISO 8601 UTC
     torn_down_at           TEXT    NOT NULL                  -- ISO 8601 UTC
 );

@@ -73,6 +73,7 @@ from temporalio.exceptions import ApplicationError, CancelledError
 from factory.activities.usage_activities import open_client
 from factory.activities.notify_activities import ferry_read_answer, ferry_send_question
 from factory.config import ConfigError, Persona, load_personas
+from factory.config import SUBSCRIPTION_AGENT
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
@@ -83,6 +84,8 @@ from factory.verify.factory_yaml import (
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    STDOUT_LOG_NAME,
+    SUBSCRIPTION_REFUSAL_MARKER,
     AdapterError,
     ClaudeCodeAdapter,
     adapter_for,
@@ -457,7 +460,7 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         # declare `runtime: host` in their fixture manifest and get it through
         # the same resolution production uses.
         adapter = adapter_for(DEFAULT_AGENT)
-        return await adapter.run_attempt(
+        result = await adapter.run_attempt(
             context,
             factory_root=root,
             heartbeat=activity.heartbeat,
@@ -475,6 +478,12 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
             send_ferry_question=_ferry_sender(context),
             read_ferry_answer=ferry_read_answer,
         )
+        # US3 FR-013: the adapter classifies only by process outcome (FR-012).
+        # A subscription-routed attempt whose credential is present but refused by
+        # the CLI prints the measured refusal on stdout and exits 1. Reclassify
+        # that specific marker as an authentication failure so it is recorded as
+        # a named auth failure instead of a diffless AGENT_ERROR.
+        return _classify_subscription_auth_failure(context, result)
     except asyncio.CancelledError:
         raise CancelledError(
             f"attempt {context.attempt} of {context.epic_id}/{context.node_id} "
@@ -495,6 +504,40 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         raise ApplicationError(
             str(exc), type=AGENT_LAUNCH_FAILED, non_retryable=True
         ) from exc
+
+
+def _classify_subscription_auth_failure(
+    context: AttemptContext, result: AdapterResult
+) -> AdapterResult:
+    """Reclassify a subscription AGENT_ERROR that carried the CLI auth refusal.
+
+    The adapter itself classifies only by exit status (FR-012). The CLI's
+    subscription auth failure is the one exception: it exits 1 and prints the
+    refusal on stdout (measured 2026-08-19), which a caller watching stderr
+    would read as a silent success. Detecting that specific marker here, in the
+    activity that owns interpreting the adapter's output, turns the attempt into
+    a named authentication failure (US3-S5/FR-013) instead of a diffless error.
+    """
+    if result.termination != Termination.AGENT_ERROR:
+        return result
+    if context.agent != SUBSCRIPTION_AGENT:
+        return result
+    if not result.transcript_path:
+        return result
+
+    log_path = Path(result.transcript_path) / STDOUT_LOG_NAME
+    try:
+        log_text = log_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return result
+    if SUBSCRIPTION_REFUSAL_MARKER not in log_text:
+        return result
+
+    return AdapterResult(
+        termination=Termination.AUTH_FAILURE,
+        transcript_path=result.transcript_path,
+        last_snapshot=result.last_snapshot,
+    )
 
 
 # --- read_worktree_diff (what the judge scores) -------------------------------

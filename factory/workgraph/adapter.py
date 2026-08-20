@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import pwd
 import re
 import shutil
 import signal
@@ -59,6 +60,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
+from factory.config import SUBSCRIPTION_AGENT
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import FactoryConfigError, MANIFEST_NAME, load_factory_config, resolve_manifest_path
 from factory.verify.gates import BwrapGateExecutor, ordered_binds
@@ -147,6 +149,11 @@ _SALVAGE_AUTHOR_EMAIL = SALVAGE_AUTHOR_EMAIL
 #: `answer`; the adapter ferries question up and answer down (FR-009).
 FERRY_QUESTION_FILE = "question"
 FERRY_ANSWER_FILE = "answer"
+
+#: The stdout marker that means a subscription-routed attempt reached the
+#: sandbox but the CLI refused the credential (US3-S5/FR-013). Measured
+#: 2026-08-19: printed on stdout, not stderr, with exit status 1.
+SUBSCRIPTION_REFUSAL_MARKER = "Not logged in · Please run /login"
 
 _NON_ALNUM = re.compile(r"[^a-zA-Z0-9]")
 
@@ -719,7 +726,57 @@ def home_path(factory_root: Path | str, epic_id: str, node_id: str) -> Path:
     return Path(factory_root) / "homes" / epic_id / node_id
 
 
-def _seed_node_home(home: Path) -> None:
+def _operator_home() -> Path:
+    """The operator's real home directory, even when this process's HOME is synthetic.
+
+    The adapter runs with a per-node HOME, so ``Path.home()`` would return that
+    synthetic directory. The passwd entry names the operator's home, which is
+    where Claude Code stored the credential. Falls back to ``Path.home()`` when
+    the passwd entry is unavailable.
+    """
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        return Path.home()
+
+
+def discover_subscription_credential(
+    *,
+    operator_home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Find the operator's Claude Code subscription credential on this host.
+
+    The credential's location is a host fact, not a code constant. Searches, in
+    order:
+
+    1. ``$XDG_CONFIG_HOME/claude/.credentials.json``
+    2. ``~/.config/claude/.credentials.json``
+    3. ``~/.claude/.credentials.json`` (the path used in the 2026-08-19
+       feasibility run)
+
+    Returns ``None`` when none of those paths exist. The search is exposed with
+    an optional ``operator_home`` so tests can drive discovery without touching
+    the host's real home.
+    """
+    if operator_home is None:
+        operator_home = _operator_home()
+    source = os.environ if environ is None else environ
+
+    candidates: list[Path] = []
+    xdg_config = source.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        candidates.append(Path(xdg_config) / "claude" / ".credentials.json")
+    candidates.append(operator_home / ".config" / "claude" / ".credentials.json")
+    candidates.append(operator_home / ".claude" / ".credentials.json")
+
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _seed_node_home(home: Path, credential_path: Path | None = None) -> None:
     """Write the minimum the CLI needs to start non-interactively on this home.
 
     T001 found the answer is almost nothing: the CLI writes its own
@@ -728,9 +785,20 @@ def _seed_node_home(home: Path) -> None:
     writes only git identity, and it writes it from constants already owned by
     the factory's salvage path (FR-005).
 
+    For subscription-routed personas the operator's credential is also copied
+    into this home (US3 FR-007). The placement is a file copy: per-node HOMEs
+    are isolated by ``(epic, node)`` so concurrent nodes do not share the same
+    credential file, and the operator's stored credential is never written to
+    by the agent. The refresh-token rotation behaviour of the provider has not
+    been measured; if rotation-on-use is the provider's behaviour, a copy still
+    prevents concurrent nodes from invalidating each other, but the operator's
+    own host login may be invalidated when the first node refreshes. That
+    trade-off is documented here and in the diff (US3-S6/FR-015).
+
     The function takes no path into the operator's home and no argument that
     could carry one: every value it writes is imported from this module or
-    `factory.workgraph.worktree`.
+    `factory.workgraph.worktree`, except the credential copy which arrives
+    through the discovered ``credential_path``.
     """
     config = (
         "[user]\n"
@@ -738,6 +806,11 @@ def _seed_node_home(home: Path) -> None:
         f"\temail = {_SALVAGE_AUTHOR_EMAIL}\n"
     )
     (home / ".gitconfig").write_text(config, encoding="utf-8")
+    if credential_path is not None:
+        target = home / ".claude" / ".credentials.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(credential_path, target)
+        target.chmod(0o600)
 
 
 def project_dir_name(cwd: Path | str) -> str:
@@ -865,7 +938,21 @@ class ClaudeCodeAdapter:
                 f"could not create per-node home for {context.epic_id}/"
                 f"{context.node_id}: {home}"
             ) from error
-        _seed_node_home(home)
+
+        # US3 FR-007/FR-008: subscription-routed personas need the operator's
+        # credential in their per-node HOME, and a missing credential must be a
+        # named refusal before the sandbox forks.
+        credential_path: Path | None = None
+        if context.agent == SUBSCRIPTION_AGENT:
+            credential_path = discover_subscription_credential()
+            if credential_path is None:
+                operator_home = _operator_home()
+                raise AdapterError(
+                    "subscription credential not found: no .claude/.credentials.json "
+                    f"under {operator_home / '.claude'} or XDG_CONFIG_HOME. "
+                    "Run `claude login` on the worker host."
+                )
+        _seed_node_home(home, credential_path)
         await self._reap(pids)
 
         worktree = Path(context.worktree_path).resolve()
