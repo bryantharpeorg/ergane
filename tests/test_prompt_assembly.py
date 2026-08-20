@@ -90,6 +90,7 @@ from factory.cli.main import main
 from factory.cli.nouns import build as build_noun, spec as spec_noun
 from factory.workgraph import preflight
 from factory.workgraph.derive import derive_workgraph
+from factory.workgraph.models import WorkGraph, WorkNode
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "prompt_assembly"
 
@@ -215,10 +216,20 @@ def test_a_node_whose_story_the_spec_does_not_declare_is_named_with_spec_md() ->
     contains necessarily has a findable section. A graph that drifted from the
     spec beside it does not.
     """
-    graph = build_noun.load_workgraph(STALE_GRAPH / "workgraph.json")
+    document = json.loads((STALE_GRAPH / "workgraph.json").read_text(encoding="utf-8"))
+    document["specs_root"] = str((STALE_GRAPH / document["specs_root"]).resolve())
+    # Build the WorkGraph directly so the test still reaches prompt assembly on a
+    # relative-path fixture without going through load_workgraph's new absolute-path
+    # refusal.  The scenario is about assembly, not about path validation.
+    graph = WorkGraph(
+        epic_id=document["epic_id"],
+        feature=document["feature"],
+        specs_root=document["specs_root"],
+        target_repo=document["target_repo"],
+        nodes=[WorkNode(**node) for node in document["nodes"]],
+    )
 
     findings = preflight.check_prompt_assembly(graph, STALE_GRAPH)
-
     assert [finding.node_id for finding in findings] == ["us2"]
     assert findings[0].document == "spec.md"
     assert "node 'us2'" in findings[0].detail

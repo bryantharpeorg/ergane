@@ -25,6 +25,7 @@ ROADMAP_CORPUS = CORPUS / "roadmap"
 WORKGRAPH_CORPUS = CORPUS / "workgraph"
 
 TARGET_REPO = "/srv/factory/targets/short-links"
+ABS_TARGET_REPO = str(Path(__file__).resolve().parent / "fixtures")
 DEAD_ADDRESS = "127.0.0.1:1"
 
 
@@ -228,7 +229,7 @@ def test_list_needs_no_service(run: Callable[..., Run], monkeypatch: pytest.Monk
 def test_derive_writes_compiled_artifact(run: Callable[..., Run], tmp_path: Path) -> None:
     spec = epic_dir(tmp_path, "valid_epic")
 
-    result = run("spec", "derive", str(spec), "--target-repo", TARGET_REPO)
+    result = run("spec", "derive", str(spec), "--target-repo", ABS_TARGET_REPO)
 
     artifact = spec / "workgraph.json"
     assert result.code == 0
@@ -236,7 +237,7 @@ def test_derive_writes_compiled_artifact(run: Callable[..., Run], tmp_path: Path
     parsed = json.loads(artifact.read_text(encoding="utf-8"))
     assert parsed["epic_id"] == "valid_epic"
     assert parsed["feature"] == "valid_epic"
-    assert parsed["target_repo"] == TARGET_REPO
+    assert parsed["target_repo"] == ABS_TARGET_REPO
 
 
 def test_derive_epic_id_is_spec_directory_name(run: Callable[..., Run], tmp_path: Path) -> None:
@@ -245,7 +246,7 @@ def test_derive_epic_id_is_spec_directory_name(run: Callable[..., Run], tmp_path
     spec.mkdir(parents=True)
     (spec / "spec.md").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
-    result = run("spec", "derive", str(spec), "--target-repo", TARGET_REPO)
+    result = run("spec", "derive", str(spec), "--target-repo", ABS_TARGET_REPO)
 
     assert result.code == 0
     parsed = json.loads((spec / "workgraph.json").read_text(encoding="utf-8"))
@@ -256,7 +257,7 @@ def test_derive_needs_no_temporal_server(run: Callable[..., Run], tmp_path: Path
     monkeypatch.setenv("TEMPORAL_ADDRESS", DEAD_ADDRESS)
     spec = epic_dir(tmp_path, "valid_epic")
 
-    result = run("spec", "derive", str(spec), "--target-repo", TARGET_REPO)
+    result = run("spec", "derive", str(spec), "--target-repo", ABS_TARGET_REPO)
 
     assert result.code == 0
     assert (spec / "workgraph.json").exists()
@@ -265,7 +266,7 @@ def test_derive_needs_no_temporal_server(run: Callable[..., Run], tmp_path: Path
 def test_derive_failed_writes_nothing(run: Callable[..., Run], tmp_path: Path) -> None:
     spec = epic_dir(tmp_path, "cycle")
 
-    result = run("spec", "derive", str(spec), "--target-repo", TARGET_REPO)
+    result = run("spec", "derive", str(spec), "--target-repo", ABS_TARGET_REPO)
 
     assert result.code == 1
     assert not (spec / "workgraph.json").exists()
@@ -664,7 +665,7 @@ def test_list_json_is_parseable_document(run: Callable[..., Run]) -> None:
 def test_derive_json_is_parseable_document(run: Callable[..., Run], tmp_path: Path) -> None:
     spec = epic_dir(tmp_path, "valid_epic")
 
-    result = run("spec", "derive", "--json", str(spec), "--target-repo", TARGET_REPO)
+    result = run("spec", "derive", "--json", str(spec), "--target-repo", ABS_TARGET_REPO)
 
     assert result.code == 0
     doc = result.json

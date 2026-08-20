@@ -216,6 +216,23 @@ def _positive_int(value: str) -> int:
 # --- derive: text in, artifact out, nothing on failure (US3-S4, SC-006) -------
 
 
+def _resolve_identity_path(raw: str, field: str, *, must_exist: bool) -> str:
+    """Resolve one identity field to an absolute path, failing helpfully.
+
+    The deriver is handed text, not paths (derive.py:149-153), so resolution
+    belongs to the CLI that already knows which directory the operator stood in.
+    When `must_exist` is true, a non-existent path is reported as the absolute
+    path it resolved to, not as the string the operator supplied, so a cwd
+    mismatch is self-evident.
+    """
+    resolved = Path(raw).resolve()
+    if must_exist and not resolved.exists():
+        raise _OperatorError(
+            f"{field} does not exist: {resolved}"
+        )
+    return str(resolved)
+
+
 def derive_command(args: argparse.Namespace) -> int:
     """Compile one spec into `workgraph.json`, or name every reason it does not.
 
@@ -232,6 +249,12 @@ def derive_command(args: argparse.Namespace) -> int:
         raise _OperatorError(f"cannot read {spec_path}: {error}") from error
 
     epic_id = spec_dir.resolve().name
+    specs_root = _resolve_identity_path(
+        args.specs_root, "--specs-root", must_exist=True
+    )
+    target_repo = _resolve_identity_path(
+        args.target_repo, "--target-repo", must_exist=True
+    )
     if args.delta:
         # The caller wants the remainder graph. Build a baseline from default-branch
         # landed facts: every landed story pinned at its landing commit.
@@ -242,8 +265,8 @@ def derive_command(args: argparse.Namespace) -> int:
                 baseline=baseline,
                 epic_id=epic_id,
                 feature=epic_id,
-                specs_root=args.specs_root,
-                target_repo=args.target_repo,
+                specs_root=specs_root,
+                target_repo=target_repo,
             )
         except DerivationError as error:
             raise _OperatorError(f"{spec_path}: {error}") from error
@@ -263,8 +286,8 @@ def derive_command(args: argparse.Namespace) -> int:
                 spec_text,
                 epic_id=epic_id,
                 feature=epic_id,
-                specs_root=args.specs_root,
-                target_repo=args.target_repo,
+                specs_root=specs_root,
+                target_repo=target_repo,
             )
         except DerivationError as error:
             # The whole list, at the point the author can act on all of it at once.

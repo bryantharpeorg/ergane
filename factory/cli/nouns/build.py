@@ -209,6 +209,23 @@ def load_workgraph(path: str | Path) -> WorkGraph:
             "'nodes' list (write one with `ergane spec derive`)"
         )
 
+    for field in ("specs_root", "target_repo"):
+        value = document.get(field)
+        if value is None:
+            continue
+        try:
+            resolved = Path(value).resolve()
+        except (OSError, ValueError) as error:
+            raise WorkGraphError(
+                f"{location} is not dispatchable: {field} is not a resolvable "
+                f"path: {value!r} ({error})"
+            ) from error
+        if not resolved.is_absolute() or str(resolved) != str(value):
+            raise WorkGraphError(
+                f"{location} is not dispatchable: {field} must be an absolute "
+                f"path, got {value!r} (resolved to {resolved})"
+            )
+
     try:
         return WorkGraph(
             epic_id=document["epic_id"],
