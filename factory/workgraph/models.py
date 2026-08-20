@@ -144,10 +144,9 @@ class WorkGraphDeclaration:
     depends_on_merged: list[str] = field(default_factory=list)
     persona: str | None = None
     #: Stories this one may safely race despite a shared file (069-US2 FR-008).
-    #: The author's override of the slice-contention inference, and the only way
-    #: to say "I know these two name one file and it is safe". It compiles to no
-    #: node field: it is an instruction to the deriver about an edge *not* to
-    #: add, and once the graph is compiled there is nothing left of it to carry.
+    #: The author's override of the slice-contention inference. It compiles to no
+    #: node field: it is an instruction about an edge *not* to add, and once the
+    #: graph is compiled there is nothing left of it to carry.
     concurrent_with: list[str] = field(default_factory=list)
 
 
@@ -184,30 +183,22 @@ class WorkNode:
 class InferredEdge:
     """One ordering edge the deriver added that no author wrote (069-US2 FR-008).
 
-    The edge itself lives where every other edge lives — in the waiting node's
+    The edge itself lives where every other edge lives — the waiting node's
     `depends_on_merged` — because the scheduler must treat an inferred edge and a
-    declared one alike; an edge is an edge. This is the *provenance* beside it,
-    and it exists because an operator who cannot tell which edges they wrote
-    cannot debug their own spec (US2-S3).
+    declared one alike. This is the *provenance* beside it, and it exists because
+    an operator who cannot tell which edges they wrote cannot debug their own
+    spec (US2-S3).
 
-    `shared_files` is the evidence, sorted, and `reason` is the sentence an
-    operator reads: which two stories, which files, and what would have happened
-    without the edge. Both are carried rather than recomputed, so the artifact on
-    disk answers the question without re-reading the `tasks.md` it was derived
-    from — which may since have been edited.
-
-    It is evidence, never an input to a decision: nothing schedules, validates or
-    dispatches from this list, and `load_workgraph` reads the compiled artifact
-    back without it. The surfaces that answer US2-S3 are the artifact itself,
-    `ergane spec derive` and `ergane spec validate` — all three of them the
-    moment the graph is compiled, which is the moment an operator can still
-    change what it says.
+    `shared_files` is the evidence, sorted, and `reason` the sentence an operator
+    reads. Both are carried rather than recomputed, so the artifact answers the
+    question without re-reading a `tasks.md` that may since have been edited.
+    Evidence, never an input: nothing schedules or dispatches from this list.
     """
 
     #: The node that waits — the later-declared story of the colliding pair.
     node_id: str
-    #: The node whose *merge* it waits for. Named for the field the edge landed
-    #: in, so provenance and edge can be matched by eye in the artifact.
+    #: The node whose *merge* it waits for, named for the field the edge landed
+    #: in so the two can be matched by eye in the artifact.
     depends_on_merged: str
     shared_files: list[str] = field(default_factory=list)
     reason: str = ""
@@ -231,9 +222,7 @@ class WorkGraph:
     nodes: list[WorkNode]
     #: Provenance for the edges the deriver inferred from task-slice contention
     #: (069-US2). Additive and empty by default: a graph derived without a
-    #: `tasks.md` — and every artifact compiled before this landed — has none,
-    #: and validation never reads it. It is evidence for an operator, not an
-    #: input to a decision.
+    #: `tasks.md` — and every artifact compiled before this landed — has none.
     inferred_edges: list[InferredEdge] = field(default_factory=list)
 
 

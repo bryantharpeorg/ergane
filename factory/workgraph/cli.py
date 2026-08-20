@@ -321,11 +321,9 @@ def derive_command(args: argparse.Namespace) -> int:
 def _tasks_text(spec_dir: Path) -> str | None:
     """The epic's `tasks.md`, or None when there is none to read (069-US2).
 
-    None is **not checked**, never "nothing collides": with no task slices there
-    is nothing to compare, and a caller that treated the two alike would report a
-    clean bill of health for a document it never opened. `derive` says so on
-    stderr rather than inventing an answer; a spec with no `tasks.md` cannot
-    dispatch anyway, and `check_prompt_assembly` is what names that.
+    None is **not checked**, never "nothing collides": treating the two alike
+    would report a clean bill of health for a document nobody opened, so `derive`
+    says so on stderr rather than inventing an answer.
     """
     try:
         return (spec_dir / TASKS_DOCUMENT).read_text(encoding="utf-8")
@@ -336,11 +334,9 @@ def _tasks_text(spec_dir: Path) -> str | None:
 def _print_inferred_edges(graph: WorkGraph, unread: bool) -> None:
     """Say which edges the deriver added that nobody wrote (069-US2 FR-008).
 
-    On stderr and never as a refusal: an inferred edge is a compiled graph the
-    operator can dispatch, not a defect. But it is a change to the schedule the
-    author did not write, so it is stated at the moment it is compiled rather
-    than left to be discovered in the artifact — an operator who cannot tell
-    which edges they wrote cannot debug their own spec.
+    On stderr and never a refusal: an inferred edge is a graph the operator can
+    dispatch, not a defect. But it is a change to the schedule the author did not
+    write, so it is stated when compiled rather than discovered in the artifact.
     """
     if unread:
         print(

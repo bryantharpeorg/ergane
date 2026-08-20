@@ -244,14 +244,12 @@ Derivation reads a second authored document when one is there: `tasks.md`
 (069-US2). Two stories the spec declares independent whose *task slices* name a
 common file are ordered before either dispatches — the later-declared one gains
 a `depends_on_merged` edge on the earlier — because siblings that collide in a
-file cost whichever lands second a merge-queue rejection, and today that
-rejection is charged to its ladder. The inference is deliberately quiet: a
-directory is not a file, the trio every node is handed is not contention, and a
-pair the graph already lands in merge order, or that the author declared
-anything about (including a `concurrent_with` waiver), is left alone. Each
-inferred edge carries its provenance in the artifact's `inferred_edges` and is
-reported by `ergane spec validate` under `slice_contention`, so an operator can
-always tell which edges they wrote.
+file cost whichever lands second a merge-queue rejection. The inference is
+deliberately quiet: a directory, the trio every node is handed, a pair already
+landed in merge order, and a pair the author declared anything about (including
+a `concurrent_with` waiver) are left alone. Each inferred edge carries its
+provenance in `inferred_edges` and is reported by `ergane spec validate` under
+`slice_contention`.
 
 ### 3.2 Operator surface: `ergane spec` and `ergane build`
 

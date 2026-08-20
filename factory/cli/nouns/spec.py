@@ -248,9 +248,9 @@ def _validate_command(args: argparse.Namespace) -> int:
 
     # 2. Work-graph derivation.
     #
-    # Derived against `tasks.md` when there is one (069-US2): the slices are half
-    # of what the graph means, and an overlap whose only ordering would close a
-    # cycle is a refusal an author must meet here rather than at `spec derive`.
+    # Derived against `tasks.md` when there is one (069-US2): an overlap whose
+    # only ordering would close a cycle is a refusal an author must meet here
+    # rather than at `spec derive`.
     tasks_text = _tasks_text(spec_dir)
     graph: WorkGraph | None = None
     try:
@@ -347,10 +347,9 @@ def _validate_command(args: argparse.Namespace) -> int:
     #
     # The check 060 needed: it asserted its stories were file-disjoint, its
     # diffs contradicted that, and only landing order saved it. An advisory, not
-    # a refusal — derivation has already ordered the pair, so the spec compiles
-    # and dispatches; what the author is owed is the fact that their declared
-    # independence and their own task prose disagree, in time to say which one
-    # they meant.
+    # a refusal — derivation has already ordered the pair — because what the
+    # author is owed is that their declared independence and their own task
+    # prose disagree.
     if graph is not None and tasks_text is not None:
         for edge in graph.inferred_edges:
             findings.append(
@@ -365,8 +364,7 @@ def _validate_command(args: argparse.Namespace) -> int:
                     "the work graph did not compile, so there are no stories to "
                     "compare slices for"
                     if graph is None
-                    else "tasks.md could not be read, so no story has a slice to "
-                    "find a shared file in"
+                    else "tasks.md could not be read, so no story has a slice"
                 ),
             }
         )
@@ -433,11 +431,10 @@ def _validate_command(args: argparse.Namespace) -> int:
 def _tasks_text(spec_dir: Path) -> str | None:
     """The epic's `tasks.md`, or None when there is none to read (069-US2).
 
-    None means **not read**, and every layer that takes it says so as a skip
-    rather than as a pass: a document nobody opened has no findings, and
-    reporting that as a clean bill of health is how a check comes to be trusted
-    for something it never did (044 plan trap 5). `check_prompt_assembly`
-    already emits the finding that names the unreadable path.
+    None means **not read**, and every layer that takes it reports a skip rather
+    than a pass: a document nobody opened has no findings, and calling that a
+    clean bill of health is how a check comes to be trusted for something it
+    never did (044 plan trap 5).
     """
     try:
         return (spec_dir / TASKS_DOCUMENT).read_text(encoding="utf-8")

@@ -155,14 +155,13 @@ def derive_workgraph(
     guess. Everything else is read out of the spec: one node per story in spec
     order, ids lowercased, `requirement_keys` = `[story_key, *implements]`.
 
-    `tasks_text` is the second authored document, and it is **optional in the
-    signature and load-bearing when present** (069-US2). With it, two stories
-    whose task slices name a common file are ordered before either dispatches,
-    so the collision that costs the second-to-land a ladder rung never happens
-    (FR-007). Without it the graph is exactly what the spec declares: purity is
-    unchanged — text in, graph out, no file is opened here either way — and every
-    caller that has not read `tasks.md` gets the graph it always got, rather than
-    an inference made from a document nobody supplied.
+    `tasks_text` is the second authored document, **optional in the signature and
+    load-bearing when present** (069-US2). With it, two stories whose task slices
+    name a common file are ordered before either dispatches (FR-007). Without it
+    the graph is exactly what the spec declares: purity is unchanged — text in,
+    graph out, no file opened either way — and a caller that has not read
+    `tasks.md` gets the graph it always got, not an inference drawn from a
+    document nobody supplied.
 
     Raises `DerivationError` carrying every rejection; nothing is emitted.
     """
@@ -193,8 +192,8 @@ def _with_contention_edges(
     """Order the siblings whose slices collide, or refuse naming both (069-US2).
 
     The refusal is a `Rejection` like every other, so an overlap with no safe
-    ordering reaches the author in the same list — and by the same route — as a
-    dangling edge or a cycle: all of them at once, nothing emitted.
+    ordering reaches the author by the same route as a dangling edge or a cycle:
+    all of them at once, nothing emitted.
     """
     waived = {
         declaration.story_id.lower(): [
@@ -664,11 +663,11 @@ def _check_waiver(
 ) -> None:
     """`concurrent_with` names declared stories, and never the story itself.
 
-    Checked rather than ignored for the reason the key exists at all: to its
-    author, `concurrent_with: [US9]` reads as a collision they have considered
-    and accepted. A typo that silently waived nothing would leave the collision
-    in place *and* the author believing it was handled — strictly worse than
-    never offering the key (069-US2 FR-008).
+    Checked rather than ignored for the reason the key exists: to its author,
+    `concurrent_with: [US9]` reads as a collision they considered and accepted. A
+    typo that silently waived nothing would leave the collision in place *and*
+    the author believing it was handled — worse than never offering the key
+    (069-US2 FR-008).
     """
     if declaration.story_id in declaration.concurrent_with:
         rejections.add(

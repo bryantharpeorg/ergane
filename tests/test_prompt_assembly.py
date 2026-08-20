@@ -249,10 +249,8 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
     document = result.json
     assert document["findings"] == []
     # US3 added a sixth layer over the same graph and the same `tasks.md`, and
-    # 069-US2 a seventh — the stories this spec declares disjoint whose task
-    # slices name a common file. The list stays exhaustive — a layer that runs
-    # must appear here — so it grows by exactly the name of each layer that now
-    # runs, and by nothing else.
+    # 069-US2 a seventh. The list stays exhaustive — a layer that runs must
+    # appear here — so it grows by exactly the layers that now run.
     assert document["checked"] == [
         *EXISTING_LAYERS,
         "prompt_assembly",
@@ -285,9 +283,8 @@ def test_prompt_assembly_is_reported_skipped_when_there_is_no_graph_to_check(
     document = result.json
     assert "prompt_assembly" not in document["checked"]
     # US3's slice-coverage layer is per node over the same graph, so a failed
-    # derivation skips it for the same reason and it is named the same way —
-    # and so does 069-US2's contention layer, which compares one node's slice
-    # against another's and has no nodes either.
+    # derivation skips it for the same reason and names it the same way — as
+    # does 069-US2's contention layer, which has no nodes to compare either.
     assert [entry["layer"] for entry in document["skipped"]] == [
         "prompt_assembly",
         "slice_coverage",
