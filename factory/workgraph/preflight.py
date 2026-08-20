@@ -549,7 +549,7 @@ def aliases_to_check(
     named_by: dict[str, set[str]] = {}
     for name in persona_names:
         persona = registry.get(name)
-        if persona is None or not persona.is_llm:
+        if persona is None or not persona.routes_through_gateway:
             continue
         for alias in (persona.model, persona.fallback):
             if alias:

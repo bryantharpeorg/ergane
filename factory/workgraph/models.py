@@ -321,6 +321,10 @@ class AttemptContext:
     #: The US1 detector compares the target repo's tracked-file state at start
     #: and teardown; it is part of the context because it is fixed at dispatch.
     target_repo: str = ""
+    #: The persona's `agent` value resolved at dispatch, used by the adapter to
+    #: decide gateway routing (US2 FR-005). Empty means "use the default path"
+    #: for legacy payloads that predate this field.
+    agent: str = ""
 
 
 @dataclass(frozen=True)

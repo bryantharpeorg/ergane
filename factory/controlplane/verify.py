@@ -328,7 +328,9 @@ class LLMProbe:
         registry = _load_personas_for_probe()
         alias_to_personas: dict[str, set[str]] = {}
         for name, persona in registry.items():
-            if not getattr(persona, "is_llm", True):
+            # US2 FR-016: subscription personas resolve models the CLI accepts,
+            # not aliases the gateway serves, so they must not be probed here.
+            if not getattr(persona, "routes_through_gateway", True):
                 continue
             for alias in (persona.model, persona.fallback):
                 if alias:

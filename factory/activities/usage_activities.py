@@ -122,6 +122,11 @@ class IssueKeyInput:
     spec_ref: str
     models: list[str] = field(default_factory=list)
     ttl: str = DEFAULT_KEY_TTL
+    #: US2: the persona's `agent` field decides whether the attempt routes
+    #: through the gateway (and needs a virtual key) or through the operator's
+    #: subscription. Empty means "look it up from the registry" for backward
+    #: compatibility with payloads that predate this field.
+    agent: str = ""
 
 
 @dataclass(frozen=True)
@@ -162,6 +167,29 @@ def open_client() -> LiteLLMClient:
     every proxy call below goes through it rather than constructing a client.
     """
     return LiteLLMClient.from_env()
+
+
+def _is_subscription_persona(request: IssueKeyInput) -> bool:
+    """Whether the persona runs against the operator's subscription rather than
+    the gateway (US2 FR-005).
+
+    The dispatch now carries the resolved `agent` value, so key issuance does not
+    need to reload the persona registry. When the field is empty (legacy payloads),
+    fall back to the file registry for backward compatibility.
+    """
+    from factory.config import load_personas, SUBSCRIPTION_AGENT
+
+    if request.agent:
+        return request.agent == SUBSCRIPTION_AGENT
+
+    try:
+        registry = load_personas()
+    except Exception:
+        return False
+    entry = registry.get(request.persona)
+    if entry is None:
+        return False
+    return entry.agent == SUBSCRIPTION_AGENT
 
 
 def _is_direct_mode() -> bool:
@@ -234,6 +262,21 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
     alias = key_alias_for(
         request.epic_id, request.node_id, request.attempt, request.persona
     )
+
+    # US2 FR-006: subscription-routed personas authenticate through the operator's
+    # own credential, not a gateway virtual key. A minted-and-unused key would be
+    # a live credential with no purpose and an attribution row that reads zero.
+    if _is_subscription_persona(request):
+        return KeyLease(
+            key="",
+            key_alias=alias,
+            node_id=request.node_id,
+            epic_id=request.epic_id,
+            attempt=request.attempt,
+            persona=request.persona,
+            spec_ref=request.spec_ref,
+            issued_at=_now_iso(),
+        )
 
     if _is_direct_mode():
         try:
