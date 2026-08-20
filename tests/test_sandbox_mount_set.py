@@ -1,0 +1,536 @@
+"""The sandbox's system tree must be read off the host, not declared.
+
+Both bubblewrap boundaries — the agent's in `factory.workgraph.adapter` and the
+gate's in `factory.verify.gates` — opened their argv with the same four literal
+tokens and the same comment above them:
+
+    # Minimal system tree: read-only /usr plus the symlinks Ubuntu uses
+    # on aarch64. No /lib64 on this host.
+    "--ro-bind", "/usr", "/usr",
+    "--symlink", "usr/bin", "/bin",
+    "--symlink", "usr/lib", "/lib",
+
+Every word of that comment is a fact about one machine on one afternoon, and
+the code under it was the same fact compiled in. On any host that *does* have
+`/lib64` — which is every x86_64 Linux — a process inside the namespace finds
+no dynamic loader at the path its own binaries name, and the agent cannot
+start. The comment is the defect's documentation, which is why this story
+deletes it rather than correcting it.
+
+**Why every test here supplies its own root.** This machine is aarch64 and has
+no `/lib64` at all (measured 2026-08-20: `/bin -> usr/bin`, `/lib -> usr/lib`,
+`/sbin -> usr/sbin`, no `/lib64`). A test asserting the argv carries `/lib64`
+fails here; a test asserting it does not would fail on the machine the defect
+was reported from. Either one is a test of the machine it runs on rather than
+of the code — which is exactly how the literal shipped. So every test below
+hands the derivation a **fake root** built in `tmp_path` and asserts the argv
+*followed what it was given*. Both branches are then exercised on any
+architecture, including one that cannot reproduce the bug, which makes these
+assertions stronger than a real-root test could be rather than a substitute
+for one.
+
+**What this file could and could not measure.** The attempt that wrote it runs
+*inside* the agent boundary, whose root is the very mount set being replaced:
+
+    $ ls -la /
+    lrwxrwxrwx  bin -> usr/bin
+    lrwxrwxrwx  lib -> usr/lib
+    drwxr-xr-x  usr
+    (no /lib64, no /sbin — the literal never mounted them)
+
+    $ python -c 'from factory.verify.toolchain import system_tree_argv;
+                 print(system_tree_argv())'
+    ['--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin',
+     '--symlink', 'usr/lib', '/lib']
+
+So the real-root reading available here is a reading of the sandbox, and what
+it shows is that the derivation reproduces exactly the layout it is shown — the
+old two-entry literal, byte for byte. The worker host outside this boundary has
+`/sbin -> usr/sbin` (measured by the operator, 2026-08-20), so there the same
+code emits a third entry, `--symlink usr/sbin /sbin`. That addition is expected
+and closes a second latent gap: `/sbin` is a symlink the literal never mounted.
+It is not a regression, and narrowing the walk back to the two paths that were
+already mounted, to make the before/after diff on that host empty, would
+reintroduce the defect.
+
+**Mutation ledger.** "What would make this file pass if the production code did
+nothing?" — answered by breaking the production code four ways and running this
+file against each. Verbatim `-rf` output, edited only to drop the repeated
+`FAILED tests/test_sandbox_mount_set.py::` prefix:
+
+    M1  the derivation replaced by the literal it used to be: the old three
+        entries returned unconditionally, the supplied root ignored, no refusal
+        7 failed, 2 passed
+          test_a_host_with_lib64_gets_a_lib64_symlink_with_its_own_target
+          test_the_four_paths_are_each_read_rather_than_assumed
+          test_both_boundaries_derive_the_same_system_tree
+          test_a_system_path_that_can_be_neither_linked_nor_bound_refuses
+          test_a_host_with_no_usr_refuses_by_name
+          test_the_gate_refuses_a_broken_system_tree_before_it_forks
+          test_the_agent_refuses_a_broken_system_tree_before_it_forks
+        — the two survivors are the no-`/lib64` test and the stale-comment
+        test, which is this defect's whole history: on the aarch64 machine the
+        literal was written on, the literal passes.
+
+    M2  the over-correction — all four emitted as `usr/<name>` symlinks
+        whenever `/usr` exists, nothing read off the host
+        7 failed, 2 passed
+          test_a_host_without_lib64_gets_no_lib64_entry
+          test_the_four_paths_are_each_read_rather_than_assumed
+          test_both_boundaries_derive_the_same_system_tree
+          test_a_system_path_that_can_be_neither_linked_nor_bound_refuses
+          test_a_host_with_no_usr_refuses_by_name
+          test_the_gate_refuses_a_broken_system_tree_before_it_forks
+          test_the_agent_refuses_a_broken_system_tree_before_it_forks
+        — the mutation that ships `bwrap: Can't find source path`, and the one
+        M1's two survivors cannot catch.
+
+    M3  the refusal alone dropped: a path that is neither symlink nor
+        directory is skipped instead of raising
+        3 failed, 6 passed
+          test_a_system_path_that_can_be_neither_linked_nor_bound_refuses
+          test_the_gate_refuses_a_broken_system_tree_before_it_forks
+          test_the_agent_refuses_a_broken_system_tree_before_it_forks
+        — the two boundary cases failed as `AssertionError: an agent forked
+        despite an underivable system tree`, the detonator doing its job rather
+        than a shape assertion passing.
+
+    M4  the gate boundary drifted one entry from the agent's — a private copy
+        that lost its last line, which is how the two disagreed in the first
+        place
+        1 failed, 8 passed
+          test_both_boundaries_derive_the_same_system_tree
+        — `Left contains one more item: ('--symlink', 'usr/sbin', '/sbin')`.
+
+The three refusal tests are the ones that would otherwise be theatre: two of
+them replace the spawn with a detonator, so "before any subprocess is created"
+is measured rather than asserted.
+
+**The bwrap coupling, and why the ledger above is measured twice.** The first
+version of the two detonator tests read the host one last time after all, in a
+place the fake root does not cover: both boundaries check that the bwrap binary
+exists *before* they derive the mount set, and neither test supplied one. On
+this machine `/usr/bin/bwrap` is installed, so the check passed and the
+derivation ran; on the CI runner it is not, so the check answered first and the
+tests reported `sandbox backend 'bwrap' not available` instead of the refusal
+they exist to measure. That is this file's own thesis turned back on it — an
+assertion about the machine it runs on — and it is why `_plant_bwrap` now
+supplies that binary too, taking the last host fact out of the question. The
+production ordering is correct and is deliberately left alone: there is no
+point deriving a layout for an argv nothing can exec.
+
+So every measurement in this file is now recorded under both hosts — with this
+machine's real bwrap, and with the binary patched to a path that does not
+exist, which is the runner's condition. The second host is supplied by a
+throwaway pytest plugin, four lines, kept out of the tree because it belongs to
+the measurement rather than to the suite:
+
+    # /tmp/no_bwrap_plugin.py
+    from pathlib import Path
+    from factory.workgraph import adapter as adapter_module
+    from factory.verify import gates as gates_module
+    adapter_module.BWRAP_BACKEND_BINARY = Path("/nonexistent/bwrap")
+    gates_module.BWRAP_BACKEND_BINARY = Path("/nonexistent/bwrap")
+
+    $ PYTHONPATH=/tmp uv run pytest -q tests/test_sandbox_mount_set.py \
+        -p no_bwrap_plugin
+
+Each of M1–M4 above produces the identical failure set under both hosts, and
+the unmutated file is 9 passed under both. Before `_plant_bwrap`, that
+bwrap-less run was `2 failed, 7 passed` — the two detonator tests, with the
+messages the merge queue reported verbatim.
+
+**Green, unmutated.** This file under both hosts, and then the repository's
+declared gate whole:
+
+    $ uv run pytest -q tests/test_sandbox_mount_set.py
+    9 passed in 0.03s
+
+    $ PYTHONPATH=/tmp uv run pytest -q tests/test_sandbox_mount_set.py \
+        -p no_bwrap_plugin
+    9 passed in 0.03s
+
+    $ uv run pytest -q
+    3802 passed, 49 skipped, 6 warnings in 300.82s (0:05:00)
+
+That total is this host's. The runner skips sixteen bwrap-dependent tests this
+machine runs, so the same tree reports `3786 passed, 65 skipped` there — the
+rejection's own log read `3784 passed, 65 skipped` alongside the two failures,
+which is the same arithmetic with these two on the other side of the ledger.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from factory.verify import gates as gates_module
+from factory.verify.gates import BwrapGateExecutor, GateInvocation
+from factory.verify.toolchain import SystemTreeError, ToolchainError, system_tree_argv
+from factory.workgraph import adapter as adapter_module
+from factory.workgraph.adapter import AdapterError, AgentInvocation, BwrapBackend
+from tests.test_toolchain_discovery import PlantedHost
+
+#: The paths a sandbox mirrors from the host, and the one it binds. Named here
+#: so a test can say "no entry for `/lib64`" without knowing where in the argv
+#: an entry would sit.
+SYSTEM_TREE_PATHS = ("/usr", "/bin", "/lib", "/lib64", "/sbin")
+
+#: What a supplied layout can put at one of the four mirrored paths, besides a
+#: symlink (which is written as its target string) or nothing at all.
+A_DIRECTORY = object()
+A_FILE = object()
+
+
+def _fake_root(tmp_path: Path, name: str, layout: dict[str, object], *, usr: object = A_DIRECTORY) -> Path:
+    """A host's system layout, supplied rather than read from the real root.
+
+    `layout` maps a mirrored path (`/bin`, `/lib`, `/lib64`, `/sbin`) to what
+    this host has there: a `str` means a symlink with that exact target,
+    `A_DIRECTORY` a real directory, `A_FILE` a regular file. A path the mapping
+    omits is not there at all — the aarch64 `/lib64` case, and the one an
+    over-correcting fix breaks.
+    """
+    root = tmp_path / name
+    root.mkdir(parents=True, exist_ok=True)
+    if usr is A_DIRECTORY:
+        for child in ("bin", "lib", "lib64", "sbin"):
+            (root / "usr" / child).mkdir(parents=True, exist_ok=True)
+    elif usr is A_FILE:
+        (root / "usr").write_text("not a directory\n", encoding="utf-8")
+    for path, kind in layout.items():
+        planted = root / path.lstrip("/")
+        if kind is A_DIRECTORY:
+            planted.mkdir(parents=True, exist_ok=True)
+        elif kind is A_FILE:
+            planted.write_text("not a directory\n", encoding="utf-8")
+        else:
+            planted.symlink_to(str(kind))
+    return root
+
+
+def _system_tree(argv: list[str]) -> list[tuple[str, str, str]]:
+    """Every `(flag, source, destination)` the argv devotes to the system tree.
+
+    Read out of the *assembled* argv by destination rather than by position, so
+    the assertion is about what the sandbox mounts and not about where in the
+    command line it happens to say so.
+    """
+    entries: list[tuple[str, str, str]] = []
+    for index, token in enumerate(argv[:-2]):
+        if token in ("--symlink", "--ro-bind", "--bind") and argv[index + 2] in SYSTEM_TREE_PATHS:
+            entries.append((token, argv[index + 1], argv[index + 2]))
+    return entries
+
+
+def _agent_argv(host: PlantedHost, root: Path) -> list[str]:
+    """The agent boundary's real argv, built against a supplied system root."""
+    return BwrapBackend(system_root=root)._build_argv(
+        AgentInvocation(
+            argv=["claude", "-p"],
+            prompt="implement the story",
+            worktree=host.worktree,
+            env={"PATH": os.environ["PATH"], "HOME": str(host.home)},
+            log=None,
+            standards_path=None,
+            model_alias="anthropic/CHANGEME",
+        )
+    )
+
+
+def _gate_argv(host: PlantedHost, root: Path) -> list[str]:
+    """The gate boundary's real argv, built against the same supplied root."""
+    return BwrapGateExecutor(system_root=root)._build_argv(
+        GateInvocation(
+            name="test", command="true", cwd=host.worktree, timeout_s=30, env={}
+        )
+    )
+
+
+@pytest.fixture
+def planted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PlantedHost:
+    """A toolchain of this test's own, so argv assembly gets that far.
+
+    The system tree is what this file is about; the toolchain binds beside it
+    still have to resolve for `_build_argv` to return, and planting them keeps
+    the test independent of what the operator happens to have installed.
+    """
+    host = PlantedHost(tmp_path)
+    for name in ("uv", "node", "git", "claude"):
+        host.plant(name)
+    host.activate(monkeypatch)
+    return host
+
+
+def _plant_bwrap(host: PlantedHost, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point both boundaries at a bubblewrap of this test's own.
+
+    Whether `/usr/bin/bwrap` is installed is a fact about the machine running
+    the suite, and both boundaries answer it *before* deriving the mount set —
+    deliberately, since there is no point reading a host layout for an argv
+    nothing can exec. On a runner without the binary that check answers first,
+    so the two tests below would report the absent binary instead of the
+    refusal they exist to measure: the system-tree derivation would never run
+    at all. Planting one takes the host back out of the question and leaves the
+    refusal under test as the only thing that can fire.
+
+    Nothing ever execs it. Both callers replace the spawn with a detonator, and
+    that detonator is what proves "before any subprocess is created" — this
+    helper only ensures the code reaches the point where it could have forked.
+    """
+    binary = host.plant("bwrap")
+    monkeypatch.setattr(adapter_module, "BWRAP_BACKEND_BINARY", binary)
+    monkeypatch.setattr(gates_module, "BWRAP_BACKEND_BINARY", binary)
+    return binary
+
+
+# --- the four paths, read off the supplied host ------------------------------
+
+
+def test_a_host_with_lib64_gets_a_lib64_symlink_with_its_own_target(
+    tmp_path: Path, planted: PlantedHost
+) -> None:
+    """US1-S1. The x86_64 layout, which this machine cannot supply for itself.
+
+    The target asserted is the one the fake root actually holds, so a fix that
+    emitted a plausible `usr/lib64` constant rather than reading the link would
+    still fail here.
+    """
+    root = _fake_root(
+        tmp_path,
+        "x86_64-host",
+        {"/bin": "usr/bin", "/lib": "usr/lib", "/lib64": "usr/lib64", "/sbin": "usr/sbin"},
+    )
+
+    entries = _system_tree(_agent_argv(planted, root))
+
+    assert ("--symlink", "usr/lib64", "/lib64") in entries, (
+        f"a host whose /lib64 is a symlink must get that symlink, with its own "
+        f"target: {entries}"
+    )
+    assert ("--ro-bind", str(root / "usr"), "/usr") in entries, (
+        f"/usr must still be bound read-only from the supplied host: {entries}"
+    )
+
+
+def test_a_host_without_lib64_gets_no_lib64_entry(
+    tmp_path: Path, planted: PlantedHost
+) -> None:
+    """US1-S2. The over-correction guard, and the layout this machine has.
+
+    Widening the literal to name all four would bind a path that is not there,
+    which is `bwrap: Can't find source path` from a process that has already
+    forked — the same failure class, pointing the other way.
+    """
+    root = _fake_root(
+        tmp_path,
+        "aarch64-host",
+        {"/bin": "usr/bin", "/lib": "usr/lib", "/sbin": "usr/sbin"},
+    )
+
+    argv = _agent_argv(planted, root)
+
+    assert not [entry for entry in _system_tree(argv) if entry[2] == "/lib64"], (
+        f"a host without /lib64 must get no /lib64 entry: {_system_tree(argv)}"
+    )
+    assert "/lib64" not in argv, (
+        "no token anywhere in the argv may name /lib64 on a host that lacks it"
+    )
+
+
+def test_the_four_paths_are_each_read_rather_than_assumed(
+    tmp_path: Path, planted: PlantedHost
+) -> None:
+    """US1-S3. All four differ in kind, so no fixed set can satisfy this.
+
+    `/bin` is a symlink to an unusual target, `/lib` to a different one,
+    `/lib64` is absent and `/sbin` is a real directory. A derivation treating
+    the four alike — in either direction — gets a different list than this.
+    """
+    root = _fake_root(
+        tmp_path,
+        "mixed-host",
+        {
+            "/bin": "usr/altbin",
+            "/lib": "usr/lib/aarch64-linux-gnu",
+            "/sbin": A_DIRECTORY,
+        },
+    )
+
+    entries = _system_tree(_agent_argv(planted, root))
+    mirrored = [entry for entry in entries if entry[2] != "/usr"]
+
+    assert mirrored == [
+        ("--symlink", "usr/altbin", "/bin"),
+        ("--symlink", "usr/lib/aarch64-linux-gnu", "/lib"),
+    ], (
+        f"each of /bin, /lib, /lib64, /sbin must be emitted if and only if the "
+        f"supplied host has it as a symlink, with that link's own target: {mirrored}"
+    )
+
+
+def test_both_boundaries_derive_the_same_system_tree(
+    tmp_path: Path, planted: PlantedHost
+) -> None:
+    """US1-S4, FR-003. Two copies is how they came to be wrong the same way.
+
+    The assertion is on the *assembled* argvs, not on the shared helper: a
+    boundary that called the helper and then appended a literal of its own
+    would pass a test of the helper alone.
+    """
+    root = _fake_root(
+        tmp_path,
+        "shared-host",
+        {"/bin": "usr/bin", "/lib64": "usr/lib64", "/sbin": "usr/sbin"},
+    )
+
+    agent = _system_tree(_agent_argv(planted, root))
+    gate = _system_tree(_gate_argv(planted, root))
+
+    assert agent == gate, (
+        f"the agent and gate boundaries must derive one system tree, not two: "
+        f"agent={agent} gate={gate}"
+    )
+    assert agent == [
+        ("--ro-bind", str(root / "usr"), "/usr"),
+        ("--symlink", "usr/bin", "/bin"),
+        ("--symlink", "usr/lib64", "/lib64"),
+        ("--symlink", "usr/sbin", "/sbin"),
+    ], f"and it must be the supplied host's tree, in mount order: {agent}"
+
+
+# --- refusal, by name, before anything forks ---------------------------------
+
+
+def test_a_system_path_that_can_be_neither_linked_nor_bound_refuses(
+    tmp_path: Path,
+) -> None:
+    """US1-S6, FR-004. The derivation called directly, so nothing can fork.
+
+    A regular file at `/sbin` is neither a symlink to mirror nor a directory to
+    bind. bwrap's own diagnostic for that arrives after the fork, as a diffless
+    `agent_error`; `ToolchainError`'s precedent is a refusal that names the
+    path and what was found there while the argv is still being assembled.
+    """
+    root = _fake_root(tmp_path, "file-at-sbin", {"/bin": "usr/bin", "/sbin": A_FILE})
+
+    with pytest.raises(SystemTreeError) as raised:
+        system_tree_argv(root)
+
+    message = str(raised.value)
+    assert "/sbin" in message, f"the refusal must name the path: {message}"
+    assert "regular file" in message, (
+        f"the refusal must say what was found there: {message}"
+    )
+    assert isinstance(raised.value, ToolchainError), (
+        "the refusal must be catchable where a toolchain refusal already is"
+    )
+
+
+def test_a_host_with_no_usr_refuses_by_name(tmp_path: Path) -> None:
+    """US1-S6. `/usr` is the one path that must exist; absence there is fatal.
+
+    Absence among the other four is never a refusal — that is US1-S2 — so the
+    two cases are asserted apart rather than folded into one check.
+    """
+    root = _fake_root(tmp_path, "no-usr", {"/bin": "usr/bin"}, usr=None)
+
+    with pytest.raises(SystemTreeError) as raised:
+        system_tree_argv(root)
+
+    assert "/usr" in str(raised.value), (
+        f"the refusal must name /usr: {raised.value}"
+    )
+
+    absent_lib64 = _fake_root(tmp_path, "no-lib64", {"/bin": "usr/bin"})
+    assert system_tree_argv(absent_lib64) == [
+        "--ro-bind",
+        str(absent_lib64 / "usr"),
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+    ], "an absent mirrored path is not a refusal, it is simply not emitted"
+
+
+def test_the_gate_refuses_a_broken_system_tree_before_it_forks(
+    tmp_path: Path, planted: PlantedHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US1-S6. "Before any subprocess is created", measured with a detonator."""
+    root = _fake_root(tmp_path, "gate-file-at-lib", {"/lib": A_FILE})
+    _plant_bwrap(planted, monkeypatch)
+
+    def detonate(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a gate forked despite an underivable system tree")
+
+    monkeypatch.setattr(gates_module.subprocess, "Popen", detonate)
+
+    outcome = BwrapGateExecutor(system_root=root).run(
+        GateInvocation(
+            name="test", command="true", cwd=planted.worktree, timeout_s=30, env={}
+        )
+    )
+
+    assert outcome.exit_code == 127, (
+        f"an underivable system tree is infrastructure, reported as the gate "
+        f"runner's own 127 outcome: {outcome}"
+    )
+    assert "/lib" in outcome.output, (
+        f"and the outcome carries the path that could not be mirrored: "
+        f"{outcome.output}"
+    )
+
+
+def test_the_agent_refuses_a_broken_system_tree_before_it_forks(
+    tmp_path: Path, planted: PlantedHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US1-S6. The same, on the boundary whose failure costs an attempt."""
+    root = _fake_root(tmp_path, "agent-file-at-lib", {"/lib": A_FILE})
+    _plant_bwrap(planted, monkeypatch)
+
+    async def detonate(*args: object, **kwargs: object) -> None:
+        raise AssertionError("an agent forked despite an underivable system tree")
+
+    monkeypatch.setattr(adapter_module.asyncio, "create_subprocess_exec", detonate)
+
+    invocation = AgentInvocation(
+        argv=["claude", "-p"],
+        prompt="implement the story",
+        worktree=planted.worktree,
+        env={"PATH": os.environ["PATH"], "HOME": str(planted.home)},
+        log=None,
+        standards_path=None,
+        model_alias="anthropic/CHANGEME",
+    )
+
+    with pytest.raises(AdapterError) as raised:
+        asyncio.run(BwrapBackend(system_root=root).launch(invocation))
+
+    assert "/lib" in str(raised.value), (
+        f"the adapter must refuse by name, not hand the path to bwrap: "
+        f"{raised.value}"
+    )
+
+
+def test_the_stale_host_claim_is_gone_from_both_boundaries() -> None:
+    """US1-S5. The comment is the defect's documentation; it must not survive.
+
+    Asserted over the source text because that is where the defect lived: a
+    comment stating a fact about one machine, above code that was the same fact
+    compiled in. Leaving it above corrected code is worse than leaving it above
+    broken code, since the next reader trusts it twice.
+    """
+    stale = "No /lib64 on this host"
+    prose = "there is no `/lib64` on this aarch64 host"
+    for module in (adapter_module, gates_module):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert stale not in source, (
+            f"{module.__name__} still asserts a fact about one host's /lib64"
+        )
+        assert prose not in source, (
+            f"{module.__name__} still carries the stale claim in prose"
+        )

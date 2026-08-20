@@ -47,6 +47,16 @@ Both are derived, so neither can rot. They are *separately* derived
 and the payload go missing independently: a boundary built by a factory that
 predates this module carries the payload and not the launcher.
 
+**The system tree underneath them is discovered on the same terms.** The two
+boundaries also opened their argv with a hand-written `/usr` bind and two
+`--symlink` entries, above a comment asserting that this host has no `/lib64` —
+true of the aarch64 machine the line was written on, false of every x86_64
+Linux, where the container then has no dynamic loader and the agent cannot
+start at all. `system_tree_argv` walks `/bin`, `/lib`, `/lib64` and `/sbin` on
+the host it is given and emits an entry for each one the host really keeps as a
+symlink, with that link's own target. Same rule, same refusal shape, one
+implementation for both boundaries.
+
 Evidence that the host these literals described is unchanged. Discovery run in
 the worker's own environment — `PATH=/home/admin/.local/bin:/home/admin/
 .temporalio/bin:/usr/local/bin:/usr/bin:/bin`, read from `/proc/<worker>/environ`
@@ -121,11 +131,34 @@ _SYSTEM_FALLBACK_DIRS: tuple[str, ...] = ("/usr/local/bin", "/usr/bin")
 _CONTAINER_PATH_FLOOR = "/usr/bin"
 
 
+#: The one system directory a sandbox binds. Everything else the container's
+#: `/bin`, `/lib`, `/lib64` and `/sbin` resolve to lives under it.
+SYSTEM_TREE_ROOT = "/usr"
+
+#: The paths a usr-merged host keeps as symlinks into `/usr`, walked in mount
+#: order. Which of them a given host actually has is *read*, never assumed: the
+#: set differs by architecture and by distribution, and the two entries that
+#: used to be written out by hand were the set on one aarch64 machine.
+MIRRORED_SYSTEM_PATHS: tuple[str, ...] = ("/bin", "/lib", "/lib64", "/sbin")
+
+
 class ToolchainError(RuntimeError):
     """A tool a sandbox must mount was not found on this host.
 
     Raised while the argv is being assembled, so the caller can refuse by name
     instead of letting bwrap fail on a source path after the fork.
+    """
+
+
+class SystemTreeError(ToolchainError):
+    """A system path a sandbox must mirror is not something it can mirror.
+
+    A subclass, because both boundaries already turn a `ToolchainError` into a
+    refusal that never forks — the gate into a 127 outcome carrying the reason,
+    the adapter into an `AdapterError` the ladder does not charge as an attempt
+    — and the system tree wants exactly that treatment. Naming it separately is
+    what lets a caller or a test tell "this host has no node" from "this host's
+    `/usr` is not a directory".
     """
 
 
@@ -152,6 +185,86 @@ class ResolvedTool:
     def bind(self) -> tuple[str, str]:
         """`(host source, container destination)` for a read-only leaf bind."""
         return (str(self.real_path), str(self.found_at))
+
+
+def _describe(path: Path) -> str:
+    """What is at `path`, in words a refusal can carry."""
+    if path.is_symlink():
+        return f"a symlink to {os.readlink(path)!r}"
+    if not path.exists():
+        return "nothing at all"
+    if path.is_dir():
+        return "a directory"
+    if path.is_file():
+        return "a regular file"
+    return "neither a directory nor a regular file"
+
+
+def system_tree_argv(root: Path | str = Path("/")) -> list[str]:
+    """The sandbox's system tree, read off a host rather than declared.
+
+    Returns the bwrap tokens that give the container a system tree: `/usr`
+    bound read-only, followed by one `--symlink` for each of
+    `MIRRORED_SYSTEM_PATHS` that **this host has as a symlink**, carrying the
+    host's own target verbatim. The destinations are always the container's
+    canonical paths; only the sources are read from `root`, which is what lets
+    a test supply a layout instead of asserting the machine it runs on.
+
+    Both boundaries call this — the agent's in `factory.workgraph.adapter` and
+    the gate's in `factory.verify.gates`. They used to open their argv with the
+    same three literal entries and the same comment claiming there was no
+    `/lib64` "on this host", and the claim was true of the aarch64 machine the
+    line was written on and false of every x86_64 Linux, where the loader lives
+    at `/lib64/ld-linux-x86-64.so.2` and a container without it starts nothing.
+    Two copies of a fact about one machine is how they came to be wrong in the
+    same way twice, which is why this is one function and not a corrected pair.
+
+    Three cases, and the difference between them is the whole story:
+
+    - **A symlink.** Mirror it: `--symlink <readlink(p)> <p>`. The target is
+      read, not constructed, so a host whose `/lib` points somewhere unusual
+      gets that somewhere.
+    - **Absent.** Emit nothing, and do not refuse. `/lib64` is absent on
+      aarch64; binding a path that is not there is `bwrap: Can't find source
+      path` from a process that has already forked, which is the same defect
+      pointing the other way, and refusing would disable every dispatch on the
+      machine this factory runs on.
+    - **Anything else.** A directory is tolerated — a host with an un-merged
+      `/usr` can be bound there and has nothing to mirror — but no entry is
+      emitted for it, because a mirrored entry means a symlink and this is not
+      one. A path that is neither raises `SystemTreeError`, naming it and what
+      was found, while the argv is still a list.
+
+    `/usr` itself is the one requirement: it must exist and be a directory, or
+    there is no system tree to build and no defensible guess to make.
+    """
+    host_root = Path(root)
+
+    usr = host_root / SYSTEM_TREE_ROOT.lstrip("/")
+    if not usr.is_dir():
+        raise SystemTreeError(
+            f"sandbox system tree: {SYSTEM_TREE_ROOT} must be a directory to "
+            f"bind read-only, but {usr} is {_describe(usr)}. The container's "
+            f"whole toolchain resolves under it, so there is nothing to build "
+            f"and nothing to guess."
+        )
+    argv: list[str] = ["--ro-bind", str(usr), SYSTEM_TREE_ROOT]
+
+    for mirrored in MIRRORED_SYSTEM_PATHS:
+        path = host_root / mirrored.lstrip("/")
+        if path.is_symlink():
+            argv.extend(["--symlink", os.readlink(path), mirrored])
+        elif not path.exists():
+            continue
+        elif not path.is_dir():
+            raise SystemTreeError(
+                f"sandbox system tree: {mirrored} on this host is "
+                f"{_describe(path)} ({path}), which can be neither mirrored as "
+                f"a symlink nor bound as a directory. Refusing here, before "
+                f"anything forks, rather than letting bwrap fail on the source "
+                f"path inside a namespace that has already been created."
+            )
+    return argv
 
 
 def _home(env: Mapping[str, str] | None = None) -> Path:
