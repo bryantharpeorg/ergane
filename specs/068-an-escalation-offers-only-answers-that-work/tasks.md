@@ -5,7 +5,7 @@
 
 Read the plan's traps before the first task. Trap 1 (do not widen the cap —
 distinguish), trap 3 (the reporter's stated remedy is already implemented at
-`ladder.py:88`; implementing it again double-grants) and trap 6 (the red test is
+`ladder.py:94`; implementing it again double-grants) and trap 6 (the red test is
 pure and nearly free — get it first) are the three that decide whether an attempt
 lands.
 
@@ -35,7 +35,7 @@ lands.
       value.
 - [ ] T004 [P] [US1] (spec US1-S3) Assert a second ESCALATE arising from anything
       other than an operator grant still becomes KILLED, preserving
-      `factory/workgraph/workflow.py:1459-1463` (trap 2).
+      `factory/workgraph/workflow.py:1460-1465` (trap 2).
 - [ ] T005 [P] [US1] (spec US1-S5) Assert two grants buy exactly two attempts, not
       more. Guards against trap 3's double-grant.
 - [ ] T006 [P] [US1] (spec US1-S6) Enumerate the options
@@ -45,13 +45,13 @@ lands.
 ### Implementation for this story
 
 - [ ] T007 [US1] (FR-001, FR-002) Change the condition at
-      `factory/verify/ladder.py:91` so an operator-granted attempt is not
+      `factory/verify/ladder.py:96` so an operator-granted attempt is not
       suppressed by `_judge_rewrites_spent`, while judge-driven retries remain
       bounded. Keep `next_action` a pure function of its three arguments
       (trap 5).
-- [ ] T008 [US1] (FR-003) Ensure the existing grant at `ladder.py:88` remains the
+- [ ] T008 [US1] (FR-003) Ensure the existing grant at `ladder.py:94` remains the
       only grant. Do not add a second (trap 3).
-- [ ] T009 [US1] (FR-004) Leave `factory/workgraph/workflow.py:1459-1463` intact.
+- [ ] T009 [US1] (FR-004) Leave `factory/workgraph/workflow.py:1460-1465` intact.
 - [ ] T010 [US1] (FR-005) If any offered option remains incapable of changing the
       node's state, stop offering it.
 
@@ -92,7 +92,7 @@ lands.
       fail-safe and is OUT OF SCOPE per this spec's own Edge Case on expiry — do
       not touch it.**
 - [ ] T017 [US2] (FR-007) Widen `_reset_epic`'s precondition
-      (`factory/cli/nouns/build.py:878-900`) by what kind of child is alive, not
+      (`factory/cli/nouns/build.py:879-915`) by what kind of child is alive, not
       by loosening the status test (trap 7).
 - [ ] T018 [US2] (FR-008) Make ending the node and ending the epic distinct
       operator choices.

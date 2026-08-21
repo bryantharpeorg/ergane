@@ -1,5 +1,70 @@
 ---
-state: draft
+state: landed
+# ATTESTED landed 2026-08-20 8:20 PM CT. All three stories observed on
+# ergane-buildout: US1 399fa7d (PR #245), US2 0794b1f (PR #252), US3 a76c0ee
+# (PR #249).
+#
+# US2 LANDED BY HAND-RESOLVED MERGE, and the reason is trap 8a below coming
+# true. US2 and US3 both edit `factory/cli/nouns/build.py`, both declared
+# `depends_on: []`, and the epic was dispatched at `max_concurrent_nodes: 3`.
+# The file then conflicted twice in one evening:
+#
+#   1. WITHIN THIS EPIC, exactly as the trap predicted. US2's PR #246 opened
+#      17:50:13Z; US3's PR #249 merged 18:42:00Z; #246 went DIRTY and was closed.
+#   2. ACROSS EPICS, which no `depends_on_merged` edge could have prevented --
+#      069/US3 (`9537643`) landed 22:20:38Z touching the same file, and US2's
+#      re-dispatched PR #252 went DIRTY against it. Edges are within-epic only.
+#
+# The resolution kept both sides whole: US2's `_NODE_STATES_AT_WORK`,
+# `nodes_at_work`, `nodes_awaiting_operator` and `reset_refusal` alongside
+# 069/US3's `NoForge`, `_reset_forge` and `_forge_reset_lines`, on 069/US3's
+# `_reset_epic(graph, *, forge=None)` signature -- that keyword is the seam its
+# tests inject a repository through. The halves compose in the order both
+# stories require: refuse first, resolve the forge once for the graph, clean per
+# node, then print the still-waiting note. Neither story's logic was weakened.
+#
+# Verified at three levels rather than asserted: both stories' suites together
+# (25 passed), the full declared gate on the merged tree (3934 passed, 48
+# skipped, 0 failures), and the merge-group build, which is the one that gates.
+#
+# The trap was raised before dispatch and not acted on; that gap is now filed as
+# `roadmap/a-pre-dispatch-trap-that-names-a-file-collision-does-not-reach-the-dispatch-that-causes-it`.
+# US3 carries `depends_on_merged: [US2]` below as of this session -- it is the
+# remedy the trap named, recorded so the spec no longer disagrees with what was
+# learned, though it arrives after the collision it would have prevented.
+#
+# --- the flip this supersedes, kept for the chain ---
+# FLIPPED draft -> ready 2026-08-20 6:40 AM CT at the operator's instruction,
+# after the re-review the hold below demanded. Verified against `357d227`:
+#
+#   - ANCHORS: 50/50 resolve, each on the symbol it claims. Corrections included
+#     three a line-number sweep cannot catch -- `_judge_rewrites_spent` was cited
+#     54 lines off (`:127-145` -> `:181-199`); `_settle_answered` DOES NOT EXIST
+#     (the function is `_settle_answer`, `:332-371`); and six bare `:NN` refs
+#     with no filename, including traps 3 and 4.
+#   - COVERAGE: 16/16 scenarios and 10/10 FRs claimed by a task, none phantom,
+#     no duplicate ids.
+#   - DISPATCH-BLOCKER FIXED: trap 6's prescribed red test DID NOT REPRODUCE.
+#     Executed, it returns RETRY, not the ESCALATE it asserts, because
+#     `_judge_rewrites_spent` keys on `history[-1]` and the trap put the debugger
+#     record LAST, where its null judge_outcome short-circuits the veto. An
+#     implementer would have written a red test that was green on commit one and
+#     concluded US1 was already fixed. Rewritten with the order as part of the
+#     recipe and both measured outcomes pasted in.
+#   - SC-002's CONTROL PROVED BY MUTATION: at the defaults it cannot fail (cap
+#     present and cap deleted both yield DEBUGGER); at `max_attempts=5` it
+#     distinguishes. Trap 1 was right and now carries the measurement.
+#   - RAN THE CLI: the US3 verb-family enumeration is accurate -- start/reset/
+#     salvage take a graph, external-completion-count takes no positional, the
+#     rest take epic_id. FR-010's earlier false claim is fixed.
+#   - NEW TRAP 8a: US2 and US3 both edit `factory/cli/nouns/build.py` and both
+#     declare `depends_on: []`. Dispatch at --max-concurrent-nodes 1, or give US3
+#     `depends_on: [us2]`. THIS IS STILL AN OPEN DECISION, deliberately.
+#
+# NOT RUN, and not cheaply runnable: US2's FR-007 behaviour needs a live epic
+# with a stalled escalation child to exercise.
+#
+# --- the hold this reverses, kept for the chain ---
 # HELD ready -> draft 2026-08-19 5:45 PM CT, BEFORE ANY DISPATCH, by the same
 # operator session that wrote this spec ninety minutes earlier. A twelve-agent
 # adversarial pre-dispatch review found 68 defects across 067/068/069 rated
@@ -13,7 +78,7 @@ state: draft
 #     rather than from opened files. `ladder.py:88` is a comment line and the
 #     assignment is at :89; `:122` is `_debugger_cycles_spent`, while
 #     `_attempts_spent` is at :111; `:100-106` is a def plus docstring, not the
-#     comparison; `workflow.py:1459` is a closing paren and the conversion is at
+#     comparison; `workflow.py:1460` is a closing paren and the conversion is at
 #     :1460-1463; `escalation/workflow.py:395-399` is the EXPIRY fail-safe
 #     branch, not the operator-KILL path the task sends an implementer to.
 #   - CENTRAL FACTUAL CLAIMS FALSE. 068 asserts `reset` is the ONLY build verb
@@ -55,7 +120,7 @@ state: draft
 # an escalation at all -- has exactly that history. So the operator's grant is
 # tested, found sufficient, and then discarded by a cap that was never about
 # them. The ladder falls through the spent debugger rung and returns ESCALATE,
-# and `factory/workgraph/workflow.py:1459-1463` converts that second ESCALATE
+# and `factory/workgraph/workflow.py:1460-1465` converts that second ESCALATE
 # into KILLED.
 #
 # The function's own docstring anticipates the mirror image of this and not this:
@@ -153,7 +218,7 @@ rewrites, apply a RETRY resolution, and assert the decided action is a retry.
 3. **Given** a node that reaches ESCALATE a second time for a reason that is
    **not** an operator grant, **When** the action is decided, **Then** it still
    becomes KILLED as today — proven by a committed test. The caller's
-   second-ESCALATE-means-KILLED rule at `factory/workgraph/workflow.py:1459` is
+   second-ESCALATE-means-KILLED rule at `factory/workgraph/workflow.py:1460` is
    correct for the case it was written for and must survive.
 4. **Given** the same exhausted history, **When** the action is decided once with
    `escalations=[EscalationChoice.RETRY]` and once with `escalations=()` **under a
@@ -300,12 +365,16 @@ graph itself.
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-003, FR-004, FR-005]
+  persona: opus-closer
 US2:
   depends_on: []
   implements: [FR-006, FR-007, FR-008]
+  persona: opus-closer
 US3:
   depends_on: []
+  depends_on_merged: [US2]
   implements: [FR-009, FR-010]
+  persona: opus-closer
 ```
 
 ## Success Criteria

@@ -172,3 +172,49 @@ researcher:
   write_scope: read
   needs_worktree: false
   timeout: 7200
+
+opus-closer:
+  # Added 2026-08-20 (Bryan): a builder for a story that has already proved it
+  # will not fall to the house implementer. First use is 067/US1, which spent
+  # three implementer attempts and the debugger cycle and still escalated.
+  #
+  # THE DIFFERENCE FROM `closer`, which also points at Opus 5: `closer` reaches
+  # it through the LiteLLM alias `anthropic/claude-opus-5`, which is the gateway,
+  # which is per-token billing. This persona uses the SUBSCRIPTION route that
+  # 070/US2 and 070/US3 built, so it costs no metered API spend.
+  #
+  # `agent: subscription` is the sentinel at factory/config.py:149. Three
+  # consequences, all read out of the tree rather than assumed:
+  #   - `routes_through_gateway` is False, so no virtual key is minted and no
+  #     preflight runs against the proxy's served-alias list (US2 FR-016).
+  #   - the adapter hands the child NEITHER ANTHROPIC_BASE_URL NOR
+  #     ANTHROPIC_AUTH_TOKEN — it runs on the CLI's own login (US2 FR-006).
+  #   - `discover_subscription_credential` finds that login. Measured on this
+  #     host 2026-08-20: it resolves to ~/.claude/.credentials.json, the third
+  #     of its three search paths and the one the code's comment names.
+  agent: subscription
+
+  # NOT a LiteLLM alias. This value flows untouched into `claude --model`
+  # (adapter.py), and `claude --help` documents that flag as taking either an
+  # alias for the latest ("opus") or a model's full name. The full name is used
+  # deliberately: the bare alias silently follows the next major, and a builder
+  # that changes under you is a variable nobody chose.
+  #
+  # Nothing validates this string — FR-014 requires it be a name the CLI
+  # accepts, but config.py adds no check, so a typo fails at the agent rather
+  # than at `ergane spec validate`.
+  model: claude-opus-5
+
+  # Deliberately null. `closer` falls back to kimi because it HOLDS a gateway
+  # key; this persona does not, so a `ollama-cloud/*` fallback would validate
+  # cleanly here and then fail at runtime with nothing to authenticate against.
+  # Failing honestly on the subscription beats failing confusingly off it.
+  fallback: null
+
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400
+  # Opus 5's published window. Unset, the CLI assumes 200k for an alias it does
+  # not recognise — the 037 defect that cost kimi 23.7% of its window.
+  context_window: 1000000

@@ -1,5 +1,12 @@
 ---
-state: ready
+state: landed
+# ATTESTED landed 2026-08-19 10:12 PM CT. Both stories are observed-landed on
+# ergane-buildout -- US1 at 476713a (PR #235, 01:49Z), US2 at 225cb31 (PR #236,
+# 02:25Z) -- confirmed with `ergane spec landed --default-branch ergane-buildout`.
+# The frontmatter had been left at `ready`, which made the board disagree with
+# git. Bookkeeping only: a ready-and-observed-landed spec was already skipped by
+# the dispatch predicate, so this narrows nothing and arms nothing.
+#
 # Flipped draft -> ready 2026-08-19 7:12 PM CT at the operator's instruction
 # ("yes arm for build"), WITHOUT the adversarial pre-dispatch review that was
 # made mandatory earlier the same evening. Recorded here rather than left

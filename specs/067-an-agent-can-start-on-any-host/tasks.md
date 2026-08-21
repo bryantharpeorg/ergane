@@ -36,15 +36,15 @@ an attempt lands.
       that is a symlink on the host. Put it where both boundaries can reach it —
       `factory/verify/toolchain.py` is the natural home, since it already owns
       discover-don't-declare for this pair.
-- [ ] T007 [US1] (FR-003) Call it from `factory/workgraph/adapter.py:427-431` and
+- [ ] T007 [US1] (FR-003) Call it from `factory/workgraph/adapter.py:434-438` and
       from `factory/verify/gates.py:586-590`, replacing both literal blocks.
       Leave the `--proc` / `--dev` / `--tmpfs` entries after them untouched —
       those are genuinely host-independent.
 - [ ] T008 [US1] (FR-004) Refuse by name, before forking, when a required path can
       be neither bound nor linked.
-- [ ] T009 [US1] (spec US1-S5, trap 4) Delete the stale comments at `adapter.py:427-428` and
+- [ ] T009 [US1] (spec US1-S5, trap 4) Delete the stale comments at `adapter.py:434-435` and
       `gates.py:586-587`, and the stale sentence in the docstring at
-      `adapter.py:318`. Replace them with a comment that states the rule rather
+      `adapter.py:325`. Replace them with a comment that states the rule rather
       than a fact about any host.
 
 ## Phase 2: User Story 2 — A launch that never reached the agent is not an attempt
@@ -54,7 +54,9 @@ an attempt lands.
 - [ ] T010 [P] [US2] (spec US2-S1) In `tests/test_launch_is_not_an_attempt.py`,
       drive a node whose sandbox launch fails before any agent output and assert
       the ladder's spent-attempt count is **unchanged**. Assert the count
-      directly (`factory/verify/ladder.py:111-119`), not that the node retried.
+      directly (`factory/verify/ladder.py:119-133`), not that the node retried.
+      Pass the `VerificationConfig` — `_attempts_spent` takes one now, and
+      calling it without reverts US5's promotion exclusion (plan, US2 block).
 - [ ] T011 [P] [US2] (spec US2-S2) Assert the failure is reported as a launch
       failure distinct from an attempt failure, naming the fault.
 - [ ] T012 [P] [US2] (spec US2-S3) Assert the notifier is reached at the launch
@@ -69,9 +71,9 @@ an attempt lands.
 
 - [ ] T015 [US2] (FR-005) Classify a pre-first-token launch fault separately from
       an attempt, and keep it out of `_attempts_spent`'s count
-      (`factory/verify/ladder.py:111-119`). **The classification seam is
+      (`factory/verify/ladder.py:119-133`). **The classification seam is
       `factory/workgraph/workflow.py:1603-1606`, not the adapter (trap 12).**
-      `factory/activities/agent_activities.py:492-497` already raises the right
+      `factory/activities/agent_activities.py:501-505` already raises the right
       error; the workflow discards it at `_attempt`'s blanket `except
       ActivityError`. Follow the `JUDGE_UNAVAILABLE` branch at
       `workflow.py:1990`.
@@ -102,7 +104,7 @@ an attempt lands.
       only delegates and needs no change. **Resolve in the command, not in the
       deriver**: `derive_workgraph` / `derive_delta` are also called from
       `factory/activities/roadmap_activities.py:202`, and
-      `factory/workgraph/derive.py:148-152` states the deriver "is handed text,
+      `factory/workgraph/derive.py:149-153` states the deriver "is handed text,
       not a path". Resolving there reds `tests/test_derive.py` and
       `tests/test_delta.py`.
 - [ ] T023b [US3] (FR-009, FR-010) Refuse a relative path **at

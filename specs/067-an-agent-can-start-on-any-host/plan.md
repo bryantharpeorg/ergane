@@ -4,18 +4,23 @@
 
 ## What already exists, and where
 
-Every line below was read on 2026-08-19. Check each against the tree before you
-rely on it — 060 proved that a plan citing a moved anchor costs the attempt.
+Every line below was **re-verified against the tree at `357d227` on 2026-08-20
+04:10Z**, after epic 070 completed. The original set was read on 2026-08-19 and
+was correct then; 070/US5 and 071 landed into `ladder.py`, `models.py`,
+`adapter.py` and `agent_activities.py` in the hours between, moving fourteen of
+them. Check each again before you rely on it — 060 proved that a plan citing a
+moved anchor costs the attempt, and this plan has now been staled once by the
+factory's own landings.
 
 **US1 — the two mount sets:**
 
-- `factory/workgraph/adapter.py:427-431` — the agent boundary's system tree. The
-  comment at `:427-428` reads `# Minimal system tree: read-only /usr plus the
+- `factory/workgraph/adapter.py:434-438` — the agent boundary's system tree. The
+  comment at `:434-435` reads `# Minimal system tree: read-only /usr plus the
   symlinks Ubuntu uses` / `# on aarch64. No /lib64 on this host.` **That comment
   is the defect's documentation. Delete it; do not preserve it.**
 - `factory/verify/gates.py:586-590` — the gate boundary's system tree, inside
   `_build_argv` (`:579`). Byte-identical to the above including the comment.
-- `factory/workgraph/adapter.py:318` — a second copy of the same claim in prose,
+- `factory/workgraph/adapter.py:325` — a second copy of the same claim in prose,
   in a docstring: "there is no `/lib64` on this aarch64 host." Also stale.
 - `factory/verify/toolchain.py:1-30` — **read this docstring before writing any
   code.** It states the rule this story applies, and states it about this exact
@@ -23,7 +28,7 @@ rely on it — 060 proved that a plan citing a moved anchor costs the attempt.
   software, only facts about one machine on one afternoon." It also establishes
   the refusal contract US1-S6 wants: `ToolchainError` raised *before* the
   sandbox forks, naming the tool and where it looked.
-- `factory/workgraph/adapter.py:432-436` and `factory/verify/gates.py:591-595` —
+- `factory/workgraph/adapter.py:439-443` and `factory/verify/gates.py:591-595` —
   the pseudo-filesystem entries (`--proc`, `--dev`, `--tmpfs`) immediately after.
   Those are genuinely host-independent. Leave them alone.
 - `ordered_binds` — referenced from both files, emits binds shallowest-first.
@@ -33,13 +38,19 @@ rely on it — 060 proved that a plan citing a moved anchor costs the attempt.
 
 **US2 — the ladder:**
 
-- `factory/verify/ladder.py:111-119` — `_attempts_spent`, whose counting line is
-  `:119`. It counts every
-  record whose `persona` is not `DEBUGGER_PERSONA`. This is where a launch
-  failure gets charged.
-- `factory/verify/ladder.py:63-97` — `next_action`. Note `allowed =
-  config.max_attempts + len(escalations)` at `:88`.
-- `factory/verify/models.py:645-647` — `max_attempts: int = 3`,
+- `factory/verify/ladder.py:119-133` — `_attempts_spent`, whose counting line is
+  `:133`. **Its shape changed under 070/US5; the description this plan carried
+  until 2026-08-20 is now wrong, so read the function before you patch it.** It
+  takes a second argument — `config: VerificationConfig | None = None` — and
+  counts records whose `persona` is not in `excluded`, which is
+  `{DEBUGGER_PERSONA}` normally and `{DEBUGGER_PERSONA, config.promotion_persona}`
+  when a promotion persona is configured (US5-S5, the set is built at `:132`).
+  **Calling `_attempts_spent(history)` without the config silently reverts US5's
+  exclusion** — a promoted attempt starts being charged again, and no test in this
+  story would catch it. This is where a launch failure gets charged.
+- `factory/verify/ladder.py:68-105` — `next_action`. Note `allowed =
+  config.max_attempts + len(escalations)` at `:94`.
+- `factory/verify/models.py:653-655` — `max_attempts: int = 3`,
   `max_judge_retries: int = 2`, `debugger_cycles: int = 1`.
 - `factory/workgraph/adapter.py` — where the sandbox is forked and its failure
   becomes a result. Find the actual fork site rather than assuming; the argv
@@ -54,7 +65,7 @@ rely on it — 060 proved that a plan citing a moved anchor costs the attempt.
   relative default itself is `factory/workgraph/cli.py:51` —
   `DEFAULT_SPECS_ROOT = "specs"`. **Do not touch `_validate_command`'s
   `derive_workgraph` call at `spec.py:251`** — it writes no artifact.
-- **Resolve in the command, not in the deriver.** `factory/workgraph/derive.py:148-152`
+- **Resolve in the command, not in the deriver.** `factory/workgraph/derive.py:149-153`
   states the deriver "is handed text, not a path … and must not guess", and
   `derive_workgraph` / `derive_delta` are also called by
   `factory/activities/roadmap_activities.py:202` on the roadmap's dispatch path.
@@ -93,7 +104,7 @@ identical wrongness because they are two copies. If your diff leaves two
 derivations, you have reproduced the cause while fixing the symptom.
 
 **4. Delete the stale comment and the stale docstring sentence.** Both
-`adapter.py:427-428` and `gates.py:586-587`, plus the prose at `adapter.py:318`.
+`adapter.py:434-435` and `gates.py:586-587`, plus the prose at `adapter.py:325`.
 A comment asserting a fact about one host is what made this invisible for
 months; leaving it above corrected code is worse than leaving it above broken
 code.
@@ -104,12 +115,13 @@ elapsed time, exit code, or transcript size below some threshold will
 mis-classify real failures and stop charging them, which silently doubles every
 node's budget.
 
-**No such signal exists today — read this before you design.** `adapter.py:611-626`
-raises `AdapterError` only on an `OSError` from `create_subprocess_exec`; bwrap
-failing to exec the runner *inside* the namespace is exit 127, which
-`adapter.py:1116-1120` classifies as `AGENT_ERROR`, identical in shape to a real
+**No such signal exists today — read this before you design.** `adapter.py:601-633`
+is the `launch` that raises `AdapterError` only on an `OSError` from
+`create_subprocess_exec` (the handler is at `:629-630`); bwrap failing to exec the
+runner *inside* the namespace is exit 127, which `adapter.py:1216` classifies as
+`AGENT_ERROR`, identical in shape to a real
 agent failure. **You must create the signal.** The sanctioned one is bwrap's own
-diagnostic: bwrap writes `bwrap: ...` to stderr, which `adapter.py:616` merges
+diagnostic: bwrap writes `bwrap: ...` to stderr, which `adapter.py:623` merges
 into the archived stdout, and it emits nothing on a clean namespace entry.
 Classifying on a `bwrap:`-prefixed line at process exit is a fact about the
 container, not a proxy for elapsed time, exit code or transcript size — those
@@ -141,9 +153,21 @@ If you need a file assigned to another story, the edge declaration is wrong —
 say so rather than editing across the line. 060 shared a test file between two
 stories that declared themselves disjoint and only landing order saved it.
 
-**10. The judge sees the diff and the criteria, nothing else.** SC-001 through
-SC-005 all require committed output. Paste the argvs, the counts and the command
-output into the diff. A description of what you observed is not evidence of it.
+**10. The judge sees the diff and the criteria, nothing else** — and "the
+criteria" does **not** include the Success Criteria. `factory/verify/criteria.py`
+says so in its own docstring: "Key Entities and Success Criteria bullets are all
+read past." What reaches a judge is that story's acceptance scenarios and its FR
+bullets, nothing more. Two consequences, and the second is the one that bites:
+
+- SC-001 through SC-005 are **verified by the operator, not by the gate**. The
+  tasks that produce their evidence — T024–T028 — deliberately reach no node,
+  which is why `spec validate` calls them out. Do not read a green gate as
+  confirmation that any SC was met.
+- Every Then-clause that *does* reach the judge must be provable **from the diff
+  alone**. US1's are, deliberately: each one reads "proven by a committed test"
+  or "Given the diff". Keep it that way. Paste the argvs, the counts and the
+  command output into the diff anyway — it is what makes the operator's pass
+  cheap, and a description of what you observed is not evidence of it.
 
 **11. You cannot test this on the architecture that has the bug.** No x86_64 host
 is available. That is not a reason to skip proof — it is the reason trap 1 is
@@ -152,7 +176,7 @@ because it exercises both branches on any machine. Say so in the commit rather
 than apologising for the absence.
 
 **12. The charge you are removing is not in the adapter.**
-`factory/activities/agent_activities.py:492-497` already raises non-retryable
+`factory/activities/agent_activities.py:501-505` already raises non-retryable
 `AGENT_LAUNCH_FAILED` for every `AdapterError`, with a comment stating this
 story's requirement verbatim — "the ladder must not spend one of the node's
 attempts discovering that". It is then **discarded** at
@@ -165,6 +189,21 @@ on `exc.cause` being an `ApplicationError` whose `.type` is
 `AGENT_LAUNCH_FAILED`, following the pattern already used for
 `JUDGE_UNAVAILABLE` at `workflow.py:1990`. That branch is a pure read of the
 exception — no clock, no environment, no filesystem — so trap 7 is satisfied.
+
+**13. The fix adds `/sbin` on this host, and nothing else says so.** Measured
+2026-08-20: `/bin -> usr/bin`, `/lib -> usr/lib`, `/sbin -> usr/sbin`, `/lib64`
+absent. Today's literal emits **only `/bin` and `/lib`** — `/sbin` is a symlink
+that is not mounted. So a derivation that walks all four, as FR-001 and US1-S3
+require, **adds a `--symlink usr/sbin /sbin` entry to every sandbox on this
+machine**. That is correct and it fixes a latent second gap, but it is an
+expected diff nobody declared:
+
+- Do not read the new `/sbin` entry as a regression, and do not "fix" it by
+  narrowing the walk back to the two paths that are mounted today.
+- SC-001 asks that two *supplied* layouts differ by exactly the `/lib64` entry —
+  that still holds, because both supplied layouts get `/sbin` treated alike. But
+  a before-and-after on **this host** differs by `/sbin` as well, so say so in
+  the diff rather than leaving a reviewer to find an unexplained new mount.
 
 ## Sizing
 

@@ -1,0 +1,5 @@
+# Manifest variant for US3 boundary tests: names the decided bwrap backend.
+version: 1
+runtime: bwrap
+gates:
+  test: "bash gates/test.sh"

@@ -1,5 +1,16 @@
 ---
-state: ready
+state: landed
+# ATTESTED landed 2026-08-20 7:07 AM CT. All five stories are observed on
+# ergane-buildout: US1 e5f1ccd (#240), US2 3d7273b (#238), US3 357d227 (#239),
+# US4 da44b6e (#241), US5 58f5f77 (#237) -- confirmed with
+# `ergane spec landed --default-branch ergane-buildout`.
+#
+# Attested with some urgency: the roadmap's own view reported this spec as
+# `ready (landed=False)` after the 12:05Z tick, and a resumed schedule would have
+# re-dispatched five completed stories. Bookkeeping only -- a landed spec is
+# skipped by the dispatch predicate, so this narrows the surface and arms nothing.
+#
+# --- the flip this supersedes, kept for the chain ---
 # FLIPPED TO READY 2026-08-19 9:33 PM CT at the operator's explicit instruction,
 # after a second review that found one dispatch-blocker (US2-S6/FR-016) and two
 # gaps found by running the CLI rather than reading the tree (US2-S5/FR-014,

@@ -1,5 +1,50 @@
 ---
-state: draft
+state: landed
+# ATTESTED landed 2026-08-20 11:09 AM CT. All three stories observed on
+# ergane-buildout: US1 f4bd92e, US2 65ad4d0, US3 1046c2c.
+#
+# US1 IS THE FIRST STORY THIS FACTORY BUILT ON OPUS, and it is worth recording
+# why. Under the house implementer (kimi) it spent three attempts plus the
+# debugger cycle and escalated unsolved; the escalation expired and the node was
+# KILLED. Its failure was a three-line scoping bug in its own test helper --
+# `_system_tree()` collected every `--symlink` in the argv rather than the four
+# system paths, so it dragged in an unrelated toolchain mount and the
+# both-boundaries-agree assertion could never pass. Re-dispatched with
+# `persona: opus-closer` (subscription-routed Opus 5), it landed.
+#
+# Bookkeeping only: a landed spec is skipped by the dispatch predicate, so this
+# narrows the surface and arms nothing.
+#
+# --- the flip this supersedes, kept for the chain ---
+# FLIPPED draft -> ready 2026-08-20 6:26 AM CT at the operator's instruction
+# ("flip 67 to ready"), after the re-review the hold below demanded. What that
+# re-review actually did, so the next reader can judge it rather than trust it:
+#
+#   - ANCHORS: all 47 in plan.md and tasks.md resolve against `357d227`, each
+#     landing on the symbol it claims. Fourteen had moved and were corrected --
+#     NOT because the original was sloppy but because 070/US5, 071 and 070/US3
+#     landed into ladder.py, models.py, adapter.py and agent_activities.py in the
+#     hours after this plan was written. `_attempts_spent` also CHANGED SHAPE
+#     under US5 (second argument, set-based exclusion), so the plan's prose
+#     description of it was wrong too; the US2 block now carries that as a trap.
+#   - COVERAGE: 15/15 acceptance scenarios and 10/10 FRs are claimed by a task,
+#     with no task citing a scenario or FR that does not exist. All three named
+#     test files are absent from the tree. No duplicate task ids.
+#   - RAN IT, rather than reading it. All three defects reproduce on the current
+#     tree: the two mount-set literals are byte-identical; `_attempts_spent`
+#     returns 1 for a launch-failure record; and a derive from /home/admin wrote
+#     `specs_root: 'specs'` / `target_repo: 'code/ergane-roadmap-target'` which
+#     `load_workgraph` then ACCEPTED -- FR-008 and FR-009 both open.
+#   - TWO NEW FINDINGS, both now traps: `/sbin` is a symlink on this host and is
+#     NOT mounted today, so the fix adds an entry nobody declared (trap 13); and
+#     trap 10 asserted the judge checks SC-001..SC-005, which criteria.py
+#     explicitly reads past -- the SCs are operator-verified, not gated.
+#
+# Known and accepted, not defects: T024-T028 reach no node by design (they are
+# the operator's verification phase, which is why `spec validate` names them),
+# and T022 does not exist because US3's implementation tasks are T023a/T023b.
+#
+# --- the hold this reverses, kept for the chain ---
 # HELD ready -> draft 2026-08-19 5:45 PM CT, BEFORE ANY DISPATCH, by the same
 # operator session that wrote this spec ninety minutes earlier. A twelve-agent
 # adversarial pre-dispatch review found 68 defects across 067/068/069 rated
@@ -317,6 +362,7 @@ artifact carries an absolute path.
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-003, FR-004]
+  persona: opus-closer
 US2:
   depends_on: []
   implements: [FR-005, FR-006, FR-007]

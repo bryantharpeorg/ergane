@@ -334,8 +334,13 @@ def test_repo_root_registry_still_resolves_real_wiring_in_checkout(
     assert resolved == SHIPPED_REGISTRY
 
     registry = config_module.load_personas()
-    # The repo's real wiring still resolves.
-    assert "ollama-cloud/" in registry["implementer"].model
+    # The repo's real wiring still resolves. Assert that it LOADS, not which
+    # vendor it names: pinning the alias here makes the operator's own dial
+    # untouchable, which is `ci/test-suite-pins-the-operator-dial` — the same
+    # defect 037 un-pinned for `context_window`, recurring on `model` when the
+    # implementer was pointed at Opus 5 on 2026-08-19.
+    assert registry["implementer"].model
+    assert "/" in registry["implementer"].model
 
 
 # ---------------------------------------------------------------------------
