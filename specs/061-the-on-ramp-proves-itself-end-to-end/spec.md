@@ -1,5 +1,20 @@
 ---
-state: draft
+state: ready
+# RELEASED draft -> ready 2026-08-21 ~6:45 AM CT on the operator's go, hold
+# conditions answered:
+#   1. Stale forge state CLEARED: PR #226 is MERGED (us2 landed b4ebc30), the
+#      dead run's worktree/sidecar removed, factory/061 branches archived to
+#      refs/archive/* (SHAs in ~/ergane-ops/archived-refs-2026-08-21.txt) and
+#      deleted.
+#   2. Spec 071 LANDED 2026-08-20 — a failing check's log now reaches the
+#      recovery attempt. Unexercised by a real production failure yet; plan
+#      trap 14 still tells the implementer to get the git identity right.
+#   3. max_recovery_cycles is still 1 and unraisable — the soft condition,
+#      accepted. Roadmap dispatch is PAUSED, so the re-dispatch loop this hold
+#      existed to stop cannot fire; dispatch is by hand.
+# us1 and us2 are landed; the remainder is us3+us4, edges depends_on_merged.
+#
+# --- original hold note (2026-08-19 6:18 PM CT), kept for the record ---
 # HELD ready -> draft 2026-08-19 6:18 PM CT to STOP A RE-DISPATCH LOOP, not
 # because anything is wrong with the spec. us1 is landed; us2-us4 are not.
 #
@@ -286,7 +301,7 @@ gate commands and assert the reported condition differs.
    asserting exit status. An operator deliberately running without gates during
    evaluation is making a choice; the requirement is that the choice be visible,
    not that it be forbidden.
-5. **Given** the diff, **When** `_PLACEHOLDERS` (`factory/cli/init.py:273`) is
+5. **Given** the diff, **When** `_PLACEHOLDERS` (`factory/cli/init.py:398`) is
    inspected, **Then** the gate placeholder is either removed or renamed so that
    a value the code calls a placeholder cannot silently become a live gate —
    proven by a committed test asserting a freshly-initialised manifest does not
@@ -313,8 +328,11 @@ target and asserts a pull request landed.
    documented prerequisites, **When** the end-to-end exercise runs, **Then** it
    drives `ergane install`, `ergane init --wire`, `ergane repo onboard` and a
    dispatched trivial epic without human input, and asserts a pull request
-   reached a landed state — proven by the committed exercise and its output
-   pasted into the diff.
+   reached a landed state — proven by the committed exercise plus, pasted into
+   the diff, the skip-path transcript and the simulated per-stage drives
+   (US4-S2). The implementer's sandbox has no live GitHub, Temporal or gateway,
+   so the full live run is the operator's verification after landing (SC-004,
+   SC-005), not diff evidence.
 2. **Given** the exercise, **When** any single stage fails, **Then** it reports
    which stage and stops — proven by a committed test driving a simulated
    failure at each stage and asserting the reported stage name. An end-to-end
@@ -382,9 +400,12 @@ US3:
   depends_on: []
   depends_on_merged: [US2]
   implements: [FR-008, FR-009, FR-010]
+  persona: opus-closer
 US4:
-  depends_on: [US1, US2, US3]
+  depends_on: []
+  depends_on_merged: [US1, US2, US3]
   implements: [FR-011, FR-012]
+  persona: opus-closer
 ```
 
 US3's edge on US2 is a **merge** edge declared for contention: both edit
@@ -416,8 +437,11 @@ neither is substitutable.
 - **SC-003**: `ergane init --check` on a default-initialised repository reports
   the gate as a no-op rather than as a pass.
 - **SC-004**: The end-to-end exercise, run against a scratch repository, lands a
-  pull request without human input — evidenced by committed output naming the
-  merged pull request.
+  pull request without human input — evidenced by the operator running the
+  committed exercise against live prerequisites after landing and recording the
+  merged pull request at resolution. The diff carries the skip-path and
+  simulated-stage evidence; the implementer's sandbox cannot reach live
+  prerequisites, so the live transcript is not diff evidence.
 - **SC-005**: Reverting any one of US1, US2 or US3's fixes causes the US4
   exercise to fail. If it does not, the exercise is not measuring the
   composition and US4 has not been built.

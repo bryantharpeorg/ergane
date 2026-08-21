@@ -13,20 +13,19 @@
   answer"; `INFERENCE_ONLY` when the key-management API does not. 055 built this.
   Import it. Do not write a second one.
 - `factory/usage/litellm_client.py` — `issue_key`, `revoke_key_by_tokens`, and
-  the `/key/info` and `/spend/logs/v2` readers. Read the whole client before
-  writing the probe: **note that `revoke_key` is currently defined twice**, at
-  :246 and :339, with the second shadowing the first. 064/US3 deletes the dead
-  one. Until it lands, call `revoke_key_by_tokens` directly so your code does not
-  depend on which definition wins.
+  the `/key/info` and `/spend/logs/v2` readers. 064/US3 has landed: `revoke_key`
+  is now defined once, at :246, delegating to `revoke_key_by_tokens`.
 - `factory/roadmap/models.py:398` — `read_roadmap`'s `root.iterdir()`. Its
   docstring at :378 commits to raising and yielding no partial roadmap on a
   corpus with any finding. US2 must not weaken that.
 - `factory/cli/init.py:816` — `runtime_root.mkdir(exist_ok=True)`, where `specs/`
   creation belongs.
-- `factory/cli/init.py:273` — `_PLACEHOLDERS`, whose comment already calls these
-  placeholders. US3-S5 makes the placeholder stop escaping.
-- `factory/mergequeue/onboard.py:254` — `_gate_check_finding`, which emits
-  `required check '{gate}' exists` at :257. That is the line US3 changes.
+- `factory/cli/init.py:398` — `_PLACEHOLDERS`, whose comment already calls these
+  placeholders, and which still declares `"gates": {"test": "true"}`. US3-S5
+  makes the placeholder stop escaping. (Anchor re-verified 2026-08-21; 064/US2's
+  landed edits moved it from :273.)
+- `factory/mergequeue/onboard.py:258` — `_gate_check_finding`, which emits
+  `required check '{gate}' exists` at :261. That is the line US3 changes.
   `factory/mergequeue/onboard.py:29` documents the `gate_check:<gate>` contract;
   update it in the same diff.
 - 033's scripted-prompter walkthrough harness and 054/US2's injected host-probe
@@ -96,7 +95,7 @@ flaky. 042/US3 burned four attempts on exactly this. Simulate through seams.
 SC-004 are all runtime evidence and must be **committed as pasted output inside
 the diff**.
 
-**12. 063 also edits `LLMProbe.gather`, and either epic may reach it first.**
+**12. (Moot — US1 landed 2026-08-20.) 063 also edits `LLMProbe.gather`, and either epic may reach it first.**
 063/US3 extracts the distinct-alias derivation out of `gather` into a shared
 function so `ergane install --requirements` can reuse it. This spec's US1 rewrites
 the same function to mint and revoke a key. The two are compatible in principle
@@ -106,10 +105,11 @@ derivation has already been extracted, extend the extracted function rather than
 re-inlining it. `max_concurrent_epics` is 1, so they will not run simultaneously
 — but "not simultaneous" is not "unchanged".
 
-**13. Story edges.** US1 edits `verify.py`; US2 edits `models.py` and `init.py`;
-US3 edits `onboard.py` and `init.py`. US2 and US3 both touch
-`factory/cli/init.py`, so declare an edge between them. US4 depends on all three
-and on 059 and 060 having landed.
+**13. Story edges.** US1 and US2 are landed. US3's edge to US2 and US4's edges
+to US1/US2/US3 are all `depends_on_merged` — a code-needing edge must gate on
+the dependency being in the dependent's base tree, not merely verified;
+dispatching on a verified-only edge parked 073/us3 behind an operator question
+on 2026-08-21. US4 also depends on 059 and 060, both confirmed landed.
 
 **14. A FIXTURE THAT RUNS `git commit` MUST SET A GIT IDENTITY. THIS EXACT
 DEFECT HAS ALREADY KILLED THIS EPIC TWICE.** Read this one before you write a
@@ -142,13 +142,24 @@ one and apply it to **every** such fixture you add, not only the one you were
 thinking about. Do not rely on a global config, on `HOME`, or on anything the
 host happens to provide.
 
-WHY YOU WILL NOT SIMPLY BE TOLD THIS WHEN IT BREAKS. The recovery attempt that
-would normally receive the failing check's log received `log unavailable: could
-not list checks (GH_REFUSED)` instead, because `factory/mergequeue/gh.py:210`
-issues `gh pr checks --json`, a flag `gh` does not have. That is spec 071 and it
-is not yours to fix. Until it lands, a red CI check reaches you as a check name
-and nothing else — so the cost of getting this wrong is the whole node, with no
-diagnosis on the way down.
+WHY YOU MAY NOT SIMPLY BE TOLD THIS WHEN IT BREAKS. When this epic first died,
+the recovery attempt received `log unavailable: could not list checks
+(GH_REFUSED)` instead of the failing check's log. Spec 071 has since landed
+(2026-08-20), so a red check's log should now reach recovery — but do not lean
+on that as your safety net; the fix has not yet been exercised by a real
+production failure. Get the identity right the first time.
+
+**15. Your sandbox has no live prerequisites — the skip path is what runs in
+your attempt.** The per-node HOME carries only a `.gitconfig`: no `gh`
+credentials, no reachable Temporal, no gateway. US4's exercise cannot create a
+scratch GitHub repository or land a pull request from inside the sandbox, and
+you must not burn the attempt trying. Your in-attempt runtime evidence is the
+skip-path transcript (US4-S4) and the simulated per-stage drives (US4-S2),
+pasted into the diff. Of the Verification tasks, T035, T036, T038 and T039 all
+need live prerequisites and are operator-run after landing — not your scope,
+and their absence from your diff is not a gap. T037 is the exception: a scratch
+local repository and the CLI suffice, so it is runnable in-sandbox and belongs
+to US3's evidence.
 
 ## Sizing
 
