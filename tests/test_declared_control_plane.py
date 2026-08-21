@@ -237,7 +237,9 @@ def test_epic_start_with_nothing_declared_names_both_routes(
 
     with pytest.raises(OperatorError) as excinfo:
         build_module.start_command(
-            Namespace(graph=str(graph_path), max_concurrent_nodes=1)
+            Namespace(
+            graph=str(graph_path), max_concurrent_nodes=1, promotion_persona=None
+        )
         )
 
     message = str(excinfo.value)
@@ -408,7 +410,9 @@ def _start_and_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
     graph_path = _write_graph(tmp_path)
     assert build_module.start_command(
-        Namespace(graph=str(graph_path), max_concurrent_nodes=1)
+        Namespace(
+            graph=str(graph_path), max_concurrent_nodes=1, promotion_persona=None
+        )
     ) == 0
     return recorder.started[0][0][1]
 
