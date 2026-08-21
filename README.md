@@ -26,6 +26,7 @@ passes a casual smoke test and then fails at the first dispatch.
 **The proxy must serve every model alias the persona registry names.** That is
 every `model` and every `fallback` in `personas.yaml`, excluding personas
 declared `agent: none`, which have no model by construction. Run
+`ergane install --requirements` to print the exact set for your registry, or
 `ergane install --scan` to see what a candidate endpoint actually offers before
 you commit to it.
 
