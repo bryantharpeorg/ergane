@@ -78,6 +78,7 @@ from factory.activities import (
 from factory.controlplane.resolve import resolve_temporal_target
 from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
+from factory.notify.redact import configure_logging
 from factory.roadmap.workflow import (
     read_corpus_activity,
     read_spec_text_activity,
@@ -292,5 +293,10 @@ async def main() -> None:
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point
-    logging.basicConfig(level=logging.INFO)
+    # Not `logging.basicConfig`: this journal is the one `journalctl --user -u
+    # ergane-worker` prints and an operator pastes into a chat window, and the
+    # escalation sends that run in this process put the bot token in a URL httpx
+    # logs at INFO (064-US1, FR-003). Import stays inert — the protection is
+    # installed here, when the process starts, not when the module is imported.
+    configure_logging(level=logging.INFO)
     asyncio.run(main())

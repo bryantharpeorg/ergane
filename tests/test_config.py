@@ -40,11 +40,11 @@ EXPECTED_PERSONAS = {
     # class on `implementer.context_window`). Adding a persona should be a
     # one-line edit here, never a red trunk.
     "closer",
-    # Added 2026-08-20 (operator): the same Opus rung reached over the
-    # subscription route instead of the gateway (070-US2). It arrived in
-    # `personas.yaml` at c9dea78 without the one-line edit this comment asks
-    # for, which is what made the two membership assertions below red on the
-    # buildout branch.
+    # Added 2026-08-20 (operator): the subscription-routed Opus rung. Same
+    # model as `closer`, different route — `agent: subscription`, so it mints
+    # no virtual key. The edit this set asks for was not made when the registry
+    # gained it, which is what left the trunk red; see
+    # `tests/test_controlplane_verify_us1.py` for the other half of that miss.
     "opus-closer",
 }
 

@@ -32,12 +32,15 @@ No edges. All three stories touch different modules and may run in parallel.
 
 ### Implementation for this story
 
-- [ ] T007 [US1] (FR-001, FR-002, FR-004) Attach a redacting event hook to the httpx
-      client used by the escalation adapters, covering both telegram and webhook.
-      Prefer the hook over a logger level so the request line survives redacted
-      (trap 1).
-- [ ] T008 [US1] (FR-003) Apply it where the client is constructed rather than at each
-      call site, so a future adapter inherits it.
+- [ ] T007 [US1] (FR-001, FR-002, FR-004) Attach the redaction to both adapters. For
+      Telegram the httpx client is built inside python-telegram-bot, reached via
+      `open_bot` (`factory/notify/service.py:180`) — ride in through the
+      `request=` object handed to `Bot` (trap 12). For the webhook, the client
+      is factory-built at `factory/notify/webhook.py:140` and the hook attaches
+      directly. Prefer hooks over a logger level so the request line survives
+      redacted (trap 1).
+- [ ] T008 [US1] (FR-003) Apply it at the construction seams (`open_bot`, the webhook
+      client) rather than at each call site, so a future adapter inherits it.
 - [ ] T009 [US1] (FR-001) Cover exception rendering as well as log records.
 - [ ] T010 [US1] Add a comment at the hook naming `factory/supervision/units.py:425`
       as the design commitment it upholds, so the next reader sees why it exists
@@ -65,12 +68,13 @@ No edges. All three stories touch different modules and may run in parallel.
 ### Implementation for this story
 
 - [ ] T017 [US2] (FR-005, FR-006) In `factory/cli/init.py`, compare the invocation
-      directory against the resolved root from `resolve_repo_root` (:165) and
+      directory against the resolved root from `resolve_repo_root` (:185) and
       require confirmation only when they differ for the walk-up reason —
-      distinguishing that from the worktree case documented at :172.
+      distinguishing that from the worktree case documented at :192.
 - [ ] T018 [US2] (FR-007) Refuse under `--non-interactive` when they differ.
-- [ ] T019 [US2] (FR-008) Emit the resolved root as a `--check` finding at the call site
-      (`factory/cli/init.py:478`).
+- [ ] T019 [US2] (FR-008) Emit the resolved root as a `--check` finding on the report
+      path — `run_check` (`factory/cli/init.py:1157`), dispatched from the
+      short-circuit at :577.
 
 ## Phase 3: User Story 3 — `revoke_key` is defined once
 

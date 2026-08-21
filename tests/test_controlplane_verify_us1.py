@@ -425,13 +425,15 @@ async def test_llm_verify_mints_asserts_revokes_and_revokes_on_assertion_failure
     generate_call = next(c for c in gateway_transport.calls if c.path == "/key/generate")
     assert generate_call.body is not None
     assert generate_call.body.get("duration") is not None
-    # The probe sends every distinct alias the registry can dispatch *through the
-    # gateway*. A subscription persona spends tokens (`is_llm`) but resolves a
-    # name the CLI accepts rather than an alias the proxy serves, so probing its
-    # model would fail a live gateway on a persona that never touches it (070-US2
-    # FR-016). The predicate followed `is_llm` until the registry first carried a
-    # subscription persona (`opus-closer`, 2026-08-20), at which point it started
-    # expecting `claude-opus-5` in the mint the probe correctly never asked for.
+    # The probe sends every distinct alias the registry can dispatch *through
+    # the gateway*.  Not every alias that spends tokens: a subscription persona
+    # (`agent: subscription`) names a model the `claude` CLI accepts rather than
+    # one LiteLLM serves, so probing it would mint a key constrained to an alias
+    # the gateway has never heard of and fail the round trip on a healthy floor
+    # (US2 FR-016, enforced at `factory/controlplane/verify.py:333`).
+    #
+    # This predicate read `is_llm` until 2026-08-20, when the registry gained
+    # its first subscription persona and the difference stopped being theoretical.
     expected_aliases = {
         alias
         for persona in verify_module._load_personas_for_probe().values()

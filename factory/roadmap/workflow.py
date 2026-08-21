@@ -67,7 +67,7 @@ US3 — US2 runs the scheduler to quiescence and returns its status.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any, Awaitable, Callable
 
@@ -194,6 +194,36 @@ def _epic_id_for(spec_dir: str) -> str:
     return f"epic-{spec_dir}"
 
 
+def _child_config(
+    pinned: VerificationConfig, requested: VerificationConfig
+) -> VerificationConfig:
+    """The ladder one child epic runs: the manifest's, plus the operator's rung.
+
+    Two sources meet here, and until 075 only one of them arrived. Every dial
+    of a child's ladder is read from the target clone's manifest at dispatch
+    (023 US2) so that it belongs to the commit that will actually build, and
+    `RoadmapInput.config` was passed straight past the child as a result —
+    carried through continue-as-new, handed to nobody. That made the one field
+    an operator can set on a roadmap (`--promotion-persona`, FR-008) a payload
+    that reached no epic.
+
+    The overlay is one field wide and it is an override, never a reset. A
+    target repo that declares `ladder.promotion_persona` in its manifest has
+    switched the rung on for itself; an operator who started the roadmap
+    without the flag has said nothing about promotion, and saying nothing must
+    not turn that rung off (FR-010). Nothing else the manifest pinned is
+    touched — the flag names a promotion persona and has no standing over
+    `max_attempts` or any other cap.
+
+    Pure, and deliberately a module function rather than a line inside
+    `_dispatch`: it is a decision over data, testable without Temporal, which
+    is where constitution IV puts it.
+    """
+    if requested.promotion_persona is None:
+        return pinned
+    return replace(pinned, promotion_persona=requested.promotion_persona)
+
+
 @dataclass(frozen=True)
 class RoadmapInput:
     """One roadmap run's whole dispatch — the workflow's only argument.
@@ -231,6 +261,10 @@ class RoadmapInput:
     #: bound, and forwarded to every child `EpicInput`.
     max_concurrent_nodes: int = 1
     landing_config: LandingConfig = LandingConfig()
+    #: The operator's ladder overlay, not the ladder itself: every child epic's
+    #: caps are read from the target clone's manifest at dispatch (023 US2),
+    #: and `_child_config` lays the one field set here — `promotion_persona`
+    #: (075 FR-008) — over the top.
     config: VerificationConfig = VerificationConfig()
     poll_interval_s: int = 30
     #: US3 idle-wait seconds (FR-007). `None` keeps drain-and-exit (FR-006).
@@ -1224,7 +1258,7 @@ class RoadmapWorkflow:
                 EpicInput(
                     graph=graph,
                     proxy_url=request.proxy_url,
-                    config=loop_config.config,
+                    config=_child_config(loop_config.config, request.config),
                     verify_order=loop_config.verify_order,
                     poll_interval_s=request.poll_interval_s,
                     landing_config=request.landing_config,

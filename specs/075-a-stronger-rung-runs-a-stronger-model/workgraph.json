@@ -1,6 +1,6 @@
 {
-  "epic_id": "064-the-on-ramp-stops-leaking-and-guessing",
-  "feature": "064-the-on-ramp-stops-leaking-and-guessing",
+  "epic_id": "075-a-stronger-rung-runs-a-stronger-model",
+  "feature": "075-a-stronger-rung-runs-a-stronger-model",
   "specs_root": "/home/admin/code/ergane/specs",
   "target_repo": "/home/admin/code/ergane-roadmap-target",
   "nodes": [
@@ -8,13 +8,15 @@
       "id": "us1",
       "story_key": "US1",
       "persona": "opus-closer",
-      "spec_ref": "064-the-on-ramp-stops-leaking-and-guessing:US1",
+      "spec_ref": "075-a-stronger-rung-runs-a-stronger-model:US1",
       "requirement_keys": [
         "US1",
         "FR-001",
         "FR-002",
         "FR-003",
-        "FR-004"
+        "FR-004",
+        "FR-005",
+        "FR-006"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -24,13 +26,13 @@
       "id": "us2",
       "story_key": "US2",
       "persona": "opus-closer",
-      "spec_ref": "064-the-on-ramp-stops-leaking-and-guessing:US2",
+      "spec_ref": "075-a-stronger-rung-runs-a-stronger-model:US2",
       "requirement_keys": [
         "US2",
-        "FR-005",
-        "FR-006",
         "FR-007",
-        "FR-008"
+        "FR-008",
+        "FR-009",
+        "FR-010"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -40,14 +42,17 @@
       "id": "us3",
       "story_key": "US3",
       "persona": "opus-closer",
-      "spec_ref": "064-the-on-ramp-stops-leaking-and-guessing:US3",
+      "spec_ref": "075-a-stronger-rung-runs-a-stronger-model:US3",
       "requirement_keys": [
         "US3",
-        "FR-009",
-        "FR-010"
+        "FR-011",
+        "FR-012"
       ],
       "depends_on": [],
-      "depends_on_merged": [],
+      "depends_on_merged": [
+        "us1",
+        "us2"
+      ],
       "timeout_override_s": null
     }
   ],
