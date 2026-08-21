@@ -1,5 +1,33 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-21 (10:00 AM CT), 5/5. US1 4411984207b5 (#259),
+# US2 73fedb5361b5 (#260), US3 67a91c2a8ab6 (#262), US4 e5d4f26d6b77 (#261),
+# US5 669006d63adc (#265) — all five observed on ergane-buildout by
+# `ergane spec landed --default-branch ergane-buildout`, and each confirmed an
+# ancestor of origin/ergane-buildout. Every node ran on `opus-closer`
+# (subscription) and every node landed on its first attempt in the run that
+# produced the commit.
+#
+# US3 CARRIES AN ASTERISK. Its first run parked on
+# `escalation/an-answered-question-never-unparks-the-node` (critical, filed
+# 2026-08-21): the answer was delivered and the QuestionWorkflow child COMPLETED,
+# but the node stayed WAITING_OPERATOR and held US4/US5 behind it. A worker
+# restart with zero pending activities reproduced the identical park, so the
+# wedge is deterministic in the workflow code's answered branch
+# (factory/workgraph/workflow.py:1639). The epic was terminated and US3-US5
+# re-dispatched with corrected `depends_on_merged` edges. That defect is open and
+# unfixed; nothing in this spec addresses it.
+#
+# WHAT THIS ATTESTATION DOES NOT CLAIM. The frontmatter below says US4 and US5
+# fix `hardening/the-boundary-detector-files-a-sibling-nodes-pytest-cache-as-this-attempts-escape`
+# (critical). That finding is still OPEN and unresolved, and the detector filed
+# 17 further sibling-teardown criticals on this floor today — but the running
+# worker has not been restarted since 06:36Z, so it has been executing pre-fix
+# `factory/workgraph/detector.py` all day. Landing the fix and proving the fix are
+# different facts; this attests the first only. Resolve the finding after a worker
+# restart demonstrates a clean node.
+#
+# --- drafting note this supersedes ---
 # Drafted 2026-08-20 7:05 AM CT by an operator session, after a read of the live
 # store found 214 open findings — a backlog no operator can work through by
 # hand, and which nothing in the CLI helps reduce.
