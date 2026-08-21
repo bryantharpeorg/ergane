@@ -463,9 +463,12 @@ def onboard_command(args: argparse.Namespace) -> int:
 def _render_onboard(profile: Any) -> str:
     """The human view: the repo's verdict line, then one line per finding.
 
-    Each finding is `[pass|fail] <check>: <detail>`, ordered as the profile
+    Each finding is `[PASS|WARN|FAIL] <check>: <detail>`, ordered as the profile
     carries them, so an operator reading a rejected repo sees the first failing
-    check at the top of the failures without hunting.
+    check at the top of the failures without hunting. The mark comes off the
+    finding (061-US3) rather than from a conditional here: a warning printed as
+    `FAIL` beside a `PASSES onboarding` verdict is this report contradicting its
+    own first line.
     """
     lines = [
         f"target repo {profile.repo} "
@@ -478,8 +481,7 @@ def _render_onboard(profile: Any) -> str:
         "findings:",
     ]
     for finding in profile.findings:
-        mark = "PASS" if finding.passed else "FAIL"
-        lines.append(f"  [{mark}] {finding.check}: {finding.detail}")
+        lines.append(f"  [{finding.mark}] {finding.check}: {finding.detail}")
     return "\n".join(lines)
 
 

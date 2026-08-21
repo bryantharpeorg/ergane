@@ -943,8 +943,7 @@ class EpicWorkflow:
         )
         if not profile.passed:
             findings = "\n".join(
-                f"  [{('PASS' if f.passed else 'FAIL')}] {f.check}: {f.detail}"
-                for f in profile.findings
+                f"  [{f.mark}] {f.check}: {f.detail}" for f in profile.findings
             )
             raise ApplicationError(
                 f"target repo {graph.target_repo} failed onboarding; nothing "

@@ -30,13 +30,24 @@ configuration; `tests/test_forge_readiness.py` reads this source to keep it so.
   named *exactly* after it. The naming convention is the contract between
   `factory.yaml` and the repo's CI; a declared gate with no matching check
   would land a PR that never runs that gate.
+- **`noop_gate:<gate>`** — and the command behind that check must be able to
+  fail. 061's US3: `gate_check` asked only whether the two names matched, so a
+  gate declared as `true` — which the init interview itself wrote on any repo
+  whose tree suggested no command — satisfied it and printed as a pass. Every
+  word of that pass was true and it described a repository that lands whatever
+  an agent writes. This is the one finding here that does **not** fail the
+  report (`Severity.WARNING`, FR-009): an operator evaluating Ergane without
+  gates is making a choice, and the requirement is that the choice be visible,
+  not that it be forbidden. A wall in front of it is edited around, and what
+  replaces it is a no-op nothing recognises.
 - **`unknown_check:<name>`** — every required check must map back to a declared
   gate. Deterministic gates only is FR-003 made structural: a required check
   that is not a declared gate is a check the factory does not control, and this
   is precisely what keeps the LLM judge out of CI.
 
-Each check fails closed: `passed` is the conjunction, and a repo that fails any
-check is rejected for dispatch with instructions for the operator (spec US3 AS2).
+Each check fails closed: `passed` is the conjunction over `Finding.blocking`,
+and a repo that fails any *blocking* check is rejected for dispatch with
+instructions for the operator (spec US3 AS2).
 What a forge alone knows arrives on `RepositoryDescription.findings` and is
 appended here without this module knowing what it means (FR-007) — which is how
 a forge-specific rule fails a repository without the judgment learning that
@@ -70,7 +81,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from factory.mergequeue.forge import LandingPolicy, RepositoryDescription
-from factory.mergequeue.models import Finding, TargetRepoProfile
+from factory.mergequeue.models import Finding, Severity, TargetRepoProfile
 
 
 @dataclass(frozen=True)
@@ -126,6 +137,7 @@ def evaluate_repo(
     reading: "RepositoryDescription",
     policy: "LandingPolicy",
     declared_gates: Sequence[str],
+    gate_commands: Mapping[str, str] | None = None,
     factory_yaml_error: str | None = None,
     init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
@@ -139,6 +151,13 @@ def evaluate_repo(
     carries the checks it requires, so Q4 can be asked without knowing where a
     forge keeps them. `factory_yaml_error` is the 002 loader's message — a
     broken manifest fails, never passes by default.
+
+    `gate_commands` is 061-US3's addition: the command each declared gate runs,
+    so Q4 can ask whether the gate *can fail* and not only whether its name
+    matches a check. It is additive and defaults to nothing, and "not stated" is
+    deliberately not "declared empty" — a caller that gathered no commands
+    reports exactly the findings it reported before, rather than calling every
+    gate a no-op.
     """
 
     findings: list[Finding] = list(reading.findings)
@@ -160,11 +179,13 @@ def evaluate_repo(
     # matching the factory_yaml precedent.
     _landing_title_finding(findings, policy)
 
-    # Q4: the gate ↔ check mapping, by name (position is irrelevant).
+    # Q4: the gate ↔ check mapping, by name (position is irrelevant), and
+    # whether the command behind the matched check can fail at all (061 US3).
     declared = set(declared_gates)
     required = set(policy.required_checks)
+    commands: Mapping[str, str] = gate_commands or {}
     for gate in declared:
-        _gate_check_finding(findings, gate, gate in required)
+        _gate_check_finding(findings, gate, gate in required, commands.get(gate))
     for check in sorted(required - declared):
         _unknown_check_finding(findings, check)
 
@@ -179,7 +200,11 @@ def evaluate_repo(
         policy=policy,
         declared_gates=tuple(declared_gates),
         findings=tuple(findings),
-        passed=all(f.passed for f in findings),
+        # `blocking` rather than `passed`: the no-op gate finding is a fact an
+        # operator must see and may keep, and a verdict that read it as a
+        # refusal would fail every repository that had deliberately turned its
+        # gates off (061 FR-009).
+        passed=not any(f.blocking for f in findings),
     )
 
 
@@ -255,7 +280,80 @@ def _landing_title_finding(findings: list[Finding], policy: "LandingPolicy") -> 
     ))
 
 
-def _gate_check_finding(findings: list[Finding], gate: str, matched: bool) -> None:
+#: Commands that exit 0 having run nothing (061 FR-008). `true` and `:` are the
+#: shell's two canonical do-nothings; the empty string is what a gate reaches by
+#: declaring the key and writing nothing after it. The absolute paths are here
+#: because `bash -c /bin/true` is the same gate wearing a longer name, and a set
+#: that recognised only the bare word would be trivially stepped around by
+#: accident. This is a floor, not a proof: no finite table can decide whether an
+#: arbitrary shell command can fail, and this one does not try — it names the
+#: spellings that mean "no gate" on purpose.
+_NOOP_GATE_COMMANDS = frozenset({"", "true", ":", "/bin/true", "/usr/bin/true"})
+
+
+def _is_noop_gate_command(command: str | None) -> bool:
+    """Whether `command` is a gate that cannot fail — `None` being "not stated".
+
+    The `None` case is load-bearing and is not the same as `""`: a caller that
+    gathered no commands has said nothing about this gate, while a manifest
+    declaring an empty command has said something specific. Collapsing them
+    would make every call site that has not been taught to pass commands report
+    every gate as a no-op.
+
+    Stripped before matching, because the command is handed to `bash -c`, which
+    does its own word splitting: `"  true  "` runs `true` and a command that is
+    only whitespace runs nothing at all.
+    """
+    if command is None:
+        return False
+    return command.strip() in _NOOP_GATE_COMMANDS
+
+
+def _noop_gate_finding(findings: list[Finding], gate: str, command: str) -> None:
+    """Name the gate that cannot fail, and do not fail the run for it.
+
+    Worded so the consequence is true whatever else the repository declares: a
+    single no-op among real gates leaves the others deciding, while a repository
+    whose gates are *all* like this one has no gate that can fail. Both readings
+    are in the sentence, because the finding is per gate and the danger is not.
+    """
+    findings.append(
+        Finding(
+            f"noop_gate:{gate}",
+            False,
+            f"gate '{gate}' is declared as {command!r}, a command that exits 0 "
+            "without running anything — a gate that cannot fail, which is not a "
+            f"pass. Nothing '{gate}' is meant to check can refuse a landing, and "
+            f"if every gate this repository declares is like '{gate}', no gate "
+            "can fail and this factory lands whatever an agent writes. Declare "
+            "the command that decides this repository's green, or keep it and "
+            "read this line as the choice it is",
+            Severity.WARNING,
+        )
+    )
+
+
+def _gate_check_finding(
+    findings: list[Finding],
+    gate: str,
+    matched: bool,
+    command: str | None = None,
+) -> None:
+    """The gate ↔ check parity finding, and 061-US3's no-op finding beside it.
+
+    A matched gate whose command is a no-op reports the no-op *instead of* the
+    parity pass. The pass is not false — the check really does exist — but it is
+    the line an operator read as "gates work", and leaving it in beside the
+    warning would leave the reassurance intact next to the reason not to be
+    reassured. An *unmatched* gate keeps its failing parity finding and gets the
+    no-op finding as well: those are two independent problems and reporting only
+    one of them would be the masking this module forbids.
+    """
+    if command is not None and _is_noop_gate_command(command):
+        _noop_gate_finding(findings, gate, command)
+        if matched:
+            return
+
     if matched:
         findings.append(
             Finding(f"gate_check:{gate}", True, f"required check '{gate}' exists")
