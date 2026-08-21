@@ -363,7 +363,8 @@ US2:
   implements: [FR-004, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-011, FR-012, FR-013]
   persona: opus-closer
 US3:
-  depends_on: [US2]
+  depends_on: []
+  depends_on_merged: [US2]
   implements: [FR-014, FR-015, FR-016, FR-017, FR-018, FR-019]
   persona: opus-closer
 US4:
@@ -371,13 +372,20 @@ US4:
   implements: [FR-020, FR-021, FR-022, FR-023]
   persona: opus-closer
 US5:
-  depends_on: [US4]
+  depends_on: []
+  depends_on_merged: [US4]
   implements: [FR-024, FR-025, FR-026]
   persona: opus-closer
 ```
 
 The chain US1 → US2 → US3 is real, not merely contentious: US2's proof rule reads
-a field US1 creates, and US3 acts on classes US2 defines. US4 and US5 are a
+a field US1 creates, and US3 acts on classes US2 defines. The unlanded
+code-needing edges (US3 → US2, US5 → US4) are `depends_on_merged`, because the
+dependent story must find its dependency's code in its own base tree — a
+`depends_on` edge releases on verification, before the code lands, and
+dispatching US3 that way parked it behind an operator question on 2026-08-21.
+(US2's edge keeps its original `depends_on` form only because both ends are
+already landed and editing it would change a landed story's fingerprint.) US4 and US5 are a
 separate module and share no file with the first three; US5 changes the same
 finding-construction path US4 changes, and its bounded-notes requirement only
 makes sense once one row absorbs every occurrence.

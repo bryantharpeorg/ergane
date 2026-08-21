@@ -104,11 +104,11 @@ US3, and on specs 059 and 060 having landed.
 ### Implementation for this story
 
 - [ ] T023 [US3] (FR-008) Add no-op detection to `_gate_check_finding`
-      (`factory/mergequeue/onboard.py:254`), emitting a distinct finding rather
-      than the `required check '{gate}' exists` pass at :257.
+      (`factory/mergequeue/onboard.py:258`), emitting a distinct finding rather
+      than the `required check '{gate}' exists` pass at :261.
 - [ ] T024 [US3] (FR-009) Give the finding a severity that does not fail the run.
 - [ ] T025 [US3] (FR-010) Remove or rename the gate entry in `_PLACEHOLDERS`
-      (`factory/cli/init.py:273`) so a value the code calls a placeholder cannot
+      (`factory/cli/init.py:398`) so a value the code calls a placeholder cannot
       become a live gate. Coordinate with 060's shared defaults source if 060 has
       landed.
 - [ ] T026 [US3] Update the `gate_check:<gate>` contract documented at
@@ -144,6 +144,10 @@ US3, and on specs 059 and 060 having landed.
       can decide when to run it rather than discovering its cost by running it.
 
 ## Verification
+
+T035, T036, T038 and T039 need live prerequisites and are **operator-run after
+landing** (plan trap 15) — not implementer scope. T037 is in-sandbox runnable
+and belongs to US3's evidence.
 
 - [ ] T035 (SC-001) Start LiteLLM with no `DATABASE_URL`; run `ergane install
       --verify`; confirm the `llm` check fails naming key management. Restart with
