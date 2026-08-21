@@ -3,10 +3,10 @@
 US1's grammar is the deriver's discipline applied one level up: every spec
 declares its intent — `draft`, `ready`, `deferred`, or attested `landed` — in a
 frontmatter block, and one reader turns a `specs/` corpus into a roadmap graph
-of states and `depends_on_landed` edges. The grammar is *closed*: unknown keys
-and unknown states are rejected naming the offender and the file, because
-silently dropping a key an author wrote is how a roadmap comes to mean something
-other than it says (FR-001).
+of states, `depends_on_landed` edges and (since 073-US1) the `fixes:` a spec
+declares. The grammar is *closed*: unknown keys and unknown states are rejected
+naming the offender and the file, because silently dropping a key an author
+wrote is how a roadmap comes to mean something other than it says (FR-001).
 
 Three properties carry the weight here:
 
@@ -40,6 +40,7 @@ from typing import Any
 import pytest
 
 from factory.roadmap.models import (
+    _KNOWN_KEYS,
     RoadmapError,
     SpecEntry,
     SpecState,
@@ -150,6 +151,36 @@ def test_each_grammar_rejection_names_offender_and_file(
     assert named in str(fault)
     # The file is named — never a bare "rejected".
     assert spec_dir in str(fault)
+
+
+def test_the_closed_grammar_is_exactly_the_keys_named_here(tmp_path: Path) -> None:
+    """The whole vocabulary, pinned — so widening it is a visible act.
+
+    The frontmatter rides `PromptSources.spec_text` whole into agent payloads,
+    which is why the key set is closed rather than a general-purpose metadata
+    block. Pinning the tuple means a story that adds a key edits this line and
+    says so in its diff; the alternative is a set that grows one convenience at
+    a time until nobody can say what a spec may declare.
+
+    073-US1 widened it by exactly one name: `fixes`, the finding keys a spec
+    declares it closes. The behaviour below is the same statement without the
+    private constant — every listed key parses, and one that is not listed is
+    refused.
+    """
+    assert _KNOWN_KEYS == ("state", "depends_on_landed", "fixes")
+
+    specs_root = tmp_path / "specs"
+    (specs_root / "001-all").mkdir(parents=True)
+    (specs_root / "001-all" / "spec.md").write_text(
+        "---\nstate: ready\ndepends_on_landed: []\nfixes: [category/slug]\n---\n\n"
+        "# Feature Specification: every key at once\n",
+        encoding="utf-8",
+    )
+
+    (entry,) = read_roadmap(specs_root).entries
+    assert entry.state is SpecState.READY
+    assert entry.depends_on_landed == []
+    assert entry.fixes == ["category/slug"]
 
 
 def test_a_cycle_is_reported_naming_only_the_specs_on_it() -> None:
