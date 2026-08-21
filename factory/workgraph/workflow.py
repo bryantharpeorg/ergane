@@ -210,7 +210,11 @@ with workflow.unsafe.imports_passed_through():
     from factory.mergequeue.rejection import rejection_cause
     from factory.notify.messages import render_history, render_landing_history
     from factory.usage.models import KeyLease, Termination, UsageSnapshot
-    from factory.verify.ladder import DEBUGGER_PERSONA, next_action
+    from factory.verify.ladder import (
+        DEBUGGER_PERSONA,
+        PROMOTION_PERSONA,
+        next_action,
+    )
     from factory.verify.models import (
         AttemptRecord,
         CriteriaSet,
@@ -559,10 +563,15 @@ class EpicWorkflow:
         #: the worker predates this story or runs outside a git checkout.
         self._worker_revision: str | None = None
 
-        #: US4 FR-010: the registry snapshot, kept so the scheduler can tell
-        #: subscription-routed nodes from gateway-routed ones when applying the
-        #: per-subscription concurrency limit.  Filled during `_resolve`.
-        self._personas: dict[str, Persona] = {}
+        #: The epic's persona snapshot: one resolved entry per persona any
+        #: attempt of this epic may be built for — every node's persona, the
+        #: debugger's, and the configured promotion persona (075-US1 FR-003).
+        #: Filled during `_resolve` and never again, which is what keeps an
+        #: operator's mid-epic `personas.yaml` edit a fact about the *next* epic
+        #: (FR-004). The scheduler reads it to tell subscription-routed nodes
+        #: from gateway-routed ones (US4 FR-010); every attempt site reads it for
+        #: the pair — agent and model alias — that says how the attempt runs.
+        self._personas: dict[str, ResolvedPersona] = {}
 
         #: One background poll task per open landing, keyed by node id. Started
         #: when a PASS node's landing enqueues (US1) and reaped when the landing
@@ -721,7 +730,7 @@ class EpicWorkflow:
         # is told exactly what to change. Checked at every epic start, never
         # cached (spec § US3 IT).
         await self._onboard_target(graph)
-        resolved = await self._resolve(graph)
+        resolved = await self._resolve(graph, request.config)
         # US4 FR-010: a stable lookup from node id to persona name so the
         # scheduler can count in-flight subscription-routed nodes without recomputing
         # it on every dispatch decision.
@@ -932,7 +941,9 @@ class EpicWorkflow:
                 non_retryable=True,
             )
 
-    async def _resolve(self, graph: WorkGraph) -> list[ResolvedNode]:
+    async def _resolve(
+        self, graph: WorkGraph, config: VerificationConfig
+    ) -> list[ResolvedNode]:
         """Validate the graph against the persona registry, or fail the epic.
 
         The rejection is re-raised as the workflow's own failure carrying the
@@ -953,28 +964,145 @@ class EpicWorkflow:
                 ) from exc
             raise
 
-        # US4 FR-010: keep the registry snapshot for the scheduler's subscription
-        # concurrency bound.  `_run_node` also uses it to pass the resolved agent
-        # value to key issuance and the adapter.
-        self._personas = {item.node.persona: self._resolve_persona(item.node.persona) for item in resolved}
+        # The snapshot every attempt of this epic is built from, filled here and
+        # nowhere else (075-US1 FR-003/FR-004). One registry read answers for the
+        # whole epic: an operator editing `personas.yaml` while it runs changes
+        # the *next* epic, and a rung firing four attempts later selects from
+        # this map rather than reading the file again (trap 1 — a per-attempt
+        # read is a filesystem read on a replay path).
+        registry = self._read_registry()
+        # Node personas first. Their aliases come from the resolution the
+        # activity above just did, so an ordinary attempt is routed by exactly
+        # the bytes `resolve_graph` validated; the registry supplies the `agent`
+        # beside them, which `ResolvedNode` does not carry.
+        self._personas = {
+            item.node.persona: ResolvedPersona(
+                persona=item.node.persona,
+                model_alias=item.model_alias,
+                models=list(item.models),
+                agent=self._agent_of(registry, item.node.persona),
+            )
+            for item in resolved
+        }
+        # Then the personas no node declares but a rung may still select. A rung
+        # persona the registry does not have is left *out* of the snapshot rather
+        # than failing the epic: an epic that never takes that rung is perfectly
+        # dispatchable, and a node that does take it fails by name (FR-005).
+        for persona_name in self._rung_personas(config):
+            if persona_name in self._personas:
+                continue
+            entry = registry.get(persona_name)
+            if entry is None or entry.model is None:
+                continue
+            self._personas[persona_name] = ResolvedPersona(
+                persona=persona_name,
+                model_alias=entry.model,
+                models=[alias for alias in (entry.model, entry.fallback) if alias],
+                agent=entry.agent,
+            )
         return resolved
 
-    def _resolve_persona(self, persona_name: str) -> Persona | None:
-        """Read one registry entry by name, returning None if it cannot be loaded.
+    @staticmethod
+    def _rung_personas(config: VerificationConfig) -> list[str]:
+        """Every persona a rung may select that no node need declare.
 
-        This is a workflow-side helper only: the authoritative read happens in
-        `resolve_graph`.  We use it to recover the `agent` value for nodes
-        because `ResolvedNode` intentionally does not carry it (constitution VII:
-        only the model alias crosses the boundary).  A missing registry is handled
-        gracefully because `_is_subscription_node` tolerates None.
+        `PROMOTION_PERSONA` is deliberately not among them: it is the
+        `"__promotion__"` sentinel `_promotion_cycles_spent` counts against when
+        no persona is configured, and resolving it would look up a registry entry
+        that must never exist (trap 6).
+        """
+        names = [DEBUGGER_PERSONA]
+        promotion = config.promotion_persona
+        if promotion and promotion != PROMOTION_PERSONA:
+            names.append(promotion)
+        return names
+
+    @staticmethod
+    def _agent_of(registry: dict[str, Persona], persona_name: str) -> str:
+        """The `agent` a persona declares, or empty when the registry lacks it.
+
+        Empty is what it has always been for an unresolvable entry, and
+        `_is_subscription_node` still reads it as "not a subscription node" — a
+        routing misconfiguration fails the node on its own terms rather than
+        being silently counted here.
+        """
+        entry = registry.get(persona_name)
+        return entry.agent if entry is not None else ""
+
+    @staticmethod
+    def _rung_selection(
+        action: NextAction, node: WorkNode, config: VerificationConfig
+    ) -> tuple[str, str]:
+        """Which persona the next attempt runs as, and which rung chose it.
+
+        Pure, and a function of the ladder's decision alone (trap 9): the same
+        action on the same node picks the same persona on a replay. The label
+        travels with the name because the two are one decision, and because a
+        failure to resolve the persona has to be able to say which rung asked
+        for it.
+
+        `PROMOTE` is a rung like the debugger's: the ladder only returns it when
+        an operator configured a promotion persona (`_promotion_available`), and
+        the attempt is recorded under that persona — which is what keeps
+        `_promotion_cycles_spent` counting the rung rather than the node.
+        """
+        if action == NextAction.DEBUGGER:
+            return DEBUGGER_PERSONA, "debugger rung"
+        if action == NextAction.PROMOTE and config.promotion_persona:
+            return config.promotion_persona, "promotion rung"
+        return node.persona, "node's own routing"
+
+    def _routing_for(self, persona_name: str, *, rung: str) -> ResolvedPersona:
+        """The one entry an attempt's agent and model alias both come from.
+
+        FR-002 in a function: there is no path that answers "which agent" without
+        answering "which model", so the key minted for an attempt and the process
+        that runs it cannot disagree about which persona is working.
+
+        FR-005: a rung naming a persona the epic's snapshot never resolved fails
+        the node here, naming both, rather than falling back to the node's own
+        model. The fallback is the failure mode being ruled out — it would spend
+        a debugger cycle running the builder that had already failed three times,
+        and report a stronger rung in the ledger while doing it.
+        """
+        entry = self._personas.get(persona_name)
+        if entry is None:
+            raise ApplicationError(
+                f"the {rung} selected persona '{persona_name}', which is not in "
+                f"this epic's persona snapshot: it was not resolvable from the "
+                f"registry at epic start, so there is no model to run it under. "
+                f"Add '{persona_name}' to personas.yaml and start the epic again "
+                f"(constitution VII).",
+                type=GRAPH_INVALID,
+                non_retryable=True,
+            )
+        return entry
+
+    def _read_registry(self) -> dict[str, Persona]:
+        """Read the persona registry once, at epic start, for the snapshot.
+
+        A workflow-side helper only: the authoritative read is `resolve_graph`'s,
+        and this recovers what a `ResolvedNode` does not carry — the `agent`
+        value, and the entries for personas no node declares but a rung may
+        select. An unreadable registry is an empty map rather than a raise, which
+        is what it has always been: `_is_subscription_node` treats an unknown
+        persona as non-subscription, and a rung that cannot be resolved fails its
+        own node by name (`_routing_for`).
+
+        **This read is workflow code touching the filesystem**, which is a
+        determinism defect that predates 075 and is filed as its own finding. It
+        is called here — once, before any attempt — and must not be called from a
+        per-attempt path, where a registry edited mid-epic would make a replay
+        disagree with the run it is replaying (trap 1). Calling it once for the
+        whole snapshot rather than once per node is why widening the snapshot
+        costs no additional reads.
         """
         from factory.config import load_personas
 
         try:
-            registry = load_personas()
+            return load_personas()
         except Exception:
-            return None
-        return registry.get(persona_name)
+            return {}
 
     def _is_subscription_node(self, persona_name: str) -> bool:
         """Whether a node routed to this persona runs against the operator's subscription.
@@ -1303,6 +1431,10 @@ class EpicWorkflow:
         results: list[VerificationResult] = []
         evidence: list[AttemptEvidence] = []
         persona = node.persona
+        #: Which rung selected `persona`, in the words an operator would want to
+        #: read if it cannot be resolved (FR-005). It moves with the persona and
+        #: for the same reason: the two are one decision.
+        rung = "node's own routing"
         #: Set by a `PAUSE_EPIC` press: the node ends parked rather than
         #: abandoned, and the epic stops. Nothing else in the ladder's
         #: vocabulary distinguishes the two, because nothing else has to — a
@@ -1324,6 +1456,19 @@ class EpicWorkflow:
                 # grant, and no key is issued for an attempt nobody will read.
                 action = NextAction.KILLED
                 break
+
+            # The one entry this attempt is routed by — the persona the *rung*
+            # selected, not the node's (075-US1 FR-001). Key issuance and the
+            # adapter read the same object, so the agent that runs and the alias
+            # it runs under can never come from different resolutions (FR-002),
+            # and whether this attempt routes through the gateway or the
+            # operator's subscription is answered by the same entry (US2 FR-005).
+            # Read before the attempt number advances: a rung whose persona
+            # cannot be resolved dispatches nothing, so it must not consume an
+            # attempt number either — the same discipline the launch-failure
+            # path below applies to a fault that never reached the agent.
+            routing = self._routing_for(persona, rung=rung)
+            agent = routing.agent
 
             record.attempt += 1
             # Pure, and built from workflow state alone: the same inputs on a
@@ -1347,25 +1492,19 @@ class EpicWorkflow:
             # answer section (the operator never engaged, FR-004).
             record.operator_answer = None
 
-            # Resolve the persona registry entry for this node so key issuance
-            # and the adapter both know whether this attempt routes through the
-            # gateway or the operator's subscription (US2 FR-005).
-            persona_entry = self._personas.get(node.persona)
-            agent = persona_entry.agent if persona_entry is not None else ""
-
             lease = await workflow.execute_activity(
                 issue_attempt_key,
                 IssueKeyInput(
                     node_id=node.id,
                     epic_id=graph.epic_id,
                     attempt=record.attempt,
-                    # The debugger's spend is the debugger's (constitution V);
-                    # the aliases it may call are still the node's, because the
-                    # registry snapshot covers graph nodes and inventing a
-                    # second resolution here would be a second source of truth.
+                    # The debugger's spend is the debugger's (constitution V),
+                    # and so are the aliases it may call: a key constrained to
+                    # the node's models would have the proxy refuse the very
+                    # model the rung just chose.
                     persona=persona,
                     spec_ref=node.spec_ref,
-                    models=list(resolved.models),
+                    models=list(routing.models),
                     agent=agent,
                 ),
                 start_to_close_timeout=_PROXY["start_to_close_timeout"],
@@ -1389,7 +1528,7 @@ class EpicWorkflow:
                         home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
                         proxy_url=request.proxy_url,
                         virtual_key=lease.key,
-                        model_alias=resolved.model_alias,
+                        model_alias=routing.model_alias,
                         session_id=str(workflow.uuid4()),
                         timeout_s=resolved.timeout_s,
                         context_window=resolved.context_window,
@@ -1630,9 +1769,7 @@ class EpicWorkflow:
                 if action in _TERMINAL_ACTIONS:
                     break
 
-                persona = (
-                    DEBUGGER_PERSONA if action == NextAction.DEBUGGER else node.persona
-                )
+                persona, rung = self._rung_selection(action, node, request.config)
             except _LaunchFailed as exc:
                 # FR-005: a pre-first-token launch fault is not an attempt.  Record
                 # it as launch evidence so the next prompt can name it, but do not
@@ -2718,11 +2855,19 @@ class EpicWorkflow:
                 **_FAST,
             )
 
+        # The fork that decides whose work the recovery is (FR-006). A clean
+        # re-sync leaves the node's own story to finish against a base that
+        # moved under it; a conflicted one is a different job, handed to the
+        # debugger. The two must keep differing — and since 075-US1 they differ
+        # in the *model* as well as in the alias on the key, because the persona
+        # selected here is now the persona the attempt is routed by.
         if sync.clean:
             persona = resolved.node.persona
+            rung = "clean-sync recovery"
             conflicted_files = ()
         else:
             persona = DEBUGGER_PERSONA
+            rung = "conflicted-sync recovery"
             conflicted_files = sync.conflicted_files
 
         result = await self._recovery_attempt(
@@ -2736,6 +2881,7 @@ class EpicWorkflow:
             conflicted_files,
             failing_checks,
             base_unmoved=base_unmoved,
+            rung=rung,
         )
         if result is not None:
             await self._reenqueue(
@@ -2789,6 +2935,7 @@ class EpicWorkflow:
         conflicted_files: tuple[str, ...],
         failing_checks: tuple[CheckFailure, ...] = (),
         base_unmoved: bool = False,
+        rung: str = "recovery",
     ) -> VerificationResult | None:
         """One bounded recovery attempt: fresh key, landing evidence, then verify.
 
@@ -2797,6 +2944,11 @@ class EpicWorkflow:
         quoted into the prompt, and the full 002 ladder authority (gates →
         output → judge). Returns the `VerificationResult` on PASS, `None` on a
         failed or killed attempt — the caller routes a failure to escalation.
+
+        The persona is the caller's, not the node's: a conflicted re-sync hands
+        this tree to the debugger and a clean one keeps the node's own builder
+        (FR-006). `rung` names which of the two chose it, so a persona that
+        cannot be resolved fails the node saying so.
         """
         node = resolved.node
         record = self._nodes[node.id]
@@ -2820,10 +2972,12 @@ class EpicWorkflow:
             ),
         )
 
-        # Recovery re-uses the same persona as the original node; resolve its
-        # agent value the same way `_run_node` does.
-        recovery_persona_entry = self._personas.get(persona)
-        recovery_agent = recovery_persona_entry.agent if recovery_persona_entry is not None else ""
+        # Recovery runs whichever persona the sync's fork selected — the node's
+        # own on a clean re-sync, the debugger's on a conflicted one — and takes
+        # its whole routing from that persona's one snapshot entry, the same way
+        # `_run_node` does (FR-001/FR-002).
+        routing = self._routing_for(persona, rung=rung)
+        recovery_agent = routing.agent
 
         lease = await workflow.execute_activity(
             issue_attempt_key,
@@ -2833,7 +2987,7 @@ class EpicWorkflow:
                 attempt=record.attempt,
                 persona=persona,
                 spec_ref=node.spec_ref,
-                models=list(resolved.models),
+                models=list(routing.models),
                 agent=recovery_agent,
             ),
             start_to_close_timeout=_PROXY["start_to_close_timeout"],
@@ -2854,7 +3008,7 @@ class EpicWorkflow:
                     home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
                     proxy_url=request.proxy_url,
                     virtual_key=lease.key,
-                    model_alias=resolved.model_alias,
+                    model_alias=routing.model_alias,
                     session_id=str(workflow.uuid4()),
                     timeout_s=resolved.timeout_s,
                     context_window=resolved.context_window,

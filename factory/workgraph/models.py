@@ -258,11 +258,22 @@ class ResolvedPersona:
     (R8). Resolved once at epic start alongside the graph, under the same
     snapshot discipline: an operator editing `personas.yaml` mid-epic changes the
     *next* epic.
+
+    Since 075-US1 it is also the epic's per-persona snapshot entry, and what a
+    *rung* is routed by: the debugger cycle and the promotion rung select roles
+    no node names either, and the attempt built for one of them takes its `agent`
+    and its `model_alias` from a single entry of this type (FR-002). The two
+    travel together on purpose — an attempt whose key was minted for one
+    persona's agent while the process ran another's model is the disagreement
+    that hid that defect twice. `agent` defaults to empty because a recorded
+    payload written before the field existed must still deserialize, and because
+    empty has always been what an unresolvable entry's agent reads as.
     """
 
     persona: str
     model_alias: str
     models: list[str]
+    agent: str = ""
 
 
 @dataclass

@@ -1264,6 +1264,11 @@ class ScriptedWorld:
                 persona=request.persona,
                 model_alias=persona.model,
                 models=[a for a in (persona.model, persona.fallback) if a],
+                # 075-US1: the entry a rung is routed by carries both halves —
+                # the agent that runs and the alias it runs under. The fake
+                # mirrors the real activity, or a test would prove routing
+                # against a shape production never produces.
+                agent=persona.agent,
             )
 
         @activity.defn(name="load_prompt_sources")

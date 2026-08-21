@@ -327,6 +327,11 @@ async def resolve_persona(request: ResolvePersonaInput) -> ResolvedPersona:
     an epic that cannot score its stories should fail before a key is spent
     discovering it, not four attempts in.
 
+    The entry carries the persona's `agent` beside its alias (075-US1): whatever
+    is routed by a `ResolvedPersona` runs an agent *and* a model, and an entry
+    that answered only one of those questions is how an attempt came to be billed
+    to the debugger while running the implementer's model (FR-002).
+
     Read-only and idempotent. Raises non-retryable `GRAPH_INVALID`, naming the
     persona, when the registry has no such entry or the entry names no model.
     """
@@ -351,6 +356,7 @@ async def resolve_persona(request: ResolvePersonaInput) -> ResolvedPersona:
         persona=request.persona,
         model_alias=persona.model,
         models=[alias for alias in (persona.model, persona.fallback) if alias],
+        agent=persona.agent,
     )
 
 
