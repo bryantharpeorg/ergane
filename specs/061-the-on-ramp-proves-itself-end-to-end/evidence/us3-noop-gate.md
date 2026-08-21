@@ -192,4 +192,89 @@ revert. A test that cannot fail is the defect this repository has paid most
 for, so each of the four behaviours is shown failing when the line that
 implements it is removed.
 
-MUTATIONS_PLACEHOLDER
+Each block is one edit to the shipped source, the run it produced, and the
+revert. A test that cannot fail is the defect this repository has paid most
+for, so each behaviour is shown failing when the line that implements it is
+removed. The last block is the anti-vacuity control: every mutation reverted,
+everything green again.
+
+```
+### MUTATION 1 — no-op detection removed from _gate_check_finding
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_a_distinct_finding_not_a_pass[true]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_a_distinct_finding_not_a_pass[:]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_a_distinct_finding_not_a_pass[]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_recognised_through_surrounding_whitespace[  true  ]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_recognised_through_surrounding_whitespace[\ttrue\n]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_recognised_through_surrounding_whitespace[   ]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_reaches_ergane_init_check_from_a_real_manifest
+FAILED tests/test_noop_gate.py::test_every_noop_form_a_manifest_can_carry_is_reported_by_the_cli[true]
+FAILED tests/test_noop_gate.py::test_every_noop_form_a_manifest_can_carry_is_reported_by_the_cli[:]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_that_no_check_requires_still_fails_the_parity_check
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[true]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[:]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_ergane_init_check
+FAILED tests/test_noop_gate.py::test_a_real_failing_check_still_fails_the_run_alongside_a_warning
+15 failed, 11 passed in 0.46s
+
+### MUTATION 2 — the no-op finding blocks the run (severity ERROR)
+FAILED tests/test_noop_gate.py::test_the_noop_finding_reaches_ergane_init_check_from_a_real_manifest
+FAILED tests/test_noop_gate.py::test_every_noop_form_a_manifest_can_carry_is_reported_by_the_cli[true]
+FAILED tests/test_noop_gate.py::test_every_noop_form_a_manifest_can_carry_is_reported_by_the_cli[:]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[true]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[:]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_ergane_init_check
+FAILED tests/test_noop_gate.py::test_a_real_failing_check_still_fails_the_run_alongside_a_warning
+8 failed, 18 passed in 0.41s
+
+### MUTATION 3 — 'true' and ':' dropped from _NOOP_GATE_COMMANDS
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_a_distinct_finding_not_a_pass[true]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_a_distinct_finding_not_a_pass[:]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_recognised_through_surrounding_whitespace[  true  ]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_command_is_recognised_through_surrounding_whitespace[\ttrue\n]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_reaches_ergane_init_check_from_a_real_manifest
+FAILED tests/test_noop_gate.py::test_every_noop_form_a_manifest_can_carry_is_reported_by_the_cli[true]
+FAILED tests/test_noop_gate.py::test_every_noop_form_a_manifest_can_carry_is_reported_by_the_cli[:]
+FAILED tests/test_noop_gate.py::test_a_noop_gate_that_no_check_requires_still_fails_the_parity_check
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[true]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_the_judgment[:]
+FAILED tests/test_noop_gate.py::test_the_noop_finding_does_not_fail_ergane_init_check
+FAILED tests/test_noop_gate.py::test_a_real_failing_check_still_fails_the_run_alongside_a_warning
+12 failed, 14 passed in 0.44s
+
+### MUTATION 4 — the gate placeholder is put back in _PLACEHOLDERS
+FAILED tests/test_noop_gate.py::test_a_freshly_initialised_manifest_does_not_declare_true_as_a_gate
+FAILED tests/test_noop_gate.py::test_a_freshly_initialised_manifest_is_reported_with_no_noop_finding
+FAILED tests/test_noop_gate.py::test_the_placeholders_table_holds_no_value_that_could_become_a_live_gate
+3 failed, 23 passed in 0.43s
+
+### CONTROL — every mutation reverted
+26 passed in 0.39s
+```
+
+Read against the four scenarios:
+
+- **Mutation 1** (`_gate_check_finding` ignores the command it is handed) takes
+  out US3-S1, US3-S2 and US3-S4 together: with no no-op finding emitted there is
+  nothing to report and nothing to not-fail on.
+- **Mutation 2** (`Severity.ERROR` instead of `WARNING`) leaves the finding in
+  place and fails only the eight assertions about the *exit status* and the
+  `WARN` mark — which is exactly US3-S4 and FR-009, and it is the mutation that
+  proves the severity is load-bearing rather than decorative.
+- **Mutation 3** (only the empty string left in `_NOOP_GATE_COMMANDS`) fails the
+  `true` and `:` cells and leaves the empty-string cell green, which is what
+  makes the parametrisation over three forms mean three things.
+- **Mutation 4** (the `gates` placeholder put back) fails only the three FR-010
+  tests and touches nothing else, because the two halves of this story are
+  separable — and that is why the freshly-initialised manifest is asserted
+  against the detector rather than against a literal.
+
+Note what does *not* appear in any of these lists:
+`test_a_real_gate_command_reports_the_existing_pass_unchanged` and
+`test_a_real_gate_command_reports_the_pass_through_the_cli` are green in every
+mutation, because none of these edits could make a real command stop reporting
+its pass. The mutation that would break them is the over-correction plan trap 2
+names — flag every gate — and that is the failure this file's REAL_COMMANDS
+parametrisation exists to catch.
+
