@@ -130,13 +130,19 @@ ergane worker install
 
 ## Joining a repository
 
-Join a git repository so Ergane can dispatch against it. Run this from the
-repository root — `ergane init` resolves upward to the nearest enclosing
-repository, which is not always the one you meant.
+Join a git repository so Ergane can dispatch against it. `ergane init` resolves
+upward to the nearest enclosing repository, which is not always the one you
+meant — so when the directory you run it in is not itself the repository root,
+it names the root it resolved and asks before enrolling anything. Answer `y` to
+proceed, or name the repository outright:
 
 ```bash
 ergane init
+ergane init <repository-root>
 ```
+
+Under `--non-interactive` there is nobody to ask, so a resolved root that
+differs from the invocation directory is refused rather than assumed.
 
 Judge a repository's readiness without writing anything:
 

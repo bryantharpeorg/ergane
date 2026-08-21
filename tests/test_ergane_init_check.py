@@ -297,6 +297,9 @@ def test_a_scaffolded_registered_wired_repo_passes_every_finding(tmp_path: Path,
         "factory_yaml",
         "landing_title",
         "gate_check:test",
+        # 064/US2 added `resolved_root`: which repository the report is about,
+        # said in a finding rather than only in the header line.
+        "resolved_root",
         "runtime_root_ignored",
         "registry_entry",
         "landing_branch",
@@ -490,6 +493,9 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
     assert init_findings[: len(dispatch_findings)] == dispatch_findings
     # And the init door adds exactly its own checks on top.
     assert [check for check, _, _ in init_findings[len(dispatch_findings) :]] == [
+        # 064/US2: the repository the rest of these findings are about is named
+        # first, so an operator reads *which* repo before reading its verdicts.
+        "resolved_root",
         "runtime_root_ignored",
         "registry_entry",
         "landing_branch",
@@ -502,6 +508,7 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
 
 
 GUARDED_SLUGS = {
+    "resolved_root",
     "runtime_root_ignored",
     "runtime_root_migration",
     "registry_entry",

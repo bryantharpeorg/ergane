@@ -86,6 +86,10 @@ class InitFacts:
 
     #: Absolute path of the repository judged; quoted in every remedy.
     repo_root: str
+    #: 064 US2.  The directory the operator pointed `ergane init` at, when a
+    #: caller knew one.  Empty means "not stated" — a programmatic caller named
+    #: the repository outright, so nothing was resolved upwards to report.
+    invocation_dir: str = ""
     #: The root this repo has — `.ergane`, or `.factory` when unmigrated.
     runtime_root: str = ".ergane"
     runtime_root_is_legacy: bool = False
@@ -300,12 +304,41 @@ def evaluate_init_facts(init_facts: "InitFacts | None") -> tuple[Finding, ...]:
         return ()
 
     findings: list[Finding] = []
+    _resolved_root_finding(findings, init_facts)
     _runtime_root_findings(findings, init_facts)
     _registry_finding(findings, init_facts)
     _landing_branch_finding(findings, init_facts)
     _control_plane_finding(findings, init_facts)
     _roadmap_schedule_finding(findings, init_facts)
     return tuple(findings)
+
+
+def _resolved_root_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """Which repository this report is about — first, and as a finding (064 FR-008).
+
+    The near-miss that produced 064 was caught from a header line the reporter
+    happened to read, and a header is not the surface an operator scans: the
+    findings are.  So the root is named where they are looking, above every
+    finding that goes on to say something about it, and it says so whether or
+    not anything was resolved upwards — a line that appeared only in the
+    ambiguous case is one nobody learns to look for.
+
+    It never fails.  Resolving upwards is not a defect in the repository — the
+    operator was asked and consented before init wrote anything (FR-005) — and
+    the exit code of `--check` is a claim about readiness, which a directory the
+    command was typed in cannot change.
+    """
+    if facts.invocation_dir and facts.invocation_dir != facts.repo_root:
+        findings.append(Finding(
+            "resolved_root", True,
+            f"this report is about {facts.repo_root}, resolved by walking up from "
+            f"{facts.invocation_dir}, which is not a repository root — run "
+            f"`ergane init {facts.repo_root}` to name it outright",
+        ))
+        return
+    findings.append(
+        Finding("resolved_root", True, f"this report is about {facts.repo_root}")
+    )
 
 
 def _runtime_root_findings(findings: list[Finding], facts: "InitFacts") -> None:
