@@ -38,10 +38,13 @@ from factory.doctor.store import (
 )
 from factory.doctor.triage import (
     DEFAULT_COLD_DAYS,
+    apply_triage,
     classify,
     git_landing_dates,
     read_spec_records,
     render,
+    render_applied,
+    to_applied_document,
     to_document,
 )
 from factory.roadmap.models import _split_frontmatter
@@ -328,10 +331,19 @@ def add_findings_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         help=f"a finding seen once and untouched for longer is cold (default: {DEFAULT_COLD_DAYS})",
     )
     triage_parser.add_argument("--json", action="store_true", help="emit JSON")
-    # Deliberately *not* `_with_store` (073 FR-013): that wrapper runs
-    # `_resolve_promoted_findings` before every verb, which writes. Wrapping
-    # triage in it would make "the report changes nothing" false on any store
-    # where a promoted spec has just landed — and the failure would be
+    triage_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="enact the classification: close what a landed spec declared fixed, "
+        "fold the fragmented classes, annotate the rest",
+    )
+    # Deliberately *not* `_with_store` (073 FR-013), and still not with
+    # `--apply` (073 FR-019). That wrapper runs `_resolve_promoted_findings`
+    # before every verb, which writes. Without `--apply` it would make "the
+    # report changes nothing" false on any store where a promoted spec has just
+    # landed. With `--apply` the connection is writable anyway, which makes the
+    # wrapper look harmless again — and it is not: the sweep closes promoted
+    # rows triage never classified and the report never named. Both failures are
     # invisible, because the write is correct behaviour for a different verb.
     triage_parser.set_defaults(run=findings_triage_command)
 
@@ -380,12 +392,18 @@ def findings_list_command(args: argparse.Namespace, conn: sqlite3.Connection) ->
 
 
 def findings_triage_command(args: argparse.Namespace) -> int:
-    """Classify every open and regressed finding, and write nothing (073 US2).
+    """Classify every open and regressed finding; enact it only under `--apply`.
 
-    Its own runner, and a read-only connection: FR-013 says triage without
-    `--apply` must not write to the store *and* must not run any sweep that
-    would, so the two things that would write — `_with_store`'s promoted-finding
-    sweep and `connect`'s bootstrap commit — are both out of the path.
+    Its own runner, and — without `--apply` — a read-only connection: FR-013
+    says triage must not write to the store *and* must not run any sweep that
+    would, so the two things that would write, `_with_store`'s promoted-finding
+    sweep and `connect`'s bootstrap commit, are both out of the path.
+
+    `--apply` needs a writable connection and so opens `connect`, but it still
+    does not take the wrapper: it writes only to rows the classification put in
+    a class, which is FR-019 (see `factory/doctor/triage.py`'s three write-policy
+    sets). The classification is computed identically either way and reported
+    first, so what the pass did can be read against what it saw.
 
     Spec state and `fixes:` are read from `--specs-root` in the operator's
     working tree, which is where every other spec reader in this repository
@@ -396,29 +414,36 @@ def findings_triage_command(args: argparse.Namespace) -> int:
         raise OperatorError(f"--cold-days must not be negative, got {cold_days}")
 
     path = _store_path(args)
+    opener = connect if args.apply else connect_readonly
     try:
-        conn = connect_readonly(path)
+        conn = opener(path)
     except (FileNotFoundError, sqlite3.Error) as exc:
         raise OperatorError(f"cannot read the findings store: {exc}") from exc
+
+    specs_root = Path(args.specs_root)
     try:
-        findings = list_findings(conn)
+        result = classify(
+            list_findings(conn),
+            read_spec_records(specs_root),
+            landing_date_for=git_landing_dates(specs_root),
+            now=datetime.now(timezone.utc),
+            specs_root=str(specs_root),
+            cold_days=cold_days,
+        )
+        applied = apply_triage(conn, result, now=_utcnow()) if args.apply else None
     finally:
         conn.close()
 
-    specs_root = Path(args.specs_root)
-    result = classify(
-        findings,
-        read_spec_records(specs_root),
-        landing_date_for=git_landing_dates(specs_root),
-        now=datetime.now(timezone.utc),
-        specs_root=str(specs_root),
-        cold_days=cold_days,
-    )
-
     if args.json:
-        print(json.dumps(to_document(result), indent=2))
-    else:
-        print(render(result))
+        document = to_document(result)
+        if applied is not None:
+            document["applied"] = to_applied_document(applied)
+        print(json.dumps(document, indent=2))
+        return EXIT_OK
+
+    print(render(result))
+    if applied is not None:
+        print(render_applied(applied))
     return EXIT_OK
 
 

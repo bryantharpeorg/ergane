@@ -293,6 +293,65 @@ def resolve(
     return True
 
 
+#: Prefixes the one line `annotate` owns, and the only line it will replace.
+#: A marker rather than a diff of the prose because the operator's own notes and
+#: the sweep's annotation share one nullable column, and the sweep must be able
+#: to rewrite its sentence without touching a word a human wrote.
+ANNOTATION_MARKER = "[ergane findings triage]"
+
+
+def annotate(conn: sqlite3.Connection, key: str, *, annotation: str) -> bool:
+    """Write one triage annotation into a finding's `notes`, and nothing else.
+
+    `report()` is the obvious-looking door here and it is the wrong one: it
+    increments `occurrences`, advances `last_seen`, appends a `finding_events`
+    row, and flips a `resolved` row to `regressed` on the way past. Annotating a
+    two-hundred-row ledger through it would add two hundred phantom recurrences
+    to a ledger whose entire purpose is counting recurrence (073 FR-018).
+
+    So this touches exactly one column. Status, occurrences, `first_seen`,
+    `last_seen`, severity, refs, source and the event trail are all left as
+    found, and there is no event to append because an annotation is not an
+    observation — nothing was seen.
+
+    Idempotence is by **replacement, not by append**: any existing line starting
+    with `ANNOTATION_MARKER` is dropped before the new one is written, so a
+    second pass over an unchanged store rewrites the same bytes, and a pass with
+    a different `--cold-days` corrects the sentence instead of stacking a second
+    one under it. Notes a human wrote are kept verbatim, above the marker line.
+
+    Returns True when the row existed and its notes changed — so a caller can
+    tell "annotated" from "the annotation was already right" without re-reading,
+    and report the difference rather than claiming a write it did not make.
+    Returns False for an unknown key.
+    """
+    # Collapsed to one line because the marker is line-scoped: an annotation
+    # carrying a newline would leave an orphan the next pass could not find.
+    line = f"{ANNOTATION_MARKER} {' '.join(annotation.split())}"
+
+    with conn:
+        row = conn.execute(
+            "SELECT notes FROM findings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return False
+
+        existing = row[0] or ""
+        kept = [
+            text
+            for text in existing.splitlines()
+            if not text.startswith(ANNOTATION_MARKER)
+        ]
+        while kept and not kept[-1].strip():
+            kept.pop()
+        notes = "\n".join([*kept, "", line]) if kept else line
+        if notes == existing:
+            return False
+
+        conn.execute("UPDATE findings SET notes = ? WHERE key = ?", (notes, key))
+    return True
+
+
 def resolve_by_spec(
     conn: sqlite3.Connection,
     key: str,
