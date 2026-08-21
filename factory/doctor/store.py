@@ -95,6 +95,31 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(path: str | Path) -> sqlite3.Connection:
+    """Open an existing store for reading, on a connection that cannot write.
+
+    `connect` is the wrong door for a verb that must not change one byte: it
+    creates the file, applies the DDL and commits. Those are all no-ops on a
+    store that already exists, but "no-op" is a property of today's DDL rather
+    than a guarantee, and `ergane findings triage` without `--apply` has to be
+    able to state the guarantee (073 FR-013).
+
+    So the URI carries `mode=ro` — SQLite itself refuses the write — and
+    `query_only` is set as well, so a caller that tries anyway fails loudly here
+    instead of quietly succeeding somewhere else. A missing file raises rather
+    than being created: a store the operator has not got is a question, not an
+    empty ledger.
+    """
+    location = Path(path)
+    if not location.is_file():
+        raise FileNotFoundError(f"no findings store at {location}")
+
+    conn = sqlite3.connect(f"{location.resolve().as_uri()}?mode=ro", uri=True)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def _bootstrap_schema(conn: sqlite3.Connection) -> None:
     """Apply the DDL and stamp the version — idempotent across reconnects."""
     conn.executescript(_SCHEMA_DDL)
