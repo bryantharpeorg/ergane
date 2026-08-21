@@ -40,6 +40,12 @@ EXPECTED_PERSONAS = {
     # class on `implementer.context_window`). Adding a persona should be a
     # one-line edit here, never a red trunk.
     "closer",
+    # Added 2026-08-20 (operator): the same Opus rung reached over the
+    # subscription route instead of the gateway (070-US2). It arrived in
+    # `personas.yaml` at c9dea78 without the one-line edit this comment asks
+    # for, which is what made the two membership assertions below red on the
+    # buildout branch.
+    "opus-closer",
 }
 
 # Fields removed by D-021; budget enforcement returns with spec 004.

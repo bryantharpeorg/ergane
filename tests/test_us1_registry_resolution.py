@@ -340,4 +340,7 @@ EXPECTED_SHIPPED_PERSONAS = {
     "debugger",
     "researcher",
     "closer",
+    # Added 2026-08-20 (operator) at c9dea78: the subscription-routed Opus rung.
+    # Membership, not size — the registry is the operator's to extend.
+    "opus-closer",
 }
