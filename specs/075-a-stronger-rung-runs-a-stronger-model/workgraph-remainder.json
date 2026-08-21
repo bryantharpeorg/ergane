@@ -1,0 +1,23 @@
+{
+  "epic_id": "075-a-stronger-rung-runs-a-stronger-model",
+  "feature": "075-a-stronger-rung-runs-a-stronger-model",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
+  "nodes": [
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "opus-closer",
+      "spec_ref": "075-a-stronger-rung-runs-a-stronger-model:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-011",
+        "FR-012"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}

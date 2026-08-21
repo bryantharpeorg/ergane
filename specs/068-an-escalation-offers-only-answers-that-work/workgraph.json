@@ -1,0 +1,33 @@
+{
+  "epic_id": "068-an-escalation-offers-only-answers-that-work",
+  "feature": "068-an-escalation-offers-only-answers-that-work",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
+  "nodes": [
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "opus-closer",
+      "spec_ref": "068-an-escalation-offers-only-answers-that-work:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-006",
+        "FR-007",
+        "FR-008"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": [
+    {
+      "node_id": "us2",
+      "depends_on_merged": "us1",
+      "shared_files": [
+        "factory/workgraph/workflow.py"
+      ],
+      "reason": "inferred, not declared: US2's task slice and US1's both name `factory/workgraph/workflow.py`, and the spec declares no ordering between them. Raced, whichever lands second is rejected for the other's change, so US2 \u2014 the later-declared of the two \u2014 waits for US1 to merge. Declare `concurrent_with: [US1]` on US2 to run them together anyway (069-US2 FR-007)"
+    }
+  ]
+}

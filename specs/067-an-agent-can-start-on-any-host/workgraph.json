@@ -1,0 +1,24 @@
+{
+  "epic_id": "067-an-agent-can-start-on-any-host",
+  "feature": "067-an-agent-can-start-on-any-host",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "opus-closer",
+      "spec_ref": "067-an-agent-can-start-on-any-host:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002",
+        "FR-003",
+        "FR-004"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ]
+}

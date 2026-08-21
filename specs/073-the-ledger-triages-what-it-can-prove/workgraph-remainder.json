@@ -1,0 +1,60 @@
+{
+  "epic_id": "073-the-ledger-triages-what-it-can-prove",
+  "feature": "073-the-ledger-triages-what-it-can-prove",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
+  "nodes": [
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "opus-closer",
+      "spec_ref": "073-the-ledger-triages-what-it-can-prove:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-014",
+        "FR-015",
+        "FR-016",
+        "FR-017",
+        "FR-018",
+        "FR-019"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "opus-closer",
+      "spec_ref": "073-the-ledger-triages-what-it-can-prove:US4",
+      "requirement_keys": [
+        "US4",
+        "FR-020",
+        "FR-021",
+        "FR-022",
+        "FR-023"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us5",
+      "story_key": "US5",
+      "persona": "opus-closer",
+      "spec_ref": "073-the-ledger-triages-what-it-can-prove:US5",
+      "requirement_keys": [
+        "US5",
+        "FR-024",
+        "FR-025",
+        "FR-026"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us4"
+      ],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}
