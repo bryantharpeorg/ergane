@@ -268,6 +268,60 @@ def resolve(
     return True
 
 
+#: The line a triage annotation starts with, and the whole of what makes it
+#: replaceable. Everything from this marker to the end of `notes` belongs to the
+#: sweep; everything before it belongs to whoever wrote it. The marker is a
+#: string a probe would not emit by accident, because the alternative — matching
+#: on the annotation's own words — would let a re-classified row keep its old
+#: class's sentence forever.
+ANNOTATION_MARKER = "[triage]"
+
+
+def annotated_notes(existing: str | None, annotation: str) -> str:
+    """The notes a row would carry once `annotation` is its triage annotation.
+
+    Pure, and separate from the write, because idempotence (FR-018) is a
+    property of this function rather than of the database: the caller compares
+    the result with what is already stored and skips the `UPDATE` when they are
+    equal, so a repeated pass issues no write at all.
+    """
+    kept = (existing or "").split(ANNOTATION_MARKER)[0].rstrip()
+    stamped = f"{ANNOTATION_MARKER} {annotation}"
+    return f"{kept}\n\n{stamped}" if kept else stamped
+
+
+def annotate(conn: sqlite3.Connection, key: str, *, annotation: str) -> bool:
+    """Write one triage annotation into a finding's notes, and change nothing else.
+
+    `report()` is the wrong door for this and the reason is arithmetic: it
+    increments `occurrences`, advances `last_seen`, appends a `finding_events`
+    row, and flips a `resolved` row to `regressed` on the way past. Annotating a
+    two-hundred-row ledger through it would add two hundred phantom recurrences
+    to the one column the ledger exists to count (073 FR-018, plan trap 5). So
+    this touches exactly one column, appends no event, and leaves status where
+    it found it — a finding a human must still look at stays `open` (FR-017).
+
+    Returns True when the row existed and its notes changed; False for an
+    unknown key and for a repeated pass whose annotation is already there. The
+    second case issues no write, so a second `--apply` over an unchanged store
+    leaves the file alone rather than rewriting it with identical bytes.
+    """
+    with conn:
+        row = conn.execute(
+            "SELECT notes FROM findings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return False
+
+        current = row[0]
+        updated = annotated_notes(current, annotation)
+        if updated == current:
+            return False
+
+        conn.execute("UPDATE findings SET notes = ? WHERE key = ?", (updated, key))
+    return True
+
+
 def resolve_by_spec(
     conn: sqlite3.Connection,
     key: str,
