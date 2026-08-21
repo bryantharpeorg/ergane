@@ -21,6 +21,9 @@ design, because "exactly one class" is only well-defined once precedence is:
    flip uncommitted, and then no commit says so. An undated claim is not a
    proof, and the tempting fallbacks (file mtime, an `# ATTESTED landed …`
    comment, "assume it landed before today") each silently manufacture one.
+   Note the asymmetry with the prose scan below: that comment block is read as
+   *text a human wrote a key into*, never as a date, and a mention only ever
+   makes a candidate — the one class `--apply` may not act on.
 4. **fragmented** (FR-009) — two or more keys of three or more segments sharing
    their first two segments *and* one `source`. Decidable from the ledger's own
    keys without reading a single spec, which is why it is offered before the
@@ -130,10 +133,9 @@ class SpecRecord:
     """One spec's state, its declared `fixes:`, and its prose — from one read.
 
     `state` and `fixes` come from a single parse of one frontmatter block, and
-    `prose` is every `.md` in the spec directory with that block removed. The
-    frontmatter is excluded from `prose` deliberately: a `fixes:` entry is a
-    declaration (FR-005), and letting it also count as a prose mention (FR-008)
-    would put one finding in two classes.
+    `prose` is every `.md` in the spec directory — see `_prose` for why the
+    block itself is in there too, and why that cannot put one finding in two
+    classes.
 
     Shape is read leniently here and refused elsewhere: `ergane spec validate`
     is what rejects a `fixes:` that is not a list of strings, naming the spec.
@@ -247,14 +249,14 @@ def read_spec_records(specs_root: str | Path) -> list[SpecRecord]:
         spec_text = _read_text(spec_path)
         if spec_text is None:
             continue
-        block_text, body = _split_frontmatter(spec_text)
+        block_text, _body = _split_frontmatter(spec_text)
         state, fixes = _declaration(block_text)
         records.append(
             SpecRecord(
                 spec_dir=directory.name,
                 state=state,
                 fixes=fixes,
-                prose=_prose(directory, body),
+                prose=_prose(directory),
                 path=str(spec_path),
             )
         )
@@ -294,18 +296,26 @@ def _declaration(block_text: str | None) -> tuple[str | None, list[str]]:
     return state, fixes
 
 
-def _prose(directory: Path, spec_body: str) -> str:
-    """`spec.md`'s body plus every other `.md` in the spec directory.
+def _prose(directory: Path) -> str:
+    """Every `.md` in the spec directory, whole.
 
-    The plan and task documents are prose an author names findings in as often
-    as the spec itself, and FR-008's question is whether a *landed spec* names
-    the key at all. `spec.md`'s frontmatter is excluded: a `fixes:` entry is a
-    declaration, not a mention.
+    The plan and task documents name findings as often as the spec does, and
+    FR-008's question is only whether a *landed spec* writes the key down at
+    all. Frontmatter is included for the same reason: on the corpus this spec
+    was written against, two landed specs name a finding solely inside the
+    `# ATTESTED landed …` comment block their frontmatter carries, and dropping
+    those would under-report the naming specs FR-008 requires be listed in full.
+
+    Including the block cannot leak a declaration into the candidate class,
+    because the declared classes are offered first: a landed spec's own `fixes:`
+    entry is always in the declared index before the prose scan runs, so it can
+    never reach here. The one case that does arrive — a `fixes:` of a shape
+    `ergane spec validate` refuses — is correctly a candidate: a malformed
+    declaration is not a proof, but it is a mention worth a human's eye, and the
+    candidate class is the one `--apply` may never act on.
     """
-    parts = [spec_body]
+    parts: list[str] = []
     for path in sorted(directory.glob("*.md")):
-        if path.name == SPEC_NAME:
-            continue
         text = _read_text(path)
         if text is not None:
             parts.append(text)

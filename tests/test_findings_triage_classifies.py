@@ -427,6 +427,45 @@ def test_prose_naming_a_deeper_key_is_not_a_mention(
     assert run.keys_in("needs-human") == ["ops/leaks-a-key"]
 
 
+def test_a_key_named_only_in_a_frontmatter_comment_still_names_its_spec(
+    tmp_path: Path, triage: Callable[..., Run]
+) -> None:
+    """FR-008: *every* spec whose prose names it, including the attest block.
+
+    Measured on this repository's own corpus on 2026-08-21: two landed specs
+    name `interpreter/ci-failure-never-reaches-an-agent` solely inside the
+    `# ATTESTED landed …` comment block their frontmatter carries. A scan that
+    read the body only dropped both, and under-reported the naming specs FR-008
+    requires be listed in full.
+    """
+    specs_root = tmp_path / "specs"
+    directory = specs_root / "040-attested-with-a-note"
+    directory.mkdir(parents=True)
+    (directory / "spec.md").write_text(
+        "---\n"
+        "state: landed\n"
+        "# ATTESTED landed 2026-08-19. Bookkeeping only; the finding\n"
+        "#   ops/leaks-a-key  is regressed and stays open.\n"
+        "---\n"
+        "\nThe body names nothing.\n",
+        encoding="utf-8",
+    )
+    db = _store(tmp_path)
+    conn = connect(db)
+    try:
+        _seed(conn, "ops/leaks-a-key", seen_at=_ago(1))
+    finally:
+        conn.close()
+
+    run = triage(db, specs_root, "--json")
+    assert run.keys_in("candidate") == ["ops/leaks-a-key"]
+    assert run.entry("candidate", "ops/leaks-a-key")["specs"] == [
+        "040-attested-with-a-note"
+    ]
+    # And still a candidate, never fixed: the note says the opposite of fixed.
+    assert run.keys_in("fixed") == []
+
+
 def test_a_declared_key_is_never_also_a_candidate(
     tmp_path: Path, triage: Callable[..., Run]
 ) -> None:
