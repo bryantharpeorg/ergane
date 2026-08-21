@@ -109,10 +109,16 @@ ESCALATION_NOT_RECORDED = "ESCALATION_NOT_RECORDED"
 ESCALATION_TIMEOUT_S = 3600
 
 #: What the ladder offers when the dispatch does not narrow it (FR-008).
+#:
+#: 068-US2 added `KILL_EPIC` last on purpose — the buttons render in this order
+#: and it is the one press no other press undoes. Ending the node and ending the
+#: epic are two answers now, which is what the operator who pressed KILL four
+#: times and then terminated the workflow by hand was missing.
 DEFAULT_CHOICES = (
     EscalationChoice.RETRY,
     EscalationChoice.KILL,
     EscalationChoice.PAUSE_EPIC,
+    EscalationChoice.KILL_EPIC,
 )
 
 #: The activity error type for a question that could not be recorded (008-US1).

@@ -214,6 +214,19 @@ def test_a_store_written_before_this_story_migrates_in_place(db_path: Path) -> N
         assert old.history_summary == "a row written before this story existed"
         assert old.resolution is None
 
+        # 068-US2: the rebuilt table admits the fourth button and is still
+        # closed against what is not an answer. A store whose CHECK predates
+        # `KILL_EPIC` rejects the settling write, so this is what makes the
+        # button do anything at all.
+        migrated.execute(
+            "UPDATE escalations SET resolution = 'KILL_EPIC', "
+            "resolved_at = '2026-08-20T11:05:00Z' WHERE escalation_id = ?",
+            ("deadbeef0001",),
+        )
+        assert store.get_escalation(migrated, "deadbeef0001").resolution == "KILL_EPIC"
+        with pytest.raises(sqlite3.IntegrityError):
+            migrated.execute("UPDATE escalations SET resolution = 'KILL_FACTORY'")
+
         # And a new row round-trips its evidence in the migrated store.
         store.insert_escalation(migrated, an_escalation())
         fresh = store.get_escalation(migrated, "0123456789ab")
@@ -229,8 +242,8 @@ def test_the_schema_version_records_the_new_shape(db_path: Path) -> None:
     with closing(store.connect(db_path)) as conn:
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
 
-    # 6 since 023-US4 added `loop_digest` and `loop_summary`.
-    assert store.SCHEMA_VERSION == 6
+    # 7 since 068-US2 widened `escalations.resolution` to admit `KILL_EPIC`.
+    assert store.SCHEMA_VERSION == 7
     assert versions == [store.SCHEMA_VERSION]
 
 

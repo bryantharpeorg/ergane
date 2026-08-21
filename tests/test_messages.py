@@ -74,9 +74,12 @@ def make_record(**overrides: Any) -> EscalationRecord:
         "workflow_id": WORKFLOW_ID,
         "epic_id": EPIC_ID,
         "node_id": NODE_ID,
-        "choices": list(
-            (EscalationChoice.RETRY, EscalationChoice.KILL, EscalationChoice.PAUSE_EPIC)
-        ),
+        "choices": [  # 068-US2 (FR-008) added the fourth
+            EscalationChoice.RETRY,
+            EscalationChoice.KILL,
+            EscalationChoice.PAUSE_EPIC,
+            EscalationChoice.KILL_EPIC,
+        ],
         "history_summary": render_landing_history(make_landing()),
         "sent_at": "2026-08-06T10:11:00Z",
         "expires_at": "2026-08-06T11:11:00Z",
@@ -144,18 +147,20 @@ def test_history_names_the_failing_checks_on_a_checks_failed_line() -> None:
 # --- the landing escalation's buttons (FR-007) -------------------------------
 
 
-def test_landing_escalation_offers_exactly_retry_kill_pause() -> None:
+def test_landing_escalation_offers_exactly_retry_kill_pause_and_kill_epic() -> None:
+    """068-US2 added the fourth: ending the epic is its own button (FR-008)."""
     record = make_record()
 
     markup = escalation_keyboard(record)
 
     assert isinstance(markup, InlineKeyboardMarkup)
     buttons = [button for row in markup.inline_keyboard for button in row]
-    assert len(buttons) == 3
+    assert len(buttons) == 4
     assert [button.callback_data for button in buttons] == [
         callback_data(ESCALATION_ID, EscalationChoice.RETRY),
         callback_data(ESCALATION_ID, EscalationChoice.KILL),
         callback_data(ESCALATION_ID, EscalationChoice.PAUSE_EPIC),
+        callback_data(ESCALATION_ID, EscalationChoice.KILL_EPIC),
     ]
 
 

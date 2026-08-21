@@ -473,6 +473,7 @@ async def test_a_node_whose_siblings_land_forever_eventually_stops(
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
+        EscalationChoice.KILL_EPIC,
     ]
     # And it stopped at the bounds it was given: one free rebase, one charged
     # recovery, and no third of either.

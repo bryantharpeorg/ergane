@@ -1507,7 +1507,8 @@ EXPECTED_GUARDS: dict[str, dict[str, set[tuple[str, ...]]]] = {
         "_send_signal": {("RPCError",)},
         "_send_signal_with_args": {("RPCError",)},
         "_answer": {("RPCError",)},
-        "_reset_epic": {("RPCError",)},
+        # 068-US2: reset's precondition queries the epic, so it guards both.
+        "_reset_epic": {("RPCError",), ("QUERY_REFUSED",)},
         "_resolve": {("RPCError",)},
         "_start_epic": {("ConfigError",), ("WorkflowAlreadyStartedError",)},
     },

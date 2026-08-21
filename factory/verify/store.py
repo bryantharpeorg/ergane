@@ -112,7 +112,12 @@ from factory.verify.models import (
 #:
 #: 6 (023-US4): `verification_results.loop_digest` and `.loop_summary`. Additive
 #: text columns; pre-023 rows read as NULL, never backfilled.
-SCHEMA_VERSION = 6
+#:
+#: 7 (068-US2): `escalations.resolution` admits `KILL_EPIC`. The only migration
+#: here that is not additive — SQLite cannot alter a CHECK — so `_migrate`
+#: rebuilds the table. It has to run: a store whose constraint predates the
+#: button rejects the settling write and leaves the escalation pending.
+SCHEMA_VERSION = 7
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -186,7 +191,7 @@ CREATE TABLE IF NOT EXISTS escalations (
     delivered      INTEGER NOT NULL DEFAULT 0 CHECK (delivered IN (0, 1)),
     sent_at        TEXT NOT NULL,
     expires_at     TEXT NOT NULL,          -- sent_at + 1h
-    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED')),
+    resolution     TEXT CHECK (resolution IN ('RETRY', 'KILL', 'PAUSE_EPIC', 'KILL_EPIC', 'EXPIRED')),
     resolved_at    TEXT,
     resolved_via   TEXT CHECK (resolved_via IN ('BUTTON', 'TIMEOUT')),
     -- 041-US2: the failing merge-queue checks the escalation was raised over
@@ -335,6 +340,53 @@ def _bootstrap_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+#: The `resolution` constraint every store in existence carries, and 068-US2's
+#: widening of it. `_SCHEMA_DDL` has spelled these since 008 and SQLite records
+#: the creating text verbatim, so the migration rewrites the recorded DDL rather
+#: than restating the table: no second column list, nothing to drift.
+_OLD_RESOLUTIONS = "'RETRY', 'KILL', 'PAUSE_EPIC', 'EXPIRED'"
+_NEW_RESOLUTIONS = "'RETRY', 'KILL', 'PAUSE_EPIC', 'KILL_EPIC', 'EXPIRED'"
+
+
+def _escalations_ddl(conn: sqlite3.Connection) -> str | None:
+    """The text SQLite recorded when this store's `escalations` table was made."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='escalations'"
+    ).fetchone()
+    return None if row is None else (row[0] or "")
+
+
+def _widen_escalation_resolutions(conn: sqlite3.Connection) -> None:
+    """Rebuild `escalations` so `resolution` admits `KILL_EPIC` (068-US2).
+
+    `ALTER TABLE` cannot widen a CHECK, so: new table, rows copied, old dropped,
+    new renamed, indexes recreated. The new table is the old one's own recorded
+    DDL with the constraint rewritten, so nothing restates a column list — a
+    rebuild that guessed the shape would be the one migration that could
+    silently drop a column. A store whose DDL does not carry the old constraint
+    verbatim is left alone rather than guessed at.
+    """
+    recorded = _escalations_ddl(conn)
+    if not recorded or _OLD_RESOLUTIONS not in recorded:
+        return
+    rebuilt = recorded.replace(_OLD_RESOLUTIONS, _NEW_RESOLUTIONS)
+    # One replacement, and the table name is the first occurrence: no column is
+    # named `escalations`, so nothing else in the DDL can match.
+    rebuilt = rebuilt.replace("escalations", "escalations_v7", 1)
+    columns = ", ".join(
+        row[1] for row in conn.execute("PRAGMA table_info(escalations)")
+    )
+    conn.executescript(
+        f"{rebuilt};\n"
+        f"INSERT INTO escalations_v7 ({columns}) SELECT {columns} FROM escalations;\n"
+        "DROP TABLE escalations;\n"
+        "ALTER TABLE escalations_v7 RENAME TO escalations;\n"
+        "CREATE INDEX IF NOT EXISTS idx_esc_pending ON escalations (resolution)"
+        " WHERE resolution IS NULL;\n"
+        "CREATE INDEX IF NOT EXISTS idx_esc_node ON escalations (epic_id, node_id);"
+    )
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Bring a store written by an older ergane up to `SCHEMA_VERSION`.
 
@@ -356,6 +408,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
             "ALTER TABLE escalations ADD COLUMN "
             "check_evidence TEXT NOT NULL DEFAULT '[]'"
         )
+
+    recorded = _escalations_ddl(conn)
+    if recorded is not None and "KILL_EPIC" not in recorded:
+        # 068-US2, keyed off the recorded constraint rather than off the version
+        # number — a version is a claim and the schema is the fact. Run after
+        # the `check_evidence` migration above, so the copy has every column.
+        _widen_escalation_resolutions(conn)
 
     result_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(verification_results)")

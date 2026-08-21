@@ -57,7 +57,16 @@ from factory.activities.verify_activities import (
     DEFAULT_VERIFICATION_DB_PATH,
     VERIFICATION_DB_PATH_ENV,
 )
-from factory.cli.errors import EXIT_OK, EXIT_USER, EXIT_USAGE, OperatorError
+# `EXIT_TRANSPORT` hoisted: `_reset_epic` has named it since it was written
+# without importing it, so a non-NOT_FOUND RPC failure on `describe` raised
+# `NameError` instead of the operator error it meant to.
+from factory.cli.errors import (
+    EXIT_OK,
+    EXIT_TRANSPORT,
+    EXIT_USAGE,
+    EXIT_USER,
+    OperatorError,
+)
 from factory.env import (
     ERGANE_ROOT_ENV,
     ERGANE_VERIFICATION_DB_PATH_ENV,
@@ -102,6 +111,7 @@ from factory.activities.agent_activities import (
 )
 from factory.workgraph.worktree import resolve_factory_root
 from factory.workgraph.models import (
+    NodeState,
     WorkGraph,
     WorkGraphError,
     WorkNode,
@@ -959,6 +969,83 @@ def reset_command(args: argparse.Namespace) -> int:
     return asyncio.run(_reset_epic(resolve_reset_graph(args.epic_id, args.specs_root)))
 
 
+#: States in which something is actually being done — a key issued, an agent
+#: writing, gates running, a PR riding the queue — and so work `reset` must not
+#: archive out from under. `WAITING_OPERATOR`, `PENDING` and the terminals are
+#: absent on purpose: a parked question is a wait, and an undispatched node has
+#: nothing in flight to interrupt.
+_NODE_STATES_AT_WORK = frozenset(
+    {
+        NodeState.KEY_ISSUED,
+        NodeState.RUNNING,
+        NodeState.VERIFYING,
+        NodeState.PASSED,
+        NodeState.PR_OPEN,
+        NodeState.ENQUEUED,
+    }
+)
+
+
+def nodes_at_work(document: Mapping[str, Any]) -> tuple[str, ...]:
+    """Which of an epic's nodes are in flight, as opposed to waiting on a human.
+
+    A node parked on a page reads `VERIFYING`, exactly as one whose gates run
+    does, so `state` alone cannot tell work from waiting and `awaiting_operator`
+    is what does — the distinction 068 trap 7 insists on. Read off the query's
+    raw document, so an epic whose history predates the field still answers: no
+    field counts as working, the safe direction, because the other one archives
+    a worktree an agent is writing to.
+    """
+    nodes = document.get("nodes") or {}
+    return tuple(
+        node_id
+        for node_id, node in sorted(nodes.items())
+        if node.get("state") in _NODE_STATES_AT_WORK
+        and not node.get("awaiting_operator")
+    )
+
+
+def nodes_awaiting_operator(document: Mapping[str, Any]) -> tuple[str, ...]:
+    """Which of an epic's nodes are parked on a human — a page, or a question."""
+    nodes = document.get("nodes") or {}
+    return tuple(
+        node_id
+        for node_id, node in sorted(nodes.items())
+        if node.get("awaiting_operator")
+    )
+
+
+def reset_refusal(epic_id: str, document: Mapping[str, Any]) -> str | None:
+    """Why a *running* epic may not be reset, or `None` when it may (FR-007).
+
+    `reset` used to refuse every epic whose workflow was RUNNING, and a stalled
+    escalation is precisely what keeps one running. What replaces that is
+    narrower than "no node is working": a running epic is reset **only** when
+    somebody is being waited on *and* nothing is in flight behind them.
+
+    Without the first half, an epic that started and has not yet dispatched (all
+    `PENDING`, or nothing reported) would pass, and reset would archive the
+    worktrees it is about to prepare — `PENDING` is not itself work, so the
+    guard against that race is the *presence of a waiter*. Without the second,
+    US2-S4's control is gone: an epic paging about one node while another builds
+    would be reset out from under the live one. The fall-through message is the
+    one this verb has always printed, so a refusal reads the same as before.
+    """
+    refusal = (
+        f"epic '{epic_id}' is running (workflow id {workflow_id(epic_id)}); "
+        "refusing to reset "
+    )
+    working = nodes_at_work(document)
+    if working:
+        return refusal + (
+            f"while {', '.join(working)} "
+            f"{'is' if len(working) == 1 else 'are'} still working"
+        )
+    if not nodes_awaiting_operator(document):
+        return refusal + "while the workflow is active"
+    return None
+
+
 @dataclass(frozen=True)
 class NoForge:
     """Why a reset resolved no forge, and whether that leaves work undone.
@@ -1057,13 +1144,26 @@ async def _reset_epic(graph: WorkGraph, *, forge: Any | None = None) -> int:
                 f"cannot verify epic '{graph.epic_id}': {error}", EXIT_TRANSPORT
             ) from error
 
+    waiting: tuple[str, ...] = ()
     if described is not None and described.status is not None:
         if described.status.name == "RUNNING":
-            raise OperatorError(
-                f"epic '{graph.epic_id}' is running "
-                f"(workflow id {workflow_id(graph.epic_id)}); "
-                "refusing to reset while the workflow is active"
-            )
+            try:
+                document = await handle.query("epic_status")
+            except QUERY_REFUSED:
+                document = None
+            # A query refused, or answered unreadably, is never read as
+            # "nothing is running": the alternative is archiving the worktree of
+            # an epic that could not be asked what it was doing.
+            if not isinstance(document, Mapping):
+                raise OperatorError(
+                    f"epic '{graph.epic_id}' is running (workflow id "
+                    f"{workflow_id(graph.epic_id)}) and would not say what it "
+                    "is doing; refusing to reset while the workflow is active"
+                )
+            refusal = reset_refusal(graph.epic_id, document)
+            if refusal is not None:
+                raise OperatorError(refusal)
+            waiting = nodes_awaiting_operator(document)
 
     factory_root = resolve_env_path(
         ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, DEFAULT_FACTORY_ROOT_PATH
@@ -1086,7 +1186,20 @@ async def _reset_epic(graph: WorkGraph, *, forge: Any | None = None) -> int:
         ):
             print(f"  {line}")
 
+    if waiting:
+        # Archived, and the epic is still alive holding an unanswered page. Name
+        # the verb that ends it rather than ending it here: FR-008 makes that
+        # the operator's own choice, and a reset that quietly killed would press
+        # the button for them.
+        print(
+            f"note: epic '{graph.epic_id}' is still running, waiting on an "
+            f"operator for {', '.join(waiting)}; "
+            f"end it with `ergane build kill {graph.epic_id}`",
+            file=sys.stderr,
+        )
+
     return EXIT_OK
+
 
 
 def salvage_command(args: argparse.Namespace) -> int:

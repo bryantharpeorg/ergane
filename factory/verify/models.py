@@ -127,11 +127,20 @@ class EscalationChoice(StrEnum):
 
     Values stay short because they ride inside `callback_data`
     (`esc:<12-hex>:<choice>`), which Telegram caps at 64 bytes.
+
+    Three of the four end the node — everything that is not `RETRY` does, see
+    `ladder._ends_the_node` — and they differ in what they do to the *epic*,
+    which is the distinction 068 FR-008 exists to make. `KILL` leaves the epic
+    running its other nodes; `KILL_EPIC` ends it, which before now meant
+    pressing `KILL` on every node's page and reaching for `temporal workflow
+    terminate` anyway; `PAUSE_EPIC` is neither, parking the epic resumably with
+    its undispatched nodes still ahead of it (spec § Edge Cases).
     """
 
     RETRY = "RETRY"
     KILL = "KILL"
     PAUSE_EPIC = "PAUSE_EPIC"
+    KILL_EPIC = "KILL_EPIC"
 
 
 # Criteria entities (parser output — pure, snapshot-able) --------------------
