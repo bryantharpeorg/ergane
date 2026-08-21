@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-20 (11:25 PM CT). US1 eb23d9876e3c (#255),
+# US2 c7aacb560cc1 (#256), US3 ccc2a8c02ccb (#257) — all three observed on
+# ergane-buildout by `ergane spec landed --default-branch ergane-buildout`,
+# all three on the first attempt, all three on opus-closer (subscription).
+#
 # Restored draft -> ready 2026-08-20 ~9:45 PM CT by an operator session at
 # Bryan's instruction: the P0 set this was held behind (067-071) has landed and
 # been attested, so the hold condition below is discharged. Pre-dispatch review
