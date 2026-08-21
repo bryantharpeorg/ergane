@@ -25,10 +25,14 @@
   "A LiteLLM gateway, backed by a database" subsection), "Installing Ergane"
   (with "The difference that will bite you"), and "Leaving". The six statements
   US2 must guard all live under the first two.
-- `factory/controlplane/verify.py:296` — `LLMProbe.gather`'s alias derivation.
+- `factory/controlplane/verify.py:311` — `LLMProbe.gather`, whose alias
+  derivation is at `:329-337` (`alias_to_personas`). **Re-verified 2026-08-21
+  against `origin/ergane-buildout`: this function moved roughly fifteen lines
+  down when 061-US1 landed, and the anchor this plan carried before that was
+  stale.**
   FR-010 requires `--requirements` to use the same one. Note 061/US1 also edits
   this function; if 061 has landed, re-read it before extracting the derivation.
-- `factory/cli/install.py:118` — `add_install_arguments`, where
+- `factory/cli/install.py:217` — `add_install_arguments`, where
   `--requirements` goes.
 
 ## Traps

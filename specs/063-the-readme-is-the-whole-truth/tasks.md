@@ -110,9 +110,9 @@ lose silently.
 ### Implementation for this story
 
 - [ ] T023 [US3] (FR-009, FR-010) Extract the alias derivation from `LLMProbe.gather`
-      (`factory/controlplane/verify.py:296`) into a shared function and add
+      (`factory/controlplane/verify.py:311`, alias derivation at `:329-337`) into a shared function and add
       `--requirements` to `add_install_arguments`
-      (`factory/cli/install.py:118`). If 061 has landed, re-read `gather` first —
+      (`factory/cli/install.py:217`). If 061 has landed, re-read `gather` first —
       061/US1 changes it.
 - [ ] T024 [US3] (FR-009, US3-S5) Name `ergane install --requirements` in `README.md`
       where the gateway's alias requirement is stated, so the list stays live

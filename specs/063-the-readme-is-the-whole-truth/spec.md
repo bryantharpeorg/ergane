@@ -1,5 +1,21 @@
 ---
-state: draft
+state: ready
+# RELEASED draft -> ready 2026-08-21 8:25 AM CT at the operator's instruction,
+# as part of the pre-release batch with 078, 079 and 081. The hold below is
+# answered: 067, 068 and 069 all landed and were attested on 2026-08-20.
+#
+# The pre-dispatch review found TWO DEAD ANCHORS in the plan and repaired them.
+# `LLMProbe.gather` was cited at `factory/controlplane/verify.py:296` — it moved
+# to `:311` when 061-US1 landed — and `add_install_arguments` was cited at
+# `factory/cli/install.py:118`, which is now `:217`. Both would have sent the
+# implementer into the middle of an unrelated docstring. All 11 anchors now
+# resolve against `origin/ergane-buildout` at 669006d.
+#
+# The spec's own AMENDED section below is still accurate: the two `nergane`
+# typos it was drafted from are gone, US1 must be proven against a fixture page,
+# and the sweep hole at `tests/page_holds_true.py:54` is still exactly as
+# described — verified 2026-08-21.
+#
 # HELD ready -> draft 2026-08-19 5:15 PM CT at the operator's instruction, to let
 # the P0 specs drafted from the build-session feedback (067, 068, 069) reach the
 # floor first. This is a QUEUE-ORDER edit and nothing else: the spec is unchanged
