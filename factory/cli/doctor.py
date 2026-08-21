@@ -28,6 +28,7 @@ import factory.doctor.probes as _probes
 from factory.doctor.scaffold import scaffold_spec
 from factory.doctor.store import (
     connect,
+    connect_readonly,
     get_finding,
     list_findings,
     promote,
@@ -35,7 +36,16 @@ from factory.doctor.store import (
     resolve,
     resolve_by_spec,
 )
+from factory.doctor.triage import (
+    DEFAULT_COLD_DAYS,
+    classify,
+    git_landing_dates,
+    read_spec_records,
+    render,
+    to_document,
+)
 from factory.roadmap.models import _split_frontmatter
+from factory.workgraph.cli import DEFAULT_SPECS_ROOT
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.worktree import resolve_factory_root
 import factory.doctor.cli as _doctor_cli
@@ -301,6 +311,30 @@ def add_findings_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     promote_parser.set_defaults(run=_with_store(findings_promote_command))
 
+    triage_parser = verbs.add_parser(
+        "triage",
+        help="classify open findings into what the ledger can prove",
+        parents=[db_parent],
+    )
+    triage_parser.add_argument(
+        "--specs-root",
+        default=DEFAULT_SPECS_ROOT,
+        help=f"the specs corpus to read state and 'fixes:' from (default: {DEFAULT_SPECS_ROOT})",
+    )
+    triage_parser.add_argument(
+        "--cold-days",
+        type=int,
+        default=DEFAULT_COLD_DAYS,
+        help=f"a finding seen once and untouched for longer is cold (default: {DEFAULT_COLD_DAYS})",
+    )
+    triage_parser.add_argument("--json", action="store_true", help="emit JSON")
+    # Deliberately *not* `_with_store` (073 FR-013): that wrapper runs
+    # `_resolve_promoted_findings` before every verb, which writes. Wrapping
+    # triage in it would make "the report changes nothing" false on any store
+    # where a promoted spec has just landed — and the failure would be
+    # invisible, because the write is correct behaviour for a different verb.
+    triage_parser.set_defaults(run=findings_triage_command)
+
     return parser
 
 
@@ -342,6 +376,49 @@ def findings_list_command(args: argparse.Namespace, conn: sqlite3.Connection) ->
             f"{finding.key:<45} {finding.severity.value:<8} "
             f"{finding.status.value:<10} {finding.occurrences:>5} {age:<6}"
         )
+    return EXIT_OK
+
+
+def findings_triage_command(args: argparse.Namespace) -> int:
+    """Classify every open and regressed finding, and write nothing (073 US2).
+
+    Its own runner, and a read-only connection: FR-013 says triage without
+    `--apply` must not write to the store *and* must not run any sweep that
+    would, so the two things that would write — `_with_store`'s promoted-finding
+    sweep and `connect`'s bootstrap commit — are both out of the path.
+
+    Spec state and `fixes:` are read from `--specs-root` in the operator's
+    working tree, which is where every other spec reader in this repository
+    reads them, and the report says so.
+    """
+    cold_days: int = args.cold_days
+    if cold_days < 0:
+        raise OperatorError(f"--cold-days must not be negative, got {cold_days}")
+
+    path = _store_path(args)
+    try:
+        conn = connect_readonly(path)
+    except (FileNotFoundError, sqlite3.Error) as exc:
+        raise OperatorError(f"cannot read the findings store: {exc}") from exc
+    try:
+        findings = list_findings(conn)
+    finally:
+        conn.close()
+
+    specs_root = Path(args.specs_root)
+    result = classify(
+        findings,
+        read_spec_records(specs_root),
+        landing_date_for=git_landing_dates(specs_root),
+        now=datetime.now(timezone.utc),
+        specs_root=str(specs_root),
+        cold_days=cold_days,
+    )
+
+    if args.json:
+        print(json.dumps(to_document(result), indent=2))
+    else:
+        print(render(result))
     return EXIT_OK
 
 
