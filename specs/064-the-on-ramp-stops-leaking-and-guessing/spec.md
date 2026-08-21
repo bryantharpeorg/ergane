@@ -1,5 +1,16 @@
 ---
-state: draft
+state: ready
+# Restored draft -> ready 2026-08-20 ~9:45 PM CT by an operator session at
+# Bryan's instruction: the P0 set this was held behind (067-071) has landed and
+# been attested, so the hold condition below is discharged. Pre-dispatch review
+# done the same evening: `factory/cli/init.py` anchors refreshed (resolve_repo_root
+# moved :165 -> :185, the worktree docstring :172 -> :192, and the `--check`
+# report site is `run_check` at :1157, not :478), and the plan's US1 guidance
+# corrected — the Telegram httpx client is constructed inside python-telegram-bot,
+# not in factory code (see plan trap 12). The `revoke_key` duplicate was
+# re-verified still at :246/:339. Stories routed to opus-closer per the standing
+# pin-the-backlog-to-Opus-5 instruction.
+#
 # HELD ready -> draft 2026-08-19 5:15 PM CT at the operator's instruction, to let
 # the P0 specs drafted from the build-session feedback (067, 068, 069) reach the
 # floor first. A QUEUE-ORDER edit only; the spec is unchanged and still correct.
@@ -90,7 +101,7 @@ defeats the design's stated goal completely.
 
 ## US2: init guesses which repository you meant
 
-`resolve_repo_root` (`factory/cli/init.py:165`) resolves through `git rev-parse
+`resolve_repo_root` (`factory/cli/init.py:185`) resolves through `git rev-parse
 --show-toplevel`. Run from a directory that is not itself a repository, it walks
 upward to the nearest ancestor that is one.
 
@@ -226,7 +237,7 @@ delegates.
 - **Third-party libraries logging the same URL.** Redaction attached to the
   client covers more than a logger level does; prefer it where both are possible.
 - **A repository root resolved through a worktree.** `resolve_repo_root` already
-  handles the `--git-common-dir` case (`factory/cli/init.py:172`); confirmation
+  handles the `--git-common-dir` case (`factory/cli/init.py:192`); confirmation
   must not fire spuriously for a legitimate worktree invocation.
 - **A bare `git init` repository with no commits.** Already handled by 051's
   work; this story must not regress it.
@@ -259,12 +270,15 @@ delegates.
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-003, FR-004]
+  persona: opus-closer
 US2:
   depends_on: []
   implements: [FR-005, FR-006, FR-007, FR-008]
+  persona: opus-closer
 US3:
   depends_on: []
   implements: [FR-009, FR-010]
+  persona: opus-closer
 ```
 
 No edges, in either direction. This is the most parallelisable spec in the

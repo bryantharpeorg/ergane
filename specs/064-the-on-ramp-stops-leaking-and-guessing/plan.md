@@ -7,17 +7,24 @@
 - `factory/supervision/units.py:425` — `_wrapper_text`, whose docstring states
   the design goal US1 restores. Read it before writing anything; it is the
   clearest statement in the tree of what this story protects.
-- `factory/notify/adapter.py`, `factory/notify/service.py`,
-  `factory/notify/messages.py` — the escalation adapters. Find where the httpx
-  client is constructed; that is where a redacting event hook attaches.
-- `factory/notify/webhook.py` — the second adapter, covered by FR-004.
+- `factory/notify/service.py:180` — `open_bot`, the seam every Telegram send
+  goes through. It builds `telegram.Bot(token)` from python-telegram-bot, and
+  **that library constructs the httpx client internally** — no factory code in
+  `factory/notify/` constructs an httpx client for Telegram (verified by grep;
+  see trap 12). The redaction must reach the client PTB builds: pass `Bot` a
+  custom `request=` object (subclass `telegram.request.HTTPXRequest` and add the
+  redacting hook where it builds its `AsyncClient`), or use a mechanism that
+  covers library-internal clients without relying on caller logging config.
+- `factory/notify/webhook.py:138-140` — the second adapter, covered by FR-004.
+  This one *does* construct its own `httpx.AsyncClient`, so the hook attaches
+  directly there.
 - The worker and operator-bridge entry points — both need FR-003. Find them
   before deciding the mechanism; if they share a startup path, attach there.
-- `factory/cli/init.py:165` — `resolve_repo_root`, and `:172` where its docstring
+- `factory/cli/init.py:185` — `resolve_repo_root`, and `:192` where its docstring
   already documents worktree handling via `--git-common-dir`. US2 must not fire a
   confirmation for a legitimate worktree invocation.
-- `factory/cli/init.py:478` — the `--check` call site, where FR-008's finding
-  attaches.
+- `factory/cli/init.py:1157` — `run_check`, the `--check` report path where
+  FR-008's finding attaches (dispatched from the `check` short-circuit at :577).
 - `factory/usage/litellm_client.py:246` and `:339` — the two `revoke_key`
   definitions; `:255` is `revoke_key_by_tokens`, the delegation target.
 
@@ -78,6 +85,16 @@ send occurred, so the absence is meaningful (trap 2).
 modules: US1 in `factory/notify/`, US2 in `factory/cli/init.py`, US3 in
 `factory/usage/litellm_client.py`. Declare no edges between them; they can run in
 parallel.
+
+**12. The Telegram httpx client is not yours to construct.** The leak's log line
+says `INFO:httpx:` but no factory module builds that client — python-telegram-bot
+does, inside `telegram.request.HTTPXRequest`, reached through `open_bot`
+(`factory/notify/service.py:180`). Searching `factory/notify/` for an
+`httpx.AsyncClient(...)` call to hook will find only the webhook's. For Telegram
+the hook must ride in through the `request=` object handed to `Bot`, or the
+mechanism must work on clients you never constructed. A fix that only patches
+clients built in factory code fixes the webhook and leaves the actual reported
+leak in place.
 
 ## Sizing
 

@@ -1,13 +1,13 @@
 {
   "epic_id": "064-the-on-ramp-stops-leaking-and-guessing",
   "feature": "064-the-on-ramp-stops-leaking-and-guessing",
-  "specs_root": "specs",
-  "target_repo": "/home/admin/code/ergane",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
   "nodes": [
     {
       "id": "us1",
       "story_key": "US1",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "064-the-on-ramp-stops-leaking-and-guessing:US1",
       "requirement_keys": [
         "US1",
@@ -23,7 +23,7 @@
     {
       "id": "us2",
       "story_key": "US2",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "064-the-on-ramp-stops-leaking-and-guessing:US2",
       "requirement_keys": [
         "US2",
@@ -39,7 +39,7 @@
     {
       "id": "us3",
       "story_key": "US3",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "064-the-on-ramp-stops-leaking-and-guessing:US3",
       "requirement_keys": [
         "US3",
@@ -50,5 +50,6 @@
       "depends_on_merged": [],
       "timeout_override_s": null
     }
-  ]
+  ],
+  "inferred_edges": []
 }
