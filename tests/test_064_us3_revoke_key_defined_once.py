@@ -114,10 +114,10 @@ def test_revoke_key_is_defined_exactly_once_in_the_class_body() -> None:
         and statement.name == "revoke_key"
     ]
 
-    assert [statement.lineno for statement in definitions] and len(definitions) == 1, (
+    lines = [statement.lineno for statement in definitions]
+    assert len(definitions) == 1, (
         f"revoke_key is defined {len(definitions)} times in LiteLLMClient "
-        f"(lines {[statement.lineno for statement in definitions]}); "
-        "the last one wins and the others are dead source"
+        f"(lines {lines}); the last one wins and the others are dead source"
     )
 
 
