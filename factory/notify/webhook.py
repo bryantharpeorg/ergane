@@ -36,6 +36,7 @@ from factory.notify.adapter import (
     RenderedMessage,
     register_adapter,
 )
+from factory.notify.redact import install_redaction, register_url_secret
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,11 @@ class WebhookAdapter:
 
     def __init__(self, *, post: Poster | None = None) -> None:
         self._post = post or _post_json
+        # The same protection the reference transport gets, at the same seam
+        # (064-US1, FR-004). A secret in the URL is an ordinary webhook
+        # configuration — Slack, Discord and most incoming hooks are exactly
+        # that — and httpx logs the whole URL at INFO.
+        install_redaction()
 
     async def deliver(
         self, message: RenderedMessage, correlation_id: str
@@ -82,6 +88,12 @@ class WebhookAdapter:
                 WEBHOOK_URL_ENV,
             )
             return DeliveryReceipt(delivered=False)
+
+        # Everything after the origin is treated as the credential and removed
+        # from the journal; the origin stays, so an operator can still read
+        # *where* the escalation went and whether it landed (FR-002). Done here
+        # rather than in `_post_json` so a substituted `post` is covered too.
+        register_url_secret(endpoint)
 
         body = {
             "correlation_id": correlation_id,
@@ -134,9 +146,17 @@ class WebhookAdapter:
 
 
 async def _post_json(endpoint: str, body: dict[str, Any]) -> int:
-    """One POST and its status — the only socket in this file."""
+    """One POST and its status — the only socket in this file.
+
+    The client is factory-built here, unlike Telegram's, but the redaction is
+    the same mechanism rather than an event hook on this object: httpx emits its
+    request line itself, so a hook would run after the URL was already in the
+    journal, and a second mechanism would be a second thing to remember.
+    """
     import httpx
 
+    install_redaction()
+    register_url_secret(endpoint)
     async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT_S) as http:
         response = await http.post(endpoint, json=body)
     return int(response.status_code)
