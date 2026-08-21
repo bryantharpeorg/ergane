@@ -12,21 +12,33 @@ installed `gh` binary, with no token, no network, and no repository. `gh`
 rejects unknown flags during argument parsing, before it authenticates, so the
 check is fast and cheap. The command surface is enumerated from the class, not
 hand-listed, so a new method is covered automatically.
+
+078-US1 fixes what that check could not see. It classified a refusal by matching
+three phrases in stderr — "unknown flag", "unknown command", "usage:" — which is
+three shapes out of an open set. `gh` refuses an unknown `--json` field with
+`Unknown JSON field: "baseRefOid"`, which matches none of the three, so the
+check watched a refusal and reported acceptance. The classification is now the
+process exit status (FR-001), with the authentication exit kept as acceptance
+(FR-002) so the check stays runnable with no token and no network, and the
+poller's `--json` field set is validated from the value the poller sends
+(FR-003) rather than from a copy.
 """
 
 from __future__ import annotations
 
+import functools
 import inspect
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 import pytest
 
-from factory.mergequeue.gh import GhClient
+from factory.mergequeue.gh import _VIEW_FIELDS, GhClient
 
 TARGET_CLONE = "/srv/target"
 
@@ -161,36 +173,188 @@ class _FakeCompleted:
         self.returncode = returncode
 
 
-def _gh_would_refuse(argv: Sequence[str]) -> str:
-    """Run `gh` with the argv and return a refusal message, or empty if accepted.
+#: `gh`'s exit status when it parsed the command and every flag and then found
+#: it had no credential to run them with. **This is acceptance, not refusal**
+#: (FR-002): reaching the authentication wall means `gh` had no complaint about
+#: the argv, which is the only thing this file checks. The check runs with no
+#: token in CI, so "tightening" this into a refusal denies every well-formed
+#: argv — a check that denies everything is exactly as useless as one that
+#: accepts everything, and it is the easier of the two mistakes to make here.
+_GH_EXIT_AUTH_REQUIRED = 4
 
-    The run uses no token, no network, and no repository. `gh` exits 4 when it
-    needs authentication, which is fine: that means the flags and command were
-    accepted. Exit 1 with "unknown flag", "unknown command", or a usage block
-    means the argv is malformed.
+#: The exit statuses that mean `gh` did not refuse the argv.
+_GH_ACCEPTING_EXITS = frozenset({0, _GH_EXIT_AUTH_REQUIRED})
+
+#: Commands `gh` runs *without* a credential, whose non-zero exit is their
+#: answer rather than a refusal of the argv. `gh auth status` is the only one
+#: `GhClient` issues: with no credential it exits 1 to say "not logged into any
+#: GitHub hosts", which is the command working, not the command being rejected.
+#: The exception is keyed on the exact command path and is paired with a parse
+#: probe below, so an unknown flag on `auth status` is still caught — without
+#: that pairing this entry would blind the check to a whole command.
+_GH_REPORTS_WITHOUT_CREDENTIALS = frozenset({("auth", "status")})
+
+
+@functools.lru_cache(maxsize=1)
+def _gh_sandbox() -> str:
+    """A directory with no git repository in it and no `gh` config under it.
+
+    `gh` reads a stored credential from its config dir, so unsetting `GH_TOKEN`
+    alone does not make a run credential-free on a host where the operator has
+    run `gh auth login`. Pointing `GH_CONFIG_DIR` at an empty directory does,
+    which is what makes the authentication exit deterministic and keeps the
+    check from touching the network on a logged-in host.
     """
+    return tempfile.mkdtemp(prefix="ergane-gh-argv-contract-")
+
+
+def _gh_env(**overrides: str) -> dict[str, str]:
+    """The environment every `gh` run in this file uses: no token, no config."""
     env = os.environ.copy()
-    env.update({"GH_TOKEN": "", "GIT_TERMINAL_PROMPT": "0"})
+    env.update(
+        {
+            "GH_TOKEN": "",
+            "GITHUB_TOKEN": "",
+            "GH_ENTERPRISE_TOKEN": "",
+            "GITHUB_ENTERPRISE_TOKEN": "",
+            "GH_CONFIG_DIR": os.path.join(_gh_sandbox(), "gh-config"),
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    env.update(overrides)
+    return env
+
+
+def _run_gh(
+    argv: Sequence[str], *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str] | None:
+    """Run `gh` with the argv in the sandbox, or `None` if it could not be run."""
     try:
-        completed = subprocess.run(
+        return subprocess.run(
             ["gh", *argv],
-            cwd="/tmp",
+            cwd=_gh_sandbox(),
             capture_output=True,
             text=True,
-            env=env,
+            env=env if env is not None else _gh_env(),
             timeout=10,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return f"could not run gh to validate {list(argv)!r}: {exc}"
+    except (OSError, subprocess.SubprocessError):
+        return None
 
-    stderr = (completed.stderr or completed.stdout or "").lower()
-    if (
-        "unknown flag" in stderr
-        or "unknown command" in stderr
-        or ("usage:" in stderr and completed.returncode != 0)
-    ):
-        return completed.stderr or completed.stdout or ""
-    return ""
+
+@functools.lru_cache(maxsize=1)
+def _gh_version() -> str:
+    """What `gh --version` reports, for a failure message that diagnoses itself.
+
+    A refused `--json` field is almost always a version gap rather than a typo,
+    and the version is the first thing the reader needs.
+    """
+    completed = _run_gh(["--version"])
+    if completed is None or completed.returncode != 0:
+        return "unknown version"
+    first_line = (completed.stdout or "").strip().splitlines()
+    return first_line[0] if first_line else "unknown version"
+
+
+def _gh_parses_argv(argv: Sequence[str], *, env: dict[str, str] | None = None) -> bool:
+    """Whether `gh` can parse the argv's flags at all, without running it.
+
+    Appending `--help` makes `gh` stop after flag parsing: it exits 0 when every
+    flag is one the command has and non-zero when it is not, with no credential
+    and no request. That separates "this argv is malformed" from "this command
+    ran and reported a failure", which the exit status of the real run cannot.
+    """
+    completed = _run_gh([*argv, "--help"], env=env)
+    return completed is not None and completed.returncode == 0
+
+
+def _declared_json_fields(
+    command: Sequence[str], *, env: dict[str, str] | None = None
+) -> frozenset[str] | None:
+    """The `--json` field names `gh` itself declares for a command, or `None`.
+
+    `gh __complete <command> --json ''` is the shell-completion interface: it
+    prints one field name per line and exits 0, with no credential, no network
+    and no repository. `None` means the vocabulary could not be read, which is
+    reported as "cannot tell" rather than as a refusal — a check that accuses on
+    ignorance is the deny-everything failure mode wearing a different hat.
+    """
+    completed = _run_gh(["__complete", *command, "--json", ""], env=env)
+    if completed is None or completed.returncode != 0:
+        return None
+    fields = {
+        line.split("\t", 1)[0].strip()
+        for line in (completed.stdout or "").splitlines()
+        # Cobra terminates the completion list with a `:<directive>` line.
+        if line.strip() and not line.startswith(":")
+    }
+    return frozenset(fields) or None
+
+
+def _refused_json_fields(
+    argv: Sequence[str], *, env: dict[str, str] | None = None
+) -> str:
+    """Any `--json` field in the argv that this `gh` does not have, as a message.
+
+    Where `gh` validates `--json` field names relative to its authentication
+    check moved between versions: gh 2.98 validates the fields first, so a bad
+    field exits 1 and the exit status alone is enough; gh 2.45 checks
+    authentication first, so a bad field exits 4 and the fields are never looked
+    at. Reading the field vocabulary `gh` declares gives the same answer on both
+    without a credential, so the field set is checked here whenever the run
+    itself came back accepting.
+    """
+    if "--json" not in list(argv):
+        return ""
+    index = list(argv).index("--json")
+    if index + 1 >= len(argv):
+        return ""
+    requested = [field for field in argv[index + 1].split(",") if field]
+    declared = _declared_json_fields(argv[:index], env=env)
+    if declared is None:
+        return ""
+    missing = [field for field in requested if field not in declared]
+    if not missing:
+        return ""
+    return (
+        f"Unknown JSON field(s) {', '.join(missing)}: the installed gh "
+        f"({_gh_version()}) does not declare "
+        f"{'them' if len(missing) > 1 else 'it'} for `gh {' '.join(argv[:index])}`"
+    )
+
+
+def _gh_would_refuse(argv: Sequence[str], *, env: dict[str, str] | None = None) -> str:
+    """Run `gh` with the argv and return a refusal message, or empty if accepted.
+
+    The classification is the process exit status, never the wording of the
+    message (FR-001). `gh`'s prose differs across versions, subcommands and
+    locales, so any set of phrases to match is a set that a future `gh` leaves
+    behind.
+
+    Exit 0 and the authentication exit are acceptance; every other exit status
+    is a refusal, except for the one command `gh` runs without a credential,
+    whose non-zero exit is its answer and which is disambiguated by a parse
+    probe rather than by reading what it said.
+
+    The run uses no token, no stored credential, no network, and no repository.
+    """
+    completed = _run_gh(argv, env=env)
+    if completed is None:
+        return f"could not run gh to validate {list(argv)!r}"
+
+    if completed.returncode not in _GH_ACCEPTING_EXITS:
+        reports_without_credentials = (
+            tuple(argv[:2]) in _GH_REPORTS_WITHOUT_CREDENTIALS
+            and _gh_parses_argv(argv, env=env)
+        )
+        if not reports_without_credentials:
+            return (
+                completed.stderr
+                or completed.stdout
+                or f"gh exited {completed.returncode} with no output"
+            )
+
+    return _refused_json_fields(argv, env=env)
 
 
 @pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
@@ -274,6 +438,170 @@ def test_create_pr_no_longer_parses_output_as_json() -> None:
 
     assert created.number == 123
     assert created.url == "https://github.com/owner/repo/pull/123"
+
+
+#: A `--json` field name no `gh` has ever had. `gh` refuses it the same way it
+#: refuses a field a newer `gh` added — which is how the 2026-08-20 evidence was
+#: produced — so it needs no old binary and no stub on `PATH`.
+_NO_SUCH_JSON_FIELD = "erganeDefinitelyNotAJsonField"
+
+
+@pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
+def test_refusal_phrased_as_none_of_the_three_old_patterns_is_still_a_refusal() -> None:
+    """T001 (US1-S1): a refusal `gh` does not phrase as a flag or usage error.
+
+    The old check matched three phrases in stderr. This argv is refused with a
+    message containing none of them, and the test asserts that too, so the
+    classification demonstrably does not come from the prose.
+    """
+    argv = ["pr", "view", "1", "--json", _NO_SUCH_JSON_FIELD]
+
+    completed = _run_gh(argv)
+    assert completed is not None, "gh could not be run"
+    assert completed.returncode != 0, "gh accepted a field it does not have"
+    said = (completed.stderr or completed.stdout or "").lower()
+    for phrase in ("unknown flag", "unknown command", "usage:"):
+        assert phrase not in said, f"this argv was supposed to dodge {phrase!r}: {said}"
+
+    refusal = _gh_would_refuse(argv)
+
+    assert refusal, f"a refused --json field was classified as accepted: {said}"
+    assert _NO_SUCH_JSON_FIELD in refusal
+
+
+@pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
+def test_argv_gh_accepts_but_cannot_complete_without_credentials_is_accepted() -> None:
+    """T002 (US1-S2): the control, and the failure mode of this whole change.
+
+    `gh` exits 4 when it parsed the argv and then needed a credential it does
+    not have. That must stay acceptance: the check runs with no token in CI, so
+    a classifier that denies on any non-zero exit denies every well-formed argv,
+    which is the same as deleting the check.
+    """
+    argv = ["pr", "view", "1", "--repo", "owner/repo", "--json", "state"]
+
+    completed = _run_gh(argv)
+    assert completed is not None, "gh could not be run"
+    assert completed.returncode == _GH_EXIT_AUTH_REQUIRED, (
+        "the control is only a control if gh really did stop for want of a "
+        f"credential; it exited {completed.returncode}: "
+        f"{completed.stderr or completed.stdout}"
+    )
+
+    assert _gh_would_refuse(argv) == ""
+
+
+@pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
+def test_auth_status_reporting_no_credential_is_not_a_refusal() -> None:
+    """T002 (US1-S2): `gh auth status` exits non-zero to *answer*, not to refuse.
+
+    It is the one command `GhClient` issues that `gh` runs without a credential.
+    The second half is the mutation control on the exception: an unknown flag on
+    that same command must still be refused, or the exception has blinded the
+    check to a whole command.
+    """
+    assert _gh_would_refuse(["auth", "status"]) == ""
+
+    refusal = _gh_would_refuse(["auth", "status", "--ergane-test-unknown-flag"])
+
+    assert "--ergane-test-unknown-flag" in refusal
+
+
+@pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
+def test_poller_json_field_set_is_validated_as_a_set_from_the_value_it_sends() -> None:
+    """T003 (US1-S3, FR-003): the poller's field set, derived and checked as a set.
+
+    071-US2 enumerated `GhClient`'s methods correctly and still missed this: the
+    argument it could not read was inside one of them. So the argv here is built
+    by calling `poll_pr` itself, and the `--json` value it carries is asserted to
+    be `_VIEW_FIELDS` — the object the poller sends, not a copy of it.
+    """
+    argvs = _extract_argvs("poll_pr")
+    assert len(argvs) == 1, f"poll_pr built {len(argvs)} argvs, expected one"
+    argv = argvs[0]
+    index = argv.index("--json")
+    assert argv[index + 1] == _VIEW_FIELDS, (
+        "the checked field set must be the value the poller sends, not a copy"
+    )
+
+    # The mutation control: one bad field inside the poller's own value is
+    # caught. Without this the test would pass on a check that never looked.
+    poisoned = list(argv)
+    poisoned[index + 1] = f"{_VIEW_FIELDS},{_NO_SUCH_JSON_FIELD}"
+    assert _NO_SUCH_JSON_FIELD in _gh_would_refuse(poisoned)
+
+    refusal = _gh_would_refuse(argv)
+
+    assert refusal == "", (
+        "the installed gh refuses a field the landing poller sends "
+        f"(factory/mergequeue/gh.py `_VIEW_FIELDS`): {refusal}"
+    )
+
+
+@pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
+def test_refused_field_is_caught_with_no_token_no_repository_and_no_network() -> None:
+    """T004 (US1-S5, FR-002): the check works on a host with nothing to work with.
+
+    No token and no stored credential, a working directory outside any git
+    repository, and every proxy pointed at a closed port so a request that did
+    escape would fail. `gh` settles a field name without leaving the machine.
+    """
+    env = _gh_env(
+        HTTP_PROXY="http://127.0.0.1:1",
+        HTTPS_PROXY="http://127.0.0.1:1",
+        ALL_PROXY="http://127.0.0.1:1",
+        NO_PROXY="",
+    )
+    assert env["GH_TOKEN"] == ""
+    assert env["GITHUB_TOKEN"] == ""
+    outside_a_repo = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=_gh_sandbox(),
+        capture_output=True,
+        text=True,
+    )
+    assert outside_a_repo.returncode != 0, f"{_gh_sandbox()} is inside a git repository"
+
+    refusal = _gh_would_refuse(["pr", "view", "1", "--json", _NO_SUCH_JSON_FIELD], env=env)
+
+    assert _NO_SUCH_JSON_FIELD in refusal
+
+
+def test_gh_absence_is_a_runtime_condition_not_a_declared_one() -> None:
+    """T005 (US1-S6, FR-004): the guard is evaluated, not declared.
+
+    Emptying `PATH` is the runtime condition a host without `gh` presents, and
+    the guard every skip in this file is built from reports it.
+    """
+    original = os.environ.get("PATH", "")
+    try:
+        os.environ["PATH"] = ""
+        assert _gh_binary() is None
+    finally:
+        os.environ["PATH"] = original
+    assert _gh_binary() == shutil.which("gh")
+
+
+def test_no_skip_in_this_file_is_a_bare_marker() -> None:
+    """T005 (US1-S6, FR-004): nothing here skips on a marker `-m` would have to select.
+
+    Nothing in this repository passes `-m` in CI or in the gate, so a marked
+    test is an unrun test (open finding `live-tier-skips-by-guard-not-marker`).
+    Every skip here must therefore be a `skipif` whose condition is computed
+    when the module is imported.
+    """
+    source = Path(__file__).read_text()
+
+    # Spelled in two pieces so this assertion is not its own counterexample.
+    assert "@pytest.mark." + "skip(" not in source
+
+    markers = set(re.findall(r"@pytest\.mark\.(\w+)", source))
+    assert markers <= {"skipif", "parametrize"}, f"unexpected markers: {markers}"
+
+    conditions = re.findall(r"@pytest\.mark\.skipif\((.*?), reason=", source)
+    assert conditions, "no skipif conditions found — has the guard been removed?"
+    for condition in conditions:
+        assert "_gh_binary()" in condition, f"not a runtime guard: {condition!r}"
 
 
 def _url_printing_runner(argv: Sequence[str], cwd: str) -> Any:
