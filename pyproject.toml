@@ -75,4 +75,5 @@ markers = [
     "live_epic: runs a live one-node epic; auto-skips unless Tier 1 env is set",
     "live_merge: drives real PRs through the sample repo's merge queue; auto-skips unless FACTORY_SAMPLE_REPO is set and gh is authenticated",
     "live_capacity: hits a real Temporal namespace; auto-skips unless a server answers at TEMPORAL_ADDRESS/TEMPORAL_NAMESPACE",
+    "live_onramp: drives install through landing against a scratch org-owned repo; auto-skips unless every prerequisite in docs/onramp-exercise.md is present",
 ]
