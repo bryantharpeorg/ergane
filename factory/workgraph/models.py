@@ -50,7 +50,11 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 from factory.config import Persona
 from factory.mergequeue.models import Landing
 from factory.usage.models import Termination, UsageSnapshot
-from factory.verify.models import AttemptRecord, VerificationResult
+from factory.verify.models import (
+    UNRESOLVED_MODEL_ALIAS,
+    AttemptRecord,
+    VerificationResult,
+)
 
 if TYPE_CHECKING:
     # 008-US2: `OperatorAnswer` lives in the prompt assembler, which itself
@@ -342,6 +346,16 @@ class NodeRecord:
     terminal_reason: str | None = None
     #: US2: provenance for externally-completed work, surfaced in status and PR.
     provenance: str | None = None
+    #: 075-US3: the persona the node's *current* attempt was routed to, and the
+    #: alias it runs under — the pair `ergane build status` reports for a node in
+    #: flight (FR-012), where the history's own records do not exist yet. Written
+    #: at the moment the rung's routing is read, *before* the resolution can
+    #: fail, so a rung naming a persona the snapshot never resolved reports that
+    #: persona with no alias rather than the node's own (US3-S3). Empty and
+    #: unresolved until the node dispatches: a node that has run nothing names no
+    #: model, because naming one would be indistinguishable from a reading.
+    persona: str = ""
+    model_alias: str = UNRESOLVED_MODEL_ALIAS
     #: 069-US1: the verdict this node's landing was opened on, kept so a rebase
     #: that spends no attempt can still re-render the PR body it already earned.
     #: A free rebase produces no new verification — that is the whole point — so

@@ -441,9 +441,29 @@ def render_status(
         )
         lines.append(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
-            f"attempt {node['attempt']}  {node['branch']}{spend_token}{external_token}"
+            f"attempt {node['attempt']}  {node['branch']}"
+            f"{_routing_token(node)}{spend_token}{external_token}"
         )
     return "\n".join(lines)
+
+
+def _routing_token(node: Mapping[str, Any]) -> str:
+    """What the node's current attempt is running, or nothing (075-US3 FR-012).
+
+    The line already says which attempt a node is on; this says what that
+    attempt *is*, which is the reading nothing offered while a rung ran the
+    wrong model for eight days. The alias is printed verbatim, sentinel
+    included: an attempt whose persona the epic's snapshot could not resolve
+    reads `<unresolved>` rather than borrowing the node's own model (US3-S3).
+
+    Absent for a node that has dispatched nothing — a persona with no attempt
+    behind it is not a reading — and absent for an older worker's answer, which
+    carries neither key.
+    """
+    persona = node.get("persona")
+    if not persona:
+        return ""
+    return f"  persona {persona}  model {node.get('model_alias', '')}"
 
 
 # --- commands -----------------------------------------------------------------

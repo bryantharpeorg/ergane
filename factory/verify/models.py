@@ -690,6 +690,16 @@ DEFAULT_LOOP_SUMMARY = loop_summary(
 )
 
 
+#: What a `model_alias` reads as when no alias can be named for the attempt it
+#: describes: a rung naming a persona the epic's snapshot never resolved, an
+#: attempt an operator completed by hand (no model ran at all), or a record
+#: written before the field existed. Never a model name, and never the *node's*
+#: — reporting the node's alias for an attempt that did not run it is exactly
+#: the misattribution 075 exists to end (US3-S3). Angle brackets are not legal
+#: in a registry alias, so this can never collide with a real one.
+UNRESOLVED_MODEL_ALIAS = "<unresolved>"
+
+
 @dataclass(frozen=True)
 class AttemptRecord:
     """One entry of the ladder's input history.
@@ -697,12 +707,22 @@ class AttemptRecord:
     `persona` is what distinguishes a debugger cycle from an ordinary retry, and
     `judge_outcome` is None when the judge never ran — the ladder needs both to
     tell "failed the gates three times" from "the judge asked for two rewrites".
+
+    `model_alias` is 075-US3's addition (FR-011): the alias the attempt actually
+    ran under, recorded beside the persona that selected it. The pair is the
+    whole point — a rung reaches the ledger by its persona (D-026), so a record
+    naming the persona alone is what let a rung run the wrong model for eight
+    days without any surface disagreeing. It defaults to `UNRESOLVED_MODEL_ALIAS`
+    rather than to the node's alias because a history recorded before this field
+    existed genuinely does not know, and a default that guessed would be
+    indistinguishable from a reading.
     """
 
     attempt: int
     persona: str
     verdict: OverallVerdict
     judge_outcome: JudgeOutcome | None = None
+    model_alias: str = UNRESOLVED_MODEL_ALIAS
 
 
 # Escalation entities --------------------------------------------------------
