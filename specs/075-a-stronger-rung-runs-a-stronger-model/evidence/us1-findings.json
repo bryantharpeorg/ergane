@@ -1,0 +1,28 @@
+{
+  "source": "075-us1",
+  "comment": "Filed as a batch rather than reported directly: the findings store lives at the operator's runtime root, outside this node's worktree, and a node writes only to its own worktree and branch. Ingest with: ergane findings report --batch specs/075-a-stronger-rung-runs-a-stronger-model/evidence/us1-findings.json",
+  "findings": [
+    {
+      "key": "interpreter/workflow-reads-the-registry-from-workflow-code",
+      "category": "interpreter",
+      "severity": "warning",
+      "summary": "EpicWorkflow reads personas.yaml from workflow code, so a mid-epic registry edit can make a replay disagree with the run it replays",
+      "refs": [
+        "factory/workgraph/workflow.py:1081",
+        "factory/workgraph/workflow.py:973"
+      ],
+      "notes": "_read_registry calls factory.config.load_personas() inside the workflow, not in an activity. Workflow code must be a pure function of history (constitution IV); a filesystem read there is replayed against whatever the file says at replay time, not what it said at epic start. Today it is latent: the read happens once, at epic start, before the first attempt, and it only supplies the `agent` value and the rung personas' entries. It becomes live the moment a worker replays an epic whose personas.yaml changed underneath it -- the snapshot would rebuild from the new file, and 039 exists because this class of thing wedges epics. It predates 075; 075-US1 consolidated N per-node reads into one and pinned the discipline in comments and in the T005 test, but did not move the read. The fix is to carry the agent value on ResolvedNode (resolve_graph already reads the registry in an activity) and resolve rung personas through the resolve_persona activity -- which is a workflow-versioning change, because adding an activity call at epic start is a nondeterminism error against every recorded history (tests/fixtures/replay-032 catches it: 'Activity type of scheduled event load_prompt_sources does not match activity type of activity command resolve_persona'). That versioning is why it was not done inside 075-US1."
+    },
+    {
+      "key": "interpreter/a-rung-runs-under-the-nodes-context-window",
+      "category": "interpreter",
+      "severity": "info",
+      "summary": "A rung's attempt now runs the rung persona's model but is still handed the node persona's context window and timeout",
+      "refs": [
+        "factory/workgraph/workflow.py:1534",
+        "factory/workgraph/workflow.py:3014"
+      ],
+      "notes": "075-US1 routes an attempt's `agent` and `model_alias` by the persona the rung selected. `timeout_s` and `context_window` still come from the node's ResolvedNode, because the story's FRs name the first two only. The consequence is the 037 defect in miniature: promote a node to `opus-closer` (context_window 1000000) and the attempt is told the implementer's 262144, so three quarters of the window it is paying for is unreachable -- and the reverse (a rung with a smaller window than the node's) would over-report, which is worse. `timeout_s` is arguably correct as-is: a story's `## Work Graph` timeout override is a property of the story, not of the builder. `context_window` is a property of the model and should follow it. Wants a story of its own; ResolvedPersona would have to carry the window."
+    }
+  ]
+}
