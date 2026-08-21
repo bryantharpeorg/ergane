@@ -68,16 +68,28 @@ def _keys(script: ScriptedWorld, node_id: str = "us1") -> list[Any]:
     return [k for k in script.key_requests if k.node_id == node_id]
 
 
+@pytest.fixture(autouse=True)
+def registry(monkeypatch: pytest.MonkeyPatch) -> dict[str, Persona]:
+    """Point every registry read — activity-side and workflow-side — at one map.
+
+    The scripted `resolve_graph` resolves nodes against the interpreter module's
+    `PERSONAS`; the workflow's own snapshot reads `factory.config.load_personas`
+    for the halves a `ResolvedNode` does not carry — the `agent` value, and the
+    entries for personas no node declares. A fixture that moved only one of them
+    would be asserting routing against two different registries, which is the
+    disagreement this story exists to make impossible.
+
+    Autouse and returned mutable, so a test that needs a different registry
+    edits this one and calls `_use_registry` again.
+    """
+    _use_registry(monkeypatch, dict(PERSONAS))
+    return dict(PERSONAS)
+
+
 def _use_registry(
     monkeypatch: pytest.MonkeyPatch, registry: dict[str, Persona]
 ) -> None:
-    """Point every registry read — activity-side and workflow-side — at one map.
-
-    The scripted `resolve_graph` and `resolve_persona` read the interpreter
-    module's `PERSONAS`; the workflow's own snapshot helper reads
-    `factory.config.load_personas`. A fixture that moved only one of them would
-    be asserting against two different registries.
-    """
+    """Install one registry map on both sides of the boundary."""
     monkeypatch.setattr("tests.test_interpreter.PERSONAS", registry)
     monkeypatch.setattr("factory.config.load_personas", lambda path=None: registry)
 
@@ -206,8 +218,10 @@ async def test_a_rung_persona_absent_from_the_snapshot_fails_the_node(
     stronger builder. The node is killed instead, with a reason an operator can
     act on — and no fourth attempt is dispatched.
     """
-    registry = {name: p for name, p in PERSONAS.items() if name != DEBUGGER_PERSONA}
-    _use_registry(monkeypatch, registry)
+    _use_registry(
+        monkeypatch,
+        {name: p for name, p in PERSONAS.items() if name != DEBUGGER_PERSONA},
+    )
 
     script = ScriptedWorld(
         {"us1": [failing(n) for n in (1, 2, 3)]},
@@ -240,8 +254,8 @@ async def test_agent_and_model_alias_come_from_one_resolved_entry(
     to make impossible. Both fields move together, at the same rung, or neither
     does.
     """
-    registry = dict(PERSONAS)
-    registry[DEBUGGER_PERSONA] = Persona(
+    disagreeing = dict(PERSONAS)
+    disagreeing[DEBUGGER_PERSONA] = Persona(
         name=DEBUGGER_PERSONA,
         agent=SUBSCRIPTION_AGENT,
         model=DEBUGGER_ALIAS,
@@ -251,7 +265,7 @@ async def test_agent_and_model_alias_come_from_one_resolved_entry(
         needs_worktree=True,
         timeout_s=PERSONAS[DEBUGGER_PERSONA].timeout_s,
     )
-    _use_registry(monkeypatch, registry)
+    _use_registry(monkeypatch, disagreeing)
 
     script = ScriptedWorld(
         {"us1": [failing(n) for n in (1, 2, 3, 4)]},

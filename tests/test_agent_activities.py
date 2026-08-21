@@ -741,6 +741,10 @@ async def test_resolve_persona_snapshots_the_entry_for_a_role_no_node_names(
         # The issued key's constraint list (001): the judge may call the judge's
         # aliases and nothing else.
         models=[alias for alias in (persona.model, persona.fallback) if alias],
+        # 075-US1: the entry carries the agent beside the alias, so whatever is
+        # routed by it — the judge here, a rung elsewhere — cannot end up running
+        # one persona's agent under another persona's model (FR-002).
+        agent=persona.agent,
     )
 
 
