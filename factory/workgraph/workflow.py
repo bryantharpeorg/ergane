@@ -216,6 +216,7 @@ with workflow.unsafe.imports_passed_through():
         next_action,
     )
     from factory.verify.models import (
+        UNRESOLVED_MODEL_ALIAS,
         AttemptRecord,
         CriteriaSet,
         EscalationChoice,
@@ -500,6 +501,15 @@ class NodeStatus:
     terminal_reason: str | None = None
     #: US2: external-completion provenance, or None for agent-built work.
     provenance: str | None = None
+    #: 075-US3: what the node's current attempt is routed to — the persona the
+    #: rung selected and the alias it runs under (FR-012). The history below
+    #: answers the same question per *finished* attempt; this answers it for the
+    #: one in flight, which is the attempt an operator is watching when a rung
+    #: has just fired. `""` and `UNRESOLVED_MODEL_ALIAS` mean nothing has
+    #: dispatched — or, on a node killed by a rung the snapshot could not
+    #: resolve, that the persona named beside it never got a model (US3-S3).
+    persona: str = ""
+    model_alias: str = UNRESOLVED_MODEL_ALIAS
     #: 068-US2: parked on a human — an open escalation child, or the question
     #: park. `state` cannot answer alone (a paged node reads `VERIFYING`, as one
     #: whose gates run does) and `ergane build reset` must tell them apart
@@ -660,6 +670,8 @@ class EpicWorkflow:
                     else 0,
                     terminal_reason=record.terminal_reason,
                     provenance=record.provenance,
+                    persona=record.persona,
+                    model_alias=record.model_alias,
                     history=tuple(record.history),
                     free_rebases=record.landing.free_rebases
                     if record.landing is not None
@@ -1078,6 +1090,24 @@ class EpicWorkflow:
             )
         return entry
 
+    def _recorded_model_alias(self, persona_name: str) -> str:
+        """The alias to *report* for an attempt routed to this persona (075-US3).
+
+        The same snapshot `_routing_for` selects from, read for the reporting
+        path rather than the routing one — so the alias status shows and the
+        alias the attempt runs cannot come from two different resolutions
+        (FR-002's reasoning applied to the report).
+
+        Where the two paths differ is the unresolvable case: `_routing_for`
+        raises, because there is no model to dispatch under, and this returns
+        `UNRESOLVED_MODEL_ALIAS`, because there is still something true to say.
+        The fallback being ruled out is the node's own alias: a debugger rung
+        reported as the implementer's model is exactly what let this defect run
+        for eight days (FR-011, US3-S3).
+        """
+        entry = self._personas.get(persona_name)
+        return entry.model_alias if entry is not None else UNRESOLVED_MODEL_ALIAS
+
     def _read_registry(self) -> dict[str, Persona]:
         """Read the persona registry once, at epic start, for the snapshot.
 
@@ -1467,6 +1497,13 @@ class EpicWorkflow:
             # cannot be resolved dispatches nothing, so it must not consume an
             # attempt number either — the same discipline the launch-failure
             # path below applies to a fault that never reached the agent.
+            # What status reports for the attempt about to run (075-US3
+            # FR-012), written *before* the routing can fail: a rung whose
+            # persona the snapshot never resolved must be reported as the
+            # persona it asked for with no alias, rather than leaving the
+            # previous attempt's model standing as this one's (US3-S3).
+            record.persona = persona
+            record.model_alias = self._recorded_model_alias(persona)
             routing = self._routing_for(persona, rung=rung)
             agent = routing.agent
 
@@ -1661,6 +1698,7 @@ class EpicWorkflow:
                                     attempt=record.attempt,
                                     persona=persona,
                                     verdict=OverallVerdict.FAIL,
+                                    model_alias=routing.model_alias,
                                 )
                             )
                         else:
@@ -1712,6 +1750,11 @@ class EpicWorkflow:
                         persona=persona,
                         verdict=result.verdict,
                         judge_outcome=None if result.judge is None else result.judge.outcome,
+                        # From the entry this attempt was routed by, not from a
+                        # second lookup: the record has to say what ran, and the
+                        # only thing that knows is the routing that dispatched it
+                        # (075-US3 FR-011, plan trap 4).
+                        model_alias=routing.model_alias,
                     )
                 )
 
@@ -2281,6 +2324,12 @@ class EpicWorkflow:
         record.branch = branch
         record.attempt += 1
         record.provenance = provenance
+        # 075-US3: an operator's hand-back is the node's current attempt, and no
+        # model ran it. Reporting the alias the node's *agent* attempts used
+        # would attribute a human's branch to a model — the same misattribution
+        # US3-S3 rules out for an unresolvable rung, in the other direction.
+        record.persona = resolved.node.persona
+        record.model_alias = UNRESOLVED_MODEL_ALIAS
 
         result, verdict = await self._verify(
             request,
@@ -2302,6 +2351,9 @@ class EpicWorkflow:
                 persona=resolved.node.persona,
                 verdict=result.verdict,
                 judge_outcome=None if result.judge is None else result.judge.outcome,
+                # No alias: the operator's branch is the attempt, so there is no
+                # model this record could honestly name (075-US3 FR-011).
+                model_alias=UNRESOLVED_MODEL_ALIAS,
             )
         )
         await self._record_external_completion(
@@ -2976,6 +3028,12 @@ class EpicWorkflow:
         # own on a clean re-sync, the debugger's on a conflicted one — and takes
         # its whole routing from that persona's one snapshot entry, the same way
         # `_run_node` does (FR-001/FR-002).
+        # The same pair status reports for an ordinary attempt, written before
+        # the routing can fail for the same reason (075-US3 FR-012, US3-S3): a
+        # recovery is the node's current attempt, and a conflicted re-sync
+        # changes the persona it runs as.
+        record.persona = persona
+        record.model_alias = self._recorded_model_alias(persona)
         routing = self._routing_for(persona, rung=rung)
         recovery_agent = routing.agent
 
@@ -3034,6 +3092,10 @@ class EpicWorkflow:
                     persona=persona,
                     verdict=result.verdict,
                     judge_outcome=None if result.judge is None else result.judge.outcome,
+                    # The recovery's own routing, from the entry that dispatched
+                    # it: a conflicted re-sync runs the debugger's model, and the
+                    # record has to say so (075-US3 FR-011).
+                    model_alias=routing.model_alias,
                 )
             )
             return result if result.verdict == OverallVerdict.PASS else None
