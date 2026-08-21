@@ -224,13 +224,16 @@ attempt actually ran; both occurrences were found by reading a live process list
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-006]
+  persona: opus-closer
 US2:
   depends_on: []
   implements: [FR-007, FR-008, FR-009, FR-010]
+  persona: opus-closer
 US3:
   depends_on: []
   depends_on_merged: [US1, US2]
   implements: [FR-011, FR-012]
+  persona: opus-closer
 ```
 
 ## Success Criteria
