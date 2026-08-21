@@ -11,6 +11,12 @@ Key design points:
   clean or reset it (FR-002).
 - The start-state snapshot is kept *outside* the runtime root, so deleting the
   runtime root does not destroy the thing we compare against (FR-013).
+- Under the runtime root, only *loss* is a finding: a path created during the
+  attempt, or a store that merely grew, is silent (FR-020, FR-021).  Sibling
+  nodes run concurrently under the same root and the detector writes
+  ``doctor.db`` itself, so any wider rule reports the neighbours and itself.
+  Generated paths (``__pycache__``, ``.pytest_cache``, ``*.pyc``) are left out
+  of the snapshot at capture for the same reason (FR-022).
 - The finding key is keyed by ``epic_id`` and ``node_id`` so recurrence is
   countable per node.
 - Findings are filed by writing a JSON batch to a path the operator can inspect,
@@ -27,7 +33,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from factory.doctor.models import Finding, Severity, Status, parse_findings_batch
 from factory.doctor.store import connect, report
@@ -40,6 +46,15 @@ class DetectorError(RuntimeError):
 
 #: The category used for all detector findings.
 CATEGORY = "hardening"
+
+#: Directories whose contents are generated, never authored, and are therefore
+#: left out of the runtime-root snapshot entirely (FR-022).  A sibling node
+#: running its own suite creates and destroys these constantly, and attributing
+#: that to *this* attempt is how one finding came to list 3,859 paths.
+EXCLUDED_DIR_NAMES = frozenset({"__pycache__", ".pytest_cache"})
+
+#: File suffixes excluded for the same reason.
+EXCLUDED_SUFFIXES = (".pyc",)
 
 
 @dataclass(frozen=True)
@@ -75,15 +90,54 @@ class RuntimeRootState:
     entries: dict[str, dict[str, Any]]
 
     def changes_since(self, previous: "RuntimeRootState") -> dict[str, dict[str, Any]]:
-        """Map of relative path -> {before, after} for any change."""
+        """Map of relative path -> {before, after} for every path *lost*.
+
+        Only removal and truncation are reported, which is the contract this
+        module's docstring has always stated (FR-020).  Two kinds of change are
+        deliberately silent:
+
+        - **Creation.** Sibling nodes run concurrently under one runtime root, so
+          a path that appeared during the attempt is far more likely to be a
+          sibling's output than this attempt's escape, and the snapshot cannot
+          tell them apart.
+        - **Growth.** The detector writes ``doctor.db`` itself, at teardown,
+          after this comparison is taken (FR-021).  A rule that fired on growth
+          would fire on every attempt forever, and would be reporting itself.
+
+        Only paths present in ``previous`` can be lost, so that is the set we
+        walk.
+        """
         changes: dict[str, dict[str, Any]] = {}
-        all_paths = set(self.entries.keys()) | set(previous.entries.keys())
-        for path in all_paths:
-            before = previous.entries.get(path)
+        for path, before in previous.entries.items():
             after = self.entries.get(path)
-            if before != after:
+            if _is_loss(before, after):
                 changes[path] = {"before": before, "after": after}
         return changes
+
+
+def _is_loss(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> bool:
+    """Whether a path went from present to removed or truncated.
+
+    Sizes are only meaningful for files.  A directory's ``st_size`` is its entry
+    bookkeeping, which shrinks when a file is deleted from it — and that deletion
+    is already reported under its own path, so comparing directory sizes would
+    only double-count it and add noise from entries the detector never watched.
+    """
+    if before is None or not before.get("exists"):
+        return False
+    if after is None or not after.get("exists"):
+        return True
+    if before.get("kind") != "file":
+        return False
+    if after.get("kind") != "file":
+        # Whatever replaced it, the file that was there is gone.
+        return True
+    before_size = before.get("size")
+    after_size = after.get("size")
+    if before_size is None or after_size is None:
+        # ``_describe_path`` could not stat one end; do not guess a loss.
+        return False
+    return after_size < before_size
 
 
 def _now_iso() -> str:
@@ -269,11 +323,31 @@ def _runtime_root_state(root: Path | None, own_worktree: Path) -> RuntimeRootSta
                 entries[rel] = _describe_path(node_dir)
                 # Snapshot the worktree's contents so file changes inside it are
                 # detectable, not just the directory's own metadata.
-                for path in node_dir.rglob("*"):
+                for path in _snapshot_paths(node_dir):
                     entry_rel = str(path.relative_to(root))
                     entries[entry_rel] = _describe_path(path)
 
     return RuntimeRootState(root=root, entries=entries)
+
+
+def _snapshot_paths(node_dir: Path) -> Iterator[Path]:
+    """Every path under ``node_dir`` worth comparing, generated output pruned.
+
+    ``os.walk`` rather than ``rglob`` because the pruning has to happen *before*
+    the descent (FR-022).  A concurrent sibling's test run fills its worktree
+    with ``__pycache__`` trees, and those are the bulk of what the old snapshot
+    held: excluding them at comparison time would still pay to stat, store and
+    re-read thousands of entries the detector has no opinion about.
+    """
+    for dirpath, dirnames, filenames in os.walk(node_dir):
+        dirnames[:] = [name for name in dirnames if name not in EXCLUDED_DIR_NAMES]
+        directory = Path(dirpath)
+        for name in dirnames:
+            yield directory / name
+        for name in filenames:
+            if name.endswith(EXCLUDED_SUFFIXES):
+                continue
+            yield directory / name
 
 
 def _describe_path(path: Path) -> dict[str, Any]:
@@ -363,7 +437,7 @@ def _build_finding(
     summary = (
         f"attempt {context.attempt} of {context.epic_id}/{context.node_id} "
         f"modified {len(tracked_changes)} tracked path(s) and "
-        f"{len(runtime_changes)} runtime-root path(s): "
+        f"removed or truncated {len(runtime_changes)} runtime-root path(s): "
         f"{', '.join(all_changed) if all_changed else 'none'}"
     )
 
