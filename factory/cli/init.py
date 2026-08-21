@@ -48,6 +48,17 @@ GitHub Actions' directory. It stays because it is a local write that needs no
 network and must survive a refusal from the forge — moving it behind the seam
 would mean a refused operator lost the file the manual steps tell them to
 commit. A second forge makes it a question; today it is a stated limit.
+
+064's US2 adds the question that comes before all of it. Init resolves upward,
+so a directory that is not itself a repository root enrols the repository it
+happens to sit inside — and the near-miss that produced the spec was a scratch
+directory beneath a checkout holding twenty-five unrelated projects. The root is
+now named and consented to before the interview asks anything
+(`_confirm_resolved_root`), refused rather than assumed under
+`--non-interactive`, and reported by `--check` as a finding rather than only in
+the header line the reporter happened to read. The root invocation gains no
+question at all: a prompt in the common case is a prompt operators learn to
+answer without reading.
 """
 
 from __future__ import annotations
@@ -225,6 +236,91 @@ def resolve_repo_root(path: str | Path | None) -> Path:
         )
 
     return toplevel.resolve()
+
+
+def resolve_invocation_dir(path: str | Path | None) -> Path:
+    """The directory the operator *pointed at*, resolved — never walked up from.
+
+    Reads its argument exactly as `resolve_repo_root` does, so the two answers
+    are comparable: bare `ergane init` and `ergane init .` both mean the working
+    directory, and `ergane init <path>` means that path. The comparison between
+    the two is 064/US2's whole subject — a resolved root that differs from this
+    is a repository the operator did not name (FR-005).
+    """
+    return (Path(path) if path else Path.cwd()).resolve()
+
+
+def _confirmation_question(repo_root: Path, invoked_from: Path) -> str:
+    """The question, with the resolved root inside it rather than above it.
+
+    Interpolated rather than referred to ("the root above"): the operator reads
+    the path in the line they are answering, which is the difference between
+    catching this and the near-miss that produced the spec.
+    """
+    return (
+        f"{invoked_from} is not a repository root — enrol {repo_root} instead? (y/N)"
+    )
+
+
+#: What counts as consent. Anything else — including the empty answer an
+#: operator presses enter for — declines, because 060 settled that an absent
+#: answer is not an answer and a blank one is no more of one (FR-007).
+_CONSENT = ("y", "yes")
+
+
+def _confirm_resolved_root(
+    repo_root: Path,
+    invoked_from: Path,
+    *,
+    prompter: Any,
+    non_interactive: bool,
+) -> None:
+    """Name the repository init resolved, and require consent before enrolling it.
+
+    064/US2. `ergane init` run from a scratch directory beneath a repository
+    walked up out of it and offered to enrol the parent; the path was printed,
+    and the reporter happened to read it. The unnoticed outcome is twenty-five
+    unrelated projects joined as one managed repository.
+
+    Two cases reach here and both are the same comparison: a directory that is
+    not itself a repository, and a subdirectory of one. The third — a linked
+    worktree, which resolves elsewhere *legitimately* — never does:
+    `resolve_repo_root` has already refused it by name (trap 6), so "resolved
+    somewhere else because worktree" and "resolved somewhere else because we
+    walked up" are distinguished before this is called rather than here.
+
+    Called before the interview and before `_build_defaults`, so a decline costs
+    the operator nothing and writes nothing (FR-005). The root invocation — the
+    overwhelmingly normal one — returns without asking anything at all (FR-006,
+    trap 5): a prompt there teaches operators to press a key without reading.
+    """
+    if invoked_from == repo_root:
+        return
+
+    if non_interactive:
+        # FR-007, and 060's rule in the same words: silence is not consent. The
+        # remedy names the invocation that *is* unambiguous, so an automated
+        # caller has something to change rather than a flag to drop.
+        raise OperatorError(
+            f"init resolved the repository root to {repo_root}, which is not the "
+            f"directory it was invoked from ({invoked_from}); --non-interactive "
+            "has nobody to ask, and an absent answer is not consent — run "
+            f"`ergane init {repo_root}` to name the repository you mean, or "
+            "re-run without --non-interactive to confirm it",
+            code=EXIT_USER,
+        )
+
+    print(f"init resolved the repository root to {repo_root}, walking up from {invoked_from}")
+    answer = prompter.ask(
+        _confirmation_question(repo_root, invoked_from), default="n"
+    )
+    if answer.strip().lower() not in _CONSENT:
+        raise OperatorError(
+            f"declined: {repo_root} was not enrolled and nothing was written — "
+            f"run `ergane init {repo_root}` to enrol it, or run init from the "
+            "repository you meant",
+            code=EXIT_USER,
+        )
 
 
 def add_init_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -568,27 +664,20 @@ def init_command(args: argparse.Namespace) -> int:
 
     `--check` short-circuits before any question is asked and before any file is
     touched: it is the judging half of init, and its exit code is the contract
-    (0 when every finding passes, non-zero when any fails).
+    (0 when every finding passes, non-zero when any fails). It carries the
+    invocation directory into the report so the root it resolved is a finding
+    rather than a header line (064/FR-008).
     """
     global _require_explicit_consent
 
     repo_root = resolve_repo_root(args.path)
+    invoked_from = resolve_invocation_dir(args.path)
 
     if getattr(args, "check", False):
-        return run_check(repo_root)
+        return run_check(repo_root, invocation_dir=invoked_from)
 
     non_interactive = getattr(args, "non_interactive", False)
     _require_explicit_consent = not non_interactive
-
-    defaults = _build_defaults(repo_root)
-
-    # Seed the in-progress manifest with placeholders/defaults so the first
-    # question can already be validated against the full parser.
-    manifest_values: dict[str, Any] = {
-        key: defaults[key]
-        for key in _TOP_LEVEL_KEYS
-        if key in defaults
-    }
 
     reports: list[str] = []
     if non_interactive:
@@ -597,6 +686,26 @@ def init_command(args: argparse.Namespace) -> int:
         prompter = _prompter()
 
     try:
+        # 064/US2, first: the repository is named and consented to before the
+        # interview asks anything about it, so a decline costs no answers and
+        # writes no file.
+        _confirm_resolved_root(
+            repo_root,
+            invoked_from,
+            prompter=prompter,
+            non_interactive=non_interactive,
+        )
+
+        defaults = _build_defaults(repo_root)
+
+        # Seed the in-progress manifest with placeholders/defaults so the first
+        # question can already be validated against the full parser.
+        manifest_values: dict[str, Any] = {
+            key: defaults[key]
+            for key in _TOP_LEVEL_KEYS
+            if key in defaults
+        }
+
         for key in _TOP_LEVEL_KEYS:
             default_value = manifest_values.get(key)
             value = _ask_for_key(
@@ -675,6 +784,7 @@ def init_command(args: argparse.Namespace) -> int:
     run_check(
         repo_root,
         control_plane=((), control_plane_reason) if control_plane_reason is not None else None,
+        invocation_dir=invoked_from,
     )
 
     return EXIT_OK
@@ -1061,7 +1171,10 @@ def _schedule_facts(
 
 
 def gather_init_facts(
-    repo_root: Path, *, control_plane: tuple[tuple[Finding, ...], str | None] | None = None
+    repo_root: Path,
+    *,
+    control_plane: tuple[tuple[Finding, ...], str | None] | None = None,
+    invocation_dir: Path | None = None,
 ) -> InitFacts:
     """Read the facts init created, so `evaluate_repo` can judge them (FR-010).
 
@@ -1073,6 +1186,11 @@ def gather_init_facts(
     `_control_plane_facts()` so a full init evaluates the control plane once
     and shares it between the schedule precondition and the readiness report
     (FR-006).  `ergane init --check` omits it and gathers fresh.
+
+    `invocation_dir` is 064/FR-008's fact: the directory the *operator* pointed
+    at, which only the CLI knows.  A caller that names a repository directly —
+    every programmatic one — leaves it unset, and the finding then reports the
+    root without claiming anyone walked up to it.
     """
     root_name, is_legacy = resolve_repo_runtime_root(repo_root)
     registry_path, slug, registry_error = _registry_facts(repo_root)
@@ -1095,6 +1213,7 @@ def gather_init_facts(
 
     return InitFacts(
         repo_root=str(repo_root),
+        invocation_dir="" if invocation_dir is None else str(invocation_dir),
         runtime_root=root_name,
         runtime_root_is_legacy=is_legacy,
         runtime_root_ignored=_git_ignores(repo_root, f"{root_name}/"),
@@ -1116,6 +1235,7 @@ def check_repo(
     repo_root: str | Path,
     *,
     control_plane: tuple[tuple[Finding, ...], str | None] | None = None,
+    invocation_dir: Path | None = None,
 ) -> TargetRepoProfile:
     """Judge one repository's readiness through the shared judgment (FR-010).
 
@@ -1127,7 +1247,9 @@ def check_repo(
     from factory.activities.merge_activities import onboard_target_repo
 
     root = Path(repo_root).resolve()
-    facts = gather_init_facts(root, control_plane=control_plane)
+    facts = gather_init_facts(
+        root, control_plane=control_plane, invocation_dir=invocation_dir
+    )
     forge = _forge_factory(repo_path=str(root))
     return onboard_target_repo(forge, str(root), init_facts=facts)
 
@@ -1158,6 +1280,7 @@ def run_check(
     repo_root: Path,
     *,
     control_plane: tuple[tuple[Finding, ...], str | None] | None = None,
+    invocation_dir: Path | None = None,
 ) -> int:
     """Render the report; non-zero on any failing finding, 0 when all pass.
 
@@ -1165,8 +1288,14 @@ def run_check(
     `_control_plane_facts()` so a full init shares one evaluation between the
     schedule precondition and the readiness report (FR-006).  `ergane init
     --check` omits it and probes fresh.
+
+    `invocation_dir` carries 064/FR-008's fact down to the judgment: the report
+    names the root it resolved in a *finding*, not only in the header line the
+    reporter of that near-miss happened to read.
     """
-    profile = check_repo(repo_root, control_plane=control_plane)
+    profile = check_repo(
+        repo_root, control_plane=control_plane, invocation_dir=invocation_dir
+    )
     _manifest_path, manifest_name = resolve_manifest_path(repo_root)
     print(render_check(profile, repo_root, manifest_name))
     return EXIT_OK if profile.passed else EXIT_USER
