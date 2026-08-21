@@ -336,21 +336,6 @@ class LiteLLMClient:
             f"/spend/logs/v2 did not report a last page within {MAX_SPEND_LOG_PAGES} pages"
         )
 
-    async def revoke_key(self, key: str) -> bool:
-        """Delete the attempt's key; `True` if this call removed it.
-
-        `False` means it was already gone — an expired TTL, or a teardown
-        Temporal ran twice — which is a normal outcome of the last step of
-        teardown, not a failure (R3, FR-002).
-        """
-        try:
-            await self._call("POST", "/key/delete", payload={"keys": [key]})
-        except LiteLLMError as exc:
-            if exc.status in _KEY_ALREADY_GONE:
-                return False
-            raise
-        return True
-
     # --- preflight reads (US2 FR-004/005/006) --------------------------------
 
     async def list_model_ids(self) -> set[str]:
