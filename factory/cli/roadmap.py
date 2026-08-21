@@ -37,6 +37,10 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError
 
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
+from factory.cli.promotion import (
+    add_promotion_persona_flag,
+    checked_promotion_persona,
+)
 from factory.mergequeue.models import LandingConfig
 from factory.controlplane.resolve import resolve_temporal_target
 from factory.roadmap.discovery import (
@@ -113,6 +117,7 @@ def add_roadmap_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
         metavar="SECONDS",
         help="idle rescan interval; omit to drain and exit",
     )
+    add_promotion_persona_flag(start)
     start.set_defaults(run=_run_async(roadmap_start_command))
 
     pause = verbs.add_parser("pause", help="pause dispatch")
@@ -218,6 +223,13 @@ def _resolved_proxy_url() -> str:
 
 
 async def roadmap_start_command(args: argparse.Namespace) -> int:
+    # Checked before the specs root is even stat'd, and long before Temporal is
+    # dialled: an unknown promotion persona is a refusal the operator can act
+    # on without anything having been started (FR-009).  A roadmap is the
+    # expensive place to learn about a typo — it would be carried into every
+    # child epic it dispatches.
+    promotion_persona = checked_promotion_persona(args.promotion_persona)
+
     specs_root = Path(args.specs_root).resolve()
     if not specs_root.exists():
         raise OperatorError(f"specs root {specs_root} does not exist")
@@ -233,7 +245,11 @@ async def roadmap_start_command(args: argparse.Namespace) -> int:
         max_concurrent_epics=args.max_concurrent_epics,
         max_concurrent_nodes=args.max_concurrent_nodes,
         landing_config=LandingConfig(),
-        config=VerificationConfig(),
+        # The only field of `VerificationConfig` a roadmap's operator sets: the
+        # rest of every child's ladder is read from the target clone's manifest
+        # at dispatch (023 US2), and this rides alongside it as an overlay the
+        # workflow applies per child (FR-008).
+        config=VerificationConfig(promotion_persona=promotion_persona),
         poll_interval_s=args.poll_interval_s,
         idle_rescan_s=args.idle_rescan_s,
         carry_over=None,

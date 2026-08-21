@@ -75,6 +75,11 @@ from factory.env import (
     resolve_env_path,
 )
 from factory.cli.nouns import Noun, _open_preflight_client
+from factory.cli.promotion import (
+    add_promotion_persona_flag,
+    checked_promotion_persona,
+    with_promotion_persona,
+)
 from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.verify.factory_yaml import FactoryConfigError, load_loop_config
 from factory.notify.service import (
@@ -448,9 +453,17 @@ def start_command(args: argparse.Namespace) -> int:
     """Start one epic from a compiled graph.
 
     Everything that can be checked without a server is checked without one:
-    file parse, structural validation, and proxy-url presence.  Only then is a
-    client built.
+    file parse, structural validation, promotion persona, and proxy-url
+    presence.  Only then is a client built.
+
+    The promotion persona is checked first of all, before the graph is even
+    read, because it is the one input that is wholly about what the operator
+    typed: a typo in it is answerable without opening a file, and answering it
+    last would mean an operator with both a stale graph and a mistyped persona
+    fixes them one round trip at a time (FR-009).
     """
+    promotion_persona = checked_promotion_persona(args.promotion_persona)
+
     try:
         graph = load_workgraph(args.graph)
     except WorkGraphError as error:
@@ -475,6 +488,12 @@ def start_command(args: argparse.Namespace) -> int:
         raise OperatorError(
             f"preflight: manifest: [{exc.rule}] {exc.problem}"
         ) from exc
+
+    # The flag overlays the manifest rather than replacing it: the ladder the
+    # epic runs is the target repo's, with the one rung the operator declared
+    # on this invocation switched on (FR-007).  Omitted, it changes nothing —
+    # including a rung the manifest itself declared (FR-010).
+    config = with_promotion_persona(config, promotion_persona)
 
     return asyncio.run(
         _start_epic(
@@ -1372,6 +1391,7 @@ def add_parser(subparsers: Any) -> None:
             "(default: 1)"
         ),
     )
+    add_promotion_persona_flag(start)
     start.set_defaults(run=start_command)
 
     status = commands.add_parser("status", help="what one epic is doing right now")
