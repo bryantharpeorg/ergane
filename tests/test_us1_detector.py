@@ -29,6 +29,7 @@ from factory.activities.agent_activities import run_agent_attempt
 from factory.doctor.models import Finding, Severity, Status
 from factory.doctor.store import connect, get_finding
 from factory.usage.models import Termination
+from factory.workgraph import detector
 from factory.workgraph.adapter import STDOUT_LOG_NAME, home_path, transcript_dir
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import branch_name
@@ -200,8 +201,10 @@ def stub_is_up(worktree: Path, attempt: int) -> bool:
 
 
 
-def finding_key(epic_id: str, node_id: str) -> str:
-    return f"hardening/agent-worktree-boundary/{epic_id}/{node_id}"
+#: Every detector finding is filed under the class, with no epic or node suffix
+#: (073 FR-024).  The attempt that filed it is named in the refs instead
+#: (FR-025), which is what the assertions below now read.
+FINDING_KEY = detector.FINDING_KEY
 
 
 def _detector_snapshot_dir(factory_root: Path) -> Path | None:
@@ -212,7 +215,7 @@ def _detector_snapshot_dir(factory_root: Path) -> Path | None:
     return None
 
 
-def _read_surviving_finding(snapshot_dir: Path, epic_id: str, node_id: str) -> Finding | None:
+def _read_surviving_finding(snapshot_dir: Path) -> Finding | None:
     """Read the finding the detector persisted outside the runtime root."""
     path = snapshot_dir / "findings.json"
     if not path.exists():
@@ -221,7 +224,7 @@ def _read_surviving_finding(snapshot_dir: Path, epic_id: str, node_id: str) -> F
 
     data = json.loads(path.read_text(encoding="utf-8"))
     for entry in data.get("findings", []):
-        if entry.get("key") == finding_key(epic_id, node_id):
+        if entry.get("key") == FINDING_KEY:
             return Finding(
                 key=entry["key"],
                 category=entry["category"],
@@ -274,7 +277,7 @@ async def test_agent_modifying_tracked_file_in_target_repo_files_finding(
 
     conn = connect(factory_root / "doctor.db")
     try:
-        finding = get_finding(conn, finding_key(EPIC, NODE))
+        finding = get_finding(conn, FINDING_KEY)
         assert finding is not None, "expected a finding for the changed tracked path"
         assert finding.severity is Severity.CRITICAL
         assert str(target_file.relative_to(repo)) in finding.summary or any(
@@ -308,7 +311,7 @@ async def test_agent_writing_only_inside_worktree_files_nothing(
 
     conn = connect(factory_root / "doctor.db")
     try:
-        assert get_finding(conn, finding_key(EPIC, NODE)) is None
+        assert get_finding(conn, FINDING_KEY) is None
     finally:
         conn.close()
 
@@ -335,7 +338,7 @@ async def test_operator_work_is_reported_and_untouched(
 
     conn = connect(factory_root / "doctor.db")
     try:
-        finding = get_finding(conn, finding_key(EPIC, NODE))
+        finding = get_finding(conn, FINDING_KEY)
         assert finding is not None
         assert finding.severity is Severity.CRITICAL
         assert "operator_work.txt" in finding.summary or any(
@@ -409,7 +412,7 @@ async def test_detector_runs_on_completed_agent_error_timeout_and_killed(
     conn = connect(factory_root / "doctor.db")
     try:
         # At least one finding should exist and mention the tracked file.
-        finding = get_finding(conn, finding_key(EPIC, NODE))
+        finding = get_finding(conn, FINDING_KEY)
         assert finding is not None
         assert finding.severity is Severity.CRITICAL
         assert TRACKED_FILE in finding.summary or any(
@@ -448,7 +451,7 @@ async def test_agent_truncating_runtime_root_store_files_finding(
 
     conn = connect(factory_root / "doctor.db")
     try:
-        finding = get_finding(conn, finding_key(EPIC, NODE))
+        finding = get_finding(conn, FINDING_KEY)
         assert finding is not None
         assert finding.severity is Severity.CRITICAL
         summary = finding.summary
@@ -501,7 +504,7 @@ async def test_detector_reports_even_when_runtime_root_is_deleted(
     # Reconstitute the finding by replaying the detector with the saved snapshot.
     # (The implementation writes a findings batch file or the finding row itself
     # outside the runtime root; this test reads that artifact.)
-    finding = _read_surviving_finding(snapshot_dir, EPIC, NODE)
+    finding = _read_surviving_finding(snapshot_dir)
     assert finding is not None, "expected a surviving finding after runtime root deletion"
     assert finding.severity is Severity.CRITICAL
     assert "runtime root" in finding.summary or "doctor.db" in finding.summary
