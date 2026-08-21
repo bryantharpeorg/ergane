@@ -1,5 +1,25 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-21 (10:00 AM CT), 4/4. US1 83f0253f1506 (#224),
+# US2 b4ebc30b72bf (#226), US3 e5cb0e95dedc (#264), US4 c678c11191f7 (#266) —
+# all four observed on ergane-buildout by
+# `ergane spec landed --default-branch ergane-buildout`, and each confirmed an
+# ancestor of origin/ergane-buildout.
+#
+# Attempts, from the ledger rather than from a report: US1 and US3 first-attempt;
+# US2 took two attempts across a re-dispatch (the killed run of 2026-08-19, whose
+# hold note survives below); US4 took two, the first refused by `check_output` on
+# diff size at 127,038 B against the 65,536 B ceiling with the gate already green,
+# the second landing at 64,530 B — 1,006 B of margin — with the judge 5/5 and no
+# feedback. US1/US2 ran on `implementer`; US3/US4 on `opus-closer` (subscription).
+#
+# WHAT THIS ATTESTATION DOES NOT CLAIM. US4's live end-to-end run is the
+# operator's post-landing verification (SC-004, SC-005), not diff evidence, and
+# it has not been run. The exercise, its per-stage failure reporting, its skip
+# guard and its control transcripts are committed and judged; the live drive
+# against a real forge is outstanding.
+#
+# --- release note this supersedes ---
 # RELEASED draft -> ready 2026-08-21 ~6:45 AM CT on the operator's go, hold
 # conditions answered:
 #   1. Stale forge state CLEARED: PR #226 is MERGED (us2 landed b4ebc30), the

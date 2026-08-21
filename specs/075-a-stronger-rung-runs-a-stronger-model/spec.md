@@ -1,5 +1,26 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-21 (10:00 AM CT), 3/3. US1 4480d42ec746 (#254),
+# US2 377d121cacb4 (#253), US3 9cfe98ef16e1 (#263) — all three observed on
+# ergane-buildout by `ergane spec landed --default-branch ergane-buildout`, and
+# each confirmed an ancestor of origin/ergane-buildout. All three on
+# `opus-closer` (subscription); US3 first-attempt, US1 and US2 two attempts each.
+#
+# US1's SECOND ATTEMPT IS ITS OWN EVIDENCE. The ledger records it issued to the
+# `debugger` persona at 02:21:15Z and terminated `agent_error` — the escalation
+# rung firing on the very spec written to fix
+# `interpreter/debugger-escalation-does-not-change-the-model`. Read the rung and
+# the model separately when reasoning about this row; that they disagree is the
+# defect, not a reporting artifact.
+#
+# WHAT THIS ATTESTATION DOES NOT CLAIM. Both US1 and US2 had to detect and repair
+# a red trunk inside their own stories: c9dea78, an ungated direct operator push
+# to ergane-buildout, landed four failing tests under every node's pinned base.
+# That is filed as
+# `verify/an-operator-push-to-the-landing-branch-bypasses-the-required-check-and-can-red-the-trunk-every-node-builds-on`
+# (critical, open). The stories landed despite it, not because it was fixed.
+#
+# --- ready-flip note this supersedes ---
 # FLIPPED draft -> ready 2026-08-20 1:44 PM CT at the operator's instruction,
 # after he read the rendered page. What the pre-dispatch review did:
 #
