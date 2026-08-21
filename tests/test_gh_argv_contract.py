@@ -304,11 +304,10 @@ def _refused_json_fields(
     without a credential, so the field set is checked here whenever the run
     itself came back accepting.
     """
-    if "--json" not in list(argv):
+    argv = list(argv)
+    if "--json" not in argv or argv.index("--json") + 1 >= len(argv):
         return ""
-    index = list(argv).index("--json")
-    if index + 1 >= len(argv):
-        return ""
+    index = argv.index("--json")
     requested = [field for field in argv[index + 1].split(",") if field]
     declared = _declared_json_fields(argv[:index], env=env)
     if declared is None:
