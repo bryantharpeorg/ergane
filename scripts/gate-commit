@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Run the declared gate against ONE commit and record the pass.
+#
+# Split out of the pre-push hook for a reason found the hard way: git opens the
+# connection to the remote BEFORE it runs `pre-push` and holds it open while the
+# hook works. The suite takes ~6 minutes; GitHub closes the connection long
+# before that, so a hook that runs the gate inline reports
+# `gate PASSED` and then loses the push to
+# `Connection to github.com closed by remote host`. The gate ran, the verdict was
+# right, and nothing landed.
+#
+# So the expensive half happens here, deliberately and out of band, and the hook
+# only asks whether it already happened FOR THIS EXACT SHA.
+#
+#   scripts/gate-commit            # gate HEAD
+#   scripts/gate-commit <sha>      # gate any commit
+#
+# The pass is recorded per-sha in the git dir (never committed, never shared),
+# so amending or rebasing invalidates it automatically: the new commit has a new
+# sha and has not been gated.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)" || exit 1
+TARGET="$(git rev-parse --verify "${1:-HEAD}^{commit}" 2>/dev/null)"
+if [ -z "$TARGET" ]; then
+  echo "gate-commit: '${1:-HEAD}' is not a commit" >&2
+  exit 1
+fi
+RECORD="$(git rev-parse --git-common-dir)/ergane-gate-passed"
+
+# factory.yaml is the authority on what "green" means (D-009: declared, never
+# auto-detected). Read it rather than hardcoding pytest, so this cannot drift
+# from what dispatched nodes are held to.
+GATE="$(python3 - "$REPO_ROOT/factory.yaml" <<'PY' 2>/dev/null
+import sys, re
+try:
+    text = open(sys.argv[1]).read()
+except OSError:
+    sys.exit(1)
+block = re.search(r'^gates:\s*$(.*?)(^\S|\Z)', text, re.M | re.S)
+if not block:
+    sys.exit(1)
+entry = re.search(r'^\s+\w+:\s*"(.+?)"\s*$', block.group(1), re.M)
+if not entry:
+    sys.exit(1)
+print(entry.group(1))
+PY
+)"
+if [ -z "$GATE" ]; then
+  echo "gate-commit: could not read a gate command out of factory.yaml" >&2
+  exit 1
+fi
+
+# A throwaway worktree, not your checkout. This is the whole point: on
+# 2026-08-20 an operator watched 3934 tests pass and still pushed a red trunk,
+# because the suite had run in a tree that shared most of its content with the
+# commit but not all of it. Nothing staged, unstaged, stashed or untracked can
+# reach this verdict.
+wt="$(mktemp -d "${TMPDIR:-/tmp}/ergane-gate-XXXXXX")"
+if ! git worktree add --detach --quiet "$wt" "$TARGET" 2>/dev/null; then
+  echo "gate-commit: could not materialise ${TARGET:0:12} in a scratch worktree" >&2
+  rm -rf "$wt"
+  exit 1
+fi
+
+echo "gate-commit: ${TARGET:0:12} — running: $GATE"
+echo "gate-commit: in $wt (a scratch worktree, not your checkout)"
+( cd "$wt" && eval "$GATE" )
+rc=$?
+
+git worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+
+if [ $rc -ne 0 ]; then
+  echo >&2
+  echo "gate-commit: FAILED on ${TARGET:0:12} — not recorded." >&2
+  exit 1
+fi
+
+grep -qxF "$TARGET" "$RECORD" 2>/dev/null || echo "$TARGET" >> "$RECORD"
+echo "gate-commit: PASSED and recorded ${TARGET:0:12}"

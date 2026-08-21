@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Refuse a push to the landing branch unless the declared gate has already passed
+# ON THE EXACT COMMIT BEING PUSHED.
+#
+# This hook is deliberately INSTANT. It does not run the suite. An earlier
+# version did, and it was wrong in a way worth recording: git opens the
+# connection to the remote *before* running `pre-push` and holds it open while
+# the hook works. The suite takes ~6 minutes, GitHub closes the connection well
+# short of that, and the push dies with
+# `Connection to github.com closed by remote host` — immediately after the hook
+# has printed `gate PASSED`. The gate ran, the verdict was correct, and nothing
+# landed. A slow pre-push hook does not gate a push; it loses it.
+#
+# So the expensive half lives in `scripts/gate-commit`, which records the sha it
+# proved, and this hook asks one question: was THIS sha proved?
+#
+# Install:  git config core.hooksPath scripts/hooks
+# Override: ERGANE_SKIP_PREPUSH_GATE=1 git push ...    (say why in the PR)
+
+set -uo pipefail
+
+GUARDED_REFS="${ERGANE_GUARDED_REFS:-refs/heads/ergane-buildout refs/heads/main}"
+ZERO='0000000000000000000000000000000000000000'
+RECORD="$(git rev-parse --git-common-dir)/ergane-gate-passed"
+
+if [ "${ERGANE_SKIP_PREPUSH_GATE:-}" = "1" ]; then
+  echo "pre-push: SKIPPED by ERGANE_SKIP_PREPUSH_GATE=1 — you are pushing an ungated commit to a guarded branch." >&2
+  exit 0
+fi
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${remote_ref:-}" ] && continue
+  case " $GUARDED_REFS " in *" $remote_ref "*) ;; *) continue ;; esac
+  [ "$local_sha" = "$ZERO" ] && continue          # a deletion carries no tree to gate
+
+  if grep -qxF "$local_sha" "$RECORD" 2>/dev/null; then
+    echo "pre-push: ${local_sha:0:12} was gated and recorded — allowing push to $remote_ref."
+    continue
+  fi
+
+  echo >&2
+  echo "pre-push: REFUSED — ${local_sha:0:12} has not passed the gate." >&2
+  echo >&2
+  echo "  $remote_ref is the branch every dispatched node pins its base to." >&2
+  echo "  A red one costs agent attempts, not just your time: a node's gate runs" >&2
+  echo "  the whole suite against a base it did not choose and cannot fix without" >&2
+  echo "  leaving its own scope." >&2
+  echo >&2
+  echo "  Prove this exact commit, then push again:" >&2
+  echo >&2
+  echo "      scripts/gate-commit ${local_sha:0:12}" >&2
+  echo >&2
+  echo "  Note it must be THIS sha. Amending or rebasing produces a new commit," >&2
+  echo "  which has not been gated — that is the point, not an inconvenience." >&2
+  echo "  Deliberate override: ERGANE_SKIP_PREPUSH_GATE=1 git push ..." >&2
+  echo >&2
+  status=1
+done
+
+exit $status
