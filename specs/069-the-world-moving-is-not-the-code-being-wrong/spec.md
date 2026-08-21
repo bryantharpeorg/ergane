@@ -1,5 +1,58 @@
 ---
-state: draft
+state: landed
+# ATTESTED landed 2026-08-20 7:35 PM CT. All three stories observed on
+# ergane-buildout with `ergane spec landed --default-branch ergane-buildout`:
+# US1 9274625 (PR #247), US2 4eb31f5 (PR #250), US3 9537643 (PR #251).
+#
+# BOOKKEEPING ONLY -- nothing was built to close this. The frontmatter sat at
+# `ready` because the factory never saw US3 land. PR #251 merged at 22:20:38Z on
+# GitHub's own auto-merge, after the worker restart at 21:29:44Z had already
+# killed the landing poller host-wide, so the epic was parked and blind while the
+# forge finished the job without it. The work was done; only the observation was
+# missing. Its merge commit 9537643 is the current buildout tip.
+#
+# WORTH RECORDING, because the irony is load-bearing. This spec is titled "the
+# world moving is not the code being wrong," and US1 (9274625) is the single
+# commit behind all three of the day's incidents: it introduced `_escalate_and_apply`
+# into the landing path, which made every in-flight epic unreplayable across the
+# worker restart (two epics lost); it added a null escalation child that crashed
+# the landing path; and it put `baseRefOid` into `_VIEW_FIELDS`, which the
+# installed gh refuses, which is what killed the poller above. The story that
+# taught the factory to tell a moved world from broken code moved the world under
+# everything else on the floor.
+#
+# --- the flip this supersedes, kept for the chain ---
+# FLIPPED draft -> ready 2026-08-20 6:40 AM CT at the operator's instruction,
+# after the re-review the hold below demanded. Verified against `357d227`:
+#
+#   - ANCHORS: 33/33 resolve. `_attempts_spent` (`:111-119` -> `:119-133`),
+#     `_debugger_cycles_spent` (`:122-124` -> `:136-138`), `_judge_rewrites_spent`
+#     (`:127-145` -> `:181-199`), models.py (`:645-647` -> `:653-655`),
+#     `_reset_epic` (`:878-900` -> `:879-915`), `create_pr` (`:172` ->
+#     `:163-193`). The preflight regex anchors (`:298`, `:304`, `:305`) were
+#     already exact.
+#   - COVERAGE: 16/16 scenarios and 11/11 FRs claimed by a task, none phantom,
+#     no duplicate ids. No two stories share a production file.
+#   - DANGEROUS STALE TRAP FIXED: trap 10 said `create_pr` "is already broken and
+#     is not yours." 071 FIXED IT (`476713a`, `225cb31`) -- it now calls
+#     `self._run` and parses the PR number from the URL, with no `json.loads` on
+#     that path. The trap would have told an implementer to dismiss a regression
+#     they caused as a known finding. Inverted, and the general lesson recorded:
+#     a trap that permits ignoring a failure fails DANGEROUSLY rather than
+#     safely, and must name the commit it was verified against.
+#   - SEMANTIC CORRECTION: the plan described `_attempts_spent` as "counting
+#     every non-debugger record". 070/US5 falsified that -- it takes a config now
+#     and also excludes the promotion persona. Any ladder-count assertion this
+#     story makes must pass the config or it measures pre-US5 behaviour.
+#   - RAN THE CLI: `ergane build reset` against epic 070 reported only
+#     "committed dirty state, removed worktree, archived branch" per node and
+#     touched no forge -- confirming US3's "local only; nothing in it reaches the
+#     forge" premise, which is the gap FR-010 exists to close.
+#
+# NOT RUN, and not cheaply runnable: US1's moved-base rejection path needs an
+# epic the merge queue actually rejects.
+#
+# --- the hold this reverses, kept for the chain ---
 # HELD ready -> draft 2026-08-19 5:45 PM CT, BEFORE ANY DISPATCH, by the same
 # operator session that wrote this spec ninety minutes earlier. A twelve-agent
 # adversarial pre-dispatch review found 68 defects across 067/068/069 rated
@@ -45,10 +98,10 @@ state: draft
 #
 # Verified against the tree before drafting, 2026-08-19:
 #
-#   - `factory/verify/models.py:645-647` -- max_attempts: 3, max_judge_retries: 2,
+#   - `factory/verify/models.py:653-655` -- max_attempts: 3, max_judge_retries: 2,
 #     debugger_cycles: 1. The SHIPPED DEFAULT survives zero sibling landings for a
 #     node that also needs its debugger rung for anything else.
-#   - `factory/verify/ladder.py:111-119` -- `_attempts_spent` counts every record
+#   - `factory/verify/ladder.py:119-133` -- `_attempts_spent` counts every record
 #     whose persona is not the debugger. A rejection-driven recovery is such a
 #     record, so a landing rejection costs an attempt AND a debugger cycle.
 #   - `factory/workgraph/workflow.py:2163`, `:2254`, `:2539-2565`, `:2629` -- the
@@ -57,7 +110,7 @@ state: draft
 #     `rejected_tip`. So the code ALREADY distinguishes "the base moved" from
 #     "the tree is unchanged" in one place; it just does not price them
 #     differently.
-#   - `ergane build reset` (`factory/cli/nouns/build.py:878-900`) reads and
+#   - `ergane build reset` (`factory/cli/nouns/build.py:879-915`) reads and
 #     archives LOCAL state only. Nothing in it touches the forge.
 #
 # Filed as findings before drafting:
@@ -281,12 +334,15 @@ branch, and assert a rebuilt node can push.
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-006]
+  persona: opus-closer
 US2:
   depends_on: []
   implements: [FR-007, FR-008, FR-009]
+  persona: opus-closer
 US3:
   depends_on: []
   implements: [FR-010, FR-011]
+  persona: opus-closer
 ```
 
 ## Success Criteria

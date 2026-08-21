@@ -22,11 +22,16 @@ rely on it.
   is closer to hand than it looks.
 - `factory/workgraph/workflow.py:286` — "return a rejected landing to ENQUEUED."
 - `factory/workgraph/workflow.py:462` — the queue history an operator reads.
-- `factory/verify/ladder.py:111-119` — `_attempts_spent`, counting every
-  non-debugger record.
-- `factory/verify/ladder.py:122-124` — `_debugger_cycles_spent`. (`:127-145` is
+- `factory/verify/ladder.py:119-133` — `_attempts_spent`. **Not "every
+  non-debugger record" — that description was true when this plan was written and
+  070/US5 falsified it.** It now takes `config: VerificationConfig | None = None`
+  and excludes `{DEBUGGER_PERSONA, config.promotion_persona}`, the set built at
+  `:132`. Measured: with the config a promoted record scores 0, without it 1. Any
+  assertion this story makes about ladder counts must pass the config, or it will
+  silently measure the pre-US5 behaviour and pass for the wrong reason.
+- `factory/verify/ladder.py:136-138` — `_debugger_cycles_spent`. (`:181-199` is
   `_judge_rewrites_spent`, a different cap — not this story's.)
-- `factory/verify/models.py:645-647` — `max_attempts: 3`, `max_judge_retries: 2`,
+- `factory/verify/models.py:653-655` — `max_attempts: 3`, `max_judge_retries: 2`,
   `debugger_cycles: 1`.
 
 **US1 — THERE ARE TWO BUDGETS HERE AND A FIX THAT NAMES ONLY ONE IS WRONG.**
@@ -93,13 +98,15 @@ testable on its own.
 
 **US3 — reset and the forge:**
 
-- `factory/cli/nouns/build.py:878-900` — `_reset_epic`. Local only; nothing in it
+- `factory/cli/nouns/build.py:879-915` — `_reset_epic`. Local only; nothing in it
   reaches the forge.
-- `factory/mergequeue/gh.py` — the forge client. **Note before you use it:
-  `create_pr` at `:172` calls `_run_json("pr","create", …)` without `--json`, so
-  `json.loads` raises on every first attempt.** That is a known open finding and
-  is NOT in this spec's scope; do not fix it here, and do not build on the
-  assumption that this module is clean.
+- `factory/mergequeue/gh.py:163-193` — `create_pr`, the forge client's open-a-PR
+  path. **This plan said until 2026-08-20 that it was broken — calling
+  `_run_json("pr","create", …)` without `--json` so `json.loads` raised on every
+  first attempt. That was true when it was written and 071 fixed it** (`476713a`,
+  `225cb31`). It now uses `self._run` and derives the number from the URL `gh`
+  prints on stdout; there is no `json.loads` on this path at all. Treat a failure
+  inside `create_pr` as **yours**, not as the known finding.
 
 ## Traps
 
@@ -154,9 +161,18 @@ negative.
 local reset still completes and says what it could not do. A cleanup verb that
 aborts on a network error strands the operator in the state it exists to clear.
 
-**10. `create_pr` is already broken and is not yours.** See above. If your
-attempt starts failing inside `factory/mergequeue/gh.py:172`, that is the known
-open finding, not something you introduced and not something to fix here.
+**10. `create_pr` is NOT broken any more — a failure there is yours.** This trap
+used to say the opposite, and following it now would cost you the attempt: you
+would see a real regression you introduced, read this line, and dismiss it as a
+known finding. 071 fixed `create_pr` (`476713a`, `225cb31`). Verified against
+`357d227`: `factory/mergequeue/gh.py:163-193` calls `self._run`, not
+`_run_json`, and parses the PR number out of the URL `gh` prints — no `json.loads`
+on that path. **Treat any failure inside it as something you caused.**
+
+The general lesson, since this is the second stale "known broken" note found in
+this spec set: a trap that grants permission to ignore a failure has a short
+shelf life, and it fails dangerously rather than safely. State the commit you
+verified it against, as this one now does.
 
 **11. One test file per story, named here.**
 - US1 → `tests/test_moved_base_is_not_charged.py`

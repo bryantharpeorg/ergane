@@ -15,7 +15,7 @@ lands.
 - [ ] T001 [P] [US1] (spec US1-S1) In `tests/test_moved_base_is_not_charged.py`,
       reject an enqueued landing because the base moved and assert **all three**
       counts are unchanged, directly: the ladder's attempt count
-      (`factory/verify/ladder.py:111-119`), its debugger-cycle count (`:122-124`),
+      (`factory/verify/ladder.py:119-133`), its debugger-cycle count (`:136-138`),
       and the landing's `recovery_cycles` (`factory/mergequeue/models.py:134`).
       **THERE ARE TWO BUDGETS ON THIS PATH AND TODAY A MOVED BASE SPENDS ONE OF
       EACH**: `factory/workgraph/workflow.py:2325` increments `recovery_cycles`,
@@ -107,7 +107,7 @@ lands.
 ### Implementation for this story
 
 - [ ] T027 [US3] (FR-010) Add the forge cleanup to `_reset_epic`
-      (`factory/cli/nouns/build.py:878-900`), scoped to the
+      (`factory/cli/nouns/build.py:879-915`), scoped to the
       `factory/<epic>/<node>` namespace.
 - [ ] T028 [US3] (FR-011) Degrade rather than fail when the forge is unreachable.
 
