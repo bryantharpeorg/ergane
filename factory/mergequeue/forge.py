@@ -176,7 +176,12 @@ class ForgeError(RuntimeError):
 
 @runtime_checkable
 class Forge(Protocol):
-    """The seam: two reading operations, six landing ones, one wiring one, no tenth."""
+    """The seam: two reading operations, six landing, one wiring, two cleanup.
+
+    Eleven, and no twelfth: an operation added here is a question every forge
+    must answer, so the count is part of the contract rather than an accident of
+    what one caller wanted.
+    """
 
     def describe_repository(self) -> RepositoryDescription:
         """Name this repository and report what only this forge can report.
@@ -246,6 +251,39 @@ class Forge(Protocol):
         Evidence, never a conclusion: a forge that cannot produce a log states the
         absence in the record's `note` and returns anyway, one record per
         requested name, so the recovery cycle is not lost to its own evidence."""
+        ...
+
+    # --- the cleanup half (069-US3, FR-010) ----------------------------------
+    #
+    # What a *reset* has to undo on a forge, after an epic is terminated and its
+    # local survivors are archived. Two operations, because a forge holds two
+    # things a rebuilt node collides with: the proposal the dead attempt offered,
+    # and the head it pushed. Neither belongs to the landing half — nothing here
+    # runs while an epic is alive, and `ergane build reset` refuses to run while
+    # the workflow is.
+
+    def close_proposal(self, proposal: int, *, note: str) -> None:
+        """Close `proposal` without landing it, leaving `note` on it as the reason.
+
+        Distinct from `withdraw_landing`, which takes back a landing request and
+        leaves the proposal open for a person to decide about. This one ends it,
+        and `note` is not optional: a proposal shut with no reason cannot be told
+        from a person's mistake by the person who finds it.
+        """
+        ...
+
+    def retire_head(self, head: str, *, archive_prefix: str) -> str:
+        """Remove `head`, keeping whatever it pointed at under `archive_prefix`.
+
+        The tip is preserved first and the removal is what unblocks the rebuild:
+        a fresh branch from the base is not a descendant of what a dead attempt
+        pushed, so the forge refuses that push until the old head is gone
+        (constitution VI keeps the commits; FR-010 requires the head go).
+
+        Returns what it did, in words an operator reads, or `""` for a head this
+        forge does not hold — an absent head is an answer, which is what makes a
+        second reset succeed rather than fail on its own first run.
+        """
         ...
 
     # --- the wiring half (049-US4, FR-012/FR-013) ----------------------------

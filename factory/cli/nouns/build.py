@@ -33,6 +33,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -123,10 +124,18 @@ from factory.workgraph.preflight import (
 )
 from factory.workgraph.cli import DEFAULT_SPECS_ROOT
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
+from factory.mergequeue.forge import (
+    ForgeError,
+    UnknownForgeError,
+    resolve_forge_for_repo,
+)
+from factory.mergequeue.reset import reset_node_on_forge, reset_note
 from factory.workgraph.worktree import (
     NodeSalvage,
+    branch_name,
     read_node_salvage,
     reset as reset_worktree,
+    _has_remote as has_remote,
 )
 
 #: Compiled artifact naming convention, shared with `spec derive`.
@@ -1037,8 +1046,91 @@ def reset_refusal(epic_id: str, document: Mapping[str, Any]) -> str | None:
     return None
 
 
-async def _reset_epic(graph: WorkGraph) -> int:
-    """Reset every node the graph names, after one Temporal read proves it is safe."""
+@dataclass(frozen=True)
+class NoForge:
+    """Why a reset resolved no forge, and whether that leaves work undone.
+
+    The distinction is the whole of it, and getting it wrong costs the operator
+    real time either way: a clone with no remote never pushed a node branch, so
+    there is *nothing to do* and saying "not done" would send them looking for a
+    pull request that was never opened. A forge that could not be built is work
+    genuinely *undone*, and saying "nothing to do" would hide it (FR-011).
+    """
+
+    reason: str
+    undone: bool
+
+
+def _reset_forge(target_repo: Path | str) -> tuple[Any | None, NoForge | None]:
+    """The forge whose state this reset must clear, or why there is none.
+
+    Never raises, and never spawns anything to find out (069-US3, FR-011): a
+    clone with no `origin` never pushed a node branch, so there is no forge state
+    to clear and building a forge would be a subprocess asked a question already
+    answered — which is also what keeps every offline reset test in this
+    repository offline. A forge that cannot be *resolved* — an unknown name in
+    the manifest, an unreadable manifest — is reported the same way a forge that
+    cannot be reached is, because the operator's position is identical: the local
+    reset is done and the forge work is theirs to finish.
+    """
+    repo = Path(target_repo)
+    if not repo.is_dir():
+        return None, NoForge(
+            f"the target repository is not on this machine: {repo}", undone=True
+        )
+    if not has_remote(repo, "origin"):
+        return None, NoForge(
+            f"{repo} has no 'origin' remote, so no node branch was ever pushed",
+            undone=False,
+        )
+    try:
+        return resolve_forge_for_repo(repo_path=str(repo)), None
+    except (UnknownForgeError, FactoryConfigError, ForgeError, OSError) as error:
+        return None, NoForge(
+            f"no forge could be resolved for {repo}: {error}", undone=True
+        )
+
+
+def _forge_reset_lines(
+    forge: Any | None,
+    absent: NoForge | None,
+    epic_id: str,
+    node_id: str,
+) -> list[str]:
+    """One node's forge cleanup, as the operator reads it.
+
+    Every line is prefixed `forge:`, and an undone one says `not done` and names
+    the head, so FR-011's report is a remedy rather than a complaint: what is
+    printed is enough to finish the job by hand.
+    """
+    head = branch_name(epic_id, node_id)
+    if forge is None:
+        stated = absent or NoForge("no forge was resolved", undone=True)
+        if not stated.undone:
+            return [f"forge: nothing to do — {stated.reason}"]
+        return [f"forge: not done for {head} — {stated.reason}"]
+
+    result = reset_node_on_forge(
+        forge, head=head, note=reset_note(epic_id, node_id)
+    )
+    lines = [f"forge: {action}" for action in result.done]
+    lines += [f"forge: not done — {undone}" for undone in result.not_done]
+    return lines
+
+
+async def _reset_epic(graph: WorkGraph, *, forge: Any | None = None) -> int:
+    """Reset every node the graph names, after one Temporal read proves it is safe.
+
+    Two halves, in this order and never the other one (069-US3). The local half
+    archives the survivors; the forge half closes the node's open pull request
+    and retires the head it pushed, which is what a rebuilt node collides with.
+    Local first because it is the half that must always happen: it needs nothing
+    off this machine, and it is what the operator is recovering with.
+
+    `forge` is the seam tests put a repository behind. Left unset — every
+    operator invocation — the forge is the one the target repository declares,
+    resolved once for the whole graph rather than per node.
+    """
     client = await _connect()
     handle = client.get_workflow_handle(workflow_id(graph.epic_id))
     try:
@@ -1077,6 +1169,10 @@ async def _reset_epic(graph: WorkGraph) -> int:
         ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, DEFAULT_FACTORY_ROOT_PATH
     )
 
+    resolved, absent = (
+        (forge, None) if forge is not None else _reset_forge(graph.target_repo)
+    )
+
     for node in graph.nodes:
         actions = reset_worktree(
             graph.target_repo,
@@ -1085,6 +1181,10 @@ async def _reset_epic(graph: WorkGraph) -> int:
             factory_root=factory_root,
         )
         print(f"{node.id}: {', '.join(actions)}")
+        for line in _forge_reset_lines(
+            resolved, absent, graph.epic_id, node.id
+        ):
+            print(f"  {line}")
 
     if waiting:
         # Archived, and the epic is still alive holding an unanswered page. Name
