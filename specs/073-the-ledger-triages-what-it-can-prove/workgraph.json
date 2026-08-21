@@ -1,13 +1,13 @@
 {
   "epic_id": "073-the-ledger-triages-what-it-can-prove",
   "feature": "073-the-ledger-triages-what-it-can-prove",
-  "specs_root": "specs",
-  "target_repo": "/home/admin/code/ergane",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane-roadmap-target",
   "nodes": [
     {
       "id": "us1",
       "story_key": "US1",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "073-the-ledger-triages-what-it-can-prove:US1",
       "requirement_keys": [
         "US1",
@@ -22,7 +22,7 @@
     {
       "id": "us2",
       "story_key": "US2",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "073-the-ledger-triages-what-it-can-prove:US2",
       "requirement_keys": [
         "US2",
@@ -46,7 +46,7 @@
     {
       "id": "us3",
       "story_key": "US3",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "073-the-ledger-triages-what-it-can-prove:US3",
       "requirement_keys": [
         "US3",
@@ -66,7 +66,7 @@
     {
       "id": "us4",
       "story_key": "US4",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "073-the-ledger-triages-what-it-can-prove:US4",
       "requirement_keys": [
         "US4",
@@ -82,7 +82,7 @@
     {
       "id": "us5",
       "story_key": "US5",
-      "persona": "implementer",
+      "persona": "opus-closer",
       "spec_ref": "073-the-ledger-triages-what-it-can-prove:US5",
       "requirement_keys": [
         "US5",
@@ -96,5 +96,6 @@
       "depends_on_merged": [],
       "timeout_override_s": null
     }
-  ]
+  ],
+  "inferred_edges": []
 }
