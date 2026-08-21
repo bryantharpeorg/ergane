@@ -17,8 +17,12 @@ Key design points:
   ``doctor.db`` itself, so any wider rule reports the neighbours and itself.
   Generated paths (``__pycache__``, ``.pytest_cache``, ``*.pyc``) are left out
   of the snapshot at capture for the same reason (FR-022).
-- The finding key is keyed by ``epic_id`` and ``node_id`` so recurrence is
-  countable per node.
+- The finding key is the *class* — ``hardening/agent-worktree-boundary``, with no
+  epic or node suffix (FR-024) — so a boundary that four attempts trip is one row
+  with four occurrences rather than four rows with one each.  The attribution the
+  suffix used to carry moves into the refs, which name the epic and node of the
+  attempt that filed the observation (FR-025), and the evidence is bounded so one
+  pathological attempt cannot write a finding of unbounded size (FR-026).
 - Findings are filed by writing a JSON batch to a path the operator can inspect,
   and by upserting into ``doctor.db`` when that store is still reachable.
 """
@@ -46,6 +50,18 @@ class DetectorError(RuntimeError):
 
 #: The category used for all detector findings.
 CATEGORY = "hardening"
+
+#: The key every detector finding is filed under: one defect class, one row
+#: (FR-024).  It carries no epic or node suffix, because the ledger's job is to
+#: count how often a class recurs and a key split by the thing that recurs can
+#: never count it — the same four escapes arrived as forty rows of one.
+FINDING_KEY = f"{CATEGORY}/agent-worktree-boundary"
+
+#: How many changed paths one finding may name, across both halves of the
+#: comparison, before the rest become a count (FR-026).  Twenty is enough to see
+#: the shape of an escape and read it in a terminal; the finding that motivated a
+#: bound named 3,860 paths, and evidence that large is not evidence anyone reads.
+MAX_EVIDENCE_PATHS = 20
 
 #: Directories whose contents are generated, never authored, and are therefore
 #: left out of the runtime-root snapshot entirely (FR-022).  A sibling node
@@ -400,8 +416,25 @@ def _read_snapshot(snapshot_path: Path) -> dict[str, Any]:
     return json.loads(snapshot_path.read_text(encoding="utf-8"))
 
 
-def _finding_key(epic_id: str, node_id: str) -> str:
-    return f"hardening/agent-worktree-boundary/{epic_id}/{node_id}"
+def _finding_key() -> str:
+    """The class this detector files under — the same key for every attempt."""
+    return FINDING_KEY
+
+
+def _bounded(paths: list[str], room: int) -> tuple[list[str], int]:
+    """The first ``room`` paths, and how many were left out.
+
+    The room is shared across both halves of the finding rather than granted per
+    half, so ``MAX_EVIDENCE_PATHS`` is the bound on the finding and not on each
+    of its sections.
+    """
+    kept = paths[:room] if room > 0 else []
+    return kept, len(paths) - len(kept)
+
+
+def _remainder_note(dropped: int) -> str:
+    """The one line that stands in for the paths the bound left out."""
+    return f"  ... and {dropped} more path(s) not listed"
 
 
 def _build_finding(
@@ -410,39 +443,65 @@ def _build_finding(
     runtime_changes: dict[str, dict[str, Any]],
     seen_at: str,
 ) -> Finding | None:
-    """One critical finding naming every changed path, or None if nothing changed."""
+    """One critical finding naming the changed paths, or None if nothing changed.
+
+    The counts are always exact; the *lists* are bounded (FR-026).  A finding may
+    name at most ``MAX_EVIDENCE_PATHS`` paths in total, with whatever is left over
+    stated as a count in the notes and in the summary, so an attempt that changed
+    four thousand paths still produces a row an operator can read.  The refs are
+    bounded with them, because they are the same evidence in another column.
+    """
     if not tracked_changes and not runtime_changes:
         return None
 
-    refs: list[str] = []
+    # One shared allowance, tracked half first: the tracked-path check is the half
+    # that caught the real escapes, so it is the half that keeps its evidence
+    # when the two compete for room.
+    kept_tracked, dropped_tracked = _bounded(sorted(tracked_changes), MAX_EVIDENCE_PATHS)
+    kept_runtime, dropped_runtime = _bounded(
+        sorted(runtime_changes), MAX_EVIDENCE_PATHS - len(kept_tracked)
+    )
+
+    # The attempt that filed this observation.  With the key reduced to the class
+    # (FR-024), these refs are the only thing naming who tripped it (FR-025).
+    refs: list[str] = [f"epic:{context.epic_id}", f"node:{context.node_id}"]
     notes_parts: list[str] = []
 
     if tracked_changes:
         notes_parts.append("Tracked paths changed in target repository:")
-        for path in sorted(tracked_changes):
+        for path in kept_tracked:
             refs.append(f"target:{path}")
-        notes_parts.append(", ".join(sorted(tracked_changes)))
+        if kept_tracked:
+            notes_parts.append(", ".join(kept_tracked))
+        if dropped_tracked:
+            notes_parts.append(_remainder_note(dropped_tracked))
 
     if runtime_changes:
         if notes_parts:
             notes_parts.append("")
         notes_parts.append("Runtime-root paths removed or truncated:")
-        for path in sorted(runtime_changes):
+        for path in kept_runtime:
             refs.append(f"runtime:{path}")
             before = runtime_changes[path]["before"]
             after = runtime_changes[path]["after"]
             notes_parts.append(f"  {path}: {before} -> {after}")
+        if dropped_runtime:
+            notes_parts.append(_remainder_note(dropped_runtime))
 
-    all_changed = sorted(tracked_changes) + sorted(runtime_changes)
+    listed = kept_tracked + kept_runtime
+    dropped = dropped_tracked + dropped_runtime
+    evidence = ", ".join(listed) if listed else "none"
+    if dropped:
+        evidence = f"{evidence}, and {dropped} more"
     summary = (
         f"attempt {context.attempt} of {context.epic_id}/{context.node_id} "
         f"modified {len(tracked_changes)} tracked path(s) and "
         f"removed or truncated {len(runtime_changes)} runtime-root path(s): "
-        f"{', '.join(all_changed) if all_changed else 'none'}"
+        f"{evidence}"
     )
 
     return Finding(
-        key=_finding_key(context.epic_id, context.node_id),
+        key=_finding_key(),
         category=CATEGORY,
         severity=Severity.CRITICAL,
         status=Status.OPEN,
@@ -495,7 +554,7 @@ def compare_and_report(
     if not snapshot_path.exists():
         # We cannot compare; record that the snapshot is missing as a finding.
         finding = Finding(
-            key=_finding_key(context.epic_id, context.node_id),
+            key=_finding_key(),
             category=CATEGORY,
             severity=Severity.CRITICAL,
             status=Status.OPEN,
@@ -503,7 +562,11 @@ def compare_and_report(
                 f"attempt {context.attempt} of {context.epic_id}/{context.node_id}: "
                 "detector start snapshot missing at teardown"
             ),
-            refs=["detector:snapshot_missing"],
+            refs=[
+                f"epic:{context.epic_id}",
+                f"node:{context.node_id}",
+                "detector:snapshot_missing",
+            ],
             notes=f"expected snapshot at {snapshot_path}",
             source="agent-worktree-detector",
             occurrences=1,
