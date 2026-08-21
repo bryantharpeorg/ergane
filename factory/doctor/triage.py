@@ -2,10 +2,16 @@
 
 `ergane findings triage` sorts every open and regressed finding into exactly one
 class (FR-004) so an operator returning to a two-hundred-row ledger can act on
-it without reading every row. The whole module is a *read*: it opens no write
-transaction, runs no sweep, and the verb that drives it deliberately does not
-reuse `factory/cli/doctor.py`'s `_with_store` wrapper, which resolves promoted
-findings on the way past (FR-013).
+it without reading every row.
+
+Classification is a *read*: `classify` opens no write transaction, runs no
+sweep, and the verb that drives it deliberately does not reuse
+`factory/cli/doctor.py`'s `_with_store` wrapper, which resolves promoted
+findings on the way past (FR-013). `apply_triage` — the second half of the
+module, below the renderers — is the only thing here that writes, and it writes
+only to rows `classify` put in a class first. That ordering *is* FR-019: the
+sweep cannot act on a finding the report did not name, because the report is its
+input.
 
 The classes, in the order a finding is offered to them — the order is the
 design, because "exactly one class" is only well-defined once precedence is:
@@ -59,6 +65,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -69,6 +76,7 @@ from typing import Callable, Iterable, Sequence
 import yaml
 
 from factory.doctor.models import Finding, Status
+from factory.doctor.store import annotate, resolve, resolve_by_spec
 from factory.roadmap.models import SPEC_NAME, _split_frontmatter
 
 #: FR-010's default: a finding untouched for a fortnight, seen exactly once.
@@ -740,6 +748,254 @@ def render(triage: Triage) -> str:
     lines.append(
         f"{triage.classified} classified = {triage.total} open and regressed"
     )
+    return "\n".join(lines)
+
+
+# --- what `--apply` may do to each class (FR-014 … FR-019) --------------------
+#
+# Three sets, one class each, and every class in exactly one of them — held to
+# that by `test_the_three_write_policies_partition_every_class`. This is the
+# single `resolution` predicate FR-019 asks be stated in the diff: nothing below
+# decides whether to close a row by re-reading a spec, a date or a key shape.
+# `apply_triage` asks `item.triage_class in RESOLVABLE_CLASSES` and nothing else,
+# so moving one name from one set to another reverses a whole pass — visibly, in
+# one line, rather than by a condition drifting apart across six branches.
+
+#: Closed by `--apply`. A declaration proved by a dated landing (FR-014), and a
+#: fragmented class folded into its shared prefix (FR-016). Nothing else, ever.
+RESOLVABLE_CLASSES = frozenset({TriageClass.FIXED, TriageClass.FRAGMENTED})
+
+#: Left `open`, with a triage annotation written into `notes` and nothing else
+#: touched (FR-017, FR-018). These are the classes the ledger cannot decide: the
+#: annotation records what the sweep thought so the next operator inherits the
+#: reasoning rather than re-deriving it.
+ANNOTATABLE_CLASSES = frozenset({TriageClass.COLD, TriageClass.NEEDS_HUMAN})
+
+#: Not written to at all — not even a note, because a note is a write and
+#: FR-015 says *entirely* unchanged. A later sighting after a declared fix is
+#: the top of the operator's queue and a live regression; prose is not a
+#: declaration. Closing either is the failure this whole spec exists to prevent.
+UNTOUCHED_CLASSES = frozenset({TriageClass.SEEN_AFTER_FIX, TriageClass.CANDIDATE})
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """One row `--apply` closed, and the resolution it recorded."""
+
+    key: str
+    resolution: str
+
+
+@dataclass(frozen=True)
+class Fold:
+    """One fragmented class folded: the surviving key, and what went into it."""
+
+    prefix: str
+    keys: list[str]
+
+    @property
+    def members(self) -> int:
+        return len(self.keys)
+
+
+@dataclass(frozen=True)
+class Applied:
+    """What one `--apply` pass actually did, class by class.
+
+    `annotated` and `already_annotated` are separate because FR-018's idempotence
+    is a fact worth stating rather than hiding: a second pass over an unchanged
+    store reports every row in the second list and writes nothing.
+    """
+
+    resolved: list[Resolved]
+    folds: list[Fold]
+    annotated: list[str]
+    already_annotated: list[str]
+    untouched: list[TriagedFinding]
+
+    @property
+    def folded_keys(self) -> list[str]:
+        return [key for fold in self.folds for key in fold.keys]
+
+    @property
+    def resolved_count(self) -> int:
+        return len(self.resolved) + len(self.folded_keys)
+
+
+def fold_reason(prefix: str, members: int) -> str:
+    """FR-016's resolution: the shared prefix, and the number folded into it."""
+    return (
+        f"folded into '{prefix}': {members} rows of one defect split by key, "
+        "resolved by 'ergane findings triage --apply'"
+    )
+
+
+def apply_triage(
+    conn: sqlite3.Connection, triage: Triage, *, now: str
+) -> Applied:
+    """Enact a classification: close what was declared, annotate what was not.
+
+    Every write here is keyed off `triage.findings`, which `classify` filled with
+    open and regressed rows only. A resolved row is not in the pool, so it cannot
+    be re-resolved; a promoted row is not in the pool, so — unlike the sweep
+    `_with_store` runs — this cannot close one on the way past (FR-019, trap 4).
+
+    Fixed rows go through `resolve_by_spec`, which records the spec directory as
+    the resolution and appends a `resolved` event, and is the repository's one
+    existing "a landing closed this" path (FR-014). Folded rows go through
+    `resolve` with a reason naming the prefix and the count (FR-016). Annotated
+    rows go through `annotate`, which touches `notes` alone (FR-017, FR-018).
+    """
+    resolved: list[Resolved] = []
+    folds: dict[str, list[str]] = {}
+    annotated: list[str] = []
+    already_annotated: list[str] = []
+    untouched: list[TriagedFinding] = []
+
+    for item in triage.findings:
+        if item.triage_class not in RESOLVABLE_CLASSES:
+            continue
+        if item.triage_class is TriageClass.FIXED:
+            # A finding several landed specs both declare *and* prove is
+            # resolved naming all of them: picking one alphabetically would
+            # record a narrower fact than the ledger can support, and `specs`
+            # here is exactly the set that proved it.
+            resolution = ", ".join(item.specs)
+            if resolve_by_spec(conn, item.key, spec_dir=resolution, resolved_at=now):
+                resolved.append(Resolved(key=item.key, resolution=resolution))
+        else:
+            folds.setdefault(item.prefix or "", []).append(item.key)
+
+    for prefix, keys in sorted(folds.items()):
+        reason = fold_reason(prefix, len(keys))
+        for key in sorted(keys):
+            resolve(conn, key, reason=reason, resolved_at=now)
+
+    for item in triage.findings:
+        if item.triage_class in ANNOTATABLE_CLASSES:
+            written = annotate(
+                conn,
+                item.key,
+                annotation=f"{item.triage_class.value}: {item.reason}",
+            )
+            (annotated if written else already_annotated).append(item.key)
+        elif item.triage_class in UNTOUCHED_CLASSES:
+            untouched.append(item)
+
+    return Applied(
+        resolved=resolved,
+        folds=[
+            Fold(prefix=prefix, keys=sorted(keys))
+            for prefix, keys in sorted(folds.items())
+        ],
+        annotated=annotated,
+        already_annotated=already_annotated,
+        untouched=untouched,
+    )
+
+
+# --- rendering what was applied -----------------------------------------------
+
+#: Plan trap 12. `--apply` resolves the legacy per-node rows, and while the
+#: detector still keys on the node the very next attempt mints a fresh one under
+#: the same prefix. That is not a defect in the fold, but an operator who is not
+#: told will read tomorrow's ledger as a fold that did not take.
+FOLD_IS_DURABLE = False
+_FOLD_CAVEAT = (
+    "the fold is not durable yet: while the detector still keys on the node, "
+    "the next attempt mints a fresh row under this prefix and the class "
+    "re-fragments. The fold holds once the detector keys on the class."
+)
+
+_UNTOUCHED_CAVEAT = (
+    "these classes are never written to, not even a note: a sighting after a "
+    "declared fix is a live regression, and prose is not a declaration."
+)
+
+
+def to_applied_document(applied: Applied) -> dict:
+    """The `--apply --json` document: what the pass did, machine-readable."""
+    return {
+        "resolved": [
+            {"key": item.key, "resolution": item.resolution}
+            for item in applied.resolved
+        ],
+        "folds": [
+            {"prefix": fold.prefix, "members": fold.members, "keys": fold.keys}
+            for fold in applied.folds
+        ],
+        "fold_is_durable": FOLD_IS_DURABLE,
+        "annotated": list(applied.annotated),
+        "already_annotated": list(applied.already_annotated),
+        "untouched": [
+            {"key": item.key, "class": item.triage_class.value}
+            for item in applied.untouched
+        ],
+    }
+
+
+def render_applied(applied: Applied) -> str:
+    """The human report of one `--apply` pass, including what it refused to do.
+
+    The untouched section is printed even when it is long: a sweep that listed
+    only its writes would read as "these were the rows worth looking at", and
+    the rows it declined to close are the ones most worth looking at.
+    """
+    lines = [
+        "",
+        f"ergane findings triage --apply — {applied.resolved_count} resolved, "
+        f"{len(applied.annotated)} annotated, {len(applied.untouched)} left "
+        "exactly as found",
+    ]
+
+    lines.append("")
+    lines.append(f"resolved as fixed ({len(applied.resolved)})")
+    if not applied.resolved:
+        lines.append("  (none)")
+    for item in applied.resolved:
+        lines.append(f"  {item.key} -> {item.resolution}")
+
+    lines.append("")
+    lines.append(
+        f"folded ({len(applied.folds)} "
+        f"{_plural('class', len(applied.folds))}, "
+        f"{len(applied.folded_keys)} {_plural('row', len(applied.folded_keys))})"
+    )
+    if not applied.folds:
+        lines.append("  (none)")
+    for fold in applied.folds:
+        lines.append(
+            f"  surviving class key: {fold.prefix} "
+            f"({fold.members} {_plural('row', fold.members)} folded)"
+        )
+        for key in fold.keys:
+            lines.append(f"    {key}")
+    if applied.folds:
+        lines.append(f"  {_FOLD_CAVEAT}")
+
+    lines.append("")
+    lines.append(
+        f"annotated, still open ({len(applied.annotated)}"
+        + (
+            f"; {len(applied.already_annotated)} already annotated)"
+            if applied.already_annotated
+            else ")"
+        )
+    )
+    if not applied.annotated:
+        lines.append("  (none)")
+    for key in applied.annotated:
+        lines.append(f"  {key}")
+
+    lines.append("")
+    lines.append(f"left exactly as found ({len(applied.untouched)})")
+    if not applied.untouched:
+        lines.append("  (none)")
+    for item in applied.untouched:
+        lines.append(f"  {item.key} — {item.triage_class.value}")
+    if applied.untouched:
+        lines.append(f"  {_UNTOUCHED_CAVEAT}")
+
     return "\n".join(lines)
 
 
