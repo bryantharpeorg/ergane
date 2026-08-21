@@ -340,4 +340,9 @@ EXPECTED_SHIPPED_PERSONAS = {
     "debugger",
     "researcher",
     "closer",
+    # Added 2026-08-20 (operator): the subscription-routed Opus rung. Kept in
+    # step with `EXPECTED_PERSONAS` in `tests/test_config.py`, which carries
+    # the reasoning for why this set is a membership assertion rather than a
+    # dial on the registry's size.
+    "opus-closer",
 }

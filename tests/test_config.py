@@ -40,6 +40,12 @@ EXPECTED_PERSONAS = {
     # class on `implementer.context_window`). Adding a persona should be a
     # one-line edit here, never a red trunk.
     "closer",
+    # Added 2026-08-20 (operator): the subscription-routed Opus rung. Same
+    # model as `closer`, different route — `agent: subscription`, so it mints
+    # no virtual key. The edit this set asks for was not made when the registry
+    # gained it, which is what left the trunk red; see
+    # `tests/test_controlplane_verify_us1.py` for the other half of that miss.
+    "opus-closer",
 }
 
 # Fields removed by D-021; budget enforcement returns with spec 004.
