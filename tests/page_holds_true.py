@@ -14,6 +14,7 @@ stay green.
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 import sys
@@ -21,6 +22,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BIN_DIR = Path(sys.executable).parent
+
+
+class UnrecognizedCommandError(Exception):
+    """A code span starts with a word close to, but not equal to, a known Ergane entrypoint."""
 
 
 #: Everything the page sets in backticks, plus each command line inside a
@@ -41,17 +46,100 @@ def code_spans(text: str) -> list[str]:
 # --- every command the file names still exists ---------------------------------
 
 
+def _damerau_levenshtein(a: str, b: str) -> int:
+    """Damerau–Levenshtein distance between two strings.
+
+    Adjacent transpositions count as a single edit, so a transposed character
+    is caught with the same small threshold as an insertion or deletion.
+    """
+    if len(a) < len(b):
+        a, b = b, a
+    if not b:
+        return len(a)
+    prev_prev = list(range(len(b) + 1))
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            curr[j] = min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and ca == b[j - 2] and cb == a[i - 2]:
+                curr[j] = min(curr[j], prev_prev[j - 2] + 1)
+        prev_prev, prev = prev, curr
+    return prev[-1]
+
+
+def _near_entrypoints(word: str, entrypoints: set[str], threshold: int = 1) -> set[str]:
+    """Every known entrypoint within `threshold` edits of `word`.
+
+    An exact match is not a near-miss, so it is excluded.
+    """
+    word = word.lower()
+    near: set[str] = set()
+    for entrypoint in entrypoints:
+        if word == entrypoint:
+            continue
+        if _damerau_levenshtein(word, entrypoint) <= threshold:
+            near.add(entrypoint)
+    return near
+
+
+#: The program name on the usage line is the command the reader is meant to type.
+_USAGE_PROG = re.compile(r"^usage:\s+(\S+)", re.IGNORECASE)
+
+
+@functools.lru_cache(maxsize=None)
+def _root_help() -> subprocess.CompletedProcess[str]:
+    result = run_help([str(BIN_DIR / "ergane")])
+    if result.returncode != 0:
+        raise RuntimeError(f"could not run `ergane --help`:\n{result.stderr.strip()}")
+    return result
+
+
+def root_name() -> str:
+    """The console script name the page should use as a command."""
+    result = _root_help()
+    match = _USAGE_PROG.search(result.stdout)
+    if match is None:
+        raise RuntimeError("could not parse program name from `ergane --help`")
+    return match.group(1)
+
+
+def root_entrypoints() -> set[str]:
+    """The root command plus every noun the CLI advertises.
+
+    This is the set a near-miss detector compares against. It is derived from
+    argparse's own help output so it cannot drift behind the implementation.
+    """
+    result = _root_help()
+    return {root_name()} | verbs_of(result.stdout)
+
+
 def extract_commands(text: str) -> list[tuple[str, ...]]:
     """Each distinct `ergane` invocation the file recommends, as argv.
 
     Flags are kept — a renamed `--by` is as broken a recommendation as a
     renamed verb — but placeholders are not, because `<spec-dir>` is the
     reader's to fill in and `--help` does not want it.
+
+    A code span whose first word is within one edit of a known entrypoint is
+    treated as a typo and reported immediately rather than skipped.
     """
+    root = root_name()
+    entrypoints = root_entrypoints()
     found: list[tuple[str, ...]] = []
     for span in code_spans(text):
         words = span.split()
-        if not words or words[0] != "ergane":
+        if not words:
+            continue
+        first = words[0]
+        if first != root:
+            near = _near_entrypoints(first, entrypoints)
+            if near:
+                raise UnrecognizedCommandError(
+                    f"unrecognised command {first!r} in `{span}` — "
+                    f"did you mean {sorted(near)}?"
+                )
             continue
         argv = tuple(w for w in words if not w.startswith("<") and not w.endswith(">"))
         if argv not in found:
