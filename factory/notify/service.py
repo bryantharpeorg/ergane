@@ -66,6 +66,11 @@ from factory.notify.messages import (
     parse_callback_data,
     resolution_notice,
 )
+from factory.notify.redact import (
+    configure_logging,
+    install_redaction,
+    register_secret,
+)
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 from factory.verify.store import (
     ANSWERED,
@@ -186,9 +191,19 @@ def open_bot(token: str) -> Any:
     own environment to reach this call. `factory.activities.notify_activities`
     re-exports this name and hands it to the adapter, which is why patching it
     there still reaches every send.
+
+    It is also where the token stops being loggable (064-US1, FR-001). The
+    client that carries it is built *inside* python-telegram-bot, so there is no
+    factory-owned `httpx.AsyncClient` to attach anything to — and no event hook
+    could edit the `HTTP Request:` line httpx has already emitted. The redaction
+    therefore rides on the log record rather than on the client, and this seam,
+    being one of the two places a real token is in hand, is one of the two
+    places that registers it.
     """
     from telegram import Bot
 
+    install_redaction()
+    register_secret(token)
     return Bot(token)
 
 
@@ -214,6 +229,12 @@ class TelegramAdapter:
 
     def __init__(self, *, open_bot: Callable[[str], Any] = open_bot) -> None:
         self._open_bot = open_bot
+        # Construction, not the first send, and not the caller's logging setup
+        # (064-US1, FR-003): an adapter that exists is an adapter whose
+        # transport cannot write a credential down. A test that substitutes
+        # `open_bot` — or a future transport that never calls it — is protected
+        # by having been built at all.
+        install_redaction()
 
     async def deliver(
         self, message: RenderedMessage, correlation_id: str
@@ -237,6 +258,10 @@ class TelegramAdapter:
                 BOT_TOKEN_ENV if not token else CHAT_ID_ENV,
             )
             return DeliveryReceipt(delivered=False)
+
+        # The value is known here whatever `open_bot` a caller substituted, so
+        # this is the one registration every send passes through (FR-001).
+        register_secret(token)
 
         try:
             async with self._open_bot(token) as bot:
@@ -751,9 +776,17 @@ async def run_bridge(bridge: CallbackBridge, token: str) -> None:
     Built with the async context-manager form rather than `run_polling()` so the
     Temporal client and the Telegram updater share one event loop — a client
     created on a loop the bot then replaces is a client whose calls never return.
+
+    This is the bridge's own credential seam (064-US1): the updater long-polls
+    `getUpdates` forever, so an unprotected bridge writes the token into its
+    journal every few seconds — the highest-volume instance of the leak in the
+    deployment, and the reason FR-003 names both entry points.
     """
     from telegram.ext import Application, CallbackQueryHandler, MessageHandler
     from telegram.ext import filters
+
+    install_redaction()
+    register_secret(token)
 
     async def on_callback(update: Any, _context: Any) -> None:
         await bridge.handle(update)
@@ -805,5 +838,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point
-    logging.basicConfig(level=logging.INFO)
+    # Not `logging.basicConfig`: this process's journal is one of the two
+    # FR-003 names, and its logging configuration is where the protection is
+    # guaranteed to precede the first record.
+    configure_logging(level=logging.INFO)
     asyncio.run(main())
