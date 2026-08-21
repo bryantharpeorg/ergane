@@ -264,8 +264,9 @@ class TargetRepoProfile:
     `repo` is the slug exactly as `gh` reports it; `required_checks` is what the
     queue will demand of a PR, `declared_gates` what the repo's own `factory.yaml`
     names — the preflight compares them to decide whether a landing can ever be
-    enqueued. `findings` is the actionable list, and `passed` is their
-    conjunction: a profile that fails any finding cannot land.
+    enqueued. `findings` is the actionable list, and `passed` is the conjunction
+    over `Finding.blocking`: a profile carrying any blocking finding cannot
+    land. A finding may be non-passing without being blocking — see `Severity`.
     """
 
     repo: str
@@ -308,6 +309,25 @@ class TargetRepoProfile:
         )
 
 
+class Severity(StrEnum):
+    """What a finding that did not pass does to the run it is part of (061 US3).
+
+    Two members, because a report has exactly two useful answers to "and now
+    what?": either this refuses the repository, or it is something the operator
+    must see and may decide to keep. It is meaningful only when `passed` is
+    False — a passing finding carries the default and nothing reads it.
+
+    `WARNING` exists for one shape of fact: a configuration that is *legal and
+    dangerous*, where the danger is a choice an operator is entitled to make.
+    Making such a finding fail closed is not the safe direction it looks like:
+    a wall in front of a deliberate choice is edited around, and what replaces
+    it is a configuration nothing recognises at all (061 FR-009, plan trap 6).
+    """
+
+    ERROR = "ERROR"
+    WARNING = "WARNING"
+
+
 @dataclass(frozen=True)
 class Finding:
     """One preflight finding (US3): which check, whether it passed, and how to fix it.
@@ -315,11 +335,42 @@ class Finding:
     `detail` is actionable — it names what to change, not just what is wrong — so
     the operator reading a preflight report can go and change it without re-deriving
     the problem from a slug.
+
+    `severity` (061 US3) separates "this did not pass" from "this refuses the
+    repository", which were the same claim until a condition arrived that is
+    neither a pass nor a refusal. It defaults to `ERROR`, so every finding
+    written before it existed means exactly what it always meant, and an older
+    history decodes at the same value (`tests/test_temporal_payload_shape.py`).
     """
 
     check: str
     passed: bool
     detail: str
+    severity: Severity = Severity.ERROR
+
+    @property
+    def blocking(self) -> bool:
+        """Whether this finding refuses the repository it is about.
+
+        The predicate every verdict is now the conjunction over — `passed`
+        alone would read a warning as a refusal, which is the one thing FR-009
+        forbids. Compared by value rather than identity because a finding that
+        crossed a payload boundary carries the converter's reconstruction of the
+        member, not this module's.
+        """
+        return not self.passed and self.severity == Severity.ERROR
+
+    @property
+    def mark(self) -> str:
+        """`PASS`, `WARN` or `FAIL` — the three-way label every report prints.
+
+        Spelled once, here, rather than as a conditional in each of the four
+        renderers over these findings: a warning rendered as `FAIL` in one of
+        them is the report contradicting the exit code beside it.
+        """
+        if self.passed:
+            return "PASS"
+        return "FAIL" if self.blocking else "WARN"
 
 
 @dataclass(frozen=True)

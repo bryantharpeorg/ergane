@@ -1414,8 +1414,13 @@ def _onboarding_detail(profile: TargetRepoProfile) -> str:
     Each failing check names what was wrong; the parked finding carries them
     so the operator's move (fix the repo's visibility, merge queue, or checks)
     is on the finding.
+
+    Blocking findings only (061-US3): this string is the *reason* a spec was
+    parked, and a warning is by construction not a reason anything was parked.
+    Listing one here would send the operator to fix a condition that was not
+    holding their spec.
     """
-    failed = [f for f in profile.findings if not f.passed]
+    failed = [f for f in profile.findings if f.blocking]
     if not failed:
         return f"target repo {profile.repo} failed onboarding"
     lines = [

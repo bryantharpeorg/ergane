@@ -550,9 +550,14 @@ def onboard_target_repo(
     try:
         config = load_factory_config(manifest_path)
         declared_gates = tuple(config.gates.keys())
+        # 061-US3: the commands too, not only the names. Q4 used to ask whether
+        # a gate's name matched a required check; it now also asks whether the
+        # command behind that check can fail.
+        gate_commands = dict(config.gates)
         manifest_error = None
     except FactoryConfigError as error:
         declared_gates = ()
+        gate_commands = {}
         manifest_error = str(error)
 
     try:
@@ -580,6 +585,7 @@ def onboard_target_repo(
         reading=repository,
         policy=policy,
         declared_gates=declared_gates,
+        gate_commands=gate_commands,
         factory_yaml_error=manifest_error,
         init_facts=init_facts,
     )

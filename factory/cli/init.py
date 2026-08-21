@@ -395,11 +395,41 @@ _ROADMAP_KEY = "roadmap"
 #: Placeholder values that keep a partial manifest valid for full-parser checks.
 #: `landing_branch` is the *last* resort rather than the answer: see
 #: `_default_landing_branch`.
+#:
+#: `gates` used to be here as `{"test": "true"}` and is not a placeholder — it
+#: is written into the manifest, committed, and executed by every node this repo
+#: dispatches. `true` exits 0 having run nothing, so a repository initialised
+#: without a tree that suggested a command got a gate that could not fail, and
+#: `ergane init --check` reported it as a passing gate. 061 US3-S5: a value the
+#: code calls a placeholder may not silently become a live gate. See
+#: `_UNDECLARED_GATE_COMMAND` for the value that replaced it and why it is not
+#: here.
 _PLACEHOLDERS: dict[str, Any] = {
     "runtime": "bwrap",
-    "gates": {"test": "true"},
     "landing_branch": "main",
 }
+
+#: The gate command a repository gets when neither its existing manifest nor its
+#: tree names one (061 FR-010).
+#:
+#: The choice is between a gate that cannot fail and a gate that cannot pass,
+#: and only one of them is safe to be wrong about. `true` says "verified"
+#: about work nothing looked at; this says "not configured" and says it in the
+#: gate's own output, where the operator is already reading when a node fails.
+#: It is deliberately not a placeholder and deliberately not silent: a gate is
+#: the thing that decides whether an agent's work lands, so a repository whose
+#: operator has not said what green means declares that fact rather than a
+#: value that resembles an answer.
+#:
+#: Kept short on purpose. This string is offered back to the operator as the
+#: interview's default for `gates`, and `_yaml_repr` renders it through
+#: `yaml.safe_dump`, which folds a scalar past 80 columns onto a second line —
+#: 051's `test_the_interview_offers_no_multi_line_default` is what says so, and
+#: `test: '<command>'` is the whole line that has to fit. Lengthen the message
+#: and that test goes red rather than the operator finding out.
+_UNDECLARED_GATE_COMMAND = (
+    'echo "ergane: declare gates.test in ergane.yaml" >&2; exit 1'
+)
 
 #: What `git rev-parse --abbrev-ref HEAD` answers on a detached HEAD. Git
 #: refuses to create a branch by this name, so it can only ever be the sentinel.
@@ -451,11 +481,18 @@ def _default_landing_branch(repo_root: Path) -> str:
     return _current_branch(repo_root) or _PLACEHOLDERS["landing_branch"]
 
 
-def _default_gate_command(repo_root: Path) -> str | None:
-    """Propose a gate command if the tree suggests one, otherwise None."""
+def _default_gates(repo_root: Path) -> dict[str, str]:
+    """The gates to offer a repository that declares none yet.
+
+    A reading of the tree where there is one to make, and `_UNDECLARED_GATE_COMMAND`
+    where there is not. Returns the mapping the manifest actually carries rather
+    than a rendered YAML line: the caller used to receive `'test: "uv run pytest
+    -q"'` and take the value back apart with `split(":", 1)`, which meant the one
+    place that decided this repository's gate could not state it as data.
+    """
     if (repo_root / "pyproject.toml").is_file():
-        return 'test: "uv run pytest -q"'
-    return None
+        return {"test": "uv run pytest -q"}
+    return {"test": _UNDECLARED_GATE_COMMAND}
 
 
 def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
@@ -519,11 +556,14 @@ def _yaml_repr(value: Any) -> str:
 def _build_defaults(repo_root: Path) -> dict[str, Any]:
     """Return a fully populated, valid manifest used to seed the interview."""
     existing = _load_existing_defaults(repo_root)
-    gate_default = _default_gate_command(repo_root)
     defaults: dict[str, Any] = {
         "version": existing.get("version", _SUPPORTED_VERSION),
         "runtime": existing.get("runtime", _PLACEHOLDERS["runtime"]),
-        "gates": existing.get("gates", ({"test": gate_default.split(":", 1)[1].strip().strip('"')} if gate_default else _PLACEHOLDERS["gates"])),
+        # An existing manifest's gates win, exactly as `landing_branch`'s do: a
+        # re-run reconciles what a repository declared, and a repository that
+        # declared `true` keeps it — `ergane init --check` is what now says so
+        # (061 FR-008), rather than init rewriting the operator's declaration.
+        "gates": existing.get("gates", _default_gates(repo_root)),
         # The repository reading goes *underneath* the existing-manifest
         # preference, never in front of it (051 FR-004): re-running init in a
         # joined repository reconciles what is declared, and must not silently
@@ -1255,22 +1295,36 @@ def check_repo(
 
 
 def render_check(profile: TargetRepoProfile, repo_root: Path, manifest_name: str) -> str:
-    """One line per finding, pass and fail alike.
+    """One line per finding: `PASS`, `WARN` or `FAIL`.
 
     Passing findings print too: "checked" and "passed" are different claims, and
     a failures-only report cannot make the first.
+
+    061-US3 added the third mark, and the summary line has to carry it or the
+    mark is wasted: a run whose only non-passing finding is a warning exits 0,
+    and "all N checks passed" over the top of a `[WARN]` line would be the
+    report contradicting itself — which is the exact reading ("gates work") this
+    story exists to stop.
     """
     lines = [f"ergane readiness for {repo_root} ({manifest_name})"]
     failed = 0
+    warned = 0
     for finding in profile.findings:
-        mark = "PASS" if finding.passed else "FAIL"
-        if not finding.passed:
+        if finding.blocking:
             failed += 1
-        lines.append(f"  [{mark}] {finding.check}: {finding.detail}")
+        elif not finding.passed:
+            warned += 1
+        lines.append(f"  [{finding.mark}] {finding.check}: {finding.detail}")
 
     total = len(profile.findings)
+    warnings = f", {warned} warned" if warned else ""
     if failed:
-        lines.append(f"{failed} of {total} checks failed")
+        lines.append(f"{failed} of {total} checks failed{warnings}")
+    elif warned:
+        lines.append(
+            f"{total - warned} of {total} checks passed, {warned} warned; "
+            "nothing here refuses this repository"
+        )
     else:
         lines.append(f"all {total} checks passed")
     return "\n".join(lines)
