@@ -299,6 +299,25 @@ def _host_seam_factory() -> dict[str, Any]:
     return _inspect_host()
 
 
+def gather_gateway_aliases(registry: Mapping[str, Any]) -> dict[str, set[str]]:
+    """Return every distinct model/fallback alias the gateway must serve.
+
+    Deterministic personas (`agent: none`) and subscription personas have no
+    gateway alias by construction, so they contribute nothing. This is the
+    single derivation used by both `--verify` and `--requirements` (FR-010).
+    """
+    alias_to_personas: dict[str, set[str]] = {}
+    for name, persona in registry.items():
+        # US2 FR-016: subscription personas resolve models the CLI accepts,
+        # not aliases the gateway serves, so they must not be counted here.
+        if not getattr(persona, "routes_through_gateway", True):
+            continue
+        for alias in (persona.model, persona.fallback):
+            if alias:
+                alias_to_personas.setdefault(alias, set()).add(name)
+    return alias_to_personas
+
+
 # --- probes -------------------------------------------------------------------
 
 
@@ -325,16 +344,7 @@ class LLMProbe:
                 detail=f"{api_key_env} is not set; no credential to complete a round trip",
             )
 
-        registry = _load_personas_for_probe()
-        alias_to_personas: dict[str, set[str]] = {}
-        for name, persona in registry.items():
-            # US2 FR-016: subscription personas resolve models the CLI accepts,
-            # not aliases the gateway serves, so they must not be probed here.
-            if not getattr(persona, "routes_through_gateway", True):
-                continue
-            for alias in (persona.model, persona.fallback):
-                if alias:
-                    alias_to_personas.setdefault(alias, set()).add(name)
+        alias_to_personas = gather_gateway_aliases(_load_personas_for_probe())
 
         if not alias_to_personas:
             return LLMSnapshot(

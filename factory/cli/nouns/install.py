@@ -16,6 +16,7 @@ from typing import Any
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.cli.install import add_install_arguments, install_command
 from factory.cli.nouns import Noun
+from factory.config import is_example_alias
 from factory.controlplane.config import ControlPlaneConfigError
 from factory.controlplane.verify import render_findings, verify_controlplane
 from factory.discovery.llm_scanner import render_scan_results, scan_endpoints
@@ -54,6 +55,67 @@ def _scan_command(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _requirements_command(_args: argparse.Namespace) -> int:
+    """Print what the gateway must serve, derived from the persona registry.
+
+    Read-only: mints no key and issues no completion. A registry that is
+    entirely example aliases is reported as unconfigured, naming the path and
+    the resolution order.
+    """
+    from factory.config import (
+        DEFAULT_REGISTRY_REL,
+        DETERMINISTIC_AGENT,
+        ERGANE_PERSONAS_PATH_ENV,
+        FACTORY_PERSONAS_PATH_ENV,
+        load_personas,
+        resolve_default_registry_path,
+    )
+    from factory.controlplane.verify import gather_gateway_aliases
+
+    try:
+        registry = load_personas()
+    except Exception as exc:
+        raise OperatorError(
+            f"cannot load persona registry: {type(exc).__name__}: {exc}",
+            code=EXIT_USER,
+        ) from None
+
+    alias_to_personas = gather_gateway_aliases(registry)
+    if not alias_to_personas:
+        registry_path = resolve_default_registry_path()
+        raise OperatorError(
+            f"persona registry has not been configured yet: "
+            f"edit {registry_path} and declare at least one persona with a gateway model alias; "
+            f"the registry is resolved from "
+            f"{ERGANE_PERSONAS_PATH_ENV}, then {FACTORY_PERSONAS_PATH_ENV}, then "
+            f"$XDG_CONFIG_HOME/{DEFAULT_REGISTRY_REL} (or ~/.config/ergane/{DEFAULT_REGISTRY_REL}), then the packaged default",
+            code=EXIT_USER,
+        ) from None
+
+    if all(is_example_alias(alias) for alias in alias_to_personas):
+        registry_path = resolve_default_registry_path()
+        raise OperatorError(
+            f"persona registry has not been configured yet: "
+            f"edit {registry_path} and replace the example/ placeholder aliases; "
+            f"the registry is resolved from "
+            f"{ERGANE_PERSONAS_PATH_ENV}, then {FACTORY_PERSONAS_PATH_ENV}, then "
+            f"$XDG_CONFIG_HOME/{DEFAULT_REGISTRY_REL} (or ~/.config/ergane/{DEFAULT_REGISTRY_REL}), then the packaged default",
+            code=EXIT_USER,
+        ) from None
+
+    aliases = sorted(alias_to_personas)
+    print("The gateway must serve every distinct model and fallback alias:")
+    for alias in aliases:
+        personas = ", ".join(sorted(alias_to_personas[alias]))
+        print(f"  {alias}  (personas: {personas})")
+    print("")
+    print("The gateway must answer these key-management endpoints:")
+    print("  POST /key/generate")
+    print("  GET /key/info")
+    print("  GET /spend/logs/v2")
+    return EXIT_OK
+
+
 def add_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser(
         "install",
@@ -68,6 +130,11 @@ def add_parser(subparsers: Any) -> None:
         "--verify",
         action="store_true",
         help="skip the interview: probe the declared subsystems and report one finding per check",
+    )
+    parser.add_argument(
+        "--requirements",
+        action="store_true",
+        help="print the model aliases and key-management endpoints the gateway must serve",
     )
     parser.add_argument(
         "--scan",
@@ -88,6 +155,8 @@ def _run(args: argparse.Namespace) -> int:
         return _scan_command(args)
     if args.verify:
         return _verify_command(args)
+    if args.requirements:
+        return _requirements_command(args)
     return install_command(args)
 
 
