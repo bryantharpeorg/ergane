@@ -339,7 +339,7 @@ def test_the_noop_finding_does_not_fail_the_judgment(command: str) -> None:
     """
     profile = _judge(command)
 
-    assert _finding(profile, f"noop_gate:test").severity == Severity.WARNING
+    assert _finding(profile, "noop_gate:test").severity == Severity.WARNING
     assert profile.passed is True
 
 
