@@ -110,7 +110,11 @@ class LandedKind(StrEnum):
 #: `state` is required-in-spirit (a spec with no frontmatter reads `draft`, but
 #: a frontmatter block that is a mapping yet omits `state` is rejected rather
 #: than guessed at — an author who wrote a block meant to say something).
-_KNOWN_KEYS = ("state", "depends_on_landed")
+#:
+#: `fixes` is 073-US1's one addition, and the closure is why it is one name and
+#: not a metadata block: widening the grammar is a visible act, and the refusal
+#: below quotes this tuple back at an author who typed anything else.
+_KNOWN_KEYS = ("state", "depends_on_landed", "fixes")
 
 #: The values `state` may take — the members of `SpecState`, spelled out so a
 #: rejection can name the offender without a runtime enum walk producing
@@ -128,6 +132,13 @@ class SpecEntry:
     `depends_on_landed` is the list of spec dirs this spec waits on as *landed*;
     it is the spec-level analogue of the workgraph's node-level
     `depends_on_merged`, the vocabulary precedent the plan names.
+
+    `fixes` is the list of finding keys this spec closes (073 FR-001) — the fix
+    relation stated by its author rather than inferred from prose. It defaults
+    to empty, because the key is additive and most specs declare nothing: a
+    spec that names a finding in a paragraph has named it, not fixed it, and
+    the ledger's own evidence is that the two readings disagree (one finding is
+    named by six specs, one of them to say it has *regressed*).
     """
 
     spec_dir: str
@@ -136,6 +147,10 @@ class SpecEntry:
     #: The file the entry was read from, for findings that name it. Empty for a
     #: synthesized entry (none in US1; the reader always has a file).
     source: str = ""
+    #: The finding keys this spec declares it closes. `default_factory` and not
+    #: a bare `[]`: a mutable default on a frozen dataclass is one list shared
+    #: by every entry that takes it, and frozen stops rebinding, not appending.
+    fixes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -333,10 +348,26 @@ def _shape_entry(
         )
         return None
 
+    # `fixes`, checked exactly as `depends_on_landed` above (073 FR-001/FR-002).
+    # A scalar where a list belongs is the defect this repository has already
+    # paid for: read as a list it is a list of characters, and every consumer
+    # downstream believes the spec declared one fix per letter.
+    fixes = block.get("fixes", [])
+    if fixes is None:
+        fixes = []
+    if not isinstance(fixes, list) or not all(isinstance(item, str) for item in fixes):
+        findings.add(
+            "unknown_key",
+            spec_dir,
+            f"'fixes' must be a list of finding keys, got {fixes!r}",
+        )
+        return None
+
     return SpecEntry(
         spec_dir=spec_dir,
         state=SpecState(state_value),
         depends_on_landed=list(deps),
+        fixes=list(fixes),
     )
 
 
@@ -437,6 +468,7 @@ def read_roadmap(specs_root: str | Path) -> Roadmap:
                 state=entry.state,
                 depends_on_landed=entry.depends_on_landed,
                 source=str(spec_path),
+                fixes=entry.fixes,
             )
 
     findings.raise_if_any()
