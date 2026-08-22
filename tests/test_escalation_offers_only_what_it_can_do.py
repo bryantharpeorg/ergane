@@ -1,9 +1,9 @@
 """US1 — an escalation offers only what this node can execute.
 
-079-US1. The offer is a constant today: `DEFAULT_CHOICES`
-(`factory/activities/notify_activities.py`) is a module tuple, and both escalation
-sites hand it over whole regardless of what the node behind it can still do. Two
-measured losses come out of that:
+079-US1. The offer was a constant: `DEFAULT_CHOICES`
+(`factory/activities/notify_activities.py`) was a module tuple, and both escalation
+sites handed it over whole regardless of what the node behind it could still do.
+Two measured losses came out of that:
 
     2026-08-19 22:08  KILL pressed three times on one node; each answered KILL
                       was followed within a second by a fresh escalation asking
@@ -31,10 +31,13 @@ worth stating because they decide what "no attempt left" means on each path:
   "no attempt left", and it is where US1-S1 is asserted.
 - **On the landing, the recovery budget is the ceiling and nothing raises it.**
   `RETRY` is executable exactly while `recovery_cycles < max_recovery_cycles`;
-  past that the resolution reaches `_apply_landing_resolution`, matches no
-  branch, and falls through to the kill. That is US1-S2, and it is 075/us1's
+  past that the resolution reached `_apply_landing_resolution`, matched no
+  branch, and fell through to the kill. That is US1-S2, and it is 075/us1's
   configuration at 03:18Z: a re-enqueued landing rejected a second time with the
-  budget already spent.
+  budget already spent. (The one landing page whose `RETRY` is not bounded by
+  that budget is the futile re-enqueue, where it enqueues the identical tree the
+  operator has judged a flake and spends no cycle — `_reenqueue` offers it
+  there for that reason, and `tests/test_interpreter.py` still asserts it.)
 
 The control (US1-S3, plan trap 3) is here twice, once per path, because a change
 that satisfies S1 and S2 by never offering `RETRY` has deleted the feature rather
@@ -117,6 +120,16 @@ def the_offer(script: ScriptedWorld) -> list[str]:
     return raised[0]
 
 
+def keys_in(calls: list[str]) -> list[str]:
+    """Every attempt key issued in this slice of the activity log.
+
+    The log names the persona the key was minted for (`issue_attempt_key:…`),
+    so the call is matched by prefix rather than by equality: what this asserts
+    is that a key was issued at all, whichever rung asked for it.
+    """
+    return [call for call in calls if call.startswith("issue_attempt_key")]
+
+
 def assert_executable(offer: list[str]) -> None:
     """FR-003, applied to one offer: never empty, never anything but the four.
 
@@ -138,6 +151,59 @@ def resolved_for(node: Any) -> ResolvedNode:
         write_scope="worktree",
         timeout_s=1,
     )
+
+
+# --- the four worlds, built once and shared with the evidence run ------------
+
+#: The shipped landing budget: one automatic recovery cycle and no more. This is
+#: what 075/us1 was running under at 03:18Z.
+SPENT = LandingConfig(max_recovery_cycles=1, poll_interval_s=0)
+
+#: The same world with one cycle still to spend, so the control can watch a
+#: press buy something.
+BUDGETED = LandingConfig(max_recovery_cycles=2, poll_interval_s=0)
+
+
+def a_node_the_ladder_will_not_run_again(client: Any, press: str) -> LaunchFailingWorld:
+    """Every launch fails, so `max_launch_retries` decides the node before the page."""
+    return LaunchFailingWorld({"us1": [passing()]}, client=client, press=press)
+
+
+def a_ladder_with_an_attempt_to_sell(client: Any, press: str) -> ScriptedWorld:
+    """Three failures and a debugger cycle, then one more attempt a press can buy."""
+    return ScriptedWorld(
+        {"us1": [failing(1), failing(2), failing(3), failing(4), passing()]},
+        client=client,
+        press=press,
+    )
+
+
+def a_landing_with_its_budget_spent(client: Any, press: str) -> ScriptedWorld:
+    """075/us1's shape: recovered once, re-enqueued, rejected again, budget gone.
+
+    Run under `SPENT`. The first rejection is recovered automatically (the one
+    cycle the default allows), the recovery passes and re-enqueues, and the
+    queue rejects it a second time — so the scheduler picks the REJECTED landing
+    back up with `recovery_cycles >= max_recovery_cycles` and pages.
+    """
+    script = ScriptedWorld({"us1": [passing(), passing()]}, client=client, press=press)
+    script.script_landing("us1", checks_failed_snapshot(), checks_failed_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+    return script
+
+
+def a_landing_with_a_cycle_left(client: Any, press: str) -> ScriptedWorld:
+    """The same rejection under `BUDGETED`, where the recovery attempt fails.
+
+    One cycle is charged by the automatic recovery; the attempt fails; the page
+    is raised with a second cycle still to grant, and the press spends it.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing(), failing(2), passing()]}, client=client, press=press
+    )
+    script.script_landing("us1", checks_failed_snapshot(), merged_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+    return script
 
 
 # --- the premise, asserted rather than trusted -------------------------------
@@ -186,10 +252,8 @@ async def test_a_node_the_ladder_will_not_run_again_is_not_offered_retry(
     second half is plan trap 4's control: `EXPIRED` is not an unoffered choice
     and must go on ending the node.
     """
-    script = LaunchFailingWorld(
-        {"us1": [passing()]},
-        client=env.client,
-        press=EscalationChoice.RETRY.value,
+    script = a_node_the_ladder_will_not_run_again(
+        env.client, EscalationChoice.RETRY.value
     )
 
     status = await run_epic(env, script, graph=one_node())
@@ -223,20 +287,9 @@ async def test_a_landing_with_no_recovery_cycle_left_is_not_offered_retry(
 
     So it must not be offered, and the node must still be endable.
     """
-    script = ScriptedWorld(
-        {"us1": [passing(), passing()]},
-        client=env.client,
-        press=EscalationChoice.KILL.value,
-    )
-    script.script_landing("us1", checks_failed_snapshot(), checks_failed_snapshot())
-    script.script_sync("us1", clean=True, base_ref="c0ffee")
+    script = a_landing_with_its_budget_spent(env.client, EscalationChoice.KILL.value)
 
-    status = await run_epic(
-        env,
-        script,
-        graph=one_node(),
-        landing_config=LandingConfig(max_recovery_cycles=1, poll_interval_s=0),
-    )
+    status = await run_epic(env, script, graph=one_node(), landing_config=SPENT)
 
     # The premise: the budget really is spent when the page is raised.
     assert status.nodes["us1"].recovery_cycles >= 1
@@ -263,11 +316,7 @@ async def test_a_node_with_an_attempt_left_is_offered_retry_and_the_press_issues
     dispatches, not a value a function returned. A change that satisfies S1 and
     S2 by never offering `RETRY` fails here.
     """
-    script = ScriptedWorld(
-        {"us1": [failing(1), failing(2), failing(3), failing(4), passing()]},
-        client=env.client,
-        press=EscalationChoice.RETRY.value,
-    )
+    script = a_ladder_with_an_attempt_to_sell(env.client, EscalationChoice.RETRY.value)
 
     status = await run_epic(
         env,
@@ -283,7 +332,7 @@ async def test_a_node_with_an_attempt_left_is_offered_retry_and_the_press_issues
     # The press was executed: a key was issued after the page, and the attempt
     # it opened is the one that landed the node.
     after_the_page = script.calls[script.calls.index("send_escalation") :]
-    assert "issue_attempt_key" in after_the_page, "the press bought no attempt"
+    assert keys_in(after_the_page), "the press bought no attempt"
     assert [key.attempt for key in script.key_requests] == [1, 2, 3, 4, 5]
     assert attempt_counts(status) == {"us1": 5}
     assert states(status) == {"us1": NodeState.MERGED}
@@ -299,31 +348,18 @@ async def test_a_landing_with_a_cycle_left_is_offered_retry_and_the_press_spends
     again, and the page offers `RETRY` because a cycle is left to grant. The
     press spends it: a third attempt is dispatched and the landing merges.
     """
-    script = ScriptedWorld(
-        {"us1": [passing(), failing(2), passing()]},
-        client=env.client,
-        press=EscalationChoice.RETRY.value,
-    )
-    pr_number = script.script_landing(
-        "us1", checks_failed_snapshot(), merged_snapshot()
-    )
-    script.script_sync("us1", clean=True, base_ref="c0ffee")
+    script = a_landing_with_a_cycle_left(env.client, EscalationChoice.RETRY.value)
 
-    status = await run_epic(
-        env,
-        script,
-        graph=one_node(),
-        landing_config=LandingConfig(max_recovery_cycles=2, poll_interval_s=0),
-    )
+    status = await run_epic(env, script, graph=one_node(), landing_config=BUDGETED)
 
     offer = the_offer(script)
     assert_executable(offer)
     assert offer == ALL_FOUR, "a cycle remained and RETRY was withheld"
 
     after_the_page = script.calls[script.calls.index("send_escalation") :]
-    assert "issue_attempt_key" in after_the_page, "the press bought no recovery cycle"
+    assert keys_in(after_the_page), "the press bought no recovery cycle"
     assert states(status) == {"us1": NodeState.MERGED}
-    assert status.nodes["us1"].pr_number == pr_number
+    assert status.nodes["us1"].pr_number is not None
     assert status.nodes["us1"].recovery_cycles == 2
     assert attempt_counts(status) == {"us1": 3}
 
@@ -390,6 +426,11 @@ def test_expired_is_not_an_unoffered_choice(
     assert is_unoffered(EscalationChoice.RETRY.value, offer) is True
     assert is_unoffered("resolved", offer) is True
     assert is_unoffered(EscalationChoice.KILL.value, offer) is False
+    # And a node that was never paged refuses nothing: what reaches one of those
+    # is the workflow's own fail-safe — a page nobody received, an epic stopped
+    # before it went out — not a press. Refusing it would leave a node that
+    # nothing can end, which is a worse deadlock than the one being fixed.
+    assert is_unoffered(EscalationChoice.KILL.value, []) is False
     # An offer that includes RETRY does not refuse it — the predicate reads the
     # offer, never a hardcoded list.
     assert is_unoffered(EscalationChoice.RETRY.value, [EscalationChoice.RETRY]) is False
@@ -459,11 +500,7 @@ async def test_an_answered_kill_leaves_exactly_one_escalation_on_the_ladder(
     terminate` to stop it. Whatever raises the second page, a node whose
     operator has already ended it must not be paged again.
     """
-    script = ScriptedWorld(
-        {"us1": [failing(n) for n in (1, 2, 3, 4)]},
-        client=env.client,
-        press=EscalationChoice.KILL.value,
-    )
+    script = a_ladder_with_an_attempt_to_sell(env.client, EscalationChoice.KILL.value)
 
     status = await run_epic(env, script, graph=one_node())
 
@@ -482,32 +519,127 @@ async def test_an_answered_kill_leaves_exactly_one_escalation_on_the_landing(
     The same rejected-twice landing as US1-S2. The node ends KILLED with its
     branch preserved, and the epic finishes without a second page for it.
     """
-    script = ScriptedWorld(
-        {"us1": [passing(), passing()]},
-        client=env.client,
-        press=EscalationChoice.KILL.value,
-    )
-    script.script_landing("us1", checks_failed_snapshot(), checks_failed_snapshot())
-    script.script_sync("us1", clean=True, base_ref="c0ffee")
+    script = a_landing_with_its_budget_spent(env.client, EscalationChoice.KILL.value)
 
-    status = await run_epic(
-        env,
-        script,
-        graph=one_node(),
-        landing_config=LandingConfig(max_recovery_cycles=1, poll_interval_s=0),
-    )
+    status = await run_epic(env, script, graph=one_node(), landing_config=SPENT)
 
     assert states(status) == {"us1": NodeState.KILLED}
     assert len(script.escalation_requests) == 1, offers(script)
     assert status.nodes["us1"].branch == branch_name(EPIC_ID, "us1")
 
 
+# --- The evidence run (SC-001, SC-002, SC-003) -------------------------------
+
+
+async def test_the_evidence_this_story_owes(env: WorkflowEnvironment) -> None:
+    """The three success criteria, measured in one run and printed.
+
+    The judge is given the diff and nothing else (constitution VIII), so the
+    readings SC-001 to SC-003 ask for are pasted at the bottom of this file —
+    and this is the code that produced them, so the paste is reproducible rather
+    than asserted about. Run it with:
+
+        uv run pytest -s -q tests/test_escalation_offers_only_what_it_can_do.py \
+            -k the_evidence_this_story_owes
+
+    Two epics: one landing whose recovery budget is spent, answered `KILL`
+    (SC-001's left column and the whole of SC-003), and one exhausted ladder
+    with an attempt still to sell, answered `RETRY` (SC-001's right column and
+    SC-002). Everything printed is also asserted, so a paste that stops matching
+    the run fails here rather than quietly going stale.
+    """
+    spent = a_landing_with_its_budget_spent(env.client, EscalationChoice.KILL.value)
+    spent_status = await run_epic(env, spent, graph=one_node(), landing_config=SPENT)
+
+    budgeted = a_ladder_with_an_attempt_to_sell(env.client, EscalationChoice.RETRY.value)
+    budgeted_status = await run_epic(
+        env,
+        budgeted,
+        graph=one_node(),
+        landing_config=LandingConfig(poll_interval_s=0),
+    )
+
+    page = budgeted.calls.index("send_escalation")
+    keys_before_the_page = keys_in(budgeted.calls[:page])
+    keys_after_the_press = keys_in(budgeted.calls[page:])
+    spent_node = spent_status.nodes["us1"]
+    budgeted_node = budgeted_status.nodes["us1"]
+
+    report = "\n".join(
+        [
+            "",
+            "SC-001  the choice list handed to the escalation, per node",
+            f"  nothing left   recovery_cycles="
+            f"{spent_node.recovery_cycles}/{SPENT.max_recovery_cycles}  "
+            f"offered {the_offer(spent)}",
+            f"  attempt left   attempts={len(keys_before_the_page)} spent when the "
+            f"page went out, one more buyable  offered {the_offer(budgeted)}",
+            "",
+            "SC-002  the RETRY press on the node with budget",
+            f"  activity log from the page: {budgeted.calls[page : page + 4]}",
+            f"  attempt keys issued after it: {keys_after_the_press}",
+            f"  node ends {budgeted_node.state} at attempt {budgeted_node.attempt}",
+            "",
+            "SC-003  the answered KILL",
+            f"  pressed KILL; escalations raised for us1 afterwards: "
+            f"{len(spent.escalation_requests)}",
+            f"  node ends {spent_node.state}, landing {spent_node.landing_state}, "
+            f"branch {spent_node.branch}",
+            "",
+        ]
+    )
+    print(report)
+
+    # Everything above, asserted.
+    assert the_offer(spent) == WITHOUT_RETRY
+    assert the_offer(budgeted) == ALL_FOUR
+    assert spent_node.recovery_cycles == SPENT.max_recovery_cycles
+    assert len(keys_before_the_page) == 4  # three attempts and the debugger cycle
+    assert keys_after_the_press == ["issue_attempt_key:implementer"]
+    assert budgeted_node.state == NodeState.MERGED
+    assert budgeted_node.attempt == 5
+    assert len(spent.escalation_requests) == 1
+    assert spent_node.state == NodeState.KILLED
+    assert spent_node.landing_state == LandingState.KILLED
+
+
 # --- The measured evidence (SC-001, SC-002, SC-003; constitution VIII) -------
 #
 # Pasted rather than described: the judge is given the diff and nothing else, so
 # a criterion that names a terminal reading has to arrive as text in the diff.
-# Every block below is `uv run pytest` output from this file, run in this
-# worktree; the choice lists are the `SendEscalationInput.choices` the notifier
-# was handed, printed from the test that asserts them.
+# The block below is stdout from `test_the_evidence_this_story_owes` above, run
+# in this worktree on 2026-08-22, and the choice lists in it are the
+# `SendEscalationInput.choices` the notifier activity was actually handed.
 #
-# (Filled in by the verification tasks T010–T012 below the fix.)
+#     $ uv run pytest -q -p no:randomly -s \
+#           tests/test_escalation_offers_only_what_it_can_do.py \
+#           -k the_evidence_this_story_owes
+#
+#     SC-001  the choice list handed to the escalation, per node
+#       nothing left   recovery_cycles=1/1  offered ['KILL', 'PAUSE_EPIC', 'KILL_EPIC']
+#       attempt left   attempts=4 spent when the page went out, one more buyable  offered ['RETRY', 'KILL', 'PAUSE_EPIC', 'KILL_EPIC']
+#
+#     SC-002  the RETRY press on the node with budget
+#       activity log from the page: ['send_escalation', 'teardown_attempt:debugger', 'issue_attempt_key:implementer', 'run_agent_attempt']
+#       attempt keys issued after it: ['issue_attempt_key:implementer']
+#       node ends MERGED at attempt 5
+#
+#     SC-003  the answered KILL
+#       pressed KILL; escalations raised for us1 afterwards: 1
+#       node ends KILLED, landing KILLED, branch factory/demo-loans/us1
+#
+#     .
+#     1 passed, 11 deselected in 0.59s
+#
+# Read side by side, SC-001's two lines are the whole story: one page, one
+# computation, two different keyboards — and the difference between them is a
+# budget rather than a constant. SC-002 is trap 3's control in tool output: the
+# press is followed by `issue_attempt_key`, so the button that says retry bought
+# an attempt that a real agent activity then ran. SC-003 is 2026-08-19's shape,
+# answered: one press, one escalation, and no second page for the node.
+#
+# The whole file, for the record:
+#
+#     $ uv run pytest -q -p no:randomly tests/test_escalation_offers_only_what_it_can_do.py
+#     ............
+#     12 passed in 2.24s

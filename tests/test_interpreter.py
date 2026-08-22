@@ -4499,13 +4499,20 @@ async def test_conflict_routes_one_bounded_cycle_to_the_debugger_persona(
 async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
     env: WorkflowEnvironment,
 ) -> None:
-    """US2-S3: a second failure escalates; RETRY grants one more cycle.
+    """US2-S3: a recovery that fails again escalates; RETRY grants one more cycle.
 
-    With `max_recovery_cycles = 1`, a recovery that fails again exhausts the
-    automatic budget and fires the Telegram escalation with the queue history
-    rendered and choices [RETRY | KILL | PAUSE_EPIC | KILL_EPIC] (FR-007). An
-    operator press
-    of RETRY grants exactly one more cycle; a clean re-verify then re-enqueues.
+    A recovery attempt that fails fires the Telegram escalation with the queue
+    history rendered and the offer computed from what is left (FR-007, and
+    079-US1 FR-002). An operator press of RETRY grants exactly one more cycle; a
+    clean re-verify then re-enqueues.
+
+    Run under `max_recovery_cycles=2` since 079-US1. The budget is what decides
+    whether `RETRY` may be offered at all, and at the shipped default of 1 the
+    single cycle is already spent by the time this page is raised — so the run
+    that proves a press *buys a cycle* has to be a run where a cycle is left to
+    buy. The exhausted case is now
+    `test_recovery_escalation_kill_preserves_the_branch` below, which asserts
+    the narrowed offer.
     """
     script = ScriptedWorld(
         {"us1": [passing(), failing(2), passing()]},
@@ -4517,7 +4524,12 @@ async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
     )
     script.script_sync("us1", clean=True, base_ref="c0ffee")
 
-    status = await run_epic(env, script, graph=one_node())
+    status = await run_epic(
+        env,
+        script,
+        graph=one_node(),
+        landing_config=LandingConfig(max_recovery_cycles=2),
+    )
 
     assert states(status) == {"us1": NodeState.MERGED}
     assert status.nodes["us1"].pr_number == pr_number
@@ -4526,12 +4538,15 @@ async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
     assert len(script.escalation_requests) == 1
     history = script.escalation_requests[0].history_summary
     assert "CHECKS_FAILED" in history
+    # A cycle was left when the page went out, so the button that says retry is
+    # on it — and the press above is what spent that cycle (079-US1 FR-002).
     assert script.escalation_requests[0].choices == [
         EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
         EscalationChoice.KILL_EPIC,
     ]
+    assert status.nodes["us1"].recovery_cycles == 2
 
 
 async def test_recovery_escalation_kill_preserves_the_branch(
@@ -4561,8 +4576,11 @@ async def test_recovery_escalation_kill_preserves_the_branch(
     # The escalation carried the full queue history, oldest first.
     [escalation] = script.escalation_requests
     assert "CHECKS_FAILED" in escalation.history_summary
+    # 079-US1 (FR-002): the one recovery cycle this config allows was spent by
+    # the automatic recovery, so there is none left to grant and `RETRY` is not
+    # offered. The three that remain all end the node, which is what an operator
+    # holding this page can actually do.
     assert escalation.choices == [
-        EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
         EscalationChoice.KILL_EPIC,

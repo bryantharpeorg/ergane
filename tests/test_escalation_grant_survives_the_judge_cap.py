@@ -48,7 +48,7 @@ from typing import Any, AsyncIterator
 import pytest
 from temporalio.testing import WorkflowEnvironment
 
-from factory.activities.notify_activities import DEFAULT_CHOICES
+from factory.activities.notify_activities import ALL_CHOICES
 from factory.mergequeue.models import LandingConfig
 from factory.notify.messages import escalation_actions, parse_callback_data
 from factory.verify.ladder import (
@@ -430,7 +430,7 @@ def offered_choices() -> list[str]:
     """Exactly what the operator is offered, read back off the buttons.
 
     Taken from `escalation_actions` and decoded through `parse_callback_data`
-    rather than from `DEFAULT_CHOICES` directly: what reaches the ladder is the
+    rather than from `ALL_CHOICES` directly: what reaches the ladder is the
     payload a press carries back, so decoding it is what proves the button the
     operator sees and the resolution the ladder decides on are the same thing.
     """
@@ -439,7 +439,10 @@ def offered_choices() -> list[str]:
         workflow_id="escalation-0123456789ab",
         epic_id="068-an-escalation-offers-only-answers-that-work",
         node_id="us1",
-        choices=list(DEFAULT_CHOICES),
+        # 079-US1: the vocabulary, spelled because this node's ladder is
+        # exhausted and a press genuinely buys it one more attempt. The
+        # constant is no longer any request's default.
+        choices=list(ALL_CHOICES),
         history_summary="attempt 4: judge RETRY (rewrites spent)",
         sent_at="2026-08-20T11:00:00Z",
         expires_at="2026-08-20T12:00:00Z",

@@ -67,7 +67,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from factory.activities.notify_activities import (
-        DEFAULT_CHOICES,
+        ALL_CHOICES,
         ExpireEscalationInput,
         SendEscalationInput,
         expire_escalation,
@@ -470,7 +470,13 @@ class VerificationFlow:
                 # asked to decide, and one summarized failure hides the shape the
                 # decision turns on.
                 history_summary=render_history(results),
-                choices=list(DEFAULT_CHOICES),
+                # The reference flow's node is an exhausted ladder, where a
+                # press buys one more attempt (068 FR-003), so all four are
+                # honest here. 079-US1 renamed the constant and took away its
+                # role as a default: what one escalation offers is computed per
+                # node now, and spelling the vocabulary is a claim about a
+                # budget the caller has read.
+                choices=list(ALL_CHOICES),
                 timeout_s=node.config.escalation_timeout_s,
             ),
             **_BOUNDS,

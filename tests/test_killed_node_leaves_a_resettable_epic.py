@@ -35,7 +35,7 @@ from typing import Any, Callable
 import pytest
 from temporalio.testing import WorkflowEnvironment
 
-from factory.activities.notify_activities import DEFAULT_CHOICES
+from factory.activities.notify_activities import ALL_CHOICES
 from factory.cli.errors import OperatorError
 from factory.cli.nouns.build import (
     _reset_epic,
@@ -142,7 +142,7 @@ def reset_effect(repo: Path, factory_root: Path, worktrees: dict[str, Path]) -> 
 def test_the_menu_offers_ending_the_node_and_ending_the_epic_as_two_buttons() -> None:
     """US2-S5, the menu half: two presses, not one press applied twice.
 
-    Decoded off the rendered buttons rather than read from `DEFAULT_CHOICES`,
+    Decoded off the rendered buttons rather than read from `ALL_CHOICES`,
     because the payload is what reaches the ladder — a menu whose two faces
     encode one choice is this story's shape, and comparing the enum to itself
     would never see it.
@@ -150,7 +150,7 @@ def test_the_menu_offers_ending_the_node_and_ending_the_epic_as_two_buttons() ->
     actions = escalation_actions(
         EscalationRecord(
             "0123456789ab", "escalation-0123456789ab", EPIC_ID, "us1",
-            list(DEFAULT_CHOICES), "attempt 4: gates failed",
+            list(ALL_CHOICES), "attempt 4: gates failed",
             "2026-08-20T11:00:00Z", "2026-08-20T12:00:00Z", delivered=True,
         )
     )

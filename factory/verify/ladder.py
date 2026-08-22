@@ -46,6 +46,16 @@ obvious from the caps alone:
 per-node decision can say about an epic-level suspension, and the interpreter
 that owns releasing nodes is what distinguishes a park from a kill — and, since
 068 FR-008, a killed node from a killed epic.
+
+079-US1 adds the other half of the same reading. The ladder has always decided
+what a resolution *does*; now it also decides what may be *offered*, because the
+two answers have to come from one place or the offer starts advertising
+decisions this module will not make. `offered_choices` is that computation and
+it is pure like everything else here: a node's remaining budget in, a keyboard
+out. Nothing in it widens the vocabulary — the four values are 068's and stay
+four — and nothing in it ends a node, which is why the three ending choices are
+the floor every offer stands on: ending work needs no budget, so an escalation
+can never be raised with no executable answer on it (FR-003).
 """
 
 from __future__ import annotations
@@ -70,6 +80,108 @@ DEBUGGER_PERSONA = "debugger"
 #: is operator-configured; this constant is only used as a placeholder when no name
 #: has been configured.  It must not collide with any real registry name.
 PROMOTION_PERSONA = "__promotion__"
+
+#: Every choice that ends the node, in the order the buttons render — and so
+#: every choice that is executable on any node at any moment, because ending
+#: work spends no budget (079-US1, FR-003). `KILL_EPIC` is last for 068-US2's
+#: reason: it is the one press no other press undoes.
+ENDING_CHOICES: tuple[EscalationChoice, ...] = (
+    EscalationChoice.KILL,
+    EscalationChoice.PAUSE_EPIC,
+    EscalationChoice.KILL_EPIC,
+)
+
+#: What the store writes into `resolution` when the hour ran out and nobody
+#: pressed anything — `factory.verify.store.EXPIRED`, spelled here rather than
+#: imported because this module touches no store (R9). It is not a button, it is
+#: offered by nobody, and it must go on ending the node, which is why
+#: `is_unoffered` exempts it by name instead of by omission (079 plan trap 4).
+EXPIRED_RESOLUTION = "EXPIRED"
+
+#: The actions that put a node back to work. Membership only — never iterated —
+#: so a frozenset cannot make a workflow replay differently.
+_PRODUCES_WORK = frozenset(
+    {NextAction.RETRY, NextAction.PROMOTE, NextAction.DEBUGGER}
+)
+
+
+def offered_choices(*, retry_grants_work: bool) -> list[EscalationChoice]:
+    """What one escalation may offer, given what its node can still do (FR-001).
+
+    The offer used to be a module constant handed over whole at both escalation
+    sites, so an operator was shown "🔁 Retry the node" on a node with nothing
+    left to retry with. Pressing it recorded a press, delivered a signal, found
+    no grant, and tore the node down — a kill wearing a retry label (079's
+    opening paragraph, and 075/us1 at 03:18Z on 2026-08-21).
+
+    `retry_grants_work` is the caller's answer to one question: if the operator
+    presses retry, will this node be put back to work? It is a parameter rather
+    than something computed here because the two escalation sites read two
+    different budgets — the ladder's attempts and the landing's recovery cycles
+    — and only the site knows which one it is about, and whether it is in a
+    position to spend it. `grant_produces_work` answers it for the ladder.
+
+    The ending choices are always offered: they need no budget, and an
+    escalation with an empty keyboard is a park with no exit (FR-003).
+    """
+    if retry_grants_work:
+        return [EscalationChoice.RETRY, *ENDING_CHOICES]
+    return list(ENDING_CHOICES)
+
+
+def grant_produces_work(
+    history: Sequence[AttemptRecord],
+    config: VerificationConfig,
+    escalations: Sequence[EscalationChoice | str] = (),
+) -> bool:
+    """Whether one more granted attempt would put this node back to work (FR-002).
+
+    Asked of the ladder itself rather than recomputed beside it: the answer has
+    to be the same one `next_action` will give when the press arrives, and two
+    implementations of one budget is how an offer starts lying. So the question
+    is put in the ladder's own terms — decide again with one more grant on the
+    end — and the offer is honest by construction.
+
+    False for a node whose escalations already carry an answer that ended it: no
+    grant survives that (`_ends_the_node`), which is a fact about the node and
+    not about the budget.
+    """
+    return (
+        next_action(
+            history,
+            config,
+            escalations=[*escalations, EscalationChoice.RETRY],
+        )
+        in _PRODUCES_WORK
+    )
+
+
+def is_unoffered(
+    resolution: EscalationChoice | str,
+    offered: Sequence[EscalationChoice | str],
+) -> bool:
+    """Whether a resolution names a choice this escalation never offered (FR-004).
+
+    A stale message, a replayed callback, a row written by something that had no
+    business writing it: none of them is an answer, and applying one as the
+    node's kill is what the interpreter's fall-through used to do. The caller
+    refuses it by name instead.
+
+    `EXPIRED` is exempt. It is the store's timeout value rather than a button,
+    nobody offers it, and it must keep ending the node — separating the two
+    cases explicitly is the whole of plan trap 4.
+
+    An empty `offered` is exempt for a different reason: nothing was ever put in
+    front of an operator, so no resolution can contradict an offer. What arrives
+    at a node in that state is the workflow's own fail-safe — a page nobody
+    received, an epic stopped before the page went out — and refusing it would
+    leave a node that nothing can end.
+    """
+    if str(resolution) == EXPIRED_RESOLUTION:
+        return False
+    if not offered:
+        return False
+    return str(resolution) not in {str(choice) for choice in offered}
 
 
 def next_action(

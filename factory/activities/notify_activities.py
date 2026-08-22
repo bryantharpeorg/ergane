@@ -81,6 +81,7 @@ from factory.notify.messages import (
 from factory.notify.service import open_bot
 from factory.mergequeue.models import CheckFailure
 from factory.verify import store
+from factory.verify.ladder import ENDING_CHOICES
 from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
 
 logger = logging.getLogger(__name__)
@@ -108,13 +109,22 @@ ESCALATION_NOT_RECORDED = "ESCALATION_NOT_RECORDED"
 #: workflow's own timer is holding, so both answer the same question the same way.
 ESCALATION_TIMEOUT_S = 3600
 
-#: What the ladder offers when the dispatch does not narrow it (FR-008).
+#: The whole vocabulary, in the order the buttons render (FR-008).
 #:
-#: 068-US2 added `KILL_EPIC` last on purpose — the buttons render in this order
-#: and it is the one press no other press undoes. Ending the node and ending the
-#: epic are two answers now, which is what the operator who pressed KILL four
-#: times and then terminated the workflow by hand was missing.
-DEFAULT_CHOICES = (
+#: 068-US2 added `KILL_EPIC` last on purpose — it is the one press no other
+#: press undoes. Ending the node and ending the epic are two answers now, which
+#: is what the operator who pressed KILL four times and then terminated the
+#: workflow by hand was missing.
+#:
+#: 079-US1 renamed this from `DEFAULT_CHOICES` and took away its second job. It
+#: was the constant every escalation offered *and* the default every request
+#: inherited, which is how a node with nothing left to retry with came to be
+#: shown a retry button. It is now the vocabulary and nothing else: what one
+#: escalation may offer is computed per node by
+#: `factory.verify.ladder.offered_choices`, and what a request that names no
+#: choices gets is `ENDING_CHOICES` below. Offering all four is a claim about a
+#: budget, so it is spelled by a caller that has read one.
+ALL_CHOICES = (
     EscalationChoice.RETRY,
     EscalationChoice.KILL,
     EscalationChoice.PAUSE_EPIC,
@@ -159,13 +169,20 @@ class SendEscalationInput:
     notifier loses the message but not the fact), the same id is reused and the
     insert is skipped. When omitted, `send_escalation` mints a fresh id and
     inserts the row as usual (R11).
+
+    `choices` defaults to the ending choices rather than to all four (079-US1,
+    FR-002). A default cannot know a node's remaining budget, and the previous
+    one handed every caller a `RETRY` button whether or not anything would
+    honour it. What is left is executable on any node — ending work spends no
+    budget — so the default is safe and still non-empty (FR-003), and a caller
+    that wants `RETRY` offered has to have read a budget to ask for it.
     """
 
     workflow_id: str
     epic_id: str
     node_id: str
     history_summary: str
-    choices: list[EscalationChoice] = field(default_factory=lambda: list(DEFAULT_CHOICES))
+    choices: list[EscalationChoice] = field(default_factory=lambda: list(ENDING_CHOICES))
     timeout_s: int = ESCALATION_TIMEOUT_S
     escalation_id: str | None = None
     #: US2: the failing check evidence to render into the operator-facing message.

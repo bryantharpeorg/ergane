@@ -341,11 +341,33 @@ class NodeRecord:
     #: (FR-007).
     launch_failures: int = 0
     #: Set only when a node ended for a reason the ladder did not produce (US1):
-    #: today that means one thing, a crashed node coroutine. The text is surfaced
-    #: in `ergane build status` for the KILLED node.
+    #: a crashed node coroutine, or — since 079-US1 — an escalation that could
+    #: only be answered with choices nobody offered it. The text is surfaced in
+    #: `ergane build status` for the KILLED node.
     terminal_reason: str | None = None
     #: US2: provenance for externally-completed work, surfaced in status and PR.
     provenance: str | None = None
+    #: 079-US1: the choices the escalation this node was last paged on actually
+    #: offered, by name and in offer order. Written when the page is raised and
+    #: kept after it settles, because it is what a resolution coming back is
+    #: checked against (FR-004) — a stale message or a replayed callback naming
+    #: a button this page never showed is not an answer. Empty until the node's
+    #: first escalation.
+    offered_choices: list[str] = field(default_factory=list)
+    #: 079-US1: every resolution refused because this node's escalation never
+    #: offered it, by name and in arrival order (FR-004). The list is the record
+    #: the refusal leaves behind: before this, an unoffered resolution fell
+    #: through to the kill branch and left nothing at all saying it had arrived.
+    refused_resolutions: list[str] = field(default_factory=list)
+    #: 079-US1: the answer that ended this node, once one has been applied —
+    #: `KILL`, `PAUSE_EPIC`, `KILL_EPIC`, the store's `EXPIRED`, or (rarely) the
+    #: refused resolution that ran out of re-asks. `None` while the node has
+    #: never been ended by an escalation. It is what stops a second
+    #: page being raised for a node whose operator has already answered
+    #: (FR-005): on 2026-08-19 three answered kills produced three fresh
+    #: escalations asking the identical question, and only a hand-run `temporal
+    #: workflow terminate` ended it.
+    ending_answer: str | None = None
     #: 075-US3: the persona the node's *current* attempt was routed to, and the
     #: alias it runs under — the pair `ergane build status` reports for a node in
     #: flight (FR-012), where the history's own records do not exist yet. Written
