@@ -1,0 +1,10 @@
+# SC-003 / FR-004: 053-US3 revision-injection tests, run unmodified
+#
+# Neither file is touched by this story (`git status --short` below shows them absent).
+# Command: uv run pytest tests/test_ergane_build.py tests/test_ergane_build_status_refusal.py -q
+
+...........................................................              [100%]
+59 passed in 5.62s
+
+$ git status --short tests/test_ergane_build.py tests/test_ergane_build_status_refusal.py
+(empty — unmodified)
