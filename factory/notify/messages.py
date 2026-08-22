@@ -503,7 +503,37 @@ def _gate_line(gate: GateResult) -> str:
     # message an operator actually reads — not only in the evidence store.
     if gate.concurrent_gates:
         line += f" [contended: {gate.concurrent_gates} peer(s)]"
+    # The writes marker (084 FR-008), for the same reason one line up: a
+    # `DIRTIED_WORKTREE` gate exited 0, so the output tail quoted below this
+    # line reads as a clean run and answers none of the operator's question.
+    # The paths are the answer, and they are named here or nowhere the operator
+    # looks. Both markers render when both were recorded — a gate can be
+    # contended and dirty, and neither fact substitutes for the other.
+    if gate.worktree_writes:
+        written = gate.worktree_writes
+        line += f" [wrote {len(written)} path(s): {_writes_marker(written)}]"
     return line
+
+
+#: How many written paths the operator's gate line names before it counts the
+#: rest. A `compileall` gate over a repository writes hundreds, and this line
+#: shares `MESSAGE_LIMIT` with every attempt's evidence — the history the
+#: RETRY/KILL decision actually turns on. Three is enough to recognise the
+#: shape of what was written, which is what the operator reads the line for;
+#: the full set is in the evidence store and in the next attempt's prompt.
+GATE_WRITES_NAMED = 3
+
+
+def _writes_marker(paths: Sequence[str]) -> str:
+    """The first few written paths, with the remainder counted rather than cut.
+
+    Silent truncation would read as "that is all of them", which is the one
+    thing a marker may not say — so the clip names itself, the way `_tail`
+    names the lines it dropped.
+    """
+    named = ", ".join(paths[:GATE_WRITES_NAMED])
+    remaining = len(paths) - GATE_WRITES_NAMED
+    return f"{named}, +{remaining} more" if remaining > 0 else named
 
 
 def _output_check_line(check: OutputCheck) -> str:
