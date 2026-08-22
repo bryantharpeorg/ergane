@@ -363,6 +363,43 @@ async def test_install_verification_itself_reports_the_refusal(
     assert STUB_VERSION in forge_line, forge_line
 
 
+@pytest.mark.asyncio
+async def test_the_capability_seam_is_injectable_and_nothing_escapes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam every *other* probe's tests replace, exercised where it is defined.
+
+    Those tests are about the LLM gateway or Temporal, and their verdicts must
+    not turn on which binary is first on the runner's `PATH`. That only holds if
+    the injection point is real, so it is asserted here rather than trusted: an
+    unusable binary is on `PATH` throughout, and the probe still reports exactly
+    what the seam returned — meaning nothing reached past it to the host.
+    """
+    _write_stub_forge_cli(tmp_path, declares=_poller_fields()[:-1])
+    monkeypatch.setenv("PATH", str(tmp_path))
+    calls: list[tuple[()]] = []
+
+    def _seam():
+        calls.append(())
+        return gh_module.ForgeCapability(
+            condition=FORGE_CAPABLE,
+            binary="/somewhere/else/gh",
+            version="gh version 9.9.9 (2026-01-01)",
+            command=("pr", "view"),
+            fields=("state",),
+            undeclared=(),
+            detail="injected: this binary declares every field the poller sends",
+        )
+
+    probe = verify_module.ForgeCapabilityProbe(capability_seam=_seam)
+    finding = probe.evaluate(await probe.gather(_blank_config()))
+
+    assert calls == [()]
+    assert finding.passed is True
+    assert finding.detail == "injected: this binary declares every field the poller sends"
+
+
 def test_the_probe_is_registered_with_install_verification() -> None:
     """The registration itself, asserted: an unregistered probe checks nothing."""
     registered = [
