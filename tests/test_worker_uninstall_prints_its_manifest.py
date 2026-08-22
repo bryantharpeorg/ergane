@@ -11,21 +11,30 @@ autouse and makes `units._run_command` raise, because the units this module
 generates are the units this host is running: a test that forgot its fake would
 stop the worker running this attempt rather than fail.
 
-Written before the code, and failing on the two claims this story adds — the
-report's shape and the slice's stop:
+Written before the code, and re-run against the pre-story `units.py` to keep
+this paste true of the file as it now stands. Every failure is one of the two
+claims this story adds — the report's shape and the slice's stop:
 
+    $ git checkout 5fff5a8~1 -- factory/supervision/units.py
     $ PYTHONDONTWRITEBYTECODE=1 uv run pytest -q \
         tests/test_worker_uninstall_prints_its_manifest.py --no-header
     E   AssertionError: ergane.slice is not on exactly one line of 'removed 6 file(s)'
     E   AssertionError: assert 'file(s)' not in 'removed 6 file(s)'
     E   KeyError: 'ergane-worker.service'
-    E   AssertionError: uninstall never issued stop for ergane.slice: [...]
     E   AttributeError: 'UninstallReport' object has no attribute 'stopped'
-    6 failed, 5 passed in 0.09s
+    E   AssertionError: assert ('systemctl', '--user', 'stop', 'ergane.slice') in
+    E       [('systemctl', '--user', 'disable', '--now', 'ergane-worker.service'),
+    E        ('systemctl', '--user', 'disable', '--now', 'ergane-bridge.service'),
+    E        ('systemctl', '--user', 'disable', '--now', 'ergane-probe.timer'),
+    E        ('systemctl', '--user', 'daemon-reload')]
+    7 failed, 5 passed in 0.09s
 
-The five that passed from the first run are the controls and the two lines this
-story must *not* change: `ENABLE_TARGETS`, install's own command sequence, the
-open-epic refusal, and the `kept` line that already named its files.
+That last list is the defect in one line: the teardown ran to completion and
+never stopped the slice.
+
+The five that passed from the first run are the controls and the two things
+this story must *not* change: `ENABLE_TARGETS`, install's own command sequence,
+the open-epic refusal, and the `kept` line that already named its files.
 """
 
 from __future__ import annotations
