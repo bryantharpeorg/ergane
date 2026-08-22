@@ -1,5 +1,12 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-22. US1 602a62d8f8c6 (#281), observed on
+# ergane-buildout, first attempt. This was the release blocker: the landed fix
+# (factory/worker.py, the interceptor returning its awaited result) supersedes
+# the operator hot-fix that ran uncommitted on the worker overnight, and the
+# worker was restarted onto the landed revision on 2026-08-22 before the v0.2.0
+# cut.
+#
 # READY. Drafted 2026-08-21 ~8:10 PM CT at the operator's instruction (tree at
 # 4805fe7), reviewed and flipped by him ~10:20 PM CT after a pre-dispatch pass
 # against c84869b. It dispatches behind 081 in numeric order.

@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-22. US1 9e41dbc42ef6 (#274), US2 89b9a9bb144b (#275),
+# US3 a20e5b63427c (#276), US4 0fcbbc041a39 (#277) -- all four observed on
+# ergane-buildout. US2 through US4 were the first stories dispatched after
+# constitution 2.5.0 (D-050) reached the landing branch; all landed first-attempt.
+#
 # FLIPPED draft -> ready 2026-08-21 8:25 AM CT at the operator's instruction,
 # after he read the rendered page. What the pre-dispatch review did:
 #

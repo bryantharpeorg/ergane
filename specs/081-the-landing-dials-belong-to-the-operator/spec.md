@@ -1,5 +1,9 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-22. US1 6996dbb8346e (#278), US2 58ffc783d2f3 (#279),
+# US3 76764b44c2a8 (#280) -- all three observed on ergane-buildout, each on its
+# first attempt.
+#
 # FLIPPED draft -> ready 2026-08-21 8:25 AM CT at the operator's instruction,
 # after he read the rendered page. What the pre-dispatch review did:
 #

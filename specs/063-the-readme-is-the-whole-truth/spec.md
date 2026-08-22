@@ -1,5 +1,9 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-22. US1 8811d4a4d8c9 (#268), US2 0f0cccddf33f (#269),
+# US3 7551764fac36 (#270) -- all three observed on ergane-buildout. Every story
+# landed on its first attempt.
+#
 # RELEASED draft -> ready 2026-08-21 8:25 AM CT at the operator's instruction,
 # as part of the pre-release batch with 078, 079 and 081. The hold below is
 # answered: 067, 068 and 069 all landed and were attested on 2026-08-20.
