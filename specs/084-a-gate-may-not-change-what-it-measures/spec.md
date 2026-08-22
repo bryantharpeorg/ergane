@@ -1,5 +1,8 @@
 ---
 state: ready
+fixes:
+  - verify/gates-can-mutate-the-worktree-they-gate
+  - verify/a-gate-that-dirties-the-worktree-changes-the-diff-it-is-measuring
 # RELEASED draft -> ready 2026-08-22 ~8:20 AM CT at the operator's explicit
 # ruling (Q&A in the operator session, after reading the review docket): he
 # flipped it knowing it changes what "green" means for every target repo — a

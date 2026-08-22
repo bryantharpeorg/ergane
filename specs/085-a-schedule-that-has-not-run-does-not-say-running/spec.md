@@ -1,5 +1,7 @@
 ---
 state: draft
+fixes:
+  - roadmap/a-wedged-run-silently-eats-every-subsequent-tick-under-skip-overlap
 # FLIP APPROVED, STAGED. 2026-08-22 the operator ruled (Q&A after the review
 # docket): this spec flips to ready — its hold condition, "the floor is back on
 # its own scheduler", was observed met (schedule-owned, unpaused, ticking

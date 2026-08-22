@@ -1,5 +1,8 @@
 ---
 state: draft
+fixes:
+  - worker/a-deploy-is-a-restart-that-kills-every-in-flight-attempt
+  - interpreter/heartbeat-timeout-derived-from-attempt-deadline-parks-the-epic-for-hours
 # HOLD LIFTED 2026-08-22: the condition was "after our next pypi deployment"
 # and ergane-cli 0.2.0 shipped that morning (tag v0.2.0 at e5f9ce6). Draft
 # still — the ready flip stays the operator's call after he reads the refined

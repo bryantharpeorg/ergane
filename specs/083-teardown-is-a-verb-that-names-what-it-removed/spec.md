@@ -1,5 +1,10 @@
 ---
 state: ready
+fixes:
+  - uninstall/clean-runtime-cleans-the-repo-default-not-the-resolved-root
+  - uninstall/there-is-no-uninstall-verb
+  - uninstall/worker-uninstall-leaves-the-slice-loaded-and-names-nothing-it-removes
+  - uninstall/state-and-config-have-no-removal-path
 # RELEASED draft -> ready 2026-08-22 ~8:25 AM CT at the operator's explicit
 # ruling (Q&A in the operator session, after the review docket): he ACCEPTED
 # US1's ruling against the finding's own proposed fix — disclosure, never
