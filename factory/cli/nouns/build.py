@@ -74,6 +74,10 @@ from factory.env import (
     FACTORY_VERIFICATION_DB_PATH_ENV,
     resolve_env_path,
 )
+from factory.cli.landing import (
+    add_landing_dial_flags,
+    landing_config_from_args,
+)
 from factory.cli.nouns import Noun, _open_preflight_client
 from factory.cli.promotion import (
     add_promotion_persona_flag,
@@ -134,6 +138,7 @@ from factory.mergequeue.forge import (
     UnknownForgeError,
     resolve_forge_for_repo,
 )
+from factory.mergequeue.models import LandingConfig
 from factory.mergequeue.reset import reset_node_on_forge, reset_note
 from factory.workgraph.worktree import (
     NodeSalvage,
@@ -502,8 +507,14 @@ def start_command(args: argparse.Namespace) -> int:
     typed: a typo in it is answerable without opening a file, and answering it
     last would mean an operator with both a stale graph and a mistyped persona
     fixes them one round trip at a time (FR-009).
+
+    081-US1: the landing dials ride the same principle one step earlier still.
+    They are refused by `argparse` at parse time (`factory/cli/landing.py`), so
+    by the time this function runs a dial is either absent or usable, and what
+    is left here is assembly.
     """
     promotion_persona = checked_promotion_persona(args.promotion_persona)
+    landing_config = landing_config_from_args(args)
 
     try:
         graph = load_workgraph(args.graph)
@@ -543,6 +554,7 @@ def start_command(args: argparse.Namespace) -> int:
             args.max_concurrent_nodes,
             config=config,
             verify_order=verify_order,
+            landing_config=landing_config,
         )
     )
 
@@ -584,6 +596,7 @@ async def _start_epic(
     *,
     config: VerificationConfig | None = None,
     verify_order: tuple[str, ...] | None = None,
+    landing_config: LandingConfig | None = None,
 ) -> int:
     client = await _connect()
 
@@ -605,6 +618,11 @@ async def _start_epic(
         config = VerificationConfig()
     if verify_order is None:
         verify_order = ("gates", "diff_check", "judge")
+    if landing_config is None:
+        # A caller that named no dials, not an operator who lowered one to
+        # nothing: the model's own defaults decide, spelled in exactly one place
+        # (`factory/mergequeue/models.py:390-400`).
+        landing_config = LandingConfig()
 
     epic_workflow_id = workflow_id(graph.epic_id)
     try:
@@ -616,6 +634,10 @@ async def _start_epic(
                 config=config,
                 verify_order=verify_order,
                 max_concurrent_nodes=max_concurrent_nodes,
+                landing_config=landing_config,
+                # 081-US1 (FR-005). Until this story the argument list stopped
+                # one line above, so a hand-started epic ran the merge queue's
+                # code defaults whatever its operator wanted.
             ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,
@@ -1433,6 +1455,10 @@ def add_parser(subparsers: Any) -> None:
         ),
     )
     add_promotion_persona_flag(start)
+    # 081-US1 (FR-001): the merge queue's knobs, on the verb that starts the
+    # epic they govern. Declared through the shared module so `ergane roadmap
+    # start` offers the same five flags with the same spellings and refusals.
+    add_landing_dial_flags(start)
     start.set_defaults(run=start_command)
 
     status = commands.add_parser("status", help="what one epic is doing right now")

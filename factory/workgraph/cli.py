@@ -23,9 +23,11 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
 
 from factory.activities.merge_activities import onboard_target_repo
+from factory.cli.landing import landing_config_from_args
 from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.controlplane.resolve import resolve_temporal_target
 from factory.mergequeue.forge import resolve_forge_for_repo
+from factory.mergequeue.models import LandingConfig
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
 from factory.workgraph.delta import DeltaResult, derive_delta
@@ -541,11 +543,26 @@ def start_command(args: argparse.Namespace) -> int:
             "so no epic can be started without it"
         ) from error
 
-    return asyncio.run(_start_epic(graph, proxy_url, args.max_concurrent_nodes))
+    # 081-US1 (FR-005): this handler is the second `EpicInput` construction
+    # site, and it dropped the operator's dials the same way the `build` noun
+    # did. The assembly is the shared one, so the two doors onto `EpicWorkflow`
+    # cannot disagree about what a dial means.
+    return asyncio.run(
+        _start_epic(
+            graph,
+            proxy_url,
+            args.max_concurrent_nodes,
+            landing_config=landing_config_from_args(args),
+        )
+    )
 
 
 async def _start_epic(
-    graph: WorkGraph, proxy_url: str, max_concurrent_nodes: int = 1
+    graph: WorkGraph,
+    proxy_url: str,
+    max_concurrent_nodes: int = 1,
+    *,
+    landing_config: LandingConfig | None = None,
 ) -> int:
     client = await _connect()
 
@@ -564,6 +581,9 @@ async def _start_epic(
             print(f"ergane build: preflight [{finding.check}]: {finding.detail}", file=sys.stderr)
         return exit_code
 
+    if landing_config is None:
+        landing_config = LandingConfig()
+
     epic_workflow_id = workflow_id(graph.epic_id)
     try:
         await client.start_workflow(
@@ -572,6 +592,7 @@ async def _start_epic(
                 graph=graph,
                 proxy_url=proxy_url,
                 max_concurrent_nodes=max_concurrent_nodes,
+                landing_config=landing_config,
             ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,
