@@ -35,6 +35,7 @@ already means "nobody reported this".
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -139,12 +140,103 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 
 def _bootstrap_schema(conn: sqlite3.Connection) -> None:
-    """Apply the DDL and stamp the version — idempotent across reconnects."""
+    """Apply the DDL, widen what already exists, and stamp the version.
+
+    Idempotent across reconnects, and — since a ledger that predates a
+    `termination` value is the normal case rather than the exotic one — across
+    versions too (079-US3).
+    """
     conn.executescript(_SCHEMA_DDL)
+    _migrate(conn)
     recorded = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
     if recorded == 0:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
+
+
+#: The one constraint in `usage_records` that has widened since the table was
+#: first written: 008 added `'question'` on 2026-08-07, 070 added
+#: `'auth_failure'`. Neither reached a ledger that already existed, because every
+#: statement in `_SCHEMA_DDL` is `IF NOT EXISTS` and that is a no-op on a table
+#: which is already there. The consequence is 079-US3's wedge: a node parks on an
+#: operator question, `teardown_attempt` writes the row the park owes with
+#: `termination='question'`, an older ledger's CHECK refuses it, the activity
+#: fails, and the node is left `WAITING_OPERATOR` with the epic paused — a
+#: symptom indistinguishable from a bug in the question branch itself.
+#:
+#: Keyed off the recorded constraint rather than off `SCHEMA_VERSION`, for
+#: `factory/verify/store.py`'s reason: a version is a claim and the schema is the
+#: fact. The value list is read out of `_SCHEMA_DDL` rather than restated here,
+#: so the migration cannot drift from the DDL it migrates towards.
+_TERMINATION_CHECK = re.compile(r"termination\s+IN\s*\(([^)]*)\)", re.IGNORECASE)
+
+
+def _termination_values(ddl: str) -> str | None:
+    """The `termination IN (...)` list of a DDL, whitespace collapsed to one line."""
+    match = _TERMINATION_CHECK.search(ddl)
+    return None if match is None else " ".join(match.group(1).split())
+
+
+def _usage_records_ddl(conn: sqlite3.Connection) -> str | None:
+    """The text SQLite recorded when this ledger's `usage_records` was made."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='usage_records'"
+    ).fetchone()
+    return None if row is None else (row[0] or "")
+
+
+def _widen_terminations(conn: sqlite3.Connection) -> None:
+    """Rebuild `usage_records` so `termination` admits every value the tree writes.
+
+    `ALTER TABLE` cannot widen a CHECK, so: new table, rows copied, old dropped,
+    new renamed, indexes recreated by re-running the DDL (every statement is
+    `IF NOT EXISTS`, so it restores what `DROP TABLE` took and no-ops on the
+    rest). The new table is the old one's own recorded DDL with the value list
+    rewritten — no second column list, nothing to drift, and a rebuild that
+    guessed the shape would be the one migration that could silently drop a
+    column. `id` is copied with the rest, so a row keeps the identity an operator
+    may already have quoted.
+    """
+    recorded = _usage_records_ddl(conn)
+    current = _termination_values(_SCHEMA_DDL)
+    if recorded is None or current is None:
+        return
+    match = _TERMINATION_CHECK.search(recorded)
+    existing = _termination_values(recorded)
+    if match is None or existing is None:
+        # A ledger whose DDL does not carry this constraint verbatim is left
+        # alone rather than guessed at.
+        return
+    if not _values(existing) < _values(current):
+        # Equal is nothing to do; anything else means the ledger admits a value
+        # this ergane does not, and an older ergane must never narrow a newer
+        # store's constraint under it.
+        return
+
+    rebuilt = recorded[: match.start(1)] + current + recorded[match.end(1) :]
+    # One replacement, and the table name is the first occurrence: no column is
+    # named `usage_records`, so nothing else in the DDL can match.
+    rebuilt = rebuilt.replace("usage_records", "usage_records_v3", 1)
+    columns = ", ".join(
+        row[1] for row in conn.execute("PRAGMA table_info(usage_records)")
+    )
+    conn.executescript(
+        f"{rebuilt};\n"
+        f"INSERT INTO usage_records_v3 ({columns}) SELECT {columns} FROM usage_records;\n"
+        "DROP TABLE usage_records;\n"
+        "ALTER TABLE usage_records_v3 RENAME TO usage_records;"
+    )
+    conn.executescript(_SCHEMA_DDL)
+
+
+def _values(value_list: str) -> set[str]:
+    """A CHECK's `IN` list as the set of values it admits."""
+    return {value.strip() for value in value_list.split(",") if value.strip()}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring a ledger written by an older ergane up to the DDL above (079-US3)."""
+    _widen_terminations(conn)
 
 
 def upsert_record(conn: sqlite3.Connection, record: UsageRecord) -> UsageRecord:

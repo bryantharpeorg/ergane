@@ -235,6 +235,16 @@ def test_connecting_a_pre_008_ledger_widens_it_so_a_question_teardown_lands(
             ("demo:us1:1:i",),
         ).fetchall()
         assert termination == "question"
+
+        # The table an operator's `.schema` shows is still `usage_records`, and
+        # the widened list is the tree's. A rebuild that left the scaffolding
+        # name behind would be a published surface changed under them (FR-012).
+        [(recorded,)] = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='usage_records'"
+        ).fetchall()
+        assert "usage_records_v3" not in recorded
+        assert "'question'" in recorded
+        assert "'auth_failure'" in recorded
     finally:
         conn.close()
 
