@@ -97,6 +97,14 @@ class FakeHost:
         if args[1:4] == ("worktree", "add", "--detach"):
             (Path(args[4]) / ".venv/bin").mkdir(parents=True)
             return CommandResult(0)
+        if args[1:4] == ("worktree", "remove", "--force"):
+            tree = Path(args[-1])
+            for child in sorted(tree.rglob("*"), reverse=True):
+                child.rmdir() if child.is_dir() else child.unlink()
+            tree.rmdir()
+            return CommandResult(0)
+        if args[1:] == ("worktree", "prune"):
+            return CommandResult(0)
         raise AssertionError(f"unexpected git command: {args}")
 
     def _systemctl(self, args: tuple[str, ...]) -> CommandResult:
@@ -107,6 +115,15 @@ class FakeHost:
             return CommandResult(0, "Version=255")
         if verb == "enable":
             self.units.add(name)
+            return CommandResult(0)
+        # 082-US3: the tail of every deploy sweeps, so this host answers the
+        # two commands a sweep runs as well as the three a deploy does.
+        if verb == "list-units":
+            return CommandResult(
+                0, "\n".join(f"{unit} loaded active running" for unit in sorted(self.units))
+            )
+        if verb == "disable":
+            self.units.discard(name)
             return CommandResult(0)
         raise AssertionError(f"unexpected systemctl command: {args}")
 
@@ -135,8 +152,11 @@ class FakeDeployments:
         versions: dict[str, str] | None = None,
         registers_after: int = 1,
         available: bool = True,
+        open_work: dict[str, int] | None = None,
     ) -> None:
         self.host, self.current, self.available = host, current, available
+        self.open_work = dict(open_work or {})
+        self.deleted: list[str] = []
         self.versions = {OLD_SHORT: "current"} if versions is None else dict(versions)
         self.registers_after = registers_after
         self.snapshots = 0
@@ -169,6 +189,15 @@ class FakeDeployments:
             self.versions[self.current] = "draining"
         self.current = build_id
         self.versions[build_id] = "current"
+
+    # -- what the tail of a deploy sweeps with (082-US3) ----------------------
+
+    def open_pinned(self, build_id: str) -> int:
+        return self.open_work.get(build_id, 0)
+
+    def delete(self, build_id: str) -> None:
+        self.deleted.append(build_id)
+        self.versions.pop(build_id, None)
 
 
 class FakeClock:
@@ -432,17 +461,61 @@ def test_the_report_of_a_real_deploy_carries_the_servers_own_version_list(
     would show a clean floor while a stuck drain piles versions up."""
     host = FakeHost()
     directory = FakeDeployments(
-        host, versions={OLD_SHORT: "current", "1234567": "drained"}
+        host,
+        versions={OLD_SHORT: "current", "1234567": "draining"},
+        open_work={"1234567": 3},
     )
 
     report = run_deploy(layout, host, directory)
 
     assert [(one.build_id, one.state) for one in report.versions] == [
-        ("1234567", "drained"),
+        ("1234567", "draining"),
         (OLD_SHORT, "draining"),
         (HEAD_SHORT, "current"),
     ]
     assert OLD_SHORT in report.render() and "draining" in report.render()
+
+
+# --- 082-US3 / FR-005 — the tail of a deploy reaps what has finished draining ---
+
+
+def test_the_tail_of_a_deploy_reaps_a_version_that_has_finished_draining(
+    layout: InstallLayout,
+) -> None:
+    """The moment a version most often becomes reapable is a deploy, and it is
+    also the moment an operator is watching — so the sweep runs here as well as
+    on the probe's timer, inside the lock the deploy already holds."""
+    host = FakeHost()
+    old = layout.deployment_tree("1234567")
+    old.mkdir(parents=True)
+    host.units.add(worker_instance("1234567"))
+    directory = FakeDeployments(
+        host, versions={OLD_SHORT: "current", "1234567": "drained"}
+    )
+
+    report = run_deploy(layout, host, directory)
+
+    assert directory.deleted == ["1234567"]
+    assert not old.exists()
+    assert worker_instance("1234567") not in host.units
+    assert "1234567" not in [one.build_id for one in report.versions]
+    assert "reaped" in report.render()
+
+
+def test_a_deploy_that_never_registered_reaps_nothing(layout: InstallLayout) -> None:
+    """The control on that wiring. A degraded deploy left a unit running and
+    made nothing current; the floor is not in a state to also be pruned, and the
+    report an operator has to read is about the degradation."""
+    host = FakeHost()
+    directory = FakeDeployments(
+        host, versions={OLD_SHORT: "current", "1234567": "drained"}, registers_after=10_000
+    )
+
+    report = run_deploy(layout, host, directory, wait_s=30.0, poll_s=5.0)
+
+    assert report.degraded is not None
+    assert directory.deleted == []
+    assert report.swept is None
 
 
 # --- Spec edge case — two deploys racing: the verb takes a lock, the loser reports ---
