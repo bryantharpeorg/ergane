@@ -1,5 +1,14 @@
 ---
-state: ready
+state: landed
+# LANDED 2026-08-22, attested ~11:28 AM CT by the operator session. Every
+# story verified on ergane-buildout by content (`ergane spec landed
+# --default-branch ergane-buildout`); the epic workflow completed clean.
+# This was the manually-started epic (the 13:15Z roadmap tick parked it on
+# a push race; started by hand 13:28Z):
+#   US1 landed at 0e86dd9f135a (PR #283, attempt 1)
+#   US2 landed at 701bc0dcb31c (PR #284, attempt 1)
+#   US3 landed at ec19fc097fb2 (PR #286, attempt 1)
+#   US4 landed at 6bc0daaf78c9 (PR #288, attempt 1)
 fixes:
   - uninstall/clean-runtime-cleans-the-repo-default-not-the-resolved-root
   - uninstall/there-is-no-uninstall-verb
