@@ -1345,6 +1345,12 @@ class EpicWorkflow:
             node_id: task
             for node_id, task in in_flight.items()
             if self._nodes[node_id].state != NodeState.WAITING_OPERATOR
+            # 079-US3: "in-flight but not done" is the exemption, and a finished
+            # task is not that case whatever the record still says. A parked node
+            # whose coroutine already raised must be reaped here — waiting on it
+            # cannot deadlock (it is done) and skipping it leaves a dead node
+            # holding its dependents PENDING through the pause.
+            or task.done()
         }
         while drainable:
             await workflow.wait_condition(
@@ -1685,7 +1691,10 @@ class EpicWorkflow:
                         # the pause (a parked question is not a bracket to close), and
                         # the scheduler's `wait_condition(not self._paused)` is what
                         # idles while it waits. The node clears the pause itself on
-                        # un-park, the way it set it on park.
+                        # un-park, the way it set it on park — including when the
+                        # park raises rather than ends, which is what the
+                        # `except Exception` clause on this attempt's `try` is
+                        # for (079-US3, FR-011).
                         record.state = NodeState.WAITING_OPERATOR
                         record.pending_question_id = question.id
                         self._paused = True
@@ -1926,6 +1935,36 @@ class EpicWorkflow:
                 # ending and the SDK will not record new history anyway
                 # (FR-002). Re-raise immediately so Python does not report a
                 # swallowed cancellation that later awaits in `finally`.
+                raise
+            except Exception:
+                # 079-US3 (FR-009/FR-011): release the park before the raise
+                # leaves this coroutine. `_paused` and `pending_question_id` are
+                # epic-wide state that only the parked node ever clears, and
+                # `_drain_in_flight` deliberately does not wait on a
+                # `WAITING_OPERATOR` node — so a task that dies holding them is
+                # never reaped and nothing ever resumes the epic. The node stays
+                # parked forever, every sibling behind it stays PENDING, and an
+                # operator's answer reaches a coroutine that is already dead:
+                # 073's morning, and the shape US3-S5 reproduces. The measured
+                # cause was the teardown at the park itself — a ledger whose
+                # `usage_records` CHECK predates `'question'` refuses the row
+                # (US3-S6, fixed in `factory/usage/ledger.py`) — but any raise
+                # between the park and the un-park has the same blast radius, so
+                # the release does not ask what the reason was.
+                #
+                # Only a parked node holds the park: `record.state` is
+                # `WAITING_OPERATOR` between the two assignments and nowhere
+                # else in this loop, and the next attempt overwrites it at
+                # `KEY_ISSUED`. The child is cancelled the way the
+                # kill-while-parked path cancels it — its 8h window must not
+                # outlive the node that asked — and the raise then reaches
+                # `_reap_finished`, which ends the node KILLED with the failure
+                # named rather than parked with no reason at all.
+                if record.state == NodeState.WAITING_OPERATOR:
+                    record.pending_question_id = None
+                    self._paused = False
+                    if not question.done():
+                        question.cancel()
                 raise
             finally:
                 # Every key that is opened for an attempt is closed on every exit
