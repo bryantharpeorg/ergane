@@ -261,6 +261,11 @@ class RoadmapInput:
     #: bound, and forwarded to every child `EpicInput`.
     max_concurrent_nodes: int = 1
     landing_config: LandingConfig = LandingConfig()
+    #: 081-US3 (FR-009): which of those dials this roadmap's operator set, by
+    #: name. Forwarded to every child epic beside the config itself, because a
+    #: child that carried the values without them would report every dial as
+    #: defaulted — "set but unreadable", the same defect US2 ended one layer up.
+    landing_overrides: tuple[str, ...] = ()
     #: The operator's ladder overlay, not the ladder itself: every child epic's
     #: caps are read from the target clone's manifest at dispatch (023 US2),
     #: and `_child_config` lays the one field set here — `promotion_persona`
@@ -990,6 +995,7 @@ class RoadmapWorkflow:
                 max_concurrent_epics=request.max_concurrent_epics,
                 max_concurrent_nodes=request.max_concurrent_nodes,
                 landing_config=request.landing_config,
+                landing_overrides=request.landing_overrides,
                 config=request.config,
                 poll_interval_s=request.poll_interval_s,
                 idle_rescan_s=request.idle_rescan_s,
@@ -1262,6 +1268,7 @@ class RoadmapWorkflow:
                     verify_order=loop_config.verify_order,
                     poll_interval_s=request.poll_interval_s,
                     landing_config=request.landing_config,
+                    landing_overrides=request.landing_overrides,
                     max_concurrent_nodes=request.max_concurrent_nodes,
                 ),
                 id=child_workflow_id,
