@@ -8,11 +8,18 @@ Three properties are the whole design:
 
 - **It reports; it does not remediate (FR-014).** The instinct on reading "the
   worker is down" is to restart it. systemd owns restarts, and a restart into
-  an already-dying host deepens an OOM storm rather than ending it. Reaping
-  orphaned test servers is the sole exception, and only because nothing else
-  ever will: a server whose parent died is reparented to PID 1, the fixtures'
-  `finally` never runs after a SIGKILL, and it accrues at ~66 MiB a copy until
-  the host dies — 2026-08-11, 8,131 copies, 123 GiB, one dead host.
+  an already-dying host deepens an OOM storm rather than ending it. Reaping is
+  the exception, and only where nothing else ever will: an orphaned test server
+  whose parent died is reparented to PID 1, the fixtures' `finally` never runs
+  after a SIGKILL, and it accrues at ~66 MiB a copy until the host dies —
+  2026-08-11, 8,131 copies, 123 GiB, one dead host. 082-US3 adds the second
+  case on the same argument: a worker version nothing is pinned to any more
+  holds a unit, a venv and a frozen checkout forever, and this is the only
+  process on the host that runs on a timer. Both are `Host` seams, so no test
+  reaches a machine; the version sweep's own mechanism lives in
+  `factory.supervision.deploy`, which is also why this module still imports no
+  Temporal client (`assess` calls a callable; the callable does the reaching,
+  and reports being unable to instead of raising).
 - **Alerts are edge-triggered, with a heartbeat under them (FR-013).** The
   timer fires every couple of minutes, and a page per firing is a channel the
   operator mutes within a day — worse than none, because it still looks
@@ -41,7 +48,9 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence
 
+from factory.cli.errors import OperatorError
 from factory.supervision.alert import AlertOutcome, StackAlert, send_alert
+from factory.supervision.deploy import SweepReport
 from factory.supervision.units import (
     BRIDGE_UNIT,
     SLICE_UNIT,
@@ -85,6 +94,18 @@ class ProbeConfig:
     heartbeat_every_s: int = 86_400
 
 
+def _no_sweep() -> SweepReport:
+    """The default: a probe that reaps no worker version.
+
+    A default rather than a required argument because every existing test
+    constructs a `Host` by keyword, and the one thing worse than a probe that
+    does not sweep is a test that reaps a version off the machine it runs on.
+    `real_host` is where the production answer is wired, and a test holds it to
+    that (082-US3).
+    """
+    return SweepReport()
+
+
 @dataclasses.dataclass(frozen=True)
 class Host:
     """Everything the probe reads about the machine, behind one seam."""
@@ -95,6 +116,7 @@ class Host:
     uptime_s: Callable[[], float]
     kill: Callable[[int], None]
     dial: Callable[[str, int], bool]
+    sweep: Callable[[], SweepReport] = _no_sweep
 
 
 def real_host() -> Host:
@@ -106,7 +128,26 @@ def real_host() -> Host:
         uptime_s=_uptime_s,
         kill=lambda pid: _kill(pid),
         dial=_dial,
+        sweep=_sweep_versions,
     )
+
+
+def _sweep_versions() -> SweepReport:
+    """Reap every worker version that has finished draining (082-US3, FR-005).
+
+    Imported inside the function, like `_default_dial` below and for the same
+    reason: this module is the one that has to work when Temporal is what died,
+    and `factory.supervision.deploy` reaches a client. An installation this
+    probe cannot resolve a layout for is not a thing the probe can fix, so it
+    reports that too rather than raising into the timer.
+    """
+    from factory.supervision.deploy import sweep
+    from factory.supervision.units import resolve_layout
+
+    try:
+        return sweep(resolve_layout())
+    except OperatorError as error:
+        return SweepReport(unavailable=str(error))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -268,6 +309,11 @@ def assess(config: ProbeConfig, host: Host) -> Verdict:
     ).out.strip()
     if used.isdigit():
         notes.append(f"{config.slice_unit} {int(used) // 1_073_741_824} GiB")
+
+    # 082-US3: a note, never a problem. A stuck drain is disk, not an outage,
+    # and a version that will not reap would otherwise page on every firing —
+    # the muting FR-013 forbids. A sweep with nothing to say says nothing.
+    notes += host.sweep().notes
 
     return Verdict(
         status=DEGRADED if problems else HEALTHY,
