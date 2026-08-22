@@ -37,11 +37,14 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError
 
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
+from factory.cli.landing import (
+    add_landing_dial_flags,
+    landing_config_from_args,
+)
 from factory.cli.promotion import (
     add_promotion_persona_flag,
     checked_promotion_persona,
 )
-from factory.mergequeue.models import LandingConfig
 from factory.controlplane.resolve import resolve_temporal_target
 from factory.roadmap.discovery import (
     RoadmapLocation,
@@ -118,6 +121,13 @@ def add_roadmap_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
         help="idle rescan interval; omit to drain and exit",
     )
     add_promotion_persona_flag(start)
+    # The same five dials `ergane build start` offers, declared from the same
+    # module so the two verbs cannot drift (081 FR-006). They are worth more
+    # here than there: a hand-started epic is one epic an operator is watching,
+    # and a roadmap is every epic they are not. Note the poll dial is
+    # `--landing-poll-interval-s`; `--poll-interval-s` above is this roadmap's
+    # own child-poll beat and always was.
+    add_landing_dial_flags(start)
     start.set_defaults(run=_run_async(roadmap_start_command))
 
     pause = verbs.add_parser("pause", help="pause dispatch")
@@ -244,7 +254,24 @@ async def roadmap_start_command(args: argparse.Namespace) -> int:
         proxy_url=proxy_url,
         max_concurrent_epics=args.max_concurrent_epics,
         max_concurrent_nodes=args.max_concurrent_nodes,
-        landing_config=LandingConfig(),
+        # The operator's landing dials, over today's values for the ones they
+        # did not set (FR-006). This line was `LandingConfig()` until 081-US2,
+        # and it is why `factory/roadmap/workflow.py`'s
+        # `landing_config=request.landing_config` — faithful since 044 — still
+        # dispatched the defaults to every child epic: the value it forwarded
+        # was made here, empty.
+        #
+        # FR-007, US2-S3 — what a change does to a running epic, stated where
+        # the operator is standing when they ask: **it reaches the next
+        # dispatch, and nothing that is already running.** These dials are
+        # compiled into this run's input at start and carried verbatim across
+        # every continue-as-new boundary; each child epic's `EpicInput` is
+        # built once, at its own dispatch, and no signal on `RoadmapWorkflow`
+        # reconfigures landing. To change a dial, start a roadmap with the new
+        # value — the epics already in flight keep the ones they were
+        # dispatched with. `tests/test_scheduled_epics_carry_the_dials.py`
+        # proves both halves.
+        landing_config=landing_config_from_args(args),
         # The only field of `VerificationConfig` a roadmap's operator sets: the
         # rest of every child's ladder is read from the target clone's manifest
         # at dispatch (023 US2), and this rides alongside it as an overlay the
