@@ -1,5 +1,32 @@
 ---
-state: draft
+state: ready
+# RELEASED draft -> ready 2026-08-22 ~8:25 AM CT at the operator's explicit
+# ruling (Q&A in the operator session, after the review docket): he ACCEPTED
+# US1's ruling against the finding's own proposed fix — disclosure, never
+# retargeting — and chose the FULL four-story scope over the US1-only cut.
+# The hold below is answered.
+#
+# RE-ANCHORED 2026-08-22 against 732ff88 before the flip. An exhaustive pass
+# re-printed every citation in spec/plan/tasks (~200 anchors):
+#   - ZERO broken constructs. US1's and US2's entire surfaces (cli/repo.py,
+#     supervision/units.py, worktree.py, registry.py, config.py, locking.py,
+#     the noun shims, test_ergane_repo_forget.py) are byte-identical to the
+#     draft-time tree — those two stories needed no re-anchoring at all.
+#   - factory/cli/roadmap.py drifted wholesale (+11/+32) when 081's landing
+#     dials landed: pause command :310 -> :342, _connect :189 -> :200,
+#     Client.connect :193 -> :204, and every render anchor. All updated. The
+#     "no injectable client seam" premise RE-VERIFIED: Client.connect still
+#     occurs exactly once. Trap 14 and FR-017 stand unchanged in force —
+#     and note the irony: the silent-anchor-shift hazard trap 14 warned
+#     about has now actually happened once, caused by 081, not by anyone
+#     breaking a rule.
+#   - factory/cli/nouns/build.py salvage surface drifted +129 (078/081):
+#     load_workgraph :1263 -> :1392, salvage_command :1244 -> :1373, parser
+#     :1512 -> :1645. Updated; FR-015's reasoning unaffected.
+#   - The trap-3a stale-comment claim (units.py:78-80 vs :81) re-verified
+#     still true; T017's four-name assertion still matches.
+#
+# THE ORIGINAL HOLD, kept for the record:
 # HELD AT DRAFT deliberately. Drafted 2026-08-21 ~5:30 PM CT by an operator
 # session from a field report, against a tree at dcc854d which is byte-identical
 # to `origin/ergane-buildout`. It is held because US1 makes a ruling that
@@ -83,10 +110,10 @@ state: draft
 #     Temporal fake, no systemd fake and no filesystem fake required.
 #   - **THE 085 COLLISION -- RULED, and this spec takes the avoiding side.**
 #     `085-a-schedule-that-has-not-run-does-not-say-running`'s US3 rewrites two
-#     lines of `factory/cli/roadmap.py` (`:432` and `:448`). Both stories sit at
+#     lines of `factory/cli/roadmap.py` (`:464` and `:480`). Both stories sit at
 #     the tail of their chains, so they land in the same window if the two epics
 #     run together. `factory/cli/roadmap.py` has no injectable client seam --
-#     `_connect()` at `:189` calls `Client.connect` inline at `:193` -- so an
+#     `_connect()` at `:200` calls `Client.connect` inline at `:204` -- so an
 #     implementer making step one testable will reach for exactly that file.
 #     **This spec does not edit it.** Plan trap 14 is the full account.
 #   - **US3 GAINS A CONTROL** (US3-S6 / FR-017 / SC-008). It was the only story
@@ -104,7 +131,7 @@ state: draft
 #     labelled kept line per surviving path, in the same block as the removed
 #     lines, in the shape `factory/supervision/units.py:479` already renders.
 #   - **FR-015 NAMED A COMMAND THAT CANNOT ANSWER IT.** `ergane build salvage`
-#     loads a compiled graph (`factory/cli/nouns/build.py:1263`) and reports one
+#     loads a compiled graph (`factory/cli/nouns/build.py:1392`) and reports one
 #     epic's nodes; it does not enumerate a host's refs. Teardown prints
 #     `git for-each-ref refs/heads/factory/` and `git for-each-ref refs/salvage/`
 #     verbatim instead.
@@ -181,15 +208,15 @@ not meaningfully perform.**
 - **`install` and `init`.** This spec builds teardown. It does not touch the
   interview, the walkthrough, or what install writes.
 - **`factory/cli/roadmap.py`.** Teardown *imports* `roadmap_pause_command`
-  (`factory/cli/roadmap.py:310`) and edits nothing in that module. Spec
+  (`factory/cli/roadmap.py:342`) and edits nothing in that module. Spec
   `085-a-schedule-that-has-not-run-does-not-say-running` is rewriting
-  `factory/cli/roadmap.py:432` and `factory/cli/roadmap.py:448` in the same
+  `factory/cli/roadmap.py:464` and `factory/cli/roadmap.py:480` in the same
   window, and that file has no injectable Temporal client seam to borrow, which
   is exactly the reason an implementer would open it. The seam this spec needs
   lives in teardown's own step table instead. The plan's trap 14 is the full
   account, and it is scope, not a footnote.
 - **The signatures of the three commands teardown composes.**
-  `roadmap_pause_command` (`factory/cli/roadmap.py:310`), `repo_forget_command`
+  `roadmap_pause_command` (`factory/cli/roadmap.py:342`), `repo_forget_command`
   (`factory/cli/repo.py:307`) and `uninstall()`
   (`factory/supervision/units.py:528`) keep the shapes and injection seams they
   have today. FR-017 is the control that says so.
@@ -314,8 +341,8 @@ repo and installed units, and read the plan it prints.
    stopped or signalled. **The seam that produces that evidence is teardown's
    own step table, not a fake for any of the three commands** — `--check` is
    conclusive because the acting half is unreachable on that path, which needs
-   no Temporal client fake and cannot get one: `factory/cli/roadmap.py:189`
-   connects inline at `:193`. `init --check` (`factory/cli/init.py:343-345`) and
+   no Temporal client fake and cannot get one: `factory/cli/roadmap.py:200`
+   connects inline at `:204`. `init --check` (`factory/cli/init.py:343-345`) and
    `install --verify` (`factory/cli/nouns/install.py:130-132`) are the two shapes
    to match for the flag itself.
 3. **Given** a step with nothing to do — no repositories registered, no units
@@ -330,7 +357,7 @@ repo and installed units, and read the plan it prints.
 5. **Given** dispatch that cannot be paused because no owner can be named,
    **When** teardown runs, **Then** that is a refusal and not a skipped step —
    proven by a committed test. `roadmap pause`
-   (`factory/cli/roadmap.py:310-331`) reports success when it signalled a run it
+   (`factory/cli/roadmap.py:342-363`) reports success when it signalled a run it
    could not establish ownership of, and continuing past that is how a schedule
    goes on dispatching into a host being dismantled.
 6. **Given** this story landed, **When** `ergane roadmap pause`,
@@ -342,7 +369,7 @@ repo and installed units, and read the plan it prints.
    `factory/cli/repo.py:93` that `tests/test_ergane_repo_forget.py:90` replaces,
    that `uninstall()` still honours its `open_epics` parameter
    (`factory/supervision/units.py:532`) and its `run` parameter (`:531`), and
-   that `roadmap_pause_command` (`factory/cli/roadmap.py:310`) still pauses the
+   that `roadmap_pause_command` (`factory/cli/roadmap.py:342`) still pauses the
    schedule when the roadmap is schedule-owned. **The control.** This story
    composes three live call paths, and the failure it exists to catch is a
    teardown that works because the commands beneath it were reshaped to suit
@@ -400,7 +427,7 @@ directory, once bare and once with `--purge`, and diff what survives.
    `git for-each-ref refs/salvage/` — and removes neither — proven by a
    committed test asserting the counts, both command strings, and the refs'
    survival. It does **not** name `ergane build salvage`: that verb loads a
-   compiled graph (`factory/cli/nouns/build.py:1263`) and reports one epic's
+   compiled graph (`factory/cli/nouns/build.py:1392`) and reports one epic's
    nodes, so it cannot answer what is on the host. Salvage refs are evidence;
    leaving them is defensible, leaving them unmentioned is not, and pointing at
    a command that will not list them is worse than either.
@@ -459,13 +486,13 @@ directory, once bare and once with `--purge`, and diff what survives.
   (`factory/workgraph/worktree.py:480`) — and MUST print, verbatim, the two
   commands that list them: `git for-each-ref refs/heads/factory/` and
   `git for-each-ref refs/salvage/`. It MUST NOT name `ergane build salvage`,
-  which loads a compiled graph (`factory/cli/nouns/build.py:1263`) and reports
+  which loads a compiled graph (`factory/cli/nouns/build.py:1392`) and reports
   one epic's nodes rather than a host's refs.
 - **FR-016**: `ergane uninstall --scrub-refs` MUST remove those refs and name
   them; without it they MUST survive.
 - **FR-017**: The three commands teardown composes MUST keep the signatures and
   injection seams they have today: `roadmap_pause_command`
-  (`factory/cli/roadmap.py:310`) and `repo_forget_command`
+  (`factory/cli/roadmap.py:342`) and `repo_forget_command`
   (`factory/cli/repo.py:307`) MUST still take one `argparse.Namespace`,
   `repo_forget_command` MUST still resolve its Temporal client through the
   module attribute at `factory/cli/repo.py:93`, and `uninstall()` MUST still

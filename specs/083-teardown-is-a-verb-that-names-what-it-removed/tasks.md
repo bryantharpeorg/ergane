@@ -12,7 +12,7 @@ that adds a path print has closed nothing. Trap 3: **do not add `SLICE_UNIT` to
 `ENABLE_TARGETS`** — that changes install, and US2-S4 is the control that proves
 install did not move. Trap 14 (US3 only): **do not edit
 `factory/cli/roadmap.py`** — spec 085's US3 is rewriting
-`factory/cli/roadmap.py:432` and `factory/cli/roadmap.py:448` in the same
+`factory/cli/roadmap.py:464` and `factory/cli/roadmap.py:480` in the same
 landing window, and the plan's "The ruling on composition" is why US3 needs no
 edit there.
 
@@ -145,7 +145,7 @@ T033 and trap 14.
       already been done.
 - [ ] T029 [P] [US3] (spec US3-S5, FR-012) Assert that dispatch which could not
       be paused because no owner can be named is a refusal, not a skipped step.
-      `factory/cli/roadmap.py:311-319` and `factory/cli/roadmap.py:328-330` are
+      `factory/cli/roadmap.py:343-351` and `factory/cli/roadmap.py:360-362` are
       why (trap 7).
 - [ ] T030 [P] [US3] (spec US3-S6, FR-017) **The control.** Assert the three
       composed commands still behave exactly as they do today when invoked
@@ -154,7 +154,7 @@ T033 and trap 14.
       module attribute at `factory/cli/repo.py:93` — drive it the way
       `tests/test_ergane_repo_forget.py:90` does — `uninstall()` still honours
       `run` (`factory/supervision/units.py:531`) and `open_epics` (`:532`), and
-      `roadmap_pause_command` (`factory/cli/roadmap.py:310`) still pauses the
+      `roadmap_pause_command` (`factory/cli/roadmap.py:342`) still pauses the
       schedule when the roadmap is schedule-owned. A teardown that works because
       the three commands beneath it were reshaped breaks every operator who never
       runs teardown.
@@ -179,8 +179,8 @@ T033 and trap 14.
       acting half — and have both `--check` and the real run read that one table,
       so the printed plan and the performed sequence cannot diverge. `perform`
       calls the three commands **as they stand**: `roadmap_pause_command`
-      (`factory/cli/roadmap.py:310`, run through `asyncio.run` in the shape
-      `factory/cli/roadmap.py:180-184` already uses), `repo_forget_command`
+      (`factory/cli/roadmap.py:342`, run through `asyncio.run` in the shape
+      `factory/cli/roadmap.py:191-195` already uses), `repo_forget_command`
       (`factory/cli/repo.py:307`), and `uninstall(resolve_layout())`
       (`factory/supervision/units.py:528`, `factory/supervision/units.py:165`).
       The two open-epic seams stay as they are and are different functions:
@@ -248,7 +248,7 @@ T033 and trap 14.
       commands verbatim (`git for-each-ref refs/heads/factory/` and
       `git for-each-ref refs/salvage/`), leaves the refs in place, and **does not
       name `ergane build salvage`**, which loads a compiled graph
-      (`factory/cli/nouns/build.py:1263`) and answers a different question.
+      (`factory/cli/nouns/build.py:1392`) and answers a different question.
 - [ ] T046 [P] [US4] (spec US4-S5, FR-016) Assert `--scrub-refs` removes those
       refs and names them.
 

@@ -35,7 +35,7 @@ sentence. **Trap 2: two renderers, one sentence** — the verdict is computed on
 `RoadmapLocation`, never twice in two CLI files. **Trap 17: 083 is pulled toward
 `factory/cli/roadmap.py` and has ruled itself out of it** (083's FR-017 makes it a
 MUST NOT), so you are its only editor — US3 stays inside `_render_disposition`
-(`factory/cli/roadmap.py:424`) and `_render_status` (`:446`) and touches no client
+(`factory/cli/roadmap.py:456`) and `_render_status` (`:478`) and touches no client
 seam.
 
 ## Phase 1: User Story 1 — The read stops throwing the fact away
@@ -176,7 +176,7 @@ property beside `refusal` at `:89`. Contention, not logic (trap 2).
       print; never let it decide the verdict (trap 1).
 - [ ] T024 [US2] (FR-005) Keep the word `starved`. Not `stalled`
       (`factory/mergequeue/models.py:77`), not `parked`
-      (`factory/cli/roadmap.py:452`, two lines below the one FR-012 rewrites), not
+      (`factory/cli/roadmap.py:484`, two lines below the one FR-012 rewrites), not
       `blocked` (`CONTEXT.md:132`). Only the third is in `CONTEXT.md`, so a
       fruitless grep there is not permission to reuse the other two (trap 11).
 
@@ -194,15 +194,15 @@ this story renders a verdict it does not compute.
 
 **And it shares a file with a spec the work graph cannot see** (trap 17).
 `specs/083-teardown-is-a-verb-that-names-what-it-removed/`'s US3 wires
-`ergane uninstall` to `roadmap_pause_command` (`factory/cli/roadmap.py:310`), and
+`ergane uninstall` to `roadmap_pause_command` (`factory/cli/roadmap.py:342`), and
 the obvious way to make that testable is a client seam here, because `_connect()`
-at `:189` calls `Client.connect` inline at `:193` and that is the file's only
+at `:200` calls `Client.connect` inline at `:204` and that is the file's only
 occurrence. **083 ruled that out** — its FR-017 makes `factory/cli/roadmap.py` a
 file 083 MUST NOT edit — so you are the only editor and the hazard is an 083
 attempt that breaks its own rule. Both stories sit at the tail of their chain, so
 they land in the same window. **Every task below stays inside
-`_render_disposition` (`factory/cli/roadmap.py:424`) and `_render_status`
-(`:446`).** Add no seam near `:189`/`:193`; touch nothing in
+`_render_disposition` (`factory/cli/roadmap.py:456`) and `_render_status`
+(`:478`).** Add no seam near `:200`/`:204`; touch nothing in
 `roadmap_pause_command` at `:310`. If 083 landed first, re-derive every anchor in
 this file by exact line text with `grep -n` — never by offset, because there is
 real content at the old numbers and the misreading resolves silently.
@@ -221,7 +221,7 @@ real content at the old numbers and the misreading resolves silently.
       (trap 6).
 - [ ] T028 [P] [US3] (spec US3-S2, FR-009) Render both verbs from **one** location
       and assert they produce the same verdict word (`factory/cli/status.py:729`,
-      `factory/cli/roadmap.py:432`). A diff where each renderer computes its own
+      `factory/cli/roadmap.py:464`). A diff where each renderer computes its own
       answer fails here and nowhere else (trap 2).
 - [ ] T029 [P] [US3] (spec US3-S3, FR-011) **The control.** Assert a healthy
       location renders byte for byte what it renders today — `schedule: <id>
@@ -233,7 +233,7 @@ real content at the old numbers and the misreading resolves silently.
       read for this.
 - [ ] T030 [P] [US3] (spec US3-S4, FR-009) Assert an `unknown` schedule state
       renders as such and every other line of the report still renders (trap 3).
-- [ ] T031 [P] [US3] (spec US3-S5, FR-012) Assert `factory/cli/roadmap.py:448` no
+- [ ] T031 [P] [US3] (spec US3-S5, FR-012) Assert `factory/cli/roadmap.py:480` no
       longer says `roadmap: running`, names dispatch instead — matching
       `factory/cli/status.py:738` — and that the schedule line and the dispatch line
       cannot be read as one another.
@@ -241,21 +241,21 @@ real content at the old numbers and the misreading resolves silently.
 ### Implementation for this story
 
 - [ ] T032 [US3] (FR-009) Replace `factory/cli/status.py:729` and
-      `factory/cli/roadmap.py:432` with a read of US2's computed verdict. Neither
-      renderer recomputes anything. `:432` sits inside `_render_disposition`
-      (`factory/cli/roadmap.py:424`); that function and `_render_status` (`:446`)
+      `factory/cli/roadmap.py:464` with a read of US2's computed verdict. Neither
+      renderer recomputes anything. `:464` sits inside `_render_disposition`
+      (`factory/cli/roadmap.py:456`); that function and `_render_status` (`:478`)
       are the only two this story may enter in that file (trap 17).
 - [ ] T033 [US3] (FR-009, FR-010) Carry the verdict and its evidence onto
       `RoadmapDisposition` (`factory/cli/status.py:157-178`) alongside the copies at
       `:522-523`, and render the starved sentence with both pieces of evidence:
       elapsed time since the last actual start, and the skipped count.
-- [ ] T034 [US3] (FR-012) Rename the line at `factory/cli/roadmap.py:448` to name
+- [ ] T034 [US3] (FR-012) Rename the line at `factory/cli/roadmap.py:480` to name
       dispatch, using the word `factory/cli/status.py:738` already uses. Note the
       block already prints `running:` for the epic list at
-      `factory/cli/roadmap.py:451` and `parked:` at `:452` — the same
+      `factory/cli/roadmap.py:483` and `parked:` at `:484` — the same
       `dispatch:` / `running:` / `parked:` order `factory/cli/status.py:738-740`
       already uses. Adopt it. This is a rename inside `_render_status`
-      (`factory/cli/roadmap.py:446`) and nothing else in the file moves (trap 17).
+      (`factory/cli/roadmap.py:478`) and nothing else in the file moves (trap 17).
 - [ ] T034a [US3] (FR-012) Update the byte-for-byte assertion the rename breaks:
       `tests/test_roadmap_schedule_discovery.py:491-498`, whose first element is
       `"roadmap: running\n"` at `:492`, plus the docstrings quoting that block at
