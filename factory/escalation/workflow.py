@@ -74,7 +74,7 @@ import dataclasses
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
+from temporalio.common import RetryPolicy, VersioningBehavior
 
 with workflow.unsafe.imports_passed_through():
     from factory.activities.notify_activities import (
@@ -89,6 +89,7 @@ with workflow.unsafe.imports_passed_through():
     from factory.mergequeue.models import CheckFailure
     from factory.notify.adapter import UNKNOWN_SENDER
     from factory.notify.service import SIGNAL_NAME
+    from factory.versioning import workflow_versioning_behavior
     from factory.verify.ladder import ENDING_CHOICES
     from factory.verify.models import EscalationChoice
 
@@ -214,7 +215,10 @@ def child_correlation_id() -> str:
     return workflow.uuid4().hex[:CORRELATION_ID_HEX]
 
 
-@workflow.defn
+# 082-US1: pinned with the epic that raised it. An escalation is one human
+# decision about one attempt, and the code that formats its choices has to be
+# the code that will act on the answer.
+@workflow.defn(versioning_behavior=workflow_versioning_behavior(VersioningBehavior.PINNED))
 class EscalationWorkflow:
     """One escalation, from the page to the row that closes it."""
 

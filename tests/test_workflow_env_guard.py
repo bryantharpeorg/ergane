@@ -69,34 +69,39 @@ def _is_env_read(node: ast.AST) -> bool:
     return False
 
 
-def _is_workflow_defn(node: ast.AST) -> bool:
-    """True for a class decorated with `@workflow.defn`."""
-    if not isinstance(node, ast.ClassDef):
-        return False
+def _decorates_with(node: ast.AST, module: str, attr: str) -> bool:
+    """True when `node` carries `@module.attr` — with or without arguments.
+
+    Both spellings must match. A decorator that takes an argument parses as a
+    `Call` wrapping the `Attribute`, so a scanner that only knows the bare form
+    stops seeing a definition the moment anyone passes it something — which is
+    how a guard becomes silently vacuous rather than loudly wrong. 082-US1 hit
+    exactly that: `@workflow.defn(versioning_behavior=…)` made all four
+    workflows invisible here, and the only reason it surfaced is
+    `assert_no_workflow_env_reads`'s own "the scanner must not be blind" line.
+    """
     for decorator in node.decorator_list:
-        if isinstance(decorator, ast.Attribute):
-            if (
-                isinstance(decorator.value, ast.Name)
-                and decorator.value.id == "workflow"
-                and decorator.attr == "defn"
-            ):
-                return True
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == module
+            and target.attr == attr
+        ):
+            return True
     return False
+
+
+def _is_workflow_defn(node: ast.AST) -> bool:
+    """True for a class decorated with `@workflow.defn`, bare or with arguments."""
+    return isinstance(node, ast.ClassDef) and _decorates_with(node, "workflow", "defn")
 
 
 def _is_activity_defn(node: ast.AST) -> bool:
-    """True for a function decorated with `@activity.defn`."""
-    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return False
-    for decorator in node.decorator_list:
-        if isinstance(decorator, ast.Attribute):
-            if (
-                isinstance(decorator.value, ast.Name)
-                and decorator.value.id == "activity"
-                and decorator.attr == "defn"
-            ):
-                return True
-    return False
+    """True for a function decorated with `@activity.defn`, bare or with arguments."""
+    return isinstance(
+        node, (ast.FunctionDef, ast.AsyncFunctionDef)
+    ) and _decorates_with(node, "activity", "defn")
 
 
 def _top_level_functions(tree: ast.AST) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -228,6 +233,42 @@ def test_guard_discovers_workflow_modules_and_forbids_env_reads() -> None:
     """FR-006/007: scan `factory/` by construction, fail naming module+function."""
     factory_root = Path(__file__).resolve().parent.parent / "factory"
     assert_no_workflow_env_reads(factory_root)
+
+
+def test_a_decorator_with_arguments_is_still_a_workflow(tmp_path: Path) -> None:
+    """082-US1: `@workflow.defn(...)` must not make a module invisible to the scan.
+
+    The failure this pins is not a false negative in one check — it is the whole
+    guard going quiet. Before this, the four production workflows gaining a
+    `versioning_behavior` argument dropped the scan's module count to zero, and
+    every workflow-scope env read in the repository would have been unobserved.
+    """
+    source = '''\
+import os
+from temporalio import activity, workflow
+
+
+@workflow.defn(versioning_behavior=SOMETHING)
+class DecoratedWithArguments:
+    @workflow.run
+    async def run(self) -> None:
+        os.environ.get("LEAKED")
+
+
+@activity.defn(name="renamed")
+async def also_decorated_with_arguments() -> None:
+    pass
+'''
+    module = tmp_path / "decorated.py"
+    module.write_text(source, encoding="utf-8")
+
+    assert _discover_workflow_modules(tmp_path) == [module]
+    tree = ast.parse(source)
+    assert [_is_activity_defn(node) for node in tree.body].count(True) == 1
+
+    violations = _guard_passes(source)
+    assert len(violations) == 1, violations
+    assert "run() reads process environment" in violations[0]
 
 
 # ============================================================================

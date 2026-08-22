@@ -72,7 +72,7 @@ from datetime import timedelta
 from typing import Any, Awaitable, Callable
 
 from temporalio import activity, workflow
-from temporalio.common import RetryPolicy, WorkflowIDReusePolicy
+from temporalio.common import RetryPolicy, VersioningBehavior, WorkflowIDReusePolicy
 from temporalio.exceptions import ApplicationError, FailureError
 from temporalio.workflow import ParentClosePolicy
 
@@ -119,6 +119,7 @@ with workflow.unsafe.imports_passed_through():
         compute_readiness,
         read_roadmap,
     )
+    from factory.versioning import workflow_versioning_behavior
     from factory.verify.models import VerificationConfig
     from factory.workgraph.models import EpicState
     from factory.workgraph.preflight import PreflightFinding
@@ -508,7 +509,22 @@ async def read_spec_text_activity(request: ReadSpecInput) -> str:
     )
 
 
-@workflow.defn
+# 082-US1/FR-002: AUTO_UPGRADE, and the probe is the reason rather than the
+# preference. Measured on the dev server (T001, evidence/us1-t001-t002-probes.md):
+# a PINNED workflow's continue-as-new *inherits* its version — new run id, same
+# version, with a newer one current. The roadmap is the one workflow that never
+# ends, so pinning it would make it the thing that keeps a dead version alive
+# forever and FR-002 would fail structurally. Declared AUTO_UPGRADE, the same
+# probe showed the run adopting the newly-current version at its next workflow
+# task and the version it left reaching VERSION_DRAINAGE_STATUS_DRAINED on its
+# own — no override, no continue-as-new nudge, no manual surgery.
+#
+# Safe because the child epics it dispatches pin independently: they are started
+# with ParentClosePolicy.ABANDON and carry their own PINNED behavior, so the
+# roadmap moving to new code never moves an epic already building on old code.
+@workflow.defn(
+    versioning_behavior=workflow_versioning_behavior(VersioningBehavior.AUTO_UPGRADE)
+)
 class RoadmapWorkflow:
     """One roadmap, from corpus read to every dispatchable spec's child landed.
 
