@@ -1527,6 +1527,14 @@ EXPECTED_GUARDS: dict[str, dict[str, set[tuple[str, ...]]]] = {
         "roadmap_unpark_command": set(),
         "roadmap_status_command": {("RPCError",)},
     },
+    # 083-US3: `ergane uninstall` resolves what owns dispatch before it pauses
+    # anything, so it reaches Temporal through `factory.roadmap.discovery`. The
+    # sweep found this module the moment it was written, which is the behaviour
+    # this table exists to have; the guard it names is the one the read carries.
+    "factory/cli/uninstall.py": {
+        "_locate_dispatch": {("RPCError",)},
+        "_read_dispatch": {("RPCError",)},
+    },
 }
 
 
@@ -1822,6 +1830,11 @@ def test_no_temporal_call_site_catches_the_transport_failure_alone(
         ("factory/cli/status.py", "_disposition"),
         ("factory/cli/status.py", "_running_epics"),
         ("factory/cli/status.py", "collect_floor"),
+        # 083-US3: teardown's dispatch read. Neither is a query — the ladder
+        # describes, lists and signals nothing — so neither is required to name
+        # QUERY_REFUSED, and `transport_alone` below is unchanged by them.
+        ("factory/cli/uninstall.py", "_locate_dispatch"),
+        ("factory/cli/uninstall.py", "_read_dispatch"),
     ]
     # Today there is one query guarded by RPCError only: roadmap_status_command.
     # It is part of the discovered set, so the generalized sweep surfaces it.
