@@ -435,8 +435,16 @@ def test_an_unreadable_snapshot_is_evidence_not_a_clean_worktree(
     [result] = results
     assert result.status is not GateStatus.PASS
     assert not gates_passed(results)
-    assert "fatal:" in result.output_tail
-    assert "/nonexistent-ergane-084" in result.output_tail
+    # Git's own refusal reaches the tail. Assert the part of git's message that
+    # is its error *class*, not the part that echoes the missing gitdir: git
+    # 2.43 prints `fatal: not a git repository: /nonexistent-ergane-084` and
+    # newer git prints `fatal: not a git repository: (null)` for this same
+    # gitfile, so an assertion on the echoed path passes on a developer's host
+    # and fails on CI.
+    assert "fatal: not a git repository" in result.output_tail
+    # Which tree could not be read is ours to say, and it is version-proof.
+    assert "worktree snapshot failed" in result.output_tail
+    assert str(worktree) in result.output_tail
     # The gate's own output survives beside git's complaint.
     assert "hello" in result.output_tail
 

@@ -188,3 +188,20 @@ The worktree's `.git` is a gitfile pointing at a directory that does not exist.
 A list, not an exception; not PASS; git's own message in the tail, beside the
 gate's own output (`hello`) rather than instead of it. An unreadable snapshot is
 a tree the check cannot vouch for, and this module fails closed everywhere else.
+
+**The tail is asserted on its version-stable half.** The paste above is from
+git 2.43 on this host, which echoes the missing gitdir; the merge-queue runner's
+git prints `fatal: not a git repository: (null)` for the same gitfile, and the
+first landing attempt failed there on an assertion that the echoed path appears:
+
+```
+FAILED tests/test_a_gate_that_writes_does_not_pass.py::test_an_unreadable_snapshot_is_evidence_not_a_clean_worktree
+  AssertionError: assert '/nonexistent-ergane-084' in 'hello\n\n[worktree snapshot
+  failed: git add -A failed in /tmp/.../broken-repo: fatal: not a git repository: (null)]'
+```
+
+So the test asserts `fatal: not a git repository` — git's error *class*, which
+both versions print — plus the two facts this repository owns and git cannot
+reword: the `worktree snapshot failed` marker and the path of the tree that
+could not be read. Which tree was unreadable is what the next attempt needs; how
+its git phrased the complaint is not something a committed test may depend on.
