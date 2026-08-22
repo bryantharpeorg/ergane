@@ -125,6 +125,69 @@ def _seconds_since(now: datetime, stamp: str | None) -> float | None:
     return (now - started).total_seconds()
 
 
+def _elapsed(seconds: int) -> str:
+    """`21600` at the scale an operator reads it: `6h 0m`.
+
+    Coarsening upward on purpose. The number that matters in a starved line is
+    the order of magnitude — minutes is a late tick, hours is the outage — and a
+    line that prints `21600` makes the reader do the division that the sentence
+    exists to save them.
+    """
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def render_schedule_line(
+    schedule_id: str,
+    state: "RoadmapScheduleState | str",
+    *,
+    seconds_since_last_start: int | None = None,
+    skipped_overlap_count: int | None = None,
+) -> str:
+    """The `schedule:` line both verbs print, phrased once for both of them.
+
+    `ergane status` and `ergane roadmap status` each built this sentence out of
+    one boolean, in two files, so `running` meant `not paused` twice over and
+    fixing either left the other lying (FR-009). The verdict is decided on the
+    location; this is the other half — the words — and it lives beside the
+    verdict for the same reason: a third caller inherits the sentence rather
+    than reinventing it.
+
+    Three of the four states are a bare word, and the healthy one is
+    byte-identical to what both verbs printed before this existed (FR-011):
+    `schedule: ergane-roadmap (running)`.
+
+    `starved` is the state that has to argue its case, so it carries its
+    evidence inside the parentheses (FR-010): how long since a tick actually
+    started, and how many the overlap policy skipped. Neither decides the
+    verdict — the count is a lifetime counter and could not — and either may be
+    unreadable, in which case the clause says which rather than printing a zero
+    that reads as a measurement.
+    """
+    word = str(state)
+    if word != RoadmapScheduleState.STARVED.value:
+        return f"schedule: {schedule_id} ({word})"
+    age = (
+        f"{_elapsed(seconds_since_last_start)} since a tick last started"
+        if seconds_since_last_start is not None
+        else "no tick has ever started"
+    )
+    skipped = (
+        f"{skipped_overlap_count} ticks skipped"
+        if skipped_overlap_count is not None
+        else "skipped count unknown"
+    )
+    return f"schedule: {schedule_id} ({word}: {age}, {skipped})"
+
+
 @dataclass(frozen=True)
 class RoadmapLocation:
     """The answer to "where is roadmap `<root>`, and what owns it?"
@@ -253,6 +316,26 @@ class RoadmapLocation:
         """
         elapsed = _seconds_since(now, self.last_action_started_at)
         return None if elapsed is None else int(elapsed)
+
+    def schedule_line_at(self, now: datetime) -> str:
+        """The `schedule:` line this location is worth, against a supplied clock.
+
+        One clock for the verdict and for the evidence it names: reading the
+        wall clock twice could report `starved` beside an elapsed time measured
+        a moment earlier, which is a small lie in the middle of a line whose
+        whole job is not to tell one.
+        """
+        return render_schedule_line(
+            self.schedule_id or "",
+            self.schedule_state_at(now),
+            seconds_since_last_start=self.seconds_since_last_start(now),
+            skipped_overlap_count=self.skipped_overlap_count,
+        )
+
+    @property
+    def schedule_line(self) -> str:
+        """`schedule_line_at`, against the wall clock — what a renderer prints."""
+        return self.schedule_line_at(datetime.now(timezone.utc))
 
 
 @dataclass(frozen=True)
