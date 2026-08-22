@@ -326,3 +326,58 @@ def test_the_epics_are_read_before_any_command_is_issued(
         uninstall(layout, run=watched, open_epics=epics)
 
     assert order == ["read the open epics"]
+
+
+# ============================================================================
+# T023 / SC-004 — the report, pasted. An installation under a temp root, torn
+# down against the recording fake above; the same call the tests make, and the
+# same string `ergane worker uninstall` prints (`factory/cli/nouns/worker.py:31`
+# is `print(report.render())`). Not run against this host's own session: on this
+# host that session is the factory.
+# ============================================================================
+#
+#   >>> print(uninstall(layout, run=fake, open_epics=lambda: ()).render())
+#   uninstalled:
+#     ergane-worker.service: stopped, disabled, removed
+#     ergane-bridge.service: stopped, disabled, removed
+#     ergane-probe.timer: stopped, disabled, removed
+#     ergane.slice: stopped, removed
+#     ergane-probe.service: removed
+#     ergane-run.sh: removed
+#
+# Six files, each named, each with the acts it received — against the one line
+# it replaces, which was the whole of what an operator got:
+#
+#   removed 6 file(s)
+#
+# `ergane-temporal.service` is absent because this layout is external-mode and
+# install never wrote it; it is in ENABLE_TARGETS all the same, and the
+# `if name in recorded` guard is what keeps teardown from disabling a unit it
+# did not install.
+#
+# ============================================================================
+# T024 / SC-005 — the command sequence and the control, pasted.
+# ============================================================================
+#
+# Every command the fake runner received, in order. The slice's stop is there,
+# and it is after the three disables and before the daemon-reload:
+#
+#   systemctl --user disable --now ergane-worker.service
+#   systemctl --user disable --now ergane-bridge.service
+#   systemctl --user disable --now ergane-probe.timer
+#   systemctl --user stop ergane.slice
+#   systemctl --user daemon-reload
+#
+# THE CONTROL. `ENABLE_TARGETS` at `factory/supervision/units.py:81`, read
+# before this story and read after it. Both readings, so the match is visible
+# rather than asserted in a sentence:
+#
+#   before:
+#     ('ergane-worker.service', 'ergane-bridge.service',
+#      'ergane-temporal.service', 'ergane-probe.timer')
+#   after:
+#     ('ergane-worker.service', 'ergane-bridge.service',
+#      'ergane-temporal.service', 'ergane-probe.timer')
+#
+# The slice is stopped by uninstall and is still not enabled by install, which
+# is the repair this story was allowed to make and the one it was not.
