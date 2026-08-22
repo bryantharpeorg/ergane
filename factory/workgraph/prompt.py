@@ -49,6 +49,7 @@ from factory.usage.models import Termination
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
 from factory.verify.models import (
     DiffSizeRefusal,
+    GateResult,
     GateStatus,
     HygieneViolation,
     OutputCheck,
@@ -331,6 +332,25 @@ _OUTPUT_CHECK_UNEXPLAINED = (
     "which usually means the node ran under a write scope the persona registry "
     "does not define. The record itself is in the verification store for this "
     "attempt."
+)
+
+#: 084 FR-007. What a `DIRTIED_WORKTREE` gate has to be told about, and why the
+#: paths come with it. The gate exited 0, so its own tail says the run was fine
+#: and reads as evidence that nothing went wrong; the refusal is entirely in a
+#: set of paths that lived only on `GateResult.worktree_writes` until this
+#: story rendered them. The wording points at the gate command rather than at
+#: the code the gate measured, because that is where the fix is — an agent
+#: shown a green log under a red verdict will otherwise go looking in its own
+#: work. It deliberately does not mention declaring the writes in a manifest:
+#: the config gate parses a node's manifest with the worker's installed parser
+#: rather than the worktree's, so advice to declare a key an older worker does
+#: not know turns one refusal into a `CONFIG_ERROR` in 0.0s before any gate
+#: runs (`factory.yaml:38-42` records 020/US1 dying four times to prove it).
+_GATE_WROTE_INTO_THE_WORKTREE = (
+    "changed the node worktree while it ran, and the judge's patch is assembled "
+    "from that worktree afterwards — so this gate edited the evidence it was "
+    "scored on, which is why it did not pass despite its exit code. Fix the "
+    "gate command, not the code it measured. Every path it wrote:"
 )
 
 # --- section headings ---------------------------------------------------------
@@ -681,6 +701,15 @@ def _attempt_block(position: int, evidence: AttemptEvidence) -> str:
     Failing gates only — a green gate's output is noise in a prompt whose whole
     job is to say what went wrong — and every tail is fenced by a run of
     backticks longer than any inside it, so quoting cannot swallow the quote.
+
+    A gate that dirtied the worktree gets a second block beside its tail (084
+    FR-007), because its tail cannot explain it: the command exited 0 and its
+    output says so. The block sits inside the same loop and beside the same
+    gate, so an attempt whose two gates each wrote different paths attributes
+    each set to the command that wrote it — the whole point of attributing
+    `worktree_writes` to a gate in the first place. It renders off the record's
+    own field, so a gate that wrote nothing gains nothing: an empty fence under
+    a heading is the noise this docstring's first sentence refuses.
     """
     result = evidence.result
     attempt = position if result is None else result.attempt
@@ -698,6 +727,8 @@ def _attempt_block(position: int, evidence: AttemptEvidence) -> str:
             f"Gate `{gate.name}` (`{gate.command}`) — {gate.status.value}, "
             f"{exited}:\n\n{_quote(gate.output_tail)}"
         )
+        if gate.worktree_writes:
+            parts.append(_gate_writes_block(gate))
 
     # Between the gates and the judge, because that is the order verification
     # produced it in (`workflow.py`: gates → check_output → judge_required).
@@ -711,6 +742,25 @@ def _attempt_block(position: int, evidence: AttemptEvidence) -> str:
     if len(parts) == 1:
         parts.append(_NOTHING_FAILED_LOUDLY)
     return "\n\n".join(parts)
+
+
+def _gate_writes_block(gate: GateResult) -> str:
+    """What one gate wrote into the node worktree, quoted (084 FR-007).
+
+    The gate is named again beside its command rather than left implied by
+    position: two gates of one attempt can each carry writes, and "which
+    command do I fix?" is the first question the next attempt has to answer.
+    The paths are quoted the way a gate tail is — one per line, inside a fence —
+    because a path is an instruction and a count is only a description.
+    Straight off `gate.worktree_writes`, never re-derived here: the tree that
+    was measured is gone by the time this renders, and a second opinion about
+    it could only be a worse one.
+    """
+    listing = "\n".join(gate.worktree_writes)
+    return (
+        f"Gate `{gate.name}` (`{gate.command}`) {_GATE_WROTE_INTO_THE_WORKTREE}"
+        f"\n\n{_quote(listing)}"
+    )
 
 
 def _output_check_block(check: OutputCheck) -> str:
