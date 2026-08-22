@@ -62,7 +62,12 @@ import pytest
 
 from factory.notify import service
 from factory.notify.adapter import ESCALATION_ADAPTER_ENV
-from factory.notify.service import SIGNAL_NAME, BridgeOutcome, CallbackBridge
+from factory.notify.service import (
+    SIGNAL_NAME,
+    UNPARSED_ESCALATION,
+    BridgeOutcome,
+    CallbackBridge,
+)
 from factory.verify.models import EscalationChoice
 from factory.verify.store import (
     EXPIRED,
@@ -197,8 +202,12 @@ class Branch:
     signalled: bool
     #: Did this press leave the row carrying its own choice?
     resolves_row: bool
-    #: True only where no escalation id was ever parsed, so no line can name one.
-    anonymous: bool = False
+    #: The escalation id the journal line must name — `None` only where the
+    #: press named none, because `parse_callback_data` refused the payload.
+    names: str | None = ESCALATION_ID
+    #: False only for the update that carries no callback query at all: there is
+    #: nobody to toast at, which is exactly why the journal line is not optional.
+    toastable: bool = True
     responders: tuple[str, ...] = ()
     #: Substring the operator's toast must contain, lowercased.
     notice_says: str | None = None
@@ -276,9 +285,14 @@ def _row_vanishes_mid_signal(arrange: Arrange) -> Any:
     """The row is gone by the time the guarded UPDATE runs — a store rebuilt
     under a running bridge. `_answer_settled` has to answer a `None`."""
     _seed(arrange)
-    arrange.client.on_signal = lambda _signal: arrange.store.execute(
-        "DELETE FROM escalations WHERE escalation_id = ?", (ESCALATION_ID,)
-    ) and arrange.store.commit()
+
+    def rebuild_the_store(_signal: SentSignal) -> None:
+        arrange.store.execute(
+            "DELETE FROM escalations WHERE escalation_id = ?", (ESCALATION_ID,)
+        )
+        arrange.store.commit()
+
+    arrange.client.on_signal = rebuild_the_store
     return pressed(EscalationChoice.RETRY)
 
 
@@ -346,7 +360,8 @@ BRANCHES: tuple[Branch, ...] = (
         build=_no_callback,
         signalled=False,
         resolves_row=False,
-        anonymous=True,
+        names=None,
+        toastable=False,
     ),
     Branch(
         name="payload_from_elsewhere",
@@ -354,7 +369,8 @@ BRANCHES: tuple[Branch, ...] = (
         build=_foreign_payload,
         signalled=False,
         resolves_row=False,
-        anonymous=True,
+        names=None,
+        notice_says="not one of this factory's",
     ),
     Branch(
         name="unauthorized_sender",
@@ -371,7 +387,7 @@ BRANCHES: tuple[Branch, ...] = (
         build=_no_row,
         signalled=False,
         resolves_row=False,
-        anonymous=True,
+        names="ffffffffffff",
         notice_says="no longer on record",
     ),
     Branch(
@@ -639,21 +655,20 @@ async def test_every_press_branch_lands_or_names_its_refusal(
 
     assert driven.outcome is branch.outcome
 
-    landed = driven.outcome is BridgeOutcome.RESOLVED
-    if landed:
-        assert driven.signals, f"{branch.name}: RESOLVED without a signal"
+    if branch.resolves_row:
+        assert driven.signals, f"{branch.name}: the row moved without a signal"
         assert driven.row is not None
         assert driven.row["resolution"] == EscalationChoice.RETRY.value
         assert driven.row["resolved_via"] == "BUTTON"
     else:
-        # A refusal is only a refusal if the operator can read it. The one
-        # branch with no callback query has nobody to toast at, which is why
-        # FR-007's record below is the part that has no exceptions.
-        if not branch.anonymous or driven.notices:
+        # A refusal is only a refusal if the operator can read it — and the one
+        # branch with nobody to toast at is the reason FR-007's record below is
+        # the half with no exceptions.
+        if branch.toastable:
             assert driven.notices, f"{branch.name}: refused the press in silence"
         assert driven.row is None or driven.row["resolution"] != (
             EscalationChoice.RETRY.value
-        ) or not branch.resolves_row
+        ), f"{branch.name}: a refused press moved the row anyway"
 
     assert bool(driven.signals) == branch.signalled, (
         f"{branch.name}: signalled={bool(driven.signals)}, expected {branch.signalled}"
@@ -721,9 +736,13 @@ async def test_every_handled_press_is_recorded_naming_the_escalation(
     assert branch.outcome.value in driven.log, (
         f"{branch.name}: nothing recorded says what the press did"
     )
-    if not branch.anonymous:
-        assert ESCALATION_ID in driven.log, (
+    if branch.names is not None:
+        assert branch.names in driven.log, (
             f"{branch.name}: recorded without naming the escalation"
+        )
+    else:
+        assert UNPARSED_ESCALATION in driven.log, (
+            f"{branch.name}: a press that named no escalation still has to be filed"
         )
 
 
