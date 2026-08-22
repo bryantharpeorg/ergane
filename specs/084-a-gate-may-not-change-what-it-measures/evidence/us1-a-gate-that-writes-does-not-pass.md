@@ -48,7 +48,7 @@ Gate `test` is `echo generated > generated.txt`; the repo's `.gitignore` names
 
 The command succeeded — `exit_code=0` — and the run refuses it anyway. The
 second line is FR-004 arriving at the decider that already owns the
-deterministic half (`factory/verify/models.py:478-492`), with no edit to it.
+deterministic half (`factory/verify/models.py:501-515`), with no edit to it.
 
 ## SC-002 — the control: a gate that writes only ignored paths
 
@@ -134,7 +134,7 @@ protocol, ships nowhere, and runs no process at all — it performs its writes a
 returns an outcome. Surviving it is what proves the check sits at
 `backend.run(invocation)` rather than inside a shipped executor. That is not a
 test-only shape: production already interposes a fourth executor,
-`_HeartbeatingExecutor` (`factory/activities/verify_activities.py:230-258`),
+`_HeartbeatingExecutor` (`factory/activities/verify_activities.py:231-258`),
 which is what `run_gates` actually receives at `:278-279` — so a check inside
 `SubprocessGateExecutor` would be bypassed by the wrapper production uses.
 

@@ -1350,10 +1350,10 @@ def _run_watched(
     than being written out twice and drifting. It wraps
     `backend.run(invocation)` for the same reason at the other axis: that is the
     single line `SubprocessGateExecutor`, `BwrapGateExecutor` and production's
-    `_HeartbeatingExecutor` (`factory/activities/verify_activities.py:230-258`)
+    `_HeartbeatingExecutor` (`factory/activities/verify_activities.py:231-258`)
     all pass through, and a check inside any one of them is bypassed by the
     other two. This observes; it does not prevent — the worktree stays bound
-    writable on purpose (`:625-630`), because gates that write scratch files are
+    writable on purpose (`:640-645`), because gates that write scratch files are
     legitimate and only their effect on the judge's patch is not.
 
     Two things are deliberately outside the measurement. The limiter slot is

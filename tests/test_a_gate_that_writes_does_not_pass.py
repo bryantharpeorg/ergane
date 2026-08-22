@@ -27,7 +27,7 @@ holds the refusal to eight properties, and three of them are controls:
   and three executors are asserted, the third being a stub that is neither
   shipped class. The stub is not a test-only shape: production already runs a
   fourth, `_HeartbeatingExecutor`
-  (`factory/activities/verify_activities.py:230-258`), which wraps the resolved
+  (`factory/activities/verify_activities.py:231-258`), which wraps the resolved
   backend and is what `run_gates` actually receives (`:278-279`) — a check
   living inside either shipped executor would be bypassed by the wrapper
   production uses.
@@ -35,7 +35,7 @@ holds the refusal to eight properties, and three of them are controls:
 Failing closed is the other half. An unreadable snapshot must never read as a
 clean worktree, and `run_gates` must still return a list rather than raise: the
 module's promise is one result per declared gate, and an exception costs the
-attempt its evidence (`factory/verify/gates.py:1094-1098`).
+attempt its evidence (`factory/verify/gates.py:1111-1115`).
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ def _node_worktree(tmp_path: Path, *, ignore: tuple[str, ...] = ()) -> Path:
     worktree whose `.git` is a file pointing back at the parent repo, never the
     repo's own checkout. It matters here beyond fidelity — `BwrapGateExecutor`
     binds the parent read-only and the worktree writable
-    (`factory/verify/gates.py:628-642`), so a fixture that put `.git` *inside*
+    (`factory/verify/gates.py:643-657`), so a fixture that put `.git` *inside*
     the worktree would have the parent bind cover the leaf and every gate would
     fail on a read-only filesystem instead of writing anything.
     """
@@ -144,7 +144,7 @@ class StubGateExecutor:
     check cannot be living inside `SubprocessGateExecutor` or
     `BwrapGateExecutor` — it is at `backend.run(invocation)`, the one line both
     of them, and production's `_HeartbeatingExecutor`
-    (`factory/activities/verify_activities.py:230-258`), pass through. It is
+    (`factory/activities/verify_activities.py:231-258`), pass through. It is
     also the only one of the three cases that runs on every host.
     """
 
@@ -273,7 +273,7 @@ def test_both_gate_list_runners_refuse_a_gate_that_dirties(
     """US1-S4 / FR-001: a check in one runner is bypassable through the other.
 
     Which one a repo takes is decided by whether its worktree carries a
-    candidate parser (`factory/verify/gates.py:1135`): Ergane's own nodes take
+    candidate parser (`factory/verify/gates.py:1156`): Ergane's own nodes take
     `_run_gate_list`, every other target repo takes
     `_run_gate_list_from_config`. The field report came from the second; this
     story's own verification runs on the first.
@@ -310,7 +310,7 @@ def test_run_gates_refuses_on_the_candidate_parser_path(tmp_path: Path) -> None:
     """US1-S4 / FR-001: the same refusal reached through `run_gates` itself.
 
     A worktree carrying `factory/verify/factory_yaml.py` is routed to
-    `_run_gate_list` (`factory/verify/gates.py:1130-1146`) — the path Ergane's
+    `_run_gate_list` (`factory/verify/gates.py:1151-1167`) — the path Ergane's
     own nodes take, and the one the private-function test above cannot prove is
     wired up.
     """

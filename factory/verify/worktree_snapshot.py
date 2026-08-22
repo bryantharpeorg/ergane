@@ -30,7 +30,7 @@ same reason the environment arrives as an argument instead of being fetched from
 git under exactly the environment the gate ran under.
 
 Nothing here raises past its caller for a git refusal. `run_gates` promises one
-result per declared gate and never raises (`factory/verify/gates.py:1094-1098`),
+result per declared gate and never raises (`factory/verify/gates.py:1111-1115`),
 so a snapshot git will not take comes back as a message on the result — an
 unreadable tree fails closed and is never reported as a clean one (FR-006).
 """
