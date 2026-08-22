@@ -26,7 +26,7 @@ import dataclasses
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
+from temporalio.common import RetryPolicy, VersioningBehavior
 
 with workflow.unsafe.imports_passed_through():
     from factory.activities.notify_activities import (
@@ -41,6 +41,7 @@ with workflow.unsafe.imports_passed_through():
         settle_question,
     )
     from factory.notify.service import QUESTION_SIGNAL_NAME
+    from factory.versioning import workflow_versioning_behavior
     from factory.verify.store import ANSWERED, EXPIRED
 
 _RETRIES = RetryPolicy(
@@ -83,7 +84,9 @@ class QuestionOutcome:
         return self.outcome == ANSWERED
 
 
-@workflow.defn
+# 082-US1: pinned, for the escalation's reason. The node parked on this answer
+# is running on one version; the workflow that unparks it must be on the same.
+@workflow.defn(versioning_behavior=workflow_versioning_behavior(VersioningBehavior.PINNED))
 class QuestionWorkflow:
     """One question, from the page to the row that closes it."""
 

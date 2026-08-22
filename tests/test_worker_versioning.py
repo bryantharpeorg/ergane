@@ -158,6 +158,7 @@ _CHILD = textwrap.dedent(
     import asyncio, json, sys
 
     from temporalio.client import Client
+    from temporalio.common import VersioningBehavior
     from temporalio.workflow import _Definition
     from temporalio.api.workflowservice.v1 import DescribeWorkerDeploymentRequest
 
@@ -181,7 +182,9 @@ _CHILD = textwrap.dedent(
             "engaged_build_id": versioning.ENGAGED_BUILD_ID,
             "revision": worker_module._WORKER_REVISION,
             "behaviors": {
-                name: (_Definition.must_from_class(cls).versioning_behavior or 0).name
+                name: VersioningBehavior(
+                    _Definition.must_from_class(cls).versioning_behavior or 0
+                ).name
                 for name, cls in CLASSES.items()
             },
         }
@@ -250,10 +253,17 @@ async def dev_server() -> AsyncIterator[WorkflowEnvironment]:
     Versioning not yet supported in test server", so a registration cannot be
     read back there. `start_local()` runs the real server binary, which answers
     it. That binary resolves the current user at startup, so a bare environment
-    (no `USER`, as under some sandboxes) makes it exit before it listens — set
-    it from the uid rather than leave the test looking flaky.
+    (no `USER`, as under a gate sandbox) makes it exit before it listens with
+    "error detecting resource: user: Current requires cgo or $USER set in
+    environment". It only needs the variable to hold *something*, and a sandbox
+    with no passwd entry for the uid is exactly the case that has neither, so
+    the fallback is synthetic rather than another lookup that can raise.
     """
-    os.environ.setdefault("USER", pwd.getpwuid(os.getuid()).pw_name)
+    if not os.environ.get("USER"):
+        try:
+            os.environ["USER"] = pwd.getpwuid(os.getuid()).pw_name
+        except KeyError:
+            os.environ["USER"] = f"uid-{os.getuid()}"
     try:
         env = await WorkflowEnvironment.start_local()
     except RuntimeError as exc:  # the live guard's shape: temporalio raises bare
@@ -289,16 +299,20 @@ class TestEngagedTheWorkerRegistersItsRevision:
         assert f"{DEPLOYMENT_NAME}.{revision}" in report["versions"]
 
 
+@pytest.fixture(scope="module")
+def engaged() -> dict:
+    """The four definitions as a process that had the variable sees them."""
+    return _boot("defns", build_id=worker_module._worker_revision())
+
+
+@pytest.fixture(scope="module")
+def disengaged() -> dict:
+    """The same four, as every worker that has not deployed US2 sees them."""
+    return _boot("defns", build_id=None)
+
+
 class TestTheDeclaredBehaviors:
     """US1-S3/S4, FR-001/FR-002 — asserted where the decorator puts them."""
-
-    @pytest.fixture(scope="class")
-    def engaged(self) -> dict:
-        return _boot("defns", build_id=worker_module._worker_revision())
-
-    @pytest.fixture(scope="class")
-    def disengaged(self) -> dict:
-        return _boot("defns", build_id=None)
 
     def test_the_epic_the_escalation_and_the_question_are_pinned(
         self, engaged: dict

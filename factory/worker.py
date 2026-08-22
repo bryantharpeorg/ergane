@@ -62,7 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from temporalio.client import Client
-from temporalio.worker import Interceptor, Worker
+from temporalio.worker import Interceptor, Worker, WorkerDeploymentConfig
 from temporalio.worker._interceptor import (
     ExecuteWorkflowInput,
     WorkflowInboundInterceptor,
@@ -76,6 +76,7 @@ from factory.activities import (
     usage_activities,
     verify_activities,
 )
+from factory import versioning
 from factory.controlplane.resolve import resolve_temporal_target
 from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
@@ -231,6 +232,31 @@ def _worker_revision() -> str | None:
 _WORKER_REVISION = _worker_revision()
 
 
+def _deployment_registration() -> dict[str, WorkerDeploymentConfig]:
+    """082-US1: the `deployment_config` keyword, or no keyword at all (FR-001).
+
+    Empty is the whole of the disengaged path — not `deployment_config=None`,
+    which happens to mean the same thing today, but nothing passed, so the
+    construction below is the one that has been running.
+
+    `default_versioning_behavior` is deliberately *not* set. Leaving it
+    unspecified is what turns on the SDK's own check that every registered
+    workflow declares a behavior, so the day a fifth workflow joins `WORKFLOWS`
+    without one, the versioned worker refuses to construct at deploy time
+    instead of quietly serving it under a default nobody chose.
+    """
+    version = versioning.resolve_deployment_version(
+        revision=_WORKER_REVISION, requested=versioning.ENGAGED_BUILD_ID
+    )
+    if version is None:
+        return {}
+    return {
+        "deployment_config": WorkerDeploymentConfig(
+            version=version, use_worker_versioning=True
+        )
+    }
+
+
 def build_worker(client: Client) -> Worker:
     """The production registration, against a caller's client.
 
@@ -238,6 +264,11 @@ def build_worker(client: Client) -> Worker:
     only way to learn that Temporal accepts it — no duplicate names, no callable
     missing its `@activity.defn`, no workflow class it rejects — is to construct
     one, and on a worker host construction is process start.
+
+    Which is also why 082's refusals are raised from here: a worker that has been
+    told to register a build id it cannot establish must fail where an operator
+    reads the failure, in the unit's journal at boot, rather than by polling a
+    version no epic routes to.
     """
     return Worker(
         client,
@@ -250,6 +281,10 @@ def build_worker(client: Client) -> Worker:
         # 053 US3: the workflow sees the worker revision that imported it, so the
         # query answer can carry it without re-reading the tree per call.
         interceptors=[_WorkerRevisionInterceptor(_WORKER_REVISION)],
+        # 082-US1: absent the environment gate this contributes nothing, and the
+        # four workflow definitions declare no behavior either — the two halves
+        # of "behaves exactly as today" (FR-001).
+        **_deployment_registration(),
     )
 
 

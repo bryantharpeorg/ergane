@@ -109,7 +109,7 @@ from datetime import datetime, timedelta
 from typing import Sequence
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
+from temporalio.common import RetryPolicy, VersioningBehavior
 from temporalio.exceptions import (
     ActivityError,
     ApplicationError,
@@ -215,6 +215,7 @@ with workflow.unsafe.imports_passed_through():
         next_action,
         offered_choices,
     )
+    from factory.versioning import workflow_versioning_behavior
     from factory.verify.models import (
         UNRESOLVED_MODEL_ALIAS,
         AttemptRecord,
@@ -631,7 +632,12 @@ class _LaunchFailed(Exception):
     """
 
 
-@workflow.defn
+# 082-US1: an epic finishes on the code it started with. PINNED means every
+# workflow task and activity of this run is served by the worker version that
+# started it, however many newer versions become current while it builds — the
+# whole point of the epic. Absent the environment gate this resolves to
+# UNSPECIFIED, which is the argument's own default and what shipped before.
+@workflow.defn(versioning_behavior=workflow_versioning_behavior(VersioningBehavior.PINNED))
 class EpicWorkflow:
     """One epic, from graph validation to every node terminal."""
 
