@@ -50,7 +50,7 @@ def init(monkeypatch: pytest.MonkeyPatch, floor: FakeScheduleServer) -> Init:
 
     def run(repo: Path, *, slug: str = SLUG) -> Any:
         # version, runtime, gates, timeouts, standards, landing_branch, roadmap,
-        # forge (049/US5, omitted), slug
+        # forge (049/US5, omitted), writes (084/US3, omitted), slug
         answers = [
             "1",
             "bwrap",
@@ -58,6 +58,7 @@ def init(monkeypatch: pytest.MonkeyPatch, floor: FakeScheduleServer) -> Init:
             "",
             "",
             "main",
+            "",
             "",
             "",
             slug,
