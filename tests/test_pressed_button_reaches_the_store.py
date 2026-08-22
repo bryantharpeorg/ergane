@@ -35,11 +35,12 @@ it expects the press to do — signalled or not, row resolved or not — and the
 contract is asserted uniformly, so a branch cannot be added with a weaker
 promise than its neighbours.
 
-**The control (US2-S4, FR-008).** `stale_already_resolved` and `stale_expired`
-are here to fail if the staleness guard is ever removed to make presses "land".
-A press on a settled escalation must stay refused, must send nothing, must
-change nothing, and must be *told it is stale* — an old message re-answering a
-live node is worse than a dropped press.
+**The control (US2-S4, FR-008).** `stale_already_resolved`, `stale_expired` and
+`stale_race_to_expiry` are here to fail if the staleness guard is ever removed
+to make presses "land". A press on a settled escalation must stay refused, must
+send nothing new, must leave the decision that was already made standing, and
+must be *told it is stale* — an old message re-answering a live node is worse
+than a dropped press, because nobody learns the node moved on.
 
 Written before the branch-closing change exists: `_handle_press` and
 `BridgeOutcome.BRIDGE_ERROR` are named here first, so until they land this file

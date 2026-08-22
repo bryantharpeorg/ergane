@@ -51,13 +51,13 @@ T020 / SC-004 — the press path, walked from the code
 CallbackBridge.handle's call graph (follow `self.<method>(...)` transitively):
 
   _answer                0 return(s) at lines []
-  _answer_settled        3 return(s) at lines [902, 911, 920]
+  _answer_settled        3 return(s) at lines [904, 913, 922]
   _edit                  0 return(s) at lines []
-  _handle_press          8 return(s) at lines [560, 578, 589, 600, 607, 613, 627, 637]
-  _record                1 return(s) at lines [985]
-  _refuse_unauthorized   2 return(s) at lines [789, 797]
-  _signal                2 return(s) at lines [879, 880]
-  handle                 3 return(s) at lines [509, 517, 535]
+  _handle_press          8 return(s) at lines [562, 580, 591, 602, 609, 615, 629, 639]
+  _record                1 return(s) at lines [987]
+  _refuse_unauthorized   2 return(s) at lines [791, 799]
+  _signal                2 return(s) at lines [881, 882]
+  handle                 3 return(s) at lines [511, 519, 537]
 
   19 returns in total.
 
@@ -88,30 +88,30 @@ Every row is one of {signal sent + row resolved} or {a named refusal}, and every
 T021 / SC-005 — one press, against this host's Temporal and a real store
 ==============================================================================
 temporal      : 127.0.0.1:7233, namespace 'default'
-workflow      : us2-evidence-b3ee8ff0 (EvidenceEscalationWaiter)
-escalation    : dc593059e21f
-store         : /tmp/tmp4c2cjul4/.factory/verification.db
+workflow      : us2-evidence-1b4dba78 (EvidenceEscalationWaiter)
+escalation    : 0e439cfc53f1
+store         : /tmp/tmpbxfn2sty/.factory/verification.db
 
 row before the press:
-  escalation_id='dc593059e21f' | workflow_id='us2-evidence-b3ee8ff0' | choices='["RETRY", "KILL"]' | resolution=None | resolved_at=None | resolved_via=None
+  escalation_id='0e439cfc53f1' | workflow_id='us2-evidence-1b4dba78' | choices='["RETRY", "KILL"]' | resolution=None | resolved_at=None | resolved_via=None
 
 press:
-  callback_data = 'esc:dc593059e21f:RETRY'
+  callback_data = 'esc:0e439cfc53f1:RETRY'
 
 outcome       : RESOLVED
 
 signal, as the workflow itself returned it:
-  escalation_resolved('dc593059e21f', 'RETRY')
+  escalation_resolved('0e439cfc53f1', 'RETRY')
 
 row after the press:
-  escalation_id='dc593059e21f' | workflow_id='us2-evidence-b3ee8ff0' | choices='["RETRY", "KILL"]' | resolution='RETRY' | resolved_at='2026-08-22T03:26:41Z' | resolved_via='BUTTON'
+  escalation_id='0e439cfc53f1' | workflow_id='us2-evidence-1b4dba78' | choices='["RETRY", "KILL"]' | resolution='RETRY' | resolved_at='2026-08-22T03:28:47Z' | resolved_via='BUTTON'
 
 what the operator was told:
   toast: RETRY recorded.
   message now reads: ✅ Escalation resolved …
 
 what the journal recorded (FR-007):
-  escalation dc593059e21f: press RESOLVED — RETRY signalled to us2-evidence-b3ee8ff0 and recorded
+  escalation 0e439cfc53f1: press RESOLVED — RETRY signalled to us2-evidence-1b4dba78 and recorded
 
 The workflow completed on the signal, so the decision reached it: the `heard` list above is the workflow's own return value, not a recorder's.
 ```
@@ -130,8 +130,20 @@ The workflow completed on the signal, so the decision reached it: the `heard` li
   walking `CallbackBridge.handle`'s call graph in the AST, not from a list
   anyone wrote. Drop one branch from the registry and the count drops with it —
   `tests/test_pressed_button_reaches_the_store.py::test_every_return_in_the_press_path_is_taken_by_a_branch`
-  is the guard, and removing `row_vanishes_mid_signal` while building this made
-  it fail with `['_answer_settled:902']`.
+  is the guard. Measured, not assumed — deleting the `row_vanishes_mid_signal`
+  entry from the registry and re-running gives:
+
+  ```
+  E  AssertionError: these returns in CallbackBridge.handle's call graph are branches
+     no scenario reaches, so nobody can say what a press through them does:
+     ['_answer_settled:904']
+  ```
+
+  Note what the *other* two enumerations did on that same run: they passed.
+  `BridgeOutcome.UNKNOWN` was still produced by `row_is_gone`, so the outcome
+  check saw full coverage while a distinct branch producing the same outcome had
+  gone untested. That is why the return walk is the primary check and the
+  outcome set is the secondary one.
 
 The two rows that did not exist before this story are
 `row_this_build_cannot_read` and `store_fails_after_the_signal`. Both used to
@@ -144,7 +156,7 @@ press again, the second says do not.
 
 ```
 $ uv run pytest -q
-4177 passed, 52 skipped, 7 warnings in 326.02s (0:05:26)
+4177 passed, 52 skipped, 6 warnings in 318.73s (0:05:18)
 ```
 
 ```

@@ -165,7 +165,9 @@ _ANSWER_RESOLVED = "{choice} recorded."
 #: are separate because the operator's next move is opposite: before the signal,
 #: nothing happened and pressing again is right; after it, the workflow already
 #: has the decision and a second press would answer a node that has moved on.
-_ANSWER_BRIDGE_ERROR = "The bridge failed on that press ({reason}); nothing was recorded, press again."
+_ANSWER_BRIDGE_ERROR = (
+    "The bridge failed on that press ({reason}); nothing was recorded, press again."
+)
 _ANSWER_BRIDGE_ERROR_SIGNALLED = (
     "That choice reached the workflow but recording it failed ({reason}); "
     "do not press again — check `ergane escalations list`."
