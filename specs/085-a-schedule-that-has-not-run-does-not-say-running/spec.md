@@ -1,5 +1,36 @@
 ---
 state: draft
+fixes:
+  - roadmap/a-wedged-run-silently-eats-every-subsequent-tick-under-skip-overlap
+# FLIP APPROVED, STAGED. 2026-08-22 the operator ruled (Q&A after the review
+# docket): this spec flips to ready — its hold condition, "the floor is back on
+# its own scheduler", was observed met (schedule-owned, unpaused, ticking
+# unattended since 2026-08-21 night) — but the flip is DELIBERATELY STAGED
+# until 083's US3 has landed, so the factory/cli/roadmap.py collision window
+# never opens. Whoever holds this file next: flip to ready once
+# `ergane spec landed specs/083-* --default-branch ergane-buildout` shows US3.
+#
+# RE-ANCHORED 2026-08-22 against 732ff88. Every citation re-printed (~230
+# anchors, the densest of the trio):
+#   - ZERO broken constructs. discovery.py, schedule.py, cli/status.py,
+#     doctor/probes.py, and ALL FIVE cited test files are byte-identical to
+#     the draft-time tree. The four-fakes inventory RE-CONFIRMED: exactly
+#     four describe() fakes exist today, the same three still build
+#     schedule=SimpleNamespace with no `spec` attribute, and no fifth has
+#     appeared. US1-S7 / FR-002 / SC-009 stand exactly as written.
+#   - factory/cli/roadmap.py drifted wholesale when 081 landed (+11/+32):
+#     US3's two target lines are now :464 (_render_disposition at :456) and
+#     :480 (_render_status at :478); _connect :200, Client.connect :204
+#     (still the file's only occurrence), pause command :342. All updated —
+#     and note: the exact silent-shift hazard this spec's own trap section
+#     warned about has now happened once, caused by 081. The four re-derive
+#     rules were right.
+#   - The 065 guard's caller moved +5 (:887-900). And the frontmatter's own
+#     "correction to the finding" about workflow.py:849 had itself gone
+#     stale — :849 now holds a comprehension clause, the capacity comment is
+#     at :854. Corrected below; the ruling (065 landed, do not rebuild) is
+#     unaffected.
+#
 # A CROSS-SPEC CRITIC PASS WAS APPLIED 2026-08-21 ~6:50 PM CT, reading 083, 084
 # and 085 as one batch against the same tree at `dcc854d`. **The state stays
 # `draft`** — the pass fixed defects, it did not clear the hold below. Four
@@ -66,7 +97,7 @@ state: draft
 # `dcc854d` (byte-identical to `origin/ergane-buildout`):
 #   `factory/cli/status.py:729`
 #       state = "paused" if disposition.schedule_paused else "running"
-#   `factory/cli/roadmap.py:432` — the same sentence, in a second file:
+#   `factory/cli/roadmap.py:464` — the same sentence, in a second file:
 #       state = "paused" if location.schedule_paused else "running"
 #   `running` is *defined* as `not paused`. No reading of the schedule's health
 #   enters either line, so both actively assert health while dispatch is dead.
@@ -90,7 +121,7 @@ state: draft
 #
 # WHAT IS ALREADY FIXED, so nobody rebuilds it. Spec 065 landed 3/3 on
 # 2026-08-19 and is live in the running worker. Its child-result guard is at
-# `factory/roadmap/workflow.py:139` and `:148`, its caller at `:882-895`. 065
+# `factory/roadmap/workflow.py:139` and `:148`, its caller at `:887-900`. 065
 # also shipped `RoadmapWedgeProbe` (`factory/doctor/probes.py:474`), which
 # catches a roadmap whose *workflow task is in a failed state*. That is a
 # different condition: a run can be perfectly healthy as a workflow and still be
@@ -98,8 +129,9 @@ state: draft
 #
 # A CORRECTION TO THE FINDING, which the implementer must carry. The finding
 # cites the 065 guard at `factory/roadmap/workflow.py:849`. THAT ANCHOR IS
-# STALE. Line 849 today reads `# Capacity: count every open epic-* workflow (the
-# roadmap's own` — an unrelated comment in the capacity block. An implementer
+# STALE. As of the 2026-08-22 re-anchor: line 849 holds a comprehension clause
+# (`and entry.spec_dir not in self._children`) and the capacity comment sits at
+# :854 — either way, unrelated content, no guard. An implementer
 # sent there finds no guard and concludes 065 never landed.
 #
 # Filed as, critical and open:
@@ -151,7 +183,7 @@ whose ticks are being eaten says so, in the same line that used to say
   cannot make from the data it has, and a wrong bound terminates a healthy long
   epic — a worse outage than the one being closed.
 - **065's child-result guard and its wedge probe.**
-  `factory/roadmap/workflow.py:139`, `:148`, `:882-895` and
+  `factory/roadmap/workflow.py:139`, `:148`, `:887-900` and
   `factory/doctor/probes.py:474` are landed and correct.
 - **The `next tick:` line.** Its value is correct even during starvation — the
   schedule really will tick, it will just skip again. It keeps its wording and
@@ -171,16 +203,16 @@ so. Both are being drafted in the same batch, both put the hazard in their
 they reach that file in the same window. This section is that hazard declared as
 scope. The mechanism, verified line by line:
 
-- **This spec's US3 rewrites two rendering lines**: `factory/cli/roadmap.py:432`
+- **This spec's US3 rewrites two rendering lines**: `factory/cli/roadmap.py:464`
   (`state = "paused" if location.schedule_paused else "running"`, inside
-  `_render_disposition` at `:424`) and `:448`
+  `_render_disposition` at `:456`) and `:480`
   (`f"roadmap: {'paused' if status.paused else 'running'}",` inside
-  `_render_status` at `:446`). **This spec is the only one of the two that edits
+  `_render_status` at `:478`). **This spec is the only one of the two that edits
   the file at all.**
 - **083 was pulled toward the same file and has ruled itself out of it.** `ergane
-  uninstall` composes `roadmap_pause_command` (`factory/cli/roadmap.py:310`), and
-  that file has **no injectable client seam**: `_connect()` at `:189` calls
-  `Client.connect` inline at `:193`, and that is the only occurrence in the file.
+  uninstall` composes `roadmap_pause_command` (`factory/cli/roadmap.py:342`), and
+  that file has **no injectable client seam**: `_connect()` at `:200` calls
+  `Client.connect` inline at `:204`, and that is the only occurrence in the file.
   Contrast `factory/cli/repo.py:93` — `_temporal_client_factory: Callable[[],
   Awaitable[Client]] = _open_client`, read at `:98` — a real module-attribute
   seam a test can rebind. That asymmetry is why 083's implementer would reach
@@ -189,25 +221,25 @@ scope. The mechanism, verified line by line:
   edit**, with its US3-S6 control and `git diff --stat` check to prove it.
 - **So the expected collision is none — and the hazard is that 083 breaks its own
   ruling.** If an 083 attempt adds the seam anyway, it lands above
-  `factory/cli/roadmap.py:424` and moves every anchor below. That is the case the
+  `factory/cli/roadmap.py:456` and moves every anchor below. That is the case the
   four rules under this heading exist for; it is not the expected case.
 
 **What this spec's implementer does about it, as declared scope:**
 
 - **Confine every edit to the two render functions**, `_render_disposition`
-  (`factory/cli/roadmap.py:424`) and `_render_status` (`:446`). Lines `:432` and
-  `:448` are the whole of this spec's business in that file.
+  (`factory/cli/roadmap.py:456`) and `_render_status` (`:478`). Lines `:464` and
+  `:480` are the whole of this spec's business in that file.
 - **Do not add, move or refactor a client seam** near `_connect`
-  (`factory/cli/roadmap.py:189`, `:193`). 083 has ruled that seam out of its own
+  (`factory/cli/roadmap.py:200`, `:204`). 083 has ruled that seam out of its own
   scope rather than into it, so building it here does not help 083 — it just adds
   an unowned edit to a file two epics are reading at once.
-- **Do not touch `roadmap_pause_command` (`factory/cli/roadmap.py:310`)** even
+- **Do not touch `roadmap_pause_command` (`factory/cli/roadmap.py:342`)** even
   though reading this file will pass over it, and even though its ownership
   behaviour is a real defect. It is 083's defect and 083's story.
 - **If 083 landed first, re-derive the line numbers rather than trusting them.**
   Under 083's ruling this file is untouched and the anchors hold; but that is a
   rule an attempt can break, and an inserted seam above
-  `factory/cli/roadmap.py:424` shifts every anchor in this section silently,
+  `factory/cli/roadmap.py:456` shifts every anchor in this section silently,
   because there is real content at the old numbers. Re-derive by exact line text
   — `grep -n` the construct — never by applying an offset. A plan citing a line
   that has moved is the most expensive defect class in this repository.
@@ -283,7 +315,7 @@ in — paused, running, starved or unknown — so no renderer invents the answer
 no two renderers can disagree.
 
 **Why this priority**: P1. The defect is one sentence duplicated in two files
-(`factory/cli/status.py:729`, `factory/cli/roadmap.py:432`); fixing one leaves
+(`factory/cli/status.py:729`, `factory/cli/roadmap.py:464`); fixing one leaves
 the other lying, and a third caller would inherit it again. The verdict belongs
 beside `refusal` (`factory/roadmap/discovery.py:89`), already a computed property
 that phrases a fact for the operator.
@@ -363,7 +395,7 @@ healthy location and compare the four outputs.
    renders, **Then** the schedule line says so and every other line of the report
    still renders — proven by a committed test. 052's principle again.
 5. **Given** `ergane roadmap status` on a running roadmap, **When** its status
-   block renders, **Then** the line at `factory/cli/roadmap.py:448` no longer says
+   block renders, **Then** the line at `factory/cli/roadmap.py:480` no longer says
    `roadmap: running` but names its actual subject, dispatch, matching the word
    `factory/cli/status.py:738` already uses for that fact — proven by a committed
    test asserting the new line and that the schedule line and the dispatch line
@@ -404,7 +436,7 @@ healthy location and compare the four outputs.
   the last actual start and the skipped-overlap count.
 - **FR-011**: A healthy schedule's rendered output MUST be unchanged from today in
   both verbs.
-- **FR-012**: `factory/cli/roadmap.py:448` MUST name dispatch rather than
+- **FR-012**: `factory/cli/roadmap.py:480` MUST name dispatch rather than
   `roadmap`, matching `factory/cli/status.py:738`.
 
 ## Work Graph
@@ -499,4 +531,4 @@ and enforced by the implementer, not by the workflow.
   constant precisely so the next operator can change it against evidence rather
   than rediscover it inside a conditional.
 - The finding's own anchor `factory/roadmap/workflow.py:849` is stale; the
-  correction in this frontmatter was verified line by line on 2026-08-21.
+  correction in this frontmatter was re-verified 2026-08-22 at 732ff88.

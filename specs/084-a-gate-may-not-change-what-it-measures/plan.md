@@ -14,13 +14,14 @@ stories cannot disagree" fixes `GateResult.worktree_writes` (the paths),
 these and none of them sees the other two, so they are not yours to rename. Use
 them exactly.
 
-**The ordering that is the defect — `factory/workgraph/workflow.py`:**
+**The ordering that is the defect — `factory/workgraph/workflow.py`** (re-anchored
+2026-08-22 at 732ff88: the block moved +184 lines, byte-identical in content):
 
-- `:2114` — `gate_results = await workflow.execute_activity(`
-- `:2116` — `RunGatesInput(worktree_path=prepared.path),`
-- `:2122` — `output = await workflow.execute_activity(`
-- `:2125` — `worktree_path=prepared.path,` — the same worktree the gates just ran in
-- `:2129` — `base_ref=prepared.base_ref,`
+- `:2298` — `gate_results = await workflow.execute_activity(`
+- `:2300` — `RunGatesInput(worktree_path=prepared.path),`
+- `:2306` — `output = await workflow.execute_activity(`
+- `:2309` — `worktree_path=prepared.path,` — the same worktree the gates just ran in
+- `:2313` — `base_ref=prepared.base_ref,`
 
 Gates, then the diff, in one worktree, in that order. You are not changing this
 ordering; you are making the first half report what it did to the second half's
@@ -98,8 +99,9 @@ refusal. A new non-PASS `GateStatus` member needs no downstream edit at all.
 - `factory/workgraph/prompt.py:678` `def _attempt_block(`, and `:693-695`:
   `for gate in result.gate_results:` / `if gate.status is GateStatus.PASS:` /
   `continue`. `:722-724` records what a silent failure cost last time.
-- `factory/notify/messages.py:410` `def _gate_line(`, `:417-418` the contention
-  marker rendered for the operator.
+- `factory/notify/messages.py:497` `def _gate_line(`, `:504-505` the contention
+  marker rendered for the operator. (Re-anchored 2026-08-22: `_gate_line` moved
+  +87 lines when 079/081's escalation work landed; its body is byte-identical.)
 
 **The measurement's precedent — `factory/workgraph/worktree.py`:**
 
@@ -207,13 +209,18 @@ rather than as a quiet boolean on a PASS row. Get this wrong and the node fails
 with nothing in its prompt — the `033-ergane-install/us2` shape recorded at
 `factory/workgraph/prompt.py:722-724`, four attempts on a byte-identical mystery.
 
-**8. A new `GateResult` field has four homes, and `concurrent_gates` visited all
-of them.** `factory/verify/models.py:301` (the field),
+**8. A new `GateResult` field has five homes, and `concurrent_gates` visited
+four of them.** `factory/verify/models.py:301` (the field),
 `factory/verify/gates.py:1355-1363` (`_to_result`), `factory/verify/store.py:676`
 and `:691` (both codec halves, the read defaulted),
-`factory/notify/messages.py:417-418` (the operator's line). A field that skips
+`factory/notify/messages.py:504-505` (the operator's line). A field that skips
 the codec is lost the moment the row is stored and re-read, and the retry prompt
-is built from stored evidence.
+is built from stored evidence. The fifth home, found at the 2026-08-22
+re-anchoring pass: `factory/mergequeue/messages.py:130-141` `_gate_status`,
+rendered into the merge-queue PR body at `:95`. It renders `status.value`
+generically, so US1's status needs no edit there — but US2 should decide
+deliberately whether the writes marker belongs in the PR body line too, rather
+than discover that surface after landing.
 
 **9. `run_gates` never raises, and returns one result per declared gate.**
 `factory/verify/gates.py:1094-1098`. An unreadable snapshot must become evidence
@@ -312,7 +319,14 @@ guard quoted beside it*. Then add a third executor: a stub implementing the
 `GateExecutor` seam and neither shipped class. The stub runs on every host and it
 proves what the criterion is actually for — that the check sits at
 `backend.run(invocation)` (`factory/verify/gates.py:1275` and
-`factory/verify/gates.py:1311`) rather than inside any executor. That is trap 3,
+`factory/verify/gates.py:1311`) rather than inside any executor. The stub is
+not even a novelty: the 2026-08-22 re-anchoring pass found production already
+runs a non-shipped executor through this exact seam — `_HeartbeatingExecutor`
+(`factory/activities/verify_activities.py:231-258`), a decorator wrapping the
+resolved backend that `run_gates` receives at `:278-279`. Cite it in the test's
+docstring as the precedent; it is also why the check MUST sit at the seam — a
+check inside either shipped executor would be bypassed by the wrapper production
+actually uses. That is trap 3,
 made provable on a host that cannot run bwrap.
 
 ## Sizing

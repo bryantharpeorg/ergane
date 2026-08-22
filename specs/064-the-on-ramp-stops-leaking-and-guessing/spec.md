@@ -1,5 +1,9 @@
 ---
 state: landed
+fixes:
+  - notify/telegram-bot-token-is-written-to-the-journal-in-cleartext
+  - cli/init-silently-resolves-to-a-parent-git-repository
+  - interpreter/revoke-key-is-defined-twice-and-the-first-is-dead
 # Attested landed 2026-08-20 (11:25 PM CT). US1 eb23d9876e3c (#255),
 # US2 c7aacb560cc1 (#256), US3 ccc2a8c02ccb (#257) — all three observed on
 # ergane-buildout by `ergane spec landed --default-branch ergane-buildout`,

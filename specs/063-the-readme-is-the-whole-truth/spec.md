@@ -1,5 +1,8 @@
 ---
 state: landed
+fixes:
+  - install/readme-omits-the-database-requirement-that-decides-whether-the-gateway-works
+  - ci/the-readme-command-sweep-cannot-see-a-typo
 # Attested landed 2026-08-22. US1 8811d4a4d8c9 (#268), US2 0f0cccddf33f (#269),
 # US3 7551764fac36 (#270) -- all three observed on ergane-buildout. Every story
 # landed on its first attempt.

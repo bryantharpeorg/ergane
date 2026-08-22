@@ -121,7 +121,7 @@ does not exist until US1 lands. Shares no file with US3.
       green gate's output stays noise (`factory/workgraph/prompt.py:681-683`).
 - [ ] T022 [P] [US2] (spec US2-S3, FR-008) Assert the operator-facing gate line
       carries the marker, following `concurrent_gates`'s rendering at
-      `factory/notify/messages.py:417-418`.
+      `factory/notify/messages.py:504-505`.
 
 ### Implementation for this story
 
@@ -129,7 +129,7 @@ does not exist until US1 lands. Shares no file with US3.
       (`factory/workgraph/prompt.py:678`). The gate is already reachable there
       because its status is not PASS (trap 7) — confirm that before adding a
       branch.
-- [ ] T024 [US2] (FR-008) Extend `_gate_line` (`factory/notify/messages.py:410`).
+- [ ] T024 [US2] (FR-008) Extend `_gate_line` (`factory/notify/messages.py:497`).
 
 ### Verification for this story
 

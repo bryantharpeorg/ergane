@@ -1,5 +1,33 @@
 ---
-state: draft
+state: ready
+fixes:
+  - verify/gates-can-mutate-the-worktree-they-gate
+  - verify/a-gate-that-dirties-the-worktree-changes-the-diff-it-is-measuring
+# RELEASED draft -> ready 2026-08-22 ~8:20 AM CT at the operator's explicit
+# ruling (Q&A in the operator session, after reading the review docket): he
+# flipped it knowing it changes what "green" means for every target repo — a
+# gate that writes an unignored path fails until declared in `writes:`. The
+# hold below is answered.
+#
+# RE-ANCHORED 2026-08-22 against 732ff88 before the flip. An exhaustive pass
+# re-printed every citation in spec/plan/tasks (~150 distinct anchors):
+#   - ZERO broken. Only two cited constructs moved, both pure displacement:
+#     the gates-then-check_output ordering block in
+#     factory/workgraph/workflow.py (+184, now :2298-2313) and _gate_line in
+#     factory/notify/messages.py (+87, now :497, marker at :504-505). All
+#     citations updated in place; everything else is byte-identical to the
+#     draft-time tree.
+#   - THE GateStatus ASSUMPTION NOW READ THREE TIMES: all nine `GateStatus.`
+#     references under factory/ re-enumerated at 732ff88; no exhaustive match
+#     exists; gates_passed and judge_required unchanged. FR-004 stands.
+#   - TWO DISCOVERIES, both additive: factory/mergequeue/messages.py:130-141
+#     (_gate_status, PR body at :95) is a FIFTH home for a GateResult field —
+#     plan trap 8 updated; and factory/activities/verify_activities.py:231-258
+#     (_HeartbeatingExecutor) is a non-shipped GateExecutor already riding the
+#     seam in production — direct precedent for the stub-executor case SC-004
+#     demands, noted in the plan.
+#
+# THE ORIGINAL HOLD, kept for the record:
 # HELD AT DRAFT. Drafted 2026-08-21 ~5:35 PM CT by an operator session, at the
 # operator's instruction, tree at dcc854d (ergane-buildout), byte-identical to
 # origin. No ready flip, no derive, no dispatch until the operator says so: this
@@ -289,7 +317,7 @@ the worktree and assert the gate name and the paths appear in it.
    **When** the operator reads it, **Then** the gate's line carries the marker —
    proven by a committed test asserting the rendered line. `concurrent_gates` is
    rendered there for exactly this reason
-   (`factory/notify/messages.py:410-419`); a marker that lives only in the
+   (`factory/notify/messages.py:497-506`); a marker that lives only in the
    evidence store is one the operator never sees.
 
 ---

@@ -139,11 +139,11 @@ individually** (`sed -n '<n>p' <file>`). Check each one anyway.
 
 **US3 — the steps teardown composes:**
 
-- `factory/cli/roadmap.py:123` — `pause = verbs.add_parser("pause", help="pause dispatch")`
-- `factory/cli/roadmap.py:310` — `async def roadmap_pause_command(...)`, whose
-  docstring at `:311-319` says a schedule-owned roadmap pauses at the schedule
+- `factory/cli/roadmap.py:134` — `pause = verbs.add_parser("pause", help="pause dispatch")`
+- `factory/cli/roadmap.py:342` — `async def roadmap_pause_command(...)`, whose
+  docstring at `:343-351` says a schedule-owned roadmap pauses at the schedule
   and a run with no schedule the client can name is *signalled* with a caveat on
-  stderr. `:328-330` is that path. Read it before wiring step one.
+  stderr. `:360-362` is that path. Read it before wiring step one.
 - `factory/cli/repo.py:307` — the forget command, step two.
 - `factory/supervision/units.py:528` — `uninstall(`, step three.
 - The two open-epic seams are **not** the same function, and US3 needs both.
@@ -166,12 +166,12 @@ is what made SC-006 unprovable, so it is ruled here.
 **The three steps have three incompatible shapes.** All three verified:
 
 - `roadmap_pause_command(args: argparse.Namespace) -> int`
-  (`factory/cli/roadmap.py:310`) — connects inline through `_connect()`
-  (`factory/cli/roadmap.py:189`), which calls `Client.connect` at
-  `factory/cli/roadmap.py:193`. `grep -n "Client.connect" factory/cli/roadmap.py`
+  (`factory/cli/roadmap.py:342`) — connects inline through `_connect()`
+  (`factory/cli/roadmap.py:200`), which calls `Client.connect` at
+  `factory/cli/roadmap.py:204`. `grep -n "Client.connect" factory/cli/roadmap.py`
   returns that one line and nothing else: **there is no module-level client
-  seam in that file.** It is `async`, and `factory/cli/roadmap.py:125` wraps it
-  for argparse with `_run_async` (`factory/cli/roadmap.py:180`, which is
+  seam in that file.** It is `async`, and `factory/cli/roadmap.py:136` wraps it
+  for argparse with `_run_async` (`factory/cli/roadmap.py:191`, which is
   `asyncio.run(command(args))` at `:184`). It prints to stdout.
 - `repo_forget_command(args) -> int` (`factory/cli/repo.py:307`) — synchronous,
   with a real module-attribute seam at `factory/cli/repo.py:93`
@@ -187,7 +187,7 @@ table. It does not extract a library layer beneath them, and it does not edit
 
 Each record's `perform` builds the `argparse.Namespace` that step needs and
 calls the existing entry point — `asyncio.run(roadmap_pause_command(ns))` for
-step one, in the same shape `factory/cli/roadmap.py:180-184` already uses;
+step one, in the same shape `factory/cli/roadmap.py:191-195` already uses;
 `repo_forget_command(ns)` for step two; `uninstall(resolve_layout())`
 (`factory/supervision/units.py:165`) for step three. Teardown captures each
 step's stdout and folds it into its own report.
@@ -249,12 +249,12 @@ this question, so teardown must not name it.**
 
 The draft's FR-015 said teardown "MUST name the command that lists them" and
 cited nothing but `SALVAGE_REF_ROOT`. The verb that exists is
-`ergane build salvage` — `salvage_command` at `factory/cli/nouns/build.py:1244`,
-parser at `factory/cli/nouns/build.py:1512`, whose description at
-`factory/cli/nouns/build.py:1515-1518` reads *"Read-only. For every node of a
+`ergane build salvage` — `salvage_command` at `factory/cli/nouns/build.py:1373`,
+parser at `factory/cli/nouns/build.py:1645`, whose description at
+`factory/cli/nouns/build.py:1648-1651` reads *"Read-only. For every node of a
 compiled graph, report the node's branch and tip, every per-attempt salvage ref
 (refs/salvage/<epic>/<node>/attempt-<n>-<sha12>)…"*. Its first act is
-`graph = load_workgraph(args.graph)` (`factory/cli/nouns/build.py:1263`): **it
+`graph = load_workgraph(args.graph)` (`factory/cli/nouns/build.py:1392`): **it
 is keyed by a compiled graph, and it reports one epic's nodes.** It cannot
 enumerate every salvage ref on a host, which is the question a departing
 operator is asking.
@@ -330,7 +330,7 @@ override, no line, output
 byte-identical to today's. This is why US1 carries two controls and not one.
 
 **7. `roadmap pause` can report success without having stopped dispatch.**
-`factory/cli/roadmap.py:311-319` says so itself: a run with no schedule the
+`factory/cli/roadmap.py:343-351` says so itself: a run with no schedule the
 client can name is *signalled*, with the caveat on stderr rather than in the
 output the operator asked for. US3-S5 makes that a refusal for teardown
 specifically. Teardown may not read a warning on stderr as a completed step —
@@ -394,11 +394,11 @@ judge to wonder which way the green went.
 **14. Spec 085 is rewriting `factory/cli/roadmap.py` in the same landing window,
 and this spec must not touch that file.**
 `085-a-schedule-that-has-not-run-does-not-say-running`'s US3 rewrites two lines
-in it: `factory/cli/roadmap.py:432` — `state = "paused" if
+in it: `factory/cli/roadmap.py:464` — `state = "paused" if
 location.schedule_paused else "running"`, inside `_render_disposition` at
-`factory/cli/roadmap.py:424` — and `factory/cli/roadmap.py:448` — `f"roadmap:
+`factory/cli/roadmap.py:456` — and `factory/cli/roadmap.py:480` — `f"roadmap:
 {'paused' if status.paused else 'running'}",` inside `_render_status` at
-`factory/cli/roadmap.py:446`. **Both are US3 stories at the tail of their
+`factory/cli/roadmap.py:478`. **Both are US3 stories at the tail of their
 chains**, so they land in the same window if the two epics run together. Nothing
 in either work graph can stop a file collision — the factory schedules within a
 spec, not across two — so the only thing keeping this window clean is this spec
@@ -408,8 +408,8 @@ under it silently.
 
 The temptation is specific, and it is why this trap is scope rather than a
 footnote. `factory/cli/roadmap.py` has **no injectable Temporal client seam**:
-`_connect()` at `factory/cli/roadmap.py:189` calls `Client.connect` inline at
-`factory/cli/roadmap.py:193`, and `grep -n "Client.connect"
+`_connect()` at `factory/cli/roadmap.py:200` calls `Client.connect` inline at
+`factory/cli/roadmap.py:204`, and `grep -n "Client.connect"
 factory/cli/roadmap.py` returns that one line and nothing else. Compare
 `factory/cli/repo.py:93` — `_temporal_client_factory: Callable[[],
 Awaitable[Client]] = _open_client` — a real module-attribute seam that the
@@ -419,7 +419,7 @@ to `factory/cli/roadmap.py` the seam that file is missing. **Do not.**
 
 The ruling above puts the seam in teardown's own step table, which needs no
 change to `factory/cli/roadmap.py` at all: US3 *imports*
-`roadmap_pause_command` (`factory/cli/roadmap.py:310`) and edits nothing. If you
+`roadmap_pause_command` (`factory/cli/roadmap.py:342`) and edits nothing. If you
 believe the ruling cannot be executed, that is an operator decision about
 landing order — say so and stop. Do not resolve it by editing the file, and do
 not resolve it by rebasing blind onto whatever 085 landed there.

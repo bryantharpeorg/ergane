@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - hardening/mutating-a-production-safety-guard-escapes-the-sandbox
 # Attested landed 2026-08-17 by an operator session, after `ergane spec landed
 # specs/050-init-preconditions --default-branch ergane-buildout` observed all
 # three stories in git: US1 8cff22f8f807, US2 deff9d0d7aa8, US3 a6f335815905.

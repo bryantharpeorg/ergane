@@ -80,23 +80,24 @@ individually** (`sed -n '<n>p' <file>`). Check each one anyway.
 - `:738` — `lines.append(f"dispatch: {'paused' if disposition.dispatch_paused else 'running'}")`
   **This is the word FR-012 adopts.** `ergane status` already calls this fact
   dispatch; `ergane roadmap status` calls it `roadmap`.
-- `factory/cli/roadmap.py:424` — `def _render_disposition(location: RoadmapLocation) -> str:`
-- `factory/cli/roadmap.py:432` — `state = "paused" if location.schedule_paused else "running"`
-  — the same sentence, second file. `:433` and `:442` are its two lines.
-- `factory/cli/roadmap.py:446` — `def _render_status(status: RoadmapStatus) -> str:`
-  and `:448` — `f"roadmap: {'paused' if status.paused else 'running'}",` — the
+- `factory/cli/roadmap.py:456` — `def _render_disposition(location: RoadmapLocation) -> str:`
+- `factory/cli/roadmap.py:464` — `state = "paused" if location.schedule_paused else "running"`
+  — the same sentence, second file. `:465` and `:474` are its two lines.
+- `factory/cli/roadmap.py:478` — `def _render_status(status: RoadmapStatus) -> str:`
+  and `:480` — `f"roadmap: {'paused' if status.paused else 'running'}",` — the
   colliding line.
 
 **What 065 already landed, so nobody rebuilds it:**
 
 - `factory/roadmap/workflow.py:139` — `def _is_epic_status(value: object) -> bool:`
   and `:148` — `return hasattr(value, "epic_state") and hasattr(value, "nodes")`
-- `factory/roadmap/workflow.py:882` — `status = handle.result()`, with `:883-895`
+- `factory/roadmap/workflow.py:887` — `status = handle.result()`, with `:888-900`
   discarding a bad child result and continuing.
 - `factory/doctor/probes.py:474` — `class RoadmapWedgeProbe:` — catches a
   *workflow task in failed state*. A stuck-but-healthy run is invisible to it.
-- **`factory/roadmap/workflow.py:849` is the finding's stale anchor**, reading
-  `# Capacity: count every open epic-* workflow (the roadmap's own`.
+- **`factory/roadmap/workflow.py:849` is the finding's stale anchor** — at the
+  2026-08-22 re-anchor it holds a comprehension clause, with the capacity
+  comment at `:854`. Unrelated content either way; the guard is not there.
 
 **The test seams — read these before writing a line of test:**
 
@@ -224,7 +225,7 @@ shares the instinct: `factory/workgraph/worktree.py:208` exists solely to emit i
 deprecation *"once per Python process."*
 
 **2. Two renderers, one sentence.** `factory/cli/status.py:729` and
-`factory/cli/roadmap.py:432` are the same line in two files. Fixing one leaves the
+`factory/cli/roadmap.py:464` are the same line in two files. Fixing one leaves the
 other lying and a third caller would inherit it again. Put the verdict on
 `RoadmapLocation` beside `refusal` (`factory/roadmap/discovery.py:89`) and have
 both renderers read it. US3-S2 renders both from one location and asserts they
@@ -295,9 +296,9 @@ watch it fail three times and then pass. A story that extends the `info` half an
 declares victory is the single most likely way this spec burns a second attempt.
 
 **7. 065 is done, and the finding's anchor for it is stale.** The guard is at
-`factory/roadmap/workflow.py:139`/`:148` with its caller at `:882-895`;
+`factory/roadmap/workflow.py:139`/`:148` with its caller at `:887-900`;
 `RoadmapWedgeProbe` is at `factory/doctor/probes.py:474`. The finding cites
-`factory/roadmap/workflow.py:849`, which is a comment in the capacity block. Do
+`factory/roadmap/workflow.py:849`, which holds unrelated capacity-block code. Do
 not rebuild the guard, and do not conclude from `:849` that it is missing. This
 spec is about the schedule's visibility, not the crash that caused one wedge.
 
@@ -308,7 +309,7 @@ user's very first `ergane status` takes. Default the fields, or pass them at bot
 
 **9. The `next tick:` line is true and must not be touched.** During starvation the
 schedule really will tick; it will just skip. `factory/cli/status.py:736` and
-`factory/cli/roadmap.py:442` keep their wording and values, or US3-S3's
+`factory/cli/roadmap.py:474` keep their wording and values, or US3-S3's
 byte-for-byte control breaks for no gain.
 
 **10. A schedule that has never ticked is not starved.**
@@ -331,7 +332,7 @@ file at all, so do not conclude from a fruitless grep that they are free. Their
 real owners: `stalled` → `factory/mergequeue/models.py:77`
 (`STALLED = "STALLED"`), the outcome the classifier reaches past `stall_after_s`
 (`factory/mergequeue/classify.py:19`, decided at `:92-94`); `parked` →
-`factory/cli/roadmap.py:452`, `f"parked: {len(status.parked)}",` — which prints
+`factory/cli/roadmap.py:484`, `f"parked: {len(status.parked)}",` — which prints
 **two lines below the line FR-012 rewrites**, in the same `_render_status` block.
 Use `starved`, and use the same token in both renderers so the two stay
 grep-comparable.
@@ -358,9 +359,9 @@ regression dressed as a fix.
 
 Two facts that make the rename safe rather than risky. First, `_render_status`
 already prints a third line containing the word `running` —
-`factory/cli/roadmap.py:451`, `f"running: {', '.join(status.running) or '-'}",`,
+`factory/cli/roadmap.py:483`, `f"running: {', '.join(status.running) or '-'}",`,
 the list of running epics — so before the rename this block says `running` twice
-about two different things, and `parked:` follows at `:452`. Second,
+about two different things, and `parked:` follows at `:484`. Second,
 `factory/cli/status.py` already solved this: `:738` `dispatch:` sits immediately
 above `:739` `running:` and `:740` `parked:`. Adopt that layout exactly and the
 two verbs converge instead of drifting.
@@ -422,9 +423,9 @@ a time, and a verdict built on it is trap 1 wearing a different hat.
 so you are the only editor, unless 083 breaks its own rule.**
 `specs/083-teardown-is-a-verb-that-names-what-it-removed/` is being drafted in the
 same batch. Its US3 wires `ergane uninstall` to `roadmap_pause_command`
-(`factory/cli/roadmap.py:310`), and to make that step testable the obvious move is
-a client seam in this file — there is none today: `_connect()` at `:189` calls
-`Client.connect` inline at `:193` and that is the file's only occurrence.
+(`factory/cli/roadmap.py:342`), and to make that step testable the obvious move is
+a client seam in this file — there is none today: `_connect()` at `:200` calls
+`Client.connect` inline at `:204` and that is the file's only occurrence.
 `factory/cli/repo.py:93` is the shape it would copy —
 `_temporal_client_factory: Callable[[], Awaitable[Client]] = _open_client`, read at
 `factory/cli/repo.py:98` — a module attribute a test can rebind, which is why
@@ -437,25 +438,25 @@ and a `git diff --stat` check behind it. So the expected outcome is that this sp
 is the file's only editor in the window.
 
 The hazard that remains is an 083 attempt that breaks that rule: the seam would
-land above `factory/cli/roadmap.py:424` and shift every anchor below it silently,
+land above `factory/cli/roadmap.py:456` and shift every anchor below it silently,
 because there is real content at the old numbers. Both stories are the tail of
 their chain, so the two would land together. Four rules, and the spec states them
 as declared scope under *The other spec that reaches for this file*:
 
 1. **Stay inside the two render functions** — `_render_disposition`
-   (`factory/cli/roadmap.py:424`) and `_render_status` (`:446`). Lines `:432` and
-   `:448` are the whole of this spec's business in that file.
-2. **Do not add or move a client seam** near `factory/cli/roadmap.py:189`/`:193`.
+   (`factory/cli/roadmap.py:456`) and `_render_status` (`:478`). Lines `:464` and
+   `:480` are the whole of this spec's business in that file.
+2. **Do not add or move a client seam** near `factory/cli/roadmap.py:200`/`:204`.
    083 ruled that seam out of its scope rather than into it, so building it here
    helps nobody — it just adds an unowned edit to a file two epics are reading at
    once.
-3. **Do not touch `roadmap_pause_command` (`factory/cli/roadmap.py:310`)**, even
+3. **Do not touch `roadmap_pause_command` (`factory/cli/roadmap.py:342`)**, even
    though its ownership behaviour is a real defect and you will read straight past
    it. It is 083's defect and 083's story.
 4. **If 083 landed first, re-derive the anchors rather than trusting them.**
    Under 083's FR-017 this file is untouched and they hold — but that is a rule an
    attempt can break. Re-derive by exact line text with `grep -n`, never by
-   offset. A seam inserted anywhere above `factory/cli/roadmap.py:424` shifts all
+   offset. A seam inserted anywhere above `factory/cli/roadmap.py:456` shifts all
    of them, and there is real content at the old numbers, so the misreading
    resolves silently instead of erroring.
 

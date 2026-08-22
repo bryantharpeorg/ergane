@@ -1,5 +1,13 @@
 ---
 state: landed
+fixes:
+  - escalation/an-answered-question-never-unparks-the-node
+  - escalation/kill-stops-the-node-and-leaves-the-epic-running-holding-a-fresh-escalation
+  - escalation/retry-on-an-exhausted-ladder-cannot-retry-and-re-escalates-instantly
+  - escalation/retry-on-an-exhausted-ladder-kills-the-node
+  - interpreter/escalation-retry-kills-the-node
+  - interpreter/pause-epic-park-kills-dependents
+  - notify/a-pressed-button-on-a-live-escalation-never-reaches-the-store
 # Attested landed 2026-08-22. US1 9e41dbc42ef6 (#274), US2 89b9a9bb144b (#275),
 # US3 a20e5b63427c (#276), US4 0fcbbc041a39 (#277) -- all four observed on
 # ergane-buildout. US2 through US4 were the first stories dispatched after

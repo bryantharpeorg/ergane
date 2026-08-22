@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - worker/revision-interceptor-swallows-every-workflow-return-value
 # Attested landed 2026-08-22. US1 602a62d8f8c6 (#281), observed on
 # ergane-buildout, first attempt. This was the release blocker: the landed fix
 # (factory/worker.py, the interceptor returning its awaited result) supersedes

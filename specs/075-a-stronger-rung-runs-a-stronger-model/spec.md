@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - interpreter/debugger-escalation-does-not-change-the-model
 # Attested landed 2026-08-21 (10:00 AM CT), 3/3. US1 4480d42ec746 (#254),
 # US2 377d121cacb4 (#253), US3 9cfe98ef16e1 (#263) — all three observed on
 # ergane-buildout by `ergane spec landed --default-branch ergane-buildout`, and
