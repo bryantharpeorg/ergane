@@ -469,13 +469,58 @@ class InstallReport:
 
 @dataclasses.dataclass(frozen=True)
 class UninstallReport:
-    """What was removed, and what was deliberately not."""
+    """What was removed, what was deactivated, and what was deliberately not.
+
+    Deletion and deactivation are different acts with different failure modes:
+    systemd holds the parsed unit in memory, so a unit file can be gone while
+    the unit itself is still loaded and active. `removed 6 file(s)` reported
+    both as one word and neither by name, which is why the surviving
+    `ergane.slice` was found by `systemctl --user list-units 'ergane*'` rather
+    than by reading the report (FR-005, FR-006).
+
+    The three tuples are per-act rather than per-name because that is how the
+    acts happen — a loop over the enabled units, one stop of the slice, a loop
+    over the generated files — and `render` recombines them by name for the
+    operator, who reads by name.
+    """
 
     removed: tuple[str, ...]
     kept: tuple[str, ...]
+    stopped: tuple[str, ...] = ()
+    disabled: tuple[str, ...] = ()
+
+    @property
+    def acted_on(self) -> tuple[str, ...]:
+        """Every name teardown touched, in the order it first touched it."""
+        ordered: list[str] = []
+        for name in self.stopped + self.disabled + self.removed:
+            if name not in ordered:
+                ordered.append(name)
+        return tuple(ordered)
+
+    def acts(self, name: str) -> tuple[str, ...]:
+        """Which of stop, disable and remove `name` received, in that order."""
+        return tuple(
+            act
+            for act, names in (
+                ("stopped", self.stopped),
+                ("disabled", self.disabled),
+                ("removed", self.removed),
+            )
+            if name in names
+        )
 
     def render(self) -> str:
-        lines = [f"removed {len(self.removed)} file(s)"]
+        lines = [f"  {name}: {', '.join(self.acts(name))}" for name in self.acted_on]
+        # An empty teardown still has to say so. `removed 0 file(s)` at least
+        # printed something, and replacing it with a blank line would trade one
+        # unreadable report for a silent one.
+        lines.insert(
+            0,
+            "uninstalled:"
+            if lines
+            else "uninstalled nothing: no file this engine wrote is still here",
+        )
         lines += [f"  left in place (not written by ergane): {n}" for n in self.kept]
         return "\n".join(lines)
 
@@ -546,12 +591,31 @@ def uninstall(
 
     runner = _run_command if run is None else run
     recorded = _read_manifest(layout)
+    stopped: list[str] = []
+    disabled: list[str] = []
     for name in ENABLE_TARGETS:
         if name in recorded:
             # Before deleting: systemd holds the parsed unit in memory, and a
             # file removed out from under a running unit leaves it up and
             # invisible to `disable` until the next reboot.
             runner(("systemctl", "--user", "disable", "--now", name))
+            # `--now` is two acts in one command, and the report names both:
+            # a unit can be disabled and still loaded, and the operator who
+            # has to tell those apart is the one this verb is for (FR-006).
+            stopped.append(name)
+            disabled.append(name)
+
+    if SLICE_UNIT in recorded:
+        # Nothing is `WantedBy` the slice — it is pulled in by the `Slice=`
+        # lines of the units just stopped, which is why it is deliberately not
+        # in ENABLE_TARGETS and why the disable loop above never reaches it.
+        # So it survives its own members as loaded and active, holding the
+        # cgroup open, until it is stopped by name. That hand-run stop is this
+        # line (FR-007). It goes after the disables because a slice cannot be
+        # stopped out from under a running member, and before the removals for
+        # the same reason the disables are.
+        runner(("systemctl", "--user", "stop", SLICE_UNIT))
+        stopped.append(SLICE_UNIT)
 
     removed: list[str] = []
     kept: list[str] = []
@@ -566,7 +630,12 @@ def uninstall(
     (layout.generated_dir / MANIFEST_NAME).unlink(missing_ok=True)
 
     runner(("systemctl", "--user", "daemon-reload"))
-    return UninstallReport(tuple(removed), tuple(kept))
+    return UninstallReport(
+        removed=tuple(removed),
+        kept=tuple(kept),
+        stopped=tuple(stopped),
+        disabled=tuple(disabled),
+    )
 
 
 def _reading(
