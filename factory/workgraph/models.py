@@ -85,13 +85,23 @@ class NodeState(StrEnum):
     ladder has opened a landing (FR-009's whole distinction), so the happy-path
     terminal is `MERGED`, not `PASSED`. `PR_OPEN`/`ENQUEUED` are the landing
     phase's states, and `MERGED` is the new terminal a verified node reaches when
-    the queue confirms it. `FAILED` (parked by a PAUSE_EPIC resolution) and
-    `KILLED` remain terminals reachable from any non-terminal state, a landing
-    interrupted included. `WAITING_OPERATOR` is the non-terminal park a QUESTION
-    attempt ends in (008-US1): the marker stopped the node, the operator's answer
-    (US2) is what un-parks it, and the epic pauses the way a `PAUSE_EPIC` press
-    pauses it. It is deliberately not in `_UNREACHABLE` — a parked question is not
-    a dead edge, so its dependents stay PENDING rather than being KILLED. The
+    the queue confirms it. `FAILED` and `KILLED` remain terminals reachable from
+    any non-terminal state, a landing interrupted included. `WAITING_OPERATOR` is
+    the non-terminal park a QUESTION attempt ends in (008-US1): the marker
+    stopped the node, the operator's answer (US2) is what un-parks it, and the
+    epic pauses the way a `PAUSE_EPIC` press pauses it. It is deliberately not in
+    `_UNREACHABLE` — a parked question is not a dead edge, so its dependents stay
+    PENDING rather than being KILLED.
+
+    **079-US4 makes that sentence do a second job.** A `PAUSE_EPIC` press used to
+    park its node in `FAILED`, which *is* in `_UNREACHABLE`, so one press ended
+    the node and every node waiting on it (2026-08-19, three nodes). A press
+    leaves `WAITING_OPERATOR` now, at both escalation sites: the reason the
+    question park is not a dead edge is exactly the reason a pressed park is not
+    one, and stating it twice in two states is how the two would drift. `FAILED`
+    is consequently written by nothing in the interpreter today; it stays in the
+    vocabulary because histories carry it and `_UNREACHABLE` must keep reading it
+    as unreachable when they replay. The
     ladder's `RETRY`/`DEBUGGER`/`ESCALATE` are deliberately absent — they are
     `NextAction` values that route a node back into `KEY_ISSUED` or forward to a
     terminal state. Giving them membership here would create a second place the
@@ -108,10 +118,13 @@ class NodeState(StrEnum):
     MERGED = "MERGED"
     FAILED = "FAILED"
     KILLED = "KILLED"
-    #: The node has asked a question and is parked on the operator's answer
-    #: (008-US1, FR-001). Non-terminal: US2's answer un-parks it, so it is not a
-    #: dead edge and its dependents are not locked out. The epic pauses while it
-    #: waits, the way a `PAUSE_EPIC` press pauses it.
+    #: The node is parked on the operator. Two doors reach it: an agent asked a
+    #: question and is waiting for the answer (008-US1, FR-001), or an operator
+    #: pressed `PAUSE_EPIC` and stopped the epic on this node (079-US4, FR-013).
+    #: Non-terminal either way, and in neither case a dead edge — the dependents
+    #: are not locked out, which is the whole of FR-013. The epic pauses while it
+    #: waits. What differs is what un-parks it: an answer for the first, an
+    #: operator's `resume`, `reset` or `kill` for the second.
     WAITING_OPERATOR = "WAITING_OPERATOR"
 
 
