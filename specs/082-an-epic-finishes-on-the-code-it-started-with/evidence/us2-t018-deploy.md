@@ -1,45 +1,51 @@
-# US2 T018 — a deploy puts B on the floor without touching A
+# US2 T018 — a deploy puts B on the floor, and A's epic finishes on A
 
-2026-08-22, session dev server 1.31.2, namespace `ergane-082-us2-evidence` (never
-`factory`), source a `/tmp` clone so `git worktree add` wrote nowhere near the
-operator's repository. A=`e423f13`, B=`23851fa`. **One substitution**: this
-sandbox has no systemd user bus, so `systemctl --user enable --now` was replaced
-by spawning exactly what the generated template's `ExecStart` says with exactly
-its `Environment=`; the rest is `deploy()` itself. Minimal lines (D-050).
+2026-08-22, dev server 1.31.2, namespace `ergane-082-us2-t018b`, source a
+`/tmp` clone — nothing touched `factory` or the operator's checkout.
+A=`e423f13`, B=`b683288`. **Two substitutions**: no systemd user bus here, so
+`systemctl --user enable --now` spawned exactly what the template's `ExecStart`
+says with exactly its `Environment=`; and each instance served `ScriptedWorld`'s
+activities, so an epic reaches COMPLETED without a proxy or an agent. All else
+is the deployment's own code — `deploy()`, the workflows, the versioning
+registration, the 053 interceptor. D-050: minimal lines; the
+`status behavior version` triples drop the describe enums' prefixes.
 
-Deploy A, start an epic, then deploy B **with that epic in flight**:
+## US2-S1 — the epic in flight finishes on A, with B current
 
 ```
-[ran] git worktree add --detach …/deployments/e423f13/tree e423f133c98a…
-[ran] uv sync --frozen  (in …/deployments/e423f13/tree)
-[systemd] started ergane-worker@e423f13.service pid=26061
-[systemd]   Environment=ERGANE_WORKER_BUILD_ID=e423f13
 deployed e423f13: now current
-[epic on A] behavior=PINNED pinned_version=ergane-worker.e423f13
---- deploy B ---
-[systemd] started ergane-worker@23851fa.service pid=26140
-deployed 23851fa: now current
-[worker A]  pid=26061 alive=True unchanged=True
-[epic on A] behavior=PINNED pinned_version=ergane-worker.e423f13
+[epic on A] RUNNING    PINNED  ergane-worker.e423f13
+--- deploy B, with that epic in flight ---
+[systemd] started ergane-worker@b683288.service pid=885
+[systemd]   Environment=ERGANE_WORKER_BUILD_ID=b683288
+deployed b683288: now current
+[worker A] pid=814 alive=True unchanged=True
+[epic on A] result epic_state=COMPLETED nodes={'us1': 'MERGED', 'us2': 'MERGED',
+  'us3': 'MERGED'} (waited 36s past the deploy)
+[epic on A] COMPLETED  PINNED  ergane-worker.e423f13
+[epic on A] history events matching CANCEL/FAILED/TERMINATED/TIMED_OUT: none
 ```
 
-**US2-S1**: A's process is the same pid and still alive after B became current,
-and the epic started on A is still pinned to A. No stop, restart, kill or
-`temporal activity fail` — the transcript above is every command the deploy
-issued (SC-005). US1's T001 measured the routing half on this same server.
-
-**US2-S2**, **US2-S3** and **FR-010**:
+The activity running when B landed is the proof, from the server's own records:
 
 ```
-[053 query] worker_revision='23851fa'   ← the next epic reports the deployed id
-deployed 23851fa: already current       ← second deploy; nothing duplicated
-[systemd] ergane-worker@23851fa.service already running pid=26140 — none started
-versions of this deployment:  23851fa current   e423f13 draining
+run_agent_attempt STARTED   21:31:46.656  identity=814@spark-9cb5  ← worker A
+b683288 current_since       21:32:00.279
+run_agent_attempt COMPLETED 21:32:31.718  ← 31s after B became current, on A
+activity identities across the whole epic: {'814@spark-9cb5': 49}
+event types: ACTIVITY_TASK_SCHEDULED/STARTED/COMPLETED x49 each
 ```
 
-That `worker_revision` is why this story also fixes 053's interceptor (see
-`factory/worker.py`): it had never fired, so the same line read `None` before.
+pid 814 is A. Every activity of the epic ran in A's process and every one
+completed — no cancellation, no KILLED, no `temporal activity fail` (SC-001,
+SC-005).
 
-**Not executed here**: a real `systemctl` deploy, and an epic *completing*
-across one — no user bus, and an epic with a synthetic target closes at the
-onboarding gate in a second. Both belong to the operator's first live deploy.
+## US2-S2, US2-S3 and FR-010
+
+```
+[053 query] worker_revision='b683288'   ← the next epic reports the deployed id
+[epic on B] COMPLETED  PINNED  ergane-worker.b683288
+deployed b683288: already current       ← second deploy; nothing duplicated
+[systemd] ergane-worker@b683288.service already running pid=885 — none started
+versions of this deployment:  b683288 current   e423f13 draining
+```

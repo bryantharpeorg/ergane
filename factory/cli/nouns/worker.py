@@ -36,11 +36,10 @@ def _uninstall(_args: argparse.Namespace) -> int:
 def _deploy(args: argparse.Namespace) -> int:
     """082-US2. Thin like the two above; the refusals are the engine's.
 
-    The exit code is the one decision here: a deploy whose version never
-    registered left a unit running and made nothing current (US2-S5), and
-    exiting 0 would tell a script the floor moved when it has not. The report
-    prints either way — it names every version, which is what an operator needs
-    most on exactly that path."""
+    The exit code is the one decision here: a degraded deploy left a unit
+    running and made nothing current (US2-S5), and exiting 0 would tell a
+    script the floor moved when it has not. The report prints either way —
+    it names every version, which is what that path most needs read."""
     report = deploy(resolve_layout(), args.revision)
     print(report.render())
     return EXIT_USER if report.degraded else EXIT_OK

@@ -1,22 +1,22 @@
 """082-US2: `ergane worker deploy` — new code on the floor, old code untouched.
 
-The verb the operator asked for, in his shape: "draining off of one worker while
-the next worker is already taking new work." A deploy freezes a commit into a
-checkout of its own, gives it its own dependency environment, starts it as an
-instance of the versioned unit template, waits for it to register, and makes it
-current. Nothing is restarted, so nothing in flight is cancelled: attempts stay
-pinned to the version that started them (US1), which serves them until the last
-one closes.
+The verb the operator asked for, in the shape asked for: "draining off of one
+worker while the next worker is already taking new work." A deploy freezes a
+commit into a checkout of its own, gives it its own dependency environment,
+starts it as an instance of the versioned unit template, waits for it to
+register, and makes it current. Nothing is restarted, so nothing in flight is
+cancelled: attempts stay pinned to the version that started them (US1), which
+serves them until the last one closes.
 
-Four properties are load-bearing. **Every refusal happens before anything
-moves** (FR-004) — one that already created a worktree and synced a venv is a
-half-deploy. **Re-running converges** (FR-003), which is the whole recovery
-story, because a registration timeout deliberately leaves the unit running
-(US2-S5). **The wait is bounded and its timeout is not a rollback** (trap 7):
-`set-current-version` against an unregistered version fails, and a poll that
-never succeeds leaves the unit up because that journal is the only evidence of
-why. **The report is read back from the server** (FR-010), because an operator
-watching a stuck drain needs the server's answer rather than ours.
+Four properties are load-bearing. **Every refusal happens before anything moves**
+(FR-004) — one that already created a worktree and synced a venv is a
+half-deploy. **Re-running converges** (FR-003), the whole recovery story, because
+a registration timeout deliberately leaves the unit running (US2-S5). **The wait
+is bounded and its timeout is not a rollback** (trap 7): `set-current-version`
+against an unregistered version fails, and a poll that never succeeds leaves the
+unit up because that journal is the only evidence of why. **The report is read
+back from the server** (FR-010): an operator watching a stuck drain needs the
+server's answer, not ours.
 """
 
 from __future__ import annotations
