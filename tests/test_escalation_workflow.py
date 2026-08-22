@@ -83,7 +83,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
 from factory.activities.notify_activities import (
-    ALL_CHOICES,
+    DEFAULT_CHOICES,
     ESCALATION_TIMEOUT_S,
     expire_escalation,
     send_escalation,
@@ -257,10 +257,9 @@ def a_request(**overrides: Any) -> EscalationRequest:
         # Spelled since 079-US1, where the request's default narrowed to the
         # ending choices: a default cannot know a node's budget, so a caller
         # that wants `RETRY` answerable has to say so. These tests press RETRY,
-        # and a reply naming a choice the request never offered is refused by
-        # `EscalationWorkflow._answer` — correctly, and silently as far as the
-        # signal is concerned.
-        "choices": list(ALL_CHOICES),
+        # and `EscalationWorkflow._answer` refuses a reply naming a choice the
+        # request never offered.
+        "choices": list(DEFAULT_CHOICES),
     }
     fields.update(overrides)
     return EscalationRequest(**fields)

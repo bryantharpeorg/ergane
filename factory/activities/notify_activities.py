@@ -116,15 +116,14 @@ ESCALATION_TIMEOUT_S = 3600
 #: is what the operator who pressed KILL four times and then terminated the
 #: workflow by hand was missing.
 #:
-#: 079-US1 renamed this from `DEFAULT_CHOICES` and took away its second job. It
-#: was the constant every escalation offered *and* the default every request
-#: inherited, which is how a node with nothing left to retry with came to be
-#: shown a retry button. It is now the vocabulary and nothing else: what one
-#: escalation may offer is computed per node by
-#: `factory.verify.ladder.offered_choices`, and what a request that names no
-#: choices gets is `ENDING_CHOICES` below. Offering all four is a claim about a
-#: budget, so it is spelled by a caller that has read one.
-ALL_CHOICES = (
+#: **079-US1 took away its second job: it is no longer anyone's default.** It was
+#: the vocabulary *and* the value every request inherited when it named no
+#: choices, which is how a node with nothing left to retry with came to be shown
+#: a retry button. What an escalation may offer is computed per node now
+#: (`ladder.offered_choices`) and the defaults below are `ENDING_CHOICES`, so
+#: offering all four is a claim a caller makes having read a budget. The name is
+#: kept only because a dozen unrelated tests spell it; it names the vocabulary.
+DEFAULT_CHOICES = (
     EscalationChoice.RETRY,
     EscalationChoice.KILL,
     EscalationChoice.PAUSE_EPIC,
@@ -170,12 +169,11 @@ class SendEscalationInput:
     insert is skipped. When omitted, `send_escalation` mints a fresh id and
     inserts the row as usual (R11).
 
-    `choices` defaults to the ending choices rather than to all four (079-US1,
-    FR-002). A default cannot know a node's remaining budget, and the previous
+    `choices` defaults to the ending choices rather than all four (079-US1,
+    FR-002): a default cannot know a node's remaining budget, and the previous
     one handed every caller a `RETRY` button whether or not anything would
-    honour it. What is left is executable on any node — ending work spends no
-    budget — so the default is safe and still non-empty (FR-003), and a caller
-    that wants `RETRY` offered has to have read a budget to ask for it.
+    honour it. What is left is executable on any node, so the default is safe
+    and still non-empty (FR-003).
     """
 
     workflow_id: str

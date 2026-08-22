@@ -544,13 +544,6 @@ class NodeStatus:
     #: (FR-007). False by default, so a pre-068 worker's answer reads as
     #: "working" and reset refuses — the safe direction.
     awaiting_operator: bool = False
-    #: 079-US1: what this node's last escalation offered, and every resolution
-    #: it refused because nobody offered it (FR-001/FR-004). Both are here for
-    #: one reason: an operator who has just pressed a button and seen nothing
-    #: happen needs to be able to read what the page actually offered and what
-    #: came back, without attaching a debugger to a workflow.
-    offered_choices: tuple[str, ...] = ()
-    refused_resolutions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -719,8 +712,6 @@ class EpicWorkflow:
                         record.pending_escalation_id is not None
                         or record.state == NodeState.WAITING_OPERATOR
                     ),
-                    offered_choices=tuple(record.offered_choices),
-                    refused_resolutions=tuple(record.refused_resolutions),
                 )
                 for node_id, record in self._nodes.items()
             },
@@ -1812,10 +1803,9 @@ class EpicWorkflow:
                             results,
                             request.config,
                             # 079-US1 (FR-002): asked of the ladder itself, so
-                            # the offer and the decision the press will get come
-                            # from one budget. On an exhausted ladder this is
-                            # True — a press raises `allowed` with it (068
-                            # FR-003) — and the button is honest.
+                            # the offer and the decision the press gets come from
+                            # one budget. True on an exhausted ladder — a press
+                            # raises `allowed` with it (068 FR-003).
                             retry_grants_work=grant_produces_work(
                                 record.history, request.config, record.escalations
                             ),
@@ -1829,21 +1819,16 @@ class EpicWorkflow:
                             break
                         if self._refuse_unoffered(record, escalation.resolution):
                             # 079-US1 (FR-004): nobody offered this, so it is not
-                            # an answer. It is refused by name and recorded, and
-                            # `escalations` is left alone — the ladder is never
-                            # told an operator decided anything. The node then
-                            # ends the way an unanswered escalation ends it (its
-                            # ladder is exhausted, which is why it was paged),
-                            # never as the kill this resolution would have been
-                            # read as.
+                            # an answer. `escalations` is left alone — the ladder
+                            # is never told an operator decided anything.
                             record.terminal_reason = _refusal_reason(record)
                             action = NextAction.KILLED
                             break
                         record.escalations.append(escalation.resolution)
                         if escalation.resolution != EscalationChoice.RETRY:
-                            # FR-005: the node's operator has answered and the
-                            # answer ends it. No second page is raised for it,
-                            # whatever else in the epic reaches for one.
+                            # FR-005: answered, and the answer ends the node. No
+                            # second page is raised for it, whatever else in the
+                            # epic reaches for one.
                             record.ending_answer = escalation.resolution
                         if escalation.resolution == EscalationChoice.PAUSE_EPIC:
                             # The press the ladder can only half answer: it ends the
@@ -1911,13 +1896,10 @@ class EpicWorkflow:
                         node,
                         [],
                         request.config,
-                        # 079-US1 (FR-002): this is the one ladder page a press
-                        # of RETRY buys nothing on. The launch budget is spent,
-                        # this node is already ending KILLED, and the resolution
-                        # below is read for `KILL_EPIC` and nothing else — so
-                        # offering "retry the node" here was offering a button
-                        # that does not exist. What is offered is what the epic
-                        # can still act on.
+                        # 079-US1 (FR-002): the one ladder page a press of RETRY
+                        # buys nothing on — the launch budget is spent, the node
+                        # is already ending KILLED, and the resolution below is
+                        # read for `KILL_EPIC` alone.
                         retry_grants_work=False,
                         history_summary=launch_summary,
                     )
@@ -2514,13 +2496,11 @@ class EpicWorkflow:
         068-US2 (FR-006): `None` when the epic was stopped with the page still
         open — see `_page_the_operator`, which owns that wait now.
 
-        079-US1 (FR-001): the offer is computed, not constant. `retry_grants_work`
-        is the caller's answer to "will a press put this node back to work?" —
-        the ladder's exhaustion path asks `grant_produces_work`, because a press
-        raises `allowed` with it; the launch-failure path answers False, because
-        the node is already ending and the resolution is read for `KILL_EPIC`
-        and nothing else. Every offer keeps its ending choices, so no escalation
-        is raised with no executable answer on it (FR-003).
+        079-US1 (FR-001): the offer is computed, not constant.
+        `retry_grants_work` is the caller's answer to "will a press put this node
+        back to work?" — the exhaustion path asks `grant_produces_work`, the
+        launch-failure path answers False. Every offer keeps its ending choices
+        (FR-003).
         """
         outcome = await self._page_the_operator(
             self._nodes[node.id],
@@ -2559,13 +2539,10 @@ class EpicWorkflow:
         beside a signal-set boolean, so it replays identically.
 
         079-US1 (FR-005) adds the second reason to raise nothing: a node whose
-        operator has already answered with something that ended it. On
-        2026-08-19 three answered kills produced three fresh escalations for one
-        node — four workflow ids, four store rows, and a hand-run `temporal
-        workflow terminate` to stop it. The guard is here rather than at either
-        call site because it has to hold for whatever raises the second page,
-        including a path nobody has found yet: an ended node has no question
-        left to ask.
+        operator already answered with something that ended it (on 2026-08-19
+        three answered kills produced three fresh escalations for one node). It
+        is here rather than at either call site so it holds for whatever raises
+        the second page, including a path nobody has found yet.
         """
         if self._kill_requested:
             # Already stopping: a page nobody will act on can only be answered
@@ -2574,11 +2551,10 @@ class EpicWorkflow:
         if record.ending_answer is not None:
             # Answered, and the answer ended the node. Reads to both callers the
             # way a stop does — the ladder ends the node KILLED, the landing
-            # applies its fail-safe — which is what an already-ended node should
-            # do anyway.
+            # applies its fail-safe.
             return None
-        # What a resolution coming back is checked against (FR-004), and what
-        # `ergane build status` reports the operator was actually shown.
+        # What a resolution coming back is checked against (FR-004): the record
+        # of what this operator was actually shown.
         record.offered_choices = [str(choice) for choice in request.choices]
         # Workflow scope, so a replay mints the same correlation id.
         child = await workflow.start_child_workflow(
@@ -2602,21 +2578,13 @@ class EpicWorkflow:
         """Refuse a resolution nobody offered, by name, and say that it was.
 
         079-US1 (FR-004). A resolution reaches a node from more places than its
-        keyboard: the store's row is the arbiter of a press-versus-timer race,
-        and whatever is recorded there comes back as the answer — including a
-        value written by a stale message or a replayed callback naming a button
-        this page never showed. Applying one of those as the node's kill is what
-        the landing's fall-through did, and it is indistinguishable, afterwards,
-        from an operator having pressed kill.
-
-        So it is refused: recorded by name on the node, where `epic_status` and
-        so `ergane build status` can read it back, and never appended to
-        `escalations`, which is the ladder's input and means "the operator
-        decided". Pure and total — no activity, no clock — so a caller can act
-        on the answer without emitting a command for it.
-
-        `EXPIRED` is not refused (plan trap 4): it is the store's timeout value
-        rather than a button, and an hour of silence must go on ending the node.
+        keyboard — the store's row arbitrates the press-versus-timer race, so a
+        stale message naming a button this page never showed comes back as the
+        answer, and applying one as the node's kill is indistinguishable
+        afterwards from a real one. So it is refused: recorded by name, never
+        appended to `escalations` (the ladder's input, meaning "the operator
+        decided"), and carried to an operator by `_refusal_reason` through
+        `terminal_reason`. Pure and total. `EXPIRED` is exempt (trap 4).
         """
         if not is_unoffered(resolution, record.offered_choices):
             return False
@@ -3142,10 +3110,10 @@ class EpicWorkflow:
             graph,
             request,
             record,
-            # 079-US1 (FR-002): this cycle has already been charged, so the
-            # question is whether the *next* one can be. When it cannot, the
-            # grant below is unreachable and the page says so instead of
-            # offering a button whose only effect would be the kill under it.
+            # 079-US1 (FR-002): this cycle is already charged, so the question
+            # is whether the *next* can be. When it cannot, the grant below is
+            # unreachable and the page says so rather than offering a button
+            # whose only effect is the kill under it.
             retry_grants_work=(
                 record.landing.recovery_cycles < config.max_recovery_cycles
             ),
@@ -3176,13 +3144,10 @@ class EpicWorkflow:
         rather than as three copies of the same two calls.
 
         079-US1 (FR-002): both halves of the retry rule live here. The offer
-        carries `RETRY` only while a recovery cycle remains, and when it does
-        carry it a press *spends* one — the hand-granted cycle `_run_recovery`
-        has always described in its docstring and never gave this path. Without
-        the second half the first would be a narrower lie: a page on a node with
-        a cycle left, offering a button that reached
-        `_apply_landing_resolution` and fell through to the kill. That is
-        exactly what 075/us1's operator pressed at 03:18Z.
+        carries `RETRY` only while a recovery cycle remains, and when it does a
+        press *spends* one — the hand-granted cycle `_run_recovery` has always
+        described and never gave this path. Without the second half the first is
+        a narrower lie: a button that still fell through to the kill.
         """
         record = self._nodes[resolved.node.id]
         landing = record.landing
@@ -3379,13 +3344,10 @@ class EpicWorkflow:
                     graph,
                     request,
                     record,
-                    # 079-US1 (FR-002): offered whatever the recovery budget
-                    # says, because this RETRY does not spend a cycle. It
-                    # completes the interrupted enqueue of a tree the operator
-                    # has judged a flake (069-US2's branch below), which is work
-                    # this site can do with no budget left at all — and
-                    # withholding it would delete the one answer this page
-                    # exists to ask for.
+                    # 079-US1 (FR-002): offered whatever the budget says,
+                    # because this RETRY spends no cycle — it completes the
+                    # interrupted enqueue of a tree the operator judged a flake
+                    # (069-US2 below), the one answer this page exists to ask.
                     retry_grants_work=True,
                     note=(
                         "Re-enqueueing would be futile: the recovery's tree is "
@@ -3456,8 +3418,8 @@ class EpicWorkflow:
         if enqueued.rejected:
             # A refusal is a queue rejection an operator can fix — escalate.
             # 079-US1: through the pair that computes the offer and can honour a
-            # `RETRY` with a granted cycle, rather than through a copy of it
-            # that offered the button and killed the node on the press.
+            # `RETRY` with a granted cycle, rather than a copy that offered the
+            # button and killed the node on the press.
             await self._escalate_and_apply(graph, request, resolved, sources, judge)
             return
 
@@ -3499,15 +3461,10 @@ class EpicWorkflow:
         KILL; the store's word on a press that beat the timer by a millisecond
         still decides (002 R12). 041-US3 moved all three into the child.
 
-        079-US1 (FR-001/FR-002): the offer is `[KILL | PAUSE_EPIC | KILL_EPIC]`,
-        with `RETRY` in front of them only when this caller can honour it.
-        `retry_grants_work` is that caller's own answer, because the sites do not
-        agree on what a retry *is*: on the exhaustion and recovery-failure paths
-        it is one more recovery cycle and the recovery budget bounds it, while on
-        the futile-re-enqueue path it is the interrupted enqueue of a tree the
-        operator has judged a flake, which spends no cycle at all. The one thing
-        no site may do is offer it and then not do it — 075/us1 at 03:18Z was a
-        RETRY press whose next activity was `remove_worktree`.
+        079-US1 (FR-001/FR-002): `RETRY` goes in front of the ending choices only
+        when this caller can honour it, because the sites disagree on what a
+        retry *is* — one more recovery cycle bounded by the budget, or the
+        futile-re-enqueue page's, which spends none.
 
         US3: an optional `note` explains why this escalation fired when it is not
         the ordinary exhaustion case — e.g. a futile re-enqueue. The note is
@@ -3556,27 +3513,22 @@ class EpicWorkflow:
         the node plus the scheduler's own stop. `RETRY` is not routed here — the
         caller grants one more recovery cycle.
 
-        079-US1 (FR-004) puts one check in front of all of that. The fall-through
-        below used to read "KILL, EXPIRED, or anything unoffered — all end the
-        node killed", so a stale message or a replayed callback naming a button
-        this page never showed became a kill nobody could tell from a real one.
-        A resolution nobody offered is refused by name instead, and the node is
-        left exactly as it was: its landing stays REJECTED, so the scheduler
-        raises the page again rather than the refusal being spent as the node's
-        death. `EXPIRED` is not one of those (plan trap 4) — an hour of silence
-        is a legitimate outcome and still ends the node.
+        079-US1 (FR-004) puts one check in front of all that. The fall-through
+        below read "KILL, EXPIRED, or anything unoffered — all end the node
+        killed", making an unoffered resolution a kill nobody could tell from a
+        real one. It is refused by name instead and the node left as it was, so
+        the scheduler pages again rather than the refusal being spent as the
+        node's death. `EXPIRED` is exempt (trap 4).
         """
         record = self._nodes[resolved.node.id]
         if self._refuse_unoffered(record, resolution):
             if len(record.refused_resolutions) < _REFUSALS_BEFORE_FAILSAFE:
-                # Nothing is applied. The landing keeps whatever state it had —
-                # REJECTED on every path that reaches here — and the scheduler
-                # picks it up for another recovery, which pages the operator
-                # again with a page that has not been answered.
+                # Nothing is applied. The landing keeps its state — REJECTED on
+                # every path here — and the scheduler picks it up for another
+                # recovery, which pages again.
                 return
-            # Asked and refused enough times that asking again is its own
-            # failure. The fail-safe applies, with every refused name on the
-            # record and the reason saying which they were.
+            # Refused often enough that asking again is its own failure: the
+            # fail-safe applies, with every refused name recorded.
             record.terminal_reason = _refusal_reason(record)
         if resolution == EscalationChoice.KILL_EPIC.value:
             # The epic-level half, set before the node closes out so the
@@ -3584,10 +3536,10 @@ class EpicWorkflow:
             # node-level half is the KILL fall-through below: the two answers
             # differ only in what they do to the epic.
             self._kill_requested = True
-        # FR-005: whatever the answer was, it ends this node — so no second page
-        # is raised for it. The three answered choices and the hour of silence
-        # all land here; only a `RETRY` grant, which never reaches this method,
-        # leaves the node with a question still open.
+        # FR-005: whatever the answer was, it ends this node, so no second page
+        # is raised. The three answered choices and the hour of silence all land
+        # here; only a `RETRY` grant, which never reaches this method, leaves a
+        # question open.
         record.ending_answer = resolution
         if resolution == EscalationChoice.PAUSE_EPIC.value:
             self._paused = True
@@ -3608,20 +3560,18 @@ class EpicWorkflow:
 
 
 #: How many refused resolutions one node may collect before the escalation is
-#: closed out with its fail-safe instead of being asked again (079-US1,
-#: FR-004). A refusal is not an answer, so the page is raised again — but a
-#: channel that keeps returning choices nobody offered must not page an operator
-#: forever, and a node cannot wait on a question that cannot be answered.
+#: closed out with its fail-safe instead of being asked again (079-US1, FR-004).
+#: A refusal is not an answer, so the page is raised again — but a channel that
+#: keeps returning choices nobody offered must not page an operator forever.
 _REFUSALS_BEFORE_FAILSAFE = 3
 
 
 def _refusal_reason(record: NodeRecord) -> str:
     """What a node ended of, when what ended it was refusals (FR-004).
 
-    Operator-facing: `ergane build status` prints `terminal_reason`, and "the
-    escalation was answered with something it never offered" is a different
-    fact from "the operator killed it" — which is exactly the difference the
-    fall-through used to erase.
+    `ergane build status` prints `terminal_reason`, and "answered with something
+    it never offered" is a different fact from "the operator killed it" — the
+    difference the fall-through erased.
     """
     refused = ", ".join(record.refused_resolutions)
     offered = ", ".join(record.offered_choices) or "nothing"

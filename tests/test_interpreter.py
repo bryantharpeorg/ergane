@@ -4502,17 +4502,14 @@ async def test_recovery_exhaustion_escalates_with_retry_and_kill_choices(
     """US2-S3: a recovery that fails again escalates; RETRY grants one more cycle.
 
     A recovery attempt that fails fires the Telegram escalation with the queue
-    history rendered and the offer computed from what is left (FR-007, and
-    079-US1 FR-002). An operator press of RETRY grants exactly one more cycle; a
-    clean re-verify then re-enqueues.
+    history rendered and the offer computed from what is left (FR-007, 079-US1
+    FR-002). An operator press of RETRY grants exactly one more cycle; a clean
+    re-verify then re-enqueues.
 
-    Run under `max_recovery_cycles=2` since 079-US1. The budget is what decides
-    whether `RETRY` may be offered at all, and at the shipped default of 1 the
-    single cycle is already spent by the time this page is raised — so the run
-    that proves a press *buys a cycle* has to be a run where a cycle is left to
-    buy. The exhausted case is now
-    `test_recovery_escalation_kill_preserves_the_branch` below, which asserts
-    the narrowed offer.
+    Run under `max_recovery_cycles=2` since 079-US1: at the shipped default of 1
+    the cycle is already spent when this page is raised, so the run that proves a
+    press *buys* one has to leave one to buy. The exhausted case is
+    `test_recovery_escalation_kill_preserves_the_branch` below.
     """
     script = ScriptedWorld(
         {"us1": [passing(), failing(2), passing()]},
@@ -4577,9 +4574,8 @@ async def test_recovery_escalation_kill_preserves_the_branch(
     [escalation] = script.escalation_requests
     assert "CHECKS_FAILED" in escalation.history_summary
     # 079-US1 (FR-002): the one recovery cycle this config allows was spent by
-    # the automatic recovery, so there is none left to grant and `RETRY` is not
-    # offered. The three that remain all end the node, which is what an operator
-    # holding this page can actually do.
+    # the automatic recovery, so none is left to grant and `RETRY` is not
+    # offered. The three that remain all end the node.
     assert escalation.choices == [
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,

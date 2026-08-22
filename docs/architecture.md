@@ -448,12 +448,7 @@ The pipeline, cheapest signal first:
    recorded attempts: retry-with-feedback within `max_attempts` (default 3, with the 2
    judge retries bounded *inside* that total), then the `debugger` persona once, then
    Telegram escalation (§9). Escalation `RETRY` grants exactly one further attempt;
-   `KILL`, `PAUSE_EPIC`, `KILL_EPIC`, and the configured timeout end the node. What the
-   page *offers* is computed from what the node can still do, not fixed
-   (`ladder.offered_choices`, 079-US1): `RETRY` appears only where a press would put the
-   node back to work — on an exhausted ladder it always does, because a press raises the
-   attempt ceiling with it, and on the launch-failure page it never does, because the node
-   is already ending.
+   `KILL`, `PAUSE_EPIC`, and the configured timeout end the node.
 
 ### 6.1 Evidence store (SQLite)
 
@@ -576,12 +571,11 @@ more expensive kind of idle. One cycle:
    refused sync, or a refused re-enqueue → a landing escalation (§9) with the queue history
    rendered (FR-007). The offer is `[KILL | PAUSE_EPIC | KILL_EPIC]`, with `RETRY` in front
    of them only while the recovery budget can honour it — `recovery_cycles <
-   max_recovery_cycles`, or the futile-re-enqueue page, whose `RETRY` enqueues the
-   identical tree and spends no cycle (079-US1). Offered, `RETRY` grants exactly one more
-   cycle; 1h silence or `KILL` ends the node KILLED with the branch preserved; a
-   `PAUSE_EPIC` parks the node and pauses the epic. A resolution naming a choice the page
-   did not offer — a stale message, a replayed callback — is refused by name and recorded
-   on the node rather than applied as a kill (FR-004).
+   max_recovery_cycles`, or the futile-re-enqueue page, whose `RETRY` spends no cycle
+   (079-US1). Offered, `RETRY` grants exactly one more cycle; 1h silence or `KILL` ends the
+   node KILLED with the branch preserved; a `PAUSE_EPIC` parks the node and pauses the
+   epic. A resolution the page did not offer is refused by name and recorded rather than
+   applied as a kill (079-US1 FR-004).
 
 A PR closed manually without merging is an operator kill: the node ends KILLED, the branch is
 preserved, and the notifier sends the **manual-intervention notice** (notify-only, no
@@ -763,11 +757,7 @@ factory/
   pressed again. Presses that lose the race with expiry, or arrive on an unknown or
   already-resolved id, are answered with a notice and change nothing.
 - **Messages** — pure rendering: the full failure history across attempts plus one inline
-  button per offered choice. The vocabulary is `RETRY` / `KILL` / `PAUSE_EPIC` /
-  `KILL_EPIC` (068-US2); which of them a given page carries is decided per node by the
-  caller that raises it (`ladder.offered_choices`, 079-US1), so a button is never rendered
-  for something the node cannot do. Every offer keeps the three ending choices, which need
-  no budget — an escalation with an empty keyboard would be a park with no exit.
+  button per offered choice (`RETRY` / `KILL` / `PAUSE_EPIC`).
 
 Escalations expire after 1h and **default to kill** — but only after salvage (principle VI),
 which the node-lifecycle owner performs. Used by: verify-fail-after-retries (§6), landing

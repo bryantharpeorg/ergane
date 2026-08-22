@@ -136,11 +136,9 @@ class EscalationRequest:
     carries (SC-005); the store keeps it whole and only the message is clipped.
 
     `choices` is what this escalation offers, and since 079-US1 it is computed
-    from the paging node's remaining budget rather than inherited from a
-    constant (FR-001). The default is the ending choices — executable on any
-    node, and never empty (FR-003) — because a default cannot know a budget and
-    the one that offered all four is how a retry button reached a node with
-    nothing to retry with.
+    from the paging node's remaining budget rather than inherited from a constant
+    (FR-001). The default is the ending choices — executable on any node, never
+    empty (FR-003) — because a default cannot know a budget.
     """
 
     epic_id: str

@@ -443,26 +443,9 @@ def render_status(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
             f"attempt {node['attempt']}  {node['branch']}"
             f"{_routing_token(node)}{spend_token}{external_token}"
-            f"{_refused_token(node)}{_reason_token(node)}"
+            f"{_reason_token(node)}"
         )
     return "\n".join(lines)
-
-
-def _refused_token(node: Mapping[str, Any]) -> str:
-    """Resolutions this node's escalation refused because nobody offered them.
-
-    079-US1 (FR-004). A refusal used to be indistinguishable from an operator
-    pressing kill, because it *was* one: the unoffered resolution fell through
-    to the kill branch and left no trace of having arrived. It is recorded on
-    the node now, and this is what makes it readable without a debugger — the
-    press that produced it is the one an operator is standing there wondering
-    about. Absent for every node that was answered with something it offered,
-    which is nearly all of them.
-    """
-    refused = node.get("refused_resolutions") or ()
-    if not refused:
-        return ""
-    return "  refused: " + ", ".join(str(name) for name in refused)
 
 
 def _reason_token(node: Mapping[str, Any]) -> str:
