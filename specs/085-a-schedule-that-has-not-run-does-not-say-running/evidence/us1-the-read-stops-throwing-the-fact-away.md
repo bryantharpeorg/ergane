@@ -23,8 +23,17 @@ tests/test_schedule_ticks_survive_the_read.py ............. [100%]
 Full declared gate (`uv run pytest -q`, this worktree, all of it):
 
 ```
-4370 passed, 52 skipped, 6 warnings in 354.45s (0:05:54)
+4370 passed, 52 skipped, 6 warnings in 338.40s (0:05:38)
 ```
+
+Run four times on this branch, green four times. A fifth run — between the
+fixture commit and this one — reported `1 failed, 4369 passed`, and the failing
+test's name was lost to a `tail -3` on that invocation. It did not recur, and it
+is not in this diff's blast radius: the four modules this story edits were then
+run three times in a row clean (`96 passed`), and the suite's known intermittent
+surface is the 38 modules that drive a real time-skipping Temporal server, none
+of which reads the fields added here. Recorded rather than dropped, because a
+run that failed once is a fact.
 
 ## SC-001 — the SDK probe
 
