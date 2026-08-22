@@ -2697,21 +2697,65 @@ async def test_the_teardown_carries_the_terminations_the_adapter_reported(
 
 
 
+# --- US5-S1/S2: the derived heartbeat timeout is capped (082 FR-008) -----------
+
+
+def test_the_agent_heartbeat_timeout_is_capped_floored_and_monotone() -> None:
+    """082 US5-S1/US5-S2 (FR-008): liveness is bounded by a constant, not by the
+    attempt's deadline.
+
+    Half a deadline is a liveness bound that prices a crash at the work budget:
+    on 2026-08-19 a SIGKILLed worker left a 4-hour attempt parked for ~2 hours
+    before Temporal would call it dead. The cap says how long a *dead* worker
+    goes unnoticed, and that answer must not depend on how long the attempt was
+    allowed to run.
+
+    The floor is the control in the other direction: it is the beat the bound is
+    bounding, so a deliberately short attempt cannot collapse below it. Between
+    floor and cap the derivation is still the deadline's own half, which is why
+    the ladder below asserts monotonicity rather than three isolated points.
+    """
+    cap = workflow_module._AGENT_HEARTBEAT_TIMEOUT_CEILING
+    floor = workflow_module._AGENT_HEARTBEAT_TIMEOUT_FLOOR
+    derive = workflow_module._agent_heartbeat_timeout
+
+    # Both constants named, and the cap held to FR-008's twenty-beat minimum so
+    # a transient Temporal blip is survivable rather than fatal.
+    assert cap == timedelta(seconds=120)
+    assert floor == timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
+    assert cap >= timedelta(seconds=20 * HEARTBEAT_INTERVAL_S)
+
+    # S1: a multi-hour attempt buys the cap, not a share of its own deadline.
+    assert derive(4 * 60 * 60) == cap
+    assert derive(5400) == cap  # the shipped persona default
+
+    # S2, the control: short attempts keep today's five-beat floor. 60s sits in
+    # the linear middle (30s) — above the floor, below the cap — which is what
+    # makes the floor's binding case a deadline shorter still.
+    assert derive(60) == timedelta(seconds=30)
+    assert derive(6) == floor
+    assert derive(1) == floor
+
+    # Monotone across the whole range, so neither bound introduces a step down.
+    ladder = [1, 6, 10, 60, 239, 240, 241, 3600, 4 * 60 * 60]
+    derived = [derive(seconds) for seconds in ladder]
+    assert derived == sorted(derived)
+    assert all(floor <= value <= cap for value in derived)
+
+
 # --- US4-S1: heartbeat timeout is derived from the attempt timeout (FR-008) ----
 
 
 async def test_heartbeat_timeout_is_derived_from_attempt_timeout_and_floored(
     env: WorkflowEnvironment,
 ) -> None:
-    """The agent activity's heartbeat timeout comes from the configured attempt
-    timeout, not from a fixed 5-second constant, and short attempts keep a sane
-    floor.
+    """The bound Temporal is actually asked for: capped above, floored below.
 
-    A multi-hour attempt with the old fixed 5s bound would be declared dead on
-    any Temporal blip longer than a few seconds. The new bound is a function of
-    the attempt's own timeout, so a 90-minute attempt survives a 10-second
-    outage. A deliberately short attempt is floored so the bound never collapse
-    below the beat that it is bounding.
+    A multi-hour attempt with a fixed 5s bound would be declared dead on any
+    Temporal blip longer than a few seconds; with half its own deadline it would
+    park for hours after a crash (082 US5). The shipped derivation survives the
+    blip and still notices the crash in minutes, and a deliberately short attempt
+    is floored so the bound never collapses below the beat it is bounding.
 
     The assertion reads the scheduled activity's options from the run history:
     the activity's `heartbeat_timeout` is what the workflow actually asked
@@ -2755,9 +2799,11 @@ async def test_heartbeat_timeout_is_derived_from_attempt_timeout_and_floored(
         make_graph([us1_short]), workflow_id=f"{WORKFLOW_ID}-short"
     )
 
-    # The current derivation is half the attempt timeout, floored at five beats
-    # so short attempts do not collapse below the heartbeat they bound.
-    assert long_heartbeat == timedelta(seconds=long_timeout // 2)
+    # Half the attempt timeout, capped at a constant so a dead worker is noticed
+    # in minutes (082 FR-008) and floored at five beats so short attempts do not
+    # collapse below the heartbeat they bound.
+    assert long_heartbeat == workflow_module._AGENT_HEARTBEAT_TIMEOUT_CEILING
+    assert long_heartbeat < timedelta(seconds=long_timeout // 2)
     assert short_heartbeat == timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
 
 

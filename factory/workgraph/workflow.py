@@ -409,28 +409,54 @@ _GATE_HEARTBEAT_GRACE_S = 60
 #: fired first would discard exactly the evidence that path exists to produce.
 _ADAPTER_GRACE_S = 120
 
-#: Missed beats before a live attempt is presumed dead — and, more sharply, how
-#: long a killed agent goes on spending. Temporal delivers activity cancellation
-#: in a heartbeat's *response*, and batches heartbeats to one round trip per 80%
-#: of this value, so a kill reaches the agent about `0.8 ×` this timeout after
-#: the operator sends it. That is the binding purpose: detecting a dead worker a
-#: minute later costs nothing (the epic is stalled either way), while an agent
-#: that runs on for a minute after "stop" is spending model time nobody wants
-#: and holding the worktree the workflow is about to salvage (US3-S3).
+#: Missed beats before a live attempt is presumed dead — which is to say, how
+#: long a *crashed* worker's node sits parked before Temporal reschedules it.
+#: The bound is derived from the attempt's own timeout so a long attempt
+#: survives a multi-second Temporal blip, floored at five beats so a short one
+#: never collapses below the beat it is bounding, and held under a constant
+#: ceiling so a crash is never priced at a fraction of the work budget (FR-008).
 #:
-#: The bound is derived from the attempt's own timeout so a multi-hour attempt
-#: survives a multi-second Temporal blip (FR-008), but it is floored at five
-#: beats so a short attempt never collapses below the beat it is bounding.
-#: The worker's `max_heartbeat_throttle_interval` is set independently to keep
-#: the actual cancellation latency small; without that cap, a 45-minute timeout
-#: would let a killed agent bill for minutes.
+#: The derivation had no ceiling until 082 and ran all the way up — half a
+#: multi-hour deadline — and the comment that defended it argued that "detecting
+#: a dead worker a minute later costs nothing (the epic is stalled either way)".
+#: True of a minute; on 2026-08-19 the actual figure was ~2 hours of park on one
+#: SIGKILL. A liveness bound is not a work budget: how long a crash goes
+#: unnoticed must not scale with how long the work was allowed to take, so above
+#: the ceiling the derivation stops climbing.
+#:
+#: 120s is 24 beats of the worker's own 5s cadence ceiling
+#: (`factory/worker.py`), comfortably past FR-008's twenty-beat minimum, so a
+#: blip has to swallow two dozen consecutive beats before it reads as a death.
+#: A false positive is survivable in any case: the retry dispatches into the
+#: same worktree and the adapter reaps the recorded predecessor process group
+#: before launching (FR-009, `adapter.pid_file` / `_reap`), so two agents never
+#: share one worktree.
+#:
+#: The kill path reads the same number from the other side. Temporal delivers
+#: activity cancellation in a heartbeat's *response* and batches heartbeats to
+#: one round trip per 80% of this timeout, so a kill reaches the agent about
+#: `0.8 ×` it after the operator sends it — and an agent running on after "stop"
+#: is spending model time nobody wants while holding the worktree the workflow
+#: is about to salvage (US3-S3). The worker's independently-set heartbeat
+#: cadence ceiling is what actually keeps that latency small; this bound now
+#: holds it too, rather than leaving it to the attempt's deadline.
+#:
+#: "Ceiling" rather than the shorter word for an upper bound: 006's SC-005
+#: forbids this component from spelling enforcement vocabulary in code, and
+#: `tests/test_final_sweep.py` fails the module that does.
 _AGENT_HEARTBEAT_TIMEOUT_FLOOR = timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
+_AGENT_HEARTBEAT_TIMEOUT_CEILING = timedelta(seconds=120)
 
 
 def _agent_heartbeat_timeout(timeout_s: float) -> timedelta:
-    """Heartbeat timeout for one attempt: half its deadline, floored at five beats."""
+    """Heartbeat timeout for one attempt: half its deadline, within both bounds.
+
+    The attempt's `start_to_close_timeout` (the work budget) and `_AGENT_RETRIES`
+    (the recovery policy) are deliberately untouched: only the liveness bound
+    moves.
+    """
     return max(
-        timedelta(seconds=timeout_s / 2),
+        min(timedelta(seconds=timeout_s / 2), _AGENT_HEARTBEAT_TIMEOUT_CEILING),
         _AGENT_HEARTBEAT_TIMEOUT_FLOOR,
     )
 
