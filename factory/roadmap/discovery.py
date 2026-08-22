@@ -207,6 +207,52 @@ async def _find_owning_schedule(client: Any, bare_id: str) -> _Found | None:
     return None
 
 
+async def _find_newest_run(client: Any, bare_id: str) -> _Found | None:
+    """Rung 3: the newest `roadmap-<root>-<timestamp>` run, schedule or not.
+
+    Reached when no schedule could be named — either because none exists or
+    because the server would not list them. Something started the run on a tick
+    this client cannot see, so `pause` on this rung can only signal the run, and
+    its caller has to say so.
+    """
+    run_id = await _newest_run(client, f"{bare_id}-")
+    if run_id is None:
+        return None
+    return _Found(owner=RoadmapOwner.RUN, workflow_id=run_id)
+
+
+async def _newest_run(client: Any, prefix: str) -> str | None:
+    """The most recently started workflow whose id begins with `prefix`.
+
+    The id prefix goes into the list filter so the server does the narrowing,
+    and is re-checked here so a server that ignores the predicate cannot widen
+    the answer. Ordering is by start time, falling back to the id itself — the
+    timestamp a schedule appends sorts lexicographically anyway.
+    """
+    try:
+        executions = [
+            execution
+            async for execution in client.list_workflows(
+                f'WorkflowId STARTS_WITH "{prefix}"'
+            )
+            if str(execution.id).startswith(prefix)
+        ]
+    except RPCError:
+        # A server without advanced visibility: degrade, per the Assumptions.
+        return None
+    if not executions:
+        return None
+    newest = max(
+        executions,
+        key=lambda execution: (
+            getattr(execution, "start_time", None) is not None,
+            getattr(execution, "start_time", None),
+            execution.id,
+        ),
+    )
+    return str(newest.id)
+
+
 def _described_time(value: Any) -> str | None:
     """A described timestamp, phrased the way `next_action_at` already is.
 
@@ -267,52 +313,6 @@ def _cadence_seconds(described: Any) -> int | None:
         return None
     total_seconds = getattr(getattr(intervals[0], "every", None), "total_seconds", None)
     return int(total_seconds()) if callable(total_seconds) else None
-
-
-async def _find_newest_run(client: Any, bare_id: str) -> _Found | None:
-    """Rung 3: the newest `roadmap-<root>-<timestamp>` run, schedule or not.
-
-    Reached when no schedule could be named — either because none exists or
-    because the server would not list them. Something started the run on a tick
-    this client cannot see, so `pause` on this rung can only signal the run, and
-    its caller has to say so.
-    """
-    run_id = await _newest_run(client, f"{bare_id}-")
-    if run_id is None:
-        return None
-    return _Found(owner=RoadmapOwner.RUN, workflow_id=run_id)
-
-
-async def _newest_run(client: Any, prefix: str) -> str | None:
-    """The most recently started workflow whose id begins with `prefix`.
-
-    The id prefix goes into the list filter so the server does the narrowing,
-    and is re-checked here so a server that ignores the predicate cannot widen
-    the answer. Ordering is by start time, falling back to the id itself — the
-    timestamp a schedule appends sorts lexicographically anyway.
-    """
-    try:
-        executions = [
-            execution
-            async for execution in client.list_workflows(
-                f'WorkflowId STARTS_WITH "{prefix}"'
-            )
-            if str(execution.id).startswith(prefix)
-        ]
-    except RPCError:
-        # A server without advanced visibility: degrade, per the Assumptions.
-        return None
-    if not executions:
-        return None
-    newest = max(
-        executions,
-        key=lambda execution: (
-            getattr(execution, "start_time", None) is not None,
-            getattr(execution, "start_time", None),
-            execution.id,
-        ),
-    )
-    return str(newest.id)
 
 
 BARE_WORKFLOW_LOOKUP = _Lookup(
