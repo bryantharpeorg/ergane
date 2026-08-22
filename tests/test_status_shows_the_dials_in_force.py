@@ -33,9 +33,9 @@ What these tests are written to resist:
 - **A new field that breaks status when it cannot be read.** Spec 052 landed
   "degraded, not broken" for `ergane build status` and plan trap 9 forbids
   regressing it. `test_a_status_that_cannot_read_the_dials_still_renders_the_epic`
-  drives four documents that cannot answer — a pre-081 worker's answer, a null,
-  a wrong type, and a truncated one — and requires the epic line and every node
-  line out of each.
+  drives five documents that cannot answer — a pre-081 worker's answer, a null,
+  a wrong type, a truncated one, and provenance that is not a list — and
+  requires the epic line and every node line out of each.
 
 The rendered readings SC-007 asks for are pasted at the bottom of this file,
 because the judge is given the diff and nothing else (constitution VIII).
@@ -302,12 +302,13 @@ async def test_a_status_that_cannot_read_the_dials_still_renders_the_epic(
 
     Spec 052 landed "degraded, not broken" for `ergane build status`, and the
     way a new field regresses it is by raising on an answer it did not expect.
-    Four answers that cannot be read are driven here, and they are the four
-    shapes the wire actually produces: a worker that predates 081 and sends no
-    key at all, a workflow queried before `run` recorded the dials (`null`), an
-    answer whose config is not a mapping, and one that carries a dial the
-    renderer does not find. Each must still print the epic's own line and the
-    node's, because those are the reading the operator came for.
+    Five answers that cannot be read are driven here, and they are the shapes
+    the wire actually produces: a worker that predates 081 and sends no key at
+    all, a workflow queried before `run` recorded the dials (`null`), an answer
+    whose config is not a mapping, one missing a dial the renderer looks for,
+    and one whose provenance is not a list of names. Each must still print the
+    epic's own line and the node's, because those are the reading the operator
+    came for.
     """
     async with start_epic(env, one_passing_node(env), graph=one_node()) as handle:
         status = await wait_for_status(
