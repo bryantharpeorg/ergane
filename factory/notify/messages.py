@@ -31,6 +31,12 @@ Four decisions carry the weight:
   4096-character cap**, and when it bites they say so. The store keeps the
   summary in full; a message silently clipped would read as a complete history
   that happens to end early, which is worse than one that admits it was cut.
+- **A message names what every offered press will do, before it is pressed**
+  (079-US4, FR-015). `render_blast_radius` spells out both halves — the node and
+  the epic — for each choice on the keyboard, and it rides in the footer so the
+  clip takes evidence rather than consequence. The button faces cannot carry it:
+  "⏸️ Pause the epic" was the gentlest label on the keyboard and the widest
+  press, ending the node and every node waiting on it.
 """
 
 from __future__ import annotations
@@ -105,6 +111,49 @@ _CHOICE_LABELS = {
     EscalationChoice.PAUSE_EPIC: "⏸️ Pause the epic",
     EscalationChoice.KILL_EPIC: "💥 End the whole epic",
 }
+
+#: What one press does — to this node, and to the epic's other work (079-US4,
+#: FR-015). One line per offered choice, rendered into the message *before* the
+#: press rather than discovered after it.
+#:
+#: A label is four words on a phone, and four words cannot carry a blast radius.
+#: "⏸️ Pause the epic" read as the gentlest button on the keyboard and was the
+#: widest: it ended the node and, until US4, every node waiting on it — three at
+#: once on 2026-08-19. Both halves are named for every choice because the halves
+#: are what distinguish the buttons from each other: `KILL` and `PAUSE_EPIC` do
+#: the same thing to the node and opposite things to everything else, and an
+#: operator reading only the node half cannot tell them apart.
+#:
+#: Written as literal prose rather than derived from the interpreter, because a
+#: message that computed its own promises could only ever agree with itself.
+#: `tests/test_pause_is_not_a_kill.py` asserts the effects against the epic these
+#: sentences describe; if a press stops doing what its line says, that is where
+#: it fails.
+_CHOICE_EFFECTS = {
+    EscalationChoice.RETRY: (
+        "node: one more attempt, on the tree this one left behind. "
+        "epic: unchanged — it keeps dispatching."
+    ),
+    EscalationChoice.KILL: (
+        "node: ends KILLED, its branch preserved. "
+        "epic: keeps dispatching, but every node waiting on this one is "
+        "locked out and ends KILLED with it, undispatched."
+    ),
+    EscalationChoice.PAUSE_EPIC: (
+        "node: ends parked, not killed — nothing waiting on it is locked out. "
+        "epic: stops dispatching until you resume it; the undispatched nodes "
+        "keep their place and run then."
+    ),
+    EscalationChoice.KILL_EPIC: (
+        "node: ends KILLED, its branch preserved. "
+        "epic: ends with it — nothing else dispatches, and any other node's "
+        "open page is cancelled unanswered."
+    ),
+}
+
+#: The heading the effect block renders under. Spelled once so the message and
+#: the test that reads it back cannot disagree about where the block starts.
+_BLAST_RADIUS_HEADING = "What each button does:"
 
 
 @dataclass(frozen=True)
@@ -304,14 +353,52 @@ def roadmap_recovery_notice(roadmap_id: str, prior_count: int) -> str:
     return _compose(header, body, "")
 
 
+def render_blast_radius(choices: Sequence[EscalationChoice | str]) -> str:
+    """What each *offered* choice will do, to the node and to the epic (FR-015).
+
+    Driven by `choices` rather than by the enum, for the reason 079-US1 landed:
+    what an escalation offers is computed per node, and a block rendered from the
+    vocabulary would describe a retry button that is not on the keyboard.
+
+    A choice this module has no sentence for still gets its line — the name and
+    an admission — because an offer whose effect nobody wrote down is precisely
+    the case an operator must not read as "no effect".
+    """
+    lines = [_effect_line(choice) for choice in choices]
+    return "\n".join([_BLAST_RADIUS_HEADING, *lines])
+
+
+def _effect_line(choice: EscalationChoice | str) -> str:
+    """One offered choice: its name, its face, and what pressing it does."""
+    value = _value(choice)
+    try:
+        member = EscalationChoice(value)
+    except ValueError:
+        return f"{value} — effect not documented; do not press."
+    label = _CHOICE_LABELS.get(member, value)
+    effect = _CHOICE_EFFECTS.get(member, "effect not documented; do not press.")
+    return f"{value} ({label}) — {effect}"
+
+
 def escalation_message(record: EscalationRecord) -> str:
-    """The message an operator is paged with: what failed, and what silence does."""
+    """The message an operator is paged with: what failed, and what each press does.
+
+    The blast radius rides in the *footer*, not the body (079-US4, FR-015).
+    `_compose` reserves header and footer and lets the history absorb the clip,
+    so the thing the operator is deciding *from* survives a gate that dumped 32
+    KiB — a consequence pushed off the end of the message by evidence would be
+    missing exactly when the epic is in the most trouble. It costs the history a
+    few hundred characters of the 4096, which is the trade this story makes
+    knowingly: the evidence is kept whole in the store, and the effect of a press
+    is not recorded anywhere the operator's thumb can reach.
+    """
     body = record.history_summary
     if record.check_evidence:
         body += "\n\n" + _render_check_evidence(record.check_evidence)
     return _compose(
         _header("⚠️ Verification escalation", record),
         body,
+        f"\n\n{render_blast_radius(record.choices)}"
         f"\n\nNo answer by {record.expires_at} applies the default: KILL the node.",
     )
 

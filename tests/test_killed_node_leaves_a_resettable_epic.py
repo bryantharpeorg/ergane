@@ -185,6 +185,12 @@ async def test_kill_ends_the_node_kill_epic_ends_the_epic_and_pause_ends_neither
     `KILL_EPIC` ends **the epic**: `us2` never dispatches. `PAUSE_EPIC` ends
     neither — PAUSED, `us2` still PENDING ahead of a resume. `us2`'s terminal
     state is the discriminator a label cannot fake.
+
+    079-US4 changed what `us1` reads as under the third press: parked on the
+    operator rather than `FAILED`, because `FAILED` is in `_UNREACHABLE` and the
+    press was killing this graph's dependents too (`tests/test_pause_is_not_a_
+    kill.py`). `us2` was already PENDING here — it depends on nothing — which is
+    why this test never saw the defect and why the one that does is separate.
     """
     graph = make_graph([make_node("us1", "US1"), make_node("us2", "US2")])
 
@@ -225,7 +231,10 @@ async def test_kill_ends_the_node_kill_epic_ends_the_epic_and_pause_ends_neither
     parked = await answered_with(EscalationChoice.PAUSE_EPIC, "epic-pause-the-epic")
     assert parked.epic_state == EpicState.PAUSED
     assert parked.epic_state not in (EpicState.KILLED, EpicState.COMPLETED)
-    assert states(parked) == {"us1": NodeState.FAILED, "us2": NodeState.PENDING}
+    assert states(parked) == {
+        "us1": NodeState.WAITING_OPERATOR,
+        "us2": NodeState.PENDING,
+    }
 
 
 # --- T011 / US2-S1 / FR-006: no living escalation child ---------------------

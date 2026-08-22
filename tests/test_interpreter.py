@@ -3128,26 +3128,32 @@ async def test_a_pause_epic_resolution_parks_the_node_and_pauses_the_epic(
     `PAUSE_EPIC` is neither a grant nor a kill: the ladder ends the node, because
     parking is the most a per-node decision can say about an epic-level
     suspension, and the interpreter supplies the rest of the meaning — the node
-    is FAILED rather than KILLED (parked, its branch salvaged and its worktree
-    swept like any terminal path) and the scheduler stops, so the operator can
-    look at what happened before `us3` spends anything.
+    is parked rather than KILLED (its branch salvaged and its worktree swept like
+    any terminal path) and the scheduler stops, so the operator can look at what
+    happened before `us3` spends anything.
+
+    079-US4 changed which state that park is. It was `FAILED`, which is in
+    `_UNREACHABLE`, so the press also killed `us2` — the dependents' states below
+    used to read `KILLED` and that was the defect, not the design.
+    `tests/test_pause_is_not_a_kill.py` owns the claim; this test keeps the rest
+    of the park's shape honest around it.
     """
     script = exhausted(EscalationChoice.PAUSE_EPIC.value, env.client)
 
     async with start_epic(env, script) as handle:
         paused = await wait_for_status(
             handle,
-            paused_with("us1", NodeState.FAILED),
-            what="us1 to park FAILED and the epic to pause",
+            paused_with("us1", NodeState.WAITING_OPERATOR),
+            what="us1 to park and the epic to pause",
         )
 
         assert states(paused) == {
             # Parked, not killed: the operator stopped the epic rather than
             # abandoning the node.
-            "us1": NodeState.FAILED,
-            # A dependent of a node that will never pass — killed where it
-            # stands, without a worktree, a key or an attempt (SC-002).
-            "us2": NodeState.KILLED,
+            "us1": NodeState.WAITING_OPERATOR,
+            # A dependent of a node that has not passed — its edge is locked, but
+            # it is not a dead edge, so it keeps its place (079-US4, FR-013).
+            "us2": NodeState.PENDING,
             # Independent, and not dispatched: the pause outranks its readiness.
             "us3": NodeState.PENDING,
         }
@@ -3170,8 +3176,8 @@ async def test_a_pause_epic_resolution_parks_the_node_and_pauses_the_epic(
 
     assert status.epic_state == EpicState.COMPLETED
     assert states(status) == {
-        "us1": NodeState.FAILED,
-        "us2": NodeState.KILLED,
+        "us1": NodeState.WAITING_OPERATOR,
+        "us2": NodeState.PENDING,
         "us3": NodeState.MERGED,
     }
     assert script.dispatched == ["us1"] * 4 + ["us3"]

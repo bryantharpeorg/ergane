@@ -296,6 +296,31 @@ _TERMINAL_STATES = frozenset({NodeState.MERGED, NodeState.FAILED, NodeState.KILL
 #: return a rejected landing to ENQUEUED.
 _LANDING_TERMINAL = frozenset({LandingState.MERGED, LandingState.KILLED})
 
+#: What a `PAUSE_EPIC` press leaves the node in (079-US4, FR-013).
+#:
+#: One name for both escalation sites, because they are one decision: the ladder
+#: raises its page from an exhausted attempt budget and the landing raises its
+#: from an exhausted recovery budget, and a park spelled separately in each is a
+#: park that can drift in one of them. Both used to spell it `NodeState.FAILED`,
+#: which is in `_UNREACHABLE` — so `_lock_out_dependents` read the parked node as
+#: a dead edge and killed everything waiting on it. One press ended three nodes
+#: (2026-08-19), which made the button labelled "pause the epic" the widest one
+#: on the keyboard.
+#:
+#: `WAITING_OPERATOR` is the state that already means what a park means, and
+#: `factory/workgraph/models.py` records why it sits outside `_UNREACHABLE`: a
+#: parked question is not a dead edge, so its dependents stay PENDING rather than
+#: being KILLED. A press is the same fact about the same node reached by a
+#: different door — the node is stopped, a human is holding it, and nothing about
+#: that says the rest of the graph is unbuildable. It also makes the park legible
+#: to `ergane build reset`, which acts on a running epic only when somebody is
+#: being waited on (068 FR-007): parked-as-FAILED satisfied neither half of that
+#: and left the operator reaching for `temporal workflow terminate`.
+#:
+#: Non-terminal by design, and `_kill_remaining` writes over it — an operator who
+#: parks and then kills gets the kill (US4-S5).
+_PARKED = NodeState.WAITING_OPERATOR
+
 #: Queue outcomes that are a rejection a recovery cycle can fix (US2, FR-006),
 #: rather than a terminal the landing ends on. Everything else the classifier
 #: yields — MERGED, DEQUEUED_BY_HUMAN, STALLED — ends the landing here.
@@ -1282,6 +1307,16 @@ class EpicWorkflow:
         # merging. A verified dependency still riding the queue might still merge.
         for dependency in node.depends_on_merged:
             record = self._nodes[dependency]
+            if record.state == _PARKED:
+                # 079-US4 (FR-013): a park is not a death, and the landing half
+                # of the park would otherwise say it was. A `PAUSE_EPIC` press on
+                # the landing page ends the landing KILLED — nothing is driving
+                # the PR while the epic is stopped — and reading that as a dead
+                # edge kills the merge-gated dependents the press was supposed to
+                # leave standing. Keyed on the *node's* park rather than on the
+                # landing's state, so a node that ended KILLED with an unmerged
+                # landing is untouched: that is the control (US4-S4).
+                continue
             if record.state in _UNREACHABLE or self._landing_unmerged_terminal(
                 dependency
             ):
@@ -2004,6 +2039,19 @@ class EpicWorkflow:
             record.state = NodeState.PASSED
             await self._close_out(graph, node, record, termination, state=None)
             await self._land(graph, request, resolved, record, prepared, results[-1])
+        elif parked:
+            # 079-US4: a `PAUSE_EPIC` press. The node ends parked rather than
+            # killed — `_PARKED` is outside `_UNREACHABLE`, so nothing waiting on
+            # it is locked out (FR-013) — but it ends, and it closes its bracket
+            # like every other terminal path: salvage, then sweep (constitution
+            # VI). That is the whole difference from the question park below,
+            # which is still *running* and owns its own tree.
+            #
+            # Ahead of the question branch on purpose, now that the two share a
+            # state: `parked` is set only by the press, and a press that fell
+            # through to a `pass` would skip the salvage and strand the worktree.
+            state = _PARKED
+            await self._close_out(graph, node, record, termination, state=state)
         elif record.state == NodeState.WAITING_OPERATOR:
             # 008-US1 parked here; US2 moved the un-park *inside* the loop (the
             # question path `continue`s on answer or expiry, and `break`s on a
@@ -2011,9 +2059,6 @@ class EpicWorkflow:
             # stopped the epic mid-question: the node stays parked, the epic
             # stays paused, and nothing else dispatches. The state is the truth.
             pass
-        elif parked:
-            state = NodeState.FAILED
-            await self._close_out(graph, node, record, termination, state=state)
         else:
             state = NodeState.KILLED
             await self._close_out(graph, node, record, termination, state=state)
@@ -3583,11 +3628,20 @@ class EpicWorkflow:
         if resolution == EscalationChoice.PAUSE_EPIC.value:
             self._paused = True
             self._epic_state = EpicState.PAUSED
+            # 079-US4 (FR-013), the landing site of the same one-line defect. The
+            # ladder's page and this one raise from different budgets, so a fix
+            # applied to one leaves the other killing dependents exactly as
+            # before (trap 2). `_PARKED` is the one spelling of the park.
             await self._close_out(
-                graph, resolved.node, record, Termination.KILLED, state=NodeState.FAILED
+                graph, resolved.node, record, Termination.KILLED, state=_PARKED
             )
+            # The landing itself does end: nothing is driving this PR any more,
+            # and a landing left REJECTED is a recovery the scheduler picks up
+            # again the moment the epic resumes — a page-loop, not a park. What
+            # must not follow from that ending is the merge-gated lock-out, and
+            # `_dead_edge` is where the park is read (FR-013).
             record.landing = replace(record.landing, state=LandingState.KILLED)
-            record.state = NodeState.FAILED
+            record.state = _PARKED
             return
         # KILL, EXPIRED, or a refusal that ran out of re-asks (FR-004): all end
         # the node killed. What no longer reaches this line is a resolution
