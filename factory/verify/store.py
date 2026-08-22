@@ -675,6 +675,7 @@ def _gate_to_dict(gate: GateResult) -> dict[str, Any]:
         "output_tail": gate.output_tail,
         "concurrent_gates": gate.concurrent_gates,
         "worktree_writes": list(gate.worktree_writes),
+        "writes_declared": gate.writes_declared,
     }
 
 
@@ -695,6 +696,10 @@ def _gate_from_dict(data: dict[str, Any]) -> GateResult:
         # from stored evidence, so a field that skipped this codec would be lost
         # the moment the row was re-read.
         worktree_writes=tuple(data.get("worktree_writes", ())),
+        # Absent means nobody declared this gate a writer, which is the honest
+        # reading of any row written before the `writes:` key existed — and of
+        # every row a manifest that declares nothing will ever produce.
+        writes_declared=bool(data.get("writes_declared", False)),
     )
 
 

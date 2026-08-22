@@ -380,11 +380,15 @@ _PROMPTS: dict[str, str] = {
         "max_concurrent_nodes, optional)"
     ),
     "forge": "forge this repository is on (optional)",
+    "writes": (
+        "gates that write on purpose (YAML mapping of gate name to true, "
+        "optional)"
+    ),
 }
 
 #: Keys an empty answer omits rather than defaults.  Each is additive: a repo
 #: that declares none of them is a complete manifest.
-_OPTIONAL_KEYS = ("timeouts", "standards", "roadmap", "forge")
+_OPTIONAL_KEYS = ("timeouts", "standards", "roadmap", "forge", "writes")
 
 #: Spelled as a constant only because `tests/test_ergane_cli.py`'s guard against
 #: a hardcoded list of CLI noun names matches a bracket followed by any quoted
@@ -512,6 +516,11 @@ def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
     }
     if config.timeouts:
         defaults["timeouts"] = dict(config.timeouts)
+    if config.writes:
+        # Offered back so a re-run reconciles the declaration rather than
+        # dropping it: a repo whose lockfile gate is declared would otherwise
+        # come out of `ergane init` with that gate refused again (084 FR-009).
+        defaults["writes"] = dict(config.writes)
     if config.standards is not None:
         defaults["standards"] = config.standards
     if config.roadmap is not None:
@@ -578,6 +587,8 @@ def _build_defaults(repo_root: Path) -> dict[str, Any]:
         defaults[_ROADMAP_KEY] = existing[_ROADMAP_KEY]
     if "forge" in existing:
         defaults["forge"] = existing["forge"]
+    if "writes" in existing:
+        defaults["writes"] = existing["writes"]
     return defaults
 
 

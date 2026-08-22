@@ -184,6 +184,7 @@ def answers_for(slug: str) -> list[str]:
         "main",  # landing_branch
         "",  # roadmap dials (omitted; 034/US6)
         "",  # forge (omitted; 049/US5 — absent means github)
+        "",  # writes (omitted; 084/US3 — absent means nothing declared)
         slug,
     ]
 

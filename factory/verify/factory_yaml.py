@@ -109,6 +109,7 @@ _TOP_LEVEL_KEYS = (
     "landing_branch",
     "roadmap",
     "forge",
+    "writes",
 )
 
 #: Keys that only schema v2 recognises; v1 refuses them as unknown (US1-S6).
@@ -193,6 +194,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     runtime = _read_runtime(document, source)
     gates = _read_gates(document, source, version)
     timeouts = _read_timeouts(document, gates, source)
+    writes = _read_writes(document, gates, source)
     standards = _read_standards(document, source)
     landing_branch = _read_landing_branch(document, source)
     roadmap = _read_roadmap(document, source)
@@ -205,6 +207,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         runtime=runtime,
         gates=gates,
         timeouts=timeouts,
+        writes=writes,
         standards=standards,
         landing_branch=landing_branch,
         roadmap=roadmap,
@@ -399,6 +402,58 @@ def _read_timeouts(
                 source=source,
             )
     return dict(timeouts)
+
+
+def _read_writes(
+    document: Mapping[Any, Any], gates: Mapping[str, str], source: str
+) -> dict[str, bool]:
+    """Read the gates this repo declares as legitimate writers (084 FR-009).
+
+    The same position, shape and sparseness `timeouts:` has, for the same
+    reason: the declaration belongs to a gate, so it is written against the gate
+    by name rather than as a repo-wide switch. Absent is "nothing declared", and
+    so is `false` — a key with one position would let a repo turn off the whole
+    check by naming a gate at all.
+
+    The `false` entries are kept rather than filtered. A manifest that spells
+    out a declaration it has retired is telling its next reader something, and
+    dropping it here would make `ergane init` re-runs rewrite the operator's
+    manifest to say less than it said.
+    """
+    if "writes" not in document:
+        return {}
+    writes = document["writes"]
+    if not isinstance(writes, Mapping):
+        raise FactoryConfigError(
+            "writes",
+            f"declares `writes: {writes!r}`; it must be a mapping of gate name "
+            "to a boolean saying whether that gate writes on purpose",
+            source=source,
+        )
+
+    for name, declared in writes.items():
+        if name not in gates:
+            # A declaration that silently applied to nothing would be worse than
+            # no declaration: the operator would read a manifest that says the
+            # gate is covered, and the node would refuse it anyway (FR-011).
+            raise FactoryConfigError(
+                "writes",
+                f"declares writes for {name!r}, which this manifest does not "
+                f"declare as a gate; declared gates are {_names(gates)}",
+                source=source,
+            )
+        # `type(...) is not bool` rather than `isinstance`, for the reason
+        # `_read_timeouts` spells its own check exactly: `isinstance(True, int)`
+        # is true, so the loose forms of these two checks each accept the
+        # other's values.
+        if type(declared) is not bool:
+            raise FactoryConfigError(
+                "writes",
+                f"gives gate {name!r} the writes declaration {declared!r}; it "
+                "must be `true` or `false`",
+                source=source,
+            )
+    return dict(writes)
 
 
 def _read_standards(document: Mapping[Any, Any], source: str) -> str | None:

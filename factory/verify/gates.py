@@ -194,11 +194,20 @@ class CandidateOutcome:
 
 @dataclass(frozen=True)
 class _AcceptedConfig:
-    """A candidate acceptance: the subset of the protocol the runner consumes."""
+    """A candidate acceptance: the subset of the protocol the runner consumes.
+
+    "The subset the runner consumes" is the whole hazard: a field the manifest
+    parser reads and the parser CLI emits still arrives here as nothing unless
+    it is named. `writes` is carried for that reason (084 FR-012) — the runner
+    this shape feeds is the one a worktree carrying its own parser selects,
+    which is every Ergane node, so a declaration that stopped at
+    `FactoryConfig` would be parsed, stored, emitted and never read.
+    """
 
     kind: str = "accepted"
     gates: dict[str, str] | None = None
     timeouts: dict[str, int] | None = None
+    writes: dict[str, bool] | None = None
 
 
 @dataclass(frozen=True)
@@ -961,6 +970,7 @@ def _interpret_candidate(
 
     gates_view = document.get("gates")
     timeouts_view = document.get("timeouts", {})
+    writes_view = document.get("writes", {})
 
     if not isinstance(gates_view, dict) or not gates_view:
         return _CannotRun(reason="protocol gates mapping is empty")
@@ -978,9 +988,19 @@ def _interpret_candidate(
             reason="protocol timeouts are not str-to-positive-int"
         )
 
+    # `type(...) is not bool` for the reason the manifest parser spells the same
+    # check that way: `isinstance(True, int)` is true, so a loose check here
+    # would read a candidate's `writes: {test: 1}` as a declaration.
+    if not isinstance(writes_view, dict) or not all(
+        isinstance(name, str) and type(declared) is bool
+        for name, declared in writes_view.items()
+    ):
+        return _CannotRun(reason="protocol writes are not str-to-bool")
+
     return _AcceptedConfig(
         gates=dict(gates_view),
         timeouts=dict(timeouts_view),
+        writes=dict(writes_view),
     )
 
 
@@ -1164,11 +1184,13 @@ def run_gates(
     if isinstance(interpreted, _AcceptedConfig):
         gates_view = interpreted.gates or {}
         timeouts_view = interpreted.timeouts or {}
+        writes_view = interpreted.writes or {}
         return _run_gate_list(
             worktree,
             manifest,
             gates_view,
             timeouts_view,
+            writes_view,
             executor=backend,
             timeout_overrides=timeout_overrides,
             concurrency_limiter=concurrency_limiter,
@@ -1267,13 +1289,22 @@ def _run_gate_list(
     manifest: Path,
     gates_view: Mapping[str, str],
     timeouts_view: Mapping[str, int],
+    writes_view: Mapping[str, bool] | None = None,
     *,
     executor: GateExecutor,
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
 ) -> list[GateResult]:
-    """Run gates from a JSON view (candidate acceptance or fallback)."""
+    """Run gates from a JSON view (candidate acceptance or fallback).
+
+    `writes_view` is the third view lifted off the candidate acceptance (084
+    FR-012): which gates the manifest declared as legitimate writers. It is
+    defaulted rather than required because a caller holding only gates and
+    timeouts is holding a manifest that declared nothing, which is what an
+    absent `writes:` block means everywhere else.
+    """
     backend = executor
+    declared = dict(writes_view or {})
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
     limiter = (
@@ -1293,7 +1324,12 @@ def _run_gate_list(
             env=env,
         )
         result, before = _run_watched(
-            invocation, backend=backend, limiter=limiter, before=before, env=env
+            invocation,
+            backend=backend,
+            limiter=limiter,
+            before=before,
+            env=env,
+            writes_declared=declared.get(name, False),
         )
         results.append(result)
     return results
@@ -1309,6 +1345,10 @@ def _run_gate_list_from_config(
 ) -> list[GateResult]:
     """Run gates from an in-process FactoryConfig (today's fallback path)."""
     backend = executor
+    # `getattr` rather than an attribute read: this runner is also handed
+    # config objects a caller built, and a shape that predates 084 declares
+    # nothing rather than failing here.
+    declared = dict(getattr(config, "writes", None) or {})
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
     limiter = (
@@ -1328,7 +1368,12 @@ def _run_gate_list_from_config(
             env=env,
         )
         result, before = _run_watched(
-            invocation, backend=backend, limiter=limiter, before=before, env=env
+            invocation,
+            backend=backend,
+            limiter=limiter,
+            before=before,
+            env=env,
+            writes_declared=declared.get(name, False),
         )
         results.append(result)
     return results
@@ -1341,6 +1386,7 @@ def _run_watched(
     limiter: GateConcurrencyLimiter,
     before: TreeSnapshot,
     env: Mapping[str, str],
+    writes_declared: bool = False,
 ) -> tuple[GateResult, TreeSnapshot]:
     """Run one gate and report what running it did to the worktree (084 FR-001).
 
@@ -1363,6 +1409,11 @@ def _run_watched(
     and not the factory's bookkeeping. The "after" snapshot is returned so it
     becomes the next gate's "before": N gates cost N+1 snapshots, not 2N, and
     every path is attributed to exactly one gate.
+
+    `writes_declared` says the manifest named this gate as a legitimate writer
+    (084 FR-010). It is decided by the two runners, which is where the manifest
+    is, and passed down rather than looked up here: the snapshot is taken and
+    the paths are recorded identically either way, and only the verdict moves.
     """
     peers = limiter.acquire()
     try:
@@ -1378,6 +1429,7 @@ def _run_watched(
         peers,
         worktree_writes=change.paths,
         snapshot_error=change.error,
+        writes_declared=writes_declared,
     )
     # Carried forward even when it is an error: a gate that ran while the check
     # had no readable baseline cannot be vouched for either, and fail-closed is
@@ -1406,6 +1458,7 @@ def _to_result(
     *,
     worktree_writes: tuple[str, ...] = (),
     snapshot_error: str = "",
+    writes_declared: bool = False,
 ) -> GateResult:
     """Turn one execution into the evidence the verdict truth table reads.
 
@@ -1428,12 +1481,23 @@ def _to_result(
     is a tree it may not report as clean (FR-006). Git's own message joins the
     output tail rather than replacing it: the gate's output is where the gate's
     explanation is.
+
+    `writes_declared` is the target repo's manifest saying this gate writes on
+    purpose (084 FR-010), and it moves exactly one thing: a gate that succeeded
+    and wrote keeps PASS instead of being demoted. It does not move the
+    recording — the paths are still on the result, flagged declared, because an
+    opt-out that omitted them would be an opt-out nobody could see. It does not
+    cover a snapshot the check could not read either: declaring what a gate
+    writes is not a claim about a tree git refused, and fail-closed is this
+    module's rule wherever the evidence is missing rather than merely expected.
     """
     if outcome.timed_out:
         status, exit_code = GateStatus.TIMEOUT, None
     elif outcome.exit_code != 0:
         status, exit_code = GateStatus.FAIL, outcome.exit_code
-    elif worktree_writes or snapshot_error:
+    elif snapshot_error:
+        status, exit_code = GateStatus.DIRTIED_WORKTREE, 0
+    elif worktree_writes and not writes_declared:
         status, exit_code = GateStatus.DIRTIED_WORKTREE, 0
     else:
         status, exit_code = GateStatus.PASS, 0
@@ -1452,4 +1516,5 @@ def _to_result(
         output_tail=tail,
         concurrent_gates=concurrent_gates,
         worktree_writes=worktree_writes,
+        writes_declared=writes_declared,
     )
