@@ -1,5 +1,9 @@
 ---
 state: landed
+fixes:
+  - install/the-sandbox-mount-set-is-aarch64-only-so-no-agent-can-exec-on-x86-64
+  - verify/an-exec-failure-before-the-agents-first-token-is-charged-to-the-ladder
+  - interpreter/specs-root-is-compiled-relative-and-resolved-against-the-workers-cwd
 # ATTESTED landed 2026-08-20 11:09 AM CT. All three stories observed on
 # ergane-buildout: US1 f4bd92e, US2 65ad4d0, US3 1046c2c.
 #

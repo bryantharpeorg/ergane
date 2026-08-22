@@ -1,5 +1,8 @@
 ---
 state: landed
+fixes:
+  - verify/a-landing-rejection-caused-by-a-sibling-landing-is-priced-as-a-code-defect
+  - mergequeue/a-reset-epic-is-blocked-by-its-own-stale-pr-and-remote-branch
 # ATTESTED landed 2026-08-20 7:35 PM CT. All three stories observed on
 # ergane-buildout with `ergane spec landed --default-branch ergane-buildout`:
 # US1 9274625 (PR #247), US2 4eb31f5 (PR #250), US3 9537643 (PR #251).

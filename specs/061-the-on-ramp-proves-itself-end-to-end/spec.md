@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - verify/the-default-gate-is-a-no-op-and-readiness-reports-it-green
 # Attested landed 2026-08-21 (10:00 AM CT), 4/4. US1 83f0253f1506 (#224),
 # US2 b4ebc30b72bf (#226), US3 e5cb0e95dedc (#264), US4 c678c11191f7 (#266) —
 # all four observed on ergane-buildout by

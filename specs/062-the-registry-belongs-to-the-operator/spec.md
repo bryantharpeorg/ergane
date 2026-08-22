@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - interpreter/persona-skills-are-parsed-validated-and-never-read
 # ATTESTED landed 2026-08-19 5:05 PM CT by an operator session, on git evidence,
 # after the epic completed 3/3 on the roadmap. `ergane spec landed
 # specs/062-the-registry-belongs-to-the-operator --default-branch ergane-buildout`

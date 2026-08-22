@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - hardening/the-boundary-detector-files-a-sibling-nodes-pytest-cache-as-this-attempts-escape
 # Attested landed 2026-08-21 (10:00 AM CT), 5/5. US1 4411984207b5 (#259),
 # US2 73fedb5361b5 (#260), US3 67a91c2a8ab6 (#262), US4 e5d4f26d6b77 (#261),
 # US5 669006d63adc (#265) — all five observed on ergane-buildout by

@@ -1,5 +1,8 @@
 ---
 state: landed
+fixes:
+  - interpreter/a-null-escalation-child-crashes-the-landing-path-and-kills-the-node
+  - operator/build-reset-takes-a-graph-path-where-every-sibling-verb-takes-an-epic-id
 # ATTESTED landed 2026-08-20 8:20 PM CT. All three stories observed on
 # ergane-buildout: US1 399fa7d (PR #245), US2 0794b1f (PR #252), US3 a76c0ee
 # (PR #249).

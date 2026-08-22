@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - interpreter/ci-failure-never-reaches-an-agent
 # ATTESTED landed 2026-08-19 10:12 PM CT. Both stories are observed-landed on
 # ergane-buildout -- US1 at 476713a (PR #235, 01:49Z), US2 at 225cb31 (PR #236,
 # 02:25Z) -- confirmed with `ergane spec landed --default-branch ergane-buildout`.

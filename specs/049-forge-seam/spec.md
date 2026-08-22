@@ -1,5 +1,7 @@
 ---
 state: landed
+fixes:
+  - ci/the-adapter-conformance-suite-is-a-hardcoded-list-of-one
 # Attested landed 2026-08-16 by an operator session, after `ergane spec landed
 # specs/049-forge-seam --default-branch ergane-buildout` observed every
 # story in git: US1 fde4309d, US2 784c03ba, US3 6ca72111, US4 0f8f6b36, US5 63760c17, US6 1bfc8c8b.
