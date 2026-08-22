@@ -480,6 +480,15 @@ class EpicInput:
     config: VerificationConfig = VerificationConfig()
     poll_interval_s: int = DEFAULT_POLL_INTERVAL_S
     landing_config: LandingConfig = LandingConfig()
+    #: 081-US3: which of `landing_config`'s fields the operator actually set, by
+    #: name. A `LandingConfig` is five values with no memory of where each came
+    #: from, so an epic running `poll_interval_s=60` cannot say whether that is
+    #: the operator's number or nobody's — and FR-009 turns on exactly that
+    #: distinction. Built by `factory/cli/landing.py:landing_overrides_from_args`
+    #: at the command that typed the flags, carried unread by the workflow, and
+    #: reported back by `epic_status`. Empty means "nothing was set", which is
+    #: also what every payload written before this story says.
+    landing_overrides: tuple[str, ...] = ()
     #: 023 FR-003. The verification-step order the child epic must execute. It
     #: is part of dispatch so the operator clone's manifest pins it; a node
     #: worktree cannot move it. Defaults to today's order so every pre-023
@@ -586,6 +595,16 @@ class EpicStatus:
     #: boot and carried unchanged through the epic's life. `None` when the worker
     #: recorded none.
     worker_revision: str | None = None
+    #: 081-US3 (FR-008): the landing dials this epic is actually running on —
+    #: the merge-queue knobs it was dispatched with, not the code defaults a
+    #: reader would otherwise have to assume. `None` until `run` records them,
+    #: which is the answer a query that lands before the epic starts gets; a
+    #: reader that cannot get them degrades rather than guessing (FR-010).
+    landing_config: LandingConfig | None = None
+    #: 081-US3 (FR-009): which of those dials the operator set, by name. The
+    #: config above cannot say — 60 is 60 whoever chose it — and telling "set to
+    #: 60" from "defaulted to 60" is the whole value of the reading.
+    landing_overrides: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -625,6 +644,13 @@ class EpicWorkflow:
         #: captured once at worker boot and supplied in `EpicInput`. `None` when
         #: the worker predates this story or runs outside a git checkout.
         self._worker_revision: str | None = None
+        #: 081-US3: the landing dials this epic was dispatched with, and which of
+        #: them the operator named, recorded at the top of `run` so `epic_status`
+        #: can report them without holding the request. `None` until then: a
+        #: query that arrives before the epic starts has no dials to report, and
+        #: saying so is honester than answering with the code defaults.
+        self._landing_config: LandingConfig | None = None
+        self._landing_overrides: tuple[str, ...] = ()
 
         #: The epic's persona snapshot: one resolved entry per persona any
         #: attempt of this epic may be built for — every node's persona, the
@@ -741,6 +767,8 @@ class EpicWorkflow:
                 for node_id, record in self._nodes.items()
             },
             worker_revision=self._worker_revision,
+            landing_config=self._landing_config,
+            landing_overrides=self._landing_overrides,
         )
 
     # --- the main loop (R10) -------------------------------------------------
@@ -759,6 +787,13 @@ class EpicWorkflow:
         # worker boot, so the query answer can report the worker's revision without
         # re-reading the tree (which would always report the CLI's revision).
         self._worker_revision = request.worker_revision
+        # 081-US3 (FR-008): the dials this epic will land on, recorded where the
+        # query can reach them. Recorded rather than re-derived: this is the same
+        # object `_land`, `_ride_landing` and the classifier are handed, so the
+        # reading an operator gets is the configuration those paths run on and
+        # cannot drift from it.
+        self._landing_config = request.landing_config
+        self._landing_overrides = tuple(request.landing_overrides)
         # The concurrency cap is validated here as well as in the CLI (FR-002):
         # `EpicInput` can be constructed without the CLI, so CLI-only validation
         # is not validation. A non-positive cap is a wiring error, not a dispatch

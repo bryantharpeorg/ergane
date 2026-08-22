@@ -23,7 +23,10 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
 
 from factory.activities.merge_activities import onboard_target_repo
-from factory.cli.landing import landing_config_from_args
+from factory.cli.landing import (
+    landing_config_from_args,
+    landing_overrides_from_args,
+)
 from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.controlplane.resolve import resolve_temporal_target
 from factory.mergequeue.forge import resolve_forge_for_repo
@@ -553,6 +556,7 @@ def start_command(args: argparse.Namespace) -> int:
             proxy_url,
             args.max_concurrent_nodes,
             landing_config=landing_config_from_args(args),
+            landing_overrides=landing_overrides_from_args(args),
         )
     )
 
@@ -563,6 +567,7 @@ async def _start_epic(
     max_concurrent_nodes: int = 1,
     *,
     landing_config: LandingConfig | None = None,
+    landing_overrides: tuple[str, ...] = (),
 ) -> int:
     client = await _connect()
 
@@ -593,6 +598,9 @@ async def _start_epic(
                 proxy_url=proxy_url,
                 max_concurrent_nodes=max_concurrent_nodes,
                 landing_config=landing_config,
+                # 081-US3 (FR-009): which of them the operator named, so the
+                # epic's status can tell a set dial from a defaulted one.
+                landing_overrides=landing_overrides,
             ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,

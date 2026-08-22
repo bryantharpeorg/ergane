@@ -40,6 +40,7 @@ from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
 from factory.cli.landing import (
     add_landing_dial_flags,
     landing_config_from_args,
+    landing_overrides_from_args,
 )
 from factory.cli.promotion import (
     add_promotion_persona_flag,
@@ -272,6 +273,10 @@ async def roadmap_start_command(args: argparse.Namespace) -> int:
         # dispatched with. `tests/test_scheduled_epics_carry_the_dials.py`
         # proves both halves.
         landing_config=landing_config_from_args(args),
+        # 081-US3 (FR-009): and which of them were typed here, so an operator
+        # reading a child epic's status can tell this roadmap's choice from the
+        # code default it happens to equal.
+        landing_overrides=landing_overrides_from_args(args),
         # The only field of `VerificationConfig` a roadmap's operator sets: the
         # rest of every child's ladder is read from the target clone's manifest
         # at dispatch (023 US2), and this rides alongside it as an overlay the

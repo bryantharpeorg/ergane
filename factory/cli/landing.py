@@ -14,12 +14,20 @@ and `ergane roadmap start` must offer *one* set of flags with one spelling, one
 refusal and one default. Two copies drift, and the drift is invisible until an
 operator types a flag on the verb that was not updated.
 
-Three things, and deliberately nothing else:
+Four things, and deliberately nothing else:
 
 - `LANDING_DIAL_FLAGS` — the map from flag to `LandingConfig` field. One
   declaration, so "which dials exist" is answerable without reading a parser.
 - `add_landing_dial_flags` — the declaration on one start verb's parser.
 - `landing_config_from_args` — the assembler.
+- `landing_overrides_from_args` — which dials the operator actually typed
+  (081-US3). The assembler above deliberately loses that: a `LandingConfig` is
+  five values with no memory of where each came from, and `poll_interval_s=60`
+  is the same object whether the operator typed it or never mentioned it. This
+  is the other half, kept beside the config rather than inside it, and it is
+  what lets `ergane build status` tell "set to 60" from "defaulted to 60"
+  (FR-009) instead of guessing by comparing against the defaults — a guess that
+  is wrong in exactly the case the operator is checking.
 
 **No default is written here.** The overrides are built from what the operator
 actually typed and everything else is left to the dataclass, so there is no
@@ -174,8 +182,8 @@ def add_landing_dial_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def landing_config_from_args(args: Any) -> LandingConfig:
-    """The dials the operator typed, over today's values for the ones they did not.
+def _typed_dials(args: Any) -> dict[str, Any]:
+    """Every dial the operator actually typed, by `LandingConfig` field name.
 
     Read with `getattr(..., None)` rather than by attribute, and that is load
     bearing rather than defensive: `start_command` is called with hand-built
@@ -183,10 +191,28 @@ def landing_config_from_args(args: Any) -> LandingConfig:
     predates these flags means "the operator said nothing" — the same answer as
     a flag left off the command line — not an `AttributeError` at dispatch.
     """
-    overrides = {
+    typed = {
         field: getattr(args, flag.lstrip("-").replace("-", "_"), None)
         for flag, field in LANDING_DIAL_FLAGS.items()
     }
-    return LandingConfig(
-        **{field: value for field, value in overrides.items() if value is not None}
-    )
+    return {field: value for field, value in typed.items() if value is not None}
+
+
+def landing_config_from_args(args: Any) -> LandingConfig:
+    """The dials the operator typed, over today's values for the ones they did not."""
+    return LandingConfig(**_typed_dials(args))
+
+
+def landing_overrides_from_args(args: Any) -> tuple[str, ...]:
+    """The `LandingConfig` fields the operator set, in declaration order (081-US3).
+
+    Names, not values: the values are already in the config beside this, and a
+    second copy of them would be a second thing to keep in step. What travels
+    with the dispatch is only the fact that the operator named each of these,
+    which is the fact a status reading cannot reconstruct from the config alone.
+
+    A dial set to the number that is already its default is in here, and that is
+    the whole point (FR-009): the operator's question is "did my flag reach the
+    epic", not "is this value unusual".
+    """
+    return tuple(_typed_dials(args))

@@ -349,39 +349,40 @@ async def test_a_status_that_cannot_read_the_dials_still_renders_the_epic(
 #
 # Both readings are of the same one-node epic, taken by rendering a live
 # `epic_status` query through `factory/cli/nouns/build.py:render_status` — the
-# exact text `ergane build status <epic-id>` prints — while the epic was
-# running. The only difference between them is the command line that started
-# the epic. Reproduced by the tests above.
+# exact text `ergane build status <epic-id>` prints — while the epic was still
+# running (`execution RUNNING`). The only difference between them is the
+# command line that started the epic. Both are reproduced by the tests above.
 #
 # SET — started with
-# `ergane build start --merge-method rebase --stall-after-s 900 --max-recovery-cycles 3 workgraph.json`:
+# `--merge-method rebase --stall-after-s 900 --max-recovery-cycles 3`:
 #
-#     epic demo-loans  BUILDING  execution RUNNING
+#     epic demo-loans  RUNNING  execution RUNNING
 #     landing dials
-#       --merge-method              rebase  set
-#       --landing-poll-interval-s       60  default
-#       --stall-after-s                900  set
-#       --max-recovery-cycles            3  set
-#       --max-free-rebases               3  default
-#     us1  DISPATCHED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias
+#       --merge-method             rebase  set
+#       --landing-poll-interval-s      60  default
+#       --stall-after-s               900  set
+#       --max-recovery-cycles           3  set
+#       --max-free-rebases              3  default
+#     us1  PASSED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias
 #
-# DEFAULT — started with `ergane build start workgraph.json`, nothing set:
+# DEFAULT — the same epic started with no dial flags at all:
 #
-#     epic demo-loans  BUILDING  execution RUNNING
+#     epic demo-loans  RUNNING  execution RUNNING
 #     landing dials
-#       --merge-method              squash  default
-#       --landing-poll-interval-s       60  default
-#       --stall-after-s               7200  default
-#       --max-recovery-cycles            1  default
-#       --max-free-rebases               3  default
-#     us1  DISPATCHED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias
+#       --merge-method             squash  default
+#       --landing-poll-interval-s      60  default
+#       --stall-after-s              7200  default
+#       --max-recovery-cycles           1  default
+#       --max-free-rebases              3  default
+#     us1  PASSED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias
 #
-#   Read the two together: three dials moved and say so, the two nobody typed
-#   are identical in both readings and say *that*, and every number in the
-#   DEFAULT reading is the value US1's control froze. The comparison is the
-#   evidence — one reading alone proves only that a line was printed.
+#   Read the two together, because the comparison is the evidence and one
+#   reading alone proves only that a line was printed. Three dials moved and say
+#   so; the two nobody typed are identical in both readings and say *that*; and
+#   every number in the DEFAULT reading is the value US1's control froze —
+#   `squash`, `60`, `7200`, `1`, and 069's `3`.
 #
-# DEGRADED — the same epic, rendered from a worker's answer that carries no
+# DEGRADED — the same epic again, rendered from a worker's answer carrying no
 # `landing_config` key (the pre-081 wire, and the shape
 # `test_a_status_that_cannot_read_the_dials_still_renders_the_epic` drives):
 #
@@ -390,6 +391,6 @@ async def test_a_status_that_cannot_read_the_dials_still_renders_the_epic(
 #     us1  MERGED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias
 #
 #   The epic and its node still render (FR-010). The dials are reported as
-#   unread rather than guessed at: a status that printed `squash / 60 / 7200 /
-#   1 / 3` here would be inventing an answer it does not have, which is the
-#   failure mode the whole story exists to end.
+#   unread rather than guessed at: printing `squash / 60 / 7200 / 1 / 3` here
+#   would be inventing the answer, which is the failure mode the whole story
+#   exists to end.

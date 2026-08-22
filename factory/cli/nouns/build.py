@@ -35,7 +35,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from temporalio.client import Client, WorkflowQueryFailedError, WorkflowQueryRejectedError
 from temporalio.exceptions import WorkflowAlreadyStartedError
@@ -75,8 +75,10 @@ from factory.env import (
     resolve_env_path,
 )
 from factory.cli.landing import (
+    LANDING_DIAL_FLAGS,
     add_landing_dial_flags,
     landing_config_from_args,
+    landing_overrides_from_args,
 )
 from factory.cli.nouns import Noun, _open_preflight_client
 from factory.cli.promotion import (
@@ -435,6 +437,7 @@ def render_status(
         f"epic {epic_id}  {document['epic_state']}  "
         f"execution {execution_status}"
     ]
+    lines.extend(_landing_dial_lines(document))
     for node_id, node in nodes.items():
         figure = live.get(node_id)
         spend_token = (
@@ -451,6 +454,76 @@ def render_status(
             f"{_reason_token(node)}"
         )
     return "\n".join(lines)
+
+
+#: What the dial block is headed with, and what a reading that could not be
+#: taken prints instead. Spelled once: the degraded line has to be recognisable
+#: as the same block's absence rather than as a new kind of message.
+_DIALS_HEADER = "landing dials"
+_DIALS_UNAVAILABLE = f"{_DIALS_HEADER}  unavailable"
+
+
+def _landing_dial_lines(document: Mapping[str, Any]) -> list[str]:
+    """The landing dials in force, one per line, each said to be set or defaulted.
+
+    081-US3, FR-008/FR-009. US1 made these settable and US2 carried them to a
+    scheduled epic's children; neither is falsifiable from outside the process
+    that typed the flag, which is the shape of the last five readiness defects.
+    This is the reading that makes them falsifiable — printed under the epic's
+    own line, before the nodes, because it is a property of the epic rather than
+    of any node.
+
+    The provenance is read from the epic's `landing_overrides` — the field names
+    its operator actually typed, carried from the command that typed them —
+    never by comparing a value against `LandingConfig()`. That comparison is the
+    obvious implementation and it is wrong in precisely the case the operator is
+    checking: an operator who typed `--landing-poll-interval-s 60` is asking
+    whether their flag arrived, and "60, same as the default" does not answer it.
+
+    Flags rather than field names, because the flag is what the operator typed
+    and what they would retype; `LANDING_DIAL_FLAGS` is the CLI's own map, so a
+    dial added to the model with a flag behind it appears here for free and one
+    added without a flag is US1's failing test, not a silently missing line.
+
+    FR-010 governs everything below: this is a *reading*, and no shape of it may
+    cost the operator the epic and node lines they came for. The document is
+    whatever the worker sent — a worker that predates this story sends no dials
+    at all, and one queried before `run` recorded them sends `null` — so a
+    reading that cannot be taken degrades to one honest line. It is never
+    guessed: printing the code defaults for an epic whose dials could not be
+    read would invent the exact answer this story exists to stop inventing.
+    """
+    try:
+        config = document.get("landing_config")
+        if not isinstance(config, Mapping):
+            return [_DIALS_UNAVAILABLE]
+        overrides = document.get("landing_overrides") or ()
+        if isinstance(overrides, (str, bytes)) or not isinstance(overrides, Iterable):
+            return [_DIALS_UNAVAILABLE]
+        typed = set(overrides)
+
+        dials: list[tuple[str, str, str]] = []
+        for flag, field in LANDING_DIAL_FLAGS.items():
+            if field not in config:
+                # A dial the worker did not report is a dial this CLI cannot
+                # read. Half a block would read as a complete one.
+                return [_DIALS_UNAVAILABLE]
+            dials.append(
+                (flag, str(config[field]), "set" if field in typed else "default")
+            )
+    except Exception:
+        # The last resort, and the reason it is broad: every branch above reads
+        # a decoded payload built by a worker this CLI does not control, and
+        # spec 052's rule is that `ergane build status` degrades rather than
+        # breaks. A malformed dial costs its own line and nothing else.
+        return [_DIALS_UNAVAILABLE]
+
+    flag_width = max(len(flag) for flag, _, _ in dials)
+    value_width = max(len(value) for _, value, _ in dials)
+    return [_DIALS_HEADER] + [
+        f"  {flag.ljust(flag_width)}  {value.rjust(value_width)}  {provenance}"
+        for flag, value, provenance in dials
+    ]
 
 
 def _reason_token(node: Mapping[str, Any]) -> str:
@@ -515,6 +588,11 @@ def start_command(args: argparse.Namespace) -> int:
     """
     promotion_persona = checked_promotion_persona(args.promotion_persona)
     landing_config = landing_config_from_args(args)
+    # 081-US3 (FR-009): the names beside the values. Read here, from the same
+    # namespace and in the same breath, because this is the only place in the
+    # system that still knows the difference between a dial the operator typed
+    # and a dial that happens to equal its default.
+    landing_overrides = landing_overrides_from_args(args)
 
     try:
         graph = load_workgraph(args.graph)
@@ -555,6 +633,7 @@ def start_command(args: argparse.Namespace) -> int:
             config=config,
             verify_order=verify_order,
             landing_config=landing_config,
+            landing_overrides=landing_overrides,
         )
     )
 
@@ -597,6 +676,7 @@ async def _start_epic(
     config: VerificationConfig | None = None,
     verify_order: tuple[str, ...] | None = None,
     landing_config: LandingConfig | None = None,
+    landing_overrides: tuple[str, ...] = (),
 ) -> int:
     client = await _connect()
 
@@ -638,6 +718,12 @@ async def _start_epic(
                 # 081-US1 (FR-005). Until this story the argument list stopped
                 # one line above, so a hand-started epic ran the merge queue's
                 # code defaults whatever its operator wanted.
+                #
+                # 081-US3 (FR-009): and the line below is why the epic can say
+                # which of those dials were its operator's doing. A caller that
+                # names none — the default — dispatches an epic that reports
+                # every dial as defaulted, which is what it is.
+                landing_overrides=landing_overrides,
             ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,
