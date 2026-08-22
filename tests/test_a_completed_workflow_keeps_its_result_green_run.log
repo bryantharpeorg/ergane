@@ -1,0 +1,17 @@
+# SC-001 second half + SC-002: both tests GREEN after the fix
+#
+# Tree: factory/worker.py:266 `-> Any`, :278 `return await self.next.execute_workflow(input)`.
+# Command: uv run pytest tests/test_a_completed_workflow_keeps_its_result.py -v
+
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /home/admin/code/ergane/.factory/worktrees/086-a-completed-workflow-keeps-its-result/us1/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/admin/code/ergane/.factory/worktrees/086-a-completed-workflow-keeps-its-result/us1
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, anyio-4.14.2
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/test_a_completed_workflow_keeps_its_result.py::test_the_client_observes_the_value_the_workflow_returned PASSED [ 50%]
+tests/test_a_completed_workflow_keeps_its_result.py::test_a_workflow_that_returns_none_is_observed_as_none PASSED [100%]
+
+============================== 2 passed in 0.42s ===============================

@@ -1,0 +1,29 @@
+# SC-001, first half: the round-trip test RED against the unfixed tree
+#
+# Tree: interceptor at factory/worker.py:265-270 awaits without returning.
+# Command: uv run pytest tests/test_a_completed_workflow_keeps_its_result.py -q
+
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+___________ test_the_client_observes_the_value_the_workflow_returned ___________
+
+env = <temporalio.testing._workflow._EphemeralServerWorkflowEnvironment object at 0xf612d89e8b00>
+
+    async def test_the_client_observes_the_value_the_workflow_returned(
+        env: WorkflowEnvironment,
+    ) -> None:
+        """US1-S1 / FR-002: a non-None result survives the production interceptor list."""
+        async with _scratch_worker(env):
+            observed = await env.client.execute_workflow(
+                _EchoWorkflow.run,
+                ECHO_RESULT,
+                id="result-kept-echo",
+                task_queue=SCRATCH_QUEUE,
+            )
+>       assert observed == ECHO_RESULT
+E       AssertionError: assert None == {'epic': '086', 'kept': True}
+
+tests/test_a_completed_workflow_keeps_its_result.py:112: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_a_completed_workflow_keeps_its_result.py::test_the_client_observes_the_value_the_workflow_returned
+1 failed, 1 passed in 0.45s

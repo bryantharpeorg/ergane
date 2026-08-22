@@ -59,6 +59,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 from temporalio.client import Client
 from temporalio.worker import Interceptor, Worker
@@ -262,12 +263,19 @@ class _WorkerRevisionInterceptor(Interceptor):
         revision = self._revision
 
         class _Inbound(WorkflowInboundInterceptor):
-            async def execute_workflow(self, input: ExecuteWorkflowInput) -> None:
+            async def execute_workflow(self, input: ExecuteWorkflowInput) -> Any:
+                # `-> Any` and the `return` are both the SDK base class's own
+                # declaration, restored: an inbound interceptor sits on the path
+                # the workflow's result travels back along, so one that awaits
+                # without returning completes *every* workflow this worker runs
+                # with None. That is invisible here — the injection below still
+                # works — and fatal one seam out, where the parent reads the
+                # child's result (086-US1).
                 if input.type == "EpicWorkflow" and input.args:
                     original = input.args[0]
                     if getattr(original, "worker_revision", None) is None:
                         input.args = (replace(original, worker_revision=revision),)
-                await self.next.execute_workflow(input)
+                return await self.next.execute_workflow(input)
 
         return _Inbound
 
