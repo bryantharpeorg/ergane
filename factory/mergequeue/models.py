@@ -101,7 +101,9 @@ class LandingState(StrEnum):
     `REJECTED` is the recovery-eligible rejection (checks_failed / conflict): it
     may return to `ENQUEUED` after a successful recovery cycle (FR-006's bounded
     cycle). `KILLED` is terminal — operator kill, dequeue-by-human, escalation
-    default, epic kill — and nothing leaves it.
+    default, epic kill, and (078-US3) a landing poll that stopped, which is the
+    same fact stated from the factory's side: nothing is driving this landing
+    any more. Nothing leaves it, and the branch outlives it in every case.
     """
 
     PR_OPEN = "PR_OPEN"

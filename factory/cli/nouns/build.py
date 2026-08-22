@@ -443,8 +443,29 @@ def render_status(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
             f"attempt {node['attempt']}  {node['branch']}"
             f"{_routing_token(node)}{spend_token}{external_token}"
+            f"{_reason_token(node)}"
         )
     return "\n".join(lines)
+
+
+def _reason_token(node: Mapping[str, Any]) -> str:
+    """Why a node ended, when the ladder did not produce the ending (078-US3).
+
+    `terminal_reason` has been on the record and in the query since 025; what it
+    has never been is *printed*. The case that made the gap cost an evening is a
+    landing poller that stopped — the record knew the poll had died and the
+    status still read `ENQUEUED` — so the reason now ends the node's line
+    (FR-009). Absent for every node that ended the way the ladder said it would,
+    which is nearly all of them.
+
+    Whitespace is flattened because the line is the unit an operator reads. The
+    text is never truncated: the tail of a forge's refusal is usually the half
+    that names the cause.
+    """
+    reason = node.get("terminal_reason")
+    if not reason:
+        return ""
+    return "  reason: " + " ".join(str(reason).split())
 
 
 def _routing_token(node: Mapping[str, Any]) -> str:

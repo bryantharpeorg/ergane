@@ -409,6 +409,34 @@ def _agent_heartbeat_timeout(timeout_s: float) -> timedelta:
     )
 
 
+#: How far down a failure's cause chain `_failure_detail` will walk. A bound
+#: rather than a `while`, because the chain is built by a converter this code
+#: does not own and an operator-facing string is not worth a loop that trusts it.
+_CAUSE_DEPTH = 8
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """The innermost sentence of a failure chain — the one that says why.
+
+    An activity that raises reaches the workflow as an `ActivityError` whose own
+    `str` is the fixed "Activity task failed"; the message an operator needs is
+    the `ApplicationError` underneath it, which carries what the forge (or git,
+    or the proxy) actually said. Walking to the deepest cause that has a message
+    is what makes 078-US3's reason a reason rather than a category. Pure, so it
+    replays identically.
+    """
+    detail = str(exc) or type(exc).__name__
+    cause = exc.__cause__
+    for _ in range(_CAUSE_DEPTH):
+        if cause is None:
+            break
+        text = str(cause)
+        if text:
+            detail = text
+        cause = cause.__cause__
+    return detail
+
+
 @dataclass(frozen=True)
 class EpicInput:
     """One epic's whole dispatch — the workflow's only argument.
@@ -2635,8 +2663,69 @@ class EpicWorkflow:
         )
         record.state = NodeState.ENQUEUED
         self._landing_tasks[node.id] = asyncio.ensure_future(
-            self._poll_landing(graph, record, config)
+            self._ride_landing(graph, record, config)
         )
+
+    async def _ride_landing(
+        self,
+        graph: WorkGraph,
+        record: NodeRecord,
+        config: LandingConfig,
+    ) -> None:
+        """Ride one landing, and say so if the ride stops (078-US3, FR-008/009).
+
+        The observing half of the background poller, and the whole of what this
+        story changes. `_poll_landing` is *spawned* rather than awaited — an
+        epic must go on running its other nodes while a pull request sits in the
+        queue (US3-S5) — and until this wrapper existed nobody read the task's
+        exception. A `poll_landing` that raised left a dead task, a node
+        reporting `ENQUEUED` forever, and an epic parked on a landing nothing
+        was driving. The concurrency was never the defect; the silence was, so
+        the fix observes the failure and keeps the task.
+
+        `except Exception` is deliberate, and draws the same line
+        `_reap_finished` draws: `asyncio.CancelledError` derives from
+        `BaseException`, so the kill path's `task.cancel()` passes straight
+        through and a cancelled poller is never recorded as a stopped one
+        (US3-S4).
+        """
+        try:
+            await self._poll_landing(graph, record, config)
+        except Exception as exc:
+            workflow.logger.exception(
+                "landing poll for node %s stopped; nothing is watching its "
+                "pull request",
+                record.node_id,
+            )
+            self._stop_landing(record, exc)
+
+    def _stop_landing(self, record: NodeRecord, exc: Exception) -> None:
+        """Record a landing that no longer has a poller behind it (FR-008/009).
+
+        Two facts, and the node needs both. The state stops implying that
+        something is still asking the queue about this pull request, and the
+        reason the asking stopped is written where `ergane build status` prints
+        it. The landing is terminal for the same reason the dequeue and stall
+        paths are: the epic is no longer driving it, so parking the main loop on
+        it would only reproduce the hang this story exists to end. The branch
+        outlives the kill, exactly as it does on every other landing-KILLED
+        route — the pull request may still merge on the forge, and nothing here
+        withdraws it.
+
+        What reaches here has already spent the activity's retry budget
+        (`_FAST`'s `_RETRIES`) or was declared non-retryable at the source, so
+        one slow forge call is not a stopped poller (FR-010): a transient
+        failure is retried inside the activity and never becomes an exception
+        this method sees.
+        """
+        landing = record.landing
+        pr = "?" if landing is None or landing.pr_number is None else landing.pr_number
+        record.terminal_reason = (
+            f"landing poll stopped for PR #{pr}: {_failure_detail(exc)}"
+        )
+        record.state = NodeState.KILLED
+        if landing is not None:
+            record.landing = replace(landing, state=LandingState.KILLED)
 
     async def _poll_landing(
         self,
@@ -3236,8 +3325,12 @@ class EpicWorkflow:
         )
         record.state = NodeState.ENQUEUED
         record.last_result = result
+        # 078-US3: the requeue path's poller is observed exactly as the first
+        # one is. This is the site a busy epic runs — every node whose sibling
+        # lands ahead of it comes back through here — so a fix applied only to
+        # `_land` would leave the common case as blind as it was.
         self._landing_tasks[record.node_id] = asyncio.ensure_future(
-            self._poll_landing(graph, record, config)
+            self._ride_landing(graph, record, config)
         )
 
     async def _escalate_landing(
