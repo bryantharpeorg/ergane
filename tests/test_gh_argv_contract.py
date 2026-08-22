@@ -22,6 +22,26 @@ process exit status (FR-001), with the authentication exit kept as acceptance
 (FR-002) so the check stays runnable with no token and no network, and the
 poller's `--json` field set is validated from the value the poller sends
 (FR-003) rather than from a copy.
+
+**This file's verdict is about the `gh` on the asking process's `PATH`, and it
+says so.** That is not a hedge, it is the measurement. `gh`'s version is a
+property of the environment, not of the code, so there are two different
+questions here and only one of them is about the tree:
+
+- *Is the argv malformed?* — a defect in `GhClient`, true on every host. Always
+  a failure.
+- *Does the `gh` this process resolves declare every `--json` field the argv
+  asks for?* — a property of this machine. Named and reported explicitly, never
+  passed over in silence and never charged to the tree.
+
+The second question has a live answer right now: `/usr/bin/gh` in the node's
+environment is 2.45.0 and does not declare `baseRefOid`, which
+`factory/mergequeue/gh.py` `_VIEW_FIELDS` sends; the worker that actually runs
+`poll_landing` resolves a 2.98.0 further up its own `PATH` and answers it fine
+(operator, 2026-08-21, from three live landings: PRs #268, #269, #270). Two
+`gh` binaries, two true answers, one tree. So the gap is reported as what it is
+— this environment being behind the code — and no `gh` version is written into
+a test, because pinning one re-creates the defect this story removes.
 """
 
 from __future__ import annotations
@@ -38,7 +58,11 @@ from typing import Any, Callable, Sequence
 
 import pytest
 
-from factory.mergequeue.gh import _VIEW_FIELDS, GhClient
+from factory.mergequeue.gh import (
+    _VERSION_SENSITIVE_VIEW_FIELDS,
+    _VIEW_FIELDS,
+    GhClient,
+)
 
 TARGET_CLONE = "/srv/target"
 
@@ -291,10 +315,10 @@ def _declared_json_fields(
     return frozenset(fields) or None
 
 
-def _refused_json_fields(
+def _undeclared_json_fields(
     argv: Sequence[str], *, env: dict[str, str] | None = None
-) -> str:
-    """Any `--json` field in the argv that this `gh` does not have, as a message.
+) -> list[str]:
+    """The argv's `--json` fields that the locally resolved `gh` does not declare.
 
     Where `gh` validates `--json` field names relative to its authentication
     check moved between versions: gh 2.98 validates the fields first, so a bad
@@ -303,18 +327,32 @@ def _refused_json_fields(
     at. Reading the field vocabulary `gh` declares gives the same answer on both
     without a credential, so the field set is checked here whenever the run
     itself came back accepting.
+
+    An empty list means "nothing missing" *or* "could not tell" — the vocabulary
+    is unreadable on some hosts, and a check that accuses on ignorance is the
+    deny-everything failure mode wearing a different hat.
     """
     argv = list(argv)
     if "--json" not in argv or argv.index("--json") + 1 >= len(argv):
-        return ""
+        return []
     index = argv.index("--json")
     requested = [field for field in argv[index + 1].split(",") if field]
     declared = _declared_json_fields(argv[:index], env=env)
     if declared is None:
-        return ""
-    missing = [field for field in requested if field not in declared]
+        return []
+    return [field for field in requested if field not in declared]
+
+
+def _undeclared_field_refusal(argv: Sequence[str], missing: Sequence[str]) -> str:
+    """The refusal message for fields this `gh` does not declare, or empty.
+
+    It names the version, because a refused `--json` field is far more often a
+    version gap than a typo and the version is the first thing the reader needs.
+    """
     if not missing:
         return ""
+    argv = list(argv)
+    index = argv.index("--json")
     return (
         f"Unknown JSON field(s) {', '.join(missing)}: the installed gh "
         f"({_gh_version()}) does not declare "
@@ -353,19 +391,90 @@ def _gh_would_refuse(argv: Sequence[str], *, env: dict[str, str] | None = None) 
                 or f"gh exited {completed.returncode} with no output"
             )
 
-    return _refused_json_fields(argv, env=env)
+    return _undeclared_field_refusal(argv, _undeclared_json_fields(argv, env=env))
+
+
+def _local_vocabulary_gap(
+    argv: Sequence[str], refusal: str, *, env: dict[str, str] | None = None
+) -> list[str]:
+    """The fields missing here, when *that alone* is the whole of the refusal.
+
+    Anything else in `refusal` — an unknown flag, an unknown command, any other
+    non-zero exit — returns `[]`, so the split below can never swallow a real
+    malformed argv. The comparison is against the message this file would build
+    for the missing fields, not against a phrase match: prose is what this story
+    stopped classifying on, and it is not sneaking back in one function later.
+    """
+    missing = _undeclared_json_fields(argv, env=env)
+    if missing and refusal == _undeclared_field_refusal(argv, missing):
+        return missing
+    return []
+
+
+def _is_this_host_being_behind(missing: Sequence[str]) -> bool:
+    """Whether every missing field is one the tree declared as merely newer.
+
+    This is the whole difference between "this machine's `gh` is old" and "the
+    tree asks for a field that does not exist", and without it the two are the
+    same observation: a name the local `gh` does not declare. `gh` cannot tell
+    them apart offline — a newer binary's vocabulary is a superset of an older
+    one's, and nothing local says which supersets exist — so the tree says which
+    of its own fields it sends ahead of the field's arrival in `gh`, in
+    `factory/mergequeue/gh.py` `_VERSION_SENSITIVE_VIEW_FIELDS`, next to the set
+    it annotates.
+
+    Everything outside that annotation fails, on every host. A typo has no
+    version to be waiting for.
+    """
+    return bool(missing) and set(missing) <= _VERSION_SENSITIVE_VIEW_FIELDS
+
+
+def _report_local_gh_is_behind_the_tree(gaps: Sequence[str]) -> None:
+    """Degrade explicitly: name the fields, the `gh`, and who is actually wrong.
+
+    This is the environment question, not the code question, so it is neither a
+    pass nor a failure. Passing would be a lie — the fields really are
+    unanswerable here. Failing would pin the suite to whichever `gh` happens to
+    be first on the `PATH` of whoever ran it, which is the same as writing a
+    version number into a test.
+
+    Do not "fix" this by shrinking `_VIEW_FIELDS`. `baseRefOid` is 069-US1's
+    free rebase; without it every landing rejection is priced as the node's own
+    defect. The tree is right and this machine is behind it. The surface that
+    turns this into something an operator is *told* — before an epic parks — is
+    078-US2's forge capability probe, not a red gate here.
+    """
+    pytest.skip(
+        "this environment's gh is behind the tree, which is a fact about the "
+        "machine and not a defect in it: "
+        + "; ".join(gaps)
+        + f". Resolved gh: {_gh_binary()} ({_gh_version()}). The argv is "
+        "well-formed and every other check on it passed."
+    )
 
 
 @pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
 @pytest.mark.parametrize("method_name", _public_command_methods())
 def test_gh_client_method_argv_is_accepted_by_real_gh(method_name: str) -> None:
-    """T015: every command `GhClient` issues is accepted by the real `gh` binary."""
+    """T015: every command `GhClient` issues is accepted by the real `gh` binary.
+
+    A malformed argv fails. An argv this host's `gh` is merely too old to answer
+    is reported as that, by name — see `_report_local_gh_is_behind_the_tree`.
+    """
     failures: list[str] = []
+    gaps: list[str] = []
     for argv in _extract_argvs(method_name):
         refusal = _gh_would_refuse(argv)
-        if refusal:
+        if not refusal:
+            continue
+        missing = _local_vocabulary_gap(argv, refusal)
+        if _is_this_host_being_behind(missing):
+            gaps.append(f"{method_name} sends {', '.join(missing)}, which {refusal}")
+        else:
             failures.append(f"{method_name}: {argv!r}\n{refusal}")
     assert not failures, "\n---\n".join(failures)
+    if gaps:
+        _report_local_gh_is_behind_the_tree(gaps)
 
 
 @pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
@@ -514,6 +623,10 @@ def test_poller_json_field_set_is_validated_as_a_set_from_the_value_it_sends() -
     argument it could not read was inside one of them. So the argv here is built
     by calling `poll_pr` itself, and the `--json` value it carries is asserted to
     be `_VIEW_FIELDS` — the object the poller sends, not a copy of it.
+
+    Everything up to the last two lines is asserted on every host, including the
+    mutation control, so the check is provably live wherever it runs. Only the
+    final verdict on the real field set is environment-dependent, and it says so.
     """
     argvs = _extract_argvs("poll_pr")
     assert len(argvs) == 1, f"poll_pr built {len(argvs)} argvs, expected one"
@@ -523,17 +636,87 @@ def test_poller_json_field_set_is_validated_as_a_set_from_the_value_it_sends() -
         "the checked field set must be the value the poller sends, not a copy"
     )
 
-    # The mutation control: one bad field inside the poller's own value is
-    # caught. Without this the test would pass on a check that never looked.
+    # The mutation control, and the reason a degraded verdict below is still
+    # worth something: one bad field inside the poller's own value is caught
+    # here on every host, on the gh that host has. Without this the test would
+    # pass on a check that never looked.
     poisoned = list(argv)
     poisoned[index + 1] = f"{_VIEW_FIELDS},{_NO_SUCH_JSON_FIELD}"
-    assert _NO_SUCH_JSON_FIELD in _gh_would_refuse(poisoned)
+    poisoned_refusal = _gh_would_refuse(poisoned)
+    assert _NO_SUCH_JSON_FIELD in poisoned_refusal
+    assert _NO_SUCH_JSON_FIELD in _local_vocabulary_gap(poisoned, poisoned_refusal), (
+        "the field-set path must be what refused the poisoned value; if the "
+        "argv was refused for some other reason this control proved nothing"
+    )
 
     refusal = _gh_would_refuse(argv)
+    if not refusal:
+        return
 
-    assert refusal == "", (
-        "the installed gh refuses a field the landing poller sends "
-        f"(factory/mergequeue/gh.py `_VIEW_FIELDS`): {refusal}"
+    missing = _local_vocabulary_gap(argv, refusal)
+    assert _is_this_host_being_behind(missing), (
+        "the landing poller sends a --json field no gh declares and the tree "
+        "does not vouch for as merely new (factory/mergequeue/gh.py "
+        f"`_VERSION_SENSITIVE_VIEW_FIELDS`): {refusal}"
+    )
+    _report_local_gh_is_behind_the_tree(
+        [f"factory/mergequeue/gh.py `_VIEW_FIELDS` sends {', '.join(missing)}: {refusal}"]
+    )
+
+
+@pytest.mark.skipif(_gh_binary() is None, reason="gh is not installed")
+def test_only_a_field_vocabulary_gap_is_charged_to_the_environment() -> None:
+    """T003 (US1-S3): the code/environment split cannot swallow a malformed argv.
+
+    The two tree-facing checks above report a locally-undeclared `--json` field
+    as this machine being behind the tree rather than as a defect in it. That
+    split is only safe if it is narrow, so this is its mutation control, and it
+    runs on every host because both argvs are refused by every `gh`:
+
+    - a field no `gh` has is recognised as a vocabulary gap, and *only* that
+      field is named — the split can see the case it exists for;
+    - an unknown flag is not, however many good `--json` fields ride along with
+      it — so no malformed argv can be reported as somebody else's `gh`;
+    - and neither is excused, because neither is a field the tree vouched for.
+      This last one is what stops the split from becoming a way to make any
+      refused field quietly disappear on an old host.
+    """
+    vocabulary = ["pr", "view", "1", "--json", f"state,{_NO_SUCH_JSON_FIELD}"]
+    malformed = ["pr", "view", "1", "--json", "state", "--ergane-test-unknown-flag"]
+
+    gap = _local_vocabulary_gap(vocabulary, _gh_would_refuse(vocabulary))
+    assert gap == [_NO_SUCH_JSON_FIELD]
+    assert not _is_this_host_being_behind(gap), (
+        "an invented field was excused as this host being out of date; only "
+        "fields the tree names in `_VERSION_SENSITIVE_VIEW_FIELDS` may be"
+    )
+
+    malformed_refusal = _gh_would_refuse(malformed)
+    assert malformed_refusal, "the malformed argv was not refused at all"
+    assert _local_vocabulary_gap(malformed, malformed_refusal) == [], (
+        "an unknown flag was charged to this host's gh version instead of to "
+        f"the argv: {malformed_refusal}"
+    )
+
+
+def test_version_sensitive_fields_are_a_subset_of_what_the_poller_sends() -> None:
+    """T003 (US1-S3, FR-003): the annotation cannot drift into a second field list.
+
+    `_VERSION_SENSITIVE_VIEW_FIELDS` is the one thing allowed to excuse a field
+    the local `gh` will not answer, so it is exactly the thing that must not
+    become a hand-maintained restatement of the field set (078 trap 5). Holding
+    it to a strict subset of `_VIEW_FIELDS` is what keeps it an annotation *on*
+    that value rather than a copy *of* it: it can only ever name fields the
+    poller actually sends, and it may never name all of them.
+
+    This runs with no `gh` at all — it is a fact about the tree, not the host.
+    """
+    sent = {field for field in _VIEW_FIELDS.split(",") if field}
+
+    assert _VERSION_SENSITIVE_VIEW_FIELDS < sent, (
+        "every version-sensitive field must be one the poller sends, and the "
+        "annotation may not swallow the whole set: "
+        f"{sorted(_VERSION_SENSITIVE_VIEW_FIELDS - sent)} not sent"
     )
 
 
@@ -587,7 +770,10 @@ def test_no_skip_in_this_file_is_a_bare_marker() -> None:
     Nothing in this repository passes `-m` in CI or in the gate, so a marked
     test is an unrun test (open finding `live-tier-skips-by-guard-not-marker`).
     Every skip here must therefore be a `skipif` whose condition is computed
-    when the module is imported.
+    when the module is imported, or — for the environment gap reported by
+    `_report_local_gh_is_behind_the_tree` — a `pytest.skip()` *call*, which is
+    a condition evaluated mid-test and cannot be selected away by `-m` either.
+    What is banned is the declared, unconditional form.
     """
     source = Path(__file__).read_text()
 
