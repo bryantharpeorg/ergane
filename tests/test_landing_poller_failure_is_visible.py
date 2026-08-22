@@ -563,27 +563,39 @@ async def test_another_node_runs_while_a_landing_is_still_polling(
 
 # --- T028 [US3] (SC-007): the reading, before and after -----------------------
 #
-# Both readings are of the same epic: one node, its ladder green, its landing
-# enqueued, and a forge that refuses every `poll_landing`. The command is
-# `ergane build status <epic-id>`, rendered by `factory/cli/nouns/build.py`.
+# Both readings are of the same epic and the same forge: one node, its ladder
+# green, its landing enqueued, and a `poll_landing` that refuses every
+# observation. Both were taken by rendering a live `epic_status` query through
+# `factory/cli/nouns/build.py:render_status` — the exact text `ergane build
+# status <epic-id>` prints — once the poll's retry budget was spent. The BEFORE
+# reading was produced by checking out this commit's parent factory code
+# (`git checkout HEAD~1 -- factory/`) and running the identical scenario.
 #
-# BEFORE (this commit's parent, with the same scripted refusal):
+# BEFORE:
 #
 #     epic demo-loans  RUNNING  execution RUNNING
 #     us1  ENQUEUED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias
 #
-#   ...and it says that forever. The poll task is dead, its exception unread;
-#   the epic is parked in `_all_landings_terminal()` waiting for a landing
-#   nothing is driving. The only account of the failure is the worker's log.
+#   ...and it says that for as long as anyone looks. The same run printed, on
+#   stderr and nowhere an operator reads:
+#
+#     Task exception was never retrieved
+#     future: <Task finished name='Task-128 (workflow: EpicWorkflow, id: epic-demo-loans, ...)'
+#       coro=<EpicWorkflow._poll_landing() done, defined at .../factory/workgraph/workflow.py:2641>
+#       exception=ActivityError('Activity task failed')>
+#
+#   That line is the whole defect in Python's own words: the poll task died, its
+#   exception was never retrieved, and the status went on reporting a node being
+#   polled by nobody while the epic parked in `_all_landings_terminal()`.
 #
 # AFTER:
 #
 #     epic demo-loans  COMPLETED  execution COMPLETED
-#     us1  KILLED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias  reason: landing poll stopped for PR #470: gh pr view --json baseRefOid: Unknown JSON field: "baseRefOid"
+#     us1  KILLED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias  reason: landing poll stopped for PR #486: gh pr view --json baseRefOid: Unknown JSON field: "baseRefOid"
 #
-#   The state no longer implies a live poller (FR-008), the reason is on the
-#   line an operator reads (FR-009), and the epic reaches a terminal instead of
-#   parking on a pull request nobody is watching.
+#   The state no longer implies a live poller (FR-008), the reason is on the line
+#   an operator reads and names what the forge said (FR-009), and the epic
+#   reaches a terminal instead of parking on a pull request nobody is watching.
 #
 # Reproduced by `test_the_stopped_poller_names_its_reason_in_the_rendered_status`
 # above, which asserts every load-bearing fragment of the AFTER line.
