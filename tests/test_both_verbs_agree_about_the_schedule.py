@@ -300,6 +300,17 @@ def test_a_starved_schedule_whose_skipped_count_could_not_be_read_says_so(
     )
 
 
+def test_a_single_skipped_tick_is_counted_in_the_singular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The line an operator reads during an outage does not say `1 ticks`."""
+    location = _location(
+        last_action_started_at=_ago(hours=6), skipped_overlap_count=1
+    )
+
+    assert "1 tick skipped" in _schedule_line(_status_block(monkeypatch, location))
+
+
 @pytest.mark.parametrize(
     "ago, phrase",
     [

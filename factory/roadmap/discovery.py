@@ -147,7 +147,7 @@ def _elapsed(seconds: int) -> str:
 
 def render_schedule_line(
     schedule_id: str,
-    state: "RoadmapScheduleState | str",
+    state: RoadmapScheduleState | str,
     *,
     seconds_since_last_start: int | None = None,
     skipped_overlap_count: int | None = None,
@@ -181,7 +181,7 @@ def render_schedule_line(
         else "no tick has ever started"
     )
     skipped = (
-        f"{skipped_overlap_count} ticks skipped"
+        f"{skipped_overlap_count} tick{'' if skipped_overlap_count == 1 else 's'} skipped"
         if skipped_overlap_count is not None
         else "skipped count unknown"
     )
