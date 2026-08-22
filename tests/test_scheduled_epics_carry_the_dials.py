@@ -539,3 +539,101 @@ def test_an_impossible_dial_is_refused_at_the_roadmap_command(
     assert "unrecognized arguments" not in result.stderr, result.stderr
     assert complaint in result.stderr, result.stderr
     assert repr(value) in result.stderr or value in result.stderr, result.stderr
+
+
+# ==============================================================================
+# Runtime evidence (constitution VIII: pasted, not described). 2026-08-22, this
+# worktree, `uv run` at the repo root.
+# ==============================================================================
+#
+# --- SC-006: a roadmap-dispatched child epic carrying an operator-set dial ----
+#
+# Captured by a throwaway module beside this one (deleted after the run) that
+# drives the same harness these tests use and prints the `EpicInput` the
+# roadmap handed `start_child_workflow`:
+#
+#   $ uv run pytest -q -s tests/_evidence_us2.py
+#   $ ergane roadmap start /tmp/.../overnight --target-repo /srv/factory/targets/library \
+#         --stall-after-s 900 --max-recovery-cycles 3
+#   roadmap-overnight
+#
+#   child workflow started: EpicWorkflow id=epic-001-overnight
+#   child epic id:          001-overnight
+#   child EpicInput.landing_config:
+#       merge_method         'squash'
+#       poll_interval_s      60
+#       stall_after_s        900
+#       max_recovery_cycles  3
+#       max_free_rebases     3
+#   .
+#   1 passed in 0.91s
+#
+# The two dials the operator set arrived; the three they did not are today's
+# values, which is FR-002 holding on this path too.
+#
+# --- The suite (FR-006, FR-007, FR-004 on this verb) --------------------------
+#
+#   $ uv run pytest tests/test_scheduled_epics_carry_the_dials.py -v --no-header
+#   collected 9 items
+#
+#   ...::test_a_dial_set_on_the_roadmap_reaches_the_child_epic PASSED   [ 11%]
+#   ...::test_a_roadmap_that_sets_nothing_dispatches_todays_defaults PASSED   [ 22%]
+#   ...::test_a_dial_change_reaches_the_next_dispatch_never_the_running_epic PASSED   [ 33%]
+#   ...::test_every_dispatch_of_one_run_gets_the_dial_that_run_started_with PASSED   [ 44%]
+#   ...::test_no_roadmap_signal_changes_the_dials_of_a_running_roadmap PASSED   [ 55%]
+#   ...::test_no_roadmap_input_site_default_constructs_a_landing_config PASSED   [ 66%]
+#   ...::test_an_impossible_dial_is_refused_at_the_roadmap_command[--stall-after-s-0-...] PASSED   [ 77%]
+#   ...::test_an_impossible_dial_is_refused_at_the_roadmap_command[--landing-poll-interval-s--1-...] PASSED   [ 88%]
+#   ...::test_an_impossible_dial_is_refused_at_the_roadmap_command[--merge-method-cherry-pick-...] PASSED   [100%]
+#
+#   ============================ 9 passed in 1.25s =============================
+#
+# --- The mutation: does any of this actually drive the wiring? ----------------
+#
+# `factory/cli/roadmap.py`'s construction reverted to the bare
+# `landing_config=LandingConfig()` this story removed — the exact line as it
+# stood before — and the suite re-run. Applied, captured, reverted:
+#
+#   mutated: the roadmap builds LandingConfig() bare again
+#   FAILED ...::test_a_dial_set_on_the_roadmap_reaches_the_child_epic
+#   FAILED ...::test_a_dial_change_reaches_the_next_dispatch_never_the_running_epic
+#   FAILED ...::test_every_dispatch_of_one_run_gets_the_dial_that_run_started_with
+#   FAILED ...::test_no_roadmap_input_site_default_constructs_a_landing_config
+#   4 failed, 5 passed in 1.27s
+#
+# The control and the signal case survive the mutation, which is what makes
+# them the control: neither is evidence that anything was wired, and both must
+# hold on either side of this story.
+#
+# --- The surface, as the operator meets it -----------------------------------
+#
+#   $ uv run ergane roadmap start --help
+#     --merge-method METHOD
+#                           how a passing node's pull request lands (merge,
+#                           rebase, squash; default: squash)
+#     --landing-poll-interval-s SECONDS
+#                           how often a landing in the queue is polled (default:
+#                           60)
+#     --stall-after-s SECONDS
+#                           how long a landing may sit queued and unanswered
+#                           before it classifies as stalled (default: 7200)
+#     --max-recovery-cycles N
+#                           how many times a rejected landing may be recovered
+#                           before the node escalates (default: 1)
+#     --max-free-rebases N  how many times a landing rejected for a moved base
+#                           may be rebased and requeued for free (default: 3)
+#
+#   $ uv run ergane roadmap start specs --target-repo /srv/x --stall-after-s 0
+#   ergane roadmap start: error: argument --stall-after-s: stall-after-s must be
+#   an integer >= 1, got '0'
+#
+# --- Out of scope, and named rather than left to be discovered ----------------
+#
+# A roadmap run started by its *Temporal schedule* (`ergane init`'s, via
+# `factory/roadmap/schedule.py`'s `RoadmapSchedule.arguments()`) carries no
+# landing config, so its children run the defaults. That is not a regression
+# and not this story's line: those arguments declare no `config`,
+# `poll_interval_s` or `idle_rescan_s` either, so *every* operator overlay on a
+# roadmap reaches it through `ergane roadmap start` today. Moving them onto the
+# manifest is a manifest change (`RoadmapDials`), which US2 does not make.
+
