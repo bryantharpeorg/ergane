@@ -1,5 +1,10 @@
 ---
-state: draft
+state: ready
+# FLIPPED TO READY 2026-08-22 2:10 PM CT. The operator's 2026-08-22 ruling
+# (Q&A after the review docket) approved this flip and deferred it until the
+# 083/084/085 trio had landed, so that a lexicographically-earlier spec could
+# not take the floor ahead of them. All three are now landed and attested:
+# 083 at 6bc0daa, 084 at d4a1406, 085 at 3084e8a. The deferral is discharged.
 fixes:
   - worker/a-deploy-is-a-restart-that-kills-every-in-flight-attempt
   - interpreter/heartbeat-timeout-derived-from-attempt-deadline-parks-the-epic-for-hours

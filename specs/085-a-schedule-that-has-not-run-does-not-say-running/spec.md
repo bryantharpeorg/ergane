@@ -1,5 +1,14 @@
 ---
-state: ready
+state: landed
+# LANDED 2026-08-22, attested ~2:10 PM CT by the operator session. Every story
+# verified on ergane-buildout by content (`ergane spec landed --default-branch
+# ergane-buildout`); the epic workflow completed clean, every story first-try.
+# This was the staged flip: draft -> ready at 10:29 AM once 083/US3 had landed
+# (closing the factory/cli/roadmap.py collision window), then dispatched by the
+# roadmap itself at 11:35 AM with no operator hand.
+#   US1 landed at 96c2b38b7713 (PR #289, attempt 1)
+#   US2 landed at 33d3092dbe74 (PR #290, attempt 1)
+#   US3 landed at 3084e8a62382 (PR #291, attempt 1)
 fixes:
   - roadmap/a-wedged-run-silently-eats-every-subsequent-tick-under-skip-overlap
 # FLIP APPROVED, STAGED. 2026-08-22 the operator ruled (Q&A after the review
