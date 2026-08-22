@@ -1,8 +1,33 @@
 ---
 state: draft
-# HOLD — the operator said so in the drafting session (2026-08-21 ~3:55 PM CT):
+# HOLD LIFTED 2026-08-22: the condition was "after our next pypi deployment"
+# and ergane-cli 0.2.0 shipped that morning (tag v0.2.0 at e5f9ce6). Draft
+# still — the ready flip stays the operator's call after he reads the refined
+# set.
+#
+# REFINED 2026-08-22 (operator session, tree at e5f9ce6). What the pass did:
+#   - RE-ANCHORED THE WHOLE SET. Sixteen commits landed since the draft's
+#     158aa63; EpicWorkflow's defn had moved 72 lines, the heartbeat
+#     derivation 25, and 086 rewrote the very interceptor the plan cites
+#     (its `return` is now load-bearing — see the plan's worker.py notes).
+#     All plan and spec-body line citations now resolve against e5f9ce6.
+#   - FR-009 IS ALREADY LANDED CODE. The adapter's R4 machinery (pid_file +
+#     _reap, factory/workgraph/adapter.py:732/:1320, tested in
+#     tests/test_adapter.py) records and reaps predecessor process groups in
+#     the runtime sidecar. US5 shrinks to the heartbeat cap; FR-009 and
+#     US5-S4 are reworded as reuse-and-verify. Plan trap 10 rewritten.
+#   - TWO NEW TRAPS (plan 13 rewritten, 14 added): tests/test_worker.py runs
+#     against the TIME-SKIPPING server whose deployment-API support is
+#     unproven — probe before leaning on it; and D-050 (constitution 2.5.0,
+#     landed after this draft) charges pasted evidence to the 64 KiB diff
+#     budget, which this evidence-heavy spec must respect — paste minimal
+#     proving lines, never transcripts.
+#   - LIVE PROBES RE-RUN, all unchanged: server 1.31.2 answers the
+#     deployment API, SDK 1.31.0 carries the full surface. Both motivating
+#     findings still open in the ledger.
+#
+# The original hold note, kept for the record:
 # "i dont want to actually work on this until after our next pypi deployment."
-# Draft only. No ready flip, no derive, no dispatch until he lifts the hold.
 #
 # Drafted 2026-08-21 ~4:15 PM CT by an operator session, at the operator's
 # instruction, tree at 158aa63 (ergane-buildout).
@@ -72,7 +97,7 @@ costs follow, each already paid at least once:
   revision query just to detect the skew.
 - **A worker that dies instead of draining parks its epic for hours.** The
   attempt's liveness bound is derived as half its deadline
-  (`factory/workgraph/workflow.py:404-409`), so a multi-hour attempt whose
+  (`factory/workgraph/workflow.py:429-434`), so a multi-hour attempt whose
   worker crashed sits PENDING for a multi-hour heartbeat timeout while the
   scheduler waits behind it. 2026-08-19: ~2h, cleared by hand with
   `temporal activity fail`.
@@ -286,9 +311,13 @@ the replacement attempt against the wall clock.
 4. **Given** a false positive — the server misses beats past the cap while
    the agent actually lives — **When** the retry dispatches into the same
    worktree, **Then** the recorded predecessor process group is terminated
-   before the new attempt starts, so two agents never share a worktree —
-   proven by a committed test. **Given** no recorded predecessor, **Then**
-   nothing is killed — the control.
+   before the new attempt starts, so two agents never share a worktree, and
+   **Given** no recorded predecessor, **Then** nothing is killed — the
+   control. **The 2026-08-22 refinement found this machinery already landed
+   and tested** (the adapter's R4: `pid_file`/`_reap`,
+   `factory/workgraph/adapter.py:732`, `:1320`, exercised by
+   `tests/test_adapter.py`) — the story verifies the existing coverage holds
+   under the new cap and extends it only if a genuine gap is proven.
 
 ### Edge Cases
 
@@ -345,7 +374,12 @@ the replacement attempt against the wall clock.
 - **FR-009**: Before starting an agent, the attempt activity MUST terminate a
   recorded live predecessor process group for the same node, and MUST record
   its own where the next attempt will find it — beside the attempt's other
-  sidecar evidence, never inside the diffed tree.
+  sidecar evidence, never inside the diffed tree. **Refinement 2026-08-22:
+  this requirement is already satisfied by landed code** — the adapter's R4
+  machinery records `.factory/run/<epic>/<node>.pid` and reaps before every
+  launch. The story MUST reuse that machinery, not build a parallel one;
+  its obligation shrinks to verifying the existing tests still prove the
+  scenario under the US5 cap.
 - **FR-010**: The deploy report MUST name every version of the deployment and
   its state, so "what is on the floor right now" is one command's output.
 
@@ -359,6 +393,44 @@ the replacement attempt against the wall clock.
   version.
 - **Drainage**: the server's own statement that a version has no open pinned
   work; the reaper's precondition, re-checked at the moment of action.
+
+## Work Graph
+
+```yaml
+US1:
+  depends_on: []
+  implements: [FR-001, FR-002]
+  persona: opus-closer
+US2:
+  depends_on: []
+  depends_on_merged: [US1]
+  implements: [FR-003, FR-004, FR-010]
+  persona: opus-closer
+US3:
+  depends_on: []
+  depends_on_merged: [US2]
+  implements: [FR-005]
+  persona: opus-closer
+US4:
+  depends_on: []
+  depends_on_merged: [US2]
+  implements: [FR-006, FR-007]
+  persona: opus-closer
+US5:
+  depends_on: []
+  depends_on_merged: [US1]
+  implements: [FR-008, FR-009]
+  persona: opus-closer
+```
+
+The chain through US2 is logic (deploy needs registration; reaping and
+retiring need deploy). US5's edge to US1 is contention, not logic — both
+stories edit `factory/workgraph/workflow.py` and `factory/worker.py`, and US5
+needs US1's lines to have stopped moving. US3 and US4 both build on US2 but
+touch disjoint surfaces (reaper vs. unit generation) — with one caveat the
+plan names at T016: US2 lands the template-instance plumbing in `units.py`
+that US4's generation swap then completes; US4's `depends_on_merged: [US2]`
+exists for that shared file as much as for the logic.
 
 ## Success Criteria
 

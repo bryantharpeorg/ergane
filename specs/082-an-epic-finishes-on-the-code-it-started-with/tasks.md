@@ -5,15 +5,16 @@
 
 Read the plan's traps before the first task. Trap 1 (**a versioned worker
 serves only its version — land US1 dark**), trap 5 (**probe the roadmap's
-migration mechanics, don't guess them**) and trap 10 (**the predecessor record
-never enters the diffed tree**) are the three that decide whether an attempt
-lands.
+migration mechanics, don't guess them**), trap 10 (**the predecessor sweep
+already exists — reuse the adapter's R4, never rebuild it**) and trap 14
+(**pasted evidence is charged to the 64 KiB diff budget — paste minimal
+proving lines**) are the four that decide whether an attempt lands.
 
 ## Phase 1: User Story 1 — The worker declares which code it is
 
 ### Probes for this story (run FIRST, commit the transcripts as evidence)
 
-- [ ] T001 [US1] (plan trap 5, FR-002) On the dev server, with a toy workflow:
+- [ ] T001 [US1] (spec US1-S4; plan trap 5, FR-002) On the dev server, with a toy workflow:
       prove whether a PINNED workflow's continue-as-new inherits its version
       or re-routes to current. The roadmap's `versioning_behavior` is chosen
       by this transcript, not by preference.
@@ -29,10 +30,13 @@ lands.
       `build_worker` constructs exactly today's worker — no
       `deployment_config` — and the existing `tests/test_worker.py` suite
       passes untouched (plan trap 13).
-- [ ] T004 [P] [US1] (spec US1-S1, FR-001) With the environment gate set,
-      the booted worker registers deployment `ergane-worker` with the
-      captured revision as build id, read back via the SDK from a real dev
-      server.
+- [ ] T004 [P] [US1] (spec US1-S1, FR-001; plan trap 13) With the environment
+      gate set, the booted worker registers deployment `ergane-worker` with
+      the captured revision as build id, read back via the SDK from a real
+      dev server. **Probe first whether the time-skipping test server
+      supports the deployment API**; if not, use `start_local()` or the
+      session dev server behind the bare-RuntimeError live guard — never a
+      marker.
 - [ ] T005 [P] [US1] (spec US1-S5, FR-001; plan trap 11) With versioning
       engaged and `_worker_revision()` returning `None`, boot refuses by
       name.
@@ -96,7 +100,7 @@ lands.
 
 ### Verification for this story
 
-- [ ] T018 [US2] (SC-001, SC-005) **The story's whole point, live.** With an
+- [ ] T018 [US2] (spec US2-S1, US2-S2; SC-001, SC-005) **The story's whole point, live.** With an
       attempt in flight on version A: deploy B; paste the attempt finishing
       on A (no KILLED, no `temporal activity fail`), the next epic's 053
       revision query reporting B, and the deploy report.
@@ -123,7 +127,7 @@ lands.
 
 ### Verification for this story
 
-- [ ] T023 [US3] (SC-003) Paste: a drained non-current version, then within
+- [ ] T023 [US3] (spec US3-S1; SC-003) Paste: a drained non-current version, then within
       one sweep interval — unit inactive, checkout gone, `describe-version`
       unknowing.
 
@@ -161,27 +165,31 @@ lands.
 
 ### Tests for this story (write FIRST, must fail)
 
-- [ ] T029 [P] [US5] (spec US5-S1/S2, FR-008) The derivation: a 4-hour
+- [ ] T029 [P] [US5] (spec US5-S1, US5-S2, FR-008) The derivation: a 4-hour
       deadline yields the cap (120s); a 60-second deadline yields today's
       five-beat floor; the function is monotone between them. Name both
       constants (`factory/workgraph/workflow.py:401`, the new cap).
-- [ ] T030 [P] [US5] (spec US5-S4, FR-009; plan trap 10) The predecessor
-      sweep: a recorded live process group for the node is terminated before
-      the new attempt starts; with no record, nothing is touched (**the
-      control**); the record lives beside the sidecar evidence and never
-      appears in `read_worktree_diff`'s output.
+- [ ] T030 [US5] (spec US5-S4, FR-009; plan trap 10) **Verify, don't build**:
+      the predecessor sweep already exists (adapter R4 — `pid_file` at
+      `factory/workgraph/adapter.py:732`, `_reap` at `:1320`, tested in
+      `tests/test_adapter.py`). Confirm the existing suite covers: recorded
+      live group terminated before the next attempt; no record → nothing
+      touched (**the control**); record in the sidecar, absent from
+      `read_worktree_diff`. Add a test ONLY for a proven gap, extending the
+      existing file.
 
 ### Implementation for this story
 
 - [ ] T031 [US5] (FR-008; plan trap 9) The cap in
-      `_agent_heartbeat_timeout` (`factory/workgraph/workflow.py:404-409`),
-      the comment at `:386-400` rewritten to argue the cap,
+      `_agent_heartbeat_timeout` (`factory/workgraph/workflow.py:429-434`),
+      the comment at `:411-425` rewritten to argue the cap,
       `start_to_close_timeout` and `_AGENT_RETRIES` untouched.
-- [ ] T032 [US5] (FR-009) The record-then-sweep in `run_agent_attempt`'s
-      entry, record placed beside the attempt's archived evidence.
+- [ ] T032 [US5] — **STRUCK at the 2026-08-22 refinement.** The
+      record-then-sweep it asked for is landed code (adapter R4, see T030);
+      building it again would fork the pid-file contract. No work here.
 
 ### Verification for this story
 
-- [ ] T033 [US5] (SC-002) **Live, with timestamps.** SIGKILL the worker unit
+- [ ] T033 [US5] (spec US5-S3; SC-002) **Live, with timestamps.** SIGKILL the worker unit
       mid-attempt; paste the kill time and the replacement attempt's
       schedule time, ≤3 minutes apart, against the 2026-08-19 ~2h baseline.
