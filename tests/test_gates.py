@@ -45,6 +45,7 @@ module lands, every test here fails at import.
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -112,6 +113,20 @@ class RecordingExecutor:
     @property
     def timeouts(self) -> dict[str, int]:
         return {inv.name: inv.timeout_s for inv in self.invocations}
+
+
+def make_git_worktree(path: Path) -> Path:
+    """Make a bare fixture directory into something git can read.
+
+    084 snapshots the worktree's content around every gate and refuses to call a
+    tree it cannot read a clean one, so a directory standing in for a node
+    worktree has to be a repository. Production's always is — the factory only
+    ever runs gates in a worktree it created with `git worktree add`.
+    """
+    subprocess.run(
+        ["git", "init", "--quiet", str(path)], check=True, capture_output=True
+    )
+    return path
 
 
 def results_by_name(results: list[GateResult]) -> dict[str, GateResult]:
@@ -968,8 +983,7 @@ def test_candidate_acceptance_runs_declared_gates_despite_worker_refusing(
     with a valid gates view, so the gates run and no CONFIG_ERROR appears."""
     import json
 
-    worktree = tmp_path / "deadlock-worktree"
-    worktree.mkdir()
+    worktree = make_git_worktree(tmp_path / "deadlock-worktree")
     (worktree / "factory" / "verify").mkdir(parents=True)
     (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
     manifest = worktree / MANIFEST_NAME
@@ -1102,8 +1116,7 @@ def test_candidate_cannot_run_with_good_manifest_runs_todays_gates(
 ) -> None:
     """US2-S4: when the candidate cannot run but the worker parser accepts the
     manifest, the declared gates still run exactly as today."""
-    worktree = tmp_path / "good-manifest"
-    worktree.mkdir()
+    worktree = make_git_worktree(tmp_path / "good-manifest")
     (worktree / "factory" / "verify").mkdir(parents=True)
     (worktree / "factory" / "verify" / "factory_yaml.py").write_text("# candidate", encoding="utf-8")
     manifest = worktree / MANIFEST_NAME

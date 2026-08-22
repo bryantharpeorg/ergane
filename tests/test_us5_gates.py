@@ -377,10 +377,17 @@ def test_gate_can_write_in_its_own_nested_worktree_inside_the_boundary() -> None
         results = _results_by_name(run_gates(worktree, executor=BwrapGateExecutor()))
         gate = results["test"]
 
-        assert gate.status is GateStatus.PASS, (
+        assert gate.exit_code == 0, (
             "a gate must be able to write in its own worktree; got "
-            f"{gate.status.value}: {gate.output_tail}"
+            f"{gate.status.value} exit={gate.exit_code}: {gate.output_tail}"
         )
+        # 084 changed what a permitted write is *reported* as, not whether it is
+        # permitted: the worktree stays bound writable, and the path the gate
+        # wrote is now named on the result instead of vanishing into a PASS.
+        # The exit code is what carries this test's property; the status carries
+        # 084's.
+        assert gate.status is GateStatus.DIRTIED_WORKTREE
+        assert gate.worktree_writes == ("gate-wrote-this",)
         assert (worktree / "gate-wrote-this").is_file(), (
             "the gate reported success but its write did not reach the host"
         )
@@ -464,10 +471,18 @@ def test_a_gate_that_commits_is_not_asked_who_it_is() -> None:
         results = _results_by_name(run_gates(worktree, executor=BwrapGateExecutor()))
         gate = results["test"]
 
-        assert gate.status is GateStatus.PASS, (
+        assert gate.exit_code == 0, (
             "a gate must be able to commit inside the boundary; got "
-            f"{gate.status.value}: {gate.output_tail}"
+            f"{gate.status.value} exit={gate.exit_code}: {gate.output_tail}"
         )
+        assert "gate-commit" in gate.output_tail, (
+            f"the commit's own log line proves it happened: {gate.output_tail}"
+        )
+        # As above: the identity question this test is about is settled by the
+        # exit code. 084 records the throwaway repository the gate created,
+        # because it is a path the judge's patch would otherwise have carried.
+        assert gate.status is GateStatus.DIRTIED_WORKTREE
+        assert gate.worktree_writes == ("throwaway",)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

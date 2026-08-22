@@ -73,12 +73,25 @@ class GateStatus(StrEnum):
     `CONFIG_ERROR` covers a missing or malformed `factory.yaml`: it is a status
     rather than a raised error so it flows through the verdict truth table and
     fails the verification — never pass-by-default.
+
+    `DIRTIED_WORKTREE` is the same argument one step further in (084 FR-004):
+    the command exited 0, but running it changed the worktree the judge's patch
+    is assembled from, so the gate edited the evidence it was scored on. It is a
+    status rather than a quiet boolean on a PASS row for two reasons that both
+    bite. `gates_passed` refuses anything that is not PASS, so the deterministic
+    half fails with no edit to the decider that owns it; and the retry prompt
+    `continue`s past every PASS gate (`factory/workgraph/prompt.py:693-695`), so
+    a marker on a PASS row would be invisible to the next attempt — the failure
+    shape recorded at `factory/workgraph/prompt.py:722-724`. A worktree whose
+    snapshot git refused takes this status too: a tree the check could not read
+    is a tree it cannot report as clean (084 FR-006).
     """
 
     PASS = "PASS"
     FAIL = "FAIL"
     TIMEOUT = "TIMEOUT"
     CONFIG_ERROR = "CONFIG_ERROR"
+    DIRTIED_WORKTREE = "DIRTIED_WORKTREE"
 
 
 class JudgeOutcome(StrEnum):
@@ -290,6 +303,15 @@ class GateResult:
     was a fact about this run rather than having to guess. The default of zero
     keeps every caller that predates fan-out honest — an uncontended gate is
     the only kind a sequential loop ever produced.
+
+    `worktree_writes` names the paths *this* gate changed in the node worktree
+    while it ran (084 FR-003), attributed to it by the name it was declared
+    under: a gate that changed nothing carries an empty tuple, which is what
+    every gate did before the check existed and is why the field is defaulted,
+    the way `concurrent_gates` is. Tracked content and unignored new paths only
+    — the same set `worktree.diff` puts in front of the judge — because a gate
+    that wrote an ignored path cannot have moved what the judge scores. A tuple
+    rather than a list because this dataclass is frozen.
     """
 
     name: str
@@ -299,6 +321,7 @@ class GateResult:
     duration_s: float
     output_tail: str
     concurrent_gates: int = 0
+    worktree_writes: tuple[str, ...] = ()
 
 
 # Diff/artifact entities -----------------------------------------------------

@@ -674,6 +674,7 @@ def _gate_to_dict(gate: GateResult) -> dict[str, Any]:
         "duration_s": gate.duration_s,
         "output_tail": gate.output_tail,
         "concurrent_gates": gate.concurrent_gates,
+        "worktree_writes": list(gate.worktree_writes),
     }
 
 
@@ -689,6 +690,11 @@ def _gate_from_dict(data: dict[str, Any]) -> GateResult:
         # means uncontended, which is the only honest reading of a row that
         # predates fan-out.
         concurrent_gates=data.get("concurrent_gates", 0),
+        # Rows written before 084 have no writes record, and absent means
+        # "nothing recorded" rather than "unknown": the retry prompt is built
+        # from stored evidence, so a field that skipped this codec would be lost
+        # the moment the row was re-read.
+        worktree_writes=tuple(data.get("worktree_writes", ())),
     )
 
 
