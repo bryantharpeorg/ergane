@@ -176,6 +176,17 @@ def test_the_report_says_which_acts_each_unit_received(layout: InstallLayout) ->
     assert acts[WRAPPER_NAME] == ["removed"]
 
 
+def test_an_uninstall_with_nothing_to_do_says_so(layout: InstallLayout) -> None:
+    """Naming what was removed must not mean saying nothing when the answer is
+    nothing: `removed 0 file(s)` was unreadable, and a blank line is worse."""
+    report = uninstall(layout, run=FakeSystemctl(), open_epics=lambda: ())
+
+    assert report.removed == ()
+    assert report.stopped == ()
+    assert report.render().strip() != ""
+    assert "no file this engine wrote is still here" in report.render()
+
+
 def test_a_unit_the_engine_did_not_write_is_still_reported_as_kept(
     layout: InstallLayout,
 ) -> None:

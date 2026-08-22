@@ -512,8 +512,15 @@ class UninstallReport:
 
     def render(self) -> str:
         lines = [f"  {name}: {', '.join(self.acts(name))}" for name in self.acted_on]
-        if lines:
-            lines.insert(0, "uninstalled:")
+        # An empty teardown still has to say so. `removed 0 file(s)` at least
+        # printed something, and replacing it with a blank line would trade one
+        # unreadable report for a silent one.
+        lines.insert(
+            0,
+            "uninstalled:"
+            if lines
+            else "uninstalled nothing: no file this engine wrote is still here",
+        )
         lines += [f"  left in place (not written by ergane): {n}" for n in self.kept]
         return "\n".join(lines)
 
