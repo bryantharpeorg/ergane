@@ -27,6 +27,16 @@ the last `OUTPUT_TAIL_LIMIT` bytes, because this text is copied into workflow
 state, an escalation message and the evidence store, and one verbose test suite
 should not be able to fill all three.
 
+**A gate that writes is measured, not stopped.** The judge's patch is assembled
+from the same worktree the gates just ran in, so a gate that writes into it has
+edited its own evidence. Every execution is bracketed by a content snapshot
+(`factory/verify/worktree_snapshot.py`); a gate that changed tracked content or
+added an unignored path is reported `DIRTIED_WORKTREE` with the paths on its
+result, and one that wrote only ignored paths is untouched, because a path the
+judge never sees is not a path the gate can have moved. The worktree stays bound
+writable throughout — this observes, and preventing it would break every gate
+that legitimately needs a scratch file.
+
 Execution sits behind the narrow `GateExecutor` seam (R3) so `ContainerExecutor`
 can replace `SubprocessGateExecutor` later without touching verdict logic — and
 so tests can assert the timeout the runner *resolved* without waiting out a
@@ -1115,6 +1125,12 @@ def run_gates(
     Defaults to the process-level limiter, so two `run_gates` calls in two
     worker threads (the shape fan-out produces) share one bound.
 
+    Every gate is watched for what it did to the worktree (084 FR-001): a gate
+    whose command succeeded but whose execution changed tracked content or added
+    an unignored path is reported `DIRTIED_WORKTREE`, carrying those paths on
+    `worktree_writes`, and a gate that failed or timed out keeps that status and
+    records them anyway. A snapshot git refuses is never read as a clean tree.
+
     `candidate_runner` resolves the manifest: when the worktree carries a
     candidate parser it is consulted first, via a subprocess inside the
     worktree, with the worker's imported parser as fallback. A candidate
@@ -1424,7 +1440,8 @@ def _to_result(
 
     tail = tail_output(outcome.output)
     if snapshot_error:
-        tail = tail_output(f"{tail}\n[worktree snapshot failed: {snapshot_error}]")
+        note = f"[worktree snapshot failed: {snapshot_error}]"
+        tail = tail_output(f"{tail}\n{note}" if tail else note)
 
     return GateResult(
         name=invocation.name,
