@@ -65,7 +65,7 @@ import asyncio
 import json
 import sqlite3
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -80,7 +80,12 @@ from factory.env import (
     FACTORY_VERIFICATION_DB_PATH_ENV,
     resolve_env_path,
 )
-from factory.roadmap.discovery import RoadmapOwner, resolve_roadmap
+from factory.roadmap.discovery import (
+    RoadmapOwner,
+    RoadmapScheduleState,
+    render_schedule_line,
+    resolve_roadmap,
+)
 from factory.roadmap.models import (
     SPEC_NAME,
     LandedKind,
@@ -176,6 +181,19 @@ class RoadmapDisposition:
     #: reading and a refused one look the same in the fields above, and only one
     #: of them is worth an operator's attention.
     dispatch_unavailable: str | None = None
+    #: What the schedule is actually *doing* — `paused`, `running`, `starved` or
+    #: `unknown` — decided on the location and copied here whole. The renderer
+    #: below is handed a finished verdict rather than the `schedule_paused`
+    #: boolean above and a clock, because a renderer that decides is a renderer
+    #: the other verb can disagree with (FR-009). Carried as its plain word, as
+    #: `owner` is, so `--json` says exactly what the human rendering says.
+    schedule_state: str | None = None
+    #: The evidence a starved line names, alongside `skipped_overlap_count`:
+    #: how long since a tick *actually* started. `None` when none ever did.
+    seconds_since_last_start: int | None = None
+    #: Lifetime count of ticks the overlap policy skipped. Evidence inside the
+    #: sentence, never a trigger — it never decreases.
+    skipped_overlap_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -515,6 +533,9 @@ async def _disposition(client: Any, specs_root: Path) -> RoadmapDisposition:
             document = None
             refusal = str(error) or type(error).__name__
 
+    # One clock for the verdict and for the evidence it names, so the two halves
+    # of a starved sentence cannot be measured a moment apart.
+    now = datetime.now(timezone.utc)
     return RoadmapDisposition(
         owner=str(location.owner.value),
         workflow_id=location.workflow_id,
@@ -526,6 +547,9 @@ async def _disposition(client: Any, specs_root: Path) -> RoadmapDisposition:
         running=[] if document is None else list(document.get("running") or []),
         parked=None if document is None else len(document.get("parked") or []),
         dispatch_unavailable=refusal,
+        schedule_state=str(location.schedule_state_at(now)),
+        seconds_since_last_start=location.seconds_since_last_start(now),
+        skipped_overlap_count=location.skipped_overlap_count,
     )
 
 
@@ -726,8 +750,18 @@ def _roadmap_lines(floor: FloorStatus) -> list[str]:
     disposition = floor.roadmap
     lines: list[str] = []
     if disposition.schedule_id is not None:
-        state = "paused" if disposition.schedule_paused else "running"
-        lines.append(f"schedule: {disposition.schedule_id} ({state})")
+        # Read, never re-derived: the verdict was decided on the location and
+        # `_disposition` copied it here. This line and `roadmap.py`'s were the
+        # same sentence written twice, which is why one could be fixed while the
+        # other went on lying (FR-009).
+        lines.append(
+            render_schedule_line(
+                disposition.schedule_id,
+                disposition.schedule_state or RoadmapScheduleState.UNKNOWN.value,
+                seconds_since_last_start=disposition.seconds_since_last_start,
+                skipped_overlap_count=disposition.skipped_overlap_count,
+            )
+        )
     if disposition.owner == RoadmapOwner.RUN.value:
         lines.append("schedule: none found")
     if disposition.workflow_id is not None:

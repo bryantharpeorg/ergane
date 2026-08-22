@@ -461,8 +461,11 @@ def _render_disposition(location: RoadmapLocation) -> str:
     """
     lines: list[str] = []
     if location.schedule_id is not None:
-        state = "paused" if location.schedule_paused else "running"
-        lines.append(f"schedule: {location.schedule_id} ({state})")
+        # The location's own line, not one built here. This sentence used to be
+        # written in this file *and* in `factory/cli/status.py`, out of the same
+        # boolean, so `running` meant `not paused` in both and a schedule that
+        # had skipped every tick for six hours said `(running)` in both (FR-009).
+        lines.append(location.schedule_line)
     if location.owner is RoadmapOwner.RUN:
         lines.append(
             f"schedule: none found (no schedule starts "
@@ -476,8 +479,19 @@ def _render_disposition(location: RoadmapLocation) -> str:
 
 
 def _render_status(status: RoadmapStatus) -> str:
+    """The status document, under headings that each name one subject.
+
+    The first line used to read `roadmap: running`, which was the second line of
+    this block to say `running` about something else — the third is the list of
+    running epics — and, above it, `schedule: … (running)` said it about a
+    schedule that had not started a tick in six hours. Three unrelated
+    `running`s in one screen is how a reporter spent six hours reading the wrong
+    one. It names its actual subject now, dispatch, with the word
+    `factory/cli/status.py`'s floor report already used for the same fact, so
+    the two verbs converge instead of drifting (FR-012).
+    """
     lines = [
-        f"roadmap: {'paused' if status.paused else 'running'}",
+        f"dispatch: {'paused' if status.paused else 'running'}",
         f"concurrency: {status.max_concurrent_epics} epic(s), "
         f"{status.max_concurrent_nodes} node(s)",
         f"running: {', '.join(status.running) or '-'}",

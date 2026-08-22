@@ -44,7 +44,7 @@ floor (stdout, captured by test_status_reports_the_newest_run_and_names_both):
     schedule: ergane-roadmap (running)
     run: roadmap-specs-2026-08-15T15:00:00Z
     next tick: 2026-08-15T16:00:00+00:00
-    roadmap: running
+    dispatch: running
     concurrency: 1 epic(s), 1 node(s)
     running: 011-agent-sandbox
     parked: 0
@@ -318,10 +318,29 @@ def _at(hour: int) -> datetime:
     return datetime(2026, 8, 15, hour, 0, 0, tzinfo=timezone.utc)
 
 
+def _just_ticked() -> list[datetime]:
+    """A tick that actually started a moment ago, as `recent_actions` carries it.
+
+    Relative to the wall clock, unlike every other stamp in this module, and
+    deliberately: 085 made the schedule's rendered state a judgement about *how
+    long since a tick started*, so a fixed last-start would read `running` the
+    day it was written and `starved` every day after. The floor around it stays
+    2026-08-15 — those are ids and next-tick times, which are data — while this
+    is the one fact whose age is the point.
+    """
+    return [datetime.now(timezone.utc) - timedelta(seconds=30)]
+
+
 def scheduled_floor(
     setup: Callable[..., FakeTemporalClient], **kwargs: Any
 ) -> FakeTemporalClient:
-    """The 2026-08-15 floor: two timestamped runs, a schedule, no bare workflow."""
+    """The 2026-08-15 floor: two timestamped runs, a schedule, no bare workflow.
+
+    The schedule is *ticking*: it started a run half a minute ago, so it renders
+    `(running)` on its own merits rather than because nothing paused it. A
+    schedule seeded with no starts at all is a different floor — and, once its
+    creation is more than a grace window old, a starved one.
+    """
     return setup(
         workflows={
             OLDER_RUN: FakeWorkflow(_status_document(), _at(14)),
@@ -332,6 +351,7 @@ def scheduled_floor(
                 id=SCHEDULE_ID,
                 action_workflow_id=BARE_ID,
                 next_action_times=[_at(16)],
+                recent_action_starts=_just_ticked(),
             )
         ],
         **kwargs,
@@ -377,7 +397,7 @@ def test_status_reports_the_newest_run_and_names_both(
         schedule: ergane-roadmap (running)
         run: roadmap-specs-2026-08-15T15:00:00Z
         next tick: 2026-08-15T16:00:00+00:00
-        roadmap: running
+        dispatch: running
         concurrency: 1 epic(s), 1 node(s)
         running: 011-agent-sandbox
         parked: 0
@@ -503,9 +523,17 @@ def test_bare_workflow_status_output_is_unchanged(
 ) -> None:
     """US2-S4: no schedule, so no disposition — the pre-046 rendering, byte for byte.
 
+    085/US3 renamed the first line: it said `roadmap: running` while the block
+    below it said `running: …` about the epic list and, on a schedule-driven
+    floor, `schedule: … (running)` above it said it about the schedule. It names
+    dispatch now, the word `ergane status` already used for that fact (FR-012).
+    The assertion stays an equality — that is what this control is worth, and
+    weakening it to a containment to absorb the rename would be a regression
+    dressed as a fix (085 plan, trap 14).
+
     Verbatim stdout:
 
-        roadmap: running
+        dispatch: running
         concurrency: 1 epic(s), 1 node(s)
         running: 011-agent-sandbox
         parked: 0
@@ -518,7 +546,7 @@ def test_bare_workflow_status_output_is_unchanged(
 
     assert result.code == 0, result.stderr
     assert result.stdout == (
-        "roadmap: running\n"
+        "dispatch: running\n"
         "concurrency: 1 epic(s), 1 node(s)\n"
         "running: 011-agent-sandbox\n"
         "parked: 0\n"
@@ -674,7 +702,7 @@ def test_status_falls_through_to_the_newest_run_when_schedules_cannot_be_listed(
 
         schedule: none found (no schedule starts roadmap-specs*)
         run: roadmap-specs-2026-08-15T15:00:00Z
-        roadmap: running
+        dispatch: running
         concurrency: 1 epic(s), 1 node(s)
         running: 011-agent-sandbox
         parked: 0
@@ -716,6 +744,13 @@ def test_a_schedule_that_has_not_ticked_yet_still_reports_its_disposition(
 ) -> None:
     """A schedule owns dispatch before its first tick; there is simply no run to query.
 
+    Created just now, so it is inside its first cadence intervals and running
+    rather than starved: `_find_owning_schedule` promises a never-ticked
+    schedule is reported, and a `ergane init` that answered `starved` thirty
+    seconds after creating a schedule would look broken to every new user (085,
+    trap 10). Its creation time is therefore the wall clock's, not this module's
+    fixed default — the same reason `_just_ticked` exists.
+
     Verbatim stdout:
 
         schedule: ergane-roadmap (running)
@@ -728,6 +763,7 @@ def test_a_schedule_that_has_not_ticked_yet_still_reports_its_disposition(
                 id=SCHEDULE_ID,
                 action_workflow_id=BARE_ID,
                 next_action_times=[_at(16)],
+                created_at=datetime.now(timezone.utc),
             )
         ]
     )
