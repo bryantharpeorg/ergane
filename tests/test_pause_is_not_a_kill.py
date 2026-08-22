@@ -45,13 +45,13 @@ from typing import Any
 import pytest
 from temporalio.testing import WorkflowEnvironment
 
-from factory.cli.errors import OperatorError
 from factory.cli.nouns.build import (
     _reset_epic,
     nodes_at_work,
     nodes_awaiting_operator,
     reset_refusal,
 )
+from factory.mergequeue.models import CheckFailure, LandingConfig, LandingState
 from factory.notify.messages import MESSAGE_LIMIT, escalation_message
 from factory.verify.ladder import ENDING_CHOICES
 from factory.verify.models import EscalationChoice, EscalationRecord
@@ -75,6 +75,7 @@ from tests.test_interpreter import (
     SETTLE_S,
     ScriptedWorld,
     attempt_counts,
+    checks_failed_snapshot,
     exhausted,
     make_graph,
     make_node,
@@ -95,6 +96,19 @@ from tests.test_killed_node_leaves_a_resettable_epic import (  # noqa: F401 — 
 #: the same claim seen from the workflow and from the CLI, and two spellings is
 #: how they would drift.
 PARKED = NodeState.WAITING_OPERATOR
+
+
+def show(what: str, status: Any) -> None:
+    """Print the graph's states — SC-008's evidence, remade by `pytest -s`.
+
+    Captured and invisible on an ordinary run, so it costs the suite nothing.
+    It exists because the block at the foot of this file has to be reproducible
+    by the next reader rather than trusted as a transcript: the same two tests
+    under `-s` print it again.
+    """
+    print(f"\n{what}")
+    for node_id, node in status.nodes.items():
+        print(f"  {node_id:<4} {node.state.value:<17} attempt={node.attempt}")
 
 
 # --- T033 / US4-S1 / FR-013: the press does not kill the dependents ---------
@@ -124,6 +138,7 @@ async def test_a_pause_press_leaves_the_dependents_alive(
             what="us1 to park and the epic to pause",
         )
 
+        show("PAUSE_EPIC pressed on us1, which us2 depends on:", parked)
         assert states(parked) == {
             # Parked, not killed: the operator stopped the epic rather than
             # abandoning the node. Non-terminal, and outside `_UNREACHABLE`,
@@ -148,10 +163,70 @@ async def test_a_pause_press_leaves_the_dependents_alive(
         await handle.signal(RESUME_SIGNAL)
         status = await handle.result()
 
+    show("after `resume_epic`:", status)
     # And the dependent is still there after the resume: PENDING, never KILLED.
     # Its edge is locked (nothing unlocks it but a PASS on us1), which is a
     # different fact from the edge being dead.
     assert states(status)["us2"] == NodeState.PENDING
+    assert attempt_counts(status)["us2"] == 0
+
+
+async def test_a_pause_press_on_the_landing_page_spares_the_merge_gated_dependents(
+    env: WorkflowEnvironment,
+) -> None:
+    """US4-S1 at the other escalation site (trap 2): a fix to one is half a fix.
+
+    The ladder pages from a spent attempt budget; the landing pages from a spent
+    recovery budget. They are different methods with different callers, and the
+    one-line defect was in both. This is 075/us1's landing shape — rejected,
+    recovered once, rejected again, budget gone — with a *merge-gated* dependent
+    behind it.
+
+    That dependent is the second door onto the same lock-out, and it does not go
+    through `_UNREACHABLE`: the press ends the landing KILLED (nothing drives
+    that PR while the epic is stopped), and a landing that is terminal-but-
+    unmerged is a dead edge for anything waiting on the merge. So `us2` would
+    still have died with `us1` parked, on a graph the ladder test cannot build.
+    `_dead_edge` reads the node's park and spares it.
+    """
+    graph = make_graph(
+        [
+            make_node("us1", "US1"),
+            make_node("us2", "US2", depends_on_merged=["us1"]),
+        ]
+    )
+    script = ScriptedWorld(
+        {"us1": [passing(), passing()], "us2": [passing()]},
+        client=env.client,
+        press=EscalationChoice.PAUSE_EPIC.value,
+    )
+    script.script_landing("us1", checks_failed_snapshot(), checks_failed_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    async with start_epic(
+        env,
+        script,
+        graph=graph,
+        landing_config=LandingConfig(max_recovery_cycles=1, poll_interval_s=0),
+    ) as handle:
+        parked = await wait_for_status(
+            handle,
+            paused_with("us1", PARKED),
+            what="us1's landing to park and the epic to pause",
+        )
+        show("PAUSE_EPIC pressed on us1's landing page, us2 merge-gated on it:", parked)
+
+        # The premise: this really is the landing page, with its budget spent.
+        assert parked.nodes["us1"].recovery_cycles == 1
+        assert parked.nodes["us1"].landing_state == LandingState.KILLED
+        assert states(parked) == {"us1": PARKED, "us2": NodeState.PENDING}
+
+        await handle.signal(RESUME_SIGNAL)
+        status = await handle.result()
+
+    # The edge is locked — `us2` waits for a MERGE that is not coming while the
+    # node is parked — but it is not dead, and the node is not killed for it.
+    assert states(status) == {"us1": PARKED, "us2": NodeState.PENDING}
     assert attempt_counts(status)["us2"] == 0
 
 
@@ -189,6 +264,7 @@ async def test_the_undispatched_nodes_dispatch_when_the_epic_resumes(
             paused_with("us3", PARKED),
             what="us3 to park and the epic to pause",
         )
+        show("PAUSE_EPIC pressed on us3, with the us1 → us2 chain undispatched:", parked)
         assert states(parked) == {
             "us3": PARKED,
             "us1": NodeState.PENDING,
@@ -203,6 +279,7 @@ async def test_the_undispatched_nodes_dispatch_when_the_epic_resumes(
         await handle.signal(RESUME_SIGNAL)
         status = await handle.result()
 
+    show("after `resume_epic`:", status)
     assert status.epic_state == EpicState.COMPLETED
     assert states(status) == {
         "us3": PARKED,
@@ -289,22 +366,44 @@ def test_the_message_describes_the_offer_and_not_the_vocabulary() -> None:
     assert "RETRY" not in lines
 
 
-def test_the_blast_radius_survives_a_history_that_fills_the_message() -> None:
-    """It is footer, not body: the clip takes evidence, never the consequence.
+def test_the_blast_radius_is_the_last_thing_read_and_survives_the_clip() -> None:
+    """It is footer, not evidence: it outlives the clip and follows every input.
 
-    A message clipped to Telegram's ceiling has to keep the part the operator is
-    deciding from. `_compose` reserves the footer and eats the history, so the
-    block is rendered there — an FR-015 line that a long gate log could push off
-    the end would be absent exactly when the epic is in the most trouble.
+    Two claims, and the second is what makes the first mean something.
+    `_compose` reserves header and footer and eats the history from the front, so
+    a block rendered into the footer is kept whole when a 32 KiB gate tail fills
+    the message — an FR-015 line pushed off the end by evidence would be missing
+    exactly when the epic is in the most trouble.
+
+    But a block appended to the *end* of the body would survive that clip too,
+    since the clip keeps the tail. What separates them is order: the footer
+    follows the check evidence as well as the history, so what the operator reads
+    last, immediately above the deadline, is what each press will do. The
+    evidence answers "what happened"; this answers "what happens if I press",
+    and the second question is the one they are being paged to decide.
     """
-    record = make_escalation(history_summary="\n".join(["evidence line"] * 2000))
+    record = make_escalation(
+        history_summary="\n".join(["evidence line"] * 2000),
+        check_evidence=(
+            CheckFailure(
+                name="build", url="https://forge/run/9", log_tail="E FAILED", note=""
+            ),
+        ),
+    )
 
     message = escalation_message(record)
 
     assert len(message) <= MESSAGE_LIMIT
     assert set(effect_lines(message)) == {"RETRY", "KILL", "PAUSE_EPIC", "KILL_EPIC"}
     assert "truncated" in message.lower()
-    assert record.node_id in message
+    assert record.node_id in message  # the header survives the clip too
+
+    # Every input, then the consequence, then the deadline — in that order.
+    assert (
+        message.index("Failing check evidence:")
+        < message.index("What each button does:")
+        < message.index("No answer by")
+    ), message[-1200:]
 
 
 # --- T036 / US4-S4: the control — KILL still locks the dependents out -------
@@ -414,3 +513,98 @@ async def test_reset_acts_on_the_epic_a_real_pause_press_leaves_behind(
 
     assert killed.epic_state == EpicState.KILLED
     assert states(killed) == {"us1": NodeState.KILLED, "us2": NodeState.KILLED}
+
+
+# --- runtime evidence, pasted verbatim (constitution VIII / D-037) ----------
+#
+# T041 / SC-008 — the press, the dependents after it, and the resume. Printed by
+# `show()` from the three tests that assert these runs, so the paste cannot drift
+# without a test failing with it: `pytest tests/test_pause_is_not_a_kill.py -s`.
+#
+# BEFORE, at 974503c (tests committed, implementation not) — the defect:
+#   AssertionError: timed out waiting for us1 to park and the epic to pause;
+#   last status: EpicStatus(epic_state=PAUSED, nodes={'us1': NodeStatus(
+#   state=<NodeState.FAILED: 'FAILED'>, ... 'us2': NodeStatus(
+#   state=<NodeState.KILLED: 'KILLED'>, attempt=0, ...
+#
+# AFTER:
+#   PAUSE_EPIC pressed on us1, which us2 depends on:
+#     us1  WAITING_OPERATOR  attempt=4
+#     us2  PENDING           attempt=0
+#     us3  PENDING           attempt=0
+#   after `resume_epic`:
+#     us1  WAITING_OPERATOR  attempt=4
+#     us2  PENDING           attempt=0
+#     us3  MERGED            attempt=1
+#
+#   PAUSE_EPIC pressed on us1's landing page, us2 merge-gated on it:
+#     us1  WAITING_OPERATOR  attempt=2
+#     us2  PENDING           attempt=0
+#
+#   PAUSE_EPIC pressed on us3, with the us1 → us2 chain undispatched:
+#     us1  PENDING           attempt=0
+#     us2  PENDING           attempt=0
+#     us3  WAITING_OPERATOR  attempt=4
+#   after `resume_epic`:
+#     us1  MERGED            attempt=1
+#     us2  MERGED            attempt=1
+#     us3  WAITING_OPERATOR  attempt=4
+#
+# US4-S5, from the run above under `-s`: reset acts on the park, and says the
+# epic is still the operator's to end.
+#   note: epic 'demo-loans' is still running, waiting on an operator for us1;
+#         end it with `ergane build kill demo-loans`
+#   us1: committed dirty state, removed worktree, archived branch
+#   us2: committed dirty state, removed worktree, archived branch
+#
+# T042 / SC-009 — the rendered message, all four offered (the ladder page of a
+# node with an attempt left). Body clipped here to the two lines that are not
+# this story's; nothing else is elided.
+#
+#   ⚠️ Verification escalation
+#   epic: demo-loans
+#   node: us1
+#
+#   Attempt 4 — FAIL
+#     gate test: FAIL (exit 1, 12.4s)
+#
+#   What each button does:
+#   RETRY (🔁 Retry the node) — node: one more attempt, on the tree this one
+#     left behind. epic: unchanged — it keeps dispatching.
+#   KILL (🛑 Kill the node) — node: ends KILLED, its branch preserved. epic:
+#     keeps dispatching, but every node waiting on this one is locked out and
+#     ends KILLED with it, undispatched.
+#   PAUSE_EPIC (⏸️ Pause the epic) — node: ends parked, not killed — nothing
+#     waiting on it is locked out. epic: stops dispatching until you resume it;
+#     the undispatched nodes keep their place and run then.
+#   KILL_EPIC (💥 End the whole epic) — node: ends KILLED, its branch preserved.
+#     epic: ends with it — nothing else dispatches, and any other node's open
+#     page is cancelled unanswered.
+#
+#   No answer by 2026-08-22T12:00:00Z applies the default: KILL the node.
+#
+# On a page that offers only the ending three (079-US1's computed offer), the
+# RETRY line is absent and the other three are unchanged.
+#
+# Six mutations, each reverted before the next, named by the claim it kills:
+#  1. `_dead_edge`'s park guard removed -> FAILED ..._on_the_landing_page_spares_
+#     the_merge_gated_dependents: us2 KILLED. The landing half of the lock-out.
+#  2. the landing site back to `NodeState.FAILED` -> FAILED the same one.
+#  3. the ladder site back to `NodeState.FAILED` -> FAILED 3: ..._leaves_the_
+#     dependents_alive, ..._undispatched_nodes_dispatch..., ..._reset_acts_on...
+#  4. `render_blast_radius` iterating `EscalationChoice` instead of the offer ->
+#     FAILED ..._describes_the_offer_and_not_the_vocabulary.
+#  5. the block moved from the footer into the body -> FAILED ..._is_the_last_
+#     thing_read_and_survives_the_clip. Its first shape did NOT catch this (the
+#     clip keeps the body's tail either way); the ordering assertion is what
+#     does, and the docstring now claims only what it proves.
+#  6. the PAUSE_EPIC line's epic half deleted -> FAILED ..._names_what_each_
+#     offered_button_does.
+#
+# The gate `factory.yaml` declares, on the whole tree: 4212 passed, 52 skipped
+# in 331.23s. Two pre-existing tests changed with the fix — both asserted the
+# defect (`us1` FAILED, `us2` KILLED) and now assert the park.
+#
+# The diff was measured with `diffbounds` rather than estimated, because a story
+# whose evidence outgrows its code is refused before a judge reads a line of it
+# (constitution VIII / D-050): 47,161 bytes of the 65,536 ceiling.
