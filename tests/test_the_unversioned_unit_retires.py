@@ -7,20 +7,17 @@ applies to everything else (US4-S3/FR-006), which means an install that stopped
 writing the file must go on remembering the digest of the one it wrote before,
 or the operator's own teardown can never prove the file is the engine's.
 **Migration off it is refused while an epic that predates versioning is open**
-(US4-S2/FR-007), and what "predates versioning" means is not a guess: T002's
-probe measured it on the dev server, and the transcript is in
-`specs/082-an-epic-finishes-on-the-code-it-started-with/evidence/us1-t001-t002-probes.md`.
-
-The finding that shapes the refusal, from that transcript: a pre-versioning run
-is *not* stalled when a versioned worker becomes current. It is adopted onto
-whatever version is current at its next workflow task, where it then pins —
+(US4-S2/FR-007), and what "predates versioning" means is T002's measurement
+rather than a guess (`evidence/us1-t001-t002-probes.md`): such a run is *not*
+stalled when a versioned worker becomes current —
 
     [pre-versioning run right after set-current]  behavior=UNSPECIFIED version='.'
     [part B final]  status=2 behavior=PINNED version='probe-082-mig2.mig-v1'
 
-so the danger the refusal exists for is not a stalled epic. It is an epic that
-finishes on code it did not start with, plus the agents its attempts are running
-under the legacy unit's own cgroup, which `disable --now` takes with it.
+— it is adopted onto whatever is current at its next workflow task and pins
+there. So the danger is not a stall: it is an epic finishing on code it did not
+start with, plus the agents its attempts run inside the legacy unit's own
+cgroup, which `disable --now` takes with it.
 
 Nothing here reaches the host's session: `no_real_commands` is autouse, because
 the unit this story retires is the unit this attempt is running under.
@@ -39,6 +36,7 @@ Written before the code, and failing on every claim it makes:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterator, Sequence
 
 import pytest
@@ -65,17 +63,11 @@ from factory.supervision.units import (
 )
 from factory.versioning import OpenEpic, open_epic_from, strandable_epics
 
-#: What a pre-082 install wrote to `ergane-worker.service`. The text itself is
-#: never compared against anything the engine can still generate — provenance is
-#: the digest recorded at install time — so the only property that matters here
-#: is that this is *some* text an older engine wrote and the manifest agrees.
-LEGACY_TEXT = """\
-[Unit]
-Description=ergane — factory worker (workgraph task queue)
-
-[Service]
-ExecStart=/tmp/ergane-run.sh factory.worker
-"""
+#: What a pre-082 install wrote to `ergane-worker.service`. Never compared
+#: against anything the engine can still generate — provenance is the digest
+#: recorded at install time — so all that matters is that an older engine wrote
+#: this text and the manifest agrees.
+LEGACY_TEXT = "[Unit]\nDescription=ergane — factory worker\n"
 
 #: The build ids of two versions this host has deployed.
 DEPLOYED = ("a1b2c3d", "9f8e7d6")
@@ -162,8 +154,7 @@ def test_install_writes_the_versioned_template_and_not_the_unversioned_unit(
     layout: InstallLayout,
 ) -> None:
     """US4-S1. Two deployment stories is how skew comes back, so there is one:
-    every worker on the floor is an instance of the template, put there by
-    `ergane worker deploy` and pinned to the code it registered with."""
+    every worker is an instance of the template, put there by deploy."""
     generated = [one.name for one in generated_files(layout)]
 
     assert WORKER_TEMPLATE_UNIT in generated
@@ -179,9 +170,9 @@ def test_install_writes_the_versioned_template_and_not_the_unversioned_unit(
 
 def test_install_never_enables_the_unversioned_worker(layout: InstallLayout) -> None:
     """The other half of not writing it: a unit that is not written must not be
-    enabled either, and `ENABLE_TARGETS` is where that would sneak back in. A
+    enabled either, and `ENABLE_TARGETS` is where that sneaks back in. A
     template cannot be enabled — its instances are, by deploy — so the worker
-    leaves that tuple altogether rather than being replaced in it."""
+    leaves that tuple rather than being replaced in it."""
     fake = FakeSystemctl()
 
     install(layout, run=fake)
@@ -275,9 +266,8 @@ def test_uninstall_stops_and_disables_every_versioned_instance(
     layout: InstallLayout,
 ) -> None:
     """US4-S3: template, instances, and the legacy unit. An instance has no file
-    of its own — systemd instantiates it from the template — so what teardown
-    owes it is the disable, and the checkouts deploy froze are how it knows
-    which instances exist."""
+    of its own, so what teardown owes it is the disable; the checkouts deploy
+    froze are how it knows which instances exist."""
     install(layout, run=FakeSystemctl())
     deployed(layout, *DEPLOYED)
     fake = FakeSystemctl()
@@ -341,47 +331,33 @@ def test_the_classification_reads_the_versioning_info_the_server_reports() -> No
     pre-versioning and refuse every migration forever.
     """
 
-    class FakeVersion:
-        build_id = "a1b2c3d"
 
-    class FakeVersioningInfo:
-        behavior = 1
-        deployment_version = FakeVersion()
 
-    class FakeExecution:
-        id = "epic-082-pinned"
-        raw_info = type("Info", (), {"versioning_info": FakeVersioningInfo()})()
+    def execution(epic_id: str, behavior: int, build_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=epic_id,
+            raw_info=SimpleNamespace(
+                versioning_info=SimpleNamespace(
+                    behavior=behavior,
+                    deployment_version=SimpleNamespace(build_id=build_id),
+                )
+            ),
+        )
 
-    class FakeUnversioned:
-        id = "epic-082-old"
-        raw_info = type(
-            "Info",
-            (),
-            {
-                "versioning_info": type(
-                    "V",
-                    (),
-                    {"behavior": 0, "deployment_version": type("D", (), {"build_id": ""})()},
-                )()
-            },
-        )()
+    pinned = open_epic_from(execution("epic-082-pinned", 1, "a1b2c3d"))
+    old = open_epic_from(execution("epic-082-old", 0, ""))
 
-    assert open_epic_from(FakeExecution()) == OpenEpic(
-        "epic-082-pinned", behavior=1, build_id="a1b2c3d"
-    )
-    assert open_epic_from(FakeUnversioned()) == OpenEpic("epic-082-old")
-    assert strandable_epics(
-        [open_epic_from(FakeExecution()), open_epic_from(FakeUnversioned())]
-    ) == ("epic-082-old",)
+    assert pinned == OpenEpic("epic-082-pinned", behavior=1, build_id="a1b2c3d")
+    assert old == OpenEpic("epic-082-old")
+    assert strandable_epics([pinned, old]) == ("epic-082-old",)
 
 
 def test_migration_is_refused_by_name_while_a_pre_versioning_epic_is_open(
     layout: InstallLayout,
 ) -> None:
-    """US4-S2/FR-007. `disable --now` on the legacy unit takes its cgroup with
-    it — the attempts and the agents inside them — and what survives is adopted
-    onto whatever version is current at its next workflow task, which is not the
-    code it started with. So the epic is named, and nothing is touched."""
+    """US4-S2/FR-007. `disable --now` takes the unit's cgroup with it — the
+    attempts and the agents inside them — and what survives is adopted onto
+    whatever version is current next. So the epic is named, nothing is touched."""
     path = legacy_unit(layout)
     install(layout, run=FakeSystemctl())
     fake = FakeSystemctl()
@@ -475,9 +451,9 @@ def test_migration_leaves_an_unversioned_unit_the_engine_did_not_write(
 def test_a_migrated_host_converges_and_never_asks_temporal_again(
     layout: InstallLayout,
 ) -> None:
-    """Re-running the verb is the recovery, so it has to be free. With no
-    unversioned unit on disk and none in the manifest there is nothing to
-    decide, and a refusal about an epic nobody is going to strand is noise."""
+    """Re-running the verb is the recovery, so it has to be free: with nothing
+    left to retire there is nothing to decide, and a refusal about an epic
+    nobody is going to strand is noise."""
     legacy_unit(layout)
     install(layout, run=FakeSystemctl())
     migrate_off_legacy_unit(layout, run=FakeSystemctl(), open_epics=lambda: ())

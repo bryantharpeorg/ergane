@@ -63,11 +63,10 @@ SLICE_UNIT = "ergane.slice"
 
 #: The unversioned worker, retired by 082-US4 (FR-006). The engine no longer
 #: generates it: an in-place restart is how an epic finished on code it did not
-#: start with, and two deployment stories is how that skew comes back. The name
-#: survives for the two things still owed to a host that has one — teardown
-#: removes it under the same provenance rule as everything else, and
-#: `ergane worker migrate` retires it on its own once nothing that predates
-#: versioning is still open (FR-007).
+#: start with. The name survives for the two things still owed to a host that
+#: has one — teardown removes it under the same provenance rule as everything
+#: else, and `ergane worker migrate` retires it on its own once nothing that
+#: predates versioning is still open (FR-007).
 LEGACY_WORKER_UNIT = "ergane-worker.service"
 
 #: 082-US2: the versioned worker, one instance per deployed build id — a
@@ -102,11 +101,9 @@ PKILL_PATTERN = "python -"
 #: because external mode must not enable a unit that was not generated.
 #:
 #: 082-US4: no worker is among them any more. A template cannot be enabled —
-#: only instances of it can — so the worker leaves this tuple rather than being
-#: replaced in it, and `ergane worker deploy` is what enables the instance that
-#: serves a version. An install on a fresh host therefore brings up the bridge
-#: and the probe timer and no worker at all, which is why `InstallReport` says
-#: so in as many words.
+#: only instances of it can — so the worker leaves this tuple and
+#: `ergane worker deploy` enables the instance that serves a version. An install
+#: therefore brings up no worker at all, which is why `InstallReport` says so.
 ENABLE_TARGETS = (BRIDGE_UNIT, TEMPORAL_UNIT, PROBE_TIMER)
 
 #: Names this engine wrote once and no longer generates. Their provenance is
@@ -146,13 +143,10 @@ def deployed_instances(layout: InstallLayout) -> tuple[str, ...]:
 
     Read from the frozen checkouts rather than from systemd, because those are
     what the engine created and therefore what its provenance rules can speak
-    about: `ergane worker deploy` makes the directory before it enables the
-    instance, and a reap removes both. An instance has no file of its own —
-    systemd instantiates it from the template — so the disable is the whole of
-    what teardown owes it.
-
-    No deployments directory is a floor before its first deploy, which is a
-    state and not an error.
+    about: deploy makes the directory before it enables the instance, and a reap
+    removes both. An instance has no file of its own, so the disable is the
+    whole of what teardown owes it. No deployments directory is a floor before
+    its first deploy — a state, not an error.
     """
     try:
         return tuple(
@@ -369,10 +363,9 @@ def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
 def _retired_candidates(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
     """The files the engine no longer writes but may still have to remove.
 
-    Their text is deliberately empty and never read: provenance is the digest
-    recorded at install time compared against the file on disk
-    (`_is_someone_elses`), which is the only rule that can speak about a name
-    this engine can no longer regenerate the text for.
+    Their text is deliberately empty and never read: provenance is the recorded
+    digest compared against the file on disk (`_is_someone_elses`), which is the
+    only rule that can speak about a name whose text is no longer generated.
     """
     return tuple(
         GeneratedFile(name, "", layout.unit_dir) for name in RETIRED_UNITS
@@ -703,11 +696,9 @@ class UninstallReport:
 class RetirementReport(UninstallReport):
     """What `ergane worker migrate` retired (082-US4, FR-007).
 
-    Teardown's report shape exactly — the acts are the same acts, and an
-    operator reading one has already learned to read the other — with its own
-    headline, because "uninstalled" is what this verb is careful *not* to do:
-    the template, the instances and everything else install wrote stay where
-    they are.
+    Teardown's report shape exactly — the same acts, read the same way — with
+    its own headline, because "uninstalled" is what this verb is careful *not*
+    to do: everything else install wrote stays where it is.
     """
 
     def render(self) -> str:
@@ -775,10 +766,9 @@ def _carried_provenance(
     """The provenance of what this engine wrote once and writes no longer.
 
     The trap in retiring a generated file (082-US4): install rewrites the
-    manifest from what it just wrote, so a name it stopped writing falls out of
-    it on the next install — and the file is still on the host, now with nothing
-    left to prove it is the engine's. Teardown would keep the operator's worker
-    unit forever, and the migration could never remove it.
+    manifest from what it just wrote, so a retired name falls out of it on the
+    next install — and the file is still on the host with nothing left to prove
+    it is the engine's, which teardown and the migration must then keep forever.
     """
     return {
         name: recorded[name]
@@ -884,15 +874,13 @@ def migrate_off_legacy_unit(
     epic still being served by it loses the attempt and the agent inside it. And
     what survives is not stranded but *adopted*: T002's probe measured an
     unversioned run being served by the versioned worker that became current and
-    pinning there, which is an epic finishing on code it did not start with,
-    which is what this whole spec exists to stop. So while one is open the
-    removal is refused, by name.
+    pinning there, which is an epic finishing on code it did not start with. So
+    while one is open the removal is refused, by name.
 
     The other three properties are teardown's, deliberately: the epics are read
     before anything is touched (a half-migration has no inverse verb), the file
     is removed only while it matches what install once wrote, and re-running is
-    free — with nothing left to retire the server is never asked, because a
-    refusal about an epic nobody is going to strand is noise.
+    free — with nothing left to retire the server is never asked.
     """
     recorded = _read_manifest(layout)
     on_disk = (layout.unit_dir / LEGACY_WORKER_UNIT).exists()
@@ -1010,11 +998,9 @@ def _open_epics() -> tuple["OpenEpic", ...]:
     Temporal is the thing that died. A module-scope Temporal import here would
     put a client on that path for the sake of a read the probe never performs.
     The query is the roadmap's own, so a closed epic is narrowed away on the
-    server rather than here.
-
-    One query for both refusals — teardown's (FR-012, which needs only the ids)
-    and 082-US4's migration (which needs the versioning info too) — because two
-    reads of the same fact are two answers waiting to disagree.
+    server rather than here. One query serves both refusals — teardown's
+    (FR-012, ids only) and the migration's (which needs the versioning info) —
+    because two reads of one fact are two answers waiting to disagree.
     """
     import asyncio
 

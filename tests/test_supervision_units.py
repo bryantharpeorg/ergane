@@ -189,9 +189,8 @@ def test_install_writes_every_unit_and_the_wrapper(layout: InstallLayout) -> Non
 
     report = install(layout, run=fake)
 
-    # 082-US4: the versioned template and no `ergane-worker.service` — the
-    # retirement is asserted in tests/test_the_unversioned_unit_retires.py; this
-    # set is what it leaves the rest of the installation looking like.
+    # 082-US4: the template, and no `ergane-worker.service` (that retirement is
+    # asserted in tests/test_the_unversioned_unit_retires.py).
     everything = [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT,
                   WORKER_TEMPLATE_UNIT, WRAPPER_NAME]
     assert sorted(report.written) == sorted(everything)
@@ -220,7 +219,7 @@ def test_install_enables_the_units_and_reads_back_what_is_running(
     report = install(layout, run=fake)
 
     # No worker among them since 082-US4: a template cannot be enabled, and
-    # `ergane worker deploy` is what enables the instance that serves a version.
+    # deploy is what enables the instance serving a version.
     assert sorted(report.active) == sorted([BRIDGE_UNIT, PROBE_TIMER])
     assert sorted(report.enabled) == sorted([BRIDGE_UNIT, PROBE_TIMER])
     assert fake.issued("daemon-reload") != []
