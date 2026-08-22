@@ -75,6 +75,19 @@ contains, with tool output pasted rather than described. The obligation sits wit
 spec author: a criterion that cannot be met is a defect in the spec, not in the agent
 that failed it.
 
+**That evidence is spent from a bounded budget, and the bound is 64 KiB.** The
+deterministic check refuses any story diff exceeding `DIFF_INPUT_LIMIT`
+(`factory/verify/diffbounds.py`) before the judge ever runs, so a diff of correct,
+tested code is discarded for its size alone — gates green, judge never called, the
+whole attempt spent. Pasted evidence is charged to that same budget as the code: on
+2026-08-22 both stories of epic 079 lost their first attempt this way at 83,384 and
+74,490 bytes, and for one of them 29% of the refused diff was the artifacts this
+principle requires. A story is therefore sized for its evidence and its code
+together, and one whose evidence cannot fit beside its implementation is split
+before dispatch, not discovered oversized after a build. The obligation sits with
+the spec author here too: the ceiling binds the diff an agent produces, so a story
+scoped past it is a defect in the spec (D-050).
+
 ## Environment Constraints
 
 - **Intent layer**: Spec Kit feature specs (`specs/<feature>/spec.md`) are the system
@@ -115,7 +128,10 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.4.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-17 (2.4.0 —
+**Version**: 2.5.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-22 (2.5.0 —
+D-050: Principle VIII amended; the evidence it mandates is charged to a bounded 64 KiB
+diff budget, and a story is sized for evidence and code together or split before
+dispatch. 2.4.0 —
 D-046: loop composition is declared data; environment-constraints wording amended to
 say each target repo declares runtime, gates and loop composition in a committed
 `factory.yaml`. 2.3.0 — D-037: Principle VIII added; acceptance criteria must be

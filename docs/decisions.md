@@ -1200,3 +1200,54 @@ where it is declared, under the rule slug `llm_direct_not_supported`.
 This closes the second consequence of
 `install/the-config-install-writes-reaches-nothing-that-builds`; the first — the
 declared endpoint reaching no build — is D-047's.
+
+---
+
+## D-050 · Pasted evidence is charged to the diff budget: stories are sized for evidence and code together (decided)
+
+Decided 2026-08-22, claimed from the ledger rather than from a spec landing: finding
+`verify/the-standards-demand-committed-evidence-and-never-name-the-diff-ceiling`,
+raised after it cost both stories of epic 079 their first attempt on the same night.
+
+D-037 established Principle VIII: the judge sees the diff and the criteria and nothing
+else, so a story needing runtime evidence commits that evidence as an artifact the diff
+contains. What that principle never said is that the diff it is filling has a hard
+ceiling. `DIFF_INPUT_LIMIT` (`factory/verify/diffbounds.py`) refuses any story diff over
+64 KiB in the deterministic check, *before* the judge runs. A grep for `size`, `bytes`,
+`limit`, `ceiling` or `oversiz` across all 128 lines of the constitution returned
+nothing: the binding standards channel demanded the evidence and never named the budget
+it was spent from.
+
+The measurement, from the epic that paid for it. Both first attempts of 079 were refused
+with gates green, `hygiene_violations` empty and `judge_verdict` null — the judge was
+never called:
+
+| story | gates | diff | limit |
+| --- | --- | --- | --- |
+| 079/us1 attempt 1 | PASS — 4151 passed, exit 0 | 83,384 B | 65,536 B |
+| 079/us2 attempt 1 | PASS — 4178 passed, exit 0 | 74,490 B | 65,536 B |
+
+For us2, 21,920 of those 74,490 bytes — 29% — were the two evidence artifacts Principle
+VIII requires (`us2_press_evidence.py` at 12,967 B and `us2-a-pressed-button-lands.md`
+at 8,953 B). Without the mandated evidence the diff is 52,570 B and lands. The cost was
+roughly 71 minutes of agent build time and two 5.5-minute gate runs, spent on code the
+gates had already passed.
+
+1. **The ceiling is stated where the obligation is stated.** Principle VIII now names
+   64 KiB and its enforcement point, so the standards file an agent is told to read and
+   obey no longer demands an artifact without naming the budget it consumes.
+2. **Evidence and code share one budget.** A story is sized for both together. One whose
+   evidence cannot fit beside its implementation is split *before* dispatch — the split
+   is a refinement act, not a discovery made after a build is already spent.
+3. **The obligation stays with the spec author.** Consistent with D-037: a criterion that
+   cannot be met is a defect in the spec, not in the agent that failed it. A story scoped
+   past the ceiling is the same kind of defect.
+
+This does not change the limit, the checker, or the refusal's behaviour — all three
+already worked exactly as designed. What changes is that the binding channel now says so.
+Recovery was never the gap either: `factory/workgraph/prompt.py` does carry the refusal
+and its largest-files listing into the retry prompt, which is why both 079 retries then
+passed. The wasted first attempt was the whole bill, and stating the ceiling up front is
+what stops paying it.
+
+Constitution version bumped from 2.4.0 to 2.5.0.
