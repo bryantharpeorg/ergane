@@ -62,12 +62,18 @@ class RoadmapOwner(str, Enum):
     NONE = "none"
 
 
-class ScheduleState(str, Enum):
+class RoadmapScheduleState(str, Enum):
     """What a schedule is *doing* — the answer that used to be `not paused`.
 
     Four answers, because three of them were being collapsed into one. A
     renderer asks for this and prints the word; it does not decide it, and two
     renderers cannot disagree about a fact neither of them computes.
+
+    Named `RoadmapScheduleState` rather than `ScheduleState` because
+    `temporalio.client.ScheduleState` already owns that name and the sibling
+    module imports it (`factory.roadmap.schedule`, where it carries the paused
+    flag a schedule *declares*). Two things called `ScheduleState` in one
+    package is a collision a reader resolves by accident.
     """
 
     #: The operator turned dispatch off. Not a fault, and not starvation.
@@ -176,7 +182,7 @@ class RoadmapLocation:
             f"(looked for {', then '.join(self.looked_for)})"
         )
 
-    def schedule_state_at(self, now: datetime) -> ScheduleState:
+    def schedule_state_at(self, now: datetime) -> RoadmapScheduleState:
         """`paused`, `running`, `starved` or `unknown`, decided here and once.
 
         Both renderers used to compute this themselves, out of one boolean:
@@ -199,10 +205,10 @@ class RoadmapLocation:
         - then **how long since a tick actually started**, against the cadence.
           Past `STARVED_AFTER_INTERVALS` intervals it is `starved`; inside them
           it is `running`. A schedule that has never ticked is measured from
-          its creation instead, so one minutes old is running rather than
-          starved — `_find_owning_schedule` already promises such a schedule is
-          reported, and a false `starved` makes `ergane init` look broken to
-          every new user.
+          its creation instead, so one that is minutes old is running rather
+          than starved — `_find_owning_schedule` already promises such a
+          schedule is reported, and a false `starved` makes `ergane init` look
+          broken to every new user.
 
         `skipped_overlap_count` decides nothing here, deliberately. It is a
         lifetime counter that never decreases, so `count > 0` is a warning that
@@ -216,22 +222,22 @@ class RoadmapLocation:
         input (FR-005).
         """
         if self.schedule_paused is None:
-            return ScheduleState.UNKNOWN
+            return RoadmapScheduleState.UNKNOWN
         if self.schedule_paused:
-            return ScheduleState.PAUSED
+            return RoadmapScheduleState.PAUSED
         if not isinstance(self.cadence_s, int) or self.cadence_s <= 0:
-            return ScheduleState.UNKNOWN
+            return RoadmapScheduleState.UNKNOWN
         since = _seconds_since(
             now, self.last_action_started_at or self.schedule_created_at
         )
         if since is None:
-            return ScheduleState.UNKNOWN
+            return RoadmapScheduleState.UNKNOWN
         if since > STARVED_AFTER_INTERVALS * self.cadence_s:
-            return ScheduleState.STARVED
-        return ScheduleState.RUNNING
+            return RoadmapScheduleState.STARVED
+        return RoadmapScheduleState.RUNNING
 
     @property
-    def schedule_state(self) -> ScheduleState:
+    def schedule_state(self) -> RoadmapScheduleState:
         """`schedule_state_at`, decided against the wall clock — what a renderer reads."""
         return self.schedule_state_at(datetime.now(timezone.utc))
 

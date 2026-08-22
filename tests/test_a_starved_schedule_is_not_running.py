@@ -40,7 +40,7 @@ from factory.roadmap.discovery import (
     STARVED_AFTER_INTERVALS,
     RoadmapLocation,
     RoadmapOwner,
-    ScheduleState,
+    RoadmapScheduleState,
 )
 
 SPECS_ROOT = "/srv/factory/ergane/specs"
@@ -102,7 +102,7 @@ def test_a_schedule_whose_last_actual_start_is_stale_is_starved() -> None:
         last_action_started_at=_started(timedelta(hours=6)), skipped_overlap_count=76
     )
 
-    assert location.schedule_state_at(NOW) is ScheduleState.STARVED
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.STARVED
     assert location.schedule_state_at(NOW) == "starved"
 
 
@@ -110,20 +110,20 @@ def test_a_schedule_that_started_a_tick_within_the_grace_window_is_running() -> 
     """US2-S2 / FR-005: a schedule that is ticking is running, as it always was."""
     location = _location(last_action_started_at=_started(timedelta(minutes=1)))
 
-    assert location.schedule_state_at(NOW) is ScheduleState.RUNNING
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.RUNNING
 
 
 @pytest.mark.parametrize(
     "ago_s,expected",
     [
-        (GRACE_S - 1, ScheduleState.RUNNING),
-        (GRACE_S, ScheduleState.RUNNING),
-        (GRACE_S + 1, ScheduleState.STARVED),
+        (GRACE_S - 1, RoadmapScheduleState.RUNNING),
+        (GRACE_S, RoadmapScheduleState.RUNNING),
+        (GRACE_S + 1, RoadmapScheduleState.STARVED),
     ],
     ids=["just inside", "exactly two intervals", "just outside"],
 )
 def test_the_threshold_is_two_cadence_intervals(
-    ago_s: int, expected: ScheduleState
+    ago_s: int, expected: RoadmapScheduleState
 ) -> None:
     """US2-S1 / FR-006: two intervals, and the boundary is asserted from both sides.
 
@@ -159,7 +159,7 @@ def test_a_large_lifetime_skipped_count_with_a_recent_start_is_running() -> None
         skipped_overlap_count=76, last_action_started_at=_started(timedelta(minutes=1))
     )
 
-    assert location.schedule_state_at(NOW) is ScheduleState.RUNNING
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.RUNNING
     # The evidence is still there for the sentence to print — carried, not acted on.
     assert location.skipped_overlap_count == 76
 
@@ -181,8 +181,8 @@ def test_the_verdict_ignores_the_skipped_count_in_both_directions(
         skipped_overlap_count=count, last_action_started_at=_started(timedelta(hours=6))
     )
 
-    assert recent.schedule_state_at(NOW) is ScheduleState.RUNNING
-    assert stale.schedule_state_at(NOW) is ScheduleState.STARVED
+    assert recent.schedule_state_at(NOW) is RoadmapScheduleState.RUNNING
+    assert stale.schedule_state_at(NOW) is RoadmapScheduleState.STARVED
 
 
 # --- the operator's own decision is not a fault -------------------------------
@@ -197,7 +197,7 @@ def test_a_paused_schedule_is_paused_however_long_since_its_last_tick(
     """US2-S4 / FR-005: a paused schedule not ticking is the operator's decision."""
     location = _location(schedule_paused=True, last_action_started_at=_started(ago))
 
-    assert location.schedule_state_at(NOW) is ScheduleState.PAUSED
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.PAUSED
 
 
 def test_a_paused_schedule_is_paused_even_when_nothing_else_could_be_read() -> None:
@@ -214,7 +214,7 @@ def test_a_paused_schedule_is_paused_even_when_nothing_else_could_be_read() -> N
         schedule_created_at=None,
     )
 
-    assert location.schedule_state_at(NOW) is ScheduleState.PAUSED
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.PAUSED
 
 
 # --- a schedule minutes old has not failed at anything yet --------------------
@@ -234,7 +234,7 @@ def test_a_never_ticked_schedule_inside_its_first_intervals_is_running() -> None
         schedule_created_at=_started(timedelta(minutes=1)),
     )
 
-    assert location.schedule_state_at(NOW) is ScheduleState.RUNNING
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.RUNNING
 
 
 def test_a_never_ticked_schedule_past_its_first_intervals_is_starved() -> None:
@@ -248,7 +248,7 @@ def test_a_never_ticked_schedule_past_its_first_intervals_is_starved() -> None:
         schedule_created_at=_started(timedelta(hours=12)),
     )
 
-    assert location.schedule_state_at(NOW) is ScheduleState.STARVED
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.STARVED
 
 
 def test_a_last_start_is_preferred_over_creation_as_the_reference() -> None:
@@ -266,8 +266,8 @@ def test_a_last_start_is_preferred_over_creation_as_the_reference() -> None:
         schedule_created_at=_started(timedelta(minutes=1)),
     )
 
-    assert ticking.schedule_state_at(NOW) is ScheduleState.RUNNING
-    assert stopped.schedule_state_at(NOW) is ScheduleState.STARVED
+    assert ticking.schedule_state_at(NOW) is RoadmapScheduleState.RUNNING
+    assert stopped.schedule_state_at(NOW) is RoadmapScheduleState.STARVED
 
 
 # --- not knowing is the third answer ------------------------------------------
@@ -302,8 +302,8 @@ def test_a_reading_that_could_not_be_taken_is_unknown(
     """
     state = _location(**dials).schedule_state_at(NOW)
 
-    assert state is ScheduleState.UNKNOWN, why
-    assert state not in (ScheduleState.RUNNING, ScheduleState.STARVED)
+    assert state is RoadmapScheduleState.UNKNOWN, why
+    assert state not in (RoadmapScheduleState.RUNNING, RoadmapScheduleState.STARVED)
 
 
 def test_the_empty_location_is_unknown_rather_than_running() -> None:
@@ -324,7 +324,7 @@ def test_the_empty_location_is_unknown_rather_than_running() -> None:
         looked_for=(f"workflow id {BARE_ID}",),
     )
 
-    assert location.schedule_state_at(NOW) is ScheduleState.UNKNOWN
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.UNKNOWN
 
 
 # --- the word, and the shape of the answer ------------------------------------
@@ -340,15 +340,15 @@ def test_the_four_answers_are_the_four_words_the_spec_names() -> None:
     `CONTEXT.md`, so a fruitless grep there is not permission to reuse the other
     two. One token, so the two renderers stay grep-comparable.
     """
-    assert {state.value for state in ScheduleState} == {
+    assert {state.value for state in RoadmapScheduleState} == {
         "paused",
         "running",
         "starved",
         "unknown",
     }
-    assert ScheduleState.STARVED.value == "starved"
+    assert RoadmapScheduleState.STARVED.value == "starved"
     # A renderer interpolating the state directly gets the word, not the repr.
-    assert f"{ScheduleState.STARVED}" == "starved"
+    assert f"{RoadmapScheduleState.STARVED}" == "starved"
 
 
 # --- the verdict reads the location and nothing else --------------------------
@@ -372,9 +372,9 @@ def test_the_verdict_is_pure_and_no_socket_is_opened(
 
     location = _location(last_action_started_at=_started(timedelta(minutes=1)))
 
-    assert location.schedule_state_at(NOW) is ScheduleState.RUNNING
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.RUNNING
     assert location.schedule_state_at(NOW) is location.schedule_state_at(NOW)
-    assert location.schedule_state in ScheduleState
+    assert location.schedule_state in RoadmapScheduleState
 
 
 def test_the_property_decides_against_the_wall_clock() -> None:
@@ -388,8 +388,8 @@ def test_the_property_decides_against_the_wall_clock() -> None:
     ticking = _location(last_action_started_at=(now - timedelta(seconds=30)).isoformat())
     starved = _location(last_action_started_at=(now - timedelta(hours=6)).isoformat())
 
-    assert ticking.schedule_state is ScheduleState.RUNNING
-    assert starved.schedule_state is ScheduleState.STARVED
+    assert ticking.schedule_state is RoadmapScheduleState.RUNNING
+    assert starved.schedule_state is RoadmapScheduleState.STARVED
 
 
 # --- the evidence half of the sentence ----------------------------------------
@@ -422,4 +422,4 @@ def test_a_start_time_in_the_future_is_not_starved() -> None:
     """
     location = _location(last_action_started_at=(NOW + timedelta(minutes=1)).isoformat())
 
-    assert location.schedule_state_at(NOW) is ScheduleState.RUNNING
+    assert location.schedule_state_at(NOW) is RoadmapScheduleState.RUNNING
