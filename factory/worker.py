@@ -306,23 +306,13 @@ class _WorkerRevisionInterceptor(Interceptor):
                 # with None. That is invisible here — the injection below still
                 # works — and fatal one seam out, where the parent reads the
                 # child's result (086-US1).
-                # `input.type` is the workflow *class* the SDK resolved, not its
-                # name: `ExecuteWorkflowInput.type` is declared `type`. Compared
-                # against the string "EpicWorkflow" this branch was False on
-                # every epic the factory has ever run, so 053's query answered
-                # `worker_revision=None` from a worker that knew its revision
-                # perfectly well — and `replace` was not even imported here, so
-                # the one line inside would have raised `NameError` the first
-                # time it ran. Found on 2026-08-22 by 082-US2, whose second
-                # acceptance scenario is this value reporting the build id a
-                # deploy just made current, live.
-                #
-                # Matched by name and *not* by identity against the imported
-                # class: workflow code runs in the SDK's sandbox, which re-imports
-                # the workflow module, so the class the interceptor is handed is
-                # a different object from the `EpicWorkflow` this module holds.
-                # `is` reads as the stricter check and is the one that silently
-                # never matches — measured on the dev server the same day.
+                # `input.type` is the workflow *class*, so the string compare
+                # this replaces was False for every epic the factory ever ran —
+                # 053's query answered None from a worker that knew its revision
+                # — and `replace` was unimported, so the line inside would have
+                # raised NameError had it fired. By *name*, not identity: the SDK
+                # sandbox re-imports the module, so `is` never matches. Both
+                # measured on the dev server, 2026-08-22 (082-US2).
                 if getattr(input.type, "__name__", "") == "EpicWorkflow" and input.args:
                     original = input.args[0]
                     if getattr(original, "worker_revision", None) is None:

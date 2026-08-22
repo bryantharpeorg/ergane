@@ -36,12 +36,11 @@ def _uninstall(_args: argparse.Namespace) -> int:
 def _deploy(args: argparse.Namespace) -> int:
     """082-US2. Thin like the two above; the refusals are the engine's.
 
-    The exit code is the one thing decided here: a deploy whose version never
-    registered has left a unit running and made nothing current (US2-S5), and
-    exiting 0 on it would tell a script that the floor had moved when it has
-    not. The report is printed either way — it names every version, which is
-    what the operator needs most on exactly that path.
-    """
+    The exit code is the one decision here: a deploy whose version never
+    registered left a unit running and made nothing current (US2-S5), and
+    exiting 0 would tell a script the floor moved when it has not. The report
+    prints either way — it names every version, which is what an operator needs
+    most on exactly that path."""
     report = deploy(resolve_layout(), args.revision)
     print(report.render())
     return EXIT_USER if report.degraded else EXIT_OK
@@ -80,10 +79,9 @@ def add_parser(subparsers: Any) -> None:
         help="put a committed revision on the floor beside the running worker",
         description=(
             "Freeze a commit into a checkout of its own outside this one, give "
-            "it its own dependency environment, start it as a versioned worker "
-            "unit beside whatever is already running, and make it current. "
-            "Nothing is restarted, so every attempt in flight finishes on the "
-            "version it started with. Re-running the same revision converges."
+            "it its own environment, start it as a versioned worker unit beside "
+            "whatever is running, and make it current. Nothing is restarted, so "
+            "every attempt in flight finishes on the version it started with."
         ),
     )
     deployer.add_argument(
@@ -91,9 +89,8 @@ def add_parser(subparsers: Any) -> None:
         nargs="?",
         default=None,
         help=(
-            "the commit to deploy — a sha, tag or branch. Defaults to HEAD, "
-            "which is refused while the tree has uncommitted changes: a deploy "
-            "ships commits, and a dirty tree has no sha to be accountable to"
+            "the commit to deploy — sha, tag or branch. Defaults to HEAD, and is "
+            "refused while the tree is dirty: a deploy ships commits"
         ),
     )
     deployer.set_defaults(run=_deploy)

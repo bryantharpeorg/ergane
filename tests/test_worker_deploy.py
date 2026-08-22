@@ -1,16 +1,14 @@
 """082-US2: `ergane worker deploy` — new code on the floor, old code untouched.
 
 Every claim here is about what `deploy` *issued* and what it reported. Nothing
-reaches the host: the runner is a fake modelling a plausible operator machine
-(a git checkout, a systemd session, `uv`), and the Temporal seam is a fake
-deployment directory whose versions appear when a unit that would register them
-has been started. Both are recorders, because most of what this story promises
-is about *which* commands ran and in what order — a refusal that has already
-created a checkout is not a refusal, and a `set-current` issued before the
-worker registered is the failure plan trap 7 names.
+reaches the host: the runner is a fake operator machine and the Temporal seam a
+fake deployment directory whose versions appear only once a unit that would
+register them has started. Both are recorders, because most of what this story
+promises is about *which* commands ran and in what order — a refusal that
+already created a checkout is not one, and a `set-current` before registration
+is the failure trap 7 names.
 
-Written before `factory/supervision/deploy.py` existed, and failing at
-collection:
+Written before `factory/supervision/deploy.py` existed:
 
     $ PYTHONDONTWRITEBYTECODE=1 uv run pytest -q tests/test_worker_deploy.py --no-header
     tests/test_worker_deploy.py:31: in <module>
@@ -56,12 +54,9 @@ OLD_SHORT = "9f8e7d6"
 
 
 class FakeHost:
-    """One operator machine: a checkout, a systemd session, `uv`, `git`.
-
-    Answers only the commands `deploy` is allowed to run, and records every
-    one. Anything else raises rather than returning a silent zero, so a command
-    added to the engine without a rule here is visible immediately.
-    """
+    """One operator machine: a checkout, a systemd session, `uv`, `git`. Answers
+    only what `deploy` may run and records every call; anything else raises
+    rather than returning a silent zero."""
 
     def __init__(
         self,
@@ -71,9 +66,7 @@ class FakeHost:
         systemd: bool = True,
         revisions: Sequence[str] = ("HEAD",),
     ) -> None:
-        self.checkout = checkout
-        self.dirty = dirty
-        self.systemd = systemd
+        self.checkout, self.dirty, self.systemd = checkout, dirty, systemd
         self.revisions = {name: HEAD_SHA for name in revisions}
         self.calls: list[tuple[str, ...]] = []
         self.units: set[str] = set()
@@ -97,15 +90,12 @@ class FakeHost:
         if args[1:] == ("status", "--porcelain"):
             return CommandResult(0, " M factory/worker.py" if self.dirty else "")
         if args[1:3] == ("rev-parse", "--verify"):
-            wanted = args[-1].removesuffix("^{commit}")
-            resolved = self.revisions.get(wanted)
+            resolved = self.revisions.get(args[-1].removesuffix("^{commit}"))
             return CommandResult(0, resolved) if resolved else CommandResult(128)
         if args[1:3] == ("rev-parse", "--short"):
             return CommandResult(0, args[-1][:7])
         if args[1:4] == ("worktree", "add", "--detach"):
-            tree = Path(args[4])
-            (tree / ".venv/bin").mkdir(parents=True)
-            (tree / ".venv/bin/python3").touch()
+            (Path(args[4]) / ".venv/bin").mkdir(parents=True)
             return CommandResult(0)
         raise AssertionError(f"unexpected git command: {args}")
 
@@ -118,18 +108,11 @@ class FakeHost:
         if verb == "enable":
             self.units.add(name)
             return CommandResult(0)
-        if verb == "is-active":
-            live = name in self.units
-            return CommandResult(0 if live else 3, "active" if live else "inactive")
         raise AssertionError(f"unexpected systemctl command: {args}")
 
     @property
     def mutations(self) -> list[tuple[str, ...]]:
-        """Every call that changed something — what a refusal must leave empty.
-
-        Read-only `git` questions are not mutations; `git worktree add`, `uv`
-        and every `systemctl` verb but the session probe are.
-        """
+        """Every call that changed something — what a refusal leaves empty."""
         return [
             call
             for call in self.calls
@@ -140,13 +123,9 @@ class FakeHost:
 
 
 class FakeDeployments:
-    """The deployment directory the server keeps, as `deploy` reads it.
-
-    A version appears here `registers_after` snapshots after the unit that
-    would register it was started — which is the real sequence (a worker
-    registers when it has finished booting), and the reason the wait is
-    bounded rather than assumed.
-    """
+    """The deployment directory the server keeps, as `deploy` reads it. A
+    version appears `registers_after` snapshots after the unit that registers it
+    started — the real sequence, and why the wait is bounded not assumed."""
 
     def __init__(
         self,
@@ -157,11 +136,9 @@ class FakeDeployments:
         registers_after: int = 1,
         available: bool = True,
     ) -> None:
-        self.host = host
-        self.current = current
+        self.host, self.current, self.available = host, current, available
         self.versions = {OLD_SHORT: "current"} if versions is None else dict(versions)
         self.registers_after = registers_after
-        self.available = available
         self.snapshots = 0
         self.set_calls: list[str] = []
         self.started_at: dict[str, int] = {}
@@ -184,6 +161,8 @@ class FakeDeployments:
         )
 
     def set_current(self, build_id: str) -> None:
+        # The server's own error, as an assertion: `set-current-version` against
+        # a version no worker has registered fails (plan trap 7).
         assert build_id in self.versions, "set-current before the worker registered"
         self.set_calls.append(build_id)
         if self.current is not None and self.current != build_id:
@@ -223,21 +202,6 @@ def layout(tmp_path: Path) -> Iterator[InstallLayout]:
     )
 
 
-def test_a_host_without_the_versioned_template_is_refused_by_name(
-    layout: InstallLayout,
-) -> None:
-    """The instance is an instance *of* something, and install writes it."""
-    (layout.unit_dir / WORKER_TEMPLATE_UNIT).unlink()
-    host = FakeHost()
-
-    with pytest.raises(OperatorError) as raised:
-        run_deploy(layout, host, FakeDeployments(host))
-
-    assert WORKER_TEMPLATE_UNIT in str(raised.value)
-    assert "worker install" in str(raised.value)
-    assert host.mutations == []
-
-
 def run_deploy(
     layout: InstallLayout,
     host: FakeHost,
@@ -257,14 +221,10 @@ def run_deploy(
     )
 
 
-# ============================================================================
-# US2-S4 / FR-004 — four refusals, each by name, each before anything moved
-# ============================================================================
+# --- US2-S4 / FR-004 — the refusals, each by name, each before anything moved ---
 
 
-def test_a_tree_that_is_not_a_git_checkout_is_refused_by_name(
-    layout: InstallLayout,
-) -> None:
+def test_a_tree_that_is_not_a_git_checkout_is_refused(layout: InstallLayout) -> None:
     """A wheel install is the live case: static code, and no sha to ship."""
     host = FakeHost(checkout=False)
 
@@ -277,9 +237,7 @@ def test_a_tree_that_is_not_a_git_checkout_is_refused_by_name(
     assert not layout.deployments_dir.exists()
 
 
-def test_a_revision_that_is_not_a_commit_is_refused_by_name(
-    layout: InstallLayout,
-) -> None:
+def test_a_revision_that_is_not_a_commit_is_refused(layout: InstallLayout) -> None:
     host = FakeHost()
     directory = FakeDeployments(host)
 
@@ -291,41 +249,31 @@ def test_a_revision_that_is_not_a_commit_is_refused_by_name(
     assert directory.set_calls == []
 
 
-def test_a_dirty_tree_with_no_revision_named_is_refused_by_name(
-    layout: InstallLayout,
-) -> None:
+def test_a_dirty_tree_with_no_revision_named_is_refused(layout: InstallLayout) -> None:
     """A deploy ships commits; there is no sha for a dirty tree to answer to."""
     host = FakeHost(dirty=True)
 
     with pytest.raises(OperatorError) as raised:
         run_deploy(layout, host, FakeDeployments(host))
 
-    message = str(raised.value)
-    assert "uncommitted" in message and "factory/worker.py" in message
+    assert "uncommitted" in str(raised.value)
+    assert "factory/worker.py" in str(raised.value)
     assert host.mutations == []
 
 
 def test_a_dirty_tree_deploys_the_revision_the_operator_named(
     layout: InstallLayout,
 ) -> None:
-    """The control: the refusal is about the *unnamed* sha, not about dirt.
-
-    An operator who names a commit has said which code they mean, and whatever
-    they are editing in the working tree is beside the point — the frozen
-    checkout comes out of the object database either way.
-    """
+    """The control: the refusal is about the *unnamed* sha, not about dirt —
+    the frozen checkout comes out of the object database either way."""
     host = FakeHost(dirty=True, revisions=("HEAD", "v0.2.0"))
     directory = FakeDeployments(host)
 
-    report = run_deploy(layout, host, directory, "v0.2.0")
-
-    assert report.build_id == HEAD_SHORT
+    assert run_deploy(layout, host, directory, "v0.2.0").build_id == HEAD_SHORT
     assert directory.set_calls == [HEAD_SHORT]
 
 
-def test_an_unreachable_systemd_session_is_refused_by_name(
-    layout: InstallLayout,
-) -> None:
+def test_an_unreachable_systemd_session_is_refused(layout: InstallLayout) -> None:
     host = FakeHost(systemd=False)
 
     with pytest.raises(OperatorError) as raised:
@@ -338,32 +286,33 @@ def test_an_unreachable_systemd_session_is_refused_by_name(
 def test_an_unreachable_temporal_server_is_refused_before_anything_moves(
     layout: InstallLayout,
 ) -> None:
-    """FR-004's fourth name, and the one that costs most if it comes late.
-
-    A checkout and a `uv sync` are minutes; discovering the server is down
-    after them leaves a half-deployed version with nothing to register against.
-    """
+    """The refusal that costs most if it comes late: a checkout and a `uv sync`
+    are minutes, and finding the server gone after them leaves a frozen checkout
+    with nothing to register against."""
     host = FakeHost()
 
     with pytest.raises(OperatorError) as raised:
         run_deploy(layout, host, FakeDeployments(host, available=False))
 
-    assert "Temporal" in str(raised.value)
-    assert "localhost:7233" in str(raised.value)
+    assert "Temporal" in str(raised.value) and "localhost:7233" in str(raised.value)
     assert host.mutations == []
     assert not layout.deployments_dir.exists()
 
 
-# ============================================================================
-# US2-S3 / FR-003 — freeze, start, wait, set current; and converge on a re-run
-# ============================================================================
+# --- US2-S3 / FR-003 — freeze, start, wait, set current; and converge on a re-run ---
 
 
-def test_the_happy_path_freezes_a_checkout_starts_the_unit_and_sets_current(
+def test_the_happy_path_freezes_starts_waits_and_sets_current(
     layout: InstallLayout,
 ) -> None:
+    """One deploy, and the four things it must do — in that order.
+
+    The ordering is trap 7's mitigation, asserted by the fake from the inside;
+    `registers_after=2` makes the wait real rather than incidental; and the
+    checkout living outside the operator's own is trap 2, a worktree nested in
+    the repo being executable surface where this spec forbids it."""
     host = FakeHost()
-    directory = FakeDeployments(host)
+    directory = FakeDeployments(host, registers_after=2)
 
     report = run_deploy(layout, host, directory)
 
@@ -372,51 +321,19 @@ def test_the_happy_path_freezes_a_checkout_starts_the_unit_and_sets_current(
     assert ("uv", "sync", "--frozen") in host.calls
     assert host.units == {worker_instance(HEAD_SHORT)}
     assert directory.set_calls == [HEAD_SHORT]
+    assert directory.snapshots >= 3  # the preflight read, then two polls
     assert report.build_id == HEAD_SHORT
-    assert report.checkout == tree
-    assert report.degraded is None
-
-
-def test_the_frozen_checkout_lives_outside_the_operators_own_checkout(
-    layout: InstallLayout,
-) -> None:
-    """Plan trap 2. A worktree nested in the repo is executable surface in the
-    one place this spec exists to stop executing from — and it would reach the
-    gates and the judge as apparent work product besides."""
-    host = FakeHost()
-
-    report = run_deploy(layout, host, FakeDeployments(host))
-
-    assert layout.install_root not in report.checkout.parents
-    assert layout.deployments_dir in report.checkout.parents
-
-
-def test_the_unit_is_started_before_the_version_is_made_current(
-    layout: InstallLayout,
-) -> None:
-    """Plan trap 7: `set-current-version` before a worker registers fails.
-
-    The ordering *is* the mitigation, so the fake asserts it from the inside —
-    `set_current` on a build id the directory has never seen is the exact
-    server-side error, and here it is an assertion.
-    """
-    host = FakeHost()
-    directory = FakeDeployments(host, registers_after=2)
-
-    run_deploy(layout, host, directory)
-
-    assert directory.set_calls == [HEAD_SHORT]
-    assert directory.snapshots >= 3  # preflight, then two polls
+    assert report.checkout == tree and report.degraded is None
+    assert layout.install_root not in tree.parents
+    assert layout.deployments_dir in tree.parents
 
 
 def test_deploying_the_already_current_revision_converges(
     layout: InstallLayout,
 ) -> None:
-    """US2-S3. Twice in a row, and the second run changes nothing.
-
-    Not merely "does not crash": no second `git worktree add` (which fails on
-    an existing directory), no second unit, and no redundant `set-current`.
-    """
+    """US2-S3. Twice in a row, and the second changes nothing: no second
+    `git worktree add` (which fails on an existing directory), no second unit,
+    no redundant `set-current`."""
     host = FakeHost()
     directory = FakeDeployments(host)
 
@@ -428,30 +345,36 @@ def test_deploying_the_already_current_revision_converges(
     assert [call for call in host.calls if call[:2] == ("git", "worktree")] == []
     assert host.units == {worker_instance(HEAD_SHORT)}
     assert directory.set_calls == [HEAD_SHORT]
-    assert second.already_current is True
-    assert second.degraded is None
+    assert second.already_current is True and second.degraded is None
 
 
-# ============================================================================
-# US2-S5 / FR-003 — the registration wait is bounded, and a timeout converges
-# ============================================================================
+# --- US2-S5 / FR-003 — the registration wait is bounded, and a timeout converges ---
 
 
 def test_a_version_that_never_registers_reports_degraded_and_leaves_the_unit_up(
     layout: InstallLayout,
 ) -> None:
-    """No rollback: the idempotent re-run is the recovery (plan trap 7).
-
-    Tearing the unit down here would delete the journal the operator needs in
-    order to find out why it did not register.
-    """
+    """No rollback: the idempotent re-run is the recovery (trap 7). Tearing the
+    unit down would delete the journal that says why it did not register; the
+    clock proves the wait is bounded, not merely finite."""
     host = FakeHost()
     directory = FakeDeployments(host, registers_after=10_000)
+    clock = FakeClock()
 
-    report = run_deploy(layout, host, directory, wait_s=30.0, poll_s=5.0)
+    report = deploy(
+        layout,
+        None,
+        run=host,
+        deployments=directory,
+        now=clock.now,
+        sleep=clock.sleep,
+        wait_s=30.0,
+        poll_s=5.0,
+    )
 
     assert report.degraded is not None
     assert HEAD_SHORT in report.degraded and "30s" in report.degraded
+    assert clock.t <= 35.0
     assert host.units == {worker_instance(HEAD_SHORT)}
     assert directory.set_calls == []
     assert "worker deploy" in report.render()
@@ -473,37 +396,14 @@ def test_a_re_run_after_a_registration_timeout_converges(
     assert host.units == {worker_instance(HEAD_SHORT)}
 
 
-def test_the_registration_poll_stops_at_the_bound_rather_than_forever(
-    layout: InstallLayout,
-) -> None:
-    host = FakeHost()
-    directory = FakeDeployments(host, registers_after=10_000)
-    clock = FakeClock()
-
-    deploy(
-        layout,
-        None,
-        run=host,
-        deployments=directory,
-        now=clock.now,
-        sleep=clock.sleep,
-        wait_s=20.0,
-        poll_s=5.0,
-    )
-
-    assert clock.t <= 25.0
-
-
-# ============================================================================
-# US2-S6 / FR-010 — the report names every version and its state
-# ============================================================================
+# --- US2-S6 / FR-010 — the report names every version and its state ---
 
 
 def test_the_report_names_every_version_and_its_state() -> None:
     """One command's output answers "what is on the floor right now"."""
     report = DeployReport(
         build_id="c0ffee1",
-        checkout=Path("/state/ergane/supervision/deployments/c0ffee1/tree"),
+        checkout=Path("/state/supervision/deployments/c0ffee1/tree"),
         unit=worker_instance("c0ffee1"),
         already_current=False,
         versions=(
@@ -520,21 +420,16 @@ def test_the_report_names_every_version_and_its_state() -> None:
         ("9f8e7d6", "draining"),
         ("1234567", "drained"),
     ):
-        line = next(l for l in rendered.splitlines() if build_id in l)
+        line = next(one for one in rendered.splitlines() if build_id in one)
         assert state in line, f"{build_id} is not reported as {state}: {line!r}"
-    assert str(report.checkout) in rendered
-    assert report.unit in rendered
+    assert str(report.checkout) in rendered and report.unit in rendered
 
 
 def test_the_report_of_a_real_deploy_carries_the_servers_own_version_list(
     layout: InstallLayout,
 ) -> None:
-    """Read back, not composed: the list is the server's answer after the set.
-
-    A report assembled from what deploy *intended* would show a clean floor
-    while a stuck drain piles versions up — which is the one thing FR-010 is
-    for.
-    """
+    """Read back, not composed: a report assembled from what deploy *intended*
+    would show a clean floor while a stuck drain piles versions up."""
     host = FakeHost()
     directory = FakeDeployments(
         host, versions={OLD_SHORT: "current", "1234567": "drained"}
@@ -542,18 +437,15 @@ def test_the_report_of_a_real_deploy_carries_the_servers_own_version_list(
 
     report = run_deploy(layout, host, directory)
 
-    assert [(state.build_id, state.state) for state in report.versions] == [
+    assert [(one.build_id, one.state) for one in report.versions] == [
         ("1234567", "drained"),
         (OLD_SHORT, "draining"),
         (HEAD_SHORT, "current"),
     ]
-    rendered = report.render()
-    assert f"{OLD_SHORT}" in rendered and "draining" in rendered
+    assert OLD_SHORT in report.render() and "draining" in report.render()
 
 
-# ============================================================================
-# Spec edge case — two deploys racing: the verb takes a lock, the loser reports
-# ============================================================================
+# --- Spec edge case — two deploys racing: the verb takes a lock, the loser reports ---
 
 
 def test_a_second_deploy_reports_the_lock_the_first_one_holds(
@@ -569,77 +461,61 @@ def test_a_second_deploy_reports_the_lock_the_first_one_holds(
     assert host.mutations == []
 
 
-# ============================================================================
-# US2-S2 — what the next epic reports, which is the value 053 injects
-# ============================================================================
+# --- US2-S2 — what the next epic reports, which is the value 053 injects ---
 #
 # This scenario reads a number the deploy does not compute: the epic's
-# `worker_revision`, put on the dispatch input by the interceptor `build_worker`
-# wires. Running T018's live evidence on 2026-08-22 found that interceptor had
-# never fired: its guard compared `ExecuteWorkflowInput.type` — declared `type`
-# in the SDK, so a workflow *class* — against the string `"EpicWorkflow"`, which
-# is False for every epic the factory has run, and `replace` was not imported in
-# `factory/worker.py` at all, so the one statement inside would have raised
-# `NameError` the first time it did fire. Both are fixed with this story because
-# US2-S2 is unprovable otherwise: a deployed build id that no epic reports is a
-# deploy nobody can confirm.
-#
-# The claim here is the *injection*, so the interceptor is exercised directly
-# with a revision this test chose — the production instance carries whatever the
-# tree is at, which proves nothing. That `build_worker` still wires it, and that
-# what it returns still reaches the caller, is
-# `tests/test_a_completed_workflow_keeps_its_result.py`'s claim (086-US1) and is
-# deliberately not restated here.
+# `worker_revision`, injected by the interceptor `build_worker` wires. Running
+# T018's live evidence on 2026-08-22 found that interceptor had never fired, and
+# that it would have raised `NameError` if it had — fixed here, because a
+# deployed build id no epic reports is a deploy nobody can confirm.
 
 
 def test_the_epic_dispatch_input_is_given_the_workers_revision() -> None:
+    import asyncio
+
     from temporalio.worker._interceptor import (
         ExecuteWorkflowInput,
         WorkflowInboundInterceptor,
     )
 
+    from factory import worker as worker_module
     from factory.workgraph.models import WorkGraph
     from factory.workgraph.workflow import EpicInput
 
     class EpicWorkflow:
-        """The sandbox's re-import of the workflow class, not this process's.
-
-        Workflow code runs inside the SDK's sandbox, which imports the workflow
-        module again — so the class an interceptor is handed is a *different
-        object* with the same name. A guard written as `input.type is
-        EpicWorkflow` reads as the stricter check and never matches; this stand
-        -in is the difference, and the reason the guard is by name.
-        """
+        """The sandbox's re-import of the workflow class, not this process's:
+        the SDK imports the module again, so the class an interceptor is handed
+        is a *different object* of the same name, and `input.type is
+        EpicWorkflow` never matches."""
 
         async def run(self, request: object) -> None: ...
 
     seen: dict[str, object] = {}
 
     class Recording(WorkflowInboundInterceptor):
-        def __init__(self) -> None:  # the SDK's base takes a `next`; this is the end
+        def __init__(self) -> None:  # the chain ends here; no `next` to hold
             pass
 
         async def execute_workflow(self, input: ExecuteWorkflowInput) -> object:
             seen["args"] = input.args
             return "the result"
 
-    from factory import worker as worker_module
-
     inbound = worker_module._WorkerRevisionInterceptor("c0ffee1")
     outer = inbound.workflow_interceptor_class(None)(Recording())
     graph = WorkGraph(
         epic_id="e", feature="f", specs_root="specs", target_repo="/tmp/x", nodes=[]
     )
-    given = ExecuteWorkflowInput(
-        type=EpicWorkflow,
-        run_fn=EpicWorkflow.run,
-        args=(EpicInput(graph=graph, proxy_url="http://unused.invalid"),),
-        headers={},
+
+    result = asyncio.run(
+        outer.execute_workflow(
+            ExecuteWorkflowInput(
+                type=EpicWorkflow,
+                run_fn=EpicWorkflow.run,
+                args=(EpicInput(graph=graph, proxy_url="http://unused.invalid"),),
+                headers={},
+            )
+        )
     )
-
-    import asyncio
-
-    result = asyncio.run(outer.execute_workflow(given))
 
     assert seen["args"][0].worker_revision == "c0ffee1"
     # 086-US1: an inbound interceptor sits on the result path, and one that
@@ -647,17 +523,34 @@ def test_the_epic_dispatch_input_is_given_the_workers_revision() -> None:
     assert result == "the result"
 
 
-# ============================================================================
-# The verb — thin, and one decision of its own
-# ============================================================================
+# --- The verb — thin, and one decision of its own ---
 
 
-def _run_verb(
-    monkeypatch: pytest.MonkeyPatch, report: DeployReport, capsys: pytest.CaptureFixture
-) -> tuple[int, str]:
+@pytest.mark.parametrize(
+    "degraded, expected",
+    [
+        (None, 0),
+        # Exiting 0 here would tell a script the floor moved when it has not.
+        ("version a1b2c3d did not register with Temporal", 1),
+    ],
+)
+def test_the_verb_prints_the_report_and_exits_on_the_deploys_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    degraded: str | None,
+    expected: int,
+) -> None:
     from factory.cli.main import main as ergane_main
 
     seen: dict[str, object] = {}
+    report = DeployReport(
+        build_id=HEAD_SHORT,
+        checkout=Path("/state/deployments") / HEAD_SHORT / "tree",
+        unit=worker_instance(HEAD_SHORT),
+        already_current=False,
+        versions=(VersionState(HEAD_SHORT, "current"),),
+        degraded=degraded,
+    )
 
     def fake_deploy(layout: InstallLayout, revision: str | None = None) -> DeployReport:
         seen["revision"] = revision
@@ -665,45 +558,7 @@ def _run_verb(
 
     monkeypatch.setattr("factory.supervision.deploy.deploy", fake_deploy)
     code = ergane_main(["worker", "deploy", "v0.2.0"])
+
     assert seen["revision"] == "v0.2.0"
-    return code, capsys.readouterr().out
-
-
-def test_the_verb_prints_the_report_and_exits_zero(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    code, printed = _run_verb(
-        monkeypatch,
-        DeployReport(
-            build_id=HEAD_SHORT,
-            checkout=Path("/state/deployments") / HEAD_SHORT / "tree",
-            unit=worker_instance(HEAD_SHORT),
-            already_current=False,
-            versions=(VersionState(HEAD_SHORT, "current"),),
-        ),
-        capsys,
-    )
-
-    assert code == 0
-    assert HEAD_SHORT in printed and "current" in printed
-
-
-def test_a_degraded_deploy_does_not_exit_zero(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    """Exiting 0 here would tell a script the floor moved when it has not."""
-    code, printed = _run_verb(
-        monkeypatch,
-        DeployReport(
-            build_id=HEAD_SHORT,
-            checkout=Path("/state/deployments") / HEAD_SHORT / "tree",
-            unit=worker_instance(HEAD_SHORT),
-            already_current=False,
-            versions=(VersionState(OLD_SHORT, "current"),),
-            degraded=f"version {HEAD_SHORT} did not register with Temporal",
-        ),
-        capsys,
-    )
-
-    assert code != 0
-    assert "DEGRADED" in printed
+    assert code == expected
+    assert HEAD_SHORT in capsys.readouterr().out

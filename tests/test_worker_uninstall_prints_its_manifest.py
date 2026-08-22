@@ -139,15 +139,8 @@ def test_the_report_names_every_removed_file_by_name(layout: InstallLayout) -> N
     rendered = report.render()
 
     assert sorted(report.removed) == sorted(
-        [
-            BRIDGE_UNIT,
-            PROBE_TIMER,
-            PROBE_UNIT,
-            SLICE_UNIT,
-            WORKER_TEMPLATE_UNIT,
-            WORKER_UNIT,
-            WRAPPER_NAME,
-        ]
+        [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT,
+         WORKER_TEMPLATE_UNIT, WORKER_UNIT, WRAPPER_NAME]
     )
     for name in report.removed:
         naming = [line for line in rendered.splitlines() if name in line]
