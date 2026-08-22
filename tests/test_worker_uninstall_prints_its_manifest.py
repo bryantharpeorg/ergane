@@ -53,8 +53,8 @@ from factory.supervision.units import (
     PROBE_UNIT,
     SLICE_UNIT,
     TEMPORAL_UNIT,
+    LEGACY_WORKER_UNIT,
     WORKER_TEMPLATE_UNIT,
-    WORKER_UNIT,
     WRAPPER_NAME,
     CommandResult,
     InstallLayout,
@@ -138,9 +138,13 @@ def test_the_report_names_every_removed_file_by_name(layout: InstallLayout) -> N
     report = uninstall(layout, run=FakeSystemctl(), open_epics=lambda: ())
     rendered = report.render()
 
+    # 082-US4 retired `ergane-worker.service`: install no longer writes it, so
+    # it is no longer among what teardown removes on a host installed today. On
+    # a host that still has one it still is — under the same provenance rule,
+    # proven in tests/test_the_unversioned_unit_retires.py.
     assert sorted(report.removed) == sorted(
         [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT,
-         WORKER_TEMPLATE_UNIT, WORKER_UNIT, WRAPPER_NAME]
+         WORKER_TEMPLATE_UNIT, WRAPPER_NAME]
     )
     for name in report.removed:
         naming = [line for line in rendered.splitlines() if name in line]
@@ -175,14 +179,16 @@ def test_the_report_says_which_acts_each_unit_received(layout: InstallLayout) ->
 
     # Enabled units: `disable --now` is two acts in one command, and both are
     # named, followed by the deletion of the file.
-    assert acts[WORKER_UNIT] == ["stopped", "disabled", "removed"]
     assert acts[BRIDGE_UNIT] == ["stopped", "disabled", "removed"]
     assert acts[PROBE_TIMER] == ["stopped", "disabled", "removed"]
     # The slice is never enabled (ENABLE_TARGETS), so it is stopped, not
     # disabled — the distinction this story exists to make visible.
     assert acts[SLICE_UNIT] == ["stopped", "removed"]
     # Neither enabled nor loaded: the probe service is pulled in by its timer,
-    # and the wrapper is a shell script.
+    # the wrapper is a shell script, and since 082-US4 the worker template is a
+    # template — what systemd enables is an instance of it, and this host has
+    # deployed none.
+    assert acts[WORKER_TEMPLATE_UNIT] == ["removed"]
     assert acts[PROBE_UNIT] == ["removed"]
     assert acts[WRAPPER_NAME] == ["removed"]
 
@@ -275,34 +281,44 @@ def test_the_slice_is_not_stopped_when_install_never_wrote_it(
 # ============================================================================
 
 
-def test_enable_targets_is_unchanged(layout: InstallLayout) -> None:
+def test_enable_targets_enables_nothing_install_does_not_write(
+    layout: InstallLayout,
+) -> None:
     """Fixing uninstall by changing install is the wrong repair.
 
     Neither the slice nor the probe *service* is enabled: the slice is pulled
     in by the `Slice=` lines that reference it and the probe service by its
     timer, so enabling either would declare a `WantedBy` systemd then has to
-    reconcile. US2 stops the slice during *uninstall* and leaves that tuple
-    exactly as it found it.
+    reconcile. US2 stops the slice during *uninstall* and left that tuple
+    exactly as it found it; the one entry that has moved since is the worker,
+    removed by 082-US4 (FR-006) because the unit it named is no longer written
+    and a template cannot be enabled in its place. The property this control
+    exists for is the same one either way — nothing is enabled that install
+    does not write.
     """
-    assert ENABLE_TARGETS == (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT, PROBE_TIMER)
+    assert ENABLE_TARGETS == (BRIDGE_UNIT, TEMPORAL_UNIT, PROBE_TIMER)
     assert ENABLE_TARGETS == (
-        "ergane-worker.service",
         "ergane-bridge.service",
         "ergane-temporal.service",
         "ergane-probe.timer",
     )
     assert SLICE_UNIT not in ENABLE_TARGETS
     assert PROBE_UNIT not in ENABLE_TARGETS
+    assert LEGACY_WORKER_UNIT not in ENABLE_TARGETS
+    assert WORKER_TEMPLATE_UNIT not in ENABLE_TARGETS
 
 
-def test_install_enables_the_four_and_stops_nothing(layout: InstallLayout) -> None:
+def test_install_enables_what_it_wrote_and_stops_nothing(
+    layout: InstallLayout,
+) -> None:
     """The control as a behaviour, not just a tuple: the slice's stop belongs
     to uninstall, and install may not have grown one."""
     fake = FakeSystemctl()
 
     install(layout, run=fake)
 
-    assert fake.index_of("enable", WORKER_UNIT) >= 0
+    assert fake.index_of("enable", BRIDGE_UNIT) >= 0
+    assert fake.index_of("enable", PROBE_TIMER) >= 0
     assert [call for call in fake.calls if "stop" in call] == []
     assert [call for call in fake.calls if "disable" in call] == []
 
@@ -324,7 +340,7 @@ def test_an_epic_in_flight_refuses_and_stops_nothing(layout: InstallLayout) -> N
     assert "epic-083-teardown" in str(raised.value)
     assert fake.calls == []
     assert (layout.unit_dir / SLICE_UNIT).is_file()
-    assert (layout.unit_dir / WORKER_UNIT).is_file()
+    assert (layout.unit_dir / WORKER_TEMPLATE_UNIT).is_file()
 
 
 def test_the_epics_are_read_before_any_command_is_issued(

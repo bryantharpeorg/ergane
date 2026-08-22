@@ -48,7 +48,12 @@ from factory.supervision.probe import (
     reap_orphans,
     run_probe,
 )
-from factory.supervision.units import BRIDGE_UNIT, CommandResult, TEMPORAL_UNIT, WORKER_UNIT
+from factory.supervision.units import (
+    BRIDGE_UNIT,
+    LEGACY_WORKER_UNIT,
+    TEMPORAL_UNIT,
+    CommandResult,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -128,7 +133,7 @@ class RecordingAdapter:
 
 def host(
     *,
-    active: Sequence[str] = (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT),
+    active: Sequence[str] = (LEGACY_WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT),
     processes: str = "",
     mem_available_kb: int = 64 * 1024 * 1024,
     uptime_s: float = 10_000.0,
@@ -343,7 +348,7 @@ def test_a_dead_worker_pages_with_its_name_and_how_long_it_has_been_down(
     )
 
     assert run.verdict.status == DEGRADED
-    assert sent.sent[0].service == WORKER_UNIT
+    assert sent.sent[0].service == LEGACY_WORKER_UNIT
     assert "not active" in sent.sent[0].condition
     assert sent.sent[0].duration_s == pytest.approx(6000.0)
 
@@ -362,7 +367,7 @@ def test_a_dead_bridge_pages_exactly_as_loudly_as_a_dead_worker(
     """
     sent = Recorder()
 
-    run = probe(tmp_path, active=(WORKER_UNIT,), alert=sent)
+    run = probe(tmp_path, active=(LEGACY_WORKER_UNIT,), alert=sent)
 
     assert run.verdict.status == DEGRADED
     assert sent.sent[0].service == BRIDGE_UNIT
@@ -417,7 +422,7 @@ def test_the_alert_goes_out_through_us1s_path_by_default(
     assert run.outcome is not None and run.outcome.delivered
     assert len(messenger.sent) == 1
     assert "ergane supervision" in messenger.sent[0].text
-    assert WORKER_UNIT in messenger.sent[0].text
+    assert LEGACY_WORKER_UNIT in messenger.sent[0].text
     assert run.exit_code == 1
 
 

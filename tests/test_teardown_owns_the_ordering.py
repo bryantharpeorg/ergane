@@ -555,7 +555,9 @@ def test_uninstall_still_honours_run_and_open_epics(tmp_path: Path) -> None:
     )
 
     assert ("systemctl", "--user", "daemon-reload") in issued
-    assert "ergane-worker.service" in report.removed
+    # The worker unit install writes, which since 082-US4 (FR-006) is the
+    # versioned template and no longer `ergane-worker.service`.
+    assert "ergane-worker@.service" in report.removed
 
 
 def test_roadmap_pause_command_still_pauses_the_schedule(

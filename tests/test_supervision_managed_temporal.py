@@ -27,7 +27,6 @@ from factory.supervision.units import (
     ENABLE_TARGETS,
     PROBE_TIMER,
     SLICE_UNIT,
-    WORKER_UNIT,
     InstallLayout,
     generated_files,
     install,

@@ -48,19 +48,33 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 from factory.cli.errors import OperatorError
 from factory.registry import resolve_state_home
 
+if TYPE_CHECKING:  # pragma: no cover - `factory.versioning` imports temporalio,
+    # and this module is imported by the probe, which is the process that runs
+    # when Temporal is the thing that died. The name is needed for a signature;
+    # the import is not needed at runtime.
+    from factory.versioning import OpenEpic
+
 SLICE_UNIT = "ergane.slice"
-WORKER_UNIT = "ergane-worker.service"
+
+#: The unversioned worker, retired by 082-US4 (FR-006). The engine no longer
+#: generates it: an in-place restart is how an epic finished on code it did not
+#: start with, and two deployment stories is how that skew comes back. The name
+#: survives for the two things still owed to a host that has one — teardown
+#: removes it under the same provenance rule as everything else, and
+#: `ergane worker migrate` retires it on its own once nothing that predates
+#: versioning is still open (FR-007).
+LEGACY_WORKER_UNIT = "ergane-worker.service"
 
 #: 082-US2: the versioned worker, one instance per deployed build id — a
 #: template because the only thing two versions differ in is the checkout they
-#: run from, which `%i` already spells. US4 retires `WORKER_UNIT` for it; until
-#: then both are generated and only the legacy one is enabled, so this story
-#: lands beside the running worker rather than underneath it.
+#: run from, which `%i` already spells. Since US4 this is the only worker the
+#: engine writes; `ergane worker deploy` is what puts an instance of it on the
+#: floor, and every attempt is pinned to the version that started it.
 WORKER_TEMPLATE_UNIT = "ergane-worker@.service"
 
 BRIDGE_UNIT = "ergane-bridge.service"
@@ -86,10 +100,22 @@ PKILL_PATTERN = "python -"
 #: Units enabled for every installation.  TEMPORAL_UNIT is added when the
 #: layout's `temporal_mode` is `managed`; it is deliberately not in this tuple
 #: because external mode must not enable a unit that was not generated.
-ENABLE_TARGETS = (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT, PROBE_TIMER)
+#:
+#: 082-US4: no worker is among them any more. A template cannot be enabled —
+#: only instances of it can — so the worker leaves this tuple rather than being
+#: replaced in it, and `ergane worker deploy` is what enables the instance that
+#: serves a version. An install on a fresh host therefore brings up the bridge
+#: and the probe timer and no worker at all, which is why `InstallReport` says
+#: so in as many words.
+ENABLE_TARGETS = (BRIDGE_UNIT, TEMPORAL_UNIT, PROBE_TIMER)
+
+#: Names this engine wrote once and no longer generates. Their provenance is
+#: carried forward across an install (`_carried_provenance`) so teardown and the
+#: migration can still prove a file on disk is the engine's rather than the
+#: operator's own.
+RETIRED_UNITS = (LEGACY_WORKER_UNIT,)
 
 _MODULES = {
-    WORKER_UNIT: "factory.worker",
     WORKER_TEMPLATE_UNIT: "factory.worker",
     BRIDGE_UNIT: "factory.notify.service",
     PROBE_UNIT: "factory.supervision.probe",
@@ -113,6 +139,29 @@ def worker_instance(build_id: str) -> str:
 def instance_build_id(unit: str) -> str:
     """The build id `unit` serves — the inverse of `worker_instance`."""
     return unit.removeprefix("ergane-worker@").removesuffix(".service")
+
+
+def deployed_instances(layout: InstallLayout) -> tuple[str, ...]:
+    """Every versioned worker unit this host has on the floor (082-US4).
+
+    Read from the frozen checkouts rather than from systemd, because those are
+    what the engine created and therefore what its provenance rules can speak
+    about: `ergane worker deploy` makes the directory before it enables the
+    instance, and a reap removes both. An instance has no file of its own —
+    systemd instantiates it from the template — so the disable is the whole of
+    what teardown owes it.
+
+    No deployments directory is a floor before its first deploy, which is a
+    state and not an error.
+    """
+    try:
+        return tuple(
+            worker_instance(entry.name)
+            for entry in sorted(layout.deployments_dir.iterdir())
+            if entry.is_dir()
+        )
+    except OSError:
+        return ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -304,7 +353,6 @@ def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
     generated = layout.generated_dir
     files: list[GeneratedFile] = [
         GeneratedFile(SLICE_UNIT, _slice_text(layout), units),
-        GeneratedFile(WORKER_UNIT, _worker_text(layout), units),
         GeneratedFile(WORKER_TEMPLATE_UNIT, _worker_template_text(layout), units),
         GeneratedFile(BRIDGE_UNIT, _bridge_text(layout), units),
         GeneratedFile(PROBE_UNIT, _probe_text(layout), units),
@@ -313,9 +361,22 @@ def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
     ]
     if _temporal_managed(layout):
         files.insert(
-            4, GeneratedFile(TEMPORAL_UNIT, _temporal_text(layout), units)
+            3, GeneratedFile(TEMPORAL_UNIT, _temporal_text(layout), units)
         )
     return tuple(files)
+
+
+def _retired_candidates(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
+    """The files the engine no longer writes but may still have to remove.
+
+    Their text is deliberately empty and never read: provenance is the digest
+    recorded at install time compared against the file on disk
+    (`_is_someone_elses`), which is the only rule that can speak about a name
+    this engine can no longer regenerate the text for.
+    """
+    return tuple(
+        GeneratedFile(name, "", layout.unit_dir) for name in RETIRED_UNITS
+    )
 
 
 def _slice_text(layout: InstallLayout) -> str:
@@ -381,16 +442,6 @@ RestartSec=10
 [Install]
 WantedBy=default.target
 """
-
-
-def _worker_text(layout: InstallLayout) -> str:
-    return _service_text(
-        layout,
-        description="ergane — factory worker (workgraph task queue)",
-        module=_MODULES[WORKER_UNIT],
-        restart="on-failure",
-        stop_timeout_s=120,
-    )
 
 
 def _worker_template_text(layout: InstallLayout) -> str:
@@ -566,6 +617,10 @@ class InstallReport:
     active: tuple[str, ...]
     enabled: tuple[str, ...]
     linger: bool
+    #: 082-US4: units an earlier install wrote and this one no longer does,
+    #: still on disk. Named because an operator who is never told the retired
+    #: worker is still there never runs the verb that removes it.
+    retired: tuple[str, ...] = ()
 
     def render(self) -> str:
         lines = [f"wrote {len(self.written)} file(s) to the unit directory"]
@@ -573,6 +628,16 @@ class InstallReport:
         if not self.linger:
             lines.append("  WARN: linger is off; user units stop at logout")
         lines += [f"  left alone (not written by ergane): {n}" for n in self.kept]
+        # No worker is enabled here any more (ENABLE_TARGETS): the floor gets
+        # one when a version is deployed onto it, and an install that said
+        # nothing would read as a supervised host with no worker on it.
+        lines.append(
+            "  the worker is versioned: `ergane worker deploy` puts one on the floor"
+        )
+        lines += [
+            f"  retired, still installed: {name} — `ergane worker migrate` removes it"
+            for name in self.retired
+        ]
         return "\n".join(lines)
 
 
@@ -634,6 +699,29 @@ class UninstallReport:
         return "\n".join(lines)
 
 
+@dataclasses.dataclass(frozen=True)
+class RetirementReport(UninstallReport):
+    """What `ergane worker migrate` retired (082-US4, FR-007).
+
+    Teardown's report shape exactly — the acts are the same acts, and an
+    operator reading one has already learned to read the other — with its own
+    headline, because "uninstalled" is what this verb is careful *not* to do:
+    the template, the instances and everything else install wrote stay where
+    they are.
+    """
+
+    def render(self) -> str:
+        lines = [f"  {name}: {', '.join(self.acts(name))}" for name in self.acted_on]
+        lines.insert(
+            0,
+            "retired the unversioned worker unit:"
+            if lines
+            else "nothing to retire: no unversioned worker unit is installed here",
+        )
+        lines += [f"  left in place (not written by ergane): {n}" for n in self.kept]
+        return "\n".join(lines)
+
+
 def install(
     layout: InstallLayout,
     *,
@@ -660,7 +748,8 @@ def install(
         generated.path.chmod(generated.mode)
         written.append(generated.name)
         fresh[generated.name] = _digest(generated.text)
-    _write_manifest(layout, fresh)
+    carried = _carried_provenance(layout, recorded)
+    _write_manifest(layout, {**carried, **fresh})
 
     runner(("systemctl", "--user", "daemon-reload"))
     # Without linger a user unit is stopped when the last session ends, which
@@ -676,7 +765,26 @@ def install(
         active=_reading(runner, "is-active"),
         enabled=_reading(runner, "is-enabled"),
         linger=linger,
+        retired=tuple(carried),
     )
+
+
+def _carried_provenance(
+    layout: InstallLayout, recorded: Mapping[str, str]
+) -> dict[str, str]:
+    """The provenance of what this engine wrote once and writes no longer.
+
+    The trap in retiring a generated file (082-US4): install rewrites the
+    manifest from what it just wrote, so a name it stopped writing falls out of
+    it on the next install — and the file is still on the host, now with nothing
+    left to prove it is the engine's. Teardown would keep the operator's worker
+    unit forever, and the migration could never remove it.
+    """
+    return {
+        name: recorded[name]
+        for name in RETIRED_UNITS
+        if name in recorded and (layout.unit_dir / name).exists()
+    }
 
 
 def uninstall(
@@ -714,6 +822,22 @@ def uninstall(
             stopped.append(name)
             disabled.append(name)
 
+    # 082-US4/US4-S3: the versioned instances, which are the workers on this
+    # floor. They are in the slice, so they are disabled here — before the stop
+    # below, for the same reason every other member is.
+    for instance in deployed_instances(layout):
+        runner(("systemctl", "--user", "disable", "--now", instance))
+        stopped.append(instance)
+        disabled.append(instance)
+
+    if LEGACY_WORKER_UNIT in recorded:
+        # The unit this engine wrote before 082-US4 retired it. Recorded means
+        # an install of ours put it there; the same `in recorded` guard the
+        # loop above uses, on a name that loop no longer names.
+        runner(("systemctl", "--user", "disable", "--now", LEGACY_WORKER_UNIT))
+        stopped.append(LEGACY_WORKER_UNIT)
+        disabled.append(LEGACY_WORKER_UNIT)
+
     if SLICE_UNIT in recorded:
         # Nothing is `WantedBy` the slice — it is pulled in by the `Slice=`
         # lines of the units just stopped, which is why it is deliberately not
@@ -728,7 +852,7 @@ def uninstall(
 
     removed: list[str] = []
     kept: list[str] = []
-    for generated in generated_files(layout):
+    for generated in generated_files(layout) + _retired_candidates(layout):
         if not generated.path.exists():
             continue
         if _is_someone_elses(generated, recorded):
@@ -740,6 +864,87 @@ def uninstall(
 
     runner(("systemctl", "--user", "daemon-reload"))
     return UninstallReport(
+        removed=tuple(removed),
+        kept=tuple(kept),
+        stopped=tuple(stopped),
+        disabled=tuple(disabled),
+    )
+
+
+def migrate_off_legacy_unit(
+    layout: InstallLayout,
+    *,
+    run: Callable[[Sequence[str]], CommandResult] | None = None,
+    open_epics: Callable[[], Sequence["OpenEpic"]] | None = None,
+) -> RetirementReport:
+    """Retire the unversioned worker unit, once nothing predates versioning.
+
+    FR-007, and the refusal is the story. `disable --now` on that unit takes its
+    whole cgroup with it — `KillMode=control-group`, which is the point — so an
+    epic still being served by it loses the attempt and the agent inside it. And
+    what survives is not stranded but *adopted*: T002's probe measured an
+    unversioned run being served by the versioned worker that became current and
+    pinning there, which is an epic finishing on code it did not start with,
+    which is what this whole spec exists to stop. So while one is open the
+    removal is refused, by name.
+
+    The other three properties are teardown's, deliberately: the epics are read
+    before anything is touched (a half-migration has no inverse verb), the file
+    is removed only while it matches what install once wrote, and re-running is
+    free — with nothing left to retire the server is never asked, because a
+    refusal about an epic nobody is going to strand is noise.
+    """
+    recorded = _read_manifest(layout)
+    on_disk = (layout.unit_dir / LEGACY_WORKER_UNIT).exists()
+    if not on_disk and LEGACY_WORKER_UNIT not in recorded:
+        return RetirementReport(removed=(), kept=())
+
+    epics = tuple((_open_epics if open_epics is None else open_epics)())
+    from factory.versioning import strandable_epics
+
+    stranded = strandable_epics(epics)
+    if stranded:
+        raise OperatorError(
+            f"refusing to remove {LEGACY_WORKER_UNIT} while {', '.join(stranded)} "
+            "predates versioning: it carries no deployment version, so stopping "
+            "that unit takes the agents it is running down with its cgroup, and "
+            "whatever survives is adopted onto whichever version is current at "
+            "its next workflow task — an epic finishing on code it did not start "
+            "with. Let it land, or kill it, then run this again"
+        )
+
+    runner = _run_command if run is None else run
+    stopped: list[str] = []
+    disabled: list[str] = []
+    if LEGACY_WORKER_UNIT in recorded:
+        # Before deleting, always: systemd holds the parsed unit in memory, and
+        # a file removed out from under a running unit leaves it up and
+        # invisible to `disable` until the next boot.
+        runner(("systemctl", "--user", "disable", "--now", LEGACY_WORKER_UNIT))
+        stopped.append(LEGACY_WORKER_UNIT)
+        disabled.append(LEGACY_WORKER_UNIT)
+
+    removed: list[str] = []
+    kept: list[str] = []
+    for candidate in _retired_candidates(layout):
+        if not candidate.path.exists():
+            continue
+        if _is_someone_elses(candidate, recorded):
+            kept.append(candidate.name)
+            continue
+        candidate.path.unlink()
+        removed.append(candidate.name)
+
+    _write_manifest(
+        layout,
+        {
+            name: digest
+            for name, digest in recorded.items()
+            if name not in RETIRED_UNITS or (layout.unit_dir / name).exists()
+        },
+    )
+    runner(("systemctl", "--user", "daemon-reload"))
+    return RetirementReport(
         removed=tuple(removed),
         kept=tuple(kept),
         stopped=tuple(stopped),
@@ -797,31 +1002,41 @@ def _write_manifest(layout: InstallLayout, units: Mapping[str, str]) -> None:
     )
 
 
-def _open_epic_ids() -> tuple[str, ...]:
-    """Which epics are open right now — FR-012's refusal, as a read.
+def _open_epics() -> tuple["OpenEpic", ...]:
+    """Every open epic, with what the server says it is versioned as.
 
-    Imported inside the function on purpose, and it stays that way when 042-US4
-    lands: the probe imports this module for the unit names, and it is the
-    process that runs when Temporal is the thing that died. A module-scope
-    Temporal import here would put a client on that path for the sake of a
-    capacity read the probe never performs. The query is the roadmap's own, so
-    a closed epic is narrowed away on the server rather than here.
+    Imported inside the function on purpose, and it stays that way: the probe
+    imports this module for the unit names, and it is the process that runs when
+    Temporal is the thing that died. A module-scope Temporal import here would
+    put a client on that path for the sake of a read the probe never performs.
+    The query is the roadmap's own, so a closed epic is narrowed away on the
+    server rather than here.
+
+    One query for both refusals — teardown's (FR-012, which needs only the ids)
+    and 082-US4's migration (which needs the versioning info too) — because two
+    reads of the same fact are two answers waiting to disagree.
     """
     import asyncio
 
     from factory.activities.roadmap_activities import _OPEN_EPIC_STATUS
     from factory.cli.nouns import _open_client
     from factory.cli.status import EPIC_ID_PREFIX
+    from factory.versioning import open_epic_from
 
-    async def listed() -> tuple[str, ...]:
+    async def listed() -> tuple["OpenEpic", ...]:
         client = await _open_client()
         found = [
-            str(execution.id)
+            open_epic_from(execution)
             async for execution in client.list_workflows(
                 f'ExecutionStatus = "{_OPEN_EPIC_STATUS}"'
             )
             if str(execution.id).startswith(EPIC_ID_PREFIX)
         ]
-        return tuple(sorted(found))
+        return tuple(sorted(found, key=lambda epic: epic.epic_id))
 
     return asyncio.run(listed())
+
+
+def _open_epic_ids() -> tuple[str, ...]:
+    """Which epics are open right now — FR-012's refusal, as a read."""
+    return tuple(epic.epic_id for epic in _open_epics())
