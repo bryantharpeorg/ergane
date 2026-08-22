@@ -1056,6 +1056,63 @@ async def test_a_pid_file_naming_a_dead_process_is_not_an_error(
     assert result.termination == Termination.COMPLETED
 
 
+async def test_with_no_recorded_predecessor_nothing_is_reaped(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+    spawn_orphan: Callable[[], subprocess.Popen[bytes]],
+) -> None:
+    """The control for 082 US5-S4: the reap is keyed on the record, not a scan.
+
+    A capped heartbeat timeout (082 FR-008) makes the false positive routine —
+    the server misses beats while the agent lives — so the retry's reap now runs
+    far more often, and every extra firing is a chance to kill the wrong thing.
+    The record is the only thing that identifies a predecessor: with none, the
+    live processes on the worker host are nobody's predecessor and must be left
+    exactly as they are.
+    """
+    bystander = spawn_orphan()
+    assert not pid_file(factory_root, EPIC, NODE).exists()
+    write_control(stub_home_dir)
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert result.termination == Termination.COMPLETED
+    assert bystander.poll() is None, "a process no pid file recorded was signalled"
+
+
+async def test_the_pid_record_never_lands_inside_the_worktree(
+    adapter: ClaudeCodeAdapter,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+    worktree: Path,
+) -> None:
+    """FR-009: the record is sidecar evidence on the worker host, like the
+    transcripts above and for the same reason.
+
+    Inside the tree it would be committed by salvage and then read by
+    `read_worktree_diff`, the gates and the judge as the attempt's own work.
+    Checked while the agent is live, because that is the only moment the file
+    exists — a clean exit clears it.
+    """
+    write_control(stub_home_dir, sleep_s=2.0)
+    path = pid_file(factory_root, EPIC, NODE)
+    assert not path.resolve().is_relative_to(worktree.resolve())
+
+    run = asyncio.create_task(adapter.run_attempt(attempt(), factory_root=factory_root))
+    try:
+        await wait_until(path.is_file, what="the pid record to be written")
+        assert not list(worktree.rglob("*.pid"))
+    finally:
+        result = await run
+
+    assert result.termination == Termination.COMPLETED
+
+
 # --- monitoring (R2) -----------------------------------------------------------
 
 
