@@ -40,7 +40,7 @@ import asyncio
 import os
 import shutil
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -51,6 +51,7 @@ from factory import registry
 from factory.activities import roadmap_activities
 from factory.cli import repo_export
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
+from factory.env import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV
 from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue.gh import GhClient
 from factory.roadmap import schedule as roadmap_schedule
@@ -320,6 +321,13 @@ def repo_forget_command(args: argparse.Namespace) -> int:
     because the records it reads live in the root that flag empties; and
     `--clean-runtime` runs last, so state is deleted only once nothing points at
     it.
+
+    083 US1 adds one refusal to the front of that list and one line to the end,
+    both about the same disagreement: the root this verb empties is derived from
+    the registry entry, while the root every other process on the host uses may
+    have been set by `ERGANE_ROOT`/`FACTORY_ROOT` to something else entirely.
+    The deletion target does not move for either (FR-001) - the environment is
+    read here to report, never to retarget.
     """
     slug = str(args.slug)
     try:
@@ -341,8 +349,11 @@ def repo_forget_command(args: argparse.Namespace) -> int:
 
     if destination is not None:
         _refuse_export_inside_runtime_root(destination, runtime_root)
+    disagreement = None
     if clean_runtime:
         _refuse_while_epics_run(slug)
+        disagreement = _override_disagreement(runtime_root)
+        _refuse_clean_runtime_with_nothing_to_empty(slug, runtime_root, disagreement)
 
     schedule_id = roadmap_schedule.schedule_id_for(slug)
     try:
@@ -385,6 +396,13 @@ def repo_forget_command(args: argparse.Namespace) -> int:
     if clean_runtime:
         emptied = _empty_runtime_root(runtime_root)
         print(f"emptied {runtime_root} ({emptied} entr{'y' if emptied == 1 else 'ies'})")
+        if disagreement is not None:
+            print(
+                f"left {disagreement.root} alone; it is the runtime root the "
+                f"environment override {disagreement.source} selects for this "
+                "host's processes, and only the root derived from the registry "
+                "entry is emptied"
+            )
         legacy = entry.path / LEGACY_FACTORY_ROOT
         if runtime_root.name != str(LEGACY_FACTORY_ROOT) and legacy.is_dir():
             print(
@@ -419,6 +437,83 @@ def runtime_root_for(repo: Path) -> Path:
     if legacy.is_dir():
         return legacy
     return modern
+
+
+@dataclass(frozen=True)
+class _RootDisagreement:
+    """A runtime root the environment names and `--clean-runtime` will not touch.
+
+    `source` is the variable that supplied it, exactly as `resolve_factory_root`
+    reports it, so the disclosure names the export the operator has to change
+    rather than the pair of variables it might have been.
+    """
+
+    root: Path
+    source: str
+
+
+def _override_disagreement(runtime_root: Path) -> _RootDisagreement | None:
+    """The root an environment override names, when it is not the one emptied.
+
+    Read to *report*, never to retarget (FR-001).  `runtime_root` is still
+    `runtime_root_for(entry.path)` and the paragraph in that function is still
+    the rule; what an operator could not see until now is that the two disagree,
+    which is how a `--clean-runtime` that emptied nothing of consequence reads
+    as a cleaned host.
+
+    `resolve_factory_root()` is consulted only once one of the two variables is
+    actually set.  Its no-override branch *creates* `.ergane/` under the current
+    directory (`factory/workgraph/worktree.py:193`) and may warn about a legacy
+    one, and a `forget` that quietly scaffolds a runtime root in whatever
+    directory the operator was standing in is a side effect this verb has never
+    had.  No override, no read, no line (FR-004).
+    """
+    if not os.environ.get(ERGANE_ROOT_ENV) and not os.environ.get(FACTORY_ROOT_ENV):
+        return None
+    root, choice, source = resolve_factory_root()
+    if choice is not RuntimeRootChoice.OVERRIDE or source is None:
+        return None
+    if root.resolve() == runtime_root.resolve():
+        return None
+    return _RootDisagreement(root=root, source=source)
+
+
+def _refuse_clean_runtime_with_nothing_to_empty(
+    slug: str, runtime_root: Path, disagreement: _RootDisagreement | None
+) -> None:
+    """Refuse a `--clean-runtime` that could not have cleaned anything (FR-003).
+
+    Only while an override disagrees.  An empty root on its own is an operator
+    emptying a repository twice and `(0 entries)` is the truth there; the same
+    line under an `ERGANE_ROOT` pointing somewhere else is the field case - exit
+    0, a congratulatory count, and a host still full.  A success message for a
+    thing that did not happen is the one failure this verb must not produce.
+
+    Computed from reads alone - the resolver triple, `is_dir()`, one listing -
+    so it lands beside `_refuse_while_epics_run` and ahead of the schedule
+    delete and the entry removal, per this command's ordering contract.
+
+    There is no acknowledgment flag, for the reason `_refuse_unsafe_removal`
+    argues below: both remedies named here cost nothing, and a door with no user
+    is only a way in.
+    """
+    if disagreement is None:
+        return
+    if runtime_root.is_dir() and list(runtime_root.iterdir()):
+        return
+    raise OperatorError(
+        f"refusing to empty the runtime root of {slug!r}: the entry-derived "
+        f"root {runtime_root} holds nothing to empty, while "
+        f"{disagreement.source} points this host's processes at "
+        f"{disagreement.root} - a different root, which --clean-runtime never "
+        "deletes.  Emptying 0 entries and exiting 0 here cannot be told from a "
+        f"host that is now clean, and {disagreement.root} would still be full.  "
+        f"Either unset {disagreement.source} and re-run, so the root this verb "
+        "empties and the root your processes use are the same one, or drop "
+        f"--clean-runtime, because {runtime_root} has nothing in it to clean; "
+        "nothing was changed",
+        code=EXIT_USER,
+    )
 
 
 def _refuse_export_inside_runtime_root(destination: Path, runtime_root: Path) -> None:
