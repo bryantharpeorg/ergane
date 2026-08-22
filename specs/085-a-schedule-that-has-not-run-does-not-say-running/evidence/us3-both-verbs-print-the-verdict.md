@@ -242,15 +242,28 @@ verbs — the guess this spec exists to stop.
 
 ## The gate
 
-`uv run pytest -q` on this tree:
+`factory.yaml` declares one gate, `uv run pytest -q`. On this tree:
 
 ```
 $ uv run pytest -q tests/test_both_verbs_agree_about_the_schedule.py
-......................                                                   [100%]
-22 passed in 0.10s
+.......................                                                  [100%]
+23 passed in 0.11s
+
+$ uv run pytest -q
+4423 passed, 52 skipped, 6 warnings in 361.26s (0:06:01)
 ```
 
-Full suite, this tree, recorded in the final commit.
+The scope this diff touches in `factory/cli/roadmap.py`, as `git diff --stat`
+sees it — two render functions and nothing else, which is trap 17's rule:
+
+```
+$ git diff HEAD~3 -- factory/cli/roadmap.py | grep '^@@'
+@@ -461,8 +461,11 @@ def _render_disposition(location: RoadmapLocation) -> str:
+@@ -476,8 +479,19 @@ def _render_status(status: RoadmapStatus) -> str:
+```
+
+No client seam near `_connect`, nothing in `roadmap_pause_command`. 083 ruled
+that seam out of its own scope and this story does not add it.
 
 ## What the gate cannot catch, and the operator should run
 
