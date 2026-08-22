@@ -23,6 +23,18 @@ parameters it already has. Nothing beneath teardown is reshaped to suit it, and
 no seam is added to `factory/cli/roadmap.py`: teardown's own table is the seam,
 so this story and 085's rewrite of that file cannot collide at landing.
 
+**What teardown keeps is a judgement it does not make for the operator** (US4).
+State is cheap to recreate and credentials are not, so the last two steps have
+opposite defaults: `--purge` empties Ergane's state home and the lock siblings
+`factory/locking.py` never unlinks, while the control-plane config and the
+secrets beside it are kept on every path there is. Both facts are reported the
+same way — one labelled line per path, kept and removed together in one block,
+so the two are told apart by their label rather than by one of them being
+absent (FR-013). The git refs an epic leaves behind are counted and named but
+never removed without `--scrub-refs`, and teardown prints the two `for-each-ref`
+incantations it used rather than pointing at `ergane build salvage`, which loads
+a compiled graph and answers a different question (FR-015).
+
 Two refusals are teardown's own, taken before the commands are:
 
 - **Dispatch that cannot be paused because no owner can be named is a refusal,
@@ -46,9 +58,12 @@ import argparse
 import asyncio
 import contextlib
 import io
-from dataclasses import dataclass
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, NoReturn, Sequence
+from typing import Any, Callable, Iterable, NoReturn, Sequence
 
 from temporalio.service import RPCError
 
@@ -57,6 +72,9 @@ from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
 from factory.cli.nouns import _open_client
 from factory.cli.repo import repo_forget_command
 from factory.cli.roadmap import roadmap_pause_command
+from factory.controlplane.config import resolve_config_path
+from factory.env import ERGANE_STATE_HOME_ENV, FACTORY_STATE_HOME_ENV
+from factory.locking import lock_path_for
 from factory.roadmap.discovery import RoadmapLocation, RoadmapOwner, resolve_roadmap
 from factory.roadmap.schedule import SPECS_DIR_NAME
 from factory.supervision.units import (
@@ -66,12 +84,16 @@ from factory.supervision.units import (
     resolve_layout,
     uninstall as uninstall_units,
 )
+from factory.verify.gates import scrubbed_env
+from factory.workgraph.worktree import GIT_TIMEOUT_S, SALVAGE_REF_ROOT, branch_name
 
-#: The three step names, in the order the spec declares them. Named constants
+#: The five step names, in the order the spec declares them. Named constants
 #: because the report, the refusals and the tests all say them.
 PAUSE_DISPATCH = "pause dispatch"
 FORGET_REPOSITORIES = "forget repositories"
 STOP_AND_REMOVE_UNITS = "stop and remove units"
+CLEAR_STATE = "clear state"
+ACCOUNT_FOR_REFS = "account for git refs"
 
 #: What `--check` promises, in the same voice as `ergane init --check`'s
 #: `writes nothing`.
@@ -92,9 +114,16 @@ class TeardownRequest:
 
     layout: InstallLayout
     check: bool = False
+    purge: bool = False
+    scrub_refs: bool = False
     lock_timeout: float = registry.DEFAULT_LOCK_TIMEOUT_S
     run: Callable[[Sequence[str]], CommandResult] | None = None
     open_epics: Callable[[], Sequence[str]] | None = None
+    #: Every registered repository, read once before step two forgets the
+    #: registry that answers the question — step five still has to account for
+    #: the refs those repositories carry. `None` means "not read yet";
+    #: `run_teardown` fills it in before the loop starts.
+    repositories: tuple[Path, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -104,12 +133,20 @@ class StepSurvey:
     Exactly one of three things: a plan with subjects to act on, a
     `nothing_to_do` that says so by name (FR-011), or a `refusal` that stops the
     verb before the next step acts (FR-012).
+
+    `notes` is what the survey *established* rather than what the step will do,
+    and it prints on every path — `--check`, a real run, and a step with nothing
+    to do alike. It exists because two of FR-013/FR-015's obligations are facts
+    about what teardown is *not* going to touch: a path it keeps, and a ref it
+    counts and leaves. Those have no acting half to print them, and a report
+    that only speaks when it deletes is the defect this spec closes.
     """
 
     plan: str
     subjects: tuple[str, ...] = ()
     nothing_to_do: bool = False
     refusal: str | None = None
+    notes: tuple[str, ...] = ()
 
 
 def _removes_nothing(_request: TeardownRequest) -> tuple[Path, ...]:
@@ -240,6 +277,15 @@ def _registered_slugs() -> tuple[str, ...]:
         raise OperatorError(str(error), code=EXIT_USER) from None
 
 
+def _registered_repositories() -> tuple[Path, ...]:
+    """Where every registered repository is, for the step that reads their refs."""
+    try:
+        entries = registry.load_registry().entries
+    except registry.RegistryError as error:
+        raise OperatorError(str(error), code=EXIT_USER) from None
+    return tuple(Path(entry.path) for entry in entries if Path(entry.path).is_dir())
+
+
 def _survey_forget(_request: TeardownRequest) -> StepSurvey:
     slugs = _registered_slugs()
     if not slugs:
@@ -314,9 +360,345 @@ def _unit_removal_targets(request: TeardownRequest) -> tuple[Path, ...]:
     return (request.layout.unit_dir, request.layout.generated_dir)
 
 
+# --- step four: clear state, keep config --------------------------------------
+
+#: Everything the engine keeps under the state home lives in this one child:
+#: `factory/registry.py`'s `ergane/repos.json` and `supervision_home()`'s
+#: `ergane/supervision`. Taken from the registry's own relative path rather than
+#: spelled a second time here.
+ERGANE_STATE_DIR = registry.DEFAULT_REGISTRY_REL.parts[0]
+
+#: The label every kept and every removed path wears. One word at the start of
+#: the line, the same width of claim on both sides, so a report can be read for
+#: what survived as easily as for what did not (FR-013).
+KEPT = "kept"
+REMOVED = "removed"
+
+_WHY_CONFIG = "the control-plane config; teardown never removes it"
+_WHY_SECRET = "beside the config, so treated as a secret"
+_WHY_STATE = "state; --purge removes it"
+
+
+def _kept(path: Path | str, why: str) -> str:
+    return f"{KEPT}: {path} ({why})"
+
+
+def _removed(subject: Path | str) -> str:
+    return f"{REMOVED}: {subject}"
+
+
+def _state_home() -> Path:
+    """Ergane's own state directory — the one tree `--purge` empties.
+
+    **Which root is emptied when an override is in force** (FR-014, 083 plan
+    trap 9, applying US1's ruling here). `--clean-runtime` derives its target
+    from a registry entry, so the environment offers it a *second* candidate and
+    the right answer is to refuse to retarget. The state home is not that shape:
+    there is one resolver, `resolve_state_home()`, and everything the engine ever
+    wrote is under whatever it returns *because that resolver is what put it
+    there*. So `--purge` empties the resolved root, override included; there is
+    no other root holding Ergane's state for it to empty instead. What an
+    override does create is a default root that is now not emptied, and
+    `_state_home_disclosure` names it.
+
+    The second half of the resolution is the safety one. `resolve_state_home()`
+    returns the *shared* XDG root — `~/.local/state` — and Ergane occupies one
+    child of it. The contents `--purge` removes are that child's and never its
+    parent's: emptying `~/.local/state` would take every other application on
+    the host with it.
+    """
+    return registry.resolve_state_home() / ERGANE_STATE_DIR
+
+
+def _state_home_disclosure(state_home: Path) -> str | None:
+    """Name the default state root when an override moved the emptied one.
+
+    In the voice of the legacy-root line at `factory/cli/repo.py`, and
+    conditional for the same reason (083 plan, trap 6): no override, no line, so
+    the line still means something the day it prints. The default comes from the
+    resolver's own helper rather than from a second reading of `XDG_STATE_HOME`
+    here — re-deriving it is exactly the drift `resolve_state_home`'s docstring
+    exists to prevent.
+    """
+    for name in (ERGANE_STATE_HOME_ENV, FACTORY_STATE_HOME_ENV):
+        if not os.environ.get(name):
+            continue
+        default = registry._xdg_state_home() / ERGANE_STATE_DIR
+        if default == state_home:
+            return None
+        return (
+            f"{name} is set, so the emptied root would be {state_home}; {default} "
+            "is the root this host would use without it, and teardown does not "
+            "empty it"
+        )
+    return None
+
+
+def _state_contents(state_home: Path) -> tuple[Path, ...]:
+    """The top-level entries `--purge` removes, and a bare run keeps and names."""
+    if not state_home.is_dir():
+        return ()
+    return tuple(sorted(state_home.iterdir()))
+
+
+def _config_paths() -> tuple[Path, ...]:
+    """The control-plane config and the secrets beside it — kept on every path.
+
+    `resolve_config_path()` (FR-013) names the file; what sits beside it in that
+    directory is what install put there, and credentials are the one thing an
+    operator cannot cheaply recreate. Lock files are excluded: they are not
+    secrets, they are the litter `factory/locking.py` leaves behind, and
+    `_config_locks` sweeps them.
+    """
+    config = resolve_config_path()
+    beside: tuple[Path, ...] = ()
+    if config.parent.is_dir():
+        beside = tuple(
+            sorted(
+                path
+                for path in config.parent.iterdir()
+                if path.is_file() and path != config and path.suffix != ".lock"
+            )
+        )
+    return ((config,) if config.is_file() else ()) + beside
+
+
+def _config_locks() -> tuple[Path, ...]:
+    """The lock files beside the config — `config.toml.lock` and its kin.
+
+    `factory/locking.py:46-49` names a lock `<target>.lock`, `:68` creates it
+    with `O_CREAT`, and `:83`/`:85` unlock and close without ever unlinking, so
+    every lock this engine has taken is still on disk. That is why
+    `config.toml.lock` outlived the field teardown. It is swept here rather than
+    by making `exclusive_lock` unlink on exit, which would race two processes
+    that both hold the path open (083 plan, trap 10).
+
+    The naming rule finds the locks whose target is still there; the glob finds
+    the orphans whose target has already gone, which the rule alone cannot reach.
+    """
+    directory = resolve_config_path().parent
+    if not directory.is_dir():
+        return ()
+    by_rule = _lock_siblings((resolve_config_path(), *directory.iterdir()))
+    return tuple(sorted(set(by_rule) | {p for p in directory.glob("*.lock") if p.is_file()}))
+
+
+def _lock_siblings(paths: Iterable[Path]) -> tuple[Path, ...]:
+    """The locks guarding `paths` that actually exist, by `factory/locking.py`'s rule."""
+    return tuple(
+        sorted({lock for lock in map(lock_path_for, paths) if lock.is_file()})
+    )
+
+
+def _survey_state(request: TeardownRequest) -> StepSurvey:
+    state_home = _state_home()
+    contents = _state_contents(state_home)
+    config = resolve_config_path()
+
+    # Only what is actually there: a kept line for a file nobody has is the same
+    # unauditable claim as a removed line for a file nothing deleted.
+    kept = [
+        _kept(path, _WHY_CONFIG if path == config else _WHY_SECRET)
+        for path in _config_paths()
+    ]
+    disclosure = _state_home_disclosure(state_home)
+
+    if not request.purge:
+        # The same paths the purge run removes, wearing the other label. That
+        # symmetry is FR-013: told apart by the label, not by absence.
+        notes = [_kept(path, _WHY_STATE) for path in contents] + kept
+        return StepSurvey(
+            plan=(
+                f"nothing to do: --purge was not given, so nothing under "
+                f"{state_home} is removed; the config at {config} is kept either way"
+            ),
+            notes=tuple(notes + ([disclosure] if disclosure else [])),
+            nothing_to_do=True,
+        )
+
+    locks = _config_locks()
+    notes = kept + ([disclosure] if disclosure else [])
+    if not contents and not locks:
+        return StepSurvey(
+            plan=f"nothing to do: {state_home} holds nothing to remove",
+            notes=tuple(notes),
+            nothing_to_do=True,
+        )
+    return StepSurvey(
+        plan=(
+            f"remove {len(contents)} entr{'y' if len(contents) == 1 else 'ies'} under "
+            f"{state_home} and {len(locks)} lock "
+            f"file{'' if len(locks) == 1 else 's'} beside {config}; "
+            "the config itself is kept"
+        ),
+        subjects=tuple(str(path) for path in contents + locks),
+        notes=tuple(notes),
+    )
+
+
+def _perform_state(_request: TeardownRequest, survey: StepSurvey) -> tuple[str, ...]:
+    """Empty the state home and sweep the locks; name every path as it goes.
+
+    The state home itself survives its contents: FR-014 removes what is *in* it,
+    and a directory an operator's `XDG_STATE_HOME` points at is not this verb's
+    to delete.
+    """
+    said: list[str] = []
+    for subject in survey.subjects:
+        path = Path(subject)
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+        said.append(_removed(path))
+    return tuple(said)
+
+
+def _state_removal_targets(request: TeardownRequest) -> tuple[Path, ...]:
+    """What `--purge` deletes out of, for the FR-018 guard to test before any act.
+
+    This is the step most able to trip that guard (083 plan, trap 8): a state
+    home an operator has pointed somewhere unfortunate is one `--purge` away
+    from the field report happening again, and `supervision_home()` puts
+    everything supervision generates under it. Without `--purge` the step deletes
+    nothing, so it offers the guard nothing to test.
+    """
+    return (_state_home(),) if request.purge else ()
+
+
+# --- step five: account for the git refs --------------------------------------
+
+#: `branch_name(epic, node)` is `factory/<epic>/<node>`, so every node branch
+#: this host ever made is under one prefix. Derived from that function rather
+#: than spelled out, so a rename moves both together.
+FACTORY_BRANCH_ROOT = f"refs/heads/{branch_name('epic', 'node').split('/')[0]}"
+
+#: The two incantations teardown prints verbatim (FR-015), and the two it runs
+#: to produce its counts — the same string on both sides, so an operator who
+#: pastes one gets the set that was counted. Deliberately *not*
+#: `ergane build salvage`: that verb loads a compiled graph
+#: (`factory/cli/nouns/build.py:1392`) and reports one epic's nodes, so it cannot
+#: answer what is on the host. Pointing at a command that will not list them is
+#: worse than leaving them unmentioned.
+LIST_BRANCHES_COMMAND = f"git for-each-ref {FACTORY_BRANCH_ROOT}/"
+LIST_SALVAGE_COMMAND = f"git for-each-ref {SALVAGE_REF_ROOT}/"
+
+
+def _git(repo: Path, *args: str) -> tuple[int, str]:
+    """One git command in `repo` — its code and its stdout, never an exception.
+
+    The shape `factory/workgraph/worktree.py:823` already uses for the engine's
+    own `for-each-ref`, with the same scrubbed environment: git spawned by the
+    factory carries no factory credentials. Teardown *reports* on refs, so a
+    registered path that is not a repository is zero refs rather than a failed
+    teardown — a host being dismantled is exactly where a stale entry lives.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            env=scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"},
+            timeout=GIT_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return completed.returncode, completed.stdout
+
+
+def _for_each_ref(repo: Path, namespace: str) -> tuple[str, ...]:
+    """Every ref under `namespace` in `repo`, by name."""
+    code, listing = _git(repo, "for-each-ref", "--format=%(refname)", namespace)
+    if code != 0:
+        return ()
+    return tuple(line for line in listing.splitlines() if line)
+
+
+def _count_refs(repositories: Sequence[Path]) -> tuple[tuple[Path, int, int], ...]:
+    """Per repository, how many node branches and how many salvage refs it holds."""
+    counted: list[tuple[Path, int, int]] = []
+    for repo in repositories:
+        branches = len(_for_each_ref(repo, f"{FACTORY_BRANCH_ROOT}/"))
+        salvage = len(_for_each_ref(repo, f"{SALVAGE_REF_ROOT}/"))
+        if branches or salvage:
+            counted.append((repo, branches, salvage))
+    return tuple(counted)
+
+
+def _survey_refs(request: TeardownRequest) -> StepSurvey:
+    repositories = request.repositories or ()
+    counted = _count_refs(repositories)
+    branches = sum(found for _, found, _ in counted)
+    salvage = sum(found for _, _, found in counted)
+    tally = (
+        f"{branches} branch(es) under {FACTORY_BRANCH_ROOT}/ and "
+        f"{salvage} ref(s) under {SALVAGE_REF_ROOT}/"
+    )
+    # The commands print on every path, including the empty host: FR-015 asks
+    # for the count and the incantation unconditionally, because "none here" is
+    # an answer an operator can only trust if they can reproduce it.
+    notes = tuple(
+        f"{repo}: {found_branches} under {FACTORY_BRANCH_ROOT}/, "
+        f"{found_salvage} under {SALVAGE_REF_ROOT}/"
+        for repo, found_branches, found_salvage in counted
+    ) + (
+        "list them yourself, one namespace each:",
+        LIST_BRANCHES_COMMAND,
+        LIST_SALVAGE_COMMAND,
+    )
+    spread = (
+        f"across {len(counted)} "
+        f"{'repository' if len(counted) == 1 else 'repositories'}"
+    )
+
+    if not repositories:
+        return StepSurvey(
+            plan=f"nothing to do: {tally}, because no repository is registered "
+            "on this host",
+            notes=notes,
+            nothing_to_do=True,
+        )
+    if not request.scrub_refs or not counted:
+        return StepSurvey(
+            plan=f"nothing to do: {tally} stay, {spread}; --scrub-refs removes them",
+            notes=notes,
+            nothing_to_do=True,
+        )
+    return StepSurvey(
+        plan=f"remove {tally}, {spread}",
+        subjects=tuple(str(repo) for repo, _, _ in counted),
+        notes=notes,
+    )
+
+
+def _perform_refs(_request: TeardownRequest, survey: StepSurvey) -> tuple[str, ...]:
+    """`--scrub-refs`: delete each ref by name, and name each one (FR-016).
+
+    Read again here rather than threaded through `subjects` so the name deleted
+    and the name reported come from the same read, for the reason
+    `_read_salvage_refs` gives for its own single `for-each-ref`.
+    """
+    said: list[str] = []
+    for subject in survey.subjects:
+        repo = Path(subject)
+        for namespace in (f"{FACTORY_BRANCH_ROOT}/", f"{SALVAGE_REF_ROOT}/"):
+            for ref in _for_each_ref(repo, namespace):
+                code, _ = _git(repo, "update-ref", "-d", ref)
+                said.append(
+                    _removed(f"{ref} (in {repo})")
+                    if code == 0
+                    else f"could not remove {ref} in {repo}; it is still there"
+                )
+    return tuple(said)
+
+
 #: The order teardown performs, and the order `--check` prints. One tuple, read
 #: by both (FR-009); tests replace it wholesale, which is the only seam this
 #: module adds.
+#:
+#: State comes after the units because `supervision_home()` puts what supervision
+#: generated *inside* the state home, and the refs come last because they are
+#: the only thing here teardown reports on without owning.
 STEPS: tuple[Step, ...] = (
     Step(name=PAUSE_DISPATCH, survey=_survey_pause, perform=_perform_pause),
     Step(name=FORGET_REPOSITORIES, survey=_survey_forget, perform=_perform_forget),
@@ -326,6 +708,13 @@ STEPS: tuple[Step, ...] = (
         perform=_perform_units,
         removal_targets=_unit_removal_targets,
     ),
+    Step(
+        name=CLEAR_STATE,
+        survey=_survey_state,
+        perform=_perform_state,
+        removal_targets=_state_removal_targets,
+    ),
+    Step(name=ACCOUNT_FOR_REFS, survey=_survey_refs, perform=_perform_refs),
 )
 
 
@@ -422,6 +811,12 @@ def run_teardown(
     """
     table = STEPS if steps is None else tuple(steps)
     _refuse_removing_this_installation(request, table)
+    if request.repositories is None:
+        # Read once, before step two forgets the registry that answers it: step
+        # five still has to account for the refs those repositories carry, and
+        # `repo forget` leaves the repository itself untouched, so the paths
+        # stay valid long after the entries naming them are gone.
+        request = replace(request, repositories=_registered_repositories())
 
     total = len(table)
     print(
@@ -441,6 +836,8 @@ def run_teardown(
             _stop(table, index, survey.refusal, done)
 
         print(f"{index}/{total} {step.name}: {survey.plan}")
+        for note in survey.notes:
+            print(f"    {note}")
         if survey.nothing_to_do:
             done.append(f"{step.name} (nothing to do)")
             continue
@@ -467,7 +864,12 @@ def _request_for(args: argparse.Namespace) -> TeardownRequest:
     (`factory/supervision/units.py`'s `_run_command` says so). Binding this
     instead of the layout keeps every test's teardown inside its own tmp tree.
     """
-    return TeardownRequest(layout=resolve_layout(), check=bool(args.check))
+    return TeardownRequest(
+        layout=resolve_layout(),
+        check=bool(args.check),
+        purge=bool(args.purge),
+        scrub_refs=bool(args.scrub_refs),
+    )
 
 
 def uninstall_command(args: argparse.Namespace) -> int:
@@ -481,9 +883,12 @@ def add_uninstall_parser(subparsers: Any) -> argparse.ArgumentParser:
         help="take Ergane off this host, in the order that is safe",
         description=(
             "Perform teardown in the declared order — pause dispatch, forget "
-            "repositories, stop and remove units — naming each step as it "
-            "completes. A step with nothing to do says so; a step that refuses "
-            "stops the verb before the next one acts."
+            "repositories, stop and remove units, clear state, account for the "
+            "git refs — naming each step as it completes. A step with nothing to "
+            "do says so; a step that refuses stops the verb before the next one "
+            "acts. The control-plane config and the secrets beside it are kept "
+            "on every path, and every surviving path is named as plainly as "
+            "every removed one."
         ),
     )
     parser.add_argument(
@@ -491,6 +896,18 @@ def add_uninstall_parser(subparsers: Any) -> argparse.ArgumentParser:
         action="store_true",
         help="print the plan a real run would follow and exit; writes, removes, "
         "stops and signals nothing",
+    )
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="also empty Ergane's state home, lock-file siblings included; the "
+        "control-plane config and the secrets beside it are kept either way",
+    )
+    parser.add_argument(
+        "--scrub-refs",
+        action="store_true",
+        help="also remove the factory/<epic>/<node> branches and the refs under "
+        "refs/salvage/ that teardown otherwise only counts and names",
     )
     parser.set_defaults(run=uninstall_command)
     return parser
