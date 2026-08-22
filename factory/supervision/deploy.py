@@ -494,17 +494,19 @@ class TemporalDeployments:
         from temporalio.service import RPCError
 
         async def asked():  # type: ignore[no-untyped-def]
-            client = await Client.connect(self._address, namespace=self._namespace)
-            return await question(client)
+            try:
+                client = await Client.connect(self._address, namespace=self._namespace)
+                return await question(client)
+            except (RPCError, RuntimeError, OSError) as error:
+                # temporalio raises a bare RuntimeError on a dead port, which is
+                # why this catches the base class rather than a transport
+                # -specific one. It is caught *inside* the coroutine so that
+                # `asyncio.run`'s own RuntimeError — a caller already holding a
+                # loop — reports the programming error it is rather than
+                # arriving as a server that is not there.
+                raise DeploymentsUnavailable(self._address, str(error)) from None
 
-        try:
-            return asyncio.run(asked())
-        except DeploymentsUnavailable:
-            raise
-        except (RPCError, RuntimeError, OSError) as error:
-            # temporalio raises a bare RuntimeError on a dead port, which is why
-            # this catches the base class rather than a transport-specific one.
-            raise DeploymentsUnavailable(self._address, str(error)) from None
+        return asyncio.run(asked())
 
     async def _describe(self, client):  # type: ignore[no-untyped-def]
         from temporalio.api.workflowservice.v1 import DescribeWorkerDeploymentRequest

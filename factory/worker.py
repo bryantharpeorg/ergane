@@ -56,7 +56,7 @@ import asyncio
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -306,7 +306,17 @@ class _WorkerRevisionInterceptor(Interceptor):
                 # with None. That is invisible here — the injection below still
                 # works — and fatal one seam out, where the parent reads the
                 # child's result (086-US1).
-                if input.type == "EpicWorkflow" and input.args:
+                # `input.type` is the workflow *class* the SDK resolved, not its
+                # name: `ExecuteWorkflowInput.type` is declared `type`. Compared
+                # against the string "EpicWorkflow" this branch was False on
+                # every epic the factory has ever run, so 053's query answered
+                # `worker_revision=None` from a worker that knew its revision
+                # perfectly well — and `replace` was not even imported here, so
+                # the one line inside would have raised `NameError` the first
+                # time it ran. Found on 2026-08-22 by 082-US2, whose second
+                # acceptance scenario is this value reporting the build id a
+                # deploy just made current, live.
+                if input.type is EpicWorkflow and input.args:
                     original = input.args[0]
                     if getattr(original, "worker_revision", None) is None:
                         input.args = (replace(original, worker_revision=revision),)

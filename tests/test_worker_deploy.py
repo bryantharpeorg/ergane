@@ -570,6 +570,72 @@ def test_a_second_deploy_reports_the_lock_the_first_one_holds(
 
 
 # ============================================================================
+# US2-S2 — what the next epic reports, which is the value 053 injects
+# ============================================================================
+#
+# This scenario reads a number the deploy does not compute: the epic's
+# `worker_revision`, put on the dispatch input by the interceptor `build_worker`
+# wires. Running T018's live evidence on 2026-08-22 found that interceptor had
+# never fired: its guard compared `ExecuteWorkflowInput.type` — declared `type`
+# in the SDK, so a workflow *class* — against the string `"EpicWorkflow"`, which
+# is False for every epic the factory has run, and `replace` was not imported in
+# `factory/worker.py` at all, so the one statement inside would have raised
+# `NameError` the first time it did fire. Both are fixed with this story because
+# US2-S2 is unprovable otherwise: a deployed build id that no epic reports is a
+# deploy nobody can confirm.
+#
+# The claim here is the *injection*, so the interceptor is exercised directly
+# with a revision this test chose — the production instance carries whatever the
+# tree is at, which proves nothing. That `build_worker` still wires it, and that
+# what it returns still reaches the caller, is
+# `tests/test_a_completed_workflow_keeps_its_result.py`'s claim (086-US1) and is
+# deliberately not restated here.
+
+
+def test_the_epic_dispatch_input_is_given_the_workers_revision() -> None:
+    from temporalio.worker._interceptor import (
+        ExecuteWorkflowInput,
+        WorkflowInboundInterceptor,
+    )
+
+    from factory.workgraph.models import WorkGraph
+    from factory.workgraph.workflow import EpicInput, EpicWorkflow
+
+    seen: dict[str, object] = {}
+
+    class Recording(WorkflowInboundInterceptor):
+        def __init__(self) -> None:  # the SDK's base takes a `next`; this is the end
+            pass
+
+        async def execute_workflow(self, input: ExecuteWorkflowInput) -> object:
+            seen["args"] = input.args
+            return "the result"
+
+    from factory import worker as worker_module
+
+    inbound = worker_module._WorkerRevisionInterceptor("c0ffee1")
+    outer = inbound.workflow_interceptor_class(None)(Recording())
+    graph = WorkGraph(
+        epic_id="e", feature="f", specs_root="specs", target_repo="/tmp/x", nodes=[]
+    )
+    given = ExecuteWorkflowInput(
+        type=EpicWorkflow,
+        run_fn=EpicWorkflow.run,
+        args=(EpicInput(graph=graph, proxy_url="http://unused.invalid"),),
+        headers={},
+    )
+
+    import asyncio
+
+    result = asyncio.run(outer.execute_workflow(given))
+
+    assert seen["args"][0].worker_revision == "c0ffee1"
+    # 086-US1: an inbound interceptor sits on the result path, and one that
+    # awaits without returning completes every workflow with None.
+    assert result == "the result"
+
+
+# ============================================================================
 # The verb — thin, and one decision of its own
 # ============================================================================
 
