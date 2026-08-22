@@ -599,7 +599,19 @@ def test_the_epic_dispatch_input_is_given_the_workers_revision() -> None:
     )
 
     from factory.workgraph.models import WorkGraph
-    from factory.workgraph.workflow import EpicInput, EpicWorkflow
+    from factory.workgraph.workflow import EpicInput
+
+    class EpicWorkflow:
+        """The sandbox's re-import of the workflow class, not this process's.
+
+        Workflow code runs inside the SDK's sandbox, which imports the workflow
+        module again — so the class an interceptor is handed is a *different
+        object* with the same name. A guard written as `input.type is
+        EpicWorkflow` reads as the stricter check and never matches; this stand
+        -in is the difference, and the reason the guard is by name.
+        """
+
+        async def run(self, request: object) -> None: ...
 
     seen: dict[str, object] = {}
 

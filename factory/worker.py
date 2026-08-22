@@ -316,7 +316,14 @@ class _WorkerRevisionInterceptor(Interceptor):
                 # time it ran. Found on 2026-08-22 by 082-US2, whose second
                 # acceptance scenario is this value reporting the build id a
                 # deploy just made current, live.
-                if input.type is EpicWorkflow and input.args:
+                #
+                # Matched by name and *not* by identity against the imported
+                # class: workflow code runs in the SDK's sandbox, which re-imports
+                # the workflow module, so the class the interceptor is handed is
+                # a different object from the `EpicWorkflow` this module holds.
+                # `is` reads as the stricter check and is the one that silently
+                # never matches — measured on the dev server the same day.
+                if getattr(input.type, "__name__", "") == "EpicWorkflow" and input.args:
                     original = input.args[0]
                     if getattr(original, "worker_revision", None) is None:
                         input.args = (replace(original, worker_revision=revision),)
