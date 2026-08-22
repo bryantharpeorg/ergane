@@ -78,7 +78,6 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from factory.activities.notify_activities import (
-        DEFAULT_CHOICES,
         ESCALATION_TIMEOUT_S,
         ExpireEscalationInput,
         SendEscalationInput,
@@ -90,6 +89,7 @@ with workflow.unsafe.imports_passed_through():
     from factory.mergequeue.models import CheckFailure
     from factory.notify.adapter import UNKNOWN_SENDER
     from factory.notify.service import SIGNAL_NAME
+    from factory.verify.ladder import ENDING_CHOICES
     from factory.verify.models import EscalationChoice
 
 #: The query an operator surface reads to learn what is waiting on them
@@ -134,6 +134,11 @@ class EscalationRequest:
     `question` is the one line a list surface shows — what is being asked, not
     the whole history. `history_summary` is the full failure record the message
     carries (SC-005); the store keeps it whole and only the message is clipped.
+
+    `choices` is what this escalation offers, and since 079-US1 it is computed
+    from the paging node's remaining budget rather than inherited from a constant
+    (FR-001). The default is the ending choices — executable on any node, never
+    empty (FR-003) — because a default cannot know a budget.
     """
 
     epic_id: str
@@ -141,7 +146,7 @@ class EscalationRequest:
     history_summary: str
     question: str = ""
     choices: list[EscalationChoice] = dataclasses.field(
-        default_factory=lambda: list(DEFAULT_CHOICES)
+        default_factory=lambda: list(ENDING_CHOICES)
     )
     timeout_s: int = ESCALATION_TIMEOUT_S
     check_evidence: tuple[CheckFailure, ...] = ()

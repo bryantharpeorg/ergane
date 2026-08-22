@@ -469,8 +469,12 @@ async def test_a_node_whose_siblings_land_forever_eventually_stops(
     # It stopped, and a human was told rather than left to notice.
     assert states(status) == {"us1": NodeState.KILLED}
     assert len(script.escalation_requests) == 1
+    # 079-US1 (FR-002): both bounds are spent when this page is raised — the
+    # free rebase and the one charged cycle — so `RETRY` is not on it. It was,
+    # until this story, and it did nothing but kill the node on the press: the
+    # resolution matched no branch in `_apply_landing_resolution` and fell
+    # through.
     assert script.escalation_requests[0].choices == [
-        EscalationChoice.RETRY,
         EscalationChoice.KILL,
         EscalationChoice.PAUSE_EPIC,
         EscalationChoice.KILL_EPIC,

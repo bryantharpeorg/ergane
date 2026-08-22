@@ -569,9 +569,13 @@ more expensive kind of idle. One cycle:
    PR (`open_landing_pr` reuses it), starting a fresh poll; `recovery_cycles += 1`.
 4. **Exhaustion** — a cycle that fails again, `recovery_cycles >= max_recovery_cycles`, a
    refused sync, or a refused re-enqueue → a landing escalation (§9) with the queue history
-   rendered and choices `[RETRY | KILL | PAUSE_EPIC]` (FR-007). `RETRY` grants exactly one
-   more cycle; 1h silence or `KILL` ends the node KILLED with the branch preserved; a
-   `PAUSE_EPIC` parks the node and pauses the epic.
+   rendered (FR-007). The offer is `[KILL | PAUSE_EPIC | KILL_EPIC]`, with `RETRY` in front
+   of them only while the recovery budget can honour it — `recovery_cycles <
+   max_recovery_cycles`, or the futile-re-enqueue page, whose `RETRY` spends no cycle
+   (079-US1). Offered, `RETRY` grants exactly one more cycle; 1h silence or `KILL` ends the
+   node KILLED with the branch preserved; a `PAUSE_EPIC` parks the node and pauses the
+   epic. A resolution the page did not offer is refused by name and recorded rather than
+   applied as a kill (079-US1 FR-004).
 
 A PR closed manually without merging is an operator kill: the node ends KILLED, the branch is
 preserved, and the notifier sends the **manual-intervention notice** (notify-only, no

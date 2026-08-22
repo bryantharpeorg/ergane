@@ -341,11 +341,25 @@ class NodeRecord:
     #: (FR-007).
     launch_failures: int = 0
     #: Set only when a node ended for a reason the ladder did not produce (US1):
-    #: today that means one thing, a crashed node coroutine. The text is surfaced
-    #: in `ergane build status` for the KILLED node.
+    #: a crashed node coroutine, or — since 079-US1 — an escalation that could
+    #: only be answered with choices nobody offered it. The text is surfaced in
+    #: `ergane build status` for the KILLED node.
     terminal_reason: str | None = None
     #: US2: provenance for externally-completed work, surfaced in status and PR.
     provenance: str | None = None
+    #: 079-US1: what the escalation this node was last paged on offered, in
+    #: offer order. Kept after the page settles, because it is what a resolution
+    #: coming back is checked against (FR-004).
+    offered_choices: list[str] = field(default_factory=list)
+    #: 079-US1: every resolution refused because this node's escalation never
+    #: offered it, in arrival order (FR-004) — the record the refusal leaves
+    #: behind, where before it fell through to the kill branch leaving nothing.
+    refused_resolutions: list[str] = field(default_factory=list)
+    #: 079-US1: the answer that ended this node — `KILL`, `PAUSE_EPIC`,
+    #: `KILL_EPIC`, the store's `EXPIRED`, or a refusal that ran out of re-asks;
+    #: `None` while no escalation has ended it. It is what stops a second page
+    #: for a node whose operator already answered (FR-005).
+    ending_answer: str | None = None
     #: 075-US3: the persona the node's *current* attempt was routed to, and the
     #: alias it runs under — the pair `ergane build status` reports for a node in
     #: flight (FR-012), where the history's own records do not exist yet. Written
