@@ -8,7 +8,7 @@ escalation message, and until this story neither said a word about either.
 
 That failure shape is measured, not feared. `033-ergane-install/us2` failed four
 times on 2026-08-15 reading "No failing gate output and no judge feedback were
-recorded" (`factory/workgraph/prompt.py:722-724`) — a byte-identical mystery,
+recorded" (`factory/workgraph/prompt.py:770-774`) — a byte-identical mystery,
 four attempts deep. A gate that dirties the worktree is the same shape one door
 further along: the gate exited 0, so its output tail says the suite was green,
 and the paths that caused the refusal live only on a field nobody rendered.
@@ -26,7 +26,7 @@ So these tests are about attribution and about invention, not about a sentence:
   story, asserted against `EVIDENCE_SECTION_GOLDEN` — the same golden
   `tests/test_prompt_output_check.py` pins, from the same corpus. A green
   gate's output is noise in a prompt whose job is to say what went wrong
-  (`factory/workgraph/prompt.py:681-683`), and that stays true.
+  (`factory/workgraph/prompt.py:701-703`), and that stays true.
 - **A gate that failed *and* wrote reports both.** `_to_result` keeps the
   command's verdict as the headline and still records the writes
   (084 FR-005), so a renderer that only looks at `DIRTIED_WORKTREE` drops the
@@ -44,7 +44,7 @@ paths and counts the rest — the discipline `_tail` already follows.
 a `GateResult` and it takes no marker in this story, deliberately.
 `render_pr_body` is documented as "the PR body for a passing node"
 (`factory/mergequeue/messages.py:66`) and `gates_passed`
-(`factory/verify/models.py:478-492`) refuses any status that is not `PASS`, so a
+(`factory/verify/models.py:501-515`) refuses any status that is not `PASS`, so a
 `DIRTIED_WORKTREE` gate cannot reach a landed PR at all. A marker there would be
 unreachable code pretending to be coverage; `test_a_dirtied_gate_never_reaches_
 a_landed_pr_body` pins the reasoning instead of the branch, so if that premise

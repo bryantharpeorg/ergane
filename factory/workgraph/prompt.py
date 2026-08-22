@@ -347,11 +347,10 @@ _OUTPUT_CHECK_UNEXPLAINED = (
 #: not know turns one refusal into a `CONFIG_ERROR` in 0.0s before any gate
 #: runs (`factory.yaml:38-42` records 020/US1 dying four times to prove it).
 _GATE_WROTE_INTO_THE_WORKTREE = (
-    "changed the node worktree while it ran. The judge's patch is assembled "
-    "from that worktree afterwards, so this gate edited the evidence it was "
-    "scored on — which is why it did not pass despite its exit code. Fix the "
-    "gate command so it leaves the worktree as it found it. Every path it "
-    "wrote:"
+    "changed the node worktree while it ran, and the judge's patch is assembled "
+    "from that worktree afterwards — so this gate edited the evidence it was "
+    "scored on, which is why it did not pass despite its exit code. Fix the "
+    "gate command, not the code it measured. Every path it wrote:"
 )
 
 # --- section headings ---------------------------------------------------------
