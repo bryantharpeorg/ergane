@@ -39,6 +39,7 @@ namespace has already failed on rung 1, which does propagate.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable
 
@@ -59,6 +60,69 @@ class RoadmapOwner(str, Enum):
     RUN = "run"
     #: Nothing at all.
     NONE = "none"
+
+
+class RoadmapScheduleState(str, Enum):
+    """What a schedule is *doing* — the answer that used to be `not paused`.
+
+    Four answers, because three of them were being collapsed into one. A
+    renderer asks for this and prints the word; it does not decide it, and two
+    renderers cannot disagree about a fact neither of them computes.
+
+    Named `RoadmapScheduleState` rather than `ScheduleState` because
+    `temporalio.client.ScheduleState` already owns that name and the sibling
+    module imports it (`factory.roadmap.schedule`, where it carries the paused
+    flag a schedule *declares*). Two things called `ScheduleState` in one
+    package is a collision a reader resolves by accident.
+    """
+
+    #: The operator turned dispatch off. Not a fault, and not starvation.
+    PAUSED = "paused"
+    #: A tick actually started within the grace window. What `running` was
+    #: always meant to claim.
+    RUNNING = "running"
+    #: Unpaused, and no tick has actually started for longer than the window
+    #: allows. Under the `SKIP` overlap policy this is what a wedged run looks
+    #: like from outside: every tick fires, every tick is skipped, nothing fails.
+    STARVED = "starved"
+    #: The reading could not be taken. A third answer on purpose: printing a
+    #: guess as a verdict is the defect this module is closing.
+    UNKNOWN = "unknown"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+#: How many cadence intervals may pass with no actual start before a schedule is
+#: called starved. Two, not one: a single grace tick absorbs ordinary clock and
+#: dispatch jitter, so a tick that lands a second late is not an outage. It is a
+#: chosen threshold rather than a measured one, and it is named here so the next
+#: operator can move it against evidence instead of rediscovering it inside a
+#: conditional (FR-006).
+STARVED_AFTER_INTERVALS = 2
+
+
+def _seconds_since(now: datetime, stamp: str | None) -> float | None:
+    """How long ago `stamp` was, or `None` if that cannot be said.
+
+    The location carries times as the strings `_described_time` phrased, so this
+    is the read back. Anything unparseable — an absent field, a server phrasing
+    the time some other way — is "not known" rather than a guess, because the
+    verdict must degrade to `unknown` and never raise (FR-003, FR-008). A naive
+    timestamp is read as UTC, which is what Temporal hands back and what the
+    alternative — a `TypeError` inside a status render — is worth avoiding.
+    """
+    if not isinstance(stamp, str):
+        return None
+    try:
+        started = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return (now - started).total_seconds()
 
 
 @dataclass(frozen=True)
@@ -117,6 +181,78 @@ class RoadmapLocation:
             f"no roadmap '{self.root_name}' is running here "
             f"(looked for {', then '.join(self.looked_for)})"
         )
+
+    def schedule_state_at(self, now: datetime) -> RoadmapScheduleState:
+        """`paused`, `running`, `starved` or `unknown`, decided here and once.
+
+        Both renderers used to compute this themselves, out of one boolean:
+        `running` meant `not paused`, so a schedule that had skipped every tick
+        for six hours said `running` beside a near-future `next tick`. Fixing
+        one of the two would have left the other lying. This is the fix, in the
+        shape `refusal` above already uses — a computed property phrasing a fact
+        the renderer is not entitled to invent.
+
+        Read in this order, and the order is the answer:
+
+        - **paused first**, because it is a fact that *was* read, and a paused
+          schedule not ticking is the operator's decision rather than a fault.
+          It answers even when nothing else could be read, so a degraded
+          reading never hides the one state the operator caused themselves.
+        - then **what could not be read** — no cadence, an unparseable start,
+          no history and no creation time — which is `unknown`. Never
+          `running`, never `starved` (FR-008): not knowing is a third answer,
+          and printing a guess as a verdict is this module's whole defect.
+        - then **how long since a tick actually started**, against the cadence.
+          Past `STARVED_AFTER_INTERVALS` intervals it is `starved`; inside them
+          it is `running`. A schedule that has never ticked is measured from
+          its creation instead, so one that is minutes old is running rather
+          than starved — `_find_owning_schedule` already promises such a
+          schedule is reported, and a false `starved` makes `ergane init` look
+          broken to every new user.
+
+        `skipped_overlap_count` decides nothing here, deliberately. It is a
+        lifetime counter that never decreases, so `count > 0` is a warning that
+        is permanently on — read once, ignored after, which is this outage in a
+        new costume. It is evidence for the sentence, alongside
+        `seconds_since_last_start`, and the trigger is the elapsed time.
+
+        The clock is a parameter so a caller can decide against a supplied
+        `now`; the property below supplies the wall clock. Nothing here reads a
+        client, a file or a socket — the location's own fields are the whole
+        input (FR-005).
+        """
+        if self.schedule_paused is None:
+            return RoadmapScheduleState.UNKNOWN
+        if self.schedule_paused:
+            return RoadmapScheduleState.PAUSED
+        if not isinstance(self.cadence_s, int) or self.cadence_s <= 0:
+            return RoadmapScheduleState.UNKNOWN
+        since = _seconds_since(
+            now, self.last_action_started_at or self.schedule_created_at
+        )
+        if since is None:
+            return RoadmapScheduleState.UNKNOWN
+        if since > STARVED_AFTER_INTERVALS * self.cadence_s:
+            return RoadmapScheduleState.STARVED
+        return RoadmapScheduleState.RUNNING
+
+    @property
+    def schedule_state(self) -> RoadmapScheduleState:
+        """`schedule_state_at`, decided against the wall clock — what a renderer reads."""
+        return self.schedule_state_at(datetime.now(timezone.utc))
+
+    def seconds_since_last_start(self, now: datetime) -> int | None:
+        """How long since a tick *actually* started, for the sentence to name.
+
+        The evidence half of a starved line, and the other half of what the
+        skipped count is for: neither decides the verdict, and neither should
+        be derived twice in two renderers. `None` when the schedule has never
+        ticked or the time could not be read — "how long since a tick started"
+        has no answer when none ever did, and the schedule's own age is not a
+        substitute for one.
+        """
+        elapsed = _seconds_since(now, self.last_action_started_at)
+        return None if elapsed is None else int(elapsed)
 
 
 @dataclass(frozen=True)
