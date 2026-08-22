@@ -5,7 +5,7 @@ the escalation and the bridge service that receives the press both build their
 Telegram payloads from here, so the message an operator answers and the message
 they see after answering are assembled by the same code.
 
-Four decisions carry the weight:
+Five decisions carry the weight:
 
 - **`callback_data` carries the escalation id, never the workflow id** (R11).
   Telegram rejects a callback payload over 64 bytes outright, and workflow ids
