@@ -66,6 +66,11 @@ from factory.verify.toolchain import (
     resolve_toolchain,
     system_tree_argv,
 )
+from factory.verify.worktree_snapshot import (
+    TreeSnapshot,
+    changes_between,
+    snapshot_tree,
+)
 
 #: Deadline for a gate the manifest gives no `timeouts` entry. Sourced from
 #: `VerificationConfig` rather than restated: that field is the knob an operator
@@ -1262,6 +1267,7 @@ def _run_gate_list(
     )
 
     results: list[GateResult] = []
+    before = snapshot_tree(worktree, env=env)
     for name, command in gates_view.items():
         invocation = GateInvocation(
             name=name,
@@ -1270,12 +1276,10 @@ def _run_gate_list(
             timeout_s=_resolve_timeout(name, timeouts_view, overrides),
             env=env,
         )
-        peers = limiter.acquire()
-        try:
-            outcome = backend.run(invocation)
-        finally:
-            limiter.release()
-        results.append(_to_result(invocation, outcome, peers))
+        result, before = _run_watched(
+            invocation, backend=backend, limiter=limiter, before=before, env=env
+        )
+        results.append(result)
     return results
 
 
@@ -1298,6 +1302,7 @@ def _run_gate_list_from_config(
     )
 
     results: list[GateResult] = []
+    before = snapshot_tree(worktree, env=env)
     for name, command in config.gates.items():
         invocation = GateInvocation(
             name=name,
@@ -1306,13 +1311,62 @@ def _run_gate_list_from_config(
             timeout_s=_resolve_timeout(name, config.timeouts, overrides),
             env=env,
         )
-        peers = limiter.acquire()
-        try:
-            outcome = backend.run(invocation)
-        finally:
-            limiter.release()
-        results.append(_to_result(invocation, outcome, peers))
+        result, before = _run_watched(
+            invocation, backend=backend, limiter=limiter, before=before, env=env
+        )
+        results.append(result)
     return results
+
+
+def _run_watched(
+    invocation: GateInvocation,
+    *,
+    backend: GateExecutor,
+    limiter: GateConcurrencyLimiter,
+    before: TreeSnapshot,
+    env: Mapping[str, str],
+) -> tuple[GateResult, TreeSnapshot]:
+    """Run one gate and report what running it did to the worktree (084 FR-001).
+
+    The two gate-list runners above are near-identical twins, and which one a
+    repo takes is decided by whether its worktree carries a candidate parser —
+    so the snapshotting lives here, in the one body both of them call, rather
+    than being written out twice and drifting. It wraps
+    `backend.run(invocation)` for the same reason at the other axis: that is the
+    single line `SubprocessGateExecutor`, `BwrapGateExecutor` and production's
+    `_HeartbeatingExecutor` (`factory/activities/verify_activities.py:230-258`)
+    all pass through, and a check inside any one of them is bypassed by the
+    other two. This observes; it does not prevent — the worktree stays bound
+    writable on purpose (`:625-630`), because gates that write scratch files are
+    legitimate and only their effect on the judge's patch is not.
+
+    Two things are deliberately outside the measurement. The limiter slot is
+    released before the second snapshot, because holding a host-wide slot for a
+    tree walk would make a gate's queue somebody else's wall clock; and
+    `duration_s` stays the executor's, because it measures the gate's command
+    and not the factory's bookkeeping. The "after" snapshot is returned so it
+    becomes the next gate's "before": N gates cost N+1 snapshots, not 2N, and
+    every path is attributed to exactly one gate.
+    """
+    peers = limiter.acquire()
+    try:
+        outcome = backend.run(invocation)
+    finally:
+        limiter.release()
+
+    after = snapshot_tree(invocation.cwd, env=env)
+    change = changes_between(invocation.cwd, before, after, env=env)
+    result = _to_result(
+        invocation,
+        outcome,
+        peers,
+        worktree_writes=change.paths,
+        snapshot_error=change.error,
+    )
+    # Carried forward even when it is an error: a gate that ran while the check
+    # had no readable baseline cannot be vouched for either, and fail-closed is
+    # this module's rule everywhere else.
+    return result, after
 
 
 def _resolve_timeout(
@@ -1333,6 +1387,9 @@ def _to_result(
     invocation: GateInvocation,
     outcome: ExecutionOutcome,
     concurrent_gates: int = 0,
+    *,
+    worktree_writes: tuple[str, ...] = (),
+    snapshot_error: str = "",
 ) -> GateResult:
     """Turn one execution into the evidence the verdict truth table reads.
 
@@ -1344,13 +1401,30 @@ def _to_result(
     gates were in flight when this one got its turn. Zero for a gate that ran
     alone; a count for one that ran alongside peers, so a slow verdict is
     auditable rather than mysterious.
+
+    `worktree_writes` and `snapshot_error` are what the worktree watch observed
+    (084). The status ladder puts the *command's* verdict first: a gate that
+    timed out or exited non-zero keeps that status and that exit code, because
+    it is the more actionable headline, and it still records what it wrote so
+    the picture stays complete (FR-005). Only a gate that succeeded can be
+    demoted to `DIRTIED_WORKTREE`, and it is demoted for either finding — paths
+    written, or a snapshot git refused — because a tree the check could not read
+    is a tree it may not report as clean (FR-006). Git's own message joins the
+    output tail rather than replacing it: the gate's output is where the gate's
+    explanation is.
     """
     if outcome.timed_out:
         status, exit_code = GateStatus.TIMEOUT, None
-    elif outcome.exit_code == 0:
-        status, exit_code = GateStatus.PASS, 0
-    else:
+    elif outcome.exit_code != 0:
         status, exit_code = GateStatus.FAIL, outcome.exit_code
+    elif worktree_writes or snapshot_error:
+        status, exit_code = GateStatus.DIRTIED_WORKTREE, 0
+    else:
+        status, exit_code = GateStatus.PASS, 0
+
+    tail = tail_output(outcome.output)
+    if snapshot_error:
+        tail = tail_output(f"{tail}\n[worktree snapshot failed: {snapshot_error}]")
 
     return GateResult(
         name=invocation.name,
@@ -1358,6 +1432,7 @@ def _to_result(
         status=status,
         exit_code=exit_code,
         duration_s=outcome.duration_s,
-        output_tail=tail_output(outcome.output),
+        output_tail=tail,
         concurrent_gates=concurrent_gates,
+        worktree_writes=worktree_writes,
     )
