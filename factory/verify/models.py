@@ -261,6 +261,12 @@ class FactoryConfig:
     runtime: str
     gates: dict[str, str]
     timeouts: dict[str, int] = field(default_factory=dict)
+    #: 084 FR-009. The gates this repo declares as legitimate writers, sparse
+    #: the way `timeouts` is: a gate with no entry, and a gate whose entry is
+    #: `false`, are both undeclared. A declared gate keeps PASS when it writes
+    #: (FR-010) — the declaration moves the verdict, never the recording, so the
+    #: paths it wrote stay on its `GateResult` either way.
+    writes: dict[str, bool] = field(default_factory=dict)
     standards: str | None = None
     landing_branch: str = "main"
     #: 034 FR-015. `None` means the repo declared no `roadmap:` block, which is
@@ -312,6 +318,15 @@ class GateResult:
     — the same set `worktree.diff` puts in front of the judge — because a gate
     that wrote an ignored path cannot have moved what the judge scores. A tuple
     rather than a list because this dataclass is frozen.
+
+    `writes_declared` says the target repo's manifest named this gate in its
+    `writes:` block (084 FR-010), and it is on the result rather than only in
+    the config because that is the difference between an opt-out and an audited
+    one. A declared writer keeps PASS and still carries its `worktree_writes`,
+    so the evidence reads "this gate wrote these paths, and somebody signed for
+    it" — never "this gate wrote nothing". It tracks the declaration and not the
+    run: true beside an empty `worktree_writes` is a gate that was allowed to
+    write and did not, which is a declaration an operator can now retire.
     """
 
     name: str
@@ -322,6 +337,7 @@ class GateResult:
     output_tail: str
     concurrent_gates: int = 0
     worktree_writes: tuple[str, ...] = ()
+    writes_declared: bool = False
 
 
 # Diff/artifact entities -----------------------------------------------------
