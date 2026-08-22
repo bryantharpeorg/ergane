@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import re
+import subprocess
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -29,13 +30,17 @@ import pytest
 from factory.cli.errors import OperatorError
 from factory.supervision.units import (
     BRIDGE_UNIT,
+    PKILL_PATTERN,
     PROBE_TIMER,
     PROBE_UNIT,
     SLICE_UNIT,
+    WORKER_TEMPLATE_UNIT,
     WORKER_UNIT,
     WRAPPER_NAME,
     CommandResult,
     InstallLayout,
+    _MODULES,
+    command_line,
     generated_files,
     install,
     resolve_layout,
@@ -189,10 +194,25 @@ def test_install_writes_every_unit_and_the_wrapper(layout: InstallLayout) -> Non
     report = install(layout, run=fake)
 
     assert sorted(report.written) == sorted(
-        [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT, WORKER_UNIT, WRAPPER_NAME]
+        [
+            BRIDGE_UNIT,
+            PROBE_TIMER,
+            PROBE_UNIT,
+            SLICE_UNIT,
+            WORKER_TEMPLATE_UNIT,
+            WORKER_UNIT,
+            WRAPPER_NAME,
+        ]
     )
     assert report.kept == ()
-    for name in (WORKER_UNIT, BRIDGE_UNIT, PROBE_UNIT, PROBE_TIMER, SLICE_UNIT):
+    for name in (
+        WORKER_UNIT,
+        WORKER_TEMPLATE_UNIT,
+        BRIDGE_UNIT,
+        PROBE_UNIT,
+        PROBE_TIMER,
+        SLICE_UNIT,
+    ):
         assert (layout.unit_dir / name).is_file()
     assert (layout.generated_dir / WRAPPER_NAME).is_file()
 
@@ -457,7 +477,7 @@ def test_every_service_unit_is_inside_the_slice(layout: InstallLayout) -> None:
         if directive(text, "Slice") == [SLICE_UNIT]
     }
 
-    assert in_slice == {WORKER_UNIT, BRIDGE_UNIT}
+    assert in_slice == {WORKER_UNIT, WORKER_TEMPLATE_UNIT, BRIDGE_UNIT}
 
 
 def test_the_slice_bounds_memory_and_tasks(layout: InstallLayout) -> None:
@@ -484,7 +504,15 @@ def test_uninstall_removes_exactly_what_install_created(
     report = uninstall(layout, run=FakeSystemctl(), open_epics=lambda: ())
 
     assert sorted(report.removed) == sorted(
-        [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT, WORKER_UNIT, WRAPPER_NAME]
+        [
+            BRIDGE_UNIT,
+            PROBE_TIMER,
+            PROBE_UNIT,
+            SLICE_UNIT,
+            WORKER_TEMPLATE_UNIT,
+            WORKER_UNIT,
+            WRAPPER_NAME,
+        ]
     )
     assert report.kept == ()
     assert tree(home) == before
@@ -658,7 +686,7 @@ def test_the_probe_is_the_one_generated_unit_outside_the_slice(
         if directive(text, "Slice") == [SLICE_UNIT]
     }
 
-    assert in_slice == {WORKER_UNIT, BRIDGE_UNIT}
+    assert in_slice == {WORKER_UNIT, WORKER_TEMPLATE_UNIT, BRIDGE_UNIT}
     assert directive(texts(layout)[PROBE_UNIT], "Slice") == []
 
 
@@ -703,6 +731,145 @@ def test_install_writes_the_probe_unit_and_enables_only_its_timer(
     assert PROBE_UNIT in report.written and PROBE_TIMER in report.written
     assert PROBE_TIMER in fake.issued("enable")
     assert PROBE_UNIT not in fake.issued("enable")
+
+
+# ============================================================================
+# 082-US2 / FR-003 — the versioned template, and what an instance actually runs
+# ============================================================================
+#
+# Plan traps 2 and 4. A template that versioned the unit *name* while still
+# running `WorkingDirectory={install_root}` with the installation's interpreter
+# would pass every naming assertion and deploy nothing: every version would
+# execute the operator's live checkout, which is the surface this spec exists to
+# stop executing from.
+
+
+def test_the_versioned_instance_runs_the_deployments_own_code(
+    layout: InstallLayout,
+) -> None:
+    text = texts(layout)[WORKER_TEMPLATE_UNIT]
+    tree = layout.deployment_tree("%i")
+
+    assert directive(text, "WorkingDirectory") == [str(tree)]
+    assert directive(text, "ExecStart") == [
+        f"{layout.wrapper} factory.worker {tree} {tree}/.venv/bin/python3"
+    ]
+    assert str(layout.install_root) not in text
+    assert str(layout.interpreter) not in text
+
+
+def test_the_instance_is_told_which_build_id_it_is(layout: InstallLayout) -> None:
+    """082-US1's gate, set by the unit rather than derived at boot (trap 8).
+
+    `%i` is the directory name deploy created, so systemd restarting the
+    instance in place re-registers the same version instead of minting one.
+    """
+    from factory.versioning import WORKER_BUILD_ID_ENV
+
+    assert directive(texts(layout)[WORKER_TEMPLATE_UNIT], "Environment") == [
+        f"{WORKER_BUILD_ID_ENV}=%i"
+    ]
+
+
+def test_the_deployments_root_is_inside_the_installations_own_roots(
+    layout: InstallLayout,
+) -> None:
+    """Plan trap 2's other half: the path scan is against `roots`.
+
+    A deployments directory the scan does not know about makes every generated
+    instance unit a file naming a path outside the installation — which is the
+    failure `test_no_generated_file_names_a_path_outside_the_installation`
+    reports, one story after the cause.
+    """
+    assert layout.deployments_dir in layout.roots
+    assert layout.install_root not in layout.deployment_tree("abc1234").parents
+
+
+def test_the_instances_command_line_is_not_pkill_shaped(
+    layout: InstallLayout,
+) -> None:
+    """2026-08-12 again: a deployment's interpreter is spelled `python3` too."""
+    assert PKILL_PATTERN not in command_line(
+        layout, _MODULES[WORKER_TEMPLATE_UNIT]
+    ).replace(str(layout.interpreter), str(layout.deployment_interpreter("%i")))
+
+
+def test_the_wrapper_runs_the_deployment_it_is_handed_and_still_evaluates_the_env(
+    tmp_path: Path,
+) -> None:
+    """Plan trap 4, executed rather than asserted about.
+
+    The wrapper's two optional arguments are shell defaulting, and shell
+    defaulting under `set -eu` is exactly the kind of thing that reads correctly
+    and behaves otherwise. So this runs the generated script with `/bin/sh`: a
+    stub standing in for the deployment's venv python reports the directory it
+    was started in, the arguments it received, and whether the operator's
+    environment command had been evaluated first — the credential path the
+    indirection exists for, which resolving these into `Environment=` lines
+    would have written to disk.
+    """
+    installation = tmp_path / "erg"
+    (installation / ".venv/bin").mkdir(parents=True)
+    (installation / ".venv/bin/python3").touch()
+    deployment = tmp_path / "state/ergane/supervision/deployments/c0ffee1/tree"
+    deployment.mkdir(parents=True)
+    stub = deployment / ".venv/bin/python3"
+    stub.parent.mkdir(parents=True)
+    stub.write_text(
+        '#!/bin/sh\necho "cwd=$(pwd) args=$* secret=${SOPS_PROBE:-unset}"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+    layout = InstallLayout(
+        install_root=installation,
+        interpreter=installation / ".venv/bin/python3",
+        unit_dir=tmp_path / "units",
+        generated_dir=tmp_path / "state/ergane/supervision",
+        env_command="echo export SOPS_PROBE=from-the-env-command",
+    )
+    wrapper = tmp_path / WRAPPER_NAME
+    wrapper.write_text(texts(layout)[WRAPPER_NAME], encoding="utf-8")
+
+    spoken = subprocess.run(
+        ["/bin/sh", str(wrapper), "factory.worker", str(deployment), str(stub)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert f"cwd={deployment}" in spoken
+    assert "args=-m factory.worker" in spoken
+    assert "secret=from-the-env-command" in spoken
+
+
+def test_the_wrapper_without_those_arguments_is_the_installation_it_was_written_for(
+    tmp_path: Path,
+) -> None:
+    """The control: today's units pass one argument and must be unaffected."""
+    installation = tmp_path / "erg"
+    (installation / ".venv/bin").mkdir(parents=True)
+    stub = installation / ".venv/bin/python3"
+    stub.write_text('#!/bin/sh\necho "cwd=$(pwd) args=$*"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    layout = InstallLayout(
+        install_root=installation,
+        interpreter=stub,
+        unit_dir=tmp_path / "units",
+        generated_dir=tmp_path / "state/ergane/supervision",
+    )
+    wrapper = tmp_path / WRAPPER_NAME
+    wrapper.write_text(texts(layout)[WRAPPER_NAME], encoding="utf-8")
+
+    spoken = subprocess.run(
+        ["/bin/sh", str(wrapper), "factory.worker"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert f"cwd={installation}" in spoken
+    assert "args=-m factory.worker" in spoken
 
 
 # ============================================================================
