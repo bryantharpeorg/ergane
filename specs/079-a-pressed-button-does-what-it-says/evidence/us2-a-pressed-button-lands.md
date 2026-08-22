@@ -1,63 +1,27 @@
 # US2 — a pressed button lands, or the operator is told why
 
-Evidence for SC-004 (T020) and SC-005 (T021). Regenerate with:
+Every block below is pasted stdout, with the command that produced it, run
+against this committed tree (constitution VIII).
+
+## T020 / SC-004 — the press path, enumerated from the code
+
+Printed by the test that asserts it, so table and assertion cannot disagree:
 
 ```
-uv run python specs/079-a-pressed-button-does-what-it-says/evidence/us2_press_evidence.py
+uv run pytest -s -k every_return tests/test_pressed_button_reaches_the_store.py
 ```
-
-The generator is committed beside this file (`us2_press_evidence.py`); everything
-below is its stdout, pasted rather than described (constitution VIII).
-
-## What SC-005 could and could not be on this host, stated plainly
-
-The spec asks for a press on a **real escalation** on the **live bridge**. Two
-facts about this worktree, neither of them worked around:
-
-1. **There is no live escalation to press.** `find / -name verification.db`
-   outside pytest's temp base returns nothing: this host has no installed
-   evidence store, so `ergane escalations list` has nothing to list. Trap 12
-   says to say so and paste the closest constructed equivalent, which is what
-   follows.
-2. **A live escalation must not be pressed by a node anyway.** `CLAUDE.md`'s
-   standing rule is "never press an escalation button on the operator's behalf",
-   and the one workflow running in the `factory` namespace right now is
-   `epic-079-a-pressed-button-does-what-it-says` — the epic that dispatched this
-   node. Nothing here touches it. The evidence workflow below runs in the
-   `default` namespace, on its own task queue, under its own generated id.
-
-So the press below is real in every part the host can supply and stood in for in
-exactly one:
-
-| Part | Real? |
-| --- | --- |
-| Temporal server | **yes** — `127.0.0.1:7233`, the live one on this host |
-| The workflow receiving the signal | **yes** — started, signalled, and it returned the signal it heard as its own result |
-| The signal | **yes** — `escalation_resolved(escalation_id, choice)`, same name and arity as the interpreter's |
-| The escalations store | **yes** — a real SQLite store through `factory/verify/store.py`, DDL and guarded UPDATE included |
-| `CallbackBridge` | **yes** — the shipped class, unpatched |
-| The Telegram Bot API | **no** — `scripts/ergane-env.sh` needs `sops`, which is not on this worktree's PATH, so there is no `TELEGRAM_BOT_TOKEN` here and no bridge process polling. The callback query is an object with the two methods the bridge calls (`answer`, `edit_message_text`); what it recorded is printed verbatim below. |
-
-The one thing the substitution costs is proof that Telegram delivers the toast.
-It costs nothing on the two facts the story is about: the signal reached a real
-workflow, and the real store's real row moved.
-
-## Output
 
 ```text
-==============================================================================
-T020 / SC-004 — the press path, walked from the code
-==============================================================================
 CallbackBridge.handle's call graph (follow `self.<method>(...)` transitively):
 
   _answer                0 return(s) at lines []
-  _answer_settled        3 return(s) at lines [904, 913, 922]
+  _answer_settled        3 return(s) at lines [884, 893, 902]
   _edit                  0 return(s) at lines []
-  _handle_press          8 return(s) at lines [562, 580, 591, 602, 609, 615, 629, 639]
-  _record                1 return(s) at lines [987]
-  _refuse_unauthorized   2 return(s) at lines [791, 799]
-  _signal                2 return(s) at lines [881, 882]
-  handle                 3 return(s) at lines [511, 519, 537]
+  _handle_press          8 return(s) at lines [548, 566, 577, 588, 595, 601, 615, 625]
+  _record                1 return(s) at lines [960]
+  _refuse_unauthorized   2 return(s) at lines [775, 783]
+  _signal                2 return(s) at lines [865, 866]
+  handle                 3 return(s) at lines [499, 507, 524]
 
   19 returns in total.
 
@@ -81,85 +45,99 @@ store_fails_after_the_signal    BRIDGE_ERROR      sent    pending   yes   yes
 telegram_refuses_the_toast      RESOLVED          sent    RETRY     yes   yes
 
 returns reached by the table above: 19/19   unreached: none
+```
 
-Every row is one of {signal sent + row resolved} or {a named refusal}, and every row is recorded (FR-006, FR-007).
+`signal` + `row` are FR-006: every row is either `sent` with the row carrying
+the choice, or a refusal that sent nothing and moved nothing — never blank in
+both, which is what happened at 03:16Z. `told` is the refusal reaching the
+operator; `n/a` appears once, for the update carrying no callback query, which
+is why `recorded` (FR-007) has no exceptions. `19/19` comes from walking
+`handle`'s call graph in the AST, not from a list anyone wrote (trap 8).
 
+`row_this_build_cannot_read` and `store_fails_after_the_signal` did not exist
+before this story. Both used to leave `handle` as an exception — no signal, no
+row change, no line naming the escalation — and both are now `BRIDGE_ERROR` with
+a notice and a record. They are told apart because the operator's next move is
+opposite: the first says press again, the second says do not.
+
+### The enumeration is measured, not asserted
+
+Deleting the `row_vanishes_mid_signal` entry from `BRANCHES` and re-running:
+
+```text
+E  AssertionError: these returns in CallbackBridge.handle's call graph are branches
+   no scenario reaches, so nobody can say what a press through them does:
+   ['_answer_settled:884']
+1 failed, 14 passed, 22 deselected
+```
+
+The *other* two enumerations passed on that run: `BridgeOutcome.UNKNOWN` was
+still produced by `row_is_gone`, so the outcome check saw full coverage while a
+distinct branch producing it had gone untested. That is why the return walk is
+the primary check.
+
+## T021 / SC-005 — one real press
+
+```
+uv run python specs/079-a-pressed-button-does-what-it-says/evidence/us2_press_evidence.py
+```
+
+SC-005 asks for a press on a real escalation on the live bridge. This host has
+no live escalation — no `verification.db` outside pytest's temp base — and a node
+must not press one anyway (`CLAUDE.md`: never press an escalation button on the
+operator's behalf; the only workflow in the `factory` namespace is the epic that
+dispatched this node, and nothing here touches it). So, per trap 12, the closest
+constructed equivalent, real in every part this host can supply: real Temporal
+at `127.0.0.1:7233`, a real workflow that receives the signal and returns what it
+heard, a real SQLite store through `factory/verify/store.py` including the
+guarded UPDATE, and the shipped `CallbackBridge`, unpatched — in the `default`
+namespace, on its own task queue and id.
+
+The one substitution is the Bot API: `scripts/ergane-env.sh` needs `sops`, absent
+from this worktree's PATH, so the callback query is an object with the two
+methods the bridge calls. That costs proof that Telegram delivers the toast, and
+nothing on the two facts the story is about: the signal reached a real workflow,
+and the real row moved.
+
+```text
 ==============================================================================
 T021 / SC-005 — one press, against this host's Temporal and a real store
 ==============================================================================
 temporal      : 127.0.0.1:7233, namespace 'default'
-workflow      : us2-evidence-1b4dba78 (EvidenceEscalationWaiter)
-escalation    : 0e439cfc53f1
-store         : /tmp/tmpbxfn2sty/.factory/verification.db
+workflow      : us2-evidence-ce86c855 (EvidenceEscalationWaiter)
+escalation    : 4fc53d2bf531
+store         : /tmp/tmp8eg4xbtk/.factory/verification.db
 
 row before the press:
-  escalation_id='0e439cfc53f1' | workflow_id='us2-evidence-1b4dba78' | choices='["RETRY", "KILL"]' | resolution=None | resolved_at=None | resolved_via=None
+  escalation_id='4fc53d2bf531' | workflow_id='us2-evidence-ce86c855' | choices='["RETRY", "KILL"]' | resolution=None | resolved_at=None | resolved_via=None
 
 press:
-  callback_data = 'esc:0e439cfc53f1:RETRY'
+  callback_data = 'esc:4fc53d2bf531:RETRY'
 
 outcome       : RESOLVED
 
 signal, as the workflow itself returned it:
-  escalation_resolved('0e439cfc53f1', 'RETRY')
+  escalation_resolved('4fc53d2bf531', 'RETRY')
 
 row after the press:
-  escalation_id='0e439cfc53f1' | workflow_id='us2-evidence-1b4dba78' | choices='["RETRY", "KILL"]' | resolution='RETRY' | resolved_at='2026-08-22T03:28:47Z' | resolved_via='BUTTON'
+  escalation_id='4fc53d2bf531' | workflow_id='us2-evidence-ce86c855' | choices='["RETRY", "KILL"]' | resolution='RETRY' | resolved_at='2026-08-22T03:59:46Z' | resolved_via='BUTTON'
 
 what the operator was told:
   toast: RETRY recorded.
   message now reads: ✅ Escalation resolved …
 
 what the journal recorded (FR-007):
-  escalation 0e439cfc53f1: press RESOLVED — RETRY signalled to us2-evidence-1b4dba78 and recorded
+  escalation 4fc53d2bf531: press RESOLVED — RETRY signalled to us2-evidence-ce86c855 and recorded
 
 The workflow completed on the signal, so the decision reached it: the `heard` list above is the workflow's own return value, not a recorder's.
 ```
-
-## Reading the SC-004 table
-
-- **`signal` + `row`** are FR-006: every row is either `sent` with the row
-  carrying the choice, or a refusal that sent nothing and moved nothing. No row
-  is blank in both columns — that combination is what happened at 03:16Z.
-- **`told`** is the named refusal reaching the operator. `n/a` appears once, for
-  the update that carries no callback query at all: there is no query to answer,
-  which is exactly why the next column has no exceptions.
-- **`recorded`** is FR-007: the journal line naming the escalation. It reads
-  `yes` for all fourteen branches.
-- **`returns reached: 19/19`** is the enumeration itself. The 19 came from
-  walking `CallbackBridge.handle`'s call graph in the AST, not from a list
-  anyone wrote. Drop one branch from the registry and the count drops with it —
-  `tests/test_pressed_button_reaches_the_store.py::test_every_return_in_the_press_path_is_taken_by_a_branch`
-  is the guard. Measured, not assumed — deleting the `row_vanishes_mid_signal`
-  entry from the registry and re-running gives:
-
-  ```
-  E  AssertionError: these returns in CallbackBridge.handle's call graph are branches
-     no scenario reaches, so nobody can say what a press through them does:
-     ['_answer_settled:904']
-  ```
-
-  Note what the *other* two enumerations did on that same run: they passed.
-  `BridgeOutcome.UNKNOWN` was still produced by `row_is_gone`, so the outcome
-  check saw full coverage while a distinct branch producing the same outcome had
-  gone untested. That is why the return walk is the primary check and the
-  outcome set is the secondary one.
-
-The two rows that did not exist before this story are
-`row_this_build_cannot_read` and `store_fails_after_the_signal`. Both used to
-leave `handle` as an exception — no signal, no row change, no line naming the
-escalation — and both are now `BRIDGE_ERROR` with a notice and a record. They
-are told apart because the operator's next move is opposite: the first says
-press again, the second says do not.
 
 ## Suite
 
 ```
 $ uv run pytest -q
-4177 passed, 52 skipped, 6 warnings in 318.73s (0:05:18)
-```
+4177 passed, 52 skipped, 6 warnings in 320.81s (0:05:20)
 
-```
-$ uv run pytest tests/test_pressed_button_reaches_the_store.py -q
-39 passed in 0.14s
+$ uv run pytest -q tests/test_pressed_button_reaches_the_store.py
+39 passed in 0.16s
 ```

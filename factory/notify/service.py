@@ -29,16 +29,13 @@ The order of operations in `handle` is the whole design:
    what was read before.
 5. **Nothing leaves `handle` unsaid or unwritten** (079-US2, FR-006/FR-007).
    Every branch ends in exactly one of: the signal sent and the row resolved, or
-   a named refusal handed back to the operator — and either way a line in this
-   process's journal naming the escalation id. The fifth decision is here
-   because the first four were true of every branch anyone had *listed*: on
-   2026-08-21 a press at 03:16Z sent no signal, changed no row and wrote no
-   line, because an exception raised between step 1 and step 2 left `handle`
-   through the poll loop, which is a branch that had never been named. A store
-   row this build's `EscalationChoice` cannot read, a locked database, and a
-   callback Telegram considers too old to acknowledge all reach it. It is now a
-   branch like any other: `BRIDGE_ERROR`, with a notice that says whether the
-   decision got as far as the workflow, so "press again" is never a guess.
+   a named refusal handed back to the operator — and either way a journal line
+   naming the escalation id. The first four decisions held for every branch
+   anyone had *listed*: at 03:16Z on 2026-08-21 a press sent no signal, changed
+   no row and wrote no line, because an exception left `handle` through the poll
+   loop — a branch nobody had named. An unreadable row, a locked database and a
+   callback too old to acknowledge all reach it. It is now `BRIDGE_ERROR`, whose
+   notice says whether the decision got as far as the workflow.
 
 The bridge deliberately does not own the clock. A row past `expires_at` but still
 pending is honored, because the workflow's timer is the authority on expiry — a
@@ -151,20 +148,17 @@ DEFAULT_TEMPORAL_NAMESPACE = "ergane"
 _ANSWER_NOT_OURS = "That button is not one of this factory's escalations."
 _ANSWER_UNKNOWN = "This escalation is no longer on record; nothing was changed."
 _ANSWER_NOT_OFFERED = "That choice was not offered for this escalation."
-#: The two stale refusals say the word (FR-008). A press that arrives after the
-#: hour, or after somebody else decided, is refused on purpose — the guard is
-#: what stops an old message re-answering a live node — and an operator who is
-#: only told "nothing was changed" cannot tell that from a bridge that dropped
-#: their press.
+#: The two stale refusals say the word (FR-008). The guard is what stops an old
+#: message re-answering a live node; an operator told only "nothing was changed"
+#: cannot tell that from a bridge that dropped their press.
 _ANSWER_EXPIRED = "Stale press: the hour ran out and the node was killed by default."
 _ANSWER_ALREADY = "Stale press: already resolved as {resolution}; nothing was changed."
 _ANSWER_SIGNAL_FAILED = "Could not reach the orchestrator — nothing recorded, press again."
 _ANSWER_RESOLVED = "{choice} recorded."
 
-#: The two halves of the branch that used to be an escape hatch (079-US2). They
-#: are separate because the operator's next move is opposite: before the signal,
-#: nothing happened and pressing again is right; after it, the workflow already
-#: has the decision and a second press would answer a node that has moved on.
+#: The two halves of the branch that used to be an escape hatch (079-US2), kept
+#: separate because the operator's next move is opposite: before the signal,
+#: pressing again is right; after it, the workflow already has the decision.
 _ANSWER_BRIDGE_ERROR = (
     "The bridge failed on that press ({reason}); nothing was recorded, press again."
 )
@@ -174,8 +168,7 @@ _ANSWER_BRIDGE_ERROR_SIGNALLED = (
 )
 
 #: What a press whose escalation id was never parsed is filed under, so the
-#: journal line exists even where there is no id to name (FR-007). A press with
-#: no id is still a press somebody made.
+#: journal line exists even where there is no id to name (FR-007).
 UNPARSED_ESCALATION = "<unparsed>"
 
 #: Reply answers are toasts sent as replies to the operator's message, capped by
@@ -197,10 +190,10 @@ _UNAUTHORIZED = "{identity} is not an authorized responder; nothing was changed.
 class BridgeOutcome(str, Enum):
     """What one press did — the return value of `handle`, and what tests assert.
 
-    This is the enumeration of the bridge's press-handling branches, and it is
-    the one `tests/test_pressed_button_reaches_the_store.py` holds the code to:
-    every member must be produced by a branch and every branch must produce a
-    member, so a press can never end somewhere unnamed.
+    The enumeration of the bridge's press-handling branches, and the one
+    `tests/test_pressed_button_reaches_the_store.py` holds the code to: every
+    member produced by a branch, every branch producing a member, so a press can
+    never end somewhere unnamed.
 
     No value but RESOLVED and BRIDGE_ERROR can have sent a signal. They are all
     distinct because they are distinct *operator* situations: a press that lost
@@ -218,22 +211,19 @@ class BridgeOutcome(str, Enum):
     #: value rather than a reused one — a reply that vanished into an existing
     #: outcome would be indistinguishable from one never delivered.
     UNAUTHORIZED = "UNAUTHORIZED"
-    #: 079-US2: the bridge itself failed part-way through — a row this build
-    #: cannot read, a store that refused the write, a transport that would not
-    #: acknowledge. Its own value rather than SIGNAL_FAILED, which promises the
-    #: workflow heard nothing; here it may have heard everything, and the notice
-    #: and the journal line say which.
+    #: 079-US2: the bridge itself failed part-way through — an unreadable row, a
+    #: store that refused the write, a transport that would not acknowledge. Its
+    #: own value rather than SIGNAL_FAILED, which promises the workflow heard
+    #: nothing; here it may have heard everything, and the notice says which.
     BRIDGE_ERROR = "BRIDGE_ERROR"
 
 
 @dataclass
 class _PressProgress:
-    """How far one press got, for the branch that has to answer after a crash.
+    """How far one press got, for the branch that answers after a crash.
 
-    The two facts a refusal written from an `except` needs and cannot re-derive:
-    which escalation the press named (so the journal line names it too), and
-    whether the workflow was already told (so "press again" is advice rather
-    than a guess).
+    The two facts a refusal written from an `except` cannot re-derive: which
+    escalation the press named, and whether the workflow was already told.
     """
 
     escalation_id: str = UNPARSED_ESCALATION
@@ -491,23 +481,19 @@ class CallbackBridge:
     async def handle(self, update: Any) -> BridgeOutcome:
         """Resolve one button press. Never raises, and never returns in silence.
 
-        The press is read through the adapter (041-US1): which escalation it
-        names and which choice it carries are the transport's to translate, and
-        everything after that — the lookup, the offered-choice check, the
-        signal, the guarded UPDATE and the toast — is this bridge's, unchanged.
+        The press is read through the adapter (041-US1); everything after that —
+        the lookup, the offered-choice check, the signal, the guarded UPDATE and
+        the toast — is this bridge's, unchanged.
 
-        What 079-US2 adds is the outer half. `_handle_press` is the decision
-        path; this is the promise that whatever it does, and whatever raises
-        inside it, the press ends as one named outcome with one journal line
-        naming the escalation (FR-006/FR-007). "Never raises" was written here
-        before and was true only of the shapes anyone had thought of; a store
-        row this build cannot read is a shape nobody thought of, and it left
-        through the poll loop taking the whole press with it.
+        079-US2 adds the outer half. `_handle_press` is the decision path; this
+        is the promise that whatever raises inside it, the press ends as one
+        named outcome with one journal line naming the escalation
+        (FR-006/FR-007).
         """
         query = getattr(update, "callback_query", None)
         if query is None:
-            # Not a callback at all: nobody to toast at, which makes the journal
-            # line the only record there can be — so it is not optional.
+            # Nobody to toast at, which makes the journal line the only record
+            # there can be — so it is not optional.
             return self._record(
                 UNPARSED_ESCALATION,
                 BridgeOutcome.MALFORMED,
@@ -518,10 +504,9 @@ class CallbackBridge:
         try:
             return await self._handle_press(update, query, progress)
         except Exception as exc:
-            # The branch the 03:16Z press took. Broad on purpose and terminal by
-            # design: one unreadable row must not stop the poll loop that every
-            # other escalation depends on, and it must not cost the operator
-            # their press without telling them.
+            # The branch the 03:16Z press took. Broad on purpose: one unreadable
+            # row must not stop the poll loop every other escalation depends on,
+            # and must not cost the operator their press without telling them.
             reason = type(exc).__name__
             logger.exception(
                 "escalation %s: the bridge failed part-way through a press (%s)",
@@ -551,10 +536,9 @@ class CallbackBridge:
     ) -> BridgeOutcome:
         """The decision path: parse, look up, check the offer, signal, resolve.
 
-        Unchanged in order and in outcome from what 008 landed — the four
-        numbered decisions in this module's docstring are still exactly these
-        lines. Every `return` now goes through `_record`, and every notice
-        through `_answer`, which is what makes the branches countable.
+        Unchanged in order and outcome from what 008 landed. Every `return` now
+        goes through `_record` and every notice through `_answer`, which is what
+        makes the branches countable.
         """
         press = self._adapter.relay(update)
         if press is None:
@@ -666,12 +650,10 @@ class CallbackBridge:
         poll loop that every open question depends on.
         """
         if getattr(update, "callback_query", None) is not None:
-            # `relay` reads `callback_query` before it reads `message`, so an
-            # update carrying a press relays as (escalation id, choice) — which
-            # the question machinery below would look up as a question, find
-            # nothing for, and drop. Which handler happened to see an update
-            # must not decide whether a press lands (FR-006), so a press is
-            # handled as a press at either entry.
+            # `relay` reads `callback_query` before `message`, so a press
+            # relayed here would be looked up as a question, found missing, and
+            # dropped. Which handler saw the update must not decide whether a
+            # press lands (FR-006), so a press is a press at either entry.
             return await self.handle(update)
 
         message = getattr(update, "message", None)
@@ -890,14 +872,10 @@ class CallbackBridge:
         """Answer a press on an escalation that is already terminal.
 
         The buttons were removed when it was resolved, so arriving here means a
-        redelivered callback, a double tap, or a stale message — all ordinary,
-        none of them errors.
-
-        The refusal says *stale* (FR-008). Keeping the guard is the whole point
-        — an old message re-answering a live node is worse than a dropped press
-        — but a guard that refuses without naming its reason is indistinguishable
-        from the bridge losing the press, which is the confusion this cluster of
-        stories exists to end.
+        redelivered callback, a double tap, or a stale message — all ordinary.
+        The refusal says *stale* (FR-008): keeping the guard is the whole point,
+        but a guard that refuses without naming its reason is indistinguishable
+        from the bridge losing the press.
         """
         if resolution is None:
             await self._answer(query, escalation_id, _ANSWER_UNKNOWN)
@@ -928,11 +906,9 @@ class CallbackBridge:
     async def _answer(self, query: Any, escalation_id: str, text: str) -> None:
         """Toast the operator — and journal the toast when the transport refuses.
 
-        The Bot API rejects an answer to a callback it considers too old, which
-        is the state every callback is in after a bridge restart. That is a fact
-        about the transport and not a reason to lose a decision the operator
-        made: the exception used to abort `handle` from whichever branch it was
-        raised in. The notice goes to the journal instead, so it is still
+        The Bot API rejects an answer to a callback it considers too old, the
+        state every callback is in after a bridge restart. That exception used
+        to abort `handle`; the notice now goes to the journal instead, still
         readable without a debugger (FR-007).
         """
         try:
@@ -948,9 +924,9 @@ class CallbackBridge:
     async def _edit(self, query: Any, escalation_id: str, text: str) -> None:
         """Replace the message with its resolution and take the buttons away.
 
-        Cosmetic, and therefore never fatal: a keyboard left in place invites a
-        second press, but a second press on a resolved row is already answered
-        as stale. Losing the whole press over it would not be.
+        Cosmetic, and never fatal: a keyboard left in place invites a second
+        press, but a second press on a resolved row is already answered as
+        stale. Losing the whole press over it would not be cosmetic.
         """
         try:
             await query.edit_message_text(text, reply_markup=None)
@@ -967,15 +943,10 @@ class CallbackBridge:
     ) -> BridgeOutcome:
         """Write down what one press did, and hand the outcome back (FR-007).
 
-        Returned rather than logged-then-returned at every call site so that
-        recording is not a step a branch can be written without: the only way to
-        produce an outcome on the press path is to go through here.
-
-        The bridge's journal and not the store, deliberately. The bridge owns no
-        state (R11) and the refusal branches write nothing — a press that
-        changed no row is exactly the case FR-007 is about, so a record that
-        lived in the row would not exist for it. `journalctl -u ergane-bridge`
-        is where an operator reads this.
+        Returns the outcome so recording is not a step a branch can be written
+        without: the only way to produce one on the press path is through here.
+        The journal and not the store, because the refusal branches write no row
+        — `journalctl -u ergane-bridge` is where an operator reads this.
         """
         logger.log(
             logging.INFO if outcome is BridgeOutcome.RESOLVED else logging.WARNING,

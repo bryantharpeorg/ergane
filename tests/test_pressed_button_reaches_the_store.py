@@ -1,50 +1,29 @@
 """A pressed button lands, or the operator is told why — never silence.
 
-At 03:16Z on 2026-08-21 an operator pressed a button on a live escalation and
-nothing happened: no signal reached the workflow, no row changed in the store,
-and no log line anywhere named the escalation. The press did not lose a race and
-was not refused; it *vanished*, and the reason nobody could say which branch
-swallowed it is that the branches had never been enumerated.
+At 03:16Z on 2026-08-21 a press on a live escalation did nothing: no signal, no
+row change, no log line naming it. It did not lose a race and was not refused;
+it *vanished*, and nobody could say which branch swallowed it, because the
+branches had never been enumerated.
 
 So this file does not test a fix to one branch. It enumerates the press path
-**from the code** and holds every branch in it to one contract (FR-006):
+**from the code** and holds every branch to one contract (FR-006): exactly one
+of {the signal is sent and the row is resolved} or {a named refusal comes back
+to the operator}, and either way a line naming the escalation id (FR-007).
 
-    exactly one of {the signal is sent and the row is resolved}
-    or          {a named refusal comes back to the operator},
+Three mechanical enumerations, none of them hand-written:
 
-and, either way, a line an operator can read without a debugger, naming the
-escalation id (FR-007).
+- **`_press_path()`** walks `handle`'s AST, following `self.<method>(...)`
+  transitively, so a helper joins the enumeration by being called.
+- **`_return_spans()`** collects every `return` in those methods;
+  `test_every_return_in_the_press_path_is_taken_by_a_branch` traces execution
+  with `sys.settrace` and fails on any no scenario reaches.
+- **`BridgeOutcome`** — the enumeration the module already had (trap 8): every
+  member produced by a branch, every branch producing a member.
 
-Three mechanical enumerations, none of them a hand-written list:
-
-- **`_press_path()`** walks `CallbackBridge.handle`'s AST and follows every
-  `self.<method>(...)` call transitively, so the set of methods a press can
-  return from is derived from the tree rather than remembered. Add a helper to
-  the press path and it is enumerated the moment it is called.
-- **`_return_spans()`** collects every `return` statement in those methods.
-  `test_every_return_in_the_press_path_is_taken_by_a_branch` traces the suite's
-  own execution with `sys.settrace` and fails if any of them is a branch no
-  scenario below reaches. A new unreached `return` is the 03:16Z defect coming
-  back, and this is what refuses it.
-- **`BridgeOutcome`** — the enumeration the module already had (the plan's trap
-  8). Every member must be produced by a branch here, and every branch must
-  produce a member.
-
-`BRANCHES` is the registry those three checks run over. A branch declares what
-it expects the press to do — signalled or not, row resolved or not — and the
-contract is asserted uniformly, so a branch cannot be added with a weaker
-promise than its neighbours.
-
-**The control (US2-S4, FR-008).** `stale_already_resolved`, `stale_expired` and
-`stale_race_to_expiry` are here to fail if the staleness guard is ever removed
-to make presses "land". A press on a settled escalation must stay refused, must
-send nothing new, must leave the decision that was already made standing, and
-must be *told it is stale* — an old message re-answering a live node is worse
-than a dropped press, because nobody learns the node moved on.
-
-Written before the branch-closing change exists: `_handle_press` and
-`BridgeOutcome.BRIDGE_ERROR` are named here first, so until they land this file
-fails at import.
+`BRANCHES` is the registry those checks run over, asserted uniformly so a branch
+cannot be added with a weaker promise than its neighbours. The three `stale_*`
+branches are the control (US2-S4): they fail if the staleness guard is ever
+removed to make presses "land".
 """
 
 from __future__ import annotations
@@ -77,9 +56,8 @@ from factory.verify.store import (
     insert_escalation,
 )
 
-# The fakes are 008's, imported rather than rebuilt: a second Telegram fake
-# would be a second opinion about what an update looks like, and the branch
-# enumeration below is only as honest as the shape it is driven with.
+# The fakes are 008's, imported rather than rebuilt: the enumeration below is
+# only as honest as the shape it is driven with.
 from tests.test_notify import (
     ESCALATION_ID,
     RESOLVED_AT,
@@ -93,13 +71,13 @@ from tests.test_notify import (
     press,
 )
 
-#: An identity the configured list does not carry, for the one branch that
-#: refuses before it reads anything.
+#: An identity the configured list does not carry, for the branch that refuses
+#: before it reads anything.
 INTRUDER = "@not-the-operator"
 AUTHORIZED = "@the-operator"
 
-#: What `_press_path` starts its walk from. The *only* name here that is
-#: hand-written; everything it reaches is derived.
+#: Where `_press_path` starts. The *only* hand-written name here; everything it
+#: reaches is derived.
 PRESS_ENTRY = "handle"
 
 
@@ -108,9 +86,7 @@ PRESS_ENTRY = "handle"
 
 @pytest.fixture(autouse=True)
 def telegram_transport(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The bridge relays through 008's transport unless a deployment says
-    otherwise — and a stray export must not decide which branches this file
-    walks."""
+    """A stray export must not decide which branches this file walks."""
     monkeypatch.delenv(ESCALATION_ADAPTER_ENV, raising=False)
 
 
@@ -167,13 +143,9 @@ class NoCallbackUpdate:
 
 
 class HostileQuery(FakeCallbackQuery):
-    """A callback query Telegram will not let us answer.
-
-    Not hypothetical: the Bot API rejects an answer to a query it considers too
-    old ("query ID is invalid"), which is exactly the state a callback is in
-    after a bridge restart. Before this story that exception escaped `handle`,
-    so the press it belonged to left no trace at all.
-    """
+    """A callback query Telegram will not let us answer — the Bot API rejects
+    one it considers too old, the state a callback is in after a bridge restart.
+    That exception used to escape `handle`, leaving the press no trace."""
 
     async def answer(self, text: str | None = None, **kwargs: Any) -> None:
         self.answers.append(text)  # recorded, then refused
@@ -203,11 +175,11 @@ class Branch:
     signalled: bool
     #: Did this press leave the row carrying its own choice?
     resolves_row: bool
-    #: The escalation id the journal line must name — `None` only where the
-    #: press named none, because `parse_callback_data` refused the payload.
+    #: The escalation id the journal must name — `None` where the press named
+    #: none, because `parse_callback_data` refused the payload.
     names: str | None = ESCALATION_ID
-    #: False only for the update that carries no callback query at all: there is
-    #: nobody to toast at, which is exactly why the journal line is not optional.
+    #: False only for the update with no callback query: nobody to toast at,
+    #: which is why the journal line is not optional.
     toastable: bool = True
     responders: tuple[str, ...] = ()
     #: Substring the operator's toast must contain, lowercased.
@@ -273,8 +245,8 @@ def _unreachable_orchestrator(arrange: Arrange) -> Any:
 
 
 def _expires_mid_signal(arrange: Arrange) -> Any:
-    """The read goes stale while the signal is in flight — the guarded UPDATE
-    is the authority, and the timeout's decision stands (R12)."""
+    """The read goes stale mid-signal — the guarded UPDATE is the authority and
+    the timeout's decision stands (R12)."""
     _seed(arrange)
     arrange.client.on_signal = lambda _signal: expire_escalation(
         arrange.store, ESCALATION_ID, resolved_at=RESOLVED_AT
@@ -283,8 +255,8 @@ def _expires_mid_signal(arrange: Arrange) -> Any:
 
 
 def _row_vanishes_mid_signal(arrange: Arrange) -> Any:
-    """The row is gone by the time the guarded UPDATE runs — a store rebuilt
-    under a running bridge. `_answer_settled` has to answer a `None`."""
+    """A store rebuilt under a running bridge: the row is gone by the time the
+    guarded UPDATE runs, so `_answer_settled` has to answer a `None`."""
     _seed(arrange)
 
     def rebuild_the_store(_signal: SentSignal) -> None:
@@ -298,13 +270,8 @@ def _row_vanishes_mid_signal(arrange: Arrange) -> Any:
 
 
 def _unreadable_row(arrange: Arrange) -> Any:
-    """A stored choice this build's enum does not carry.
-
-    `_escalation_from_row` maps `choices` through `EscalationChoice`, so a row
-    written by a deployment whose vocabulary has moved on makes `get_escalation`
-    raise — before the signal, before any notice, from a line no operator would
-    think to look at. One of the ways the 03:16Z press could vanish.
-    """
+    """A stored choice this build's enum does not carry, so `get_escalation`
+    raises — before the signal, before any notice. One way the press vanished."""
     _seed(arrange)
     arrange.store.execute(
         "UPDATE escalations SET choices = ? WHERE escalation_id = ?",
@@ -315,12 +282,9 @@ def _unreadable_row(arrange: Arrange) -> Any:
 
 
 def _store_fails_after_the_signal(arrange: Arrange) -> Any:
-    """The signal lands and the store then refuses the write.
-
-    The worst shape of the defect: the workflow has the decision and the row
-    does not, so a toast saying "press again" would be a lie. The operator must
-    still be told, and the line must say the decision was already sent.
-    """
+    """The signal lands and the store then refuses the write — the worst shape:
+    the workflow has the decision and the row does not, so "press again" would
+    be a lie. The line must say the decision was already sent."""
     _seed(arrange)
 
     def exploding(*_args: Any, **_kwargs: Any) -> bool:
@@ -333,9 +297,8 @@ def _store_fails_after_the_signal(arrange: Arrange) -> Any:
 def _telegram_refuses_the_toast(arrange: Arrange) -> Any:
     """Telegram rejects the answer, and the press still has to land.
 
-    A callback the Bot API considers too old cannot be acknowledged. That is a
-    fact about the transport, not a reason to drop a decision the operator made
-    — and not a reason for the store to disagree with the workflow.
+    A fact about the transport, not a reason to drop a decision the operator
+    made — nor a reason for the store to disagree with the workflow.
     """
     _seed(arrange)
     update = pressed(EscalationChoice.RETRY)
@@ -349,118 +312,70 @@ def _telegram_refuses_the_toast(arrange: Arrange) -> Any:
 #: this file check it against the code rather than against anyone's memory.
 BRANCHES: tuple[Branch, ...] = (
     Branch(
-        name="live_escalation",
-        outcome=BridgeOutcome.RESOLVED,
-        build=_live,
-        signalled=True,
-        resolves_row=True,
+        name="live_escalation", outcome=BridgeOutcome.RESOLVED, build=_live,
+        signalled=True, resolves_row=True,
     ),
     Branch(
-        name="not_a_callback",
-        outcome=BridgeOutcome.MALFORMED,
-        build=_no_callback,
-        signalled=False,
-        resolves_row=False,
-        names=None,
-        toastable=False,
+        name="not_a_callback", outcome=BridgeOutcome.MALFORMED, build=_no_callback,
+        signalled=False, resolves_row=False, names=None, toastable=False,
     ),
     Branch(
-        name="payload_from_elsewhere",
-        outcome=BridgeOutcome.MALFORMED,
-        build=_foreign_payload,
-        signalled=False,
-        resolves_row=False,
-        names=None,
+        name="payload_from_elsewhere", outcome=BridgeOutcome.MALFORMED,
+        build=_foreign_payload, signalled=False, resolves_row=False, names=None,
         notice_says="not one of this factory's",
     ),
     Branch(
-        name="unauthorized_sender",
-        outcome=BridgeOutcome.UNAUTHORIZED,
-        build=_unauthorized,
-        signalled=False,
-        resolves_row=False,
-        responders=(AUTHORIZED,),
-        notice_says="not an authorized responder",
+        name="unauthorized_sender", outcome=BridgeOutcome.UNAUTHORIZED,
+        build=_unauthorized, signalled=False, resolves_row=False,
+        responders=(AUTHORIZED,), notice_says="not an authorized responder",
     ),
     Branch(
-        name="row_is_gone",
-        outcome=BridgeOutcome.UNKNOWN,
-        build=_no_row,
-        signalled=False,
-        resolves_row=False,
-        names="ffffffffffff",
+        name="row_is_gone", outcome=BridgeOutcome.UNKNOWN, build=_no_row,
+        signalled=False, resolves_row=False, names="ffffffffffff",
         notice_says="no longer on record",
     ),
     Branch(
-        name="choice_never_offered",
-        outcome=BridgeOutcome.INVALID_CHOICE,
-        build=_never_offered,
-        signalled=False,
-        resolves_row=False,
+        name="choice_never_offered", outcome=BridgeOutcome.INVALID_CHOICE,
+        build=_never_offered, signalled=False, resolves_row=False,
         notice_says="not offered",
     ),
     Branch(
-        name="stale_already_resolved",
-        outcome=BridgeOutcome.ALREADY_RESOLVED,
-        build=_already_resolved,
-        signalled=False,
-        resolves_row=False,
+        name="stale_already_resolved", outcome=BridgeOutcome.ALREADY_RESOLVED,
+        build=_already_resolved, signalled=False, resolves_row=False,
         notice_says="stale",
     ),
     Branch(
-        name="stale_expired",
-        outcome=BridgeOutcome.EXPIRED,
-        build=_expired,
-        signalled=False,
-        resolves_row=False,
-        notice_says="stale",
+        name="stale_expired", outcome=BridgeOutcome.EXPIRED, build=_expired,
+        signalled=False, resolves_row=False, notice_says="stale",
     ),
     Branch(
-        name="orchestrator_unreachable",
-        outcome=BridgeOutcome.SIGNAL_FAILED,
-        build=_unreachable_orchestrator,
-        signalled=False,
-        resolves_row=False,
+        name="orchestrator_unreachable", outcome=BridgeOutcome.SIGNAL_FAILED,
+        build=_unreachable_orchestrator, signalled=False, resolves_row=False,
         notice_says="press again",
     ),
     Branch(
-        name="stale_race_to_expiry",
-        outcome=BridgeOutcome.EXPIRED,
-        build=_expires_mid_signal,
-        signalled=True,
-        resolves_row=False,
+        name="stale_race_to_expiry", outcome=BridgeOutcome.EXPIRED,
+        build=_expires_mid_signal, signalled=True, resolves_row=False,
         notice_says="stale",
     ),
     Branch(
-        name="row_vanishes_mid_signal",
-        outcome=BridgeOutcome.UNKNOWN,
-        build=_row_vanishes_mid_signal,
-        signalled=True,
-        resolves_row=False,
+        name="row_vanishes_mid_signal", outcome=BridgeOutcome.UNKNOWN,
+        build=_row_vanishes_mid_signal, signalled=True, resolves_row=False,
         notice_says="no longer on record",
     ),
     Branch(
-        name="row_this_build_cannot_read",
-        outcome=BridgeOutcome.BRIDGE_ERROR,
-        build=_unreadable_row,
-        signalled=False,
-        resolves_row=False,
+        name="row_this_build_cannot_read", outcome=BridgeOutcome.BRIDGE_ERROR,
+        build=_unreadable_row, signalled=False, resolves_row=False,
         notice_says="press again",
     ),
     Branch(
-        name="store_fails_after_the_signal",
-        outcome=BridgeOutcome.BRIDGE_ERROR,
-        build=_store_fails_after_the_signal,
-        signalled=True,
-        resolves_row=False,
+        name="store_fails_after_the_signal", outcome=BridgeOutcome.BRIDGE_ERROR,
+        build=_store_fails_after_the_signal, signalled=True, resolves_row=False,
         notice_says="reached the workflow",
     ),
     Branch(
-        name="telegram_refuses_the_toast",
-        outcome=BridgeOutcome.RESOLVED,
-        build=_telegram_refuses_the_toast,
-        signalled=True,
-        resolves_row=True,
+        name="telegram_refuses_the_toast", outcome=BridgeOutcome.RESOLVED,
+        build=_telegram_refuses_the_toast, signalled=True, resolves_row=True,
     ),
 )
 
@@ -543,9 +458,7 @@ def _press_path() -> dict[str, ast.AST]:
     """Every `CallbackBridge` method a press can reach, walked from `handle`.
 
     Derived, never listed: the walk follows `self.<name>(...)` transitively, so
-    a helper extracted out of `handle` tomorrow joins the enumeration by being
-    called rather than by someone remembering to name it here. This is the
-    answer to "one of them swallowed a press and nobody can say which".
+    a helper extracted out of `handle` joins the enumeration by being called.
     """
     module = ast.parse(Path(inspect.getfile(service)).read_text(encoding="utf-8"))
     klass = next(
@@ -581,9 +494,8 @@ def _press_path() -> dict[str, ast.AST]:
 def _return_spans() -> dict[str, list[range]]:
     """Every `return` in the press path, as the lines it occupies.
 
-    A span rather than a line: a `return` whose expression wraps reports its
-    line events across the wrap, and the branch is taken if execution touched
-    any of them.
+    A span rather than a line: a wrapped `return` reports line events across the
+    wrap, and the branch is taken if execution touched any of them.
     """
     spans: dict[str, list[range]] = {}
     for name, node in _press_path().items():
@@ -597,11 +509,8 @@ def _return_spans() -> dict[str, list[range]]:
 
 @contextmanager
 def trace_lines(filename: str, into: set[int]) -> Iterator[None]:
-    """Record which lines of `filename` execute inside the block.
-
-    `sys.settrace` rather than a coverage dependency (constitution III): nothing
-    new is installed to answer a question the interpreter already answers.
-    """
+    """Record which lines of `filename` execute inside the block — `sys.settrace`
+    rather than a coverage dependency (constitution III)."""
 
     def local(frame: Any, event: str, _arg: Any) -> Any:
         if event == "line":
@@ -620,6 +529,63 @@ def trace_lines(filename: str, into: set[int]) -> Iterator[None]:
         yield
     finally:
         sys.settrace(previous)
+
+
+def _unreached(covered: set[int]) -> set[str]:
+    """Returns in the press path that no branch's execution touched."""
+    return {
+        f"{name}:{span.start}"
+        for name, spans in _return_spans().items()
+        for span in spans
+        if not covered & set(span)
+    }
+
+
+def render_enumeration(observed: list[Driven]) -> str:
+    """SC-004's artifact: the press path as walked, and what each branch did.
+
+    Rendered by the test that asserts it, so table and assertion cannot
+    disagree — `pytest -s -k every_return` prints what the evidence file pastes.
+    """
+    spans = _return_spans()
+    total = sum(len(v) for v in spans.values())
+    out = [
+        "CallbackBridge.handle's call graph "
+        "(follow `self.<method>(...)` transitively):",
+        "",
+    ]
+    for name in sorted(_press_path()):
+        starts = sorted(span.start for span in spans.get(name, []))
+        out.append(f"  {name:<22} {len(starts)} return(s) at lines {starts}")
+    out += [
+        "",
+        f"  {total} returns in total.",
+        "",
+        "Every branch driven, and what it produced:",
+        "",
+    ]
+    header = (
+        f"{'branch':<32}{'outcome':<18}{'signal':<8}{'row':<10}"
+        f"{'told':<6}{'recorded'}"
+    )
+    out += [header, "-" * len(header)]
+    covered: set[int] = set()
+    for seen in observed:
+        covered |= seen.lines
+        row = "gone" if seen.row is None else (seen.row["resolution"] or "pending")
+        out.append(
+            f"{seen.branch.name:<32}{seen.outcome.value:<18}"
+            f"{('sent' if seen.signals else '—'):<8}{row:<10}"
+            f"{('yes' if seen.notices else 'n/a'):<6}"
+            f"{'yes' if seen.log else 'NO'}"
+        )
+    unreached = _unreached(covered)
+    out += [
+        "",
+        f"returns reached by the table above: {total - len(unreached)}/{total}"
+        f"   unreached: {sorted(unreached) or 'none'}",
+    ]
+    return "\n".join(out)
 
 
 # --- US2-S1 (FR-006): the press lands ---------------------------------------
@@ -650,8 +616,8 @@ async def test_a_press_on_a_live_escalation_signals_and_resolves_the_row(
 async def test_every_press_branch_lands_or_names_its_refusal(
     branch: Branch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """FR-006, per branch: signalled-and-resolved, or a named refusal. Never both
-    and never neither."""
+    """FR-006, per branch: signalled-and-resolved, or a named refusal — never
+    both and never neither."""
     driven = await drive(branch, tmp_path, caplog)
 
     assert driven.outcome is branch.outcome
@@ -662,9 +628,9 @@ async def test_every_press_branch_lands_or_names_its_refusal(
         assert driven.row["resolution"] == EscalationChoice.RETRY.value
         assert driven.row["resolved_via"] == "BUTTON"
     else:
-        # A refusal is only a refusal if the operator can read it — and the one
-        # branch with nobody to toast at is the reason FR-007's record below is
-        # the half with no exceptions.
+        # A refusal is only a refusal if the operator can read it — and the
+        # branch with nobody to toast at is why FR-007's record has no
+        # exceptions.
         if branch.toastable:
             assert driven.notices, f"{branch.name}: refused the press in silence"
         assert driven.row is None or driven.row["resolution"] != (
@@ -685,22 +651,13 @@ async def test_every_return_in_the_press_path_is_taken_by_a_branch(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The enumeration itself (US2-S2): read the returns out of the code, then
-    prove the registry reaches all of them.
+    prove the registry reaches all of them. A `return` no scenario reaches is a
+    branch nobody has observed — which is what the 03:16Z press found."""
+    observed = [await drive(branch, tmp_path, caplog) for branch in BRANCHES]
+    # SC-004's table, printed by the test that asserts it (`pytest -s`).
+    print(render_enumeration(observed))
 
-    Hand-listing the branches is how one of them came to swallow a press. A
-    `return` in `handle`'s call graph that no scenario above reaches is a branch
-    nobody has ever observed — which is exactly what the 03:16Z press found.
-    """
-    covered: set[int] = set()
-    for branch in BRANCHES:
-        covered |= (await drive(branch, tmp_path, caplog)).lines
-
-    unreached = {
-        f"{name}:{span.start}"
-        for name, spans in _return_spans().items()
-        for span in spans
-        if not covered & set(span)
-    }
+    unreached = _unreached({line for seen in observed for line in seen.lines})
 
     assert not unreached, (
         "these returns in CallbackBridge.handle's call graph are branches no "
@@ -710,8 +667,7 @@ async def test_every_return_in_the_press_path_is_taken_by_a_branch(
 
 def test_every_bridge_outcome_is_produced_by_a_branch() -> None:
     """`BridgeOutcome` is the enumeration the module already had (trap 8). A
-    member no branch produces is a situation nobody has tested; a branch whose
-    member does not exist is a fiction."""
+    member no branch produces is a situation nobody has tested."""
     declared = {outcome for outcome in BridgeOutcome}
     covered = {branch.outcome for branch in BRANCHES}
 
@@ -728,9 +684,8 @@ def test_every_bridge_outcome_is_produced_by_a_branch() -> None:
 async def test_every_handled_press_is_recorded_naming_the_escalation(
     branch: Branch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """FR-007. The 03:16Z press left no signal, no row change and no line naming
-    the escalation. A press an operator cannot find in the journal is a press
-    that needs a debugger to explain, which is the thing this forbids."""
+    """FR-007. A press an operator cannot find in the journal is a press that
+    needs a debugger to explain, which is the thing this forbids."""
     driven = await drive(branch, tmp_path, caplog)
 
     assert driven.log, f"{branch.name}: the press left no trace at all"
@@ -750,13 +705,9 @@ async def test_every_handled_press_is_recorded_naming_the_escalation(
 async def test_the_press_that_crashes_the_bridge_still_names_its_escalation(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The 03:16Z shape, reproduced and closed.
-
-    A row this build cannot read makes `get_escalation` raise from inside
-    `handle`. Before this story that exception left the bridge through the poll
-    loop: no signal, no row change, and a traceback that never named which
-    escalation the operator had pressed.
-    """
+    """The 03:16Z shape, reproduced and closed: a row this build cannot read
+    makes `get_escalation` raise inside `handle`. That exception used to leave
+    through the poll loop, never naming which escalation was pressed."""
     driven = await drive(_branch("row_this_build_cannot_read"), tmp_path, caplog)
 
     assert driven.outcome is BridgeOutcome.BRIDGE_ERROR
@@ -770,13 +721,9 @@ async def test_the_press_that_crashes_the_bridge_still_names_its_escalation(
 async def test_a_press_the_transport_will_not_acknowledge_still_lands(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Telegram refusing the toast is not a reason to drop the decision.
-
-    A callback the Bot API considers too old cannot be answered; the operator's
-    press is still a press, and the workflow and the store must both hear it.
-    The undeliverable notice goes to the journal instead, so it is still
-    readable without a debugger.
-    """
+    """Telegram refusing the toast is not a reason to drop the decision: the
+    workflow and the store must both hear it, and the undeliverable notice goes
+    to the journal instead."""
     driven = await drive(_branch("telegram_refuses_the_toast"), tmp_path, caplog)
 
     assert driven.outcome is BridgeOutcome.RESOLVED
@@ -797,13 +744,9 @@ async def test_a_press_the_transport_will_not_acknowledge_still_lands(
 async def test_a_stale_press_stays_refused_and_is_told_it_is_stale(
     branch_name: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """**The control.** Making every press "land" by deleting the staleness
-    guard would let an old message re-answer a live node — worse than a dropped
-    press, because the operator never learns the node moved on.
-
-    So: no second signal recorded against the row, the existing resolution
-    untouched, and a refusal that says the word.
-    """
+    """**The control.** Deleting the staleness guard to make every press "land"
+    would let an old message re-answer a live node — worse than a dropped press.
+    So: the existing resolution untouched, and a refusal that says the word."""
     branch = _branch(branch_name)
     driven = await drive(branch, tmp_path, caplog)
 
@@ -842,13 +785,10 @@ async def test_an_expired_escalation_keeps_its_timeout_resolution(
 async def test_a_press_arriving_at_the_reply_entry_is_handled_as_a_press(
     bridge: CallbackBridge, client: FakeTemporalClient, store: sqlite3.Connection
 ) -> None:
-    """`TelegramAdapter.relay` reads `callback_query` first, so a press that
-    reaches `handle_reply` is a press the question machinery would look up as a
-    question, find nothing for, and drop.
-
-    Both inbound entries have to end the same way for the same update, or "which
-    handler saw it" becomes part of whether a press lands.
-    """
+    """`relay` reads `callback_query` first, so a press reaching `handle_reply`
+    is one the question machinery would look up as a question and drop. Both
+    entries must end the same way, or "which handler saw it" decides whether a
+    press lands."""
     insert_escalation(store, make_escalation())
 
     outcome = await bridge.handle_reply(pressed(EscalationChoice.RETRY))
