@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - roadmap/a-wedged-run-silently-eats-every-subsequent-tick-under-skip-overlap
 # FLIP APPROVED, STAGED. 2026-08-22 the operator ruled (Q&A after the review
@@ -9,6 +9,12 @@ fixes:
 # until 083's US3 has landed, so the factory/cli/roadmap.py collision window
 # never opens. Whoever holds this file next: flip to ready once
 # `ergane spec landed specs/083-* --default-branch ergane-buildout` shows US3.
+#
+# FLIPPED TO READY 2026-08-22 10:29 AM CT. The staged condition was observed
+# met by content: 083 US3 landed at ec19fc0 on ergane-buildout (verified via
+# `ergane spec landed --default-branch ergane-buildout`, not the merged flag).
+# The factory/cli/roadmap.py collision window is closed; nothing else about
+# the 2026-08-22 ruling changes.
 #
 # RE-ANCHORED 2026-08-22 against 732ff88. Every citation re-printed (~230
 # anchors, the densest of the trio):
