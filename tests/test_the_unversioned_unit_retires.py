@@ -31,6 +31,13 @@ Written before the code, and failing on every claim it makes:
     E   ImportError: cannot import name 'LEGACY_WORKER_UNIT' from
     E   'factory.supervision.units'
     1 error in 0.09s
+
+and green afterwards, whole suite, cold cache — the retirement moved four other
+files' expectations and none of them were left behind:
+
+    $ find . -name __pycache__ -type d -prune -exec rm -rf {} +
+    $ PYTHONDONTWRITEBYTECODE=1 uv run pytest -q --no-header
+    4491 passed, 52 skipped, 7 warnings in 371.21s (0:06:11)
 """
 
 from __future__ import annotations
