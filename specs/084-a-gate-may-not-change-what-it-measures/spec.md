@@ -1,5 +1,14 @@
 ---
-state: ready
+state: landed
+# LANDED 2026-08-22, attested ~10:57 AM CT by the operator session. Every
+# story verified on ergane-buildout by content (`ergane spec landed
+# --default-branch ergane-buildout`), not by the merged flag; the epic
+# workflow completed clean:
+#   US1 landed at 3d54182a4923 (PR #282, attempt 2 — attempt 1 went red on a
+#     CI-only git error-message assertion; the rework fixed the assertion to
+#     match git's error class rather than the echoed path)
+#   US2 landed at 64432217d59b (PR #285, attempt 1)
+#   US3 landed at d4a140650a5e (PR #287, attempt 1)
 fixes:
   - verify/gates-can-mutate-the-worktree-they-gate
   - verify/a-gate-that-dirties-the-worktree-changes-the-diff-it-is-measuring
