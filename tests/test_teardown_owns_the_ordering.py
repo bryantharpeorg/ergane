@@ -57,6 +57,8 @@ from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.cli.repo import repo_forget_command
 from factory.cli.roadmap import roadmap_pause_command
 from factory.cli.uninstall import (
+    ACCOUNT_FOR_REFS,
+    CLEAR_STATE,
     FORGET_REPOSITORIES,
     PAUSE_DISPATCH,
     STEPS,
@@ -247,6 +249,11 @@ def test_the_step_table_declares_the_order_the_spec_does() -> None:
         PAUSE_DISPATCH,
         FORGET_REPOSITORIES,
         STOP_AND_REMOVE_UNITS,
+        # 083-US4 appended two: state and config, then the refs teardown reports
+        # on but does not own. *Appended*, so US3's three keep their order and
+        # their positions, which is the property FR-009 is about.
+        CLEAR_STATE,
+        ACCOUNT_FOR_REFS,
     ]
 
 
@@ -269,11 +276,13 @@ def test_teardown_performs_its_steps_in_the_declared_order(host: Host) -> None:
 
     # …and each step named as it completes, in the same order.
     assert plan_lines(result.stdout) == [
-        line for line in result.stdout.splitlines() if line.startswith(("1/3", "2/3", "3/3"))
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith(("1/5", "2/5", "3/5", "4/5", "5/5"))
     ]
-    assert f"1/3 {PAUSE_DISPATCH}" in result.stdout
-    assert f"2/3 {FORGET_REPOSITORIES}" in result.stdout
-    assert f"3/3 {STOP_AND_REMOVE_UNITS}" in result.stdout
+    assert f"1/5 {PAUSE_DISPATCH}" in result.stdout
+    assert f"2/5 {FORGET_REPOSITORIES}" in result.stdout
+    assert f"3/5 {STOP_AND_REMOVE_UNITS}" in result.stdout
 
     # The acts themselves landed: no schedule, no entry, no unit files.
     assert host.schedules.schedules == {}
@@ -307,17 +316,30 @@ def test_check_reaches_no_acting_half(host: Host) -> None:
 
         return Step(name=name, survey=survey, perform=perform)
 
-    table = [recording(name) for name in (PAUSE_DISPATCH, FORGET_REPOSITORIES, STOP_AND_REMOVE_UNITS)]
+    table = [
+        recording(name)
+        for name in (
+            PAUSE_DISPATCH,
+            FORGET_REPOSITORIES,
+            STOP_AND_REMOVE_UNITS,
+            CLEAR_STATE,
+            ACCOUNT_FOR_REFS,
+        )
+    ]
 
     result = drive(host.request(check=True), steps=table)
 
     assert result.code == EXIT_OK, result.stderr
     assert acted == [], "a --check run reached a step's acting half"
-    assert surveyed == [PAUSE_DISPATCH, FORGET_REPOSITORIES, STOP_AND_REMOVE_UNITS]
+    assert surveyed == [
+        PAUSE_DISPATCH,
+        FORGET_REPOSITORIES,
+        STOP_AND_REMOVE_UNITS,
+        CLEAR_STATE,
+        ACCOUNT_FOR_REFS,
+    ]
     assert plan_lines(result.stdout) == [
-        f"1/3 {PAUSE_DISPATCH}: would {PAUSE_DISPATCH}",
-        f"2/3 {FORGET_REPOSITORIES}: would {FORGET_REPOSITORIES}",
-        f"3/3 {STOP_AND_REMOVE_UNITS}: would {STOP_AND_REMOVE_UNITS}",
+        f"{index}/5 {name}: would {name}" for index, name in enumerate(surveyed, start=1)
     ]
 
 
@@ -375,9 +397,16 @@ def test_a_step_with_nothing_to_do_says_so_by_name(
 
     assert result.code == EXIT_OK, result.stderr
     for index, name in enumerate(
-        (PAUSE_DISPATCH, FORGET_REPOSITORIES, STOP_AND_REMOVE_UNITS), start=1
+        (
+            PAUSE_DISPATCH,
+            FORGET_REPOSITORIES,
+            STOP_AND_REMOVE_UNITS,
+            CLEAR_STATE,
+            ACCOUNT_FOR_REFS,
+        ),
+        start=1,
     ):
-        assert f"{index}/3 {name}: nothing to do:" in result.stdout
+        assert f"{index}/5 {name}: nothing to do:" in result.stdout
     assert "no repository is registered" in result.stdout
     assert "no file this engine wrote is still here" in result.stdout
     assert events == []
@@ -397,7 +426,7 @@ def test_a_refused_step_stops_the_verb_and_names_what_was_done(host: Host) -> No
     result = drive(host.request(open_epics=lambda: ("epic-011-agent-sandbox",)))
 
     assert result.code == EXIT_USER
-    assert f"teardown stopped at step 3 of 3, {STOP_AND_REMOVE_UNITS}" in result.stderr
+    assert f"teardown stopped at step 3 of 5, {STOP_AND_REMOVE_UNITS}" in result.stderr
     assert "epic-011-agent-sandbox is in flight" in result.stderr
     assert f"already done: {PAUSE_DISPATCH}, {FORGET_REPOSITORIES}" in result.stderr
 
@@ -434,7 +463,7 @@ def test_dispatch_with_no_owner_is_a_refusal_not_a_skipped_step(
     result = drive(host.request())
 
     assert result.code == EXIT_USER
-    assert f"teardown stopped at step 1 of 3, {PAUSE_DISPATCH}" in result.stderr
+    assert f"teardown stopped at step 1 of 5, {PAUSE_DISPATCH}" in result.stderr
     assert UNOWNED_RUN in result.stderr
     assert "no schedule" in result.stderr
     assert "already done: nothing" in result.stderr
