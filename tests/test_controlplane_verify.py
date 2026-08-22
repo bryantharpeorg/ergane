@@ -114,6 +114,7 @@ import factory.controlplane.verify as verify_module
 from factory.cli.main import main as ergane_main
 from factory.controlplane.config import ControlPlaneConfig as Cfg
 from factory.controlplane.config import KNOWN_ESC_ADAPTERS, load_controlplane_config
+from factory.mergequeue.gh import FORGE_CAPABLE, ForgeCapability
 from factory.mergequeue.models import Finding
 
 
@@ -657,8 +658,12 @@ async def test_verify_all_subsystems_pass(
 
     # US2 host probe now runs before the subsystem probes. To keep this test
     # focused on the five existing probes, simulate a fully passing host through
-    # the probe's injected seam.
+    # the probe's injected seam — and, since 078-US2, a `gh` that can answer the
+    # landing poller, so this test measures the subsystems and not the runner.
     monkeypatch.setattr(verify_module, "_host_seam_factory", _passing_host_seam)
+    monkeypatch.setattr(
+        verify_module, "_forge_capability_seam_factory", _capable_forge_seam
+    )
 
     # Control: the registered namespace holds no workflow at all, and in
     # particular not the `ergane-install-verify` id the probe used to describe.
@@ -675,8 +680,10 @@ async def test_verify_all_subsystems_pass(
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
 
     assert exit_code == 0
-    assert len(findings) == 6
-    assert {f.check for f in findings} == {"host", "llm", "temporal", "memory", "telemetry", "escalation"}
+    assert len(findings) == 7
+    assert {f.check for f in findings} == {
+        "host", "forge", "llm", "temporal", "memory", "telemetry", "escalation"
+    }
     assert all(f.passed for f in findings)
     llm_finding = next(f for f in findings if f.check == "llm")
     assert "1-token" in llm_finding.detail
@@ -723,18 +730,22 @@ async def test_verify_no_masking_temporal_namespace_missing(
     monkeypatch.setenv("ERGANE_TELEGRAM_BOT_TOKEN", "123456:AAAA")
     monkeypatch.setenv("ERGANE_TELEGRAM_CHAT_ID", "-1")
 
-    # Simulate a fully passing host so the test measures only the subsystem probes.
+    # Simulate a fully passing host and a capable forge CLI so the test measures
+    # only the subsystem probes.
     monkeypatch.setattr(verify_module, "_host_seam_factory", _passing_host_seam)
+    monkeypatch.setattr(
+        verify_module, "_forge_capability_seam_factory", _capable_forge_seam
+    )
 
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
 
     assert exit_code == 1
     checks = {f.check: f for f in findings}
-    assert len(findings) == 6
+    assert len(findings) == 7
     assert checks["temporal"].passed is False
     assert "absent-namespace" in checks["temporal"].detail
     assert "temporal operator namespace create absent-namespace" in checks["temporal"].detail
-    for check in ("host", "llm", "memory", "telemetry", "escalation"):
+    for check in ("host", "forge", "llm", "memory", "telemetry", "escalation"):
         assert checks[check].passed is True
 
 
@@ -1053,6 +1064,27 @@ def _passing_host_seam() -> dict[str, Any]:
     }
 
 
+def _capable_forge_seam() -> ForgeCapability:
+    """Simulate a `gh` that declares every `--json` field the poller sends.
+
+    078-US2's capability probe asks the *installed* binary what it declares, so
+    without this seam every test below would carry a verdict on whichever `gh`
+    happens to be first on the runner's `PATH` — which is exactly the thing that
+    probe exists to report and exactly the thing these tests are not about.
+    Patched wherever the test's subject is a different probe, for the same
+    reason `_passing_host_seam` is.
+    """
+    return ForgeCapability(
+        condition=FORGE_CAPABLE,
+        binary="/usr/bin/gh",
+        version="gh version 9.9.9 (2026-01-01)",
+        command=("pr", "view"),
+        fields=("state",),
+        undeclared=(),
+        detail="simulated: this binary declares every field the poller sends",
+    )
+
+
 # ---------------------------------------------------------------------------
 # T015a absent-client-library renders a failing finding naming the dependency
 # ---------------------------------------------------------------------------
@@ -1287,6 +1319,9 @@ async def test_escalation_none_does_not_fail_the_run(
 
     monkeypatch.setattr(verify_module, "_llm_client_factory", _fake_llm_factory)
     monkeypatch.setattr(verify_module, "_host_seam_factory", _passing_host_seam)
+    monkeypatch.setattr(
+        verify_module, "_forge_capability_seam_factory", _capable_forge_seam
+    )
 
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
 

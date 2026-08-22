@@ -15,6 +15,7 @@ import pytest
 
 import factory.controlplane.verify as verify_module
 from factory.controlplane.config import ControlPlaneConfig as Cfg
+from factory.mergequeue.gh import FORGE_CAPABLE, ForgeCapability
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,13 @@ async def test_host_with_every_prerequisite_passes(
     """A complete host passes, and the five existing probes are byte-identical."""
     # Simulate a passing host for the default HostProbe() installed in REGISTRY.
     monkeypatch.setattr(verify_module, "_host_seam_factory", lambda: _host_check(_HostState()))
+    # 078-US2 added a second host-facing probe, which asks the installed `gh`
+    # which `--json` fields it declares. Simulated here for the same reason the
+    # host is: this test is about the five subsystem probes, and neither of the
+    # two host-facing ones may make its verdict depend on the runner's machine.
+    monkeypatch.setattr(
+        verify_module, "_forge_capability_seam_factory", _capable_forge_seam
+    )
 
     # Make the five subsystem probes deterministic so their findings do not depend
     # on real services in this environment.
@@ -142,16 +150,20 @@ async def test_host_with_every_prerequisite_passes(
     )
     monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
 
-    # Full registry: host probe + five existing probes.
+    # Full registry: the two host-facing probes + five existing probes.
     full_findings, _ = await verify_module.verify_controlplane_async(str(config_path))
-    full_non_host = [f for f in full_findings if f.check != "host"]
+    full_non_host = [f for f in full_findings if f.check not in ("host", "forge")]
     host_finding = next(f for f in full_findings if f.check == "host")
     assert host_finding.passed is True
     assert "prerequisites are present" in host_finding.detail
 
-    # Registry without the host probe: "today's" five probes in isolation.
+    # Registry without the host-facing probes: "today's" five probes in isolation.
     original_registry = list(verify_module.REGISTRY)
-    five_probe_registry = [p for p in original_registry if not isinstance(p, verify_module.HostProbe)]
+    five_probe_registry = [
+        p
+        for p in original_registry
+        if not isinstance(p, (verify_module.HostProbe, verify_module.ForgeCapabilityProbe))
+    ]
     assert len(five_probe_registry) == 5
     verify_module.REGISTRY[:] = five_probe_registry
     try:
@@ -314,6 +326,19 @@ async def test_host_probe_reports_and_does_not_remediate(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _capable_forge_seam() -> ForgeCapability:
+    """Simulate a `gh` that declares every `--json` field the landing poller sends."""
+    return ForgeCapability(
+        condition=FORGE_CAPABLE,
+        binary="/usr/bin/gh",
+        version="gh version 9.9.9 (2026-01-01)",
+        command=("pr", "view"),
+        fields=("state",),
+        undeclared=(),
+        detail="simulated: this binary declares every field the poller sends",
+    )
 
 
 def _raising(name: str) -> Any:

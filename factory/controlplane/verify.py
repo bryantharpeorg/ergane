@@ -30,6 +30,11 @@ from factory.config import EXAMPLE_ALIAS_PREFIXES, is_example_alias
 from factory.controlplane.config import ControlPlaneConfig
 from factory.controlplane.resolve import temporal_target_for
 from factory.discovery.llm_scanner import EndpointClassification
+from factory.mergequeue.gh import (
+    FORGE_CAPABLE,
+    ForgeCapability,
+    inspect_forge_capability,
+)
 from factory.mergequeue.models import Finding
 from factory.usage.litellm_client import LiteLLMClient
 
@@ -297,6 +302,17 @@ def _inspect_host() -> dict[str, Any]:
 def _host_seam_factory() -> dict[str, Any]:
     """Default host seam: inspect the real host."""
     return _inspect_host()
+
+
+#: Forge-capability seam type: a callable returning what the installed CLI can
+#: answer. Tests that are about some *other* probe replace this so their verdict
+#: does not depend on which binary happens to be first on the runner's PATH.
+ForgeCapabilitySeam = Callable[[], ForgeCapability]
+
+
+def _forge_capability_seam_factory() -> ForgeCapability:
+    """Default forge seam: ask the installed CLI what it declares (078-US2)."""
+    return inspect_forge_capability()
 
 
 def gather_gateway_aliases(registry: Mapping[str, Any]) -> dict[str, set[str]]:
@@ -937,8 +953,66 @@ class HostProbe:
         return Finding(check="host", passed=passed, detail=snapshot.detail)
 
 
+class ForgeCapabilityProbe:
+    """Can the installed `gh` answer what the landing poller asks it? (078-US2)
+
+    `HostProbe` already reports whether `gh` is on `PATH` and authenticated, and
+    on 2026-08-20 that was true of a host whose `gh` still could not answer the
+    poller: `poll_landing` sends a `--json` field set, an older binary does not
+    declare one of the names in it, and the epic parked hours after dispatch
+    with a node stuck in ENQUEUED. Present, authenticated and *capable* are three
+    claims, and only the third is about the question this factory actually asks.
+
+    **Why `install --verify` and not the doctor** (078 trap 11). Both surfaces
+    were available and only one is built. This is a first-run defect: it is true
+    of a host from the moment the release is installed on it, it is true before
+    any epic exists for the doctor to find wedged, and it recurs on exactly one
+    other occasion — a downgrade or reinstall of the CLI, after which the
+    operator verifies again. The doctor answers "what is wrong with the work in
+    flight"; this has to be answerable when there is no work in flight at all,
+    which is the only time it is cheap.
+
+    The probe carries no field names and no version numbers of its own. It
+    cannot: `factory/mergequeue/gh.py` owns both the field set and the
+    vocabulary (`tests/test_forge_sweep.py` holds this module to that), so what
+    is checked here is derived from the value the poller sends rather than
+    copied beside it — which is the defect this story exists to not repeat.
+    """
+
+    name = "forge"
+
+    def __init__(self, *, capability_seam: ForgeCapabilitySeam | None = None) -> None:
+        self._capability_seam = capability_seam
+
+    async def gather(self, config: ControlPlaneConfig) -> ForgeCapability:
+        """Read the installed CLI's capability through the seam, off the loop.
+
+        The seam spawns subprocesses, so it runs in a thread for the same reason
+        `HostProbe`'s does: a binary that answers slowly must not stall the
+        probes that would have answered.
+        """
+        seam = self._capability_seam or _forge_capability_seam_factory
+        return await asyncio.to_thread(seam)
+
+    def evaluate(self, snapshot: ForgeCapability) -> Finding:
+        """Pass only on `capable`; the detail is the snapshot's own sentence.
+
+        Every other condition — absent, incapable, undetermined — fails, and
+        each says a different thing, because each has a different remedy. The
+        detail is not rebuilt here: one sentence, written where the vocabulary
+        lives, is what keeps a pass from degenerating into a green line that
+        does not say what it checked.
+        """
+        return Finding(
+            check=self.name,
+            passed=snapshot.condition == FORGE_CAPABLE,
+            detail=snapshot.detail,
+        )
+
+
 REGISTRY: list[Probe] = [
     HostProbe(),
+    ForgeCapabilityProbe(),
     LLMProbe(),
     TemporalProbe(),
     MemoryProbe(),
