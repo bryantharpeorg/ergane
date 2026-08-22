@@ -56,7 +56,7 @@ import asyncio
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -306,7 +306,14 @@ class _WorkerRevisionInterceptor(Interceptor):
                 # with None. That is invisible here — the injection below still
                 # works — and fatal one seam out, where the parent reads the
                 # child's result (086-US1).
-                if input.type == "EpicWorkflow" and input.args:
+                # `input.type` is the workflow *class*, so the string compare
+                # this replaces was False for every epic the factory ever ran —
+                # 053's query answered None from a worker that knew its revision
+                # — and `replace` was unimported, so the line inside would have
+                # raised NameError had it fired. By *name*, not identity: the SDK
+                # sandbox re-imports the module, so `is` never matches. Both
+                # measured on the dev server, 2026-08-22 (082-US2).
+                if getattr(input.type, "__name__", "") == "EpicWorkflow" and input.args:
                     original = input.args[0]
                     if getattr(original, "worker_revision", None) is None:
                         input.args = (replace(original, worker_revision=revision),)

@@ -55,6 +55,14 @@ from factory.registry import resolve_state_home
 
 SLICE_UNIT = "ergane.slice"
 WORKER_UNIT = "ergane-worker.service"
+
+#: 082-US2: the versioned worker, one instance per deployed build id — a
+#: template because the only thing two versions differ in is the checkout they
+#: run from, which `%i` already spells. US4 retires `WORKER_UNIT` for it; until
+#: then both are generated and only the legacy one is enabled, so this story
+#: lands beside the running worker rather than underneath it.
+WORKER_TEMPLATE_UNIT = "ergane-worker@.service"
+
 BRIDGE_UNIT = "ergane-bridge.service"
 TEMPORAL_UNIT = "ergane-temporal.service"
 PROBE_UNIT = "ergane-probe.service"
@@ -82,9 +90,29 @@ ENABLE_TARGETS = (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT, PROBE_TIMER)
 
 _MODULES = {
     WORKER_UNIT: "factory.worker",
+    WORKER_TEMPLATE_UNIT: "factory.worker",
     BRIDGE_UNIT: "factory.notify.service",
     PROBE_UNIT: "factory.supervision.probe",
 }
+
+#: Where a deployed version's frozen checkout goes, under the supervision home
+#: and therefore outside the operator's own checkout (082 plan trap 2).
+DEPLOYMENTS_DIRNAME = "deployments"
+
+#: The subdirectory of a deployment that git owns — the checkout is *inside*
+#: the deployment directory rather than being it, so `git worktree remove` has
+#: one path and the reaper never `rm`s a tree git still tracks (trap 3).
+DEPLOYMENT_TREE_DIRNAME = "tree"
+
+
+def worker_instance(build_id: str) -> str:
+    """The unit name serving one deployed build id."""
+    return f"ergane-worker@{build_id}.service"
+
+
+def instance_build_id(unit: str) -> str:
+    """The build id `unit` serves — the inverse of `worker_instance`."""
+    return unit.removeprefix("ergane-worker@").removesuffix(".service")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -139,12 +167,31 @@ class InstallLayout:
             self.unit_dir,
             self.generated_dir,
             self.generated_dir.parent,
+            self.deployments_dir,
             self.interpreter,
         )
 
     @property
     def wrapper(self) -> Path:
         return self.generated_dir / WRAPPER_NAME
+
+    @property
+    def deployments_dir(self) -> Path:
+        """Where deployed versions keep their frozen checkouts (082-US2).
+
+        Named in `roots` though it is under `generated_dir`: the portability
+        scan reads that tuple, not the directory hierarchy."""
+        return self.generated_dir / DEPLOYMENTS_DIRNAME
+
+    def deployment_tree(self, build_id: str) -> Path:
+        """The frozen checkout one deployed version runs from."""
+        return self.deployments_dir / build_id / DEPLOYMENT_TREE_DIRNAME
+
+    def deployment_interpreter(self, build_id: str) -> Path:
+        """That checkout's own venv python — spelled `python3` for the reason
+        `_python3_spelling` exists: a deployment whose command line reads
+        `python -m factory.worker` is one an agent's sweep can kill."""
+        return self.deployment_tree(build_id) / ".venv/bin/python3"
 
     @property
     def temporal_db_path(self) -> Path:
@@ -258,6 +305,7 @@ def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
     files: list[GeneratedFile] = [
         GeneratedFile(SLICE_UNIT, _slice_text(layout), units),
         GeneratedFile(WORKER_UNIT, _worker_text(layout), units),
+        GeneratedFile(WORKER_TEMPLATE_UNIT, _worker_template_text(layout), units),
         GeneratedFile(BRIDGE_UNIT, _bridge_text(layout), units),
         GeneratedFile(PROBE_UNIT, _probe_text(layout), units),
         GeneratedFile(PROBE_TIMER, _timer_text(layout), units),
@@ -265,7 +313,7 @@ def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:
     ]
     if _temporal_managed(layout):
         files.insert(
-            3, GeneratedFile(TEMPORAL_UNIT, _temporal_text(layout), units)
+            4, GeneratedFile(TEMPORAL_UNIT, _temporal_text(layout), units)
         )
     return tuple(files)
 
@@ -295,7 +343,18 @@ def _service_text(
     module: str,
     restart: str,
     stop_timeout_s: int,
+    working_directory: Path | None = None,
+    exec_arguments: str = "",
+    environment: Sequence[str] = (),
 ) -> str:
+    """One service body, with the three things a versioned instance changes.
+
+    082-US2's template runs the *deployment's* code rather than this
+    installation's and must tell the worker which build id it is; everything
+    else — slice, kill semantics, restart bound — stays identical by
+    construction rather than by two texts agreeing.
+    """
+    settings = "".join(f"Environment={value}\n" for value in environment)
     return f"""\
 [Unit]
 Description={description}
@@ -306,8 +365,8 @@ StartLimitBurst={layout.restart_burst}
 [Service]
 Type=simple
 Slice={SLICE_UNIT}
-WorkingDirectory={layout.install_root}
-ExecStart={layout.wrapper} {module}
+WorkingDirectory={layout.install_root if working_directory is None else working_directory}
+{settings}ExecStart={layout.wrapper} {module}{exec_arguments}
 
 # The point, not a default worth losing: agents, gate subprocesses and anything
 # they spawned are in this unit's cgroup, and stopping the unit must take the
@@ -331,6 +390,44 @@ def _worker_text(layout: InstallLayout) -> str:
         module=_MODULES[WORKER_UNIT],
         restart="on-failure",
         stop_timeout_s=120,
+    )
+
+
+def _worker_template_text(layout: InstallLayout) -> str:
+    """082-US2 (FR-003): one instance per deployed version, `%i` = the build id.
+
+    Three deliberate things, each a trap the plan numbers. **The instance runs
+    the deployment's code, not this installation's** (trap 4): working directory
+    and interpreter both come out of the frozen checkout, and a template that
+    versioned the unit *name* while still executing `install_root` would have
+    versioned nothing. The wrapper is still what is exec'd, so the operator's
+    environment command keeps being evaluated from a script rather than resolved
+    into `Environment=` lines the journal echoes back. **The build id is passed,
+    not derived** — `%i` is the directory deploy created, so a restart in place
+    re-registers the same version rather than minting one (trap 8). **The
+    instance is in the slice**, because a deploy that escaped the containment
+    would reintroduce the 2026-08-11 leak one version at a time.
+    """
+    # Imported inside the function for the same reason `_open_epic_ids` is:
+    # `factory.versioning` imports `temporalio.common` at module scope, and
+    # `factory/supervision/probe.py` imports this module for the unit names
+    # while being the process that runs when Temporal is what died. The name
+    # is read from there rather than respelled here because a unit that sets a
+    # variable the worker does not read is a version that never registers.
+    from factory.versioning import WORKER_BUILD_ID_ENV
+
+    tree = layout.deployment_tree("%i")
+    return _service_text(
+        layout,
+        description="ergane — factory worker, version %i (workgraph task queue)",
+        module=_MODULES[WORKER_TEMPLATE_UNIT],
+        restart="on-failure",
+        # The drain the whole spec is about: stopping an instance must give the
+        # attempts pinned to it the same 120s the legacy unit gives its own.
+        stop_timeout_s=120,
+        working_directory=tree,
+        exec_arguments=f" {tree} {layout.deployment_interpreter('%i')}",
+        environment=(f"{WORKER_BUILD_ID_ENV}=%i",),
     )
 
 
@@ -432,6 +529,13 @@ def _wrapper_text(layout: InstallLayout) -> str:
     than frozen at install time, because a unit whose `PATH` predates the
     toolchain installed after it is a real defect this repository has already
     paid for (`factory/verify/toolchain.py`).
+
+    082-US2 gives it two optional arguments rather than a second wrapper per
+    deployment: a versioned instance passes the frozen checkout and that
+    checkout's own interpreter, and everything else — the `PATH` composition and
+    the environment command above all — stays in the one script the operator
+    installed. A per-deployment copy would have forked the credential path five
+    ways, which is the shape this indirection exists to prevent.
     """
     environment = (
         f'eval "$({layout.env_command})"\n' if layout.env_command else ""
@@ -440,11 +544,16 @@ def _wrapper_text(layout: InstallLayout) -> str:
 #!/bin/sh
 # Generated by `ergane worker install`. Edit the engine, not this file:
 # uninstall removes it only while it still matches what install wrote.
+#
+# Usage: {WRAPPER_NAME} <module> [<root> <interpreter>]
+# The two optional arguments are 082-US2's versioned instances: they run a
+# frozen checkout with that checkout's own venv. Absent, this is exactly the
+# installation the wrapper was written for.
 set -eu
-cd "{layout.install_root}"
+cd "${{2:-{layout.install_root}}}"
 PATH="$HOME/.local/bin:$PATH"
 export PATH
-{environment}exec "{layout.interpreter}" -m "$1"
+{environment}exec "${{3:-{layout.interpreter}}}" -m "$1"
 """
 
 
