@@ -123,20 +123,18 @@ ergane install --scan
 
 ## Installing the worker
 
-Put the operator bridge and the probe under systemd user supervision, then put
-a worker version on the floor. Install writes a *versioned* worker unit
-template rather than a worker: `deploy` freezes a commit into a checkout of its
-own and starts an instance serving it, so every epic finishes on the code it
-started with.
+Put the bridge and probe under systemd user supervision, then put a worker
+version on the floor. Install writes a *versioned* unit template rather than a
+worker; `deploy` freezes a commit into a checkout of its own and starts an
+instance serving it, so every epic finishes on the code it started with.
 
 ```bash
 ergane worker install
 ergane worker deploy
 ```
 
-If a host installed before versioning still has the unversioned
-`ergane-worker.service`, `ergane worker migrate` retires it — refused while any
-epic started before versioning is still open.
+On a host installed before versioning, `ergane worker migrate` retires the old
+`ergane-worker.service` — refused while any pre-versioning epic is still open.
 
 ## Joining a repository
 

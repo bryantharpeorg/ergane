@@ -1,12 +1,12 @@
 # US4 T028 — SC-004: the unversioned unit leaves the host
 
 Run 2026-08-22: the real `install` and `migrate_off_legacy_unit` over a real
-unit directory and a real manifest under a temp root, with the systemd command
-seam recording rather than executing. The host was seeded as a pre-082 install —
-`ergane-worker.service` written into `layout.unit_dir` and its digest recorded
-by `_write_manifest(layout, {LEGACY_WORKER_UNIT: _digest(text)})` — then two
-deployment trees created under `layout.deployment_tree(...)`, as
-`ergane worker deploy` leaves them. Only the decisive lines are pasted (D-050).
+unit directory and manifest under a temp root, with the systemd command seam
+recording rather than executing. The host was seeded as a pre-082 install —
+`ergane-worker.service` in `layout.unit_dir`, its digest recorded by
+`_write_manifest(layout, {LEGACY_WORKER_UNIT: _digest(text)})` — plus two
+`layout.deployment_tree(...)` checkouts, as deploy leaves them. Decisive lines
+only (D-050).
 
 **The half this cannot contain.** SC-004 also names `systemctl --user
 list-units 'ergane-worker*'`. No node of this factory can run it — a node
@@ -66,7 +66,7 @@ commands issued:
 ```
 
 The disable precedes the deletion: systemd holds the parsed unit in memory, and
-a file removed out from under a running unit leaves it up and invisible to
+a file removed out from under a running one leaves it up and invisible to
 `disable` until the next boot.
 
 ## SC-004: the unit directory, before and after
@@ -81,8 +81,8 @@ before:                            after:
   ergane.slice
 ```
 
-The legacy file is gone; the template and everything else install wrote are
-untouched — this verb retires one unit, it does not tear the floor down. On the
-host, `list-units 'ergane-worker*'` then has only the two instances above to
-list: an instance is the only thing systemd can enable from a template, and the
-legacy unit is by then neither loaded nor on disk.
+The legacy file is gone; everything else install wrote is untouched — this verb
+retires one unit, it does not tear the floor down. On the host, `list-units
+'ergane-worker*'` then has only the two instances above to list: an instance is
+the only thing systemd can enable from a template, and the legacy unit is by
+then neither loaded nor on disk.

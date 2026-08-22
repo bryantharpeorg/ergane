@@ -887,10 +887,13 @@ def migrate_off_legacy_unit(
     if not on_disk and LEGACY_WORKER_UNIT not in recorded:
         return RetirementReport(removed=(), kept=())
 
-    epics = tuple((_open_epics if open_epics is None else open_epics)())
+    # Imported here, like every other name that reaches Temporal from this
+    # module: the probe imports it, and runs when Temporal is what died.
     from factory.versioning import strandable_epics
 
-    stranded = strandable_epics(epics)
+    stranded = strandable_epics(
+        tuple((_open_epics if open_epics is None else open_epics)())
+    )
     if stranded:
         raise OperatorError(
             f"refusing to remove {LEGACY_WORKER_UNIT} while {', '.join(stranded)} "
