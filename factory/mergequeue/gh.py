@@ -70,6 +70,22 @@ _VIEW_FIELDS = (
     "statusCheckRollup,baseRefOid"
 )
 
+#: The `_VIEW_FIELDS` entries this factory knowingly sends ahead of the oldest
+#: `gh` still in the wild — the ones a sufficiently old binary will not declare.
+#: `baseRefOid` reached `gh pr view` well after the rest of the set, so a host
+#: whose `gh` predates it is behind this tree rather than in conflict with it.
+#:
+#: This is deliberately **not** a second copy of the field set (078 trap 5) and
+#: deliberately **not** a `gh` version number. It is the strictly smaller set of
+#: fields whose absence from a host's `gh` is a fact about that host, and
+#: `tests/test_gh_argv_contract.py` both holds it to being a subset of
+#: `_VIEW_FIELDS` and refuses to excuse anything outside it: a field named here
+#: degrades explicitly when the local `gh` lacks it, and a field *not* named
+#: here — a typo, a rename, an invention — fails the suite on every host. Adding
+#: a name here is therefore a claim that the field is real and merely new, and
+#: it is the only way to make the check tolerate its absence.
+_VERSION_SENSITIVE_VIEW_FIELDS = frozenset({"baseRefOid"})
+
 #: How much of a refused command's stderr is kept for the escalation to quote.
 _STDERR_TAIL_LIMIT = 2048
 
