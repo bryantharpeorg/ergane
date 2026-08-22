@@ -69,6 +69,14 @@ class RoadmapLocation:
     newest timestamped run — and is `None` when a schedule owns dispatch but has
     not ticked yet. `looked_for` is every rung that was tried, in order, phrased
     for the operator: it is what an empty answer has to say (FR-007).
+
+    The last four fields are what the schedule has *done*, as distinct from what
+    it declares. They are carried here because a renderer cannot reach back to
+    Temporal to phrase a sentence, and because reading them at the describe and
+    dropping them is how a schedule that had skipped every tick for six hours
+    printed `(running)`. Every one of them is `None` when it could not be read:
+    an older server, a description without an `info`, a spec with no interval.
+    `None` means "not known", never zero and never a guess (FR-003).
     """
 
     root_name: str
@@ -80,6 +88,17 @@ class RoadmapLocation:
     schedule_paused: bool | None
     next_action_at: str | None
     looked_for: tuple[str, ...]
+    #: Lifetime count of ticks the overlap policy skipped. It never decreases,
+    #: so it is evidence inside a sentence and never a health signal on its own.
+    skipped_overlap_count: int | None = None
+    #: When a tick last *actually* started a run — the newest `recent_actions`
+    #: entry, not the oldest. `None` on a schedule that has never ticked.
+    last_action_started_at: str | None = None
+    #: When the schedule itself was created: what to measure against when there
+    #: is no last start. A schedule minutes old is not starved.
+    schedule_created_at: str | None = None
+    #: How often it ticks. Without it, "a tick is overdue" has no scale.
+    cadence_s: int | None = None
 
     @property
     def found(self) -> bool:
@@ -109,6 +128,10 @@ class _Found:
     schedule_id: str | None = None
     schedule_paused: bool | None = None
     next_action_at: str | None = None
+    skipped_overlap_count: int | None = None
+    last_action_started_at: str | None = None
+    schedule_created_at: str | None = None
+    cadence_s: int | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +169,10 @@ async def _find_owning_schedule(client: Any, bare_id: str) -> _Found | None:
 
     A schedule that owns dispatch is reported even when it has not ticked yet:
     `workflow_id` is then the newest run if one exists, and `None` otherwise.
+
+    The description is read for what the schedule has *done* as well as for what
+    is next. Those four reads are the helpers below, and each degrades to `None`
+    on its own: a description this ladder cannot fully read still resolves.
     """
     try:
         schedules = await client.list_schedules()
@@ -172,6 +199,10 @@ async def _find_owning_schedule(client: Any, bare_id: str) -> _Found | None:
             schedule_id=entry.id,
             schedule_paused=bool(getattr(state, "paused", False)),
             next_action_at=next_times[0].isoformat() if next_times else None,
+            skipped_overlap_count=_skipped_overlap(info),
+            last_action_started_at=_last_action_started_at(info),
+            schedule_created_at=_described_time(getattr(info, "created_at", None)),
+            cadence_s=_cadence_seconds(described),
         )
     return None
 
@@ -220,6 +251,68 @@ async def _newest_run(client: Any, prefix: str) -> str | None:
         ),
     )
     return str(newest.id)
+
+
+def _described_time(value: Any) -> str | None:
+    """A described timestamp, phrased the way `next_action_at` already is.
+
+    Anything that is not a datetime — an absent field, an older server's `None`,
+    a description that predates the field — is "not known" rather than a guess,
+    because this read must degrade and never raise (FR-003).
+    """
+    isoformat = getattr(value, "isoformat", None)
+    return str(isoformat()) if callable(isoformat) else None
+
+
+def _skipped_overlap(info: Any) -> int | None:
+    """How many ticks the overlap policy has skipped, over this schedule's life.
+
+    `_schedule_for` sets `ScheduleOverlapPolicy.SKIP` deliberately, so a tick
+    landing on a still-working run is skipped rather than queued. This is the
+    count of those skips, and it is a lifetime counter: it never decreases, so a
+    reader states it as evidence and never triggers on it.
+    """
+    count = getattr(info, "num_actions_skipped_overlap", None)
+    return int(count) if isinstance(count, int) else None
+
+
+def _last_action_started_at(info: Any) -> str | None:
+    """When this schedule last *actually* started a run.
+
+    `recent_actions` is documented by the SDK as "10 most recent actions, oldest
+    first", so the newest is its **last** element — the opposite end from
+    `next_action_times` above, which ascends into the future and wants its
+    first. Taking `[0]` here compiles, raises nothing, and reports a start up to
+    ten cadences stale, which reads as starvation on a schedule that is ticking
+    perfectly.
+
+    A skipped tick leaves no entry: every result is built from the SDK's
+    `start_workflow_result` and carries a run id, and a skipped tick starts no
+    workflow. So the newest entry is a true "when did this last really run", not
+    "when was a tick last due".
+    """
+    recent = list(getattr(info, "recent_actions", None) or [])
+    if not recent:
+        return None
+    return _described_time(getattr(recent[-1], "started_at", None))
+
+
+def _cadence_seconds(described: Any) -> int | None:
+    """How often this schedule ticks — the scale an overdue tick is judged on.
+
+    Read off `described.schedule.spec.intervals`, the same field
+    `factory.roadmap.schedule.describe_schedule` decodes from the same object.
+    This is the `Schedule` half of a description, not the `ScheduleInfo` half:
+    a description with no `spec`, and a spec with no interval (a calendar-only
+    schedule), both answer "not known" — never zero, which would say it ticks
+    constantly.
+    """
+    spec = getattr(getattr(described, "schedule", None), "spec", None)
+    intervals = list(getattr(spec, "intervals", None) or [])
+    if not intervals:
+        return None
+    total_seconds = getattr(getattr(intervals[0], "every", None), "total_seconds", None)
+    return int(total_seconds()) if callable(total_seconds) else None
 
 
 BARE_WORKFLOW_LOOKUP = _Lookup(
@@ -272,7 +365,15 @@ async def resolve_roadmap(client: Any, specs_root: str) -> RoadmapLocation:
             schedule_paused=found.schedule_paused,
             next_action_at=found.next_action_at,
             looked_for=tuple(tried),
+            skipped_overlap_count=found.skipped_overlap_count,
+            last_action_started_at=found.last_action_started_at,
+            schedule_created_at=found.schedule_created_at,
+            cadence_s=found.cadence_s,
         )
+    # Nothing was found, so nothing is known about a schedule's ticks. Passed
+    # explicitly rather than left to the defaults: this is the path a new user's
+    # very first `ergane status` takes, and a field added at one site only is a
+    # `TypeError` on the emptiest floor there is.
     return RoadmapLocation(
         root_name=root_name,
         bare_workflow_id=bare_id,
@@ -283,4 +384,8 @@ async def resolve_roadmap(client: Any, specs_root: str) -> RoadmapLocation:
         schedule_paused=None,
         next_action_at=None,
         looked_for=tuple(tried),
+        skipped_overlap_count=None,
+        last_action_started_at=None,
+        schedule_created_at=None,
+        cadence_s=None,
     )

@@ -77,21 +77,30 @@ import io
 import json
 import sys
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable, Iterable, NamedTuple
 
 import pytest
 import temporalio.client
-from temporalio.client import ScheduleActionStartWorkflow
+from temporalio.client import (
+    ScheduleActionStartWorkflow,
+    ScheduleIntervalSpec,
+    ScheduleSpec,
+)
 from temporalio.service import RPCError, RPCStatusCode
 
 from factory.cli import main as main_module
 from factory.roadmap import discovery
 from factory.roadmap.workflow import RoadmapSpecStatus, RoadmapStatus
 from factory.roadmap.models import SpecState
+from tests.fake_schedules import SCHEDULE_CREATED_AT, action_results
 
 SPECS_ROOT = "/srv/factory/ergane/specs"
+#: What a fake schedule ticks at, unless a test says otherwise. Every fake in
+#: this tree must supply one: an unreadable cadence resolves to `unknown`, which
+#: the reader tolerates by design, so a fake without one exercises nothing.
+DEFAULT_CADENCE = timedelta(minutes=5)
 BARE_ID = "roadmap-specs"
 RUN_PREFIX = "roadmap-specs-"
 OLDER_RUN = "roadmap-specs-2026-08-15T14:00:00Z"
@@ -127,12 +136,23 @@ def _status_document() -> RoadmapStatus:
 
 @dataclass
 class FakeSchedule:
-    """One schedule, with the paused flag the handle mutates and reads back."""
+    """One schedule, with the paused flag the handle mutates and reads back.
+
+    The last three dials are what it has *done* rather than what it declares
+    (085/US1). They default to a schedule created but never ticked, which is a
+    real state and the one a fresh `ergane init` is in; a test that means a
+    ticking schedule seeds `recent_action_starts` and says so.
+    """
 
     id: str
     action_workflow_id: str
     paused: bool = False
     next_action_times: list[datetime] = field(default_factory=list)
+    cadence: timedelta = DEFAULT_CADENCE
+    skipped_overlap: int = 0
+    #: Ticks that actually started, oldest first, as the SDK orders them.
+    recent_action_starts: list[datetime] = field(default_factory=list)
+    created_at: datetime = SCHEDULE_CREATED_AT
 
 
 class _FakeScheduleHandle:
@@ -152,9 +172,18 @@ class _FakeScheduleHandle:
                     task_queue="ergane",
                 ),
                 state=SimpleNamespace(paused=self._schedule.paused, note=None),
+                # The real SDK spec type, for the same reason: the cadence
+                # discovery reads is `spec.intervals[0].every`, the field
+                # `describe_schedule` already decodes off this same object.
+                spec=ScheduleSpec(
+                    intervals=[ScheduleIntervalSpec(every=self._schedule.cadence)]
+                ),
             ),
             info=SimpleNamespace(
-                next_action_times=list(self._schedule.next_action_times)
+                next_action_times=list(self._schedule.next_action_times),
+                num_actions_skipped_overlap=self._schedule.skipped_overlap,
+                recent_actions=action_results(self._schedule.recent_action_starts),
+                created_at=self._schedule.created_at,
             ),
         )
 

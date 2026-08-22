@@ -190,7 +190,7 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable, Iterable, NamedTuple
@@ -200,6 +200,8 @@ import temporalio
 import temporalio.client
 from temporalio.client import (
     ScheduleActionStartWorkflow,
+    ScheduleIntervalSpec,
+    ScheduleSpec,
     WorkflowQueryFailedError,
     WorkflowQueryRejectedError,
 )
@@ -224,8 +226,13 @@ from factory.verify.models import (
     VerificationResult,
 )
 from factory.verify.store import connect as verify_connect, upsert_result
+from tests.fake_schedules import SCHEDULE_CREATED_AT, action_results
 
 DEAD_ADDRESS = "127.0.0.1:1"
+#: Every fake in this tree supplies a cadence: an unreadable one resolves to
+#: `unknown`, a state the reader tolerates by design, so a fake without one
+#: makes a schedule-line assertion pass while measuring nothing.
+DEFAULT_CADENCE = timedelta(minutes=5)
 
 #: Named by an operator's hand in production; seed data only here, never matched
 #: on (the discovery matches the action's workflow id — 046 plan trap 3).
@@ -324,10 +331,18 @@ def roadmap_document(*, paused: bool = False) -> Any:
 
 @dataclass
 class FakeSchedule:
+    #: The last four dials are the observed half of a description (085/US1) —
+    #: what the schedule has actually done, which is what the rendered schedule
+    #: line has to be true about.
     id: str
     action_workflow_id: str
     paused: bool = False
     next_action_times: list[datetime] = field(default_factory=list)
+    cadence: timedelta = DEFAULT_CADENCE
+    skipped_overlap: int = 0
+    #: Ticks that actually started, oldest first, as the SDK orders them.
+    recent_action_starts: list[datetime] = field(default_factory=list)
+    created_at: datetime = SCHEDULE_CREATED_AT
 
 
 @dataclass
@@ -351,8 +366,16 @@ class _FakeScheduleHandle:
                     task_queue="ergane",
                 ),
                 state=SimpleNamespace(paused=self._schedule.paused, note=None),
+                spec=ScheduleSpec(
+                    intervals=[ScheduleIntervalSpec(every=self._schedule.cadence)]
+                ),
             ),
-            info=SimpleNamespace(next_action_times=list(self._schedule.next_action_times)),
+            info=SimpleNamespace(
+                next_action_times=list(self._schedule.next_action_times),
+                num_actions_skipped_overlap=self._schedule.skipped_overlap,
+                recent_actions=action_results(self._schedule.recent_action_starts),
+                created_at=self._schedule.created_at,
+            ),
         )
 
 
