@@ -18,12 +18,19 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable
 
 from temporalio.api.common.v1 import Payload
-from temporalio.client import Schedule, ScheduleUpdate, ScheduleUpdateInput
+from temporalio.client import (
+    Schedule,
+    ScheduleActionExecutionStartWorkflow,
+    ScheduleActionResult,
+    ScheduleUpdate,
+    ScheduleUpdateInput,
+)
 from temporalio.converter import default as default_converter
 from temporalio.service import RPCError, RPCStatusCode
 
@@ -31,6 +38,38 @@ from factory.roadmap import schedule as schedule_module
 from factory.roadmap.schedule import RoadmapSchedule, schedule_id_for
 
 _CONVERTER = default_converter()
+
+#: When a fake schedule was created, unless a test says otherwise. Fixed rather
+#: than relative to now: a description is data, and a fixture whose facts move
+#: with the clock cannot be asserted on byte for byte.
+SCHEDULE_CREATED_AT = datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc)
+
+
+def action_results(starts: Iterable[datetime]) -> list[ScheduleActionResult]:
+    """`ScheduleInfo.recent_actions`, from the times its actions started.
+
+    The real SDK type, not a namespace shaped like one, and built the way the
+    SDK builds it: every entry carries a `first_execution_run_id`, because every
+    entry is decoded from a `start_workflow_result`. That is also why a *skipped*
+    tick leaves no entry at all — it starts no workflow and there is nothing to
+    put there — and why the newest entry means "when this last really ran".
+
+    Order is the caller's, and the SDK's order is **oldest first**: the field is
+    documented "10 most recent actions, oldest first", so a fake that seeds
+    ascending times is seeding what a real describe returns. Every reader of
+    this list therefore wants its last element.
+    """
+    return [
+        ScheduleActionResult(
+            scheduled_at=started,
+            started_at=started,
+            action=ScheduleActionExecutionStartWorkflow(
+                workflow_id=f"roadmap-{started.isoformat()}",
+                first_execution_run_id=f"run-{index}",
+            ),
+        )
+        for index, started in enumerate(starts)
+    ]
 
 
 def _encoded(args: Iterable[Any]) -> list[Payload]:
@@ -62,7 +101,19 @@ class _Handle:
             id=self.id,
             schedule=self._stored(),
             data_converter=_CONVERTER,
-            info=SimpleNamespace(next_action_times=[]),
+            # The observed half. `schedule` needs nothing added for the cadence:
+            # `_stored()` hands back the real `Schedule` the factory built, spec
+            # and intervals included. `info` is the half nothing built, and a
+            # description silent about what a schedule has actually done is how
+            # a starved schedule reads as a healthy one (085/US1).
+            info=SimpleNamespace(
+                next_action_times=[],
+                num_actions_skipped_overlap=self._server.skipped_overlap.get(self.id, 0),
+                recent_actions=action_results(
+                    self._server.recent_action_starts.get(self.id, ())
+                ),
+                created_at=self._server.created_at,
+            ),
         )
 
     async def update(self, updater: Any, **_kwargs: Any) -> None:
@@ -86,6 +137,13 @@ class FakeScheduleServer:
         self.schedules: dict[str, Schedule] = {}
         #: Every call, in order: `("create"|"describe"|"update"|"delete", id)`.
         self.calls: list[tuple[str, str]] = []
+        #: What a schedule has *done*, by id — the half of a description no
+        #: manifest declares and this server would otherwise be silent about.
+        #: Ticks that actually started, oldest first, as the SDK orders them:
+        self.recent_action_starts: dict[str, list[datetime]] = {}
+        #: and the lifetime count of ticks the SKIP policy dropped instead.
+        self.skipped_overlap: dict[str, int] = {}
+        self.created_at: datetime = SCHEDULE_CREATED_AT
 
     async def create_schedule(self, id: str, schedule: Schedule, **_kwargs: Any) -> _Handle:
         if id in self.schedules:

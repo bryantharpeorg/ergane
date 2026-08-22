@@ -351,7 +351,12 @@ async def _through_the_schedule_server_fake() -> RoadmapLocation:
     desired = fake_schedules.desired_for(
         Path("/srv/factory/ergane"), specs_root=SPECS_ROOT, cadence_s=300
     )
-    fake_schedules.seed(server, desired)
+    # `fake_schedules.seed` is the same two lines around an `asyncio.run`, which
+    # is exactly what cannot be called from inside a running loop. Reached
+    # through the seam either way (`schedule_module.create_schedule`), never a
+    # real client.
+    await schedule_module.create_schedule(server, desired)
+    server.calls.clear()
     return await _resolve(_LadderOverTheScheduleServer(server))
 
 
