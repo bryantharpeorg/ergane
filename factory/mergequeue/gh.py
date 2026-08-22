@@ -45,6 +45,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -544,6 +545,287 @@ class GhClient:
             stderr=completed.stderr,
             returncode=completed.returncode,
         )
+
+
+# --- 078-US2: what the `gh` on this host can actually answer -------------------
+#
+# The 2026-08-20 parked epic: `poll_landing` asked for a `--json` field the
+# host's `gh` did not have, the activity raised, and the operator found out
+# hours later from a node stuck in ENQUEUED. Everything below exists so that
+# `ergane install --verify` says it first, on the host where it is true.
+#
+# It lives in this module rather than beside the probe because this is the
+# module that owns `_VIEW_FIELDS` and the module allowed to spell the binary's
+# own vocabulary (`tests/test_forge_sweep.py`). The probe that renders it is
+# `factory/controlplane/verify.py`'s `ForgeCapabilityProbe`, which carries no
+# field names of its own — it cannot, and that is the point.
+
+
+#: The named conditions `inspect_forge_capability` reports. Absent and incapable
+#: are separate values because they have separate remedies (FR-006): one binary
+#: is installed, the other upgraded, and an operator sent to the wrong one loses
+#: an evening. `undetermined` is the fourth, for a binary that is present and
+#: will not say what it declares — neither a pass nor an accusation, because
+#: nothing was measured.
+FORGE_ABSENT = "absent"
+FORGE_INCAPABLE = "incapable"
+FORGE_CAPABLE = "capable"
+FORGE_UNDETERMINED = "undetermined"
+
+#: Where this factory's `gh` comes from and is replaced from. One home for the
+#: sentence, read by `wiring.py`'s refusals and by the capability check below,
+#: so a version remedy can never say two different things in two places.
+GH_SOURCE_URL = "https://cli.github.com"
+
+#: The PR number the derivation feeds the poller. Never sent anywhere: the
+#: recording runner below answers it, and the digit is dropped again before the
+#: command is used, so this is a placeholder in the strictest sense.
+_CAPABILITY_PROBE_PR = 1
+
+#: How long any single capability question may take. Both are local, offline
+#: questions — a version string and a completion list — so a binary that has
+#: not answered by now is not going to.
+_CAPABILITY_TIMEOUT_S = 10
+
+
+def upgrade_remedy(reason: str) -> str:
+    """The one sentence this factory prints when `gh` is too old for it.
+
+    `reason` completes "upgrade `gh` to a version that ...". Callers pass what
+    they needed and did not get — a field, a JSON key — so the operator reads
+    why rather than a bare version number they would have to look up.
+    """
+    return (
+        f"upgrade `gh` to a version that {reason} "
+        f"(run: gh --version and update from {GH_SOURCE_URL})"
+    )
+
+
+def install_remedy() -> str:
+    """The one sentence this factory prints when there is no `gh` at all."""
+    return f"install it from {GH_SOURCE_URL}, then run: gh auth login"
+
+
+@dataclass(frozen=True)
+class ForgeCapability:
+    """Whether the installed `gh` can answer what the landing poller asks it.
+
+    `detail` is the operator-facing sentence, built here because this is where
+    the vocabulary lives. `condition` is what a caller decides on; the rest is
+    the evidence behind the sentence — which binary answered, at what version,
+    which command and fields were checked, and which of those it does not
+    declare — so nothing downstream has to re-derive any of it.
+    """
+
+    condition: str
+    binary: str | None
+    version: str
+    command: tuple[str, ...]
+    fields: tuple[str, ...]
+    undeclared: tuple[str, ...]
+    detail: str
+
+
+class _PollerArgvRecorder:
+    """A stand-in subject for `poll_pr`: it records the argv and runs nothing.
+
+    Deliberately *not* a `GhClient`. A capability check must not be able to
+    reach the forge even by accident, and the surest way to guarantee that is a
+    subject that has no runner in it at all — there is nothing here for a
+    subprocess to come out of. It also leaves 049-US1's construction seam where
+    it is: `factory/mergequeue/github_forge.py` remains the one module that
+    builds a real client (`tests/test_forge_seam.py`), and a derivation that
+    only wants to know what the poller *asks* has no business becoming a second.
+
+    Both plumbing entry points record, so a poller rewritten onto `_run` is
+    still read rather than crashing this into an unexplained probe failure.
+    """
+
+    def __init__(self) -> None:
+        self.recorded: list[list[str]] = []
+        self._repo = os.curdir
+
+    def _run(self, *args: str) -> GhRunResult:
+        self.recorded.append(list(args))
+        return GhRunResult(stdout="{}", stderr="", returncode=0)
+
+    def _run_json(self, *args: str) -> dict[str, Any]:
+        self.recorded.append(list(args))
+        return {}
+
+
+def poller_view_argv() -> tuple[str, ...]:
+    """The argv `poll_landing` sends, recorded from the poller itself.
+
+    Not a description of it, and above all not a copy of `_VIEW_FIELDS`: the
+    2026-08-20 defect was one hand-maintained list disagreeing with another, and
+    a capability check carrying a third list would rebuild it one layer up (078
+    trap 5). So the poller's own method is run against a recorder, and what it
+    built is what gets checked. A field added to the set, or a command the
+    poller switches to, is followed with no edit here.
+    """
+    recorder = _PollerArgvRecorder()
+    GhClient.poll_pr(recorder, _CAPABILITY_PROBE_PR)  # type: ignore[arg-type]
+    if not recorder.recorded:
+        raise GhError(GH_REFUSED, "the landing poller issued no command to check")
+    return tuple(recorder.recorded[0])
+
+
+def inspect_forge_capability() -> ForgeCapability:
+    """Ask the installed `gh` whether it declares every field the poller sends.
+
+    The question is asked of the binary, offline: `gh __complete <command>
+    --json ''` is the shell-completion interface, which prints one field name
+    per line with no credential, no network and no repository. Reading the
+    vocabulary rather than running the poll is what makes this answerable on a
+    fresh host — and what keeps it honest across versions, since where `gh`
+    validates `--json` names relative to its authentication check moved between
+    2.45 and 2.98, so the exit status of a real poll means different things on
+    the two.
+
+    Nothing here runs a command against the forge, and nothing here writes: an
+    unusable `gh` is reported, never repaired.
+    """
+    argv = poller_view_argv()
+    index = argv.index("--json")
+    # The poller's command with its PR number dropped — the probe asks what the
+    # command declares, and a completion request needs no subject. Subcommand
+    # words are never digits, so this removes the placeholder and nothing else.
+    command = tuple(word for word in argv[:index] if not word.isdigit())
+    fields = tuple(field for field in argv[index + 1].split(",") if field)
+    asked = f"`gh {' '.join(command)} --json {','.join(fields)}`"
+
+    binary = shutil.which("gh")
+    if binary is None:
+        return ForgeCapability(
+            condition=FORGE_ABSENT,
+            binary=None,
+            version="",
+            command=command,
+            fields=fields,
+            undeclared=(),
+            detail=(
+                "the GitHub CLI (`gh`) is not on PATH: the landing poller has "
+                "nothing to ask, so every epic dispatched from this host would "
+                f"park at its first landing — {install_remedy()}"
+            ),
+        )
+
+    version = _installed_gh_version(binary)
+    declared = _declared_json_fields(binary, command)
+    if declared is None:
+        return ForgeCapability(
+            condition=FORGE_UNDETERMINED,
+            binary=binary,
+            version=version,
+            command=command,
+            fields=fields,
+            undeclared=(),
+            detail=(
+                f"the gh at {binary} ({version}) would not say which --json "
+                f"fields it declares for `gh {' '.join(command)}`, so whether "
+                "this host can answer the landing poller is unproven — run "
+                f"`gh __complete {' '.join(command)} --json ''` by hand and "
+                "read what it prints"
+            ),
+        )
+
+    undeclared = tuple(field for field in fields if field not in declared)
+    if undeclared:
+        named = ", ".join(undeclared)
+        return ForgeCapability(
+            condition=FORGE_INCAPABLE,
+            binary=binary,
+            version=version,
+            command=command,
+            fields=fields,
+            undeclared=undeclared,
+            detail=(
+                f"the gh at {binary} ({version}) does not declare {named}, which "
+                f"the landing poller sends in {asked}: a landing polled from "
+                "this host fails on its first poll and the node sits in ENQUEUED "
+                f"until somebody looks — {upgrade_remedy(f'declares {named}')}"
+            ),
+        )
+
+    return ForgeCapability(
+        condition=FORGE_CAPABLE,
+        binary=binary,
+        version=version,
+        command=command,
+        fields=fields,
+        undeclared=(),
+        detail=(
+            f"the gh at {binary} ({version}) declares all {len(fields)} of the "
+            f"--json fields the landing poller sends in {asked}, checked against "
+            "the field vocabulary that binary itself reports"
+        ),
+    )
+
+
+def _run_capability_question(binary: str, args: Sequence[str]) -> _Completed | None:
+    """Ask `binary` one offline question, or `None` if it could not be asked.
+
+    Run outside any repository, with the scrubbed environment the real runner
+    uses and no terminal prompt, so the answer is a property of the binary and
+    not of where it was invoked or what credential happened to be lying around.
+    """
+    env = scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"}
+    try:
+        completed = subprocess.run(
+            [binary, *args],
+            capture_output=True,
+            text=True,
+            cwd=tempfile.gettempdir(),
+            env=env,
+            timeout=_CAPABILITY_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _Completed(
+        stdout=completed.stdout or "",
+        stderr=completed.stderr or "",
+        returncode=completed.returncode,
+    )
+
+
+def _installed_gh_version(binary: str) -> str:
+    """What `gh --version` reports, verbatim, or that it would not say.
+
+    A refused `--json` field is far more often a version gap than a typo, so the
+    version is the first thing the reader of a refusal needs. Reported as the
+    binary spelled it — this factory pins no version number of its own, because
+    a pinned number is the same hand-maintained fact that caused all this.
+    """
+    completed = _run_capability_question(binary, ["--version"])
+    if completed is None or completed.returncode != 0:
+        return "version unknown"
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return lines[0] if lines else "version unknown"
+
+
+def _declared_json_fields(
+    binary: str, command: Sequence[str]
+) -> frozenset[str] | None:
+    """The `--json` field names `binary` declares for `command`, or `None`.
+
+    `None` is "could not tell", which the caller reports as its own condition
+    rather than as a refusal: a check that accuses on ignorance is the
+    deny-everything failure mode wearing a different hat, and an operator told a
+    field is missing when nothing was measured goes looking for the wrong thing.
+    """
+    completed = _run_capability_question(
+        binary, ["__complete", *command, "--json", ""]
+    )
+    if completed is None or completed.returncode != 0:
+        return None
+    fields = {
+        line.split("\t", 1)[0].strip()
+        for line in completed.stdout.splitlines()
+        # Cobra terminates a completion list with a `:<directive>` line.
+        if line.strip() and not line.startswith(":")
+    }
+    return frozenset(fields) or None
 
 
 @contextlib.contextmanager

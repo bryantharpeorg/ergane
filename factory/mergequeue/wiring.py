@@ -76,7 +76,12 @@ from factory.mergequeue.forge import (
     WiringRefused,
     WiringStep,
 )
-from factory.mergequeue.gh import GH_UNAVAILABLE, GhError
+from factory.mergequeue.gh import (
+    GH_UNAVAILABLE,
+    GhError,
+    install_remedy,
+    upgrade_remedy,
+)
 
 #: The squash-title source the landing grammar depends on: the merge queue
 #: squashes, and the delta reader parses the landing off the squashed subject.
@@ -262,8 +267,11 @@ def wire_repo(
                 "merge queue; upgrade `gh` to a version that supports the "
                 "`isInOrganization` field (GitHub CLI 2.55 or later)",
                 remedies=(
-                    "upgrade `gh` to a version that supports `isInOrganization` "
-                    "(run: gh --version and update from https://cli.github.com), or",
+                    # 078-US2: the upgrade sentence has one home, in `gh.py`
+                    # beside the capability check that prints the same one for a
+                    # refused `--json` field. Two spellings of "your gh is too
+                    # old" is how one of them ends up naming a stale URL.
+                    upgrade_remedy("supports `isInOrganization`") + ", or",
                     "run the manual wiring steps below on a host with a current `gh`",
                 ),
                 manual=manual_steps(
@@ -334,9 +342,7 @@ def _require_gh(client: Any, *, landing_branch: str, gates: Sequence[str]) -> No
             raise WiringRefused(
                 "github wiring needs the GitHub CLI, and `gh` is not installed "
                 "(or is not on PATH)",
-                remedies=(
-                    "install it from https://cli.github.com, then run: gh auth login",
-                ),
+                remedies=(install_remedy(),),
                 manual=manual,
             ) from None
         detail = error.stderr_tail.strip() or str(error)
