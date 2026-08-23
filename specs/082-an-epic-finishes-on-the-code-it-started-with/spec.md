@@ -1,5 +1,33 @@
 ---
-state: ready
+state: landed
+# LANDED 2026-08-22, attested ~7:30 PM CT by the operator session. All five
+# stories verified on ergane-buildout by content (`ergane spec landed
+# --default-branch ergane-buildout`); the epic workflow completed clean at
+# 7:16:05 PM with every node MERGED and verified=True.
+#   US1 landed at 300293992c0b (PR #292, attempt 1)
+#   US2 landed at e05a50c95ca1 (PR #293, attempt 2 — attempt 1's gate passed but
+#     the judge rejected US2-S1 on the merits: the evidence file showed the
+#     attempt alive and pinned after a deploy, then stated under "Not executed
+#     here" that an epic *completing* across one was never run. The rework
+#     produced that run. The judge was right and the loop worked.)
+#   US3 landed at 9703617c3c5a (PR #295, attempt 1)
+#   US4 landed at f1d480feac81 (PR #296, attempt 1)
+#   US5 landed at 72d5c1aa1436 (PR #294, attempt 1)
+#
+# Two operator interventions, neither a code defect:
+#   - A host hard reset at 4:11 PM killed the worker mid-attempt. Temporal
+#     detected it at the 660s heartbeat timeout and retried the gate on its own;
+#     US2's 62-minute build survived on disk. No story was rebuilt.
+#   - US5's first merge-group build failed on
+#     tests/test_roadmap_operator_surface.py::test_pause_roadmap_parks_dispatch_between_epics
+#     (TimeoutError, 1 of 4458), ejecting PR #294 and dropping its auto-merge
+#     while the poller went on reading the PR as CLEAN with no failing checks —
+#     `mergequeue/a-merge-group-failure-ejects-the-pr-and-the-poller-never-notices`,
+#     second occurrence. The operator reproduced the exact speculative merge in a
+#     scratch worktree and ran that test 4/4 green, including three runs pinned
+#     to CI's Python 3.12, then re-enqueued. The retry passed on byte-identical
+#     content: the runner, not the change.
+#
 # FLIPPED TO READY 2026-08-22 2:10 PM CT. The operator's 2026-08-22 ruling
 # (Q&A after the review docket) approved this flip and deferred it until the
 # 083/084/085 trio had landed, so that a lexicographically-earlier spec could
