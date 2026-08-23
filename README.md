@@ -43,6 +43,16 @@ gateway in front of the provider and declare `llm.mode = "gateway"`.
   only under GitHub Enterprise Cloud. A user-owned repository cannot host one at
   any plan level, so make the target repository organization-owned before you
   wire it.
+- **Spec Kit's authoring skills, installed into your agent, not into this
+  repository.** Ergane's specs are Spec Kit documents — a numbered feature
+  directory under `specs/` holding its spec, plan and tasks files — and the
+  skills that write and check them (speckit-specify, speckit-plan, speckit-tasks
+  and the rest) come from <https://github.com/github/spec-kit>. Install them
+  globally, so every project sees them, or individually per repository; either
+  way they live outside this tree. Ergane's own layer of Spec Kit — the
+  templates, the shell scripts, and the constitution at
+  `.specify/memory/constitution.md` that every dispatched attempt is told to
+  obey — is committed here and needs no installation.
 - `bwrap` on `PATH`, used by the default runtime to sandbox agent work.
 - `git` and `uv`.
 - Python 3.11 or newer.

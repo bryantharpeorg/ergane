@@ -19,36 +19,28 @@ same commit. A notice added later is a notice that was missing in between.
 - **License:** MIT
 - **Where it lives here:**
   - `.specify/` — templates, memory and shell scripts for spec-driven development
-  - `.claude/skills/speckit-*/` — ten skills, each declaring `author: "github-spec-kit"`
-    in its own front matter
 
 Ergane's spec workflow is built on Spec Kit's structure; `specs/<feature>/` and
 the `.specify/` layout are its conventions, not Ergane's inventions.
 
-## Skills for Real Engineers — Copyright (c) 2026 Matt Pocock
-
-- **Upstream:** <https://github.com/mattpocock/skills>
-- **License:** MIT
-- **Where it lives here:**
-  - `.agents/skills/` — 41 skills
-  - `.claude/skills/*` — symlinks into `.agents/skills/`, tracked as symlinks
-
-These are development-time skills for agents working *on* this repository. They
-are not imported by Ergane's runtime and none of them ships in the installed
-package.
+Spec Kit's authoring *skills* are no longer vendored here. They are a tool an
+operator installs, not material this repository redistributes, so they are named
+as a prerequisite in `README.md` and left to the operator's own agent
+configuration. The same went for the third-party skill collection this tree used
+to carry under `.agents/skills/`: removed rather than relicensed, because a
+development-time convenience is not something a repository should be shipping on
+someone else's behalf.
 
 ---
 
 ## MIT License
 
-Both of the above are distributed under the following terms. The copyright line
-differs per project and is given in each section above; the permission notice is
-identical and is reproduced once here.
+Spec Kit is distributed under the following terms.
 
 ```
 MIT License
 
-Copyright (c) <as stated for each project above>
+Copyright (c) GitHub, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
