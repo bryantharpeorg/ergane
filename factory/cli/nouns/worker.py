@@ -18,7 +18,12 @@ from typing import Any
 from factory.cli.errors import EXIT_OK, EXIT_USER
 from factory.cli.nouns import Noun
 from factory.supervision.deploy import deploy
-from factory.supervision.units import install, resolve_layout, uninstall
+from factory.supervision.units import (
+    install,
+    migrate_off_legacy_unit,
+    resolve_layout,
+    uninstall,
+)
 
 
 def _install(args: argparse.Namespace) -> int:
@@ -29,6 +34,13 @@ def _install(args: argparse.Namespace) -> int:
 
 def _uninstall(_args: argparse.Namespace) -> int:
     report = uninstall(resolve_layout())
+    print(report.render())
+    return EXIT_OK
+
+
+def _migrate(_args: argparse.Namespace) -> int:
+    """082-US4. Thin like the rest; the refusal is the engine's (FR-007)."""
+    report = migrate_off_legacy_unit(resolve_layout())
     print(report.render())
     return EXIT_OK
 
@@ -93,6 +105,21 @@ def add_parser(subparsers: Any) -> None:
         ),
     )
     deployer.set_defaults(run=_deploy)
+
+    migrator = verbs.add_parser(
+        "migrate",
+        help="retire the unversioned worker unit this engine no longer writes",
+        description=(
+            "Remove `ergane-worker.service`, the in-place-restart worker unit "
+            "installs before this one wrote. Refused while any epic that "
+            "predates versioning is still open: stopping that unit takes the "
+            "agents it is running with it, and whatever survives is adopted "
+            "onto whichever version is current at its next workflow task, "
+            "which is not the code it started with. Removes the file only "
+            "while it still matches what install wrote."
+        ),
+    )
+    migrator.set_defaults(run=_migrate)
 
 
 NOUN = Noun(

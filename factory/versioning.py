@@ -39,9 +39,10 @@ commit is a version nobody can redeploy, and every epic pinned to it is stranded
 
 from __future__ import annotations
 
+import dataclasses
 import os
-from collections.abc import Mapping
-from typing import Final
+from collections.abc import Mapping, Sequence
+from typing import Any, Final
 
 from temporalio.common import VersioningBehavior, WorkerDeploymentVersion
 
@@ -125,3 +126,60 @@ def resolve_deployment_version(
         )
 
     return WorkerDeploymentVersion(deployment_name=DEPLOYMENT_NAME, build_id=revision)
+
+
+#: What the server reports for a run that carries no versioning information at
+#: all — the integer, because it arrives on a proto and not as an SDK enum.
+UNVERSIONED_BEHAVIOR: Final = int(VersioningBehavior.UNSPECIFIED)
+
+
+@dataclasses.dataclass(frozen=True)
+class OpenEpic:
+    """One open epic, and what the server says it is versioned as (082-US4).
+
+    `behavior` is the server's own enum value rather than a bool this module
+    derived, so the classification below is a decision about data and not a
+    restatement of a read that already made it.
+    """
+
+    epic_id: str
+    behavior: int = UNVERSIONED_BEHAVIOR
+    build_id: str | None = None
+
+
+def predates_versioning(epic: OpenEpic) -> bool:
+    """Whether this epic was started by a worker that declared no version.
+
+    The one thing T002's probe measured that the hoped-for answer got wrong: a
+    pre-versioning run is *not* stalled when a versioned worker becomes current.
+    It is served, adopted onto whatever version is current at its next workflow
+    task, and pinned there — so what removing the unversioned worker costs is
+    not a stall but an epic finishing on code it did not start with, plus the
+    agents its attempts are running inside that unit's cgroup.
+    """
+    return epic.behavior == UNVERSIONED_BEHAVIOR
+
+
+def strandable_epics(epics: Sequence[OpenEpic]) -> tuple[str, ...]:
+    """The open epics that retiring the unversioned worker would strand.
+
+    Pure, and sorted, because it is the body of a refusal an operator reads.
+    """
+    return tuple(sorted(epic.epic_id for epic in epics if predates_versioning(epic)))
+
+
+def open_epic_from(execution: Any) -> OpenEpic:
+    """One `list_workflows` result as this module's own two facts.
+
+    `raw_info.versioning_info` is where the server puts them; the SDK's
+    `WorkflowExecution` does not lift them onto attributes of its own. Read
+    defensively — a server old enough to omit the field entirely reports every
+    epic as pre-versioning, which is the safe direction for a refusal to err in.
+    """
+    info = getattr(getattr(execution, "raw_info", None), "versioning_info", None)
+    version = getattr(info, "deployment_version", None)
+    return OpenEpic(
+        epic_id=str(execution.id),
+        behavior=int(getattr(info, "behavior", UNVERSIONED_BEHAVIOR) or 0),
+        build_id=(getattr(version, "build_id", "") or "") or None,
+    )

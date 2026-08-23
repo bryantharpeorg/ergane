@@ -34,7 +34,6 @@ from factory.supervision.units import (
     PROBE_UNIT,
     SLICE_UNIT,
     WORKER_TEMPLATE_UNIT,
-    WORKER_UNIT,
     WRAPPER_NAME,
     CommandResult,
     InstallLayout,
@@ -190,8 +189,10 @@ def test_install_writes_every_unit_and_the_wrapper(layout: InstallLayout) -> Non
 
     report = install(layout, run=fake)
 
+    # 082-US4: the template, and no `ergane-worker.service` (that retirement is
+    # asserted in tests/test_the_unversioned_unit_retires.py).
     everything = [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT,
-                  WORKER_TEMPLATE_UNIT, WORKER_UNIT, WRAPPER_NAME]
+                  WORKER_TEMPLATE_UNIT, WRAPPER_NAME]
     assert sorted(report.written) == sorted(everything)
     assert report.kept == ()
     for name in (name for name in everything if name != WRAPPER_NAME):
@@ -217,8 +218,10 @@ def test_install_enables_the_units_and_reads_back_what_is_running(
 
     report = install(layout, run=fake)
 
-    assert sorted(report.active) == sorted([BRIDGE_UNIT, PROBE_TIMER, WORKER_UNIT])
-    assert sorted(report.enabled) == sorted([BRIDGE_UNIT, PROBE_TIMER, WORKER_UNIT])
+    # No worker among them since 082-US4: a template cannot be enabled, and
+    # deploy is what enables the instance serving a version.
+    assert sorted(report.active) == sorted([BRIDGE_UNIT, PROBE_TIMER])
+    assert sorted(report.enabled) == sorted([BRIDGE_UNIT, PROBE_TIMER])
     assert fake.issued("daemon-reload") != []
 
 
@@ -240,7 +243,7 @@ def test_install_reports_a_unit_that_enabled_and_did_not_come_up(
 
     assert BRIDGE_UNIT in report.enabled
     assert BRIDGE_UNIT not in report.active
-    assert WORKER_UNIT in report.active
+    assert PROBE_TIMER in report.active
 
 
 def test_install_enables_linger_for_the_user(layout: InstallLayout) -> None:
@@ -303,8 +306,8 @@ def test_two_installations_generate_two_different_texts(tmp_path: Path) -> None:
     first = resolve_layout(home=tmp_path / "one", install_root=tmp_path / "one/erg")
     second = resolve_layout(home=tmp_path / "two", install_root=tmp_path / "two/erg")
 
-    one = texts(first)[WORKER_UNIT]
-    two = texts(second)[WORKER_UNIT]
+    one = texts(first)[BRIDGE_UNIT]
+    two = texts(second)[BRIDGE_UNIT]
 
     assert str(tmp_path / "one") in one and str(tmp_path / "two") not in one
     assert str(tmp_path / "two") in two and str(tmp_path / "one") not in two
@@ -406,7 +409,7 @@ def test_every_service_unit_stops_its_whole_process_tree(
     Measured evidence for the semantics itself is in the block at the end of
     this file.
     """
-    for name in (WORKER_UNIT, BRIDGE_UNIT):
+    for name in (WORKER_TEMPLATE_UNIT, BRIDGE_UNIT):
         text = texts(layout)[name]
         assert directive(text, "KillMode") == ["control-group"]
         assert directive(text, "KillSignal") == ["SIGTERM"]
@@ -420,7 +423,7 @@ def test_every_service_unit_stops_its_whole_process_tree(
 
 def test_every_service_unit_bounds_its_restart_rate(layout: InstallLayout) -> None:
     """Giving up loudly beats flapping quietly during a memory storm."""
-    for name in (WORKER_UNIT, BRIDGE_UNIT):
+    for name in (WORKER_TEMPLATE_UNIT, BRIDGE_UNIT):
         text = texts(layout)[name]
         assert directive(text, "StartLimitIntervalSec") == ["300"]
         assert directive(text, "StartLimitBurst") == ["5"]
@@ -434,7 +437,7 @@ def test_the_restart_bound_is_declared_in_the_unit_section(
     silently: the journal gets an "Unknown key" warning and the unit starts
     anyway, so the bound reads as present in the file and is absent from the
     running system."""
-    for name in (WORKER_UNIT, BRIDGE_UNIT):
+    for name in (WORKER_TEMPLATE_UNIT, BRIDGE_UNIT):
         section = texts(layout)[name].split("[Service]")[0]
         assert "StartLimitBurst=" in section
 
@@ -459,7 +462,7 @@ def test_every_service_unit_is_inside_the_slice(layout: InstallLayout) -> None:
         if directive(text, "Slice") == [SLICE_UNIT]
     }
 
-    assert in_slice == {WORKER_UNIT, WORKER_TEMPLATE_UNIT, BRIDGE_UNIT}
+    assert in_slice == {WORKER_TEMPLATE_UNIT, BRIDGE_UNIT}
 
 
 def test_the_slice_bounds_memory_and_tasks(layout: InstallLayout) -> None:
@@ -487,7 +490,7 @@ def test_uninstall_removes_exactly_what_install_created(
 
     assert sorted(report.removed) == sorted(
         [BRIDGE_UNIT, PROBE_TIMER, PROBE_UNIT, SLICE_UNIT,
-         WORKER_TEMPLATE_UNIT, WORKER_UNIT, WRAPPER_NAME]
+         WORKER_TEMPLATE_UNIT, WRAPPER_NAME]
     )
     assert report.kept == ()
     assert tree(home) == before
@@ -515,14 +518,14 @@ def test_a_same_named_unit_the_engine_did_not_write_is_reported_not_deleted(
     was written — so uninstall knows rather than guesses.
     """
     layout.unit_dir.mkdir(parents=True)
-    theirs = layout.unit_dir / WORKER_UNIT
+    theirs = layout.unit_dir / WORKER_TEMPLATE_UNIT
     theirs.write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
     install(layout, run=FakeSystemctl())
 
     report = uninstall(layout, run=FakeSystemctl(), open_epics=lambda: ())
 
-    assert WORKER_UNIT in report.kept
-    assert WORKER_UNIT not in report.removed
+    assert WORKER_TEMPLATE_UNIT in report.kept
+    assert WORKER_TEMPLATE_UNIT not in report.removed
     assert theirs.read_text(encoding="utf-8") == "[Service]\nExecStart=/usr/bin/true\n"
 
 
@@ -566,7 +569,7 @@ def test_reinstalling_over_the_engines_own_units_is_not_a_collision(
     report = install(layout, run=FakeSystemctl())
 
     assert report.kept == ()
-    assert WORKER_UNIT in report.written
+    assert WORKER_TEMPLATE_UNIT in report.written
 
 
 # ============================================================================
@@ -585,7 +588,7 @@ def test_uninstall_refuses_while_an_epic_is_in_flight_and_names_it(
         uninstall(layout, run=fake, open_epics=lambda: ("epic-042-supervised",))
 
     assert "epic-042-supervised" in str(raised.value)
-    assert (layout.unit_dir / WORKER_UNIT).is_file()
+    assert (layout.unit_dir / WORKER_TEMPLATE_UNIT).is_file()
     assert fake.calls == []
 
 
@@ -661,7 +664,7 @@ def test_the_probe_is_the_one_generated_unit_outside_the_slice(
         if directive(text, "Slice") == [SLICE_UNIT]
     }
 
-    assert in_slice == {WORKER_UNIT, WORKER_TEMPLATE_UNIT, BRIDGE_UNIT}
+    assert in_slice == {WORKER_TEMPLATE_UNIT, BRIDGE_UNIT}
     assert directive(texts(layout)[PROBE_UNIT], "Slice") == []
 
 

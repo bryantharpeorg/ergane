@@ -53,9 +53,9 @@ from factory.supervision.alert import AlertOutcome, StackAlert, send_alert
 from factory.supervision.deploy import SweepReport
 from factory.supervision.units import (
     BRIDGE_UNIT,
+    LEGACY_WORKER_UNIT,
     SLICE_UNIT,
     TEMPORAL_UNIT,
-    WORKER_UNIT,
     CommandResult,
     _run_command,
     supervision_home,
@@ -82,7 +82,13 @@ STATE_FILE = "probe.json"
 class ProbeConfig:
     """The thresholds, and the units this installation supervises."""
 
-    units: tuple[str, ...] = (WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT)
+    #: 082-US4 renamed the worker unit this watches to what it now is — the
+    #: legacy one. What it does NOT do is change which units are watched: a
+    #: host that has migrated off it runs versioned instances instead, and
+    #: naming them is a resolution against the deployments directory
+    #: (`units.deployed_instances`) rather than a constant. That belongs with
+    #: whoever owns this file's sweep, not to the story that retired the name.
+    units: tuple[str, ...] = (LEGACY_WORKER_UNIT, BRIDGE_UNIT, TEMPORAL_UNIT)
     slice_unit: str = SLICE_UNIT
     dial: tuple[tuple[str, int], ...] = ()
     mem_warn_gib: int = 16
