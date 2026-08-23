@@ -7,7 +7,7 @@
     {
       "id": "us1",
       "story_key": "US1",
-      "persona": "opus-closer",
+      "persona": "implementer",
       "spec_ref": "074-a-test-cannot-reach-the-operators-floor:US1",
       "requirement_keys": [
         "US1",
@@ -69,7 +69,9 @@
         "FR-018"
       ],
       "depends_on": [],
-      "depends_on_merged": [],
+      "depends_on_merged": [
+        "us1"
+      ],
       "timeout_override_s": null
     },
     {
@@ -84,8 +86,28 @@
         "FR-021"
       ],
       "depends_on": [],
-      "depends_on_merged": [],
+      "depends_on_merged": [
+        "us4"
+      ],
       "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": [
+    {
+      "node_id": "us4",
+      "depends_on_merged": "us1",
+      "shared_files": [
+        "factory/cli/nouns/build.py"
+      ],
+      "reason": "inferred, not declared: US4's task slice and US1's both name `factory/cli/nouns/build.py`, and the spec declares no ordering between them. Raced, whichever lands second is rejected for the other's change, so US4 \u2014 the later-declared of the two \u2014 waits for US1 to merge. Declare `concurrent_with: [US1]` on US4 to run them together anyway (069-US2 FR-007)"
+    },
+    {
+      "node_id": "us5",
+      "depends_on_merged": "us4",
+      "shared_files": [
+        "factory/cli/nouns/build.py"
+      ],
+      "reason": "inferred, not declared: US5's task slice and US4's both name `factory/cli/nouns/build.py`, and the spec declares no ordering between them. Raced, whichever lands second is rejected for the other's change, so US5 \u2014 the later-declared of the two \u2014 waits for US4 to merge. Declare `concurrent_with: [US4]` on US5 to run them together anyway (069-US2 FR-007)"
     }
   ]
 }
