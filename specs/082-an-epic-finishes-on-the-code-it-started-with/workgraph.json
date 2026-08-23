@@ -1,0 +1,87 @@
+{
+  "epic_id": "082-an-epic-finishes-on-the-code-it-started-with",
+  "feature": "082-an-epic-finishes-on-the-code-it-started-with",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "opus-closer",
+      "spec_ref": "082-an-epic-finishes-on-the-code-it-started-with:US1",
+      "requirement_keys": [
+        "US1",
+        "FR-001",
+        "FR-002"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "opus-closer",
+      "spec_ref": "082-an-epic-finishes-on-the-code-it-started-with:US2",
+      "requirement_keys": [
+        "US2",
+        "FR-003",
+        "FR-004",
+        "FR-010"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "opus-closer",
+      "spec_ref": "082-an-epic-finishes-on-the-code-it-started-with:US3",
+      "requirement_keys": [
+        "US3",
+        "FR-005"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us2"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "opus-closer",
+      "spec_ref": "082-an-epic-finishes-on-the-code-it-started-with:US4",
+      "requirement_keys": [
+        "US4",
+        "FR-006",
+        "FR-007"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us2"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us5",
+      "story_key": "US5",
+      "persona": "opus-closer",
+      "spec_ref": "082-an-epic-finishes-on-the-code-it-started-with:US5",
+      "requirement_keys": [
+        "US5",
+        "FR-008",
+        "FR-009"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}
