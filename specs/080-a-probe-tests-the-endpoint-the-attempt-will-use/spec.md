@@ -173,12 +173,10 @@ address and the name of the source that supplied it.
 US1:
   depends_on: []
   implements: [FR-001, FR-002, FR-003]
-  persona: opus-closer
 US2:
   depends_on: []
   depends_on_merged: [US1]
   implements: [FR-004, FR-005, FR-006]
-  persona: opus-closer
 ```
 
 Both stories edit `factory/controlplane/verify.py`. The edge is contention, not

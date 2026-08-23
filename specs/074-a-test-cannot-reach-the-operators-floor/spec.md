@@ -333,7 +333,6 @@ of any that get through.
 ```yaml
 US1:
   depends_on: []
-  persona: opus-closer
   implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-006]
 US2:
   depends_on: [US1]
