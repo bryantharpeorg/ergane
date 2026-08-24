@@ -1,5 +1,26 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-24. US1 0e1c1979eb60 (#300), US2 9e5d5dde06d1 (#302),
+# US3 d83d721a97ac (#301), US4 7c39b8af4f3d (#303) — all four observed on
+# ergane-buildout by `ergane spec landed`, and spot-checked by content
+# (factory/controlplane/canary/probe.py and tests/test_judge_canary.py are on
+# the branch, not merely claimed by a merged flag).
+#
+# Attempts: US1 and US2 passed first try; US3 took two; US4 took all three, its
+# first drawing a judge RETRY. Seven attempts for four stories.
+#
+# This epic is also the control that disproved a wrong diagnosis. Its first two
+# dispatches died wholesale — the night's cap>1 run lost every node to agent
+# session-id collisions, and the roadmap's follow-up lost them again at
+# `open_landing_pr`. The failure was read as "the roadmap's target_repo must own
+# ERGANE_ROOT"; it was not. After the stale node worktrees were cleared by hand,
+# this epic ran to completion under the *identical* configuration and landed all
+# four stories with the factory opening its own PRs. The real defect is that a
+# node worktree left by a dispatch under a different target_repo is silently
+# reused, and only surfaces as a bare git refspec error after a story has already
+# passed its gates — filed as
+# workgraph/a-stale-node-worktree-from-another-target-repo-is-silently-reused.
+#
 # DRAFTED 2026-08-23 ~10:00 PM CT by the operator session that produced
 # docs/container-onramp-research-findings.md (§5 is this spec's evidence) and
 # docs/container-onramp-program.md (this is the program's "fully configured"
