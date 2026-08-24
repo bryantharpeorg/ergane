@@ -1,5 +1,38 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-24. US2 9464455a6cf0 (#298), US3 e437578c668e (#305),
+# US4 0371f1b73e2f (#299) observed; US1 5bfabbf (#297) landed but NOT observed,
+# see below. All four verified on ergane-buildout by content, not by a merged
+# flag: _run_bwrap_probe and tests/test_controlplane_verify_bwrap_us1.py (US1),
+# factory/supervision/container_supervisor.py (US2), Dockerfile plus
+# container/{seccomp-ergane.json,ergane-engine.profile,compose.reference.yaml}
+# plus docs/container.md and tests/test_088_us3_container_drift.py (US3),
+# tests/test_worker_in_container_refusals.py (US4).
+#
+# WHY US1 IS NOT OBSERVED, and why attesting is nonetheless truthful. The
+# landing grammar at factory/workgraph/landed.py:39 is anchored end-to-end on
+# `<epic_id>/<node_id>: US<N> (#<pr>)`. #297 was hand-opened with a prose title,
+# so its landing is permanently invisible and cannot be corrected without
+# rewriting the landing branch. Attestation gap-fills per story
+# (landed.py:166-193), so it fills US1 and only US1 — every other story has an
+# observed commit. This was NOT safe earlier: while US3 was still unbuilt, the
+# same gap-fill would have falsely recorded the image story as landed and the
+# delta would never have built it. It became correct only once US3 landed.
+#
+# NOT ONE OF THESE FOUR LANDED THROUGH THE FACTORY'S OWN open_landing_pr. All
+# four were harvested by hand after passing their gates and judge, defeated by
+# two distinct landing-path defects, both now filed:
+#   - us1/us2/us4, 2026-08-24 ~03:59Z: the epic id was dispatched twice under
+#     different target repos, so node worktrees registered to one repo were
+#     pushed from another —
+#     workgraph/a-stale-node-worktree-from-another-target-repo-is-silently-reused
+#   - us3, 2026-08-24 16:50Z: the landing base is taken from the target repo's
+#     checked-out branch, so a dispatch against a clone sitting on an operator
+#     branch resolved `--base spec-routing-plan` —
+#     merge/landing-base-comes-from-the-target-repos-checked-out-branch
+# The code in this spec is the factory's. The landing path is what failed, four
+# times out of four, and each failure cost the full build before it appeared.
+#
 # DRAFTED 2026-08-22 ~11:30 PM CT on branch spec-routing-plan, tree 838b9c3.
 # REVISED 2026-08-23 ~8:30 AM CT: compose as front door, FR on same-path mounts.
 #
