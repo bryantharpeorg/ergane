@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 import httpx
@@ -37,6 +38,7 @@ from factory.mergequeue.gh import (
 )
 from factory.mergequeue.models import Finding
 from factory.usage.litellm_client import LiteLLMClient
+from factory.verify.toolchain import SystemTreeError, system_tree_argv
 
 #: What a Temporal value's source is called here. Nothing renders it: findings
 #: report the address, never where it came from.
@@ -243,11 +245,57 @@ def _telegram_bot_factory(config: ControlPlaneConfig.Escalation, *, timeout_s: i
 HostSeam = Callable[[], dict[str, Any]]
 
 
+#: Pinned system path for the bwrap binary. Only `/usr/bin/bwrap` carries the
+#: AppArmor grant the adapter relies on (`factory/workgraph/adapter.py:285-288`).
+_BWRAP_PINNED_PATH = Path("/usr/bin/bwrap")
+
 #: Literal argv strings for the GitHub CLI probe. The binary name is split
 #: into characters so the forge-native vocabulary sweep does not read it as a
 #: whole word from code below.
 _GH_BINARY = "".join(["g", "h"])
 _GH_AUTH_STATUS = (_GH_BINARY, "auth", "status")
+
+
+def _bwrap_probe_argv() -> tuple[str, ...]:
+    """Argv that exercises the production mount shape for the host probe.
+
+    A minimal `--ro-bind / / true` passes on kernels where the production
+    `--proc` mount is refused (findings §1, failure mode 14), so the probe
+    must mount a fresh proc, dev, tmpfs, and a read-only `/usr`. It also
+    carries the same `/bin`, `/lib`, `/lib64`, `/sbin` mirroring the adapter
+    uses (`factory.verify.toolchain.system_tree_argv`) so the probe fails on
+    a host whose loader layout the real sandbox would not cover.
+    """
+    try:
+        tree = system_tree_argv()
+    except SystemTreeError:
+        # If the host has no usable /usr, the probe will already be unusable;
+        # fall back to a shape-only argv that still names the pinned path.
+        tree = ["--ro-bind", "/usr", "/usr"]
+    argv = [str(_BWRAP_PINNED_PATH)]
+    argv.extend(tree)
+    argv.extend([
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "true",
+    ])
+    return tuple(argv)
+
+
+def _run_bwrap_probe(argv: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+    """Run the pinned bwrap binary with the probe argv and return its outcome.
+
+    This is the injectable execution seam for US1 tests; production callers
+    use the default, while tests monkeypatch it to exercise both branches.
+    """
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
 
 
 def _inspect_host() -> dict[str, Any]:
@@ -261,6 +309,18 @@ def _inspect_host() -> dict[str, Any]:
     bwrap_path = shutil.which("bwrap")
     git_path = shutil.which("git")
     github_cli_path = shutil.which(_GH_BINARY)
+
+    # US1 (088): bwrap must be *executed* at the pinned path to be usable.  The
+    # discovery result (`present`) and execution result (`usable`) are kept
+    # separate so a blocked binary reports present-but-unrunnable.
+    bwrap_present = bwrap_path is not None
+    bwrap_usable = False
+    if _BWRAP_PINNED_PATH.is_file():
+        try:
+            bwrap_result = _run_bwrap_probe(_bwrap_probe_argv())
+            bwrap_usable = bwrap_result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            bwrap_usable = False
 
     github_cli_authenticated = False
     if github_cli_path:
@@ -278,10 +338,18 @@ def _inspect_host() -> dict[str, Any]:
 
     return {
         "bwrap": {
-            "present": bwrap_path is not None,
-            "usable": bwrap_path is not None,
+            "present": bwrap_present,
+            "usable": bwrap_usable,
             "purpose": "sandboxing agent worktrees",
             "remedy": "install bubblewrap (bwrap)",
+            "unauthenticated_remedy": (
+                "bwrap is present at /usr/bin/bwrap but cannot start a sandbox; "
+                "unprivileged user namespaces are likely disabled. "
+                "If you are running as root inside a container, the uid-0 path "
+                "needs the SYS_ADMIN Linux privilege that unprivileged containers "
+                "lack. Ensure the committed confinement artifacts are installed: "
+                "container/seccomp-ergane.json and container/ergane-engine.profile."
+            ),
         },
         "git": {
             "present": git_path is not None,
