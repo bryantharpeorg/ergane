@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from factory.controlplane.canary.diff import (
     CANARY_CRITERIA,
@@ -24,6 +24,11 @@ from factory.controlplane.canary.diff import (
     VERDICT_SCHEMA_TEXT,
 )
 from factory.usage.litellm_client import LiteLLMClient
+
+
+async def _default_canary_client_factory() -> LiteLLMClient:
+    """Production seam: build the LiteLLM admin client from the environment."""
+    return LiteLLMClient.from_env()
 
 
 @dataclass(frozen=True)
@@ -126,6 +131,119 @@ def _check_verdict(parsed: dict[str, Any]) -> None:
         raise CanaryFailure(
             f"canary verdict on the known-bad diff was {verdict!r}, expected 'FAIL'"
         )
+
+
+async def probe_judge_canary(
+    alias: str,
+    client_factory: Callable[[], Awaitable[LiteLLMClient]] | None = None,
+) -> CanaryResult:
+    """Run the judge canary under the same key discipline as ``LLMProbe``.
+
+    Mirrors the existing alias probe in ``factory/controlplane/verify.py:420-460``:
+    mint a short-TTL key constrained to ``alias``, confirm the model constraint,
+    check spend logs are readable, run ``judge_canary``, and revoke the key in a
+    ``finally`` block.  The canary entry point is still ``judge_canary(alias,
+    client)``; this wrapper owns the key-management proof.
+    """
+    from datetime import datetime, timezone
+
+    client: LiteLLMClient | None = None
+    minted_key: str | None = None
+    key_probe_detail: str | None = None
+    key_probe_passed = False
+
+    if client_factory is None:
+        client = LiteLLMClient.from_env()
+    else:
+        client = await client_factory()
+
+    try:
+        try:
+            minted_key = await client.issue_key(
+                key_alias="ergane-judge-canary-probe",
+                models=[alias],
+                ttl="5m",
+            )
+        except Exception as exc:
+            key_probe_detail = f"could not mint canary key: {type(exc).__name__}: {exc}"
+        else:
+            try:
+                info = await client.get_key_info(minted_key)
+            except Exception as exc:
+                key_probe_detail = (
+                    f"gateway minted a canary key but /key/info could not confirm its "
+                    f"properties: {type(exc).__name__}: {exc}"
+                )
+            else:
+                constrained = _key_is_model_constrained(info, alias)
+                if not constrained:
+                    key_probe_detail = (
+                        f"gateway minted a canary key but it is not "
+                        f"model-constrained to {alias!r}"
+                    )
+                else:
+                    try:
+                        await client.fetch_spend_log_rows(
+                            minted_key,
+                            issued_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                    except Exception as exc:
+                        key_probe_detail = (
+                            f"gateway minted a model-constrained canary key but "
+                            f"/spend/logs/v2 did not answer: {type(exc).__name__}: {exc}"
+                        )
+                    else:
+                        key_probe_detail = (
+                            f"gateway minted, constrained and revoked a "
+                            f"short-TTL canary key; spend logs answered"
+                        )
+                        key_probe_passed = True
+    finally:
+        if minted_key is not None:
+            try:
+                await client.revoke_key_by_tokens([minted_key])
+            except Exception:
+                pass
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+
+    if not key_probe_passed:
+        return CanaryResult(
+            alias=alias,
+            passed=False,
+            detail=key_probe_detail or "judge canary key-management probe failed",
+            request=None,
+        )
+
+    canary_result = await judge_canary(alias, client)
+
+    if canary_result.passed:
+        return CanaryResult(
+            alias=alias,
+            passed=True,
+            detail=f"judge canary passed under key discipline: {key_probe_detail}",
+            request=canary_result.request,
+        )
+
+    return CanaryResult(
+        alias=alias,
+        passed=False,
+        detail=f"judge canary failed the verdict check: {canary_result.detail}",
+        request=canary_result.request,
+    )
+
+
+def _key_is_model_constrained(info: dict[str, Any], expected_alias: str) -> bool:
+    """Whether ``info`` shows the minted key constrained to ``expected_alias``."""
+    inner = info.get("info") if isinstance(info, dict) else None
+    if not isinstance(inner, dict):
+        inner = info
+    models = inner.get("models") if isinstance(inner, dict) else None
+    if not isinstance(models, list):
+        return False
+    return any(isinstance(m, str) and m == expected_alias for m in models)
 
 
 async def judge_canary(
