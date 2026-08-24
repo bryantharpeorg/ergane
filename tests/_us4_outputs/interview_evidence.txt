@@ -1,6 +1,6 @@
 === interview transcript ===
-wrote /tmp/tmpcstycqpk/ergane/config.toml
-wrote /tmp/tmpcstycqpk/xdg/ergane/personas.yaml
+wrote /tmp/tmp9lhqmq4i/ergane/config.toml
+wrote /tmp/tmp9lhqmq4i/xdg/ergane/personas.yaml
   probing implementer -> proxy/implementer-large: PASS
   probing judge -> proxy/judge-small: PASS
   probing debugger -> proxy/closer-fast: PASS
@@ -13,7 +13,7 @@ wrote /tmp/tmpcstycqpk/xdg/ergane/personas.yaml
   probing closer fallback -> proxy/debugger-cheap: PASS
   probing architect fallback -> proxy/judge-small: PASS
   probing researcher fallback -> proxy/researcher-cheap: PASS
-wrote /tmp/tmpcstycqpk/xdg/ergane/personas.yaml
+wrote /tmp/tmp9lhqmq4i/xdg/ergane/personas.yaml
   implementer: model=proxy/implementer-large, fallback=proxy/debugger-cheap
   judge: model=proxy/judge-small, fallback=proxy/judge-small
   debugger: model=proxy/closer-fast, fallback=proxy/debugger-cheap

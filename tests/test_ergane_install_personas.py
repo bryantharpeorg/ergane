@@ -34,6 +34,86 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
+# Verify-stubbing helper (used by tests that need a passing in-run verify)
+# ---------------------------------------------------------------------------
+
+
+def _stub_verify_for_passing_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the host/forge/temporal/LLM verify probes so the in-run verify
+    reports the LLM registry as configured without touching real services.
+    """
+    import factory.controlplane.verify as verify_module
+
+    async def _stub_host_probe(_self: object, _config: object) -> object:
+        from factory.controlplane.verify import HostItem, HostSnapshot
+
+        return HostSnapshot(
+            items=(
+                HostItem(name="bwrap", present=True, usable=True, purpose="sandbox", detail="ok"),
+                HostItem(name="git", present=True, usable=True, purpose="version control", detail="ok"),
+                HostItem(name="gh", present=True, usable=True, purpose="forge", detail="ok"),
+            ),
+            detail="stubbed host prerequisites are present",
+        )
+
+    async def _stub_forge_probe(_self: object, _config: object) -> object:
+        from factory.mergequeue.gh import FORGE_CAPABLE, ForgeCapability
+
+        return ForgeCapability(
+            condition=FORGE_CAPABLE,
+            binary="gh",
+            version="stubbed",
+            command=("gh", "pr", "view", "--json"),
+            fields=("number", "state"),
+            undeclared=(),
+            detail="stubbed forge capability is present",
+        )
+
+    async def _stub_temporal_probe(_self: object, _config: object) -> object:
+        from factory.controlplane.verify import TemporalSnapshot
+
+        return TemporalSnapshot(
+            address="127.0.0.1:7233",
+            namespace="ergane",
+            namespace_exists=True,
+            detail="stubbed temporal namespace exists",
+        )
+
+    async def _stub_llm_gather(_self: object, _config: object) -> object:
+        from factory.controlplane.verify import LLMAliasResult, LLMSnapshot
+
+        registry = config_module.load_personas()
+        aliases: set[str] = set()
+        for p in registry.values():
+            if p.routes_through_gateway:
+                if p.model:
+                    aliases.add(p.model)
+                if p.fallback:
+                    aliases.add(p.fallback)
+        results = [
+            LLMAliasResult(
+                alias=a,
+                model=a,
+                completed=True,
+                persona_names=("stubbed",),
+                detail=f"stubbed 1-token completion for {a}",
+            )
+            for a in sorted(aliases)
+        ]
+        return LLMSnapshot(
+            aliases=tuple(sorted(aliases)),
+            persona_by_alias={a: ("stubbed",) for a in aliases},
+            results=tuple(results),
+            detail=f"stubbed LLM probe passed for {len(results)} aliases",
+        )
+
+    monkeypatch.setattr(verify_module.HostProbe, "gather", _stub_host_probe)
+    monkeypatch.setattr(verify_module.ForgeCapabilityProbe, "gather", _stub_forge_probe)
+    monkeypatch.setattr(verify_module.TemporalProbe, "gather", _stub_temporal_probe)
+    monkeypatch.setattr(verify_module.LLMProbe, "gather", _stub_llm_gather)
+
+
+# ---------------------------------------------------------------------------
 # Harness
 # ---------------------------------------------------------------------------
 
@@ -91,14 +171,55 @@ def interview(
 ) -> Callable[..., tuple[Run, _FilePrompter]]:
     """Run `ergane install` with a `_FilePrompter`, returning the run and prompter."""
 
-    def runner(answers: list[str], *argv: str) -> tuple[Run, _FilePrompter]:
-        prompter = _FilePrompter(list(answers))
+    def runner(
+        answers: list[str],
+        *argv: str,
+        prompter: _FilePrompter | None = None,
+    ) -> tuple[Run, _FilePrompter]:
+        if prompter is None:
+            prompter = _FilePrompter(list(answers))
         monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
         monkeypatch.delenv("TEMPORAL_ADDRESS", raising=False)
         monkeypatch.delenv("TEMPORAL_NAMESPACE", raising=False)
         return _invoke(["install", *argv]), prompter
 
     return runner
+
+
+def _assert_only_model_and_fallback_changed(
+    written_path: Path,
+) -> dict[str, Persona]:
+    """Load `written_path` and the shipped example and assert every persona is
+    identical except for possible changes to `model` and `fallback`.
+
+    Returns the written personas for further assertions.
+    """
+    import yaml
+
+    written = config_module.load_personas(str(written_path))
+    example_raw = yaml.safe_load(config_module.shipped_registry_text())
+    assert isinstance(example_raw, dict)
+
+    assert set(written.keys()) == set(example_raw.keys())
+    for name, persona in written.items():
+        example_fields = example_raw[name]
+        comparisons = (
+            ("agent", "agent", lambda v: v),
+            ("skills", "skills", lambda v: tuple(v) if isinstance(v, list) else v),
+            ("write_scope", "write_scope", lambda v: v),
+            ("needs_worktree", "needs_worktree", lambda v: v),
+            ("timeout_s", "timeout", lambda v: v),
+            ("context_window", "context_window", lambda v: v),
+        )
+        for field, yaml_key, normalize in comparisons:
+            written_val = getattr(persona, field)
+            raw_val = example_fields.get(yaml_key)
+            example_val = normalize(raw_val) if raw_val is not None else None
+            assert written_val == example_val, (
+                f"persona '{name}' field '{yaml_key}' changed: "
+                f"{written_val!r} != {example_val!r}"
+            )
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -201,10 +322,20 @@ def _passing_enrich(
 
 
 class _RecordingProbeSeam:
-    """Probe seam that records every alias probed and returns pass/fail per alias."""
+    """Probe seam that records every alias probed and returns pass/fail per alias.
 
-    def __init__(self, failures: set[str] | None = None) -> None:
+    `failures` controls the 1-token completion seam.  `canary_failures`
+    controls the judge canary seam independently so US4-S3 can test the case
+    where an alias passes the 1-token probe but fails the canary.
+    """
+
+    def __init__(
+        self,
+        failures: set[str] | None = None,
+        canary_failures: set[str] | None = None,
+    ) -> None:
         self.failures = failures or set()
+        self.canary_failures = canary_failures or set()
         self.one_token_calls: list[tuple[str, dict[str, Any]]] = []
         self.canary_calls: list[str] = []
 
@@ -223,12 +354,26 @@ class _RecordingProbeSeam:
         self, alias: str, base_url: str, master_key_env: str, **kwargs: Any
     ) -> CanaryResult:
         self.canary_calls.append(alias)
-        passed = alias not in self.failures
+        passed = alias not in self.canary_failures
         return CanaryResult(
             alias=alias,
             passed=passed,
             detail=f"{'passed' if passed else 'failed'} canary for {alias}",
         )
+
+
+class _RecordingFilePrompter(_FilePrompter):
+    """File prompter that records every prompt/default it was asked."""
+
+    def __init__(self, answers: list[str]) -> None:
+        super().__init__(answers)
+        self.prompts: list[tuple[str, str | None]] = []
+
+    def ask(
+        self, prompt: str, *, default: str | None = None, error: str | None = None
+    ) -> str:
+        self.prompts.append((prompt, default))
+        return super().ask(prompt, default=default, error=error)
 
 
 @pytest.fixture
@@ -267,21 +412,26 @@ def test_all_accept_writes_registry_with_probe_passed_aliases(
     """US4-S1: all-Enter writes a registry whose every alias was probe-passed.
 
     The written file differs from the shipped example only in `model` and
-    `fallback`.  The same run invokes verify_controlplane on it.
+    `fallback`.  The same run invokes verify_controlplane on it and reports
+    the LLM probe as passing.
     """
     monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
     # One empty answer per gateway persona primary (6) and fallback (6).
     # 11 base answers + 6 primary + 6 fallback + 1 subscription = 24.
     answers = list(BASE_ANSWERS) + [""] * 13
 
+    # Stub the post-write verify probes so the same run reports [PASS] llm:.
+    _stub_verify_for_passing_llm(monkeypatch)
+
     result, prompter = interview(answers)
 
     # The interview consumed every planned answer.
     assert prompter._index == len(answers)
 
-    # The registry was written and parses.
+    # The registry was written, parses, and preserves every field except
+    # model/fallback.
     assert personas_path.exists()
-    personas = config_module.load_personas(str(personas_path))
+    personas = _assert_only_model_and_fallback_changed(personas_path)
 
     # Every gateway persona was mapped to a real alias and probed.
     gateway_models = {
@@ -303,13 +453,16 @@ def test_all_accept_writes_registry_with_probe_passed_aliases(
     # The judge alias got the canary.
     assert patched_seams.canary_calls == [gateway_models["judge"]]
 
-    # The written file differs from the example only in alias fields (model/fallback).
-    # (The assertion above that load_personas succeeds is the core FR-009 check;
-    # additional field-preservation checks live in T018.)
+    # stdout names the file that was written and summarises each persona.
+    assert f"wrote {personas_path}" in result.stdout
+    for name in ("implementer", "judge", "debugger", "closer", "architect", "researcher", "opus-closer"):
+        model = personas[name].model
+        fallback = personas[name].fallback
+        assert f"  {name}: model={model}, fallback={fallback}" in result.stdout
 
-    # Verify ran in the same install invocation on the new registry.
+    # Verify ran in the same install invocation and reported the LLM probe passing.
     assert "verifying the control plane..." in result.stdout
-    assert "[PASS] llm:" in result.stdout or "[FAIL] llm:" in result.stdout
+    assert "[PASS] llm:" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -366,11 +519,14 @@ def test_unsatisfiable_judge_exits_nonzero_and_preserves_seeded_example(
     patched_seams: _RecordingProbeSeam,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """US4-S3: if no alias passes the judge canary, install exits nonzero naming
-    the judge, requirement and candidates, and the on-disk registry stays the
-    seeded example byte-for-byte."""
+    """US4-S3: the judge alias passes the 1-token probe but fails the canary.
+
+    Install exits nonzero naming the judge, the requirement and every alias
+    tried, and the on-disk registry stays the seeded example byte-for-byte.
+    """
     monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
-    patched_seams.failures = {"proxy/judge-small"}
+    # 1-token passes for every alias; only the judge alias fails the canary.
+    patched_seams.canary_failures = {"proxy/judge-small"}
 
     # 11 base answers + 6 primary + 6 fallback + 1 subscription = 24.
     answers = list(BASE_ANSWERS) + [""] * 13
@@ -378,10 +534,16 @@ def test_unsatisfiable_judge_exits_nonzero_and_preserves_seeded_example(
     result, _ = interview(answers)
 
     assert result.code != 0
-    assert "judge" in result.stderr.lower()
-    assert "structured output" in result.stderr.lower() or "structured-output" in result.stderr.lower()
+    output = result.stderr.lower() + result.stdout.lower()
+    assert "judge" in output
+    assert (
+        "structured output" in output or "structured-output" in output
+    ), "error must name the judge requirement"
     for alias in ALIASES:
-        assert alias in result.stderr
+        assert alias in output, f"error must name every alias tried, missing {alias!r}"
+
+    # The judge canary was actually invoked for the chosen judge alias.
+    assert patched_seams.canary_calls == ["proxy/judge-small"]
 
     # Seeded example is unchanged.
     example_text = config_module.shipped_registry_text()
@@ -398,23 +560,36 @@ def test_all_enter_still_asks_judge_and_every_fallback(
     patched_seams: _RecordingProbeSeam,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """US4-S4: even with an all-Enter answer file, the transcript contains
-    explicit prompts for the judge and every fallback."""
+    """US4-S4: even with an all-Enter answer file, the judge primary and every
+    fallback are explicitly asked; none are defaulted through by a blanket
+    accept mechanism."""
     monkeypatch.setenv("ERGANE_LLM_MASTER_KEY", "sk-fake-master")
     # 11 base answers + 6 primary + 6 fallback + 1 subscription = 24.
     answers = list(BASE_ANSWERS) + [""] * 13
 
-    result, prompter = interview(answers)
+    prompter = _RecordingFilePrompter(list(answers))
+    result, _ = interview(answers, prompter=prompter)
 
-    # We cannot inspect prompter prompts directly with _FilePrompter, so we rely
-    # on stdout transcript: each persona line is printed before it is asked.
-    stdout = result.stdout
-    assert "judge" in stdout.lower()
-    assert "fallback" in stdout.lower()
+    # The interview consumed every planned answer, one per recorded prompt.
+    assert prompter._index == len(answers)
+    assert prompter._index == len(prompter.prompts)
 
-    # Every gateway persona had its fallback explicitly presented.
+    # The judge primary prompt was explicitly presented (it is the only
+    # primary line that requires confirmation and is exempt from blanket accept).
+    judge_primary_prompts = [
+        (p, d) for p, d in prompter.prompts if "judge primary" in p.lower()
+    ]
+    assert len(judge_primary_prompts) == 1, "judge primary must be asked exactly once"
+
+    # Every gateway persona had its fallback explicitly presented with a default.
     for name in PERSONA_REQUIREMENTS:
-        assert name in stdout, f"missing fallback prompt for {name}"
+        fallback_prompts = [
+            (p, d)
+            for p, d in prompter.prompts
+            if p.lower().startswith(f"{name} fallback")
+        ]
+        assert len(fallback_prompts) == 1, f"{name} fallback must be asked exactly once"
+        assert fallback_prompts[0][1] is not None, f"{name} fallback must have a default"
 
 
 # ---------------------------------------------------------------------------
