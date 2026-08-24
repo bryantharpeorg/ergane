@@ -248,6 +248,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _stub_persona_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    """US4: the persona step is tested in its own file; these tests cover the rest.
+
+    Interactive install now proposes, probes and writes persona aliases.  The
+    walkthrough tests below drive closed ports and are not about personas, so
+    stub the step out to keep them focused on the LLM/memory/temporal/telemetry/
+    escalation interview.
+    """
+    import factory.cli.install as install_module
+
+    monkeypatch.setattr(install_module, "_interview_personas", lambda _p, _d, _pp: None)
+
+
 @dataclass
 class Run:
     """One captured CLI invocation."""
@@ -351,8 +365,12 @@ def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def walkthrough(
     monkeypatch: pytest.MonkeyPatch, config_path: Path
 ) -> Callable[..., tuple[Run, ScriptedPrompter]]:
-    """Run `ergane install` with a scripted prompter, returning the run and prompter."""
+    """Run `ergane install` with a scripted prompter, returning the run and prompter.
 
+    US4 adds the persona interview step to interactive install; these walkthrough
+    tests are about the LLM/memory/temporal/telemetry/escalation interview and
+    deliberately stub that step out so they keep covering their own concerns.
+    """
     def runner(answers: list[str], *argv: str) -> tuple[Run, ScriptedPrompter]:
         prompter = ScriptedPrompter(answers, watch=config_path)
         monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)

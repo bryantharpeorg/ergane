@@ -96,6 +96,7 @@ def test_resolve_config_path_uses_xdg_config_home(tmp_path: Path) -> None:
     env.pop("FACTORY_CONFIG_PATH", None)
 
     import subprocess
+    import sys
 
     script = """
 import os
@@ -103,7 +104,7 @@ from factory.controlplane.config import resolve_config_path
 print(resolve_config_path())
 """
     result = subprocess.run(
-        ["python", "-c", script],
+        [sys.executable, "-c", script],
         env=env,
         text=True,
         capture_output=True,
