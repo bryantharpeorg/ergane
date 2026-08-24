@@ -14,7 +14,11 @@ import argparse
 from typing import Any
 
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
-from factory.cli.install import add_install_arguments, install_command
+from factory.cli.install import (
+    ENGINE_BACKENDS,
+    add_install_arguments,
+    install_command,
+)
 from factory.cli.nouns import Noun
 from factory.config import is_example_alias
 from factory.controlplane.config import ControlPlaneConfigError
@@ -130,6 +134,16 @@ def add_parser(subparsers: Any) -> None:
         "--verify",
         action="store_true",
         help="skip the interview: probe the declared subsystems and report one finding per check",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=ENGINE_BACKENDS,
+        help=(
+            "where the engine runs, instead of being asked: `container` (the "
+            "engine container), `systemd` (today's path) or `none` (configure "
+            "only); refused beside --non-interactive and --from-file, which "
+            "configure only and never reach an engine step"
+        ),
     )
     parser.add_argument(
         "--requirements",

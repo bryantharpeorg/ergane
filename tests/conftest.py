@@ -711,3 +711,28 @@ def _systemd_user_session_available_in_tests(
     monkeypatch.setattr(
         "factory.cli.install._systemd_user_session_available", lambda: True
     )
+
+
+@pytest.fixture(autouse=True)
+def _docker_daemon_unavailable_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """104-US1: no test contacts a Docker daemon, on any host (plan trap 11).
+
+    `ergane install` now probes for a Docker daemon and asks where the engine
+    runs when one answers.  Left unpinned, that probe would shell out to
+    `docker info` from every install test and — on a developer's own machine,
+    which for this epic is a machine with Docker running — would put an extra
+    question into interviews whose scripted answer lists have exactly as many
+    answers as they have questions.  The suite would then pass or fail
+    depending on whether the person running it had started Docker that morning.
+
+    Pinned to "absent", which is both the hermetic answer and the one that
+    leaves every pre-104 install test looking at exactly the interview it was
+    written against.  A test that means to exercise the container path stubs the
+    same predicate the other way (`tests/test_install_engine_question.py`).
+
+    Same shape and same reasoning as `_systemd_user_session_available_in_tests`
+    above, which 088-US4 added for the other capability predicate in that file.
+    """
+    monkeypatch.setattr(
+        "factory.cli.install._docker_daemon_available", lambda *_a, **_k: False
+    )
