@@ -1,0 +1,11 @@
+## Rich LiteLLM gateway
+EnrichmentRecord(alias='claude-sonnet-4', tool_calling=False, structured_output=False, reasoning=False, context_window=None, input_cost_per_token=None, output_cost_per_token=None, unclassified=False, detail='LiteLLM metadata from /v1/models for `claude-sonnet-4`')
+EnrichmentRecord(alias='claude-opus-4', tool_calling=False, structured_output=False, reasoning=False, context_window=None, input_cost_per_token=None, output_cost_per_token=None, unclassified=False, detail='LiteLLM metadata from /v1/models for `claude-opus-4`')
+
+## Bare gateway
+EnrichmentRecord(alias='my-gpu-box', tool_calling=False, structured_output=False, reasoning=False, context_window=None, input_cost_per_token=None, output_cost_per_token=None, unclassified=True, detail='no usable metadata endpoint at http://127.0.0.1:4000: tried /model/info and /api/show')
+EnrichmentRecord(alias='my-gpu-box-large', tool_calling=False, structured_output=False, reasoning=False, context_window=None, input_cost_per_token=None, output_cost_per_token=None, unclassified=True, detail='no usable metadata endpoint at http://127.0.0.1:4000: tried /model/info and /api/show')
+
+## Ollama endpoint
+EnrichmentRecord(alias='llama3.1', tool_calling=True, structured_output=True, reasoning=False, context_window=131072, input_cost_per_token=None, output_cost_per_token=None, unclassified=False, detail='Ollama /api/show metadata for `llama3.1`')
+EnrichmentRecord(alias='qwq', tool_calling=False, structured_output=False, reasoning=True, context_window=32768, input_cost_per_token=None, output_cost_per_token=None, unclassified=False, detail='Ollama /api/show metadata for `qwq`')
