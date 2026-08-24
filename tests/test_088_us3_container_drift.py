@@ -64,12 +64,13 @@ def _required_container_binaries() -> set[str]:
     Sources:
     - `_inspect_host` probes bwrap, git, gh.
     - `BwrapBackend._toolchain` resolves the agent runner, uv, node, git.
+    - FR-010 also requires python.
     The runner's name is `DEFAULT_EXECUTABLE`; git appears in both lists and is
     kept once.
     """
     host_probe = set(_inspect_host().keys())
     toolchain = {DEFAULT_EXECUTABLE, UV, NODE, GIT}
-    return host_probe | toolchain
+    return host_probe | toolchain | {"python"}
 
 
 def _parse_dockerfile() -> str:
@@ -132,25 +133,39 @@ def _load_seccomp() -> dict[str, Any]:
 
 
 def test_seccomp_parses_and_allows_exactly_extra_syscalls() -> None:
-    """The seccomp delta is exactly the seven syscalls, unconditionally allowed."""
+    """The Ergane delta unconditionally allows exactly the seven syscalls."""
     profile = _load_seccomp()
     syscalls = profile.get("syscalls", [])
-    extra_rules = [
+
+    def _is_unconditional_allow(rule: dict[str, Any]) -> bool:
+        return (
+            rule.get("action") == "SCMP_ACT_ALLOW"
+            and not rule.get("includes")
+            and not rule.get("excludes")
+            and not rule.get("args")
+            and not rule.get("errnoRet")
+        )
+
+    extra_allow_rules = [
         rule
         for rule in syscalls
-        if isinstance(rule.get("names"), list)
+        if _is_unconditional_allow(rule)
         and set(rule.get("names", [])) & set(SECCOMP_EXTRA_SYSCALLS)
     ]
-    assert len(extra_rules) == 1, (
-        f"expected exactly one rule touching {SECCOMP_EXTRA_SYSCALLS}, found "
-        f"{len(extra_rules)}"
+    assert extra_allow_rules, (
+        f"expected an unconditional allow rule for {SECCOMP_EXTRA_SYSCALLS}"
     )
-    rule = extra_rules[0]
-    assert rule.get("action") == "SCMP_ACT_ALLOW", (
-        f"extra syscall rule must be SCMP_ACT_ALLOW, got {rule.get('action')}"
+    allowed_by_extra = set()
+    for rule in extra_allow_rules:
+        allowed_by_extra.update(rule.get("names", []))
+    assert allowed_by_extra >= set(SECCOMP_EXTRA_SYSCALLS), (
+        f"unconditional allow rules cover {allowed_by_extra}, missing "
+        f"{set(SECCOMP_EXTRA_SYSCALLS) - allowed_by_extra}"
     )
-    assert set(rule["names"]) == set(SECCOMP_EXTRA_SYSCALLS), (
-        f"extra rule names {rule['names']} do not match exactly {SECCOMP_EXTRA_SYSCALLS}"
+    # The delta should not silently widen to additional syscalls.
+    assert allowed_by_extra == set(SECCOMP_EXTRA_SYSCALLS), (
+        f"unconditional allow rules cover {allowed_by_extra}, expected exactly "
+        f"{set(SECCOMP_EXTRA_SYSCALLS)}"
     )
 
 
