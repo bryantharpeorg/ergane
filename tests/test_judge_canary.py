@@ -9,7 +9,15 @@ Suite output after implementation:
 
 .. code-block:: text
 
-    placeholder — will be updated after the first run.
+    $ uv run pytest tests/test_judge_canary.py -q
+    ..........                                                               [100%]
+    10 passed in 0.03s
+
+    Three distinct failure reasons (US3-S2):
+
+    prose:      'canary response was not valid JSON: JSONDecodeError'
+    schema:     'canary response JSON missing required field(s): reason'
+    wrong verdict: 'canary verdict on the known-bad diff was 'PASS', expected 'FAIL''
 """
 
 from __future__ import annotations
