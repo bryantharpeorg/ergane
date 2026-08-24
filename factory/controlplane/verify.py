@@ -249,6 +249,60 @@ HostSeam = Callable[[], dict[str, Any]]
 _GH_BINARY = "".join(["g", "h"])
 _GH_AUTH_STATUS = (_GH_BINARY, "auth", "status")
 
+#: bwrap is pinned to the system path because only `/usr/bin/bwrap` carries the
+#: AppArmor grant the container relies on (factory/workgraph/adapter.py:285-288).
+_BWRAP_PINNED_PATH = "/usr/bin/bwrap"
+_BWRAP_PROBE_TIMEOUT = 5
+
+
+def _bwrap_probe_argv() -> list[str]:
+    """Return the pinned bwrap invocation that exercises the production mount shape.
+
+    The sandbox the factory dispatches binds `/usr` read-only and mirrors the
+    usr-merged symlinks, then adds a fresh `--proc`, a `--dev`, and a tmpfs.
+    A probe that under-mounts -- for example `--ro-bind / / true` -- passes on
+    kernels where this full shape is refused (findings failure mode 14), so the
+    probe must assemble the same shape the adapter does.
+    """
+    from factory.verify.toolchain import system_tree_argv
+
+    return [
+        _BWRAP_PINNED_PATH,
+        *system_tree_argv(),
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "/usr/bin/true",
+    ]
+
+
+def _run_bwrap_probe_real(argv: list[str]) -> bool:
+    """Execute the pinned bwrap argv under a bounded timeout.
+
+    Returns True only when the binary actually exits 0. A blocked namespace,
+    a missing profile, or a container running as root/PID-1 all surface as
+    False here.
+    """
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_BWRAP_PROBE_TIMEOUT,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
+#: Injectable execution seam for the bwrap probe. Tests replace this to drive
+#: both branches without requiring a host where bwrap is actually blocked.
+_run_bwrap_probe: Callable[[list[str]], bool] = _run_bwrap_probe_real
+
 
 def _inspect_host() -> dict[str, Any]:
     """Inspect the host for the prerequisites an agent needs.
@@ -276,13 +330,38 @@ def _inspect_host() -> dict[str, Any]:
         except (subprocess.TimeoutExpired, OSError):
             github_cli_authenticated = False
 
-    return {
-        "bwrap": {
-            "present": bwrap_path is not None,
-            "usable": bwrap_path is not None,
+    bwrap_absent_remedy = "install bubblewrap (bwrap)"
+    bwrap_unrunnable_remedy = (
+        "bwrap is present but cannot execute: unprivileged user namespaces are "
+        "blocked on this host. Ensure the committed confinement artifacts are loaded: "
+        "container/seccomp-ergane.json (seccomp) and container/ergane-engine.profile "
+        "(AppArmor). If running as root inside a container, run as an unprivileged user instead."
+    )
+
+    if bwrap_path is None:
+        bwrap_entry: dict[str, Any] = {
+            "present": False,
+            "usable": False,
             "purpose": "sandboxing agent worktrees",
-            "remedy": "install bubblewrap (bwrap)",
-        },
+            "absent_remedy": bwrap_absent_remedy,
+            "unauthenticated_remedy": bwrap_unrunnable_remedy,
+        }
+    else:
+        try:
+            argv = _bwrap_probe_argv()
+            bwrap_usable = _run_bwrap_probe(argv)
+        except Exception:
+            bwrap_usable = False
+        bwrap_entry = {
+            "present": True,
+            "usable": bwrap_usable,
+            "purpose": "sandboxing agent worktrees",
+            "absent_remedy": bwrap_absent_remedy,
+            "unauthenticated_remedy": bwrap_unrunnable_remedy,
+        }
+
+    return {
+        "bwrap": bwrap_entry,
         "git": {
             "present": git_path is not None,
             "usable": git_path is not None,
@@ -913,7 +992,7 @@ class HostProbe:
             usable = bool(entry.get("usable"))
             purpose = entry.get("purpose") or f"host prerequisite `{name}`"
             if not present:
-                detail = entry.get("remedy") or f"install {name}"
+                detail = entry.get("absent_remedy") or entry.get("remedy") or f"install {name}"
             elif not usable:
                 detail = (
                     entry.get("unauthenticated_remedy")
@@ -940,7 +1019,7 @@ class HostProbe:
         else:
             lines: list[str] = []
             for item in failed:
-                state = "absent" if not item.present else "present but unauthenticated"
+                state = "absent" if not item.present else "present but not usable"
                 lines.append(
                     f"{item.name} is {state} — needed for {item.purpose}; remedy: {item.detail}"
                 )
