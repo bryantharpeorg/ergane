@@ -182,6 +182,31 @@ def _controlplane_default(document: Mapping[str, Any], field: tuple[str, ...]) -
     return _NO_DEFAULT
 
 
+# ---------------------------------------------------------------------------
+# Where the engine runs (104-US1)
+# ---------------------------------------------------------------------------
+
+#: The engine runs in a Docker container — spelled **the engine container**
+#: everywhere, because three unrelated things in this tree are called a
+#: container and only one of them is this.
+ENGINE_CONTAINER = "container"
+#: Today's path: the engine runs on the host under systemd user units.
+ENGINE_SYSTEMD = "systemd"
+#: Today's exit: configure the control plane and stop there.
+ENGINE_NONE = "none"
+
+#: In offer order — the container first, because it is what this spec exists to
+#: make easy. `_offered_engine_backend` reverses the order when no daemon
+#: answers, so the offer always leads with the backend it is defaulting to.
+ENGINE_BACKENDS = (ENGINE_CONTAINER, ENGINE_SYSTEMD, ENGINE_NONE)
+
+#: The backend the flag-driven paths run under. `--non-interactive` and
+#: `--from-file` configure only and return before any engine step could run
+#: (US1-S3), so the answer is declared here rather than asked and there is no
+#: question for either path to grow.
+DEFAULT_ENGINE_BACKEND = ENGINE_NONE
+
+
 #: What a blank host is offered before it has answered anything. The values
 #: here are the defaults the interactive path displays; the non-interactive
 #: path resolves the same fields from `_controlplane_default` (FR-006).  Fields
@@ -646,6 +671,122 @@ def _interview_personas(
             print(f"  {name}: model={fields['model']}, fallback={fields.get('fallback')}")
 
 
+def _ask_engine_backend(
+    prompter: Any,
+    document: dict[str, Any],
+    path: Path,
+    offered: _OfferedEngine,
+) -> str:
+    """Ask the one question, through `_ask`, and return the answer as a value.
+
+    The `apply` captures instead of applying: the engine backend is a property
+    of the *installation*, not of the control plane, and `_TOP_LEVEL_KEYS`
+    refuses any key that is not one of the five subsystems by name.  The record
+    is the generated project on disk (plan R1), so the document `_ask` renders
+    and re-parses here comes back exactly as it went in — which also re-proves
+    it still parses at the last question, for free.
+
+    `_ask`'s own refuse-and-re-ask loop is driven by the parser and cannot judge
+    an answer the parser never sees, so an unrecognised backend is named and
+    re-asked here.  Letting it fall through as "not container" would configure
+    only, silently, on a typo.
+    """
+    captured: list[Any] = []
+
+    def _capture(candidate: dict[str, Any], value: Any) -> dict[str, Any]:
+        captured.append(value)
+        return candidate
+
+    while True:
+        _ask(
+            prompter,
+            f"engine backend ({offered.choices})",
+            document,
+            path,
+            default=offered.backend,
+            apply=_capture,
+        )
+        answer = captured[-1]
+        if answer in ENGINE_BACKENDS:
+            return str(answer)
+        typed = "" if answer is None else str(answer)
+        print(f"  `{typed}` is not an engine backend; choose {offered.choices}")
+
+
+def _interview_engine(
+    prompter: Any,
+    document: dict[str, Any],
+    path: Path,
+    *,
+    requested: str | None = None,
+) -> str:
+    """Ask where the engine runs, and return the choice (104-US1).
+
+    A step of its own, called from `install_command` with an injected prompter —
+    103's `_interview_personas` is the precedent, and the reason is the same one:
+    `_interview` is consumed positionally by `_FilePrompter` from a list
+    `_plan_file_answers` builds, and five test modules index that list. A
+    question added *inside* it desynchronises every answer after it and surfaces
+    as a complaint about the wrong prompt.
+
+    Nothing is persisted and nothing is read off disk (plan R2). The choice is
+    returned as a value and `install_command` holds it as a local, which is what
+    keeps this story concurrent with the generator that will consume it.
+
+    The question is asked when the engine container can actually run — when a
+    daemon answers. On a host where none does, install asks nothing new and
+    behaves exactly as it does today, which is US1-S1's "the paths I do not
+    choose are left exactly as they are today" taken literally. An operator who
+    wants the container on such a host says `--engine=container`, and lands on
+    the guard below: it is the same guard either way, so the flag is a way to
+    reach the capability check without being asked, not a way around it.
+    """
+    offered = _offered_engine_backend(_docker_daemon_available())
+
+    if requested is not None:
+        choice = requested
+    elif offered.unavailable_reason is None:
+        choice = _ask_engine_backend(prompter, document, path, offered)
+    else:
+        choice = offered.backend
+
+    # `_ask_temporal` refuses managed mode on a host with no systemd user
+    # session, at the answer and before anything is written; this is that guard
+    # for the engine container.
+    if choice == ENGINE_CONTAINER and offered.unavailable_reason is not None:
+        raise OperatorError(offered.unavailable_reason, code=EXIT_USER)
+
+    if choice == ENGINE_CONTAINER:
+        # US5 replaces this line with generation, consent, bring-up and
+        # verify-through. US1 asks the question; it does not act on the answer.
+        print(f"engine backend: {choice}")
+    return choice
+
+
+def _refuse_engine_flag_beside_a_flag_driven_path(
+    args: argparse.Namespace, requested: str
+) -> None:
+    """Refuse `--engine` alongside `--non-interactive` / `--from-file` (US1-S3).
+
+    Both paths return before any engine step could run, so honouring the flag is
+    impossible — and silently ignoring it discards an explicit operator
+    instruction, which is the failure mode worth a message.
+    """
+    for flag, present in (
+        ("--from-file", getattr(args, "from_file", None) is not None),
+        ("--non-interactive", bool(getattr(args, "non_interactive", False))),
+    ):
+        if not present:
+            continue
+        raise OperatorError(
+            f"--engine={requested} cannot be combined with {flag}: that path "
+            f"configures only and returns before any engine step could run, so "
+            f"its backend is always `{DEFAULT_ENGINE_BACKEND}`. Drop --engine, "
+            f"or run the interview without {flag}.",
+            code=EXIT_USER,
+        )
+
+
 # ---------------------------------------------------------------------------
 # CLI wiring
 # ---------------------------------------------------------------------------
@@ -689,6 +830,13 @@ def install_command(args: argparse.Namespace) -> int:
     path = resolve_config_path()
     timeout_s = float(getattr(args, "lock_timeout", DEFAULT_LOCK_TIMEOUT_S))
 
+    # 104-US1: where the engine runs, declared on the command line or asked
+    # below. Refused here, before either flag-driven path returns, so an
+    # instruction that cannot be honoured is never quietly dropped.
+    requested_engine = getattr(args, "engine", None)
+    if requested_engine is not None:
+        _refuse_engine_flag_beside_a_flag_driven_path(args, requested_engine)
+
     if getattr(args, "from_file", None) is not None:
         return _install_from_file(Path(args.from_file), path, timeout_s)
 
@@ -707,6 +855,13 @@ def install_command(args: argparse.Namespace) -> int:
     try:
         with exclusive_lock(path, timeout_s=timeout_s):
             document = _interview(path)
+            # 104-US1, plan R3 — ask early, act late: the last question is
+            # asked before the first thing is done, so an install that is going
+            # to refuse the chosen backend refuses with nothing written. US5
+            # acts on this local; US1 only asks.
+            engine_backend = _interview_engine(  # noqa: F841 — consumed by US5
+                init_module._prompter(), document, path, requested=requested_engine
+            )
             text = render_controlplane_document(document)
             _write_config(path, text)
             print(f"wrote {path}")
@@ -1274,6 +1429,127 @@ def _systemd_user_session_available() -> bool:
     return result.stderr.strip() == ""
 
 
+#: How long the Docker probe waits for the daemon to answer.  A probe that
+#: hangs is worse than one that says no: the operator sits at a prompt waiting
+#: for a question that never arrives, and `docker info` against a wedged socket
+#: is exactly that shape.
+_DOCKER_PROBE_TIMEOUT_S = 5.0
+
+
+def _docker_daemon_available(timeout_s: float = _DOCKER_PROBE_TIMEOUT_S) -> bool:
+    """Whether a Docker daemon answers on this host (104-US1).
+
+    The engine-container backend's capability predicate, deliberately sitting
+    beside `_systemd_user_session_available` — the systemd tier's — because two
+    capability probes in two modules is how they stop agreeing.
+
+    It asks about **the daemon only**.  "Can this installation build an image"
+    is a different question with a different answer (a wheel install carries no
+    build context), and it belongs to the generator that needs it, not to a
+    second copy here.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("docker") is None:
+        return False
+
+    try:
+        result = subprocess.run(
+            ("docker", "info", "--format", "{{.ServerVersion}}"),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        # A wedged socket, a binary that vanished between `which` and here, a
+        # daemon mid-restart: all of them mean "no daemon answered", and none of
+        # them is a reason to end an interview with a traceback.
+        return False
+    return result.returncode == 0
+
+
+def _docker_compose_v2_available(timeout_s: float = _DOCKER_PROBE_TIMEOUT_S) -> bool:
+    """Whether `docker compose` (v2, a subcommand) resolves on this host.
+
+    Consulted only while building a refusal, never while offering the question:
+    the offer turns on the daemon, and this distinguishes *which* piece is
+    missing once we already know the answer is no.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ("docker", "compose", "version"),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
+_DOCKER_INSTALL_URL = "https://docs.docker.com/engine/install/"
+
+#: Every refusal opens and closes the same way, so the operator reads the same
+#: sentence shape whether the choice arrived through the question or `--engine`.
+_ENGINE_REFUSAL_OPENING = (
+    'engine backend "container" requires a reachable Docker daemon; '
+)
+_ENGINE_REFUSAL_CLOSING = (
+    " Choose `systemd` or `none`, or fix Docker and re-run `ergane install`."
+)
+
+_DOCKER_MISSING = (
+    "`docker` is not on PATH. Install Docker Engine together with its Compose v2 "
+    f"plugin ({_DOCKER_INSTALL_URL}), which is what brings the engine container "
+    "up (`docker compose`, two words)."
+)
+
+#: `docker-compose` (v1, hyphenated) and `docker compose` (v2, a subcommand of
+#: the daemon's own CLI) are different programs and only the second can bring
+#: the engine container up.  An operator who has the first and is told "Docker is
+#: not installed" will reasonably believe the installer is wrong.
+_LEGACY_COMPOSE = (
+    "the legacy `docker-compose` binary is present ({legacy}) but `docker compose` "
+    "(v2, two words) is not, and Compose v1 cannot bring the engine container up. "
+    "Install Docker Engine and the `docker-compose-plugin` package "
+    f"({_DOCKER_INSTALL_URL})."
+)
+
+_DAEMON_SILENT = (
+    "`docker` is at {docker} but `docker info` did not answer, so the daemon is "
+    "either not running or not reachable from this account. Start it "
+    "(`sudo systemctl start docker`) and give your user the socket "
+    "(`sudo usermod -aG docker $USER`, then log in again)."
+)
+
+
+def _docker_unavailable_reason() -> str:
+    """Name the missing piece, and how to get it (US1-S2).
+
+    Three hosts, three different fixes: nothing installed, the legacy Compose
+    binary installed instead, and Docker installed but silent.  A refusal that
+    collapsed them into one message would send two of the three operators after
+    the wrong thing.
+    """
+    import shutil
+
+    docker = shutil.which("docker")
+    legacy = shutil.which("docker-compose")
+
+    if legacy is not None and (docker is None or not _docker_compose_v2_available()):
+        middle = _LEGACY_COMPOSE.format(legacy=legacy)
+    elif docker is None:
+        middle = _DOCKER_MISSING
+    else:
+        middle = _DAEMON_SILENT.format(docker=docker)
+    return _ENGINE_REFUSAL_OPENING + middle + _ENGINE_REFUSAL_CLOSING
+
+
 def _ask_temporal(
     prompter: Any, document: dict[str, Any], path: Path
 ) -> dict[str, Any]:
@@ -1651,8 +1927,52 @@ def _offered_llm_mode(scan: ScanResult | None, document: dict[str, Any]) -> _Off
     return _OfferedLLM(mode=mode, choices=mode, unavailable_reason=reason)
 
 
+@dataclasses.dataclass(frozen=True)
+class _OfferedEngine:
+    """What the engine question offers, and why the container is not on offer.
+
+    `_OfferedLLM`'s shape, for the same reason: probe first, offer the probed
+    answer first, and keep the reason when the capable option is unavailable so
+    an operator who reaches for it anyway is told what is missing rather than
+    that they typed something wrong.
+    """
+
+    backend: str
+    choices: str
+    unavailable_reason: str | None
+
+
+def _offered_engine_backend(daemon_available: bool) -> _OfferedEngine:
+    """Choose the offered backend from the Docker probe (US1-S1, US1-S2).
+
+    The probe is a parameter rather than a call, the way `_offered_llm_mode`
+    takes the scan it did not run: the caller owns the one probe, and a test can
+    state the host instead of having one.
+    """
+    if daemon_available:
+        return _OfferedEngine(
+            backend=ENGINE_CONTAINER,
+            choices="|".join(ENGINE_BACKENDS),
+            unavailable_reason=None,
+        )
+
+    # No daemon: `none` is today's exit and therefore the honest default, and
+    # the offer leads with it. The reason is computed now and carried, so the
+    # question and the `--engine` flag refuse with the same sentence.
+    return _OfferedEngine(
+        backend=DEFAULT_ENGINE_BACKEND,
+        choices="|".join((ENGINE_NONE, ENGINE_SYSTEMD, ENGINE_CONTAINER)),
+        unavailable_reason=_docker_unavailable_reason(),
+    )
+
+
 __all__ = [
+    "DEFAULT_ENGINE_BACKEND",
     "DEFAULT_LOCK_TIMEOUT_S",
+    "ENGINE_BACKENDS",
+    "ENGINE_CONTAINER",
+    "ENGINE_NONE",
+    "ENGINE_SYSTEMD",
     "add_install_arguments",
     "install_command",
 ]

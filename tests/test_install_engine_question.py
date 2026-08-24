@@ -53,6 +53,11 @@ from factory.cli.install import (
     _plan_file_answers,
 )
 
+#: The real predicate, bound before `tests/conftest.py`'s autouse fixture pins
+#: the module attribute to "absent". The probe's own contract — bounded, and no
+#: exception escapes it — is only assertable against the function itself.
+_REAL_DAEMON_PROBE = install_module._docker_daemon_available
+
 # The 033 walkthrough harness. Two of these are fixtures; importing them
 # registers them in this module.
 from tests.test_ergane_install_walkthrough import (  # noqa: F401
@@ -306,7 +311,7 @@ def test_the_daemon_probe_is_bounded_and_never_raises(
         OSError("socket vanished"),
     ):
         monkeypatch.setattr(subprocess, "run", _raise(failure))
-        assert install_module._docker_daemon_available() is False
+        assert _REAL_DAEMON_PROBE() is False
 
     assert len(calls) == 2
     for call in calls:
@@ -317,7 +322,7 @@ def test_the_daemon_probe_is_bounded_and_never_raises(
     # And an absent binary is answered without spawning anything at all.
     calls.clear()
     monkeypatch.setattr(shutil, "which", _only_which())
-    assert install_module._docker_daemon_available() is False
+    assert _REAL_DAEMON_PROBE() is False
     assert calls == []
 
 
@@ -332,17 +337,16 @@ def test_the_flag_driven_paths_ask_nothing_new_and_default_to_none(
 ) -> None:
     """US1-S3: `--non-interactive` and `--from-file` configure only.
 
-    Driven with the daemon stubbed **present**, which is the only setting that
-    can fail: a step that asked would ask here. The answer list `_plan_file_answers`
-    builds is consumed exactly, with nothing left over and nothing missing —
-    which is the property plan trap 1 exists to protect, asserted rather than
-    argued.
+    Each path is run twice from the same blank host — once on a host with no
+    Docker daemon (today), once on a host where one answers — and the two
+    question lists must be *the same list*: same length, same order, same
+    prompts. That is the property plan trap 1 exists to protect, and comparing
+    the runs asserts it directly rather than re-deriving the planner's
+    arithmetic here.
     """
-    _daemon(monkeypatch, True)
-    planned, _reports, missing, _completed = _plan_file_answers(
-        copy.deepcopy(BLANK_DOCUMENT)
-    )
-    assert missing == []
+    #: An answer file with one declared field; every other answer is a
+    #: documented default, exactly as `--from-file` is meant to be used.
+    answer_text = '[escalation]\nadapter = "none"\n'
 
     asked: list[str] = []
     real_prompter = install_module._FilePrompter
@@ -356,14 +360,35 @@ def test_the_flag_driven_paths_ask_nothing_new_and_default_to_none(
 
     answer_file = config_path.parent / "answers.toml"
     answer_file.parent.mkdir(parents=True, exist_ok=True)
-    answer_file.write_text("", encoding="utf-8")
+    answer_file.write_text(answer_text, encoding="utf-8")
 
-    for argv in (["install", "--non-interactive"], ["install", "--from-file", str(answer_file)]):
+    def _questions(argv: list[str], daemon_answers: bool) -> list[str]:
+        config_path.unlink(missing_ok=True)  # each run starts from a blank host
+        _daemon(monkeypatch, daemon_answers)
         asked.clear()
         run = _invoke(argv)
         assert run.code == EXIT_USER  # verify against the default closed ports
-        assert not any("engine" in prompt for prompt in asked), argv
-        assert len(asked) == len(planned), argv
+        assert config_path.exists()
+        return list(asked)
+
+    for argv in (
+        ["install", "--non-interactive"],
+        ["install", "--from-file", str(answer_file)],
+    ):
+        today = _questions(argv, False)
+        with_docker = _questions(argv, True)
+
+        assert today, argv  # the interview really ran through the seam
+        assert with_docker == today, argv
+        assert not any("engine" in prompt for prompt in today), argv
+
+    # Both paths plan their answers from the same document `_plan_file_answers`
+    # builds, and this story added nothing to it.
+    planned, _reports, missing, _completed = _plan_file_answers(
+        copy.deepcopy(BLANK_DOCUMENT)
+    )
+    assert missing == []
+    assert not any("engine" in report for report in _reports)
 
     # The declared default for both paths, which US5 reads and never asks about.
     assert DEFAULT_ENGINE_BACKEND == ENGINE_NONE
@@ -386,14 +411,23 @@ def test_the_answer_list_the_five_modules_share_is_unchanged(
     import tests.test_install_mode_routing as mode_routing
     import tests.test_us2_shipped_registry as duplicator
 
-    #: The ordinals the definer indexes by hand, by subsystem.
-    anchors = {0: "gateway", 3: "hindsight", 6: "external", 12: "telegram"}
-
-    for name, answers in (
-        ("tests/test_ergane_install_walkthrough.py", definer.GATEWAY_ANSWERS),
-        ("tests/test_us2_shipped_registry.py", duplicator.GATEWAY_ANSWERS),
-    ):
-        assert len(answers) == 15, name
+    #: Length, and the ordinal each subsystem's *mode* answer sits at. The two
+    #: lists differ — the duplicate declares `memory.backend = "none"` and skips
+    #: that block's two follow-ups — so each is pinned against its own shape.
+    shapes = {
+        "tests/test_ergane_install_walkthrough.py": (
+            definer.GATEWAY_ANSWERS,
+            15,
+            {0: "gateway", 3: "hindsight", 6: "external", 12: "telegram"},
+        ),
+        "tests/test_us2_shipped_registry.py": (
+            duplicator.GATEWAY_ANSWERS,
+            11,
+            {0: "gateway", 3: "none", 4: "external", 10: "none"},
+        ),
+    }
+    for name, (answers, length, anchors) in shapes.items():
+        assert len(answers) == length, name
         for index, expected in anchors.items():
             assert answers[index] == expected, (name, index)
 
