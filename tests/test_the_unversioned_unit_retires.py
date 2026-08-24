@@ -493,6 +493,11 @@ def test_the_verb_prints_the_report(
     monkeypatch.setattr(
         "factory.supervision.units.migrate_off_legacy_unit", fake_migration
     )
+    # 088-US4: this test proves unchanged behaviour when a systemd user session
+    # exists; the gate in the noun must therefore see one.
+    monkeypatch.setattr(
+        "factory.cli.install._systemd_user_session_available", lambda: True
+    )
 
     assert ergane_main(["worker", "migrate"]) == 0
     assert LEGACY_WORKER_UNIT in capsys.readouterr().out

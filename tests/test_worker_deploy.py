@@ -630,6 +630,11 @@ def test_the_verb_prints_the_report_and_exits_on_the_deploys_verdict(
         return report
 
     monkeypatch.setattr("factory.supervision.deploy.deploy", fake_deploy)
+    # 088-US4: this test proves unchanged behaviour when a systemd user session
+    # exists; the gate in the noun must therefore see one.
+    monkeypatch.setattr(
+        "factory.cli.install._systemd_user_session_available", lambda: True
+    )
     code = ergane_main(["worker", "deploy", "v0.2.0"])
 
     assert seen["revision"] == "v0.2.0"
