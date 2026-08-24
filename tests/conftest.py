@@ -692,3 +692,22 @@ def host_launch(monkeypatch: pytest.MonkeyPatch) -> None:
         return adapter
 
     monkeypatch.setattr(agent_activities, "adapter_for", _host_adapter)
+
+
+@pytest.fixture(autouse=True)
+def _systemd_user_session_available_in_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """088-US4: the worker systemd verbs see a session in the test suite.
+
+    The gate in `factory.cli.nouns.worker` reuses
+    `factory.cli.install._systemd_user_session_available`. The gate must be
+    transparent to the existing `worker install`/`deploy`/`migrate` tests,
+    which were written to prove unchanged behaviour on a host that has a
+    systemd user session (US4-S2).  Stubbing the predicate in each test would
+    modify those tests; an autouse fixture keeps them unmodified while still
+    letting a test force the absent-session path explicitly.
+    """
+    monkeypatch.setattr(
+        "factory.cli.install._systemd_user_session_available", lambda: True
+    )
