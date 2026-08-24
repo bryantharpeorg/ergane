@@ -66,10 +66,10 @@ exclude = ["**/*.py.base"]
 #
 # The engine container's confinement artifacts travel the same way (spec 104):
 # `ergane install` copies both beside the compose project it generates, so
-# `security_opt`'s relative `./seccomp-ergane.json` resolves next to the compose
-# file rather than against a checkout the host may not have. Drop a key and a
-# wheel install emits a project with no confinement contract. The `Dockerfile`
-# cannot join them — it is `COPY . /opt/ergane`, so its context is the repo.
+# `security_opt`'s relative `./seccomp-ergane.json` resolves there rather than
+# against a checkout the host may not have. Drop a key and a wheel install emits
+# a project with no confinement contract. The `Dockerfile` cannot join them: it
+# is `COPY . /opt/ergane`, so its context is the repo.
 [tool.hatch.build.targets.wheel.force-include]
 "personas.example.yaml" = "factory/personas.yaml"
 "container/seccomp-ergane.json" = "factory/container/seccomp-ergane.json"

@@ -548,6 +548,19 @@ def test_no_decision_in_the_component_asks_how_much_was_spent(path: Path) -> Non
         )
 
 
+#: Compound tokens whose word-split collides with an enforcement word while
+#: meaning something unrelated. `cap_drop` is Docker Compose's key for dropping
+#: Linux *capabilities* — the opposite of a spend cap — and
+#: `container/compose.reference.yaml:13` declares it verbatim, so the module that
+#: renders text agreeing with that file cannot avoid spelling it (spec 104).
+#:
+#: Dropped as an exact compound, before the word split, so `cap` alone, `caps`,
+#: `capped` and every other compound stay red — `max_budget` still splits to
+#: `budget`, the proxy-boundary line below (D-021, FR-004). Adding an entry is a
+#: vocabulary decision, not a way to quiet a failing module.
+NON_ENFORCEMENT_COMPOUNDS = ("cap_drop",)
+
+
 def code_words(tree: ast.Module) -> set[str]:
     """Every word the module's *code* spells — identifiers, argument and payload
     keys, and string values. Docstrings are excluded: this component is required
@@ -582,7 +595,12 @@ def code_words(tree: ast.Module) -> set[str]:
             if id(node) not in docstrings:
                 spelled.append(node.value)
 
-    return {word.lower() for text in spelled for word in re.findall(r"[A-Za-z]+", text)}
+    words: set[str] = set()
+    for text in spelled:
+        for compound in NON_ENFORCEMENT_COMPOUNDS:
+            text = text.replace(compound, " ")
+        words.update(word.lower() for word in re.findall(r"[A-Za-z]+", text))
+    return words
 
 
 @pytest.mark.parametrize("path", COMPONENT_MODULES, ids=module_id)
@@ -595,6 +613,21 @@ def test_the_component_cannot_even_spell_a_cap(path: Path) -> None:
         f"{module_id(path)} speaks enforcement vocabulary {sorted(spoken)} outside "
         "its docstrings — caps are deferred to spec 004 (D-021)"
     )
+
+
+def test_the_compose_exemption_buys_exactly_one_compound_and_no_more() -> None:
+    """`NON_ENFORCEMENT_COMPOUNDS` removes a false positive, not the guard."""
+    spoken = code_words(
+        ast.parse(
+            "cap_drop = 1\ncap = 2\ncapped = 3\nenforce = 4\n"
+            "d = {'cap_drop': ['ALL'], 'max_budget': 10}\n"
+        )
+    )
+    # Gone as an identifier and as a payload key...
+    assert "drop" not in spoken
+    # ...while what the guard is for survives, `budget` included — reached by
+    # splitting a compound, the very mechanism the exemption touches.
+    assert {"cap", "capped", "budget", "enforce"} <= spoken & ENFORCEMENT_WORDS
 
 
 def imported_roots(tree: ast.Module) -> set[str]:

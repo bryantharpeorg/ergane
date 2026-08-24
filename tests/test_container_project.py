@@ -1,9 +1,8 @@
 """104-US2: the generator that renders the engine container's compose project.
 
-Every test here is a **seam capture** (trap 14): the renderer is a pure function
-of project data, the registry is a fixture file, the confinement artifacts are
-read off the checkout. No Docker daemon, no container and no `apparmor_parser` is
-contacted — this story renders text.
+Every test here is a **seam capture** (trap 14): the registry is a fixture file
+and the confinement artifacts are read off the checkout. No Docker daemon, no
+container and no `apparmor_parser` is contacted — this story renders text.
 """
 
 from __future__ import annotations
@@ -89,9 +88,8 @@ class _Host:
 @pytest.fixture
 def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     """A relocated host with two registered repos. `ERGANE_STATE_HOME` is moved
-    off `~` deliberately (trap 5): a generator that copied the reference's
-    `${HOME}/.local/state/ergane` literal rather than calling the resolver mounts
-    one path and resolves another."""
+    off `~` deliberately (trap 5): a generator copying the reference's literal
+    rather than calling the resolver mounts one path and resolves another."""
     home, state_home = tmp_path / "home", tmp_path / "relocated-state"
     config_dir = home / ".config" / "ergane"
     for directory in (home, state_home, config_dir):
@@ -179,7 +177,7 @@ def _committed(artifact: str) -> str:
 
 def test_reference_render_parses_equal_to_the_committed_compose() -> None:
     """Not byte equality (R4): the committed file mixes flow and block style and
-    interpolates `${ERGANE_REPO_EXAMPLE:-…}`; pinning that is a museum."""
+    interpolates `${ERGANE_REPO_EXAMPLE:-…}`."""
     rendered = cp.render_compose(cp.reference_project())
     assert yaml.safe_load(rendered) == yaml.safe_load(
         COMPOSE_REFERENCE.read_text(encoding="utf-8")
@@ -194,7 +192,7 @@ def test_reference_render_carries_the_same_comment_lines_in_order() -> None:
     )
 
 
-# --- T010 [US2-S3] The comment model: header and annotations are project data ---
+# --- T010 [US2-S3] Comments are data: header and annotations ---
 
 
 def test_container_project_is_frozen_and_carries_the_comment_fields() -> None:
@@ -220,8 +218,8 @@ def test_reference_carries_the_committed_files_own_comment_data() -> None:
 def test_operational_header_names_itself_generated_and_never_a_reference(
     host: _Host,
 ) -> None:
-    """A hard-coded reference header would emit "this is a reference artifact"
-    into a file `ergane install` rewrites every run."""
+    """A hard-coded header would emit "this is a reference artifact" into a file
+    `ergane install` rewrites every run."""
     operational_text = cp.render_compose(_project(host))
 
     assert "reference artifact" in cp.render_compose(cp.reference_project())
@@ -231,7 +229,7 @@ def test_operational_header_names_itself_generated_and_never_a_reference(
     assert cp._engine_image_version() in operational_text
 
 
-# --- T011 [US2-S1] Same-path mounts, bare names, resolved values in .env ---
+# --- T011 [US2-S1] Same-path mounts, bare names, .env values ---
 
 
 def test_operational_project_mounts_every_root_same_path(host: _Host) -> None:
@@ -281,7 +279,7 @@ def test_resolved_values_land_in_the_generated_env_file(host: _Host) -> None:
     assert files["compose.yaml"].directory == cp.project_dir()
 
 
-# --- T012 [US2-S1] Trap 3: the engine is handed its config and registry by path ---
+# --- T012 [US2-S1] Trap 3: config and registry by explicit path ---
 
 
 def test_env_pins_config_personas_and_home_to_absolute_host_paths(host: _Host) -> None:
@@ -304,9 +302,8 @@ def test_the_pins_are_what_stops_the_packaged_example_registry(
     host: _Host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Trap 3, asserted with the detector the tree ships. Unpinned,
-    `resolve_default_registry_path` falls through to `factory/config.py:134` and
-    hands the engine the shipped example, whose aliases `is_example_alias`
-    recognises — and the engine looks healthy until the first dispatch."""
+    `resolve_default_registry_path` falls to `factory/config.py:134` and hands the
+    engine the shipped example — healthy-looking until the first dispatch."""
     shipped = yaml.safe_load(shipped_registry_text())
     assert any(
         is_example_alias(str(e["model"])) for e in shipped.values() if e.get("model")
@@ -325,7 +322,7 @@ def test_the_pins_are_what_stops_the_packaged_example_registry(
     assert not any(is_example_alias(p.model) for p in personas.values() if p.model)
 
 
-# --- T013 [US2-S1] R6: the engine's own Temporal database, under the state root ---
+# --- T013 [US2-S1] R6: the engine's own database, under the state root ---
 
 
 def test_env_pins_the_engines_own_temporal_database(host: _Host) -> None:
@@ -338,8 +335,8 @@ def test_env_pins_the_engines_own_temporal_database(host: _Host) -> None:
     # Not the supervisor's landed default: nothing mounts /var/lib/ergane and the
     # Dockerfile never creates it (findings failure mode 5).
     assert pinned != DEFAULT_DB_FILENAME
-    # Not the native managed unit's `dev.db` either (`units.py:500`): two servers
-    # on one SQLite file is the hazard findings §3 prevents.
+    # Nor the native unit's `dev.db` (`units.py:500`): two servers on one SQLite
+    # file is the hazard findings §3 prevents.
     assert pinned != str(resolve_layout().temporal_db_path)
     assert Path(pinned).name != "dev.db"
 
@@ -349,7 +346,7 @@ def test_env_pins_the_engines_own_temporal_database(host: _Host) -> None:
     assert any(Path(m.source) == host.state_root for m in project.mounts)
 
 
-# --- T014 [US2-S1] Trap 4: refuse at generation time what no mount covers ---
+# --- T014 [US2-S1] Trap 4: refuse what no mount covers ---
 
 
 def test_a_mount_outside_every_declared_root_is_refused_naming_the_path(
@@ -401,13 +398,13 @@ def test_every_bind_is_same_path_and_the_roots_are_the_projects_mount_set(
         assert source.startswith("/"), f"bind source must be absolute: {entry!r}"
     assert "volumes" not in compose, "no top-level named volumes (trap 4)"
 
-    # The roots the guard is against, which is why R6's database path passes
-    # through the state-root mount rather than being refused by it.
+    # The roots the guard is against — why R6's database path passes through the
+    # state-root mount rather than being refused by it.
     for root in (host.state_root, supervision_home(), host.config_dir, *host.repos):
         assert root in project.roots
 
 
-# --- T015 [US2-S1] R7/R10: the image reference is derived, never guessed ---
+# --- T015 [US2-S1] R7/R10: the image reference is derived ---
 
 
 def test_the_image_version_is_derived_through_module_private_helpers() -> None:
@@ -466,7 +463,7 @@ def test_local_source_refuses_by_name_when_there_is_no_build_context(
     _project(host, install_root=wheel_root, image_source=cp.IMAGE_SOURCE_REGISTRY)
 
 
-# --- T016 [US2-S1] R10 packaging: the confinement artifacts ship in the wheel ---
+# --- T016 [US2-S1] R10: the confinement artifacts ship in the wheel ---
 
 
 @pytest.mark.parametrize("artifact", ["seccomp-ergane.json", "ergane-engine.profile"])
@@ -508,7 +505,7 @@ def test_the_artifacts_are_copied_beside_the_generated_compose(host: _Host) -> N
     assert f"seccomp:./{cp.SECCOMP_ARTIFACT}" in _service(project)["security_opt"]
 
 
-# --- T017 [US2-S3] Trap 9: config F is unreachable from the reference render ---
+# --- T017 [US2-S3] Trap 9: config F unreachable from the reference ---
 
 
 def test_the_reference_render_carries_no_unconfined_token() -> None:
@@ -518,15 +515,15 @@ def test_the_reference_render_carries_no_unconfined_token() -> None:
 
 
 def test_reference_project_takes_no_parameters_so_no_variant_reaches_it() -> None:
-    """Structurally unreachable, not merely untaken: a parameter that *defaults*
-    to the shipped confinement leaves a committed test one edit from red."""
+    """Structurally unreachable, not merely untaken: a parameter *defaulting* to
+    the shipped confinement leaves a committed test one edit from red."""
     assert inspect.signature(cp.reference_project).parameters == {}
     project = cp.reference_project()
     assert project.security_opt == cp.CONFINED_SECURITY_OPT
     assert f"apparmor={cp.APPARMOR_PROFILE_NAME}" in project.security_opt
 
 
-# --- T018 [US2-S2] Determinism: the render is a function of the data alone ---
+# --- T018 [US2-S2] Determinism: a function of the data alone ---
 
 
 def test_the_same_inputs_twice_render_identical_text(host: _Host) -> None:
@@ -544,8 +541,8 @@ def test_the_same_inputs_twice_render_identical_text(host: _Host) -> None:
 def test_the_render_reads_neither_the_clock_nor_the_environment(
     host: _Host, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Resolution happens once, in `resolve_project`; the renderer is pure, so
-    moving the environment out from under a resolved project changes nothing."""
+    """Resolution happens once, in `resolve_project`, so moving the environment
+    out from under a resolved project changes nothing."""
     project = _project(host)
     before = cp.render_compose(project), cp.render_env(project)
 
