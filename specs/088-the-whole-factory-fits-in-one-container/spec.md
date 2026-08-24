@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # DRAFTED 2026-08-22 ~11:30 PM CT on branch spec-routing-plan, tree 838b9c3.
 # REVISED 2026-08-23 ~8:30 AM CT: compose as front door, FR on same-path mounts.
 #
@@ -32,8 +32,8 @@ state: draft
 #     load + probe suite) on 2026-08-23. Findings doc, appendix, has the run.
 #
 # ANCHOR STATUS: every file:line citation was read individually off 838b9c3
-# (2026-08-22, re-confirmed 2026-08-23 — the tree has not moved). Re-verify
-# before flipping to ready, per house rule.
+# (2026-08-22, re-confirmed 2026-08-23). The commits above 838b9c3 touch only
+# docs/ and specs/, so every anchor still resolves.
 #
 # WHAT THE DRAFTING PASSES SETTLED, so nobody re-derives it:
 #   - **`ergane install` needs no systemd.** The interview and --verify live in
@@ -51,8 +51,10 @@ state: draft
 #     always a grandchild), the image's runtime user is non-root, and US1's
 #     probe asserts both properties rather than assuming them.
 #
-# DO NOT FLIP READY without a pre-dispatch review. US3 remains the story most
-# likely to be under-specified into a second attempt: read its sizing note.
+# FLIPPED READY 2026-08-23 ~10:05 PM CT on the operator's instruction, after
+# validate passed every layer at both states. US3 remains the story most
+# likely to be under-specified into a second attempt: read its sizing note
+# before dispatch.
 ---
 
 # Feature Specification: the whole factory fits in one container

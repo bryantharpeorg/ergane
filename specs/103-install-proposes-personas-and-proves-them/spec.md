@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # DRAFTED 2026-08-23 ~10:00 PM CT by the operator session that produced
 # docs/container-onramp-research-findings.md (§5 is this spec's evidence) and
 # docs/container-onramp-program.md (this is the program's "fully configured"
@@ -29,7 +29,9 @@ state: draft
 #     interactive one; extending the answer-file schema to a second file's
 #     content is a different spec if it is ever wanted.
 #
-# DO NOT FLIP READY without a pre-dispatch review.
+# FLIPPED READY 2026-08-23 ~10:05 PM CT on the operator's instruction, after
+# validate passed every layer at both states. Anchors verified against
+# 838b9c3; the commits above it touch only docs/ and specs/.
 ---
 
 # Feature Specification: install proposes personas and proves them
