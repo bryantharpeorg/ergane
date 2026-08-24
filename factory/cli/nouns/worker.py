@@ -15,7 +15,8 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from factory.cli.errors import EXIT_OK, EXIT_USER
+from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
+from factory.cli.install import _systemd_user_session_available
 from factory.cli.nouns import Noun
 from factory.supervision.deploy import deploy
 from factory.supervision.units import (
@@ -26,7 +27,20 @@ from factory.supervision.units import (
 )
 
 
+def _require_systemd_user_session() -> None:
+    """Refuse by name when no systemd user session is available (FR-015)."""
+    if _systemd_user_session_available():
+        return
+    raise OperatorError(
+        "no systemd user session is available (systemctl --user cannot connect "
+        "to the bus); this usually means the command is running inside a "
+        "container, where systemd user units are not available. Use the "
+        "container supervisor to manage the worker instead of this verb."
+    )
+
+
 def _install(args: argparse.Namespace) -> int:
+    _require_systemd_user_session()
     report = install(resolve_layout(env_command=args.env_command))
     print(report.render())
     return EXIT_OK
@@ -39,7 +53,8 @@ def _uninstall(_args: argparse.Namespace) -> int:
 
 
 def _migrate(_args: argparse.Namespace) -> int:
-    """082-US4. Thin like the rest; the refusal is the engine's (FR-007)."""
+    """088-US4. Thin like the rest; the refusal is now the noun's (FR-015)."""
+    _require_systemd_user_session()
     report = migrate_off_legacy_unit(resolve_layout())
     print(report.render())
     return EXIT_OK
@@ -52,6 +67,7 @@ def _deploy(args: argparse.Namespace) -> int:
     running and made nothing current (US2-S5), and exiting 0 would tell a
     script the floor moved when it has not. The report prints either way —
     it names every version, which is what that path most needs read."""
+    _require_systemd_user_session()
     report = deploy(resolve_layout(), args.revision)
     print(report.render())
     return EXIT_USER if report.degraded else EXIT_OK
