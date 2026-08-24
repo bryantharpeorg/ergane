@@ -634,10 +634,15 @@ def render_compose(project: ContainerProject) -> str:
 
     lines.append("")
     lines.extend(_comments(project.annotations.get(REPO_MOUNT_KEY, ()), ""))
-    lines.append(f"{REPO_MOUNT_KEY}:")
-    for mount in project.repo_mounts:
-        lines.append(f"  - source: {json.dumps(mount.source)}")
-        lines.append(f"    target: {json.dumps(mount.target)}")
+    if not project.repo_mounts:
+        # Empty rather than absent, and `[]` rather than a bare key: a bare key
+        # parses to null, and US6 regenerates this list by reading it back.
+        lines.append(f"{REPO_MOUNT_KEY}: []")
+    else:
+        lines.append(f"{REPO_MOUNT_KEY}:")
+        for mount in project.repo_mounts:
+            lines.append(f"  - source: {json.dumps(mount.source)}")
+            lines.append(f"    target: {json.dumps(mount.target)}")
 
     return "\n".join(lines) + "\n"
 
