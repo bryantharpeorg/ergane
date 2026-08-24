@@ -1,0 +1,142 @@
+=== interview transcript ===
+wrote /tmp/tmpcstycqpk/ergane/config.toml
+wrote /tmp/tmpcstycqpk/xdg/ergane/personas.yaml
+  probing implementer -> proxy/implementer-large: PASS
+  probing judge -> proxy/judge-small: PASS
+  probing debugger -> proxy/closer-fast: PASS
+  probing closer -> proxy/closer-fast: PASS
+  probing architect -> proxy/architect-reasoner: PASS
+  probing researcher -> proxy/judge-small: PASS
+  probing implementer fallback -> proxy/debugger-cheap: PASS
+  probing judge fallback -> proxy/judge-small: PASS
+  probing debugger fallback -> proxy/debugger-cheap: PASS
+  probing closer fallback -> proxy/debugger-cheap: PASS
+  probing architect fallback -> proxy/judge-small: PASS
+  probing researcher fallback -> proxy/researcher-cheap: PASS
+wrote /tmp/tmpcstycqpk/xdg/ergane/personas.yaml
+  implementer: model=proxy/implementer-large, fallback=proxy/debugger-cheap
+  judge: model=proxy/judge-small, fallback=proxy/judge-small
+  debugger: model=proxy/closer-fast, fallback=proxy/debugger-cheap
+  closer: model=proxy/closer-fast, fallback=proxy/debugger-cheap
+  architect: model=proxy/architect-reasoner, fallback=proxy/judge-small
+  researcher: model=proxy/judge-small, fallback=proxy/researcher-cheap
+  opus-closer: model=claude-opus-5, fallback=None
+
+verifying the control plane...
+[PASS] host: stubbed host prerequisites are present
+[PASS] forge: stubbed forge capability is present
+[PASS] llm: stubbed LLM probe passed for 6 aliases
+[PASS] temporal: stubbed temporal namespace exists
+[PASS] memory: skipped by declaration: memory.backend is `none`
+[PASS] telemetry: skipped by declaration: telemetry has no otlp_endpoint
+[PASS] escalation: escalations will be dropped: escalation.adapter is `none`; a node that would have asked a question fails instead of waiting
+
+exit code: 0
+answers consumed: 24 / 24
+
+one-token probes: 12
+  - proxy/implementer-large
+  - proxy/judge-small
+  - proxy/closer-fast
+  - proxy/closer-fast
+  - proxy/architect-reasoner
+  - proxy/judge-small
+  - proxy/debugger-cheap
+  - proxy/judge-small
+  - proxy/debugger-cheap
+  - proxy/debugger-cheap
+  - proxy/judge-small
+  - proxy/researcher-cheap
+judge canary probes: ['proxy/judge-small']
+
+=== personas.yaml diff against shipped example ===
+--- personas.example.yaml
++++ personas.yaml
+@@ -24,8 +24,8 @@
+ 
+ architect:
+   agent: claude-code
+-  model: example/your-architect-model
+-  fallback: example/your-fallback-model
++  model: proxy/architect-reasoner
++  fallback: proxy/judge-small
+   skills: [codebase-design, design-an-interface, domain-modeling]
+   write_scope: docs
+   needs_worktree: true
+@@ -33,8 +33,8 @@
+ 
+ implementer:
+   agent: claude-code
+-  model: example/your-implementer-model
+-  fallback: example/your-fallback-model
++  model: proxy/implementer-large
++  fallback: proxy/debugger-cheap
+   skills: [implement, tdd]
+   write_scope: worktree
+   needs_worktree: true
+@@ -52,8 +52,8 @@
+ 
+ judge:
+   agent: claude-code
+-  model: example/your-judge-model
+-  fallback: example/your-fallback-model
++  model: proxy/judge-small
++  fallback: proxy/judge-small
+   skills: [code-review]
+   write_scope: read
+   needs_worktree: false
+@@ -61,8 +61,8 @@
+ 
+ closer:
+   agent: claude-code
+-  model: example/your-closer-model
+-  fallback: example/your-implementer-model
++  model: proxy/closer-fast
++  fallback: proxy/debugger-cheap
+   skills: [implement, tdd]
+   write_scope: worktree
+   needs_worktree: true
+@@ -71,8 +71,8 @@
+ 
+ debugger:
+   agent: claude-code
+-  model: example/your-debugger-model
+-  fallback: example/your-fallback-model
++  model: proxy/closer-fast
++  fallback: proxy/debugger-cheap
+   skills: [diagnosing-bugs]
+   write_scope: worktree
+   needs_worktree: true
+@@ -80,8 +80,8 @@
+ 
+ researcher:
+   agent: claude-code
+-  model: example/your-researcher-model
+-  fallback: example/your-fallback-model
++  model: proxy/judge-small
++  fallback: proxy/researcher-cheap
+   skills: [research, grill-with-docs]
+   write_scope: read
+   needs_worktree: false
+
+=== written personas.yaml (head) ===
+# Persona registry example.
+#
+# This is the shipped example registry.  `ergane install` copies it to
+# ~/.config/ergane/personas.yaml on a fresh host.  Replace every placeholder
+# alias below with aliases your LiteLLM proxy actually serves.
+#
+# Nodes are routed by persona, never by model tier.  This registry is the only
+# place a model name appears — code never hardcodes one.  The `model` and
+# `fallback` values are LiteLLM aliases from the operator's proxy config.
+#
+# Required fields per persona:
+#   agent          adapter name; "none" means deterministic, no key
+#   model          LiteLLM alias; required when agent != "none", null when "none"
+#   fallback       LiteLLM alias used on primary-model failure; optional (null)
+#   skills         backing skills; may be empty (reserved, currently unused)
+#   write_scope    worktree | docs | read
+#   needs_worktree whether the node runs against an isolated git worktree
+#   timeout        attempt wall-clock bound in seconds; null only when agent is "none"
+#   context_window model context-window tokens; optional (omit for default behavior)
+#
