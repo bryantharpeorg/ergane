@@ -64,17 +64,12 @@ exclude = ["**/*.py.base"]
 # shipped no registry at all and the first thing a new install printed was
 # `cannot read persona registry .../site-packages/personas.yaml`.
 #
-# The engine container's confinement artifacts travel the same way (spec 104).
-#
-# `ergane install` copies both beside the compose project it generates, so that
+# The engine container's confinement artifacts travel the same way (spec 104):
+# `ergane install` copies both beside the compose project it generates, so
 # `security_opt`'s relative `./seccomp-ergane.json` resolves next to the compose
-# file rather than against a checkout the host may not have; US4 shows the
-# AppArmor profile before asking to load it. Nothing in `factory/` read
-# `container/` before 104, so these two keys are the whole of that coupling —
-# drop one and a wheel install generates a project whose confinement contract is
-# missing, which is a bring-up failure with no obvious cause. The `Dockerfile`
-# deliberately does not join them: it is `COPY . /opt/ergane`, so its build
-# context is the repository itself and no wheel can carry one.
+# file rather than against a checkout the host may not have. Drop a key and a
+# wheel install emits a project with no confinement contract. The `Dockerfile`
+# cannot join them — it is `COPY . /opt/ergane`, so its context is the repo.
 [tool.hatch.build.targets.wheel.force-include]
 "personas.example.yaml" = "factory/personas.yaml"
 "container/seccomp-ergane.json" = "factory/container/seccomp-ergane.json"

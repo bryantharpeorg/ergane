@@ -1,43 +1,20 @@
 """The engine container's compose project, rendered from data (104-US2).
 
-*The engine container* is the Docker container `ergane install` brings up. The
-word is overloaded three ways in this tree — bwrap's sandbox is also a container,
-and `CONTEXT.md` calls an epic a container of specs — so every symbol, message
-and comment here spells the Docker one out.
+*The engine container* is the Docker container `ergane install` brings up — never
+bwrap's sandbox, never "a container of specs".
 
-Two projects come out of one renderer:
+One renderer, two projects. `reference_project()` is symbolic, and rendering it
+must agree with the committed `container/compose.reference.yaml` **structurally**
+— parsed documents equal, ordered comment lines equal — not byte-for-byte, or the
+renderer becomes a museum of one hand-written file's whitespace.
+`resolve_project(...)` is operational and calls the path resolvers rather than
+copying that file's `${HOME}` literals (trap 5).
 
-- `reference_project()` is the symbolic one. Rendering it must agree with the
-  committed `container/compose.reference.yaml`, which is what makes that file and
-  this module one fact rather than two. The agreement is **structural**: the
-  parsed documents compare equal and the ordered comment lines compare equal.
-  Byte equality is deliberately not the contract — the committed file is
-  hand-written, mixes flow and block style, and quotes `user` but not `init`;
-  pinning that would make this renderer a museum of one file's whitespace and
-  would read the first legitimate reformat as a generator defect.
-- `resolve_project(...)` is the operational one, built from the confirmed
-  control-plane config, the repo registry and the path resolvers — never from the
-  reference file's `${HOME}/...` literals, because `resolve_state_home()` honours
-  `ERGANE_STATE_HOME` and a host that sets it would otherwise get a project
-  mounted at one path and resolving another.
-
-**Comments are data.** The reference carries a header saying "this is a reference
-artifact"; a renderer that hard-coded that string would emit it into a file
-`ergane install` regenerates on every run — a generated file lying about itself.
-So `header` and `annotations` are fields, and each project carries its own.
-
-**Resolved values go in `.env`, never into `environment:` assignments.** The
-compose `environment:` list carries *bare names*, which is what the committed
-drift derivation (`derived_environment_names`) requires; the values that were
-resolved for this host land beside it in `.env`, which Docker Compose reads out
-of the project directory. Credentials are not among them: they stay in the
-operator's shell and reach the engine through the passthrough list, so no secret
-is ever written to a generated file.
-
-**Every path the project declares must be covered by one of its own mounts.**
-That guard is `_check_paths`, and it is the check that would have caught the
-supervisor's `/var/lib/ergane` default — a path nothing mounts and the Dockerfile
-never creates — before it shipped.
+Three rules the rest keeps: **comments are data**, or the operational file
+inherits "this is a reference artifact" and lies about itself; **resolved values
+go in `.env`**, never into `environment:`, and credentials into neither; **every
+declared path is covered by one of the project's own mounts** (`_check_paths`),
+the check that would have caught the supervisor's unmounted `/var/lib/ergane`.
 """
 
 from __future__ import annotations
@@ -52,8 +29,8 @@ from pathlib import Path
 from typing import Mapping
 
 from factory.cli.errors import OperatorError
-from factory.controlplane.config import ControlPlaneConfig, resolve_config_path
 from factory.config import resolve_default_registry_path
+from factory.controlplane.config import ControlPlaneConfig, resolve_config_path
 from factory.registry import Registry, load_registry, resolve_state_home
 from factory.supervision.units import (
     GeneratedFile,
@@ -62,30 +39,24 @@ from factory.supervision.units import (
     supervision_home,
 )
 
-#: The one service the project declares.
 SERVICE_NAME = "ergane"
 
-#: The generated project's directory name, under the supervision home.
+#: The project's directory name, under the supervision home.
 PROJECT_DIRNAME = "container"
 
-#: The two files the renderer produces.
 COMPOSE_NAME = "compose.yaml"
 ENV_NAME = ".env"
 
-#: The confinement artifacts, copied beside the compose file so `security_opt`'s
-#: relative paths resolve there (R5).
+#: Copied beside the compose file so `security_opt`'s relative paths resolve.
 SECCOMP_ARTIFACT = "seccomp-ergane.json"
 APPARMOR_ARTIFACT = "ergane-engine.profile"
 
 #: The AppArmor profile's own name, as `apparmor_parser` loads it.
 APPARMOR_PROFILE_NAME = "ergane-engine"
 
-#: The shipped confinement — config G of the onramp findings. Constructed as a
-#: literal and reached by no parameter (trap 9): the config-F variant
-#: (`apparmor=unconfined`) is US4's, and a *default* that merely happened to be
-#: G would leave the committed
-#: `tests/test_088_us3_container_drift.py:test_compose_contains_no_unconfined_token`
-#: one wrong default away from red on a file nobody edited.
+#: The shipped confinement — config G, a literal reached by no parameter (trap
+#: 9). The `apparmor=unconfined` variant is US4's; a default that merely happened
+#: to be G leaves the committed test banning that token one edit from red.
 CONFINED_SECURITY_OPT: tuple[str, ...] = (
     "no-new-privileges:true",
     f"seccomp:./{SECCOMP_ARTIFACT}",
@@ -98,51 +69,37 @@ REPO_MOUNT_KEY = "x-ergane-repos"
 #: Annotation key for the generated `.env`'s own comment block.
 ENV_FILE_KEY = ENV_NAME
 
-#: Where Temporal listens *inside* the engine. Spelled `host:port` because that
-#: is the tree-wide convention (`factory/notify/service.py:129`,
-#: `factory/cli/install.py:202`) and because the supervisor's children —
-#: `factory.worker` and `factory.notify.service` — read the same variable out of
-#: the same environment and need the port in it.
+#: Where Temporal listens *inside* the engine, spelled `host:port`: the tree-wide
+#: convention, and the supervisor's children read the same variable (R12).
 ENGINE_TEMPORAL_PORT = 7233
 ENGINE_TEMPORAL_ADDRESS = f"127.0.0.1:{ENGINE_TEMPORAL_PORT}"
 
-#: The engine's own Temporal database, under the state root (R6). Deliberately
-#: *not* `InstallLayout.temporal_db_path`, which is `dev.db` and belongs to the
-#: native managed unit: two Temporal servers on one SQLite file is the same-host
-#: corruption hazard the findings exist to prevent. The consequence is intended —
-#: a host switching from the native tier to the engine container starts with
-#: empty workflow history, and copying `dev.db` across is an operator move.
+#: The engine's own Temporal database, under the state root (R6) — not
+#: `InstallLayout.temporal_db_path`'s `dev.db`, the native unit's: two servers on
+#: one SQLite file is the hazard findings §3 prevents.
 TEMPORAL_DB_NAME = "engine.db"
 
-#: Where the image comes from. `registry` emits `image:` alone; `local` adds a
-#: build stanza and tags the result locally. `local` is the default until spec
-#: 105 publishes the image — a faithfully derived `registry` project would today
-#: attempt a pull of a tag that does not exist on GHCR.
+#: `local` is the default until spec 105 publishes the image: a `registry`
+#: project would today pull a tag GHCR has not got.
 IMAGE_SOURCE_REGISTRY = "registry"
 IMAGE_SOURCE_LOCAL = "local"
 
-#: Private on purpose: spec 105 creates `factory/supervision/engine_identity.py`
-#: as the single owner of `cli_version()`, `IMAGE_REPOSITORY` and
-#: `image_reference(version)`, and rewires `factory/cli/main.py:131` onto it.
-#: 104 must not create a second public version vocabulary, so these two helpers
-#: stay module-private and 105 replaces their bodies with a delegation.
+#: Private on purpose: spec 105 creates `engine_identity.py` as the single owner
+#: of `cli_version()`, `IMAGE_REPOSITORY` and `image_reference()`, so 104 must
+#: not create a second public version vocabulary. 105 delegates these.
 _IMAGE_REPOSITORY = "ghcr.io/bryantharpeorg/ergane"
 _LOCAL_IMAGE_REPOSITORY = "ergane-local"
 
-#: Seam: how the distribution version is derived. Rebound in tests, following
-#: the convention `factory/cli/install.py` uses for `_scan_endpoints`.
+#: Seam: how the version is derived. Rebound in tests, the convention
+#: `factory/cli/install.py` uses for `_scan_endpoints`.
 _distribution_version = importlib.metadata.version
 
 
-# ---------------------------------------------------------------------------
-# The env passthrough list — one shared source (T021)
-# ---------------------------------------------------------------------------
+# --- The env passthrough list — one shared source (T021) ---
 
 #: The bare names the compose `environment:` list passes through, in the order
-#: the reference file declares them. Bare, because compose resolves an entry
-#: without `=` from the environment it runs in — which includes the `.env` beside
-#: the project — and because an `ERGANE_STATE_HOME=/home/...` entry would not
-#: match `derived_environment_names()`.
+#: the reference declares them. Bare, because compose resolves an entry without
+#: `=` from the environment it runs in — which includes the `.env` beside it.
 REFERENCE_ENVIRONMENT_NAMES: tuple[str, ...] = (
     "PATH",
     "LANG",
@@ -165,10 +122,9 @@ REFERENCE_ENVIRONMENT_NAMES: tuple[str, ...] = (
     "ERGANE_VERSION",
 )
 
-#: What the operational project adds to that list. The reference declares
-#: neither, so they are additive rather than a change to the committed file: the
-#: persona-registry pin is trap 3's third fact, and the database pin is R6's.
-#: A value set in `.env` reaches the engine only if the name is declared here.
+#: What the operational project adds — additive, so the committed file is
+#: unchanged. A `.env` value reaches the engine only if its name is declared;
+#: these two are trap 3's registry pin and R6's database pin.
 _OPERATIONAL_ENVIRONMENT_NAMES: tuple[str, ...] = (
     "ERGANE_PERSONAS_PATH",
     "ERGANE_TEMPORAL_DB_FILENAME",
@@ -176,20 +132,13 @@ _OPERATIONAL_ENVIRONMENT_NAMES: tuple[str, ...] = (
 
 
 def derived_environment_names() -> set[str]:
-    """Return the env-var names the five subsystem blocks name by default.
-
-    Derived from the install interview's defaults and its optional fields rather
-    than restated, so the compose passthrough list stays in sync with the
-    control-plane schema. This is the derivation
-    `tests/test_088_us3_container_drift.py` used to keep to itself; it lives here
-    now because the generator and the reference compose need the same answer, and
-    two copies of it is how they would stop agreeing.
-    """
-    # Imported inside the function on purpose. `factory.cli.install` is the
-    # interview, and spec 104's US5 wires that interview to this module — a
-    # module-level import here would close that loop into a cycle the day it
-    # does, and it would drag the whole discovery/notify/usage import tree into
-    # every process that only wanted to render a compose file.
+    """The env-var names the five subsystem blocks name by default, derived
+    rather than restated. The drift suite used to own this; the generator and the
+    reference need one answer, not two (T021)."""
+    # Imported inside the function: US5 wires `factory.cli.install` to this
+    # module, so a module-level import closes the loop into a cycle the day it
+    # does — and drags the discovery/notify/usage tree into every process that
+    # only wanted a compose file.
     from factory.cli.install import (  # noqa: PLC0415 - see comment above
         BLANK_DOCUMENT,
         _OPTIONAL_INTERVIEW_FIELDS,
@@ -213,30 +162,20 @@ def derived_environment_names() -> set[str]:
         if isinstance(default, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", default):
             env_names.add(default)
 
-    # Variables the factory itself uses for path overrides.
+    # Path overrides the factory itself honours, then the low-level passthrough
+    # the adapter and child processes need.
     env_names.update(
-        {
-            "ERGANE_STATE_HOME",
-            "FACTORY_STATE_HOME",
-            "ERGANE_CONFIG_PATH",
-            "FACTORY_CONFIG_PATH",
-        }
+        {"ERGANE_STATE_HOME", "FACTORY_STATE_HOME", "ERGANE_CONFIG_PATH", "FACTORY_CONFIG_PATH"}
     )
-    # Low-level passthrough the adapter and child processes need.
     env_names.update({"PATH", "LANG", "TERM", "HOME"})
     return env_names
 
 
-# ---------------------------------------------------------------------------
-# The project data
-# ---------------------------------------------------------------------------
+# --- The project data ---
 
-#: An assignment's role in the mount guard.
-#: `value` is not a path and nothing has to cover it. `path` is something the
-#: engine opens, so a mount must contain it. `anchor` is only ever resolved
-#: *through* — `HOME` and `ERGANE_STATE_HOME` are never opened themselves — so
-#: the requirement is the other way round: a mount must sit beneath it, which is
-#: what makes the anchor exist inside the engine at all.
+#: An assignment's role in the mount guard. `value` is not a path. `path` is
+#: opened, so a mount must contain it. `anchor` is only resolved *through*, so
+#: the rule inverts: a mount must sit beneath it, which is what makes it exist.
 ENV_VALUE = "value"
 ENV_PATH = "path"
 ENV_ANCHOR = "anchor"
@@ -244,13 +183,9 @@ ENV_ANCHOR = "anchor"
 
 @dataclasses.dataclass(frozen=True)
 class Mount:
-    """One bind: `<path>:<path>`.
-
-    Same-path is the invariant, not a convenience. Git stores absolute paths in
-    `.git/worktrees/<name>/gitdir`, so a worktree created on the host reads as a
-    clean checkout after a commit made inside the engine only when both sides
-    spell it identically.
-    """
+    """One bind, `<path>:<path>`. Same-path is the invariant: git stores absolute
+    paths in `.git/worktrees/<name>/gitdir`, so a host worktree survives a commit
+    made in the engine only if both sides spell it alike."""
 
     source: str
     target: str
@@ -275,28 +210,19 @@ class EnvAssignment:
 
 @dataclasses.dataclass(frozen=True)
 class ContainerProject:
-    """The engine container's compose project, as data.
-
-    Data only, so that rendering is a function of this object and nothing else:
-    no clock, no environment read, no filesystem probe happens between here and
-    the rendered text. That is what makes US2-S2's determinism structural rather
-    than something a test has to keep true.
-
+    """The engine container's compose project, as data — no clock, no environment
+    read, no filesystem probe, which makes US2-S2's determinism structural.
     `header` is the comment block above `services:`; `annotations` are comment
-    lines keyed by the element they precede — a mount's source path, the
-    `x-ergane-repos` block, or the generated `.env` as a whole.
-    """
+    lines keyed by what they precede: a mount source, `x-ergane-repos`, `.env`."""
 
     image: str
     build: BuildStanza | None
-    #: The confinement variant, carried as the `security_opt` lines it renders to.
+    #: The confinement variant, as the `security_opt` lines it renders to.
     security_opt: tuple[str, ...]
     user: str
-    #: What the mount guard is against: the state root, the supervision home, the
-    #: config directory and every repo. The *argument* of `InstallLayout.roots`
-    #: (`factory/supervision/units.py:203`), not its tuple — a project that names
-    #: a path outside these comes up perfectly on the one host where that path
-    #: happens to exist.
+    #: What the guard is against: state root, supervision home, config dir,
+    #: every repo. The *argument* of `InstallLayout.roots`, not its tuple — a
+    #: project naming a path outside these runs on exactly one host.
     roots: tuple[Path, ...]
     mounts: tuple[Mount, ...]
     repo_mounts: tuple[Mount, ...]
@@ -305,30 +231,22 @@ class ContainerProject:
     ports: tuple[str, ...]
     directory: Path
     header: tuple[str, ...] = ()
-    annotations: Mapping[str, tuple[str, ...]] = dataclasses.field(
-        default_factory=dict
-    )
+    annotations: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _check_paths(self)
 
 
 def project_dir(layout: InstallLayout | None = None) -> Path:
-    """Where the generated project lives.
-
-    The record that this installation runs the container tier *is* this
-    directory: nothing about the engine goes into `config.toml`, whose parser
-    refuses any top-level key outside the five subsystems by name. US5, US6 and
-    US7 ask what was generated here; they never ask the config.
-    """
+    """Where the generated project lives — and the record that this installation
+    runs the container tier (R1), since nothing about the engine may go into
+    `config.toml`. Later stories ask here, never the config."""
     if layout is not None:
         return layout.generated_dir / PROJECT_DIRNAME
     return supervision_home() / PROJECT_DIRNAME
 
 
-# ---------------------------------------------------------------------------
-# The mount guard (trap 4)
-# ---------------------------------------------------------------------------
+# --- The mount guard (trap 4) ---
 
 
 def _covered(path: Path, roots: tuple[Path, ...]) -> bool:
@@ -337,34 +255,27 @@ def _covered(path: Path, roots: tuple[Path, ...]) -> bool:
 
 
 def _anchors(path: Path, roots: tuple[Path, ...]) -> bool:
-    """Whether some mount is created *beneath* `path`, which is what makes an
-    anchor directory exist inside the engine even though nothing mounts it."""
+    """Whether a mount is created *beneath* `path` — what makes an anchor exist
+    inside the engine though nothing mounts it."""
     return any(root == path or root.is_relative_to(path) for root in roots)
 
 
 def _check_paths(project: ContainerProject) -> None:
-    """Refuse, at generation time, a project some host would still run.
-
-    Three rules, one reason: a compose file whose paths only line up on the
-    machine that generated it starts, supervises and verifies perfectly there and
-    nowhere else. The failure this catches is not bring-up — it is the first
-    dispatch, hours later, which is the worst possible place for "verify passed"
-    to have been wrong.
-    """
+    """Refuse, at construction, a project only one host would run correctly. What
+    it catches is not a bring-up failure but the first dispatch, hours later."""
     roots = tuple(project.roots)
 
     for mount in (*project.mounts, *project.repo_mounts):
         if mount.source != mount.target:
             raise OperatorError(
                 f"the engine container's bind for {mount.source} is not same-path "
-                f"(container path {mount.target}); every bind must be "
-                "<path>:<path>, because git records absolute paths in its "
-                "worktree files and a rewritten path breaks them on one side"
+                f"(container path {mount.target}); git records absolute paths in "
+                "its worktree files, and a rewritten one breaks on the other side"
             )
         if not _covered(Path(mount.source), roots):
             raise OperatorError(
-                f"the engine container's project declares a mount at "
-                f"{mount.source}, which none of its own roots covers "
+                f"the engine container's project declares a mount at {mount.source}, "
+                f"which none of its own roots covers "
                 f"({', '.join(str(root) for root in roots)})"
             )
 
@@ -373,12 +284,9 @@ def _check_paths(project: ContainerProject) -> None:
             raise OperatorError(
                 f"the engine container's {assignment.name} points at "
                 f"{assignment.value}, which no mount covers — inside the engine "
-                "that path is either absent or a throwaway layer, so whatever is "
-                "written there is discarded on the next recreate"
+                "that is a throwaway layer, discarded on the next recreate"
             )
-        if assignment.kind == ENV_ANCHOR and not _anchors(
-            Path(assignment.value), roots
-        ):
+        if assignment.kind == ENV_ANCHOR and not _anchors(Path(assignment.value), roots):
             raise OperatorError(
                 f"the engine container's {assignment.name} points at "
                 f"{assignment.value}, and no mount is created beneath it, so that "
@@ -386,40 +294,25 @@ def _check_paths(project: ContainerProject) -> None:
             )
 
 
-# ---------------------------------------------------------------------------
-# Package data: the confinement artifacts (R10, T020)
-# ---------------------------------------------------------------------------
+# --- Package data: the confinement artifacts (R10) ---
 
 
 def _packaged_artifact(name: str):
-    """The artifact as package data, whether or not it is actually there.
-
-    A seam as much as a helper: it is what lets a test prove the wheel layout is
-    consulted first without building a wheel.
-    """
+    """The artifact as package data, present or not — a seam, so a test can prove
+    the wheel layout wins without building a wheel."""
     return importlib.resources.files("factory") / PROJECT_DIRNAME / name
 
 
 def confinement_artifact_text(name: str) -> str:
-    """Return a committed confinement artifact's text.
-
-    Package data first, the checkout second — the ordering
-    `factory/config.py:98-101` exists to fix. An installed wheel has no
-    repository above it, so a walk was the only mechanism and packaging shipped
-    nothing to walk to; every wheel install failed its own verification that way.
-    `pyproject.toml` force-includes `container/<name>` to `factory/container/<name>`
-    so `importlib.resources` finds it wherever the package was unpacked.
-
-    Every later reader goes through this one function — US4's consent prompt
-    included — so there is one answer to "what does the shipped profile say".
-    """
+    """A committed confinement artifact's text: package data first — the ordering
+    `factory/config.py:98-101` exists to fix — then the checkout. Every reader
+    comes through here, US4's consent prompt included."""
     packaged = _packaged_artifact(name)
     if packaged.is_file():
         return packaged.read_text(encoding="utf-8")
     # Development checkout: two levels up from `factory/supervision/` is the repo
-    # root, the same walk `factory/config.py:72` makes with `parents[1]` from
-    # `factory/`. In an installed wheel this is `site-packages`, where nothing
-    # has ever put a file — which is exactly why it is second and not first.
+    # root, the walk `factory/config.py:72` makes with `parents[1]`. In a wheel
+    # it is `site-packages`, where nothing has ever put a file.
     checkout = Path(__file__).resolve().parents[2] / PROJECT_DIRNAME / name
     if not checkout.is_file():
         raise OperatorError(
@@ -430,32 +323,24 @@ def confinement_artifact_text(name: str) -> str:
     return checkout.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# The image reference (R7)
-# ---------------------------------------------------------------------------
+# --- The image reference (R7) ---
 
 
 def _engine_image_version() -> str:
-    """The CLI's version, which is also the engine image's tag.
-
-    One derivation, `importlib.metadata.version("ergane-cli")` — the same one
-    `factory/cli/main.py:131` makes for `--version`, and this story does not edit
-    that file. Spec 105 replaces this body with a delegation to
-    `factory/supervision/engine_identity.py:cli_version()`.
-    """
+    """The CLI's version, also the image's tag — the derivation
+    `factory/cli/main.py:131` makes, in a file this story never edits."""
     try:
         return _distribution_version("ergane-cli")
     except importlib.metadata.PackageNotFoundError as error:
         raise OperatorError(
             "cannot derive the engine container's image tag: the ergane-cli "
             "distribution is not installed, so there is no version to read. The "
-            "tag is never guessed — a wrong one pulls or builds an engine that "
-            "does not match this CLI, and the startup handshake refuses it"
+            "tag is never guessed — a wrong one runs an engine this CLI does not "
+            "match, and the startup handshake refuses it"
         ) from error
 
 
 def _engine_image_reference(source: str, version: str) -> str:
-    """The image the project runs, for one image source."""
     if source == IMAGE_SOURCE_REGISTRY:
         return f"{_IMAGE_REPOSITORY}:{version}"
     if source == IMAGE_SOURCE_LOCAL:
@@ -467,35 +352,27 @@ def _engine_image_reference(source: str, version: str) -> str:
 
 
 def _build_stanza(source: str, install_root: Path) -> BuildStanza | None:
-    """The build stanza, and the refusal a wheel install gets instead.
-
-    `Dockerfile:44` is `COPY . /opt/ergane` followed by an editable install: the
-    build context *is* the repository. A wheel install has no repository —
-    `resolve_layout`'s `install_root` is `site-packages` there — so there is
-    nothing to build from, and refusing here is deliberate. This is the first act
-    after the operator's answer and before anything privileged, so what they lose
-    is a prompt and nothing else.
-    """
+    """The build stanza, or the refusal a wheel install gets instead:
+    `Dockerfile:44` is `COPY . /opt/ergane`, so the context *is* the repository
+    and a wheel has none. Refusing at generation is deliberate — before anything
+    privileged, so a prompt is all that is lost."""
     if source != IMAGE_SOURCE_LOCAL:
         return None
     dockerfile = install_root / "Dockerfile"
     if not dockerfile.is_file():
         raise OperatorError(
             f"this installation has no build context: {dockerfile} is not a file, "
-            "which is what an install from a wheel looks like. The engine "
-            "container needs a source checkout until the published image lands "
-            "(spec 105); run `ergane install` from a checkout, or wait for the "
-            "published image"
+            "which is what an install from a wheel looks like. The engine container "
+            "needs a source checkout until the published image lands (spec 105); "
+            "run `ergane install` from a checkout, or wait for the published image"
         )
     return BuildStanza(context=str(install_root), dockerfile="Dockerfile")
 
 
-# ---------------------------------------------------------------------------
-# The two projects
-# ---------------------------------------------------------------------------
+# --- The two projects ---
 
-#: The committed reference file's own header, carried as data so that the
-#: operational project can carry a different one (R4).
+#: The committed file's own header, as data so the operational project can carry
+#: a different one (R4).
 _REFERENCE_HEADER: tuple[str, ...] = (
     "Reference compose for the Ergane engine container.",
     "",
@@ -505,8 +382,7 @@ _REFERENCE_HEADER: tuple[str, ...] = (
     "same-path mount invariants the engine relies on.",
 )
 
-#: The reference's symbolic paths. Literals here and nowhere else: the
-#: operational project calls the resolvers (trap 5).
+#: The reference's symbolic paths — literals here and nowhere else (trap 5).
 _REFERENCE_STATE_ROOT = "${HOME}/.local/state/ergane"
 _REFERENCE_SUPERVISION = "${HOME}/.local/state/ergane/supervision"
 _REFERENCE_REPO = "${ERGANE_REPO_EXAMPLE:-/path/to/repo}"
@@ -515,16 +391,8 @@ _REFERENCE_REPO = "${ERGANE_REPO_EXAMPLE:-/path/to/repo}"
 def reference_project() -> ContainerProject:
     """The reference project: what `container/compose.reference.yaml` says.
 
-    Takes no parameters, and that is the point (trap 9). The confinement is
-    constructed literally, so the config-F variant is unreachable from this path
-    rather than merely untaken, and the committed drift test that bans the token
-    `unconfined` cannot be turned red by a default changing somewhere else.
-    """
-    mounts = (
-        Mount(_REFERENCE_STATE_ROOT, _REFERENCE_STATE_ROOT),
-        Mount(_REFERENCE_SUPERVISION, _REFERENCE_SUPERVISION),
-        Mount(_REFERENCE_REPO, _REFERENCE_REPO),
-    )
+    Takes no parameters, and that is the point (trap 9): the confinement is a
+    literal, so config F is unreachable from here rather than merely untaken."""
     return ContainerProject(
         image=f"{_IMAGE_REPOSITORY}:${{ERGANE_VERSION}}",
         build=None,
@@ -535,7 +403,11 @@ def reference_project() -> ContainerProject:
             Path(_REFERENCE_SUPERVISION),
             Path(_REFERENCE_REPO),
         ),
-        mounts=mounts,
+        mounts=(
+            Mount(_REFERENCE_STATE_ROOT, _REFERENCE_STATE_ROOT),
+            Mount(_REFERENCE_SUPERVISION, _REFERENCE_SUPERVISION),
+            Mount(_REFERENCE_REPO, _REFERENCE_REPO),
+        ),
         repo_mounts=(Mount(_REFERENCE_REPO, _REFERENCE_REPO),),
         environment=REFERENCE_ENVIRONMENT_NAMES,
         env_assignments=(),
@@ -569,16 +441,12 @@ def reference_project() -> ContainerProject:
 def _operational_header(version: str) -> tuple[str, ...]:
     return (
         f"Ergane engine container, generated by `ergane install` {version}.",
-        "Do not hand-edit.",
+        "Do not hand-edit: this is rendered from the confirmed control-plane config",
+        "and the repo registry, and a digest of it is recorded, so an edit here is",
+        "overwritten on the next run or left behind at teardown. Change the answers.",
         "",
-        "`ergane install` renders this file from the confirmed control-plane config",
-        "and the repo registry, and records a digest for it. An edit made here is",
-        "either overwritten on the next run or left behind at teardown, because",
-        "teardown removes only files whose digest it recorded. Change the answers,",
-        "not the file.",
-        "",
-        "Every bind below is same-path: the host path and the container path are",
-        "identical, so git worktree records resolve on both sides.",
+        "Every bind below is same-path — host path and container path identical —",
+        "so git worktree records resolve on both sides.",
     )
 
 
@@ -586,23 +454,16 @@ def _env_header(version: str) -> tuple[str, ...]:
     return (
         f"Generated by `ergane install` {version}. Do not hand-edit.",
         "",
-        "Docker Compose reads this file out of the project directory. It carries",
-        "resolved host paths only: credentials stay in the operator's shell and",
-        "reach the engine through the compose `environment:` passthrough list, so",
-        "no secret is ever written to a generated file.",
+        "Read by Docker Compose out of the project directory. Resolved host paths",
+        "only: credentials stay in the operator's shell and reach the engine",
+        "through the compose `environment:` list, never a generated file.",
     )
 
 
 def _published_ports(config: ControlPlaneConfig) -> tuple[str, ...]:
-    """What the project publishes, bound to loopback.
-
-    The reference declares no ports, so the host CLI could reach nothing. The
-    port comes from the confirmed `temporal.address` — which is also why US5
-    probes it before `compose up`: on a host still running the native managed
-    Temporal, `127.0.0.1:7233` is already held, and an engine that silently lost
-    the race would leave the CLI talking to the native server while the engine
-    talked to nothing, with everything looking fine.
-    """
+    """What the project publishes, bound to loopback. The reference declares none,
+    so the host CLI could reach nothing. The port is the confirmed
+    `temporal.address`'s, which is why US5 probes it first (trap 6)."""
     address = config.temporal.address
     if not address:
         return ()
@@ -622,15 +483,10 @@ def resolve_project(
     install_root: Path | None = None,
     image_source: str = IMAGE_SOURCE_LOCAL,
 ) -> ContainerProject:
-    """Render the operational project for this host from confirmed answers.
+    """Resolve the operational project for this host from confirmed answers.
 
-    Everything is resolved here, once, so that the project is data and the
-    renderer is pure. Every path comes from a resolver — `resolve_state_home()`,
-    `supervision_home()`, `resolve_config_path()`,
-    `resolve_default_registry_path()` — and never from the reference file's
-    literals, because those resolvers honour `ERGANE_STATE_HOME`,
-    `XDG_STATE_HOME` and their legacy spellings, and a host that sets any of them
-    would otherwise get a project mounted at one path and resolving another.
+    Everything resolves here, once, so the project is data and the renderer pure.
+    Every path comes from a resolver, never a literal (trap 5).
     """
     version = _engine_image_version()
     install_root = (
@@ -651,7 +507,6 @@ def resolve_project(
     registry = load_registry() if registry is None else registry
     repo_paths = tuple(entry.path for entry in registry.entries)
 
-    roots = (state_root, supervision, config_dir, *repo_paths)
     repo_mounts = tuple(Mount(str(path), str(path)) for path in repo_paths)
     mounts = (
         Mount(str(state_root), str(state_root)),
@@ -660,23 +515,21 @@ def resolve_project(
         *repo_mounts,
     )
 
-    # The engine runs as the host uid, which is what puts bwrap on its working
-    # code path: as container PID 1 it fails setting up its uid map, and as uid 0
-    # it takes a clone(CLONE_NEWNS) path needing CAP_SYS_ADMIN. `init: true` and
-    # a non-root user are both measured requirements, not hygiene.
+    # The host uid, which puts bwrap on its working code path: as container PID 1
+    # it fails setting up its uid map, and as uid 0 it takes a clone(CLONE_NEWNS)
+    # path needing CAP_SYS_ADMIN. Measured, not hygiene.
     user = f"{os.getuid()}:{os.getgid()}"
 
     env_assignments = (
         EnvAssignment("ERGANE_VERSION", version),
-        # HOME and ERGANE_STATE_HOME are anchors: nothing opens them, but every
-        # path that resolves through them has to land inside a mount. The image
-        # pins HOME=/home/ergane, so without this the engine's `~/.config` is a
-        # directory that does not exist.
+        # Anchors: nothing opens them, but every path resolving through them
+        # lands inside a mount. The image pins HOME=/home/ergane, so without this
+        # the engine's `~/.config` does not exist.
         EnvAssignment("HOME", str(home), ENV_ANCHOR),
         EnvAssignment("ERGANE_STATE_HOME", str(state_home), ENV_ANCHOR),
-        # Trap 3: handed by explicit path, or `resolve_default_registry_path`
-        # falls through to the packaged example registry and the engine runs on
-        # `example/` aliases while looking perfectly healthy.
+        # Trap 3: by explicit path, or `resolve_default_registry_path` falls
+        # through to the packaged example and the engine runs on `example/`
+        # aliases while looking perfectly healthy.
         EnvAssignment("ERGANE_CONFIG_PATH", str(config_path), ENV_PATH),
         EnvAssignment("ERGANE_PERSONAS_PATH", str(personas_path), ENV_PATH),
         EnvAssignment(
@@ -694,27 +547,24 @@ def resolve_project(
 
     annotations: dict[str, tuple[str, ...]] = {
         str(state_root): (
-            "State root: same absolute path on host and in the engine, so the native",
-            "CLI and the engine read the same SQLite files. This mount is also what",
-            "carries the engine's own Temporal database across a recreate.",
+            "State root: same absolute path here and in the engine, and the mount",
+            "that carries the engine's own Temporal database across a recreate.",
         ),
         str(supervision): (
-            "Supervision home: what supervision generates and remembers. It is a",
-            "sibling of the Temporal database, not its parent, so both mounts exist.",
+            "Supervision home: a sibling of that database, not its parent.",
         ),
         str(config_dir): (
-            "Config directory: without it the engine's `~/.config` does not exist and",
-            "the persona registry silently resolves to the packaged example.",
+            "Config directory: without it the engine's `~/.config` does not exist",
+            "and the persona registry resolves to the packaged example.",
         ),
         REPO_MOUNT_KEY: (
-            "Per-repo same-path mount list, one entry per registered repo. Re-run",
-            "`ergane init <repo>` to add one; this file is regenerated, not edited.",
+            "Per-repo same-path mount list. Re-run `ergane init <repo>` to add one.",
         ),
         ENV_FILE_KEY: _env_header(version),
     }
     for mount in repo_mounts:
         annotations[mount.source] = (
-            "Registered repository, mounted same-path so worktrees resolve on both sides.",
+            "Registered repository, same-path so worktrees resolve on both sides.",
         )
 
     return ContainerProject(
@@ -722,7 +572,7 @@ def resolve_project(
         build=build,
         security_opt=CONFINED_SECURITY_OPT,
         user=user,
-        roots=roots,
+        roots=(state_root, supervision, config_dir, *repo_paths),
         mounts=mounts,
         repo_mounts=repo_mounts,
         environment=REFERENCE_ENVIRONMENT_NAMES + _OPERATIONAL_ENVIRONMENT_NAMES,
@@ -734,33 +584,25 @@ def resolve_project(
     )
 
 
-# ---------------------------------------------------------------------------
-# Rendering
-# ---------------------------------------------------------------------------
+# --- Rendering ---
 
-#: A string safe to emit as a YAML plain scalar. Deliberately conservative:
-#: anything outside it is double-quoted, which YAML reads back identically.
+#: A string safe as a YAML plain scalar; anything else is double-quoted, which
+#: YAML reads back identically.
 _PLAIN_SAFE = re.compile(r"[A-Za-z0-9_$/][A-Za-z0-9_${}./:@=+,-]*")
 
 
 def _scalar(value: str) -> str:
-    if _PLAIN_SAFE.fullmatch(value):
-        return value
-    return json.dumps(value)
+    return value if _PLAIN_SAFE.fullmatch(value) else json.dumps(value)
 
 
 def _comments(lines: tuple[str, ...], indent: str) -> list[str]:
-    """Comment lines, `#` markers supplied here so the data stays text."""
+    """Comment lines; `#` markers are supplied here so the data stays text."""
     return [f"{indent}#" if not line else f"{indent}# {line}" for line in lines]
 
 
 def render_compose(project: ContainerProject) -> str:
-    """Render `compose.yaml` from the project and nothing else.
-
-    The one renderer: the reference project and the operational project both come
-    through here, which is what makes `container/compose.reference.yaml` and the
-    generated file one fact rather than two that happen to agree today.
-    """
+    """Render `compose.yaml` from the project and nothing else — the one renderer,
+    which makes the committed reference and the generated file one fact."""
     lines: list[str] = []
     if project.header:
         lines.extend(_comments(project.header, ""))
@@ -780,8 +622,8 @@ def render_compose(project: ContainerProject) -> str:
     lines.extend(f"      - {option}" for option in project.security_opt)
     if project.ports:
         lines.append("    ports:")
-        # Quoted always: an unquoted `127.0.0.1:7233:7233` is the classic compose
-        # foot-gun, and a published port is not worth being clever about.
+        # Always quoted: an unquoted `127.0.0.1:7233:7233` is the classic
+        # compose foot-gun, and a port is not worth being clever about.
         lines.extend(f"      - {json.dumps(port)}" for port in project.ports)
     lines.append("    volumes:")
     for mount in project.mounts:
@@ -805,36 +647,23 @@ def render_env(project: ContainerProject) -> str:
     lines = _comments(project.annotations.get(ENV_FILE_KEY, ()), "")
     if lines:
         lines.append("")
-    lines.extend(
-        f"{assignment.name}={assignment.value}"
-        for assignment in project.env_assignments
-    )
+    lines.extend(f"{a.name}={a.value}" for a in project.env_assignments)
     return "\n".join(lines) + "\n"
 
 
 def project_files(project: ContainerProject) -> tuple[GeneratedFile, ...]:
-    """Every file the engine container's project is made of.
-
-    Rendered here, written by US3's manifest writer — rendering and persisting
-    are two jobs with two failure modes, and only one of them is risky. The
-    confinement artifacts are copies rather than references so `security_opt`'s
-    relative `./seccomp-ergane.json` resolves beside the compose file, on a host
-    that may have no checkout at all.
-    """
+    """Every file the project is made of: rendered here, written by US3's manifest
+    writer (R11). The confinement artifacts are copies, not references, so
+    `security_opt`'s relative path resolves beside the compose file."""
     return (
         GeneratedFile(COMPOSE_NAME, render_compose(project), project.directory),
-        # 0600: no secret is written here, and none ever should be — but a file
-        # named `.env` attracts them, and a mode that would have to be widened
-        # first is the cheapest guard against the day someone tries.
+        # 0600: no secret is written here and none should be, but a file named
+        # `.env` attracts them and a mode that must be widened first is cheap.
         GeneratedFile(ENV_NAME, render_env(project), project.directory, 0o600),
         GeneratedFile(
-            SECCOMP_ARTIFACT,
-            confinement_artifact_text(SECCOMP_ARTIFACT),
-            project.directory,
+            SECCOMP_ARTIFACT, confinement_artifact_text(SECCOMP_ARTIFACT), project.directory
         ),
         GeneratedFile(
-            APPARMOR_ARTIFACT,
-            confinement_artifact_text(APPARMOR_ARTIFACT),
-            project.directory,
+            APPARMOR_ARTIFACT, confinement_artifact_text(APPARMOR_ARTIFACT), project.directory
         ),
     )
