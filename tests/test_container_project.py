@@ -24,7 +24,12 @@ import pytest
 import yaml
 
 from factory.cli.errors import OperatorError
-from factory.config import is_example_alias, load_personas, resolve_default_registry_path
+from factory.config import (
+    is_example_alias,
+    load_personas,
+    resolve_default_registry_path,
+    shipped_registry_text,
+)
 from factory.controlplane.config import ControlPlaneConfig
 from factory.registry import load_registry, resolve_state_home
 from factory.supervision import container_project as cp
@@ -377,18 +382,29 @@ def test_the_pins_are_what_stops_the_packaged_example_registry(
     whose aliases `is_example_alias` recognises.  The engine then looks healthy
     and fails at the first dispatch, hours later.
     """
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(host.home / "unconfigured"))
-    fallback = load_personas(resolve_default_registry_path())
+    shipped = yaml.safe_load(shipped_registry_text())
     assert any(
-        is_example_alias(persona.model) for persona in fallback.values() if persona.model
-    ), "the packaged example registry is expected to carry example/ aliases"
+        is_example_alias(str(entry["model"]))
+        for entry in shipped.values()
+        if entry.get("model")
+    ), "the registry the fallback branch resolves is the shipped example"
 
+    # Unpinned, a host whose XDG config holds no registry takes that branch and
+    # never sees the operator's file.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(host.home / "unconfigured"))
+    assert resolve_default_registry_path() != host.personas_path
+
+    # Pinned by the generated `.env`, the resolver returns the operator's own
+    # registry, and `is_example_alias` finds nothing to object to in it.
     for assignment in _project(host).env_assignments:
         monkeypatch.setenv(assignment.name, assignment.value)
-    pinned = load_personas(resolve_default_registry_path())
-    assert pinned, "the pinned registry must resolve the operator's own personas"
+    pinned = resolve_default_registry_path()
+    assert pinned == host.personas_path
+
+    personas = load_personas(pinned)
+    assert personas, "the pinned registry must resolve the operator's own personas"
     assert not any(
-        is_example_alias(persona.model) for persona in pinned.values() if persona.model
+        is_example_alias(persona.model) for persona in personas.values() if persona.model
     )
 
 
