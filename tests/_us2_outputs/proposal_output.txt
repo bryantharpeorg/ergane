@@ -1,0 +1,15 @@
+## Rich gateway proposal
+architect: ProposedMapping(persona='architect', primary='claude-opus-4', fallback='claude-sonnet-4', reason='reasoning ✓; largest context (200,000 tokens); cheapest of qualifying candidates')
+closer: ProposedMapping(persona='closer', primary='cheap-tool-caller', fallback='claude-sonnet-4', reason='tool-calling ✓; largest context (8,000 tokens); cheapest of qualifying candidates')
+debugger: ProposedMapping(persona='debugger', primary='cheap-tool-caller', fallback='claude-sonnet-4', reason='tool-calling ✓; largest context (8,000 tokens); cheapest of qualifying candidates')
+implementer: ProposedMapping(persona='implementer', primary='claude-sonnet-4', fallback='claude-opus-4', reason='tool-calling ✓; largest context (200,000 tokens); cheapest of qualifying candidates')
+judge: ProposedMapping(persona='judge', primary='claude-opus-4', fallback='claude-sonnet-4', reason='structured output ✓; reasoning ✓; cheapest of qualifying candidates; distinct from implementer primary')
+researcher: ProposedMapping(persona='researcher', primary='claude-opus-4', fallback='cheap-tool-caller', reason='reasoning ✓; largest context (200,000 tokens); cheapest of qualifying candidates')
+
+## Refusal: no qualifying judge candidate
+architect: ProposedMapping(persona='architect', primary='qwq', fallback='llama3.1', reason='reasoning ✓; largest context (32,768 tokens)')
+closer: ProposedMapping(persona='closer', primary='llama3.1', fallback='llama3.1', reason='tool-calling ✓; largest context (131,072 tokens)')
+debugger: ProposedMapping(persona='debugger', primary='llama3.1', fallback='llama3.1', reason='tool-calling ✓; largest context (131,072 tokens)')
+implementer: ProposedMapping(persona='implementer', primary='llama3.1', fallback='llama3.1', reason='tool-calling ✓; largest context (131,072 tokens)')
+judge: Refusal(persona='judge', requirement='structured output required, reasoning preferred, distinct from implementer primary', candidates=('llama3.1', 'qwq'), primary=None, fallback=None)
+researcher: ProposedMapping(persona='researcher', primary='qwq', fallback='llama3.1', reason='reasoning ✓; largest context (32,768 tokens)')
