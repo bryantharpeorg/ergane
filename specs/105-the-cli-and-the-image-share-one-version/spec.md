@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # DRAFTED 2026-08-23 ~10:20 PM CT by the operator session behind
 # docs/container-onramp-program.md. Spec-only draft: plan.md and tasks.md at
 # refinement. US1 (workflow) can land before 088; US2-US4 need 088's
@@ -16,8 +16,12 @@ state: draft
 #   - GHCR (ghcr.io/bryantharpeorg/ergane), GITHUB_TOKEN auth, cosign
 #     keyless over the pushed digest — the image-side analog of the PyPI
 #     trusted publishing already in the release workflow.
-#   - Image job runs needs:[pypi] so the only possible partial release is
-#     the detectable one (CLI on PyPI, image 404 — findings failure mode 13).
+#   - The image job runs strictly after the wheel is published —
+#     `needs: [build-and-publish]`, the id of the only job that exists in
+#     `.github/workflows/release.yml` — so the only possible partial release
+#     is the detectable one (CLI on PyPI, image 404 — findings failure mode
+#     13). [Corrected at refinement 2026-08-24: this note originally said
+#     `needs:[pypi]`; no job by that name has ever existed in this repo.]
 #   - Never auto-upgrade a stateful engine (Watchtower corpus; and this
 #     floor's own memory: a worker restart mid-attempt wedges the epic).
 #     Upgrade is an explicit drain-first verb.
@@ -25,6 +29,16 @@ state: draft
 #     notice from spec 053 (factory/cli/nouns/build.py:741 _cli_revision,
 #     :761 _skew_notice) — today a warning; for a container engine the same
 #     comparison becomes a refusal with the remedy printed.
+#
+# Settled at review repair 2026-08-24 (adversarial review of the trio):
+#   - The identity record has a lifetime. A refusal that reads a file nothing
+#     ever deletes can wedge `build start` forever, so the supervisor removes
+#     the record on exit AND the refusal names the record's path, because a
+#     SIGKILLed container skips the removal.
+#   - The compose project directory is `supervision_home()/container` — the
+#     path spec 104 has already committed to in writing
+#     (specs/104…/plan.md, ruling R1) — not an environment variable 104 declined
+#     to set. The env var survives only as an override.
 ---
 
 # Feature Specification: the CLI and the image share one version
@@ -39,8 +53,19 @@ two copies of the same code that can drift — and this project has been
 bitten twice by a stale worker running code that no longer matched the tree.
 Today no image is published at all, the release workflow publishes only to
 PyPI, and the only skew detection is a *warning* comparing git revisions
-(`factory/cli/nouns/build.py:741`, `:761`) that a container deployment,
-installed from a wheel with no git checkout, cannot even produce.
+(`factory/cli/nouns/build.py:741`, `:761`) that reads `worker_revision` off a
+**running epic's** query document (set at `factory/worker.py:318-319`,
+surfaced at `factory/workgraph/workflow.py:801`) — so it cannot answer "what
+version is this engine" before an epic exists, which is precisely the moment
+dispatch has to be refused.
+
+[Corrected at refinement 2026-08-24: this paragraph originally claimed the
+container is "installed from a wheel with no git checkout" and therefore
+cannot produce a revision at all. `Dockerfile:44-49` copies the whole build
+context and does an *editable* install, and no `.dockerignore` exists, so
+`.git` ships inside the image and `_cli_revision()` answers there today. The
+gap is the one stated above — a per-epic channel cannot answer a
+pre-dispatch question — and it is the better argument.]
 
 ## The rule this spec is asking for
 
@@ -79,7 +104,8 @@ that order, multi-arch, signed — and the workflow's shape is pinned by test.
 **Acceptance Scenarios**:
 
 1. **Given** the committed workflow, **When** the drift test reads it,
-   **Then** the image job exists with `needs: [pypi]`, one buildx invocation
+   **Then** the image job exists with `needs: [build-and-publish]` — the id of
+   the release workflow's only existing job — one buildx invocation
    declaring `linux/amd64,linux/arm64`, GHCR login via `GITHUB_TOKEN`, a
    cosign keyless step over the pushed digest, and a platform assertion —
    red first with any element removed, green against the committed file.
@@ -99,6 +125,9 @@ As the supervisor, I state what I am before I accept work.
    a committed test.
 2. **Given** a restart, **When** the supervisor comes back, **Then** the
    file is rewritten whole, never appended.
+3. **Given** a supervisor that has written its identity, **When** it exits —
+   cleanly or because a child died — **Then** the identity file is removed, so
+   a stopped engine advertises nothing — proven by a committed test.
 
 ### User Story 3 - The handshake refuses (Priority: P1)
 
@@ -108,8 +137,10 @@ allowed to dispatch into skew.
 **Acceptance Scenarios**:
 
 1. **Given** an identity file whose version differs from the CLI's, **When**
-   `ergane build start` runs, **Then** it refuses naming both versions and
-   the upgrade verb — proven by a committed test.
+   `ergane build start` runs, **Then** it refuses naming both versions, the
+   upgrade verb, and the path of the identity record itself — the last so an
+   operator whose engine is gone can clear a record a killed container never
+   removed — proven by a committed test.
 2. **Given** the same mismatch, **When** `install --verify` and `status`
    run, **Then** verify reports a finding and status a notice — and the
    native path's existing warning semantics are unchanged, its tests
@@ -130,6 +161,10 @@ As an operator upgrading, the engine is never swapped under running work.
 2. **Given** a drained engine, **When** upgrade runs, **Then** it stops the
    engine cleanly, starts the new pinned version, verifies through it, and
    retains the previous image — proven through seams.
+3. **Given** a host where `ergane install` never generated a container project,
+   **When** upgrade runs, **Then** it refuses naming the directory it looked in
+   and `ergane install` as what creates it — never guessing a path — proven by
+   a committed test.
 
 ## Work Graph
 
@@ -153,15 +188,19 @@ US4:
 ## Requirements (summary — numbered at refinement)
 
 Immutable tag scheme; single-invocation multi-arch with CI assertion;
-image-after-PyPI ordering; identity file schema and location; refuse
-semantics per verb with remedy text; drain rules and retention count;
-workflow drift test derives the version from the same tag the PyPI job uses.
+image-after-PyPI ordering; identity file schema, location and **lifetime**;
+refuse semantics per verb with remedy text — including the record's own path,
+so a stale record is clearable; the compose project directory derived from the
+supervision home rather than declared by an operator; drain rules and retention
+count; workflow drift test derives the version from the same tag the PyPI job
+uses.
 
 ## Success Criteria (summary)
 
 Pasted: workflow drift test red-then-green; identity file from a supervisor
-test run; both refusals with both versions and the remedy visible; the
-upgrade verb refusing mid-flight and draining clean. Operator verification:
-the 0.4.0 release cut publishes wheel and image in order, `docker buildx
-imagetools inspect` shows both platforms, and a deliberate version mismatch
-on the floor refuses as specified.
+test run and its absence after that supervisor exits; both refusals with both
+versions, the remedy and the record path visible; the upgrade verb refusing
+mid-flight, refusing on a host with no generated project, and draining clean.
+Operator verification: the 0.4.0 release cut publishes wheel and image in order,
+`docker buildx imagetools inspect` shows both platforms, and a deliberate
+version mismatch on the floor refuses as specified.
