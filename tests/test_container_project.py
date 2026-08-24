@@ -1,0 +1,554 @@
+"""104-US2: the generator that renders the engine container's compose project.
+
+Every test here is a **seam capture** (trap 14): the registry is a fixture file
+and the confinement artifacts are read off the checkout. No Docker daemon, no
+container and no `apparmor_parser` is contacted — this story renders text.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import importlib.metadata
+import inspect
+import json
+import os
+import tomllib
+from pathlib import Path
+
+import pytest
+import yaml
+
+from factory.cli.errors import OperatorError
+from factory.config import (
+    is_example_alias,
+    load_personas,
+    resolve_default_registry_path,
+    shipped_registry_text,
+)
+from factory.controlplane.config import ControlPlaneConfig
+from factory.registry import load_registry, resolve_state_home
+from factory.supervision import container_project as cp
+from factory.supervision.units import GeneratedFile, resolve_layout, supervision_home
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+COMPOSE_REFERENCE = REPO_ROOT / "container" / "compose.reference.yaml"
+
+#: An operator's own registry — no `example/` alias, unlike the packaged one.
+OPERATOR_PERSONAS = """\
+opus-closer:
+  agent: claude-code
+  model: anthropic/claude-opus-4
+  write_scope: worktree
+  needs_worktree: true
+verifier:
+  agent: none
+  model: null
+  write_scope: read
+  needs_worktree: false
+"""
+
+
+def _config(address: str = "127.0.0.1:7233") -> ControlPlaneConfig:
+    """A confirmed control-plane config, as the parser would leave it."""
+    return ControlPlaneConfig(
+        version=1,
+        llm=ControlPlaneConfig.LLM(
+            mode="gateway",
+            gateway=ControlPlaneConfig.LLMGateway(
+                base_url="http://127.0.0.1:4000",
+                master_key_env="ERGANE_LLM_MASTER_KEY",
+            ),
+        ),
+        memory=ControlPlaneConfig.Memory(backend="none"),
+        temporal=ControlPlaneConfig.Temporal(
+            mode="external", address=address, namespace="ergane"
+        ),
+        telemetry=ControlPlaneConfig.Telemetry(mode="none"),
+        escalation=ControlPlaneConfig.Escalation(adapter="telegram"),
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class _Host:
+    home: Path
+    state_home: Path
+    config_dir: Path
+    config_path: Path
+    personas_path: Path
+    repos: tuple[Path, ...]
+    registry_path: Path
+    install_root: Path
+
+    @property
+    def state_root(self) -> Path:
+        """The state *root*: `resolve_state_home()` returns its parent."""
+        return self.state_home / "ergane"
+
+
+@pytest.fixture
+def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
+    """A relocated host with two registered repos. `ERGANE_STATE_HOME` is moved
+    off `~` deliberately (trap 5): a generator copying the reference's literal
+    rather than calling the resolver mounts one path and resolves another."""
+    home, state_home = tmp_path / "home", tmp_path / "relocated-state"
+    config_dir = home / ".config" / "ergane"
+    for directory in (home, state_home, config_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("ERGANE_STATE_HOME", str(state_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    for name in (
+        "FACTORY_STATE_HOME",
+        "ERGANE_CONFIG_PATH",
+        "FACTORY_CONFIG_PATH",
+        "ERGANE_PERSONAS_PATH",
+        "FACTORY_PERSONAS_PATH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config_path = config_dir / "config.toml"
+    config_path.write_text("version = 1\n", encoding="utf-8")
+    personas_path = config_dir / "personas.yaml"
+    personas_path.write_text(OPERATOR_PERSONAS, encoding="utf-8")
+
+    repos = tuple(tmp_path / "src" / name for name in ("alpha", "beta"))
+    for repo in repos:
+        repo.mkdir(parents=True)
+
+    registry_path = state_home / "ergane" / "repos.json"
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text(
+        json.dumps({"version": 1, "repos": {r.name: {"path": str(r)} for r in repos}}),
+        encoding="utf-8",
+    )
+
+    install_root = tmp_path / "checkout"
+    install_root.mkdir()
+    (install_root / "Dockerfile").write_text("FROM debian\n", encoding="utf-8")
+
+    return _Host(
+        home=home,
+        state_home=state_home,
+        config_dir=config_dir,
+        config_path=config_path,
+        personas_path=personas_path,
+        repos=repos,
+        registry_path=registry_path,
+        install_root=install_root,
+    )
+
+
+def _project(host: _Host, **overrides: object) -> cp.ContainerProject:
+    kwargs: dict[str, object] = {
+        "registry": load_registry(host.registry_path),
+        "config_path": host.config_path,
+        "personas_path": host.personas_path,
+        "home": host.home,
+        "install_root": host.install_root,
+    }
+    kwargs.update(overrides)
+    return cp.resolve_project(_config(), **kwargs)  # type: ignore[arg-type]
+
+
+def _env_map(project: cp.ContainerProject) -> dict[str, str]:
+    return {a.name: a.value for a in project.env_assignments}
+
+
+def _comment_lines(text: str) -> tuple[str, ...]:
+    """Every line whose first non-space character is `#`, stripped (R4)."""
+    return tuple(l.strip() for l in text.splitlines() if l.strip().startswith("#"))
+
+
+def _binds(compose: dict) -> list[str]:
+    return [str(entry) for entry in compose["services"]["ergane"]["volumes"]]
+
+
+def _service(project: cp.ContainerProject) -> dict:
+    return yaml.safe_load(cp.render_compose(project))["services"]["ergane"]
+
+
+def _committed(artifact: str) -> str:
+    return (REPO_ROOT / "container" / artifact).read_text(encoding="utf-8")
+
+
+# --- T009 [US2-S3] One fact, two files, one test — structurally ---
+
+
+def test_reference_render_parses_equal_to_the_committed_compose() -> None:
+    """Not byte equality (R4): the committed file mixes flow and block style and
+    interpolates `${ERGANE_REPO_EXAMPLE:-…}`."""
+    rendered = cp.render_compose(cp.reference_project())
+    assert yaml.safe_load(rendered) == yaml.safe_load(
+        COMPOSE_REFERENCE.read_text(encoding="utf-8")
+    )
+
+
+def test_reference_render_carries_the_same_comment_lines_in_order() -> None:
+    """Comments are data (R4), so they are the second half of the agreement."""
+    rendered = cp.render_compose(cp.reference_project())
+    assert _comment_lines(rendered) == _comment_lines(
+        COMPOSE_REFERENCE.read_text(encoding="utf-8")
+    )
+
+
+# --- T010 [US2-S3] Comments are data: header and annotations ---
+
+
+def test_container_project_is_frozen_and_carries_the_comment_fields() -> None:
+    assert cp.ContainerProject.__dataclass_params__.frozen is True
+    names = {field.name for field in dataclasses.fields(cp.ContainerProject)}
+    assert {"header", "annotations"} <= names, f"R4 fields missing from {sorted(names)}"
+
+
+def test_reference_carries_the_committed_files_own_comment_data() -> None:
+    committed = COMPOSE_REFERENCE.read_text(encoding="utf-8").splitlines()
+    committed_header = tuple(l.strip() for l in committed[: committed.index("")])
+    rendered = cp.render_compose(cp.reference_project()).splitlines()
+
+    assert tuple(l.strip() for l in rendered[: rendered.index("")]) == committed_header
+    assert len(committed_header) == 6, "the committed header is six comment lines"
+
+    project = cp.reference_project()
+    assert cp.REPO_MOUNT_KEY in project.annotations
+    for mount in project.mounts:
+        assert project.annotations.get(mount.source), f"{mount.source} carries none"
+
+
+def test_operational_header_names_itself_generated_and_never_a_reference(
+    host: _Host,
+) -> None:
+    """A hard-coded header would emit "this is a reference artifact" into a file
+    `ergane install` rewrites every run."""
+    operational_text = cp.render_compose(_project(host))
+
+    assert "reference artifact" in cp.render_compose(cp.reference_project())
+    assert "reference artifact" not in operational_text
+    assert "do not hand-edit" in operational_text.lower()
+    assert "ergane install" in operational_text
+    assert cp._engine_image_version() in operational_text
+
+
+# --- T011 [US2-S1] Same-path mounts, bare names, .env values ---
+
+
+def test_operational_project_mounts_every_root_same_path(host: _Host) -> None:
+    project = _project(host)
+    compose = yaml.safe_load(cp.render_compose(project))
+    binds = _binds(compose)
+
+    for path in (
+        resolve_state_home() / "ergane",
+        supervision_home(),
+        host.config_dir,
+        *host.repos,
+    ):
+        assert f"{path}:{path}" in binds, f"expected a same-path bind for {path}"
+
+    # The resolvers were called, not the reference's literals copied.
+    assert resolve_state_home() == host.state_home
+    assert str(host.state_root) in "\n".join(binds)
+
+    repo_mounts = compose[cp.REPO_MOUNT_KEY]
+    assert [e["source"] for e in repo_mounts] == [str(r) for r in host.repos]
+    assert all(e["source"] == e["target"] for e in repo_mounts)
+
+
+def test_operational_environment_keeps_the_bare_passthrough_names(host: _Host) -> None:
+    """R5: `environment:` carries names, `.env` carries values."""
+    names = _service(_project(host))["environment"]
+    assert all("=" not in name for name in names), f"must be bare names, got {names}"
+    missing = cp.derived_environment_names() - set(names)
+    assert not missing, f"environment missing passthrough for: {sorted(missing)}"
+
+
+def test_resolved_values_land_in_the_generated_env_file(host: _Host) -> None:
+    project = _project(host)
+    env_text = cp.render_env(project)
+    env = _env_map(project)
+
+    assert env["ERGANE_STATE_HOME"] == str(host.state_home)
+    assert env["HOME"] == str(host.home)
+    for name, value in env.items():
+        assert f"{name}={value}" in env_text
+
+    files = {f.name: f for f in cp.project_files(project)}
+    assert set(files) == {"compose.yaml", ".env", cp.SECCOMP_ARTIFACT, cp.APPARMOR_ARTIFACT}
+    assert all(isinstance(f, GeneratedFile) for f in files.values())
+    assert files[".env"].text == env_text
+    assert files["compose.yaml"].directory == cp.project_dir()
+
+
+# --- T012 [US2-S1] Trap 3: config and registry by explicit path ---
+
+
+def test_env_pins_config_personas_and_home_to_absolute_host_paths(host: _Host) -> None:
+    project = _project(host)
+    env = _env_map(project)
+    for name, expected in (
+        ("ERGANE_CONFIG_PATH", host.config_path),
+        ("ERGANE_PERSONAS_PATH", host.personas_path),
+        ("HOME", host.home),
+    ):
+        assert env[name] == str(expected)
+        assert Path(env[name]).is_absolute(), f"{name} must be an absolute host path"
+
+    assert f"{host.config_dir}:{host.config_dir}" in _binds(
+        yaml.safe_load(cp.render_compose(project))
+    ), "the config dir must be mounted same-path, or `~/.config` does not exist"
+
+
+def test_the_pins_are_what_stops_the_packaged_example_registry(
+    host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Trap 3, asserted with the detector the tree ships. Unpinned,
+    `resolve_default_registry_path` falls to `factory/config.py:134` and hands the
+    engine the shipped example — healthy-looking until the first dispatch."""
+    shipped = yaml.safe_load(shipped_registry_text())
+    assert any(
+        is_example_alias(str(e["model"])) for e in shipped.values() if e.get("model")
+    ), "the registry the fallback branch resolves is the shipped example"
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(host.home / "unconfigured"))
+    assert resolve_default_registry_path() != host.personas_path
+
+    for assignment in _project(host).env_assignments:
+        monkeypatch.setenv(assignment.name, assignment.value)
+    pinned = resolve_default_registry_path()
+    assert pinned == host.personas_path
+
+    personas = load_personas(pinned)
+    assert personas, "the pinned registry must resolve the operator's own personas"
+    assert not any(is_example_alias(p.model) for p in personas.values() if p.model)
+
+
+# --- T013 [US2-S1] R6: the engine's own database, under the state root ---
+
+
+def test_env_pins_the_engines_own_temporal_database(host: _Host) -> None:
+    from factory.supervision.container_supervisor import DEFAULT_DB_FILENAME
+
+    project = _project(host)
+    pinned = _env_map(project)["ERGANE_TEMPORAL_DB_FILENAME"]
+    assert pinned == str(resolve_state_home() / "ergane" / "temporal" / "engine.db")
+
+    # Not the supervisor's landed default: nothing mounts /var/lib/ergane and the
+    # Dockerfile never creates it (findings failure mode 5).
+    assert pinned != DEFAULT_DB_FILENAME
+    # Nor the native unit's `dev.db` (`units.py:500`): two servers on one SQLite
+    # file is the hazard findings §3 prevents.
+    assert pinned != str(resolve_layout().temporal_db_path)
+    assert Path(pinned).name != "dev.db"
+
+    # The covering mount is the state root; the supervision home is a sibling.
+    assert Path(pinned).is_relative_to(host.state_root)
+    assert not Path(pinned).is_relative_to(supervision_home())
+    assert any(Path(m.source) == host.state_root for m in project.mounts)
+
+
+# --- T014 [US2-S1] Trap 4: refuse what no mount covers ---
+
+
+def test_a_mount_outside_every_declared_root_is_refused_naming_the_path(
+    host: _Host,
+) -> None:
+    project = _project(host)
+    stray = "/var/lib/ergane"
+    with pytest.raises(OperatorError) as error:
+        dataclasses.replace(project, mounts=project.mounts + (cp.Mount(stray, stray),))
+    assert stray in str(error.value)
+
+
+def test_a_non_same_path_bind_is_refused_naming_the_path(host: _Host) -> None:
+    project = _project(host)
+    source = str(host.repos[0])
+    with pytest.raises(OperatorError) as error:
+        dataclasses.replace(
+            project, mounts=project.mounts + (cp.Mount(source, "/mnt/repo"),)
+        )
+    assert source in str(error.value) and "same-path" in str(error.value)
+
+
+def test_an_env_path_outside_every_declared_root_is_refused(host: _Host) -> None:
+    """The guard that would have caught R6's `/var/lib/ergane` before it shipped."""
+    project = _project(host)
+    with pytest.raises(OperatorError) as error:
+        dataclasses.replace(
+            project,
+            env_assignments=project.env_assignments
+            + (
+                cp.EnvAssignment(
+                    "ERGANE_TEMPORAL_DB_FILENAME",
+                    "/var/lib/ergane/temporal.sqlite",
+                    cp.ENV_PATH,
+                ),
+            ),
+        )
+    assert "/var/lib/ergane/temporal.sqlite" in str(error.value)
+
+
+def test_every_bind_is_same_path_and_the_roots_are_the_projects_mount_set(
+    host: _Host,
+) -> None:
+    project = _project(host)
+    compose = yaml.safe_load(cp.render_compose(project))
+    for entry in _binds(compose):
+        source, _, target = entry.partition(":")
+        assert source == target, f"bind must be same-path, got {entry!r}"
+        assert source.startswith("/"), f"bind source must be absolute: {entry!r}"
+    assert "volumes" not in compose, "no top-level named volumes (trap 4)"
+
+    # The roots the guard is against — why R6's database path passes through the
+    # state-root mount rather than being refused by it.
+    for root in (host.state_root, supervision_home(), host.config_dir, *host.repos):
+        assert root in project.roots
+
+
+# --- T015 [US2-S1] R7/R10: the image reference is derived ---
+
+
+def test_the_image_version_is_derived_through_module_private_helpers() -> None:
+    """Spec 105 claims the public vocabulary; 104 keeps its derivation private."""
+    assert cp._engine_image_version() == importlib.metadata.version("ergane-cli")
+    public = {name for name in vars(cp) if not name.startswith("_")}
+    assert not {"cli_version", "IMAGE_REPOSITORY", "image_reference"} & public, (
+        "spec 105 owns that vocabulary; 104 must not create a second public "
+        f"version module (found {sorted(public)})"
+    )
+
+
+def test_registry_source_emits_an_image_only_and_local_source_adds_a_build(
+    host: _Host,
+) -> None:
+    service = _service(_project(host, image_source=cp.IMAGE_SOURCE_REGISTRY))
+    assert "build" not in service
+    assert service["image"].startswith(cp._IMAGE_REPOSITORY + ":")
+
+    service = _service(_project(host, image_source=cp.IMAGE_SOURCE_LOCAL))
+    assert service["build"] == {
+        "context": str(host.install_root),
+        "dockerfile": "Dockerfile",
+    }
+    assert service["image"] == f"{cp._LOCAL_IMAGE_REPOSITORY}:{cp._engine_image_version()}"
+
+    # Local is the default until 105 publishes the image.
+    parameters = inspect.signature(cp.resolve_project).parameters
+    assert parameters["image_source"].default == cp.IMAGE_SOURCE_LOCAL
+
+
+def test_a_failed_version_derivation_refuses_rather_than_guessing_a_tag(
+    host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _absent(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(cp, "_distribution_version", _absent)
+    with pytest.raises(OperatorError) as error:
+        _project(host)
+    assert "ergane-cli" in str(error.value)
+
+
+def test_local_source_refuses_by_name_when_there_is_no_build_context(
+    host: _Host, tmp_path: Path
+) -> None:
+    """R10: a wheel install has no repository, so `COPY . /opt/ergane` has nothing."""
+    wheel_root = tmp_path / "site-packages"
+    wheel_root.mkdir()
+    with pytest.raises(OperatorError) as error:
+        _project(host, install_root=wheel_root, image_source=cp.IMAGE_SOURCE_LOCAL)
+    message = str(error.value)
+    assert "Dockerfile" in message and "wheel" in message and "105" in message
+
+    # The registry source needs no build context and is unaffected.
+    _project(host, install_root=wheel_root, image_source=cp.IMAGE_SOURCE_REGISTRY)
+
+
+# --- T016 [US2-S1] R10: the confinement artifacts ship in the wheel ---
+
+
+@pytest.mark.parametrize("artifact", ["seccomp-ergane.json", "ergane-engine.profile"])
+def test_confinement_artifact_text_equals_the_committed_file(artifact: str) -> None:
+    assert cp.confinement_artifact_text(artifact) == _committed(artifact)
+
+
+def test_package_data_is_consulted_before_the_checkout_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wheel has no repo above it, so `importlib.resources` must win."""
+
+    class _Packaged:
+        def is_file(self) -> bool:
+            return True
+
+        def read_text(self, encoding: str = "utf-8") -> str:
+            return "PACKAGED"
+
+    monkeypatch.setattr(cp, "_packaged_artifact", lambda name: _Packaged())
+    assert cp.confinement_artifact_text(cp.SECCOMP_ARTIFACT) == "PACKAGED"
+
+
+def test_the_wheel_mapping_exists_in_pyproject() -> None:
+    """A dropped force-include fails here, not at an operator's first install."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    table = data["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+    for artifact in (cp.SECCOMP_ARTIFACT, cp.APPARMOR_ARTIFACT):
+        assert table[f"container/{artifact}"] == f"factory/container/{artifact}"
+
+
+def test_the_artifacts_are_copied_beside_the_generated_compose(host: _Host) -> None:
+    """`security_opt`'s relative path resolves beside the compose file."""
+    project = _project(host)
+    files = {f.name: f for f in cp.project_files(project)}
+    for artifact in (cp.SECCOMP_ARTIFACT, cp.APPARMOR_ARTIFACT):
+        assert files[artifact].text == _committed(artifact)
+        assert files[artifact].directory == files["compose.yaml"].directory
+    assert f"seccomp:./{cp.SECCOMP_ARTIFACT}" in _service(project)["security_opt"]
+
+
+# --- T017 [US2-S3] Trap 9: config F unreachable from the reference ---
+
+
+def test_the_reference_render_carries_no_unconfined_token() -> None:
+    """The drift suite bans that token in the reference file; the render that
+    claims to agree with it is held to the same bar."""
+    assert "unconfined" not in cp.render_compose(cp.reference_project()).lower()
+
+
+def test_reference_project_takes_no_parameters_so_no_variant_reaches_it() -> None:
+    """Structurally unreachable, not merely untaken: a parameter *defaulting* to
+    the shipped confinement leaves a committed test one edit from red."""
+    assert inspect.signature(cp.reference_project).parameters == {}
+    project = cp.reference_project()
+    assert project.security_opt == cp.CONFINED_SECURITY_OPT
+    assert f"apparmor={cp.APPARMOR_PROFILE_NAME}" in project.security_opt
+
+
+# --- T018 [US2-S2] Determinism: a function of the data alone ---
+
+
+def test_the_same_inputs_twice_render_identical_text(host: _Host) -> None:
+    """US2-S2 end to end: one project, then two resolutions of one host."""
+    project = _project(host)
+    assert cp.render_compose(project) == cp.render_compose(project)
+    assert cp.render_env(project) == cp.render_env(project)
+    assert cp.render_compose(_project(host)) == cp.render_compose(_project(host))
+    assert cp.render_env(_project(host)) == cp.render_env(_project(host))
+    assert cp.render_compose(cp.reference_project()) == cp.render_compose(
+        cp.reference_project()
+    )
+
+
+def test_the_render_reads_neither_the_clock_nor_the_environment(
+    host: _Host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolution happens once, in `resolve_project`, so moving the environment
+    out from under a resolved project changes nothing."""
+    project = _project(host)
+    before = cp.render_compose(project), cp.render_env(project)
+
+    monkeypatch.setenv("ERGANE_STATE_HOME", "/somewhere/else")
+    monkeypatch.setenv("HOME", "/nobody")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/nobody/.config")
+    monkeypatch.setattr(os, "getuid", lambda: 4242)
+
+    assert (cp.render_compose(project), cp.render_env(project)) == before

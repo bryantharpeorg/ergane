@@ -15,13 +15,9 @@ from typing import Any
 import pytest
 import yaml
 
-from factory.cli.install import (
-    BLANK_DOCUMENT,
-    _OPTIONAL_INTERVIEW_FIELDS,
-    _controlplane_default,
-)
 from factory.controlplane.verify import _inspect_host
 from factory.registry import resolve_state_home
+from factory.supervision.container_project import derived_environment_names
 from factory.supervision.units import supervision_home
 from factory.verify.toolchain import GIT, NODE, UV
 from factory.workgraph.adapter import DEFAULT_EXECUTABLE
@@ -239,42 +235,12 @@ def _load_compose() -> dict[str, Any]:
 def _compose_environment_variable_names() -> set[str]:
     """Return the env-var names the five subsystem blocks name by default.
 
-    Derives from the install interview defaults and the optional env fields so
-    the compose passthrough list stays in sync with the control-plane schema.
+    The derivation itself moved to `factory.supervision.container_project`
+    (104-US2, T021): the generator emits this same passthrough list, so a second
+    copy of the rule here is how the reference file and the file `ergane install`
+    writes would stop agreeing. This test reads it from the one source.
     """
-    env_names: set[str] = set()
-    document = dict(BLANK_DOCUMENT)
-
-    # Default env-like values in the blank document.
-    def _collect_env_values(obj: Any) -> None:
-        if isinstance(obj, dict):
-            for value in obj.values():
-                _collect_env_values(value)
-        elif isinstance(obj, str):
-            if re.fullmatch(r"[A-Z_][A-Z0-9_]*", obj):
-                env_names.add(obj)
-
-    _collect_env_values(document)
-
-    # Optional fields that may carry env var names in the rendered config.
-    for field in _OPTIONAL_INTERVIEW_FIELDS:
-        default = _controlplane_default(document, field)
-        if isinstance(default, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", default):
-            env_names.add(default)
-
-    # Variables the factory itself uses for path overrides.
-    env_names.update(
-        {
-            "ERGANE_STATE_HOME",
-            "FACTORY_STATE_HOME",
-            "ERGANE_CONFIG_PATH",
-            "FACTORY_CONFIG_PATH",
-        }
-    )
-
-    # Low-level passthrough the adapter and child processes need.
-    env_names.update({"PATH", "LANG", "TERM", "HOME"})
-    return env_names
+    return derived_environment_names()
 
 
 def test_compose_declares_exactly_one_service() -> None:

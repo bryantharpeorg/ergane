@@ -30,6 +30,16 @@ database.  The Temporal database lives **one directory above** the supervision
 subdirectory, so a `compose down && up` that mounts only the state root silently
 discards all workflow history.  The reference compose mounts both explicitly.
 
+The engine container does not share that database.  It writes its own history to
+`<state root>/temporal/engine.db`, beside the native tier's `dev.db` and never
+into it: two Temporal servers on one SQLite file is the same-host corruption
+hazard the same-path research exists to prevent.  The **state-root** mount carries
+`engine.db` across a `compose down && compose up`; the supervision-home mount does
+not, that database being a sibling of the supervision home rather than a child.
+One intended consequence: a host switching from the native tier starts with
+**empty workflow history** — migrating is an operator move, stopping both tiers
+and copying the file by hand.
+
 ## Confinement artifacts
 
 Two files define the container's sandbox contract:

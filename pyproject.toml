@@ -63,8 +63,17 @@ exclude = ["**/*.py.base"]
 # `factory.config` resolves it from as package data. Without this key the wheel
 # shipped no registry at all and the first thing a new install printed was
 # `cannot read persona registry .../site-packages/personas.yaml`.
+#
+# The engine container's confinement artifacts travel the same way (spec 104):
+# `ergane install` copies both beside the compose project it generates, so
+# `security_opt`'s relative `./seccomp-ergane.json` resolves there rather than
+# against a checkout the host may not have. Drop a key and a wheel install emits
+# a project with no confinement contract. The `Dockerfile` cannot join them: it
+# is `COPY . /opt/ergane`, so its context is the repo.
 [tool.hatch.build.targets.wheel.force-include]
 "personas.example.yaml" = "factory/personas.yaml"
+"container/seccomp-ergane.json" = "factory/container/seccomp-ergane.json"
+"container/ergane-engine.profile" = "factory/container/ergane-engine.profile"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
