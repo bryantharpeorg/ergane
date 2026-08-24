@@ -86,3 +86,15 @@ researcher:
   write_scope: read
   needs_worktree: false
   timeout: 7200
+
+opus-closer:
+  # `agent: subscription` is the sentinel at factory/config.py:149.
+  # This persona resolves a CLI-side model name, not a gateway alias, so no
+  # gateway probe runs for it.
+  agent: subscription
+  model: claude-opus-5
+  fallback: null
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400

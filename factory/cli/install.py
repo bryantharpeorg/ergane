@@ -30,8 +30,12 @@ the rename was spent avoiding (plan trap 6).
 from __future__ import annotations
 
 import argparse
+import asyncio
 import copy
 import dataclasses
+import os
+import re
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -39,6 +43,10 @@ from typing import Any, Callable, Iterator, Mapping
 from factory.cli import init as init_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 import factory.config as config_module
+from factory.controlplane.canary.probe import (
+    CanaryResult,
+    probe_judge_canary,
+)
 from factory.controlplane.config import (
     DIRECT_MODE_SURRENDERED_PROPERTIES_TEXT,
     KNOWN_LL_MODES,
@@ -52,13 +60,22 @@ from factory.controlplane.config import (
     resolve_config_path,
 )
 from factory.controlplane.verify import render_findings, verify_controlplane
+from factory.discovery.llm_enrichment import EnrichmentRecord, enrich_aliases
 from factory.discovery.llm_scanner import (
     EndpointClassification,
     ScanResult,
     scan_endpoints,
 )
+from factory.discovery.proposal import (
+    PERSONA_REQUIREMENTS,
+    OperatorChoice,
+    ProposedMapping,
+    Refusal,
+    build_proposal,
+)
 from factory.locking import LockUnavailable, exclusive_lock
 from factory.notify.service import DEFAULT_TEMPORAL_NAMESPACE
+from factory.usage.litellm_client import LiteLLMClient
 
 #: How long `ergane install` waits for another install to finish before it
 #: refuses. Overridable per invocation with `--lock-timeout`.
@@ -208,6 +225,426 @@ _HINDSIGHT_SEED: dict[str, Any] = {
 #: Seam: how the interview probes the network. Rebound in US3 tests.
 _scan_endpoints = scan_endpoints
 
+#: Seam: how the persona step fetches capability metadata. Rebound in US4 tests.
+_enrich_aliases = enrich_aliases
+
+#: Seam: how the persona step lists aliases from the confirmed gateway.
+_fetch_aliases_from_gateway = None  # type: ignore[var-assign]
+
+#: Seam: how the persona step probes a chosen alias with a 1-token completion.
+_probe_one_token = None  # type: ignore[var-assign]
+
+#: Seam: how the persona step runs the judge canary.
+
+
+def _default_fetch_aliases_from_gateway(
+    base_url: str, master_key_env: str
+) -> list[str]:
+    """List aliases served by the confirmed gateway."""
+
+    async def _fetch() -> list[str]:
+        master_key = os.environ.get(master_key_env)
+        if not master_key:
+            return []
+        client = LiteLLMClient(base_url=base_url, master_key=master_key, timeout=10.0)
+        try:
+            return sorted(await client.list_model_ids())
+        except Exception:
+            return []
+        finally:
+            await client.aclose()
+
+    return asyncio.run(_fetch())
+
+
+async def _default_probe_judge_canary(
+    alias: str, base_url: str, master_key_env: str
+) -> Any:
+    """Run the judge canary pointed at the confirmed gateway."""
+    return await probe_judge_canary(
+        alias,
+        client_factory=lambda: LiteLLMClient(
+            base_url=base_url,
+            master_key=os.environ.get(master_key_env, ""),
+            timeout=30.0,
+        ),
+    )
+
+
+def _sync_probe_judge_canary(alias: str, base_url: str, master_key_env: str) -> Any:
+    """Synchronous entry for the canary seam."""
+    return asyncio.run(_default_probe_judge_canary(alias, base_url, master_key_env))
+
+
+_probe_judge_canary = _sync_probe_judge_canary
+
+
+# ---------------------------------------------------------------------------
+# Persona registry step (US4)
+# ---------------------------------------------------------------------------
+
+
+
+async def _async_probe_one_token(
+    alias: str,
+    base_url: str,
+    master_key_env: str,
+    timeout: float = 30.0,
+) -> tuple[bool, str]:
+    """Async implementation: probe one alias with a 1-token completion."""
+    from factory.controlplane.canary.probe import _key_is_model_constrained
+
+    master_key = os.environ.get(master_key_env)
+    if not master_key:
+        return False, f"{master_key_env} is not set"
+
+    client = LiteLLMClient(base_url=base_url, master_key=master_key, timeout=timeout)
+    minted_key: str | None = None
+    try:
+        try:
+            minted_key = await client.issue_key(
+                key_alias="ergane-install-persona-probe",
+                models=[alias],
+                ttl="5m",
+            )
+        except Exception as exc:
+            return False, f"could not mint probe key for `{alias}`: {type(exc).__name__}: {exc}"
+        try:
+            info = await client.get_key_info(minted_key)
+        except Exception as exc:
+            return False, f"gateway minted a key but /key/info failed: {type(exc).__name__}: {exc}"
+        if not _key_is_model_constrained(info, alias):
+            return False, f"gateway minted a key for `{alias}` but it is not model-constrained"
+        request = {
+            "model": alias,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+        }
+        try:
+            response_data = await client.chat_completion(request)
+            completed = bool(response_data.get("choices"))
+        except Exception as exc:
+            return False, f"1-token completion failed for `{alias}`: {type(exc).__name__}: {exc}"
+        if completed:
+            return True, f"completed 1-token completion for alias `{alias}`"
+        return False, f"1-token completion for alias `{alias}` returned no choices"
+    finally:
+        if minted_key is not None:
+            try:
+                await client.revoke_key_by_tokens([minted_key])
+            except Exception:
+                pass
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+
+
+def _default_probe_one_token(
+    alias: str,
+    base_url: str,
+    master_key_env: str,
+    timeout: float = 30.0,
+) -> tuple[bool, str]:
+    """Synchronous entry for the 1-token probe seam."""
+    return asyncio.run(_async_probe_one_token(alias, base_url, master_key_env, timeout))
+
+
+# Fill in the module-level seam bindings now that the implementations exist.
+_fetch_aliases_from_gateway = _default_fetch_aliases_from_gateway
+_probe_one_token = _default_probe_one_token
+
+
+def _update_persona_lines(text: str, updates: dict[str, dict[str, Any]]) -> str:
+    """Return `text` with only the listed persona model/fallback lines changed.
+
+    Preserves comments, ordering and every field other than `model`/`fallback`.
+    Values are written unquoted when they are simple scalars; `None` becomes
+    the literal `null`.
+    """
+
+    def _scalar(value: Any) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    lines = text.splitlines()
+    for name, fields in updates.items():
+        in_block = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if in_block and stripped and not line.startswith(" "):
+                in_block = False
+            if stripped == f"{name}:" or stripped.startswith(f"{name}:"):
+                in_block = True
+                continue
+            if not in_block:
+                continue
+            for field in ("model", "fallback"):
+                if field not in fields:
+                    continue
+                if stripped.startswith(f"{field}:"):
+                    indent = len(line) - len(line.lstrip())
+                    lines[i] = f"{' ' * indent}{field}: {_scalar(fields[field])}"
+                    break
+    return "\n".join(lines) + "\n"
+
+
+def _write_personas_registry(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically and validate it by loading it back."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".personas.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        Path(tmp).chmod(0o600)
+        Path(tmp).replace(path)
+    except Exception:
+        try:
+            Path(tmp).unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    try:
+        config_module.load_personas(str(path))
+    except config_module.ConfigError as exc:
+        raise OperatorError(
+            f"wrote {path} but it does not load as a persona registry: {exc}",
+            code=EXIT_USER,
+        ) from None
+
+
+#: Personas that need a gateway alias, in the order they are presented.
+_GATEWAY_PERSONA_ORDER: tuple[str, ...] = (
+    "implementer",
+    "judge",
+    "debugger",
+    "closer",
+    "architect",
+    "researcher",
+)
+
+
+def _persona_prompt_text(result: ProposedMapping | OperatorChoice, slot: str) -> tuple[str, str]:
+    """Return (prompt, default) for a persona primary/fallback line.
+
+    The default is the proposed alias; the prompt includes the reason.
+    """
+    if isinstance(result, ProposedMapping):
+        if slot == "primary":
+            return f"{result.persona} {slot} ({result.reason})", result.primary
+        return f"{result.persona} {slot} ({result.reason})", result.fallback
+    # OperatorChoice: no classified candidate qualified.
+    candidates = ", ".join(result.candidates) if result.candidates else "(none)"
+    return (
+        f"{result.persona} {slot}: no classified candidate qualified; choose from {candidates}",
+        "",
+    )
+
+
+def _ask_persona_alias(
+    prompter: Any,
+    name: str,
+    slot: str,
+    proposal: dict[str, ProposedMapping | OperatorChoice | Refusal],
+    candidates: list[EnrichmentRecord],
+    chosen_primary: dict[str, str],
+) -> tuple[str, dict[str, ProposedMapping | OperatorChoice | Refusal], list[EnrichmentRecord]]:
+    """Ask the operator for one persona slot and return the chosen alias.
+
+    On an unsatisfiable proposal, raises `OperatorError`.  The returned
+    proposal and candidate list reflect any override the operator typed.
+    """
+    from factory.config import Persona, WriteScope
+
+    # Build a synthetic Persona dict for the proposal builder: the current
+    # primary choices influence the judge's ranking.
+    personas: dict[str, Persona] = {}
+    for pname in _GATEWAY_PERSONA_ORDER:
+        personas[pname] = Persona(
+            name=pname,
+            agent="claude-code",
+            model=chosen_primary.get(pname),
+            fallback=None,
+            skills=(),
+            write_scope=WriteScope.WORKTREE,
+            needs_worktree=True,
+        )
+
+    result = proposal.get(name)
+    if isinstance(result, Refusal):
+        raise OperatorError(
+            f"persona `{name}` cannot be satisfied: {result.requirement}; "
+            f"considered aliases: {', '.join(result.candidates)}",
+            code=EXIT_USER,
+        )
+
+    prompt, default = _persona_prompt_text(result, slot)
+    answer = prompter.ask(prompt, default=default or None).strip()
+    chosen = answer if answer else (default or "")
+
+    # If the operator picked an alias not in the current candidate list,
+    # synthesize a classified record so the proposal builder knows about it.
+    if chosen and chosen not in {r.alias for r in candidates}:
+        candidates = list(candidates) + [
+            EnrichmentRecord(
+                alias=chosen,
+                tool_calling=True,
+                structured_output=True,
+                reasoning=True,
+                detail="operator override",
+            )
+        ]
+        # Rebuild proposal so the judge can avoid this alias if it's the implementer.
+        proposal = build_proposal(personas, tuple(candidates))
+        result = proposal.get(name)
+        if isinstance(result, Refusal):
+            # Report every alias that was originally available, including the one
+            # that just failed, so the operator sees the full candidate list.
+            all_aliases = tuple(r.alias for r in records)
+            raise OperatorError(
+                f"persona `{name}` cannot be satisfied: {result.requirement}; "
+                f"considered aliases: {', '.join(all_aliases)}",
+                code=EXIT_USER,
+            )
+
+    return chosen, proposal, candidates
+
+
+def _interview_personas(
+    prompter: Any,
+    document: dict[str, Any],
+    personas_path: Path,
+) -> None:
+    """Propose, confirm, probe and write the persona registry (US4).
+
+    Uses the confirmed LLM block from `document`; never sends credentials to an
+    unconfirmed endpoint.  Writes only after every chosen alias has passed its
+    probe.
+    """
+    base_url = document["llm"]["base_url"]
+    master_key_env = document["llm"]["master_key_env"]
+
+    # Load the existing seeded registry; its non-alias fields are preserved.
+    personas = config_module.load_personas(str(personas_path))
+
+    # Fetch and enrich aliases from the confirmed gateway.
+    aliases = _fetch_aliases_from_gateway(base_url, master_key_env)
+    records = _enrich_aliases(
+        base_url, aliases, master_key_env=master_key_env, timeout=10.0
+    )
+    candidates: list[EnrichmentRecord] = list(records)
+
+    # Build the initial proposal using empty primary choices.
+    proposal = build_proposal(personas, tuple(candidates))
+
+    chosen_primary: dict[str, str] = {}
+    chosen_fallback: dict[str, str] = {}
+    tried_aliases: dict[str, set[str]] = {name: set() for name in _GATEWAY_PERSONA_ORDER}
+
+    # Primary pass.
+    for name in _GATEWAY_PERSONA_ORDER:
+        while True:
+            result = proposal.get(name)
+            if isinstance(result, Refusal):
+                # Report every alias that was originally available, including the one
+                # that just failed, so the operator sees the full candidate list.
+                all_aliases = tuple(r.alias for r in records)
+                raise OperatorError(
+                    f"persona `{name}` cannot be satisfied: {result.requirement}; "
+                    f"considered aliases: {', '.join(all_aliases)}",
+                    code=EXIT_USER,
+                )
+
+            prompt, default = _persona_prompt_text(result, "primary")
+            answer = prompter.ask(prompt, default=default or None).strip()
+            chosen = answer if answer else (default or "")
+
+            if chosen in tried_aliases[name]:
+                # Operator picked an alias that already failed for this slot.
+                print(f"  `{chosen}` already failed for {name}; choose another")
+                continue
+
+            passed, detail = _probe_one_token(chosen, base_url, master_key_env)
+            print(f"  probing {name} -> {chosen}: {'PASS' if passed else 'FAIL'}")
+            if passed and name == "judge":
+                canary = _probe_judge_canary(chosen, base_url, master_key_env)
+                if not canary.passed:
+                    passed = False
+                    detail = canary.detail
+
+            if passed:
+                chosen_primary[name] = chosen
+                break
+
+            # Probe failed: drop the alias from candidates and re-rank.
+            tried_aliases[name].add(chosen)
+            candidates = [r for r in candidates if r.alias != chosen]
+            proposal = build_proposal(personas, tuple(candidates))
+            print(f"  `{chosen}` failed ({detail}); re-ranking {name} candidates")
+
+    # Fallback pass: each line is explicitly presented, never defaulted through.
+    for name in _GATEWAY_PERSONA_ORDER:
+        while True:
+            result = proposal.get(name)
+            if isinstance(result, (Refusal, OperatorChoice)):
+                # No classified candidate for fallback; offer the primary as fallback.
+                default_fallback = chosen_primary[name]
+            else:
+                default_fallback = result.fallback
+
+            prompt = f"{name} fallback (press Enter to accept `{default_fallback}`)"
+            answer = prompter.ask(prompt, default=default_fallback).strip()
+            chosen = answer if answer else default_fallback
+
+            if chosen in tried_aliases[name]:
+                print(f"  `{chosen}` already failed for {name}; choose another")
+                continue
+
+            passed, detail = _probe_one_token(chosen, base_url, master_key_env)
+            print(f"  probing {name} fallback -> {chosen}: {'PASS' if passed else 'FAIL'}")
+            if passed:
+                chosen_fallback[name] = chosen
+                break
+
+            tried_aliases[name].add(chosen)
+            candidates = [r for r in candidates if r.alias != chosen]
+            proposal = build_proposal(personas, tuple(candidates))
+            print(f"  `{chosen}` failed ({detail}); re-ranking {name} fallback candidates")
+
+    # Subscription personas: confirm the CLI-side model name, never probe.
+    subscription_updates: dict[str, dict[str, Any]] = {}
+    for name, persona in personas.items():
+        if not persona.is_llm or persona.routes_through_gateway:
+            continue
+        if persona.agent == config_module.DETERMINISTIC_AGENT:
+            continue
+        current_model = persona.model or ""
+        prompt = f"{name} model (subscription, press Enter to accept `{current_model}`)"
+        answer = prompter.ask(prompt, default=current_model).strip()
+        chosen = answer if answer else current_model
+        subscription_updates[name] = {"model": chosen}
+
+    # Collect all updates and write once.
+    updates: dict[str, dict[str, Any]] = {}
+    for name in _GATEWAY_PERSONA_ORDER:
+        updates[name] = {
+            "model": chosen_primary[name],
+            "fallback": chosen_fallback[name],
+        }
+    updates.update(subscription_updates)
+
+    original_text = personas_path.read_text(encoding="utf-8")
+    new_text = _update_persona_lines(original_text, updates)
+    _write_personas_registry(personas_path, new_text)
+
+    print(f"wrote {personas_path}")
+    for name, fields in updates.items():
+        if "model" in fields:
+            print(f"  {name}: model={fields['model']}, fallback={fields.get('fallback')}")
+
 
 # ---------------------------------------------------------------------------
 # CLI wiring
@@ -275,6 +712,10 @@ def install_command(args: argparse.Namespace) -> int:
             print(f"wrote {path}")
             print(
                 f"{'wrote' if personas_created else 'left existing'} {personas_path}"
+            )
+            # US4: propose, confirm and prove persona aliases before verify runs.
+            _interview_personas(
+                init_module._prompter(), document, personas_path
             )
             print("")
             print("verifying the control plane...")
