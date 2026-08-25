@@ -31,6 +31,7 @@ from factory.cli.errors import (
     run_cli,
 )
 from factory.cli.nouns import Noun
+from factory.supervision.engine_identity import cli_version
 from factory.controlplane.resolve import (
     ControlPlaneResolutionError,
     resolve_proxy_url,
@@ -130,11 +131,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _version_text() -> str:
     """What `ergane --version` prints: version, revision, endpoints."""
-    try:
-        from importlib.metadata import version
-        pkg_version = version("ergane-cli")
-    except Exception:
-        pkg_version = "unknown"
+    pkg_version = cli_version()
 
     try:
         revision = subprocess.check_output(
