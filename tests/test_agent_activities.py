@@ -73,6 +73,8 @@ import json
 import os
 import subprocess
 import time
+import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -85,6 +87,7 @@ from temporalio.testing import ActivityEnvironment
 
 from factory.activities import agent_activities
 from factory.activities.agent_activities import (
+    AGENT_LAUNCH_FAILED,
     ERGANE_ROOT_ENV,
     FACTORY_ROOT_ENV,
     GRAPH_INVALID,
@@ -98,6 +101,7 @@ from factory.activities.agent_activities import (
     ResolvePersonaInput,
     SalvageWorktreeInput,
     _resolve_node,
+    derive_session_id,
     load_prompt_sources,
     prepare_worktree,
     read_worktree_diff,
@@ -109,7 +113,13 @@ from factory.activities.agent_activities import (
 )
 from factory.config import Persona, WriteScope, load_personas
 from factory.usage.models import Termination
-from factory.workgraph.adapter import STDOUT_LOG_NAME, home_path, pid_file, transcript_dir
+from factory.workgraph.adapter import (
+    SESSION_ID_REFUSAL_MARKER,
+    STDOUT_LOG_NAME,
+    home_path,
+    pid_file,
+    transcript_dir,
+)
 from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
@@ -1458,3 +1468,160 @@ def test_run_agent_attempt_does_not_override_the_resolved_backend() -> None:
         "manifest resolution; substitute the backend in a test fixture instead "
         "(see the `host_launch` fixture in this file)."
     )
+
+
+# --- US5: one agent execution, one session id --------------------------------
+
+
+def test_derive_session_id_attempt_one_returns_issued_id_unchanged() -> None:
+    """US5-S1/FR-012: attempt 1 returns the issued id unchanged, so every
+    existing archive name, transcript path and status reading is untouched for
+    the runs that never retry."""
+    assert derive_session_id(SESSION_ID, 1) == SESSION_ID
+
+
+def test_derive_session_id_attempt_two_is_distinct_valid_and_deterministic() -> None:
+    """US5-S2/FR-012: attempt 2 returns a different, syntactically valid UUID,
+    deterministically derived from the issued id and the attempt number. The
+    runner rejects a malformed id before it rejects a duplicate one, so UUID
+    validity is asserted explicitly (plan R8)."""
+    derived = derive_session_id(SESSION_ID, 2)
+    assert derived != SESSION_ID
+    # Raises ValueError if `derived` is not a syntactically valid UUID.
+    uuid.UUID(derived)
+    # The same inputs always return the same output.
+    assert derive_session_id(SESSION_ID, 2) == derived
+    assert derive_session_id(SESSION_ID, 3) != derived
+
+
+async def test_attempt_two_derives_a_distinct_id_that_argv_and_archive_share(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    worker_host: Path,
+) -> None:
+    """US5-S3/FR-012 seam capture: on activity attempt 2 the invocation's
+    session argument and the archived transcript filename name the same derived
+    id — the launch key and the archive key are one string and must move
+    together (plan R9)."""
+    env.info = replace(env.info, attempt=2)
+    write_control(home_path(factory_root, EPIC, NODE))
+
+    await env.run(run_agent_attempt, context())
+
+    derived = derive_session_id(SESSION_ID, 2)
+    assert derived != SESSION_ID
+    assert last_invocation(worktree).flag("--session-id") == derived
+    assert (archive_dir(factory_root) / f"{derived}.jsonl").is_file()
+
+
+async def test_previous_stdout_log_is_preserved_not_destroyed(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    worker_host: Path,
+) -> None:
+    """US5-S4/FR-013: an attempt archive already holding a non-empty stdout log
+    keeps it under a name stating which execution wrote it, and the file the
+    detector reads keeps its name and its meaning."""
+    archive = archive_dir(factory_root)
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / STDOUT_LOG_NAME).write_text(
+        "earlier execution evidence\n", encoding="utf-8"
+    )
+    write_control(home_path(factory_root, EPIC, NODE))
+
+    await env.run(run_agent_attempt, context())
+
+    # The live file keeps its name and meaning.
+    assert (archive / STDOUT_LOG_NAME).is_file()
+    # The earlier log survives under a name stating which execution wrote it.
+    preserved = archive / f"stdout-{SESSION_ID}.log"
+    assert preserved.is_file()
+    assert "earlier execution evidence" in preserved.read_text(encoding="utf-8")
+
+
+async def test_runner_refusal_is_a_named_launch_failure_not_a_missing_transcript(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    worker_host: Path,
+) -> None:
+    """US5-S5/FR-014: a stdout log carrying the runner's already-in-use refusal
+    is reported as a named launch refusal — the existing non-retryable
+    launch-failure error type, quoting the runner's own line — never as a
+    missing transcript, and the `Termination` enum gains no member. Asserts the
+    behaviour, never the 74-byte length (trap 11)."""
+    refusal = f"Error: Session ID {SESSION_ID} is already in use."
+    write_control(home_path(factory_root, EPIC, NODE), exit_code=1, stdout=refusal)
+
+    with pytest.raises(ApplicationError) as raised:
+        await env.run(run_agent_attempt, context())
+
+    assert raised.value.type == AGENT_LAUNCH_FAILED
+    assert raised.value.non_retryable is True
+    assert SESSION_ID_REFUSAL_MARKER in str(raised.value)
+    assert "already in use" in str(raised.value)
+
+
+async def test_ordinary_nonzero_exit_without_marker_is_still_an_agent_error(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    worker_host: Path,
+) -> None:
+    """US5-S6/FR-014: an ordinary non-zero exit whose stdout carries no refusal
+    marker is still an ordinary agent error and still ordinary ladder input — a
+    classifier that raised on every non-zero exit would convert the whole ladder
+    into launch failures and stop the node ever being graded."""
+    write_control(
+        home_path(factory_root, EPIC, NODE),
+        exit_code=1,
+        stdout="some unrelated failure",
+    )
+
+    result = await env.run(run_agent_attempt, context())
+
+    assert result.termination == Termination.AGENT_ERROR
+
+
+async def test_second_execution_preserves_first_stdout_log_seam_capture(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    worker_host: Path,
+) -> None:
+    """US5-S2/SC-005 seam capture: after a second execution the archive holds
+    both logs — the first execution's preserved under a name stating which
+    execution wrote it, and the live file the detector reads."""
+    # First execution: attempt 1, issued id unchanged.
+    write_control(home_path(factory_root, EPIC, NODE), stdout="first execution")
+    await env.run(run_agent_attempt, context())
+    assert (archive_dir(factory_root) / STDOUT_LOG_NAME).is_file()
+
+    # Second execution: attempt 2, derived id.
+    env.info = replace(env.info, attempt=2)
+    write_control(home_path(factory_root, EPIC, NODE), stdout="second execution")
+    await env.run(run_agent_attempt, context())
+
+    derived = derive_session_id(SESSION_ID, 2)
+    archive = archive_dir(factory_root)
+    # The first execution's log survives under a name stating which execution
+    # wrote it (the execution that preserved it).
+    preserved = archive / f"stdout-{derived}.log"
+    assert preserved.is_file()
+    assert "first execution" in preserved.read_text(encoding="utf-8")
+    # The live file keeps its name and meaning, and now holds the second run.
+    assert (archive / STDOUT_LOG_NAME).is_file()
+    assert "second execution" in (archive / STDOUT_LOG_NAME).read_text(
+        encoding="utf-8"
+    )
+    # Both logs present in the archive directory listing.
+    names = {p.name for p in archive.iterdir()}
+    assert STDOUT_LOG_NAME in names
+    assert f"stdout-{derived}.log" in names
