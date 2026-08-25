@@ -85,6 +85,16 @@ LANDING_REFUSED = "LANDING_REFUSED"
 #: fixes.
 PUSH_FAILED = "PUSH_FAILED"
 
+#: The activity error type for a node directory that belongs to a different
+#: clone than the landing names (107 FR-004, plan R14). Never retryable, and
+#: that is the whole reason it is not `PUSH_FAILED`: two repositories
+#: disagreeing about who owns a directory is deterministic, so the retry policy
+#: behind `PUSH_FAILED` would spend its three attempts arriving at the same
+#: refusal, interleaved with Temporal's own retry noise — the exact repeated
+#: diagnosis this story exists to remove. Every other git failure stays on
+#: today's retryable `PUSH_FAILED` path, untouched.
+LANDING_PUSH_REFUSED = "LANDING_PUSH_REFUSED"
+
 
 @dataclass(frozen=True)
 class PrepareLandingPrInput:
@@ -418,7 +428,9 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
     base. A manifest read inside an activity is legal where the workflow's would
     not be (constitution IV).
 
-    Raises `PUSH_FAILED` (retryable) when git refused, and lets the forge's own
+    Raises `LANDING_PUSH_REFUSED` (non-retryable) when the node's worktree
+    belongs to a different repository than the one asked to push, `PUSH_FAILED`
+    (retryable) when git itself refused, and lets the forge's own
     `ForgeError` through when it refused the offer.
     """
     resolved = await asyncio.to_thread(
@@ -434,6 +446,14 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
             request.node_id,
             factory_root=worktrees.resolve_factory_root(FACTORY_ROOT_ENV)[0],
         )
+    except worktrees.WorktreeOwnershipError as exc:
+        # 107 FR-004, plan R14: a repository mismatch is deterministic and an
+        # operator must clear it once, not watch it retried three times. Ahead
+        # of the catch-all below, so an ordinary worktree failure still takes
+        # today's retryable PUSH_FAILED path.
+        raise ApplicationError(
+            str(exc), type=LANDING_PUSH_REFUSED, non_retryable=True
+        ) from exc
     except worktrees.WorktreeError as exc:
         raise ApplicationError(str(exc), type=PUSH_FAILED) from exc
 

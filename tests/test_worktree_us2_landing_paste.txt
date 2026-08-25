@@ -1,0 +1,43 @@
+107 US2 — a landing push refused before it runs, and the bare git failure it replaces.
+
+Run on 2026-08-25 against this branch's `factory/workgraph/worktree.py`, on git
+2.43.0, in a scratch directory holding two `git init` repositories (`clone-a`,
+`clone-b`) and one shared runtime root (`.ergane`). `ensure()` registered the
+node worktree to clone-a; the test then asked `push_branch` to push that branch
+through clone-b's ref store.
+
+The first block is the bare `error: src refspec ... does not match any` git
+printed before this story, when the push simply went ahead against the wrong
+repository and the branch existed nowhere in its ref store. The second is the
+refusal the factory now prints instead, from the identical fixture. The second
+is what the first was a day of misdirected diagnosis past.
+
+--- the bare failure git gives (what US2 replaces)
+    $ git -C clone-b push origin factory/107-a-landing-refuses/us2
+    error: src refspec factory/107-a-landing-refuses/us2 does not match any
+    error: failed to push some refs to 'origin'
+
+--- the refusal the factory now prints
+node worktree /tmp/tmprk1msi63/.ergane/worktrees/107-a-landing-refuses/us2 is
+registered to /tmp/tmprk1msi63/clone-a, not to the dispatched target repo
+/tmp/tmprk1msi63/clone-b: refusing to build one clone's story in another clone's
+worktree. The branch factory/107-a-landing-refuses/us2 lives in the owning
+clone's ref store, so a push here would find no such ref in the repository that
+was asked. Clear it from the owning clone and dispatch again: git -C
+/tmp/tmprk1msi63/clone-a worktree remove --force
+/tmp/tmprk1msi63/.ergane/worktrees/107-a-landing-refuses/us2
+
+(One line as printed; wrapped here only to fit the page.)
+
+The refusal names all four things the acceptance scenario demands — the branch,
+the worktree, the repository that actually holds the ref (clone-a) and the one
+that was asked to push (clone-b) — and it precedes the push, so the same fixture
+with a recorded push subprocess asserts nothing ran (T011). The recovery path's
+`sync_with_target` takes the same assertion before its fetch (T012), and the
+correctly-owned worktree is untouched (T014, the existing `tests/test_worktree.py`
+passing unmodified).
+
+Reproduce: two `git init` repositories side by side, one `ensure(clone_a, ...)`
+against a shared `factory_root`, then `push_branch(clone_b, ...)`. The bare
+failure and the refusal are asserted in `tests/test_worktree_us2_landing.py`; the
+scratch paths above differ per run and are the only thing that will not match.

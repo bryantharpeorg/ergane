@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+from temporalio.exceptions import ApplicationError
 from temporalio.testing import ActivityEnvironment
 
 from factory.activities import merge_activities
@@ -462,6 +463,108 @@ async def test_open_landing_pr_ignores_the_base_a_prepared_sidecar_already_recor
     assert _create_base(fake) == DECLARED_BASE
     assert opened.base == DECLARED_BASE
     assert opened.base != "spec-routing-plan"
+
+
+# --- 107 US2: a repository mismatch refuses non-retryably (T015) --------------
+#
+# US2-S4 / plan R14: the ownership refusal crosses the landing activity's
+# boundary as a NON-retryable application error of a type distinct from the
+# retryable `PUSH_FAILED` every other git failure keeps. A deterministic
+# repository mismatch must be stated once, not retried three times interleaved
+# with Temporal's own retry noise — and the discrimination has to cut both ways:
+# an ordinary git failure stays `PUSH_FAILED` and stays retryable, or the test
+# above would pass just as happily if every worktree failure had been
+# reclassified.
+
+
+async def test_open_landing_pr_refuses_a_foreign_worktree_non_retryably(
+    env: ActivityEnvironment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US2-S4: a repository mismatch is a non-retryable, distinct error type.
+
+    The node worktree is prepared under clone A; the landing is asked to push it
+    through clone B's ref store. `open_landing_pr` catches the ownership refusal
+    and raises a NON-retryable application error whose type is not `PUSH_FAILED`
+    — so the workflow's three-attempt retry policy does not spend itself on a
+    fault only an operator can clear.
+    """
+    repo_a = build_target_repo(tmp_path / "clone-a")
+    repo_b = build_target_repo(tmp_path / "clone-b")
+    root = tmp_path / ".factory"
+    monkeypatch.setenv("ERGANE_ROOT", str(root))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+
+    prepared = worktrees.ensure(repo_a, EPIC, NODE, factory_root=root)
+    worktree = Path(prepared.path)
+    (worktree / "landed.txt").write_text("work\n", encoding="utf-8")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "--quiet", "-m", "node work")
+
+    from factory.activities.merge_activities import (
+        LANDING_PUSH_REFUSED,
+        OpenLandingPrInput,
+        PUSH_FAILED,
+        open_landing_pr,
+    )
+
+    with pytest.raises(ApplicationError) as raised:
+        await env.run(open_landing_pr, OpenLandingPrInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            target_repo=str(repo_b),
+            branch=BRANCH,
+            title=TITLE,
+            body_file="/tmp/body.md",
+        ))
+
+    assert raised.value.type == LANDING_PUSH_REFUSED
+    assert raised.value.type != PUSH_FAILED
+    assert raised.value.non_retryable is True
+    # The refusal names both repositories and the worktree.
+    assert str(repo_a.resolve()) in str(raised.value)
+    assert str(repo_b.resolve()) in str(raised.value)
+    assert str(worktree.resolve()) in str(raised.value)
+
+
+async def test_open_landing_pr_still_raises_retryable_push_failed_for_an_ordinary_failure(
+    env: ActivityEnvironment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US2-S4, the other direction: the discrimination has to cut both ways.
+
+    A git failure that is not a repository mismatch stays on today's retryable
+    `PUSH_FAILED` path. Here the target clone is a real repository (so the base
+    resolves and the ownership probe passes — the worktree is its own) but has
+    no `origin` remote, so the push itself fails: a lock, a slow filesystem, a
+    missing remote — all the things a second attempt fixes. Asserting only the
+    non-retryable refusal would pass if every push failure had been
+    reclassified.
+    """
+    repo = build_target_repo(tmp_path / "target")
+    root = tmp_path / ".factory"
+    monkeypatch.setenv("ERGANE_ROOT", str(root))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+
+    worktrees.ensure(repo, EPIC, NODE, factory_root=root)
+
+    from factory.activities.merge_activities import (
+        OpenLandingPrInput,
+        PUSH_FAILED,
+        open_landing_pr,
+    )
+
+    with pytest.raises(ApplicationError) as raised:
+        await env.run(open_landing_pr, OpenLandingPrInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            target_repo=str(repo),
+            branch=BRANCH,
+            title=TITLE,
+            body_file="/tmp/body.md",
+        ))
+
+    assert raised.value.type == PUSH_FAILED
+    assert not raised.value.non_retryable
+    assert str(repo) in str(raised.value)
 
 
 def _workflow_tree() -> ast.Module:
