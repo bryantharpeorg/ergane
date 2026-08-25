@@ -249,17 +249,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
-def _stub_persona_step(monkeypatch: pytest.MonkeyPatch) -> None:
-    """US4: the persona step is tested in its own file; these tests cover the rest.
+def _stub_persona_step_and_closing_demo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """US4/US6: the persona and closing steps are tested in their own files.
 
-    Interactive install now proposes, probes and writes persona aliases.  The
-    walkthrough tests below drive closed ports and are not about personas, so
-    stub the step out to keep them focused on the LLM/memory/temporal/telemetry/
-    escalation interview.
+    The walkthrough tests below drive the LLM/memory/temporal/telemetry/
+    escalation interview and the verification that ends it.  Stubbing the later
+    acts keeps each module focused on the questions it actually covers.
     """
     import factory.cli.install as install_module
 
     monkeypatch.setattr(install_module, "_interview_personas", lambda _p, _d, _pp: None)
+    monkeypatch.setattr(install_module, "_closing_demonstration", lambda *_a, **_k: None)
 
 
 @dataclass
