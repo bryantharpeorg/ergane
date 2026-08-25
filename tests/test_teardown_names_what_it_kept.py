@@ -192,7 +192,8 @@ def seeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Seeded:
 
 
 def plan_of(result: Run, step: str) -> str:
-    """The `N/5 <step>: <plan>` line's plan half."""
+    """The `N/M <step>: <plan>` line's plan half — index-agnostic on purpose, so
+    a step inserted ahead of these two (104-US7 inserted one) moves nothing here."""
     for line in result.stdout.splitlines():
         head, _, rest = line.partition(f" {step}: ")
         if rest and head[:1].isdigit():
