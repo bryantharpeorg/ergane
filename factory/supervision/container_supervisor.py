@@ -19,10 +19,16 @@ import logging
 import os
 import signal
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Mapping, Protocol, Sequence
 
 from factory.registry import DEFAULT_REGISTRY_REL, load_registry, resolve_state_home
+from factory.supervision.engine_identity import (
+    EngineIdentity,
+    remove_identity,
+    write_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +320,17 @@ async def _run_supervisor(
             pass
         return 1
 
+    # Write engine identity after readiness succeeds and before the worker starts.
+    write_identity(
+        state_home,
+        EngineIdentity(
+            version=os.environ.get("ERGANE_VERSION", "unknown"),
+            started_at=_now_utc_iso(),
+            image_reference=os.environ.get("ERGANE_VERSION"),
+            image_digest=os.environ.get("ERGANE_IMAGE_DIGEST"),
+        ),
+    )
+
     # Start worker and bridge.
     worker = await start_child("worker", argv_map["worker"])
     bridge = await start_child("bridge", argv_map["bridge"])
@@ -392,6 +409,11 @@ async def _run_supervisor(
     finally:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(sig)
+        # Best-effort: remove the identity record so a stopped engine advertises nothing.
+        try:
+            remove_identity(state_home)
+        except Exception:
+            pass
 
     # A child exiting on its own (not during a requested shutdown) is a fault:
     # the container exits nonzero naming the first victim and its status.
@@ -412,6 +434,10 @@ async def _run_supervisor(
         )
 
     return 0
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _build_parser() -> argparse.ArgumentParser:
