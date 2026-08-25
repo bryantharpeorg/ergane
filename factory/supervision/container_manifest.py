@@ -187,11 +187,15 @@ class RemovalReport:
         lines = [f"engine container project at {self.directory}:"]
         lines += [f"  removed: {name}" for name in self.removed]
         lines += [f"  already gone: {name}" for name in self.missing]
-        lines += [f"  kept ({kept.reason}): {self.directory / kept.name}" for kept in self.kept]
+        lines += [
+            f"  kept ({kept.reason}): {self.directory / kept.name}"
+            for kept in self.kept
+        ]
         lines.append(
             "  removed the project directory"
             if self.directory_removed
-            else "  left the project directory: it still holds files ergane did not write"
+            else "  left the project directory: it still holds files ergane "
+            "did not write"
         )
         return "\n".join(lines)
 
