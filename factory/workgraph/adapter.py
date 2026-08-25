@@ -156,6 +156,14 @@ FERRY_ANSWER_FILE = "answer"
 #: 2026-08-19: printed on stdout, not stderr, with exit status 1.
 SUBSCRIPTION_REFUSAL_MARKER = "Not logged in · Please run /login"
 
+#: The stdout marker that means the runner refused the launch because the
+#: session id was already in use (107 FR-014). Measured: printed on stdout with
+#: exit status 1, `Error: Session ID <36-char uuid> is already in use.` The id
+#: varies per refusal, so the marker is the stable substring, not the whole
+#: line — a classifier that matched the literal 74-byte refusal would rot on the
+#: next CLI bump (trap 11).
+SESSION_ID_REFUSAL_MARKER = "is already in use."
+
 _NON_ALNUM = re.compile(r"[^a-zA-Z0-9]")
 
 
@@ -729,6 +737,28 @@ def transcript_dir(
     return Path(factory_root) / "transcripts" / epic_id / node_id / f"attempt-{attempt}"
 
 
+def _preserve_previous_stdout(archive: Path, context: AttemptContext) -> None:
+    """Move a previous execution's `stdout.log` aside before this one truncates it.
+
+    The truncating open at the top of `run_attempt` destroys the one file that
+    would name the cause of a repeated identifier (107 FR-013): the earlier
+    execution's own refusal, sitting in the same archive directory. Before the
+    open, if a non-empty `stdout.log` is already there, move it to a name that
+    states which execution wrote it. The name carries the *current* execution's
+    derived session id — the per-execution discriminator, since the ladder attempt
+    is identical across an activity retry (trap 9) — so two executions of one
+    activity never overwrite each other's preserved log. The live file keeps its
+    name and meaning: `_read_stdout` and the subscription classifier read exactly
+    the file they read today (plan R10).
+    """
+    live = archive / STDOUT_LOG_NAME
+    if not live.is_file() or live.stat().st_size == 0:
+        return
+    preserved = archive / f"stdout-{context.session_id}.log"
+    with contextlib.suppress(OSError):
+        live.replace(preserved)
+
+
 def pid_file(factory_root: Path | str, epic_id: str, node_id: str) -> Path:
     """`.factory/run/<epic>/<node>.pid` — the next run's handle on this one (R4).
 
@@ -994,6 +1024,8 @@ class ClaudeCodeAdapter:
         # US1: capture the target repository's tracked-file state before the agent runs.
         if target_repo is not None:
             capture_start(Path(factory_root), target_repo, context)
+
+        _preserve_previous_stdout(archive, context)
 
         with (archive / STDOUT_LOG_NAME).open("wb") as log:
             backend = self._resolve_backend(worktree, target_repo)

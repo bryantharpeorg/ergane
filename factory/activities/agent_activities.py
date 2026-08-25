@@ -62,7 +62,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -84,6 +85,7 @@ from factory.verify.factory_yaml import (
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
+    SESSION_ID_REFUSAL_MARKER,
     STDOUT_LOG_NAME,
     SUBSCRIPTION_REFUSAL_MARKER,
     AdapterError,
@@ -455,6 +457,23 @@ def _require_standards(
 # --- run_agent_attempt (the one place an agent runs) --------------------------
 
 
+def derive_session_id(issued_id: str, attempt: int) -> str:
+    """The runner-visible session id for one execution of the agent activity.
+
+    A pure function of the workflow-issued id and the activity execution attempt
+    (107 FR-012): attempt 1 returns the issued id unchanged, so every existing
+    archive name, transcript path and status reading is untouched for the runs
+    that never retry; any later attempt returns a different, deterministically
+    derived, syntactically valid UUID. `uuid5` is deterministic and derives from
+    values already in the frame, and the runner rejects a malformed id before it
+    rejects a duplicate one (plan R8). The workflow computes nothing new, so the
+    replay property is preserved by construction (traps 9 and 10).
+    """
+    if attempt <= 1:
+        return issued_id
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{issued_id}:{attempt}"))
+
+
 @activity.defn
 async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
     """Run one agent attempt to its end, whatever that end is (D-018, FR-005).
@@ -474,6 +493,20 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
     """
     root = factory_root()
     try:
+        # 107 FR-012: the runner-visible session id is derived once, here, from
+        # the workflow-issued id and this execution's attempt number. The first
+        # execution keeps the issued id; a retry gets a different, deterministic
+        # UUID, so the one relaunch the retry policy exists to provide can start
+        # instead of colliding with the id the first execution already used. The
+        # frozen context is replaced once and passed down, so the invocation
+        # argument and the transcript archive lookup read the same derived id
+        # and cannot disagree (plan R9). The workflow's two issuance sites are
+        # untouched — the replay property is preserved because the workflow
+        # computes nothing new (traps 9 and 10).
+        execution_attempt = activity.info().attempt if activity.in_activity() else 1
+        derived = derive_session_id(context.session_id, execution_attempt)
+        if derived != context.session_id:
+            context = replace(context, session_id=derived)
         # The launch backend is resolved from the target repo's `runtime:` key
         # by the adapter itself (011-US2). Nothing overrides it here: an
         # unconditional assignment on this line pinned every production attempt
@@ -505,7 +538,16 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         # the CLI prints the measured refusal on stdout and exits 1. Reclassify
         # that specific marker as an authentication failure so it is recorded as
         # a named auth failure instead of a diffless AGENT_ERROR.
-        return _classify_subscription_auth_failure(context, result)
+        result = _classify_subscription_auth_failure(context, result)
+        # 107 FR-014: a launch the runner refused because the identifier was
+        # already in use arrives as an ordinary AGENT_ERROR with the refusal on
+        # stdout. Classify that marker as a named launch refusal — the existing
+        # non-retryable launch-failure error type, quoting the runner's own line
+        # — never as a missing transcript, and never as a new `Termination`
+        # member (plan R13). The subscription classifier *returns* a reclassified
+        # result; this one *raises*.
+        _raise_if_launch_refused(context, result)
+        return result
     except asyncio.CancelledError:
         raise CancelledError(
             f"attempt {context.attempt} of {context.epic_id}/{context.node_id} "
@@ -559,6 +601,44 @@ def _classify_subscription_auth_failure(
         termination=Termination.AUTH_FAILURE,
         transcript_path=result.transcript_path,
         last_snapshot=result.last_snapshot,
+    )
+
+
+def _raise_if_launch_refused(context: AttemptContext, result: AdapterResult) -> None:
+    """Raise a named launch refusal when the runner refused the session id.
+
+    The runner's already-in-use refusal (107 FR-014) arrives as an ordinary
+    `AGENT_ERROR` — the binary exists, it started, and it exited 1 — with the
+    refusal on stdout. Detecting that marker here, on the success path beside the
+    existing `except AdapterError`, turns the attempt into the existing
+    non-retryable `AGENT_LAUNCH_FAILED` error type, quoting the runner's own
+    line, rather than a missing transcript. It is not a new `Termination` member:
+    a launch the runner refused before the first token wrote no diff, so there is
+    nothing to grade and no ladder attempt to spend (plan R13). An ordinary
+    non-zero exit carrying no marker is left untouched — ordinary ladder input.
+    """
+    if result.termination != Termination.AGENT_ERROR:
+        return
+    if not result.transcript_path:
+        return
+
+    log_path = Path(result.transcript_path) / STDOUT_LOG_NAME
+    try:
+        log_text = log_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    if SESSION_ID_REFUSAL_MARKER not in log_text:
+        return
+
+    line = next(
+        (ln for ln in log_text.splitlines() if SESSION_ID_REFUSAL_MARKER in ln),
+        SESSION_ID_REFUSAL_MARKER,
+    )
+    raise ApplicationError(
+        f"runner refused the launch for {context.epic_id}/{context.node_id}: "
+        f"{line.strip()}",
+        type=AGENT_LAUNCH_FAILED,
+        non_retryable=True,
     )
 
 
