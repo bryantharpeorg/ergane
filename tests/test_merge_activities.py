@@ -27,6 +27,9 @@ T016): until the module lands, every test here fails at import.
 
 from __future__ import annotations
 
+import ast
+import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -38,6 +41,7 @@ from factory.activities import merge_activities
 from factory.mergequeue.gh import GhError, GH_UNAVAILABLE
 from factory.mergequeue.models import CheckFailure, PrSnapshot
 from factory.workgraph import worktree as worktrees
+from factory.workgraph import workflow
 from tests.fake_gh import FakeGh
 from tests.target_repo import build_target_repo, git, git_env
 
@@ -189,6 +193,333 @@ async def test_open_landing_pr_is_idempotent_reusing_an_existing_pr(
     assert opened.number == PR_NUMBER
     # No `gh pr create` was issued — only the reuse lookup.
     assert all("create" not in a for a in [c.args for c in fake.calls])
+
+
+# --- the landing base is the branch the repo declares (107 US3) ---------------
+#
+# Every other target-repo fixture in this suite sets the checked-out branch, the
+# declared landing branch and `main` to one value, which is exactly why a landing
+# that reads the checkout stays green against them. These fixtures make the two
+# DIFFER, so the base can only be right for the right reason.
+
+#: What the `landing-branch` fixture variant declares in its manifest.
+DECLARED_BASE = "ergane-buildout"
+
+#: What an operator happens to have checked out — never a landing decision.
+OPERATOR_BRANCH = "some-operator-branch"
+
+
+def _clone_checked_out_elsewhere(
+    tmp_path: Path, name: str, *, variant: str, checked_out: str
+) -> Path:
+    """A target clone with an origin, sitting on `checked_out` rather than trunk.
+
+    The `landing-branch` variant declares `ergane-buildout`; the manifest-less
+    and malformed variants declare nothing readable, which is the fallback arm.
+    Both the declared branch and the checked-out branch are pushed so
+    `worktrees.ensure` can pin against whichever one the resolver picks.
+    """
+    repo = build_target_repo(tmp_path / name, variant=variant)
+    origin = tmp_path / f"{name}-origin.git"
+    git(repo, "init", "--bare", str(origin))
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "--quiet", "-u", "origin", "main")
+    if variant == "landing-branch":
+        git(repo, "checkout", "--quiet", "-b", DECLARED_BASE)
+        git(repo, "push", "--quiet", "-u", "origin", DECLARED_BASE)
+        git(repo, "checkout", "--quiet", "main")
+    git(repo, "checkout", "--quiet", "-b", checked_out)
+    git(repo, "push", "--quiet", "-u", "origin", checked_out)
+    return repo
+
+
+@pytest.fixture
+def repo_landing_elsewhere(tmp_path: Path) -> Path:
+    """A clone on `some-operator-branch` whose manifest declares `ergane-buildout`."""
+    return _clone_checked_out_elsewhere(
+        tmp_path, "target", variant="landing-branch", checked_out=OPERATOR_BRANCH
+    )
+
+
+def _script_create(fake: FakeGh, base: str) -> None:
+    """Script the reuse lookup (empty) and the `pr create` that must follow."""
+    fake.expect_json(
+        "pr", "list", "--head", BRANCH, "--state", "open", "--json", "number,url",
+        payload=[],
+    )
+    fake.expect(
+        "pr", "create", "--base", base, "--head", BRANCH, "--title", TITLE,
+        "--body-file", "/tmp/body.md",
+        stdout="https://x/pull/7\n",
+    )
+
+
+def _create_base(fake: FakeGh) -> str:
+    """The `--base` argv the fake actually saw on `gh pr create`."""
+    for call in fake.calls:
+        if call.args[:2] == ("pr", "create"):
+            return call.args[call.args.index("--base") + 1]
+    raise AssertionError(f"no `gh pr create` was issued: {[c.args for c in fake.calls]}")
+
+
+async def test_open_landing_pr_opens_against_the_declared_landing_branch(
+    env: ActivityEnvironment, repo_landing_elsewhere: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S1/FR-006: the base is what the repo declares, not what it has checked out.
+
+    The clone sits on `some-operator-branch` and its manifest declares
+    `ergane-buildout`. A landing that read the checkout — the D-051 defect —
+    would open against the operator's branch and die on a blank sha far from
+    here; this asserts it opens against the declared branch instead.
+    """
+    _prepare_node_worktree(repo_landing_elsewhere, tmp_path, monkeypatch)
+    # The premise: the two branches differ, which no other fixture in this tree
+    # arranges. Without this the assertion below would pass against the defect.
+    assert git(repo_landing_elsewhere, "symbolic-ref", "--short", "HEAD").strip() == (
+        OPERATOR_BRANCH
+    )
+
+    fake = FakeGh()
+    _script_create(fake, DECLARED_BASE)
+    monkeypatch.setattr(
+        merge_activities, "_client_factory", _client_factory(fake, repo_landing_elsewhere)
+    )
+
+    from factory.activities.merge_activities import OpenLandingPrInput, open_landing_pr
+
+    opened = await env.run(open_landing_pr, OpenLandingPrInput(
+        epic_id=EPIC,
+        node_id=NODE,
+        target_repo=str(repo_landing_elsewhere),
+        branch=BRANCH,
+        title=TITLE,
+        body_file="/tmp/body.md",
+    ))
+
+    assert _create_base(fake) == DECLARED_BASE
+    assert opened.base == DECLARED_BASE
+    assert opened.base != OPERATOR_BRANCH
+
+
+async def test_open_landing_pr_names_the_manifest_arm_that_answered(
+    env: ActivityEnvironment, repo_landing_elsewhere: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """US3-S2/FR-007: the declaring clone says the manifest is what answered."""
+    _prepare_node_worktree(repo_landing_elsewhere, tmp_path, monkeypatch)
+
+    fake = FakeGh()
+    _script_create(fake, DECLARED_BASE)
+    monkeypatch.setattr(
+        merge_activities, "_client_factory", _client_factory(fake, repo_landing_elsewhere)
+    )
+
+    from factory.activities.merge_activities import OpenLandingPrInput, open_landing_pr
+
+    with caplog.at_level(logging.INFO, logger="factory.activities.merge_activities"):
+        opened = await env.run(open_landing_pr, OpenLandingPrInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            target_repo=str(repo_landing_elsewhere),
+            branch=BRANCH,
+            title=TITLE,
+            body_file="/tmp/body.md",
+        ))
+
+    assert opened.base == DECLARED_BASE
+    assert opened.base_source == worktrees.LANDING_BASE_MANIFEST
+    # The log line names the base, the repository it was read from, and the arm.
+    line = "\n".join(caplog.messages)
+    assert DECLARED_BASE in line
+    assert str(repo_landing_elsewhere) in line
+    assert "declared" in line
+
+
+@pytest.mark.parametrize("variant", ["missing-manifest", "malformed-manifest"])
+async def test_open_landing_pr_labels_the_checked_out_head_fallback(
+    env: ActivityEnvironment, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture, variant: str,
+) -> None:
+    """US3-S2/FR-007: a clone with no usable manifest is answered by HEAD, and says so.
+
+    `landing_branch` fails open by design (trap 5): an absent or malformed
+    manifest falls back to whatever the clone has checked out — which is the very
+    defect being fixed, wearing the fix's clothes. The answer is still produced,
+    but it is *labelled*, so an operator reading the result or the log can tell a
+    declaration from a guess.
+    """
+    repo = _clone_checked_out_elsewhere(
+        tmp_path, "target", variant=variant, checked_out=OPERATOR_BRANCH
+    )
+    _prepare_node_worktree(repo, tmp_path, monkeypatch)
+
+    fake = FakeGh()
+    _script_create(fake, OPERATOR_BRANCH)
+    monkeypatch.setattr(merge_activities, "_client_factory", _client_factory(fake, repo))
+
+    from factory.activities.merge_activities import OpenLandingPrInput, open_landing_pr
+
+    with caplog.at_level(logging.INFO, logger="factory.activities.merge_activities"):
+        opened = await env.run(open_landing_pr, OpenLandingPrInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            target_repo=str(repo),
+            branch=BRANCH,
+            title=TITLE,
+            body_file="/tmp/body.md",
+        ))
+
+    assert _create_base(fake) == OPERATOR_BRANCH
+    assert opened.base == OPERATOR_BRANCH
+    # Labelled as a fallback — never a silent reinstatement of the defect.
+    assert opened.base_source == worktrees.LANDING_BASE_HEAD
+    assert opened.base_source != worktrees.LANDING_BASE_MANIFEST
+    assert "fell back to the checked-out HEAD" in "\n".join(caplog.messages)
+
+
+async def test_open_landing_pr_ignores_a_supplied_base_and_logs_the_disagreement(
+    env: ActivityEnvironment, repo_landing_elsewhere: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """US3-S2/FR-007 (plan R7): a supplied base is ignored and logged, never refused.
+
+    This is the shape an activity task scheduled by a pre-US3 worker carries, and
+    on the live host the value it carries is already the disagreeing one. A
+    refusal here would kill the ordinary upgrade-window payload after the build
+    was paid for — the exact defect class this spec exists to remove — so the
+    activity resolves the base itself, opens against it, and states on its log
+    line that the supplied value was ignored and what it disagreed with.
+    """
+    _prepare_node_worktree(repo_landing_elsewhere, tmp_path, monkeypatch)
+
+    fake = FakeGh()
+    _script_create(fake, DECLARED_BASE)
+    monkeypatch.setattr(
+        merge_activities, "_client_factory", _client_factory(fake, repo_landing_elsewhere)
+    )
+
+    from factory.activities.merge_activities import OpenLandingPrInput, open_landing_pr
+
+    with caplog.at_level(logging.INFO, logger="factory.activities.merge_activities"):
+        opened = await env.run(open_landing_pr, OpenLandingPrInput(
+            epic_id=EPIC,
+            node_id=NODE,
+            target_repo=str(repo_landing_elsewhere),
+            branch=BRANCH,
+            title=TITLE,
+            body_file="/tmp/body.md",
+            base="spec-routing-plan",
+        ))
+
+    # Opened against the declared branch, and did not raise.
+    assert _create_base(fake) == DECLARED_BASE
+    assert opened.base == DECLARED_BASE
+    assert opened.base_source == worktrees.LANDING_BASE_MANIFEST
+    line = "\n".join(caplog.messages)
+    assert "ignored" in line
+    assert "spec-routing-plan" in line
+
+
+async def test_open_landing_pr_ignores_the_base_a_prepared_sidecar_already_records(
+    env: ActivityEnvironment, repo_landing_elsewhere: Path, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S4/FR-006: a sidecar that already records an operator branch decides nothing.
+
+    Four nodes on the live host were prepared before this fix and their sidecars
+    record `default_branch: spec-routing-plan`. A fix that only changed what
+    *future* sidecars record would leave every already-prepared node landing on
+    the wrong base, so the resolution happens at open time, from the repo, and
+    the recorded value is never consulted.
+    """
+    _prepare_node_worktree(repo_landing_elsewhere, tmp_path, monkeypatch)
+
+    # Pre-populate the sidecar the way an already-prepared node's looks.
+    record_file = worktrees._record_file(tmp_path, EPIC, NODE)
+    recorded = json.loads(record_file.read_text(encoding="utf-8"))
+    recorded["default_branch"] = "spec-routing-plan"
+    record_file.write_text(json.dumps(recorded, indent=2) + "\n", encoding="utf-8")
+    assert worktrees._read_record(record_file).default_branch == "spec-routing-plan"
+
+    fake = FakeGh()
+    _script_create(fake, DECLARED_BASE)
+    monkeypatch.setattr(
+        merge_activities, "_client_factory", _client_factory(fake, repo_landing_elsewhere)
+    )
+
+    from factory.activities.merge_activities import OpenLandingPrInput, open_landing_pr
+
+    opened = await env.run(open_landing_pr, OpenLandingPrInput(
+        epic_id=EPIC,
+        node_id=NODE,
+        target_repo=str(repo_landing_elsewhere),
+        branch=BRANCH,
+        title=TITLE,
+        body_file="/tmp/body.md",
+    ))
+
+    assert _create_base(fake) == DECLARED_BASE
+    assert opened.base == DECLARED_BASE
+    assert opened.base != "spec-routing-plan"
+
+
+def _workflow_tree() -> ast.Module:
+    """The interpreter module parsed — asserted against as code, not as text.
+
+    A text search would match the very comments that explain why the base is no
+    longer supplied, so both assertions below read the tree.
+    """
+    return ast.parse(Path(workflow.__file__).read_text(encoding="utf-8"))
+
+
+def _open_landing_call_sites() -> dict[str, ast.Call]:
+    """Every `OpenLandingPrInput(...)` in the workflow, keyed by its enclosing def."""
+    sites: dict[str, ast.Call] = {}
+    for node in ast.walk(_workflow_tree()):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for call in ast.walk(node):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "OpenLandingPrInput"
+            ):
+                sites[node.name] = call
+    return sites
+
+
+def test_both_landing_call_sites_leave_the_base_to_the_one_resolution_path() -> None:
+    """US3-S3/FR-008: neither call site decides the base — the activity does.
+
+    Two sites, not one (trap 4): `_land` is the first landing and `_reenqueue` is
+    the requeue after a rejection, which is the site a busy epic runs most —
+    every node whose sibling lands ahead of it comes back through it. A fix at
+    the first site alone passes every happy-path test and leaves the common case
+    broken, so the requeue is asserted by name.
+    """
+    sites = _open_landing_call_sites()
+
+    assert set(sites) == {"_land", "_reenqueue"}
+    # The requeue after a rejection, named explicitly.
+    assert "_reenqueue" in sites
+    for name, call in sites.items():
+        supplied = {keyword.arg for keyword in call.keywords}
+        assert "base" not in supplied, f"{name} still supplies a landing base"
+
+    # And the field the workflow used to reach for is read nowhere in it: the
+    # sidecar's observation of the clone is not a landing decision (trap 3). The
+    # field itself stays exactly where 020 pinned it — this asserts the workflow
+    # stopped consulting it, not that it stopped existing.
+    reads = [
+        node
+        for node in ast.walk(_workflow_tree())
+        if isinstance(node, ast.Attribute)
+        and node.attr == "default_branch"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "prepared"
+    ]
+    assert reads == []
 
 
 # --- enqueue_landing ----------------------------------------------------------
