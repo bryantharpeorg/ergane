@@ -333,6 +333,42 @@ def test_the_refusal_is_by_digest_and_not_by_filename(
     }
 
 
+def test_a_file_that_cannot_be_read_is_kept_rather_than_raised_over(
+    host: _Host, project: cp.ContainerProject
+) -> None:
+    """The digest rule reads a file to compare it, so an unreadable one raises
+    out of the middle of an install — and both ways a file here becomes
+    unreadable are real: bytes that are not UTF-8, and a root-owned file left by
+    a previous `sudo ergane install`. Unreadable is unproven, and unproven is
+    left alone on both paths."""
+    cm.write_project(project)
+    compose = project.directory / cp.COMPOSE_NAME
+    compose.write_bytes(b"services: \xff\xfe not utf-8\n")
+
+    write = cm.write_project(project)
+
+    assert [kept.name for kept in write.kept] == [cp.COMPOSE_NAME]
+    assert compose.read_bytes() == b"services: \xff\xfe not utf-8\n"
+
+
+def test_removal_keeps_a_recorded_file_it_cannot_read(
+    host: _Host, project: cp.ContainerProject
+) -> None:
+    """The same tolerance on the teardown path, where the manifest still claims
+    the file — so the branch is the recorded one, not the leftovers sweep."""
+    cm.write_project(project)
+    compose = project.directory / cp.COMPOSE_NAME
+    compose.write_bytes(b"services: \xff\xfe not utf-8\n")
+
+    report = cm.remove_project(host.layout)
+
+    assert compose.read_bytes() == b"services: \xff\xfe not utf-8\n"
+    assert cp.COMPOSE_NAME not in report.removed
+    assert {kept.name: kept.reason for kept in report.kept}[cp.COMPOSE_NAME] == (
+        cm.KEPT_CHANGED
+    )
+
+
 def test_the_writer_carries_provenance_for_a_file_it_no_longer_renders(
     project: cp.ContainerProject, monkeypatch: pytest.MonkeyPatch
 ) -> None:

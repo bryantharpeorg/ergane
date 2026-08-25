@@ -214,7 +214,7 @@ def write_project(project: ContainerProject) -> WriteReport:
     kept: list[KeptFile] = []
     fresh: dict[str, str] = {}
     for generated in rendered:
-        if _is_someone_elses(generated, recorded):
+        if _not_provably_ours(generated, recorded):
             # It exists and it is not what we recorded, so it is either an
             # operator's edit or a file that was here before this engine was.
             kept.append(
@@ -247,11 +247,27 @@ def write_project(project: ContainerProject) -> WriteReport:
     )
 
 
+def _not_provably_ours(generated: GeneratedFile, recorded: Mapping[str, str]) -> bool:
+    """`_is_someone_elses`, plus the file that cannot be read at all.
+
+    That rule reads the file to digest it, so an unreadable one raises out of the
+    middle of an install or a teardown — and the two ways a file in this
+    directory becomes unreadable are both real: a previous `sudo ergane install`
+    leaving a root-owned file behind, and bytes that are not UTF-8. Unreadable is
+    *unproven*, and the safe reading of unproven is the same one the digest rule
+    already makes: leave it alone and name it.
+    """
+    try:
+        return _is_someone_elses(generated, recorded)
+    except (OSError, ValueError):
+        return True
+
+
 def _matches(generated: GeneratedFile, digest: str) -> bool:
     """Whether the file on disk is already exactly this text."""
     try:
         return _digest(generated.path.read_text(encoding="utf-8")) == digest
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -315,7 +331,7 @@ def remove_project(layout: InstallLayout | None = None) -> RemovalReport:
         if not generated.path.exists():
             missing.append(name)
             continue
-        if _is_someone_elses(generated, recorded):
+        if _not_provably_ours(generated, recorded):
             kept.append(KeptFile(name, KEPT_CHANGED))
             continue
         generated.path.unlink()
