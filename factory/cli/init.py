@@ -49,6 +49,16 @@ network and must survive a refusal from the forge — moving it behind the seam
 would mean a refused operator lost the file the manual steps tell them to
 commit. A second forge makes it a question; today it is a stated limit.
 
+104's US6 adds an act that runs only where it applies. On a host whose engine
+runs in the container tier, joining a repo is not finished when the registry row
+is written: the engine mounts each repo at its own path, and one it does not
+mount is one its supervisor refuses to start against (088 FR-009). So init
+regenerates that mount list and re-ups the engine, immediately after the
+registry row and from it. The generated project on disk is the only record of
+that tier (104 R1), so a host without one is not probed and not told; and the
+step never raises, for `_schedule`'s reason. `--check` judges the same fact
+through `gather_init_facts`, as the `engine_container` finding.
+
 064's US2 adds the question that comes before all of it. Init resolves upward,
 so a directory that is not itself a repository root enrols the repository it
 happens to sit inside — and the near-miss that produced the spec was a scratch
@@ -137,6 +147,42 @@ def _default_controlplane_probe() -> tuple[list[Finding], int]:
 
 #: Seam: how `--check` reaches the control plane.  Rebound in tests.
 _controlplane_probe: Callable[[], tuple[list[Finding], int]] = _default_controlplane_probe
+
+
+def _default_project_writer(project: Any) -> Any:
+    """Write the engine container's regenerated project (104 R11's writer).
+
+    Imported late, like every other outward reach in this file: a `--check` run
+    on a host with no container tier must not pay for the module, and nothing
+    here may import the supervision tier at module scope.
+    """
+    from factory.supervision.container_manifest import write_project
+
+    return write_project(project)
+
+
+#: Seam: how `ergane init` writes the regenerated engine container project.
+#: Rebound in tests, which then read back what the mount list became.
+_project_writer: Callable[[Any], Any] = _default_project_writer
+
+
+def _default_compose_runner(argv: Any) -> Any:
+    """Run one `docker compose` command — 104-US5's own runner, not a second one.
+
+    Reaching for its private name is deliberate and is the argument
+    `container_manifest.py` makes for importing `units._digest`: one compose
+    runner has one behaviour, and the behaviour that matters here (stderr
+    merged into the output, because compose says most of what matters there) is
+    not one this file should re-decide.
+    """
+    from factory.supervision.container_engine import _run_compose
+
+    return _run_compose(argv)
+
+
+#: Seam: how `ergane init` reconciles the engine container.  Rebound in tests,
+#: so no test starts a container or contacts a daemon (104 trap 11).
+_compose_runner: Callable[[Any], Any] = _default_compose_runner
 
 
 def _prompter() -> Any:
@@ -787,6 +833,12 @@ def init_command(args: argparse.Namespace) -> int:
 
     registration = _register(slug, repo_root)
 
+    # 104/US6: immediately after the registry row, because the two are halves of
+    # one fact — the engine knowing this repo exists — and the mount list is
+    # regenerated *from* that row.  On a host with no engine container project
+    # this is None and nothing happens at all.
+    engine_line = _reconcile_engine(repo_root)
+
     # 050/FR-001: the readability of the control plane is decided *here*, above
     # the one act of init that publishes to shared infrastructure, and handed
     # down.  Every fact needed to refuse was already in hand when the schedule
@@ -812,6 +864,8 @@ def init_command(args: argparse.Namespace) -> int:
     print(f"  {repo_root / '.gitignore'}")
     print(f"  {repo_root / RUNTIME_ROOT}")
     print(_registration_line(registration))
+    if engine_line is not None:
+        print(engine_line)
     # US2-S1: the control-plane verdict is reported before the act that depends
     # on it, so the transcript reads as a decision rather than a confession.
     print(_control_plane_verdict_line(control_plane_reason))
@@ -1071,6 +1125,136 @@ def _registration_line(registration: registry.Registration) -> str:
     return f"registered: '{entry.slug}' -> {entry.path} (already recorded)"
 
 
+def _engine_compose_document(compose_path: Path) -> dict[str, Any]:
+    """The installed compose, parsed. Raises on a file that is not a mapping —
+    a project nobody can read is a fact both callers below must report, and
+    neither may guess at it."""
+    document = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError(f"{compose_path} does not parse as a compose project")
+    return document
+
+
+def _engine_repo_sources(compose_path: Path) -> set[Path]:
+    """Every repository the installed project mounts, read back from its own
+    `x-ergane-repos` list — the block `render_compose` emits as `[]` rather than
+    a bare key precisely so this read has something to parse."""
+    from factory.supervision.container_project import REPO_MOUNT_KEY
+
+    declared = _engine_compose_document(compose_path).get(REPO_MOUNT_KEY) or ()
+    return {Path(str(mount["source"])).resolve() for mount in declared}
+
+
+def _installed_confinement(compose_path: Path) -> str:
+    """Which confinement variant the installed project asks Docker for.
+
+    Read back rather than defaulted.  An operator who declined the AppArmor
+    profile at install has a config-F project, and regenerating it as config G
+    would ask Docker for a profile this host never loaded — so the engine `ergane
+    init` was reconciling would refuse to start, and the operator would have lost
+    it to the one command that was supposed to be safe.  Config F is a state
+    somebody chose, not a mistake to be corrected behind their back.
+    """
+    from factory.supervision import container_project as project_module
+
+    service = (
+        _engine_compose_document(compose_path).get("services") or {}
+    ).get(project_module.SERVICE_NAME) or {}
+    declared = set(service.get(project_module.SECURITY_OPT_KEY) or ())
+    relaxed = set(project_module.UNCONFINED_SECURITY_OPT) - set(
+        project_module.CONFINED_SECURITY_OPT
+    )
+    if declared & relaxed:
+        return project_module.CONFINEMENT_UNCONFINED
+    return project_module.CONFINEMENT_PROFILE
+
+
+def _reconcile_engine(repo_root: Path) -> str | None:
+    """Regenerate the engine container's mount list and reconcile the engine.
+
+    Returns the one line the report prints, or `None` on a host that does not
+    run the container tier — the generated project on disk *is* that record
+    (104 R1), so a systemd-tier host is not probed, not asked and not told about
+    a tier it does not have.
+
+    Never raises, for `_schedule`'s reason (FR-017): the scaffold and the
+    registry row are already the operator's, and an engine that could not be
+    reconciled is a failed *step*, not a failed init.  `ergane install` is the
+    verb that converges, and every failure line names it.
+
+    Regenerate first, then `up`.  `docker compose up -d` reconciles rather than
+    duplicating, so it is the whole of "the engine picks the repo up" — and it
+    reads the file that was just rewritten, which is why the order is not free.
+    """
+    from factory.supervision import container_engine, container_manifest
+    from factory.supervision.container_project import resolve_project
+
+    installed = container_manifest.installed_project()
+    if installed is None:
+        return None
+
+    compose_path = installed.compose_path
+    try:
+        from factory.controlplane.config import load_controlplane_config
+
+        project = resolve_project(
+            load_controlplane_config(),
+            confinement=_installed_confinement(compose_path),
+        )
+        report = _project_writer(project)
+        container_engine.bring_up(compose_path, run=_compose_runner)
+    except Exception as error:  # noqa: BLE001 - a late step must never abort init
+        return (
+            f"engine container: not reconciled — {type(error).__name__}: {error}; "
+            f"{repo_root.resolve()} is registered but the engine at "
+            f"{installed.directory} may not mount it, and its supervisor refuses "
+            "to start against a repo it cannot see — re-run `ergane install`"
+        )
+
+    if report.kept:
+        # The writer refuses to overwrite a file it did not write (104 US3), so
+        # the mount list on disk is still the operator's.  Saying the repo was
+        # mounted would be false, and false in the direction that fails hours
+        # later at the first dispatch rather than here.
+        return (
+            f"engine container: reconciled, but {compose_path.name} in "
+            f"{installed.directory} was left as you edited it, so it may not "
+            f"mount {repo_root.resolve()} — move it aside and re-run "
+            "`ergane install` to have it generated again"
+        )
+
+    return (
+        f"engine container: regenerated {compose_path} with "
+        f"{repo_root.resolve()} mounted at its own path, and reconciled the engine"
+    )
+
+
+def _engine_facts(repo_root: Path) -> dict[str, Any]:
+    """This host's engine container facts, as `InitFacts` keyword arguments.
+
+    An empty mapping is "this host does not run the container tier", and the
+    judgment renders no finding for it.  Every failure is a fact rather than an
+    exception, for `_control_plane_facts`' reason: a gathering step that raises
+    takes the whole report with it, and one unreadable file must not be able to
+    hide every other finding.
+    """
+    from factory.supervision.container_manifest import installed_project
+
+    try:
+        installed = installed_project()
+    except Exception as error:  # noqa: BLE001 - a fact-gatherer must never abort
+        return {"engine_project_dir": "?", "engine_error": f"{type(error).__name__}: {error}"}
+    if installed is None:
+        return {}
+
+    facts: dict[str, Any] = {"engine_project_dir": str(installed.directory)}
+    try:
+        mounted = repo_root.resolve() in _engine_repo_sources(installed.compose_path)
+    except Exception as error:  # noqa: BLE001 - see above
+        return {**facts, "engine_error": f"{type(error).__name__}: {error}"}
+    return {**facts, "engine_repo_mounted": mounted}
+
+
 def _write_scaffold(repo_root: Path, manifest_text: str) -> None:
     """Write exactly the declared files and nothing else."""
     manifest_path = repo_root / MANIFEST_NAME
@@ -1279,6 +1463,7 @@ def gather_init_facts(
         control_plane=control_plane_findings,
         control_plane_error=control_plane_error,
         **_schedule_facts(repo_root, slug, config),
+        **_engine_facts(repo_root),
     )
 
 

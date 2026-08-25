@@ -53,6 +53,23 @@ DEFAULT_READINESS_TIMEOUT_S = 30.0
 DEFAULT_GRACE_PERIOD_S = 10.0
 DEFAULT_DB_FILENAME = "/var/lib/ergane/temporal.sqlite"
 
+#: What the same-path refusal (FR-009) tells the operator to do, as one string
+#: so `docs/container.md` can quote it and a test can prove the quote and the
+#: code have not drifted (104-US6).
+#:
+#: The first remedy names `ergane init` rather than `ergane repo rebuild`
+#: because it is the verb that actually fixes the common case: a repo joined
+#: after the engine came up is registered but unmounted, and `ergane init`
+#: regenerates the mount list and reconciles the engine in one command. Rebuild
+#: is kept for the other case it always addressed — a recorded path that is
+#: stale, where the registry is what is wrong and no mount would help.
+SAME_PATH_REMEDIES = (
+    "remedies: run `ergane init <repo path>` on the host, which regenerates the "
+    "engine container's mount list with that repo at its own path and reconciles "
+    "the engine; or, if the recorded path is stale rather than merely unmounted, "
+    "rebuild the registry with `ergane repo rebuild <repo path> ...`"
+)
+
 
 class ChildController(Protocol):
     """Handle to one supervised child: wait for it, stop it, or kill it."""
@@ -150,7 +167,8 @@ def _check_same_path_registry(state_home: str | Path | None = None) -> None:
 
     An empty or absent registry is a fresh container and starts normally
     (trap 7a).  Paths are resolved before comparing (trap 7b).  The refusal
-    names both remedies: wrong mount or stale cache.
+    names both remedies: wrong mount or stale cache — `SAME_PATH_REMEDIES`,
+    which `docs/container.md` quotes.
     """
     if state_home is not None:
         registry_path = Path(state_home) / DEFAULT_REGISTRY_REL
@@ -169,10 +187,7 @@ def _check_same_path_registry(state_home: str | Path | None = None) -> None:
             f"repo '{slug}' is registered at {path}, which is not a directory"
             for slug, path in missing
         ]
-        lines.append(
-            "remedies: ensure the repo is mounted at the recorded path, "
-            "or rebuild the registry with `ergane repo rebuild <repo path> ...`"
-        )
+        lines.append(SAME_PATH_REMEDIES)
         raise SupervisorRefusal("\n".join(lines))
 
 

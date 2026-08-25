@@ -73,6 +73,12 @@ Temporal schedule, when the one it has is paused, and when that schedule's
 arguments disagree with the committed manifest. Here rather than in a second
 judgment for the reason the rest of this module exists — "ready" is decided in
 exactly one place, and a joined repo with no scheduler is not ready.
+
+**104 US6 adds `engine_container`**, and it is the first finding here that is
+*conditional on the host*: a repo the engine container does not mount is one the
+supervisor refuses to start against (088 FR-009), but only on a host that runs
+that tier at all. `engine_project_dir` is empty everywhere else and the check
+renders nothing — "not applicable" is a claim a passing finding cannot make.
 """
 
 from __future__ import annotations
@@ -129,6 +135,16 @@ class InitFacts:
     #: Why the schedule could not be read at all — unreachable engine, or no
     #: registry entry naming the slug that would identify it.
     schedule_error: str | None = None
+    #: 104 US6.  The engine container project's directory, or "" on a host that
+    #: does not run the container tier at all.  A directory rather than a bool
+    #: because "" means *not applicable*: the judgment below renders no finding
+    #: for a tier this host does not have, and a host that has one is judged
+    #: against it by name.
+    engine_project_dir: str = ""
+    #: Whether that project mounts this repository at its own path.
+    engine_repo_mounted: bool = False
+    #: Why the project could not be read — a hand-mangled compose, most likely.
+    engine_error: str | None = None
 
 
 def evaluate_repo(
@@ -408,6 +424,7 @@ def evaluate_init_facts(init_facts: "InitFacts | None") -> tuple[Finding, ...]:
     _landing_branch_finding(findings, init_facts)
     _control_plane_finding(findings, init_facts)
     _roadmap_schedule_finding(findings, init_facts)
+    _engine_container_finding(findings, init_facts)
     return tuple(findings)
 
 
@@ -664,5 +681,57 @@ def _roadmap_schedule_finding(findings: list[Finding], facts: "InitFacts") -> No
             False,
             f"roadmap schedule '{facts.schedule_id}' disagrees with this "
             f"repository: {'; '.join(problems)}{remedy}",
+        )
+    )
+
+
+def _engine_container_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """On a container-tier host, the engine must mount this repo (104 US6-S1).
+
+    Rendered only where the tier exists.  The generated project on disk *is* the
+    record that this host runs the engine container (104 R1), so a host with no
+    project is not judged against a requirement it does not have — an absent
+    finding here means "not applicable", which a passing one could not say.
+
+    What it catches is the state the supervisor's same-path check refuses at
+    startup (088 FR-009): a repo registered after the engine came up, mounted
+    nowhere, invisible to it.  The remedy is the same verb in both places.
+    """
+    if not facts.engine_project_dir:
+        return
+
+    if facts.engine_error is not None:
+        findings.append(
+            Finding(
+                "engine_container",
+                False,
+                f"the engine container project at {facts.engine_project_dir} could "
+                f"not be read, so whether it mounts {facts.repo_root} is unknown: "
+                f"{facts.engine_error} — re-run `ergane install`, which regenerates "
+                "the project it names",
+            )
+        )
+        return
+
+    if not facts.engine_repo_mounted:
+        findings.append(
+            Finding(
+                "engine_container",
+                False,
+                f"the engine container project at {facts.engine_project_dir} does "
+                f"not mount {facts.repo_root} at its own path, so the engine cannot "
+                f"see this repository — run `ergane init {facts.repo_root}` to "
+                "regenerate the mount list and reconcile the engine; without it the "
+                "supervisor refuses at startup and a dispatch here finds no worktree",
+            )
+        )
+        return
+
+    findings.append(
+        Finding(
+            "engine_container",
+            True,
+            f"the engine container project at {facts.engine_project_dir} mounts "
+            f"{facts.repo_root} at its own path",
         )
     )

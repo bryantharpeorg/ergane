@@ -18,8 +18,22 @@ clean checkout on the host immediately afterwards.
 The supervisor checks this before starting any child (FR-009,
 `factory/supervision/container_supervisor.py:_check_same_path_registry`).  If a
 registered repo's recorded path is not a directory, the container refuses and
-names both remedies: ensure the repo is mounted at the recorded path, or
-rebuild the registry with `ergane repo rebuild <repo path> ...`.
+names both remedies, verbatim (`SAME_PATH_REMEDIES` in that module, quoted here
+and held to it by `tests/test_container_supervisor.py`):
+
+```text
+remedies: run `ergane init <repo path>` on the host, which regenerates the
+engine container's mount list with that repo at its own path and reconciles
+the engine; or, if the recorded path is stale rather than merely unmounted,
+rebuild the registry with `ergane repo rebuild <repo path> ...`
+```
+
+`ergane init` is named first because it is the verb that fixes the case that
+actually happens: a repo joined after the engine came up is registered but not
+yet mounted, and `ergane init <repo path>` regenerates the project's mount list
+and reconciles the engine in one command (spec 104, US6).  Rebuild remains the
+remedy for the other case — a recorded path that is stale rather than unmounted,
+where no mount would help because the registry is what is wrong.
 
 ## Mount the supervision home, not just the state root
 

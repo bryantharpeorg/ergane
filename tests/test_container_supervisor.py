@@ -337,10 +337,38 @@ async def test_missing_repo_path_refuses_before_any_child_starts(
     message = str(raised.value)
     assert "missing-repo" in message
     assert "/nonexistent/path" in message
-    assert "remedies" in message
-    assert "mounted" in message
-    assert "rebuild" in message
+    # 104-US6/T049: the remedies were asserted here as the bare word "remedies",
+    # which is true of any string containing it — including one that names no
+    # verb at all. The refusal is the operator's only instruction at that moment,
+    # so the assertion is now what it says.
+    assert supervisor_mod.SAME_PATH_REMEDIES in message
+    assert "`ergane init <repo path>`" in message
+    assert "`ergane repo rebuild <repo path> ...`" in message
     assert started == []
+
+
+def _squashed(text: str) -> str:
+    """One line, single-spaced — so a quote may be wrapped for reading without
+    being a different string from the one the code raises."""
+    return " ".join(text.split())
+
+
+def test_the_refusals_remedies_and_the_documented_ones_are_one_string(
+    supervisor_mod,
+) -> None:
+    """104-US6/US6-S2: `docs/container.md` quotes this refusal, so the two must
+    not be able to disagree.
+
+    The doc is the surface an operator reads *before* meeting the refusal, and a
+    remedy that has moved on in the code while the page still names the old verb
+    sends them to a command that will not help. Whitespace is normalised because
+    the page wraps its blockquote and the module does not; nothing else is.
+    """
+    doc = Path(__file__).resolve().parents[1] / "docs" / "container.md"
+
+    assert _squashed(supervisor_mod.SAME_PATH_REMEDIES) in _squashed(
+        doc.read_text(encoding="utf-8")
+    )
 
 
 async def test_empty_registry_starts_normally(
