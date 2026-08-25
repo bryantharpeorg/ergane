@@ -77,7 +77,7 @@ import argparse
 import dataclasses
 import subprocess
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import yaml
 
@@ -1490,7 +1490,13 @@ def check_repo(
     return onboard_target_repo(forge, str(root), init_facts=facts)
 
 
-def render_check(profile: TargetRepoProfile, repo_root: Path, manifest_name: str) -> str:
+def render_check(
+    profile: TargetRepoProfile,
+    repo_root: Path,
+    manifest_name: str,
+    *,
+    remedy: Mapping[str, str] | None = None,
+) -> str:
     """One line per finding: `PASS`, `WARN` or `FAIL`.
 
     Passing findings print too: "checked" and "passed" are different claims, and
@@ -1501,6 +1507,12 @@ def render_check(profile: TargetRepoProfile, repo_root: Path, manifest_name: str
     and "all N checks passed" over the top of a `[WARN]` line would be the
     report contradicting itself — which is the exact reading ("gates work") this
     story exists to stop.
+
+    US5 added an optional remedy table: every non-passing line names the command
+    that clears it. A check not present in the table falls back to naming
+    `ergane init --check` so a red line never leaves the operator guessing.
+    When the table is absent the output is byte-identical to the pre-US5 shape,
+    keeping `ergane init --check`'s existing tests green untouched (trap 13).
     """
     lines = [f"ergane readiness for {repo_root} ({manifest_name})"]
     failed = 0
@@ -1510,7 +1522,13 @@ def render_check(profile: TargetRepoProfile, repo_root: Path, manifest_name: str
             failed += 1
         elif not finding.passed:
             warned += 1
-        lines.append(f"  [{finding.mark}] {finding.check}: {finding.detail}")
+        line = f"  [{finding.mark}] {finding.check}: {finding.detail}"
+        if remedy is not None and not finding.passed:
+            fix = remedy.get(finding.check)
+            if fix is None:
+                fix = "run `ergane init --check`"
+            line = f"{line} — fix: {fix}"
+        lines.append(line)
 
     total = len(profile.findings)
     warnings = f", {warned} warned" if warned else ""
