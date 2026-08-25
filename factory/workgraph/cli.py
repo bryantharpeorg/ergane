@@ -33,9 +33,16 @@ from factory.mergequeue.forge import resolve_forge_for_repo
 from factory.mergequeue.models import LandingConfig
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
+from factory.verify.criteria import parse_spec
+from factory.verify.models import RequirementKind
 from factory.workgraph.delta import DeltaResult, derive_delta
 from factory.workgraph.derive import DerivationError, derive_workgraph
-from factory.workgraph.landed import LandedKind, fingerprint, landed_facts
+from factory.workgraph.landed import (
+    LandedKind,
+    fingerprint,
+    landed_facts,
+    rescue_trailer,
+)
 from factory.workgraph.prompt import TASKS_DOCUMENT
 from factory.workgraph.worktree import landing_branch
 from factory.workgraph.models import (
@@ -180,10 +187,34 @@ def landed_command(args: argparse.Namespace) -> int:
             f"cannot read landed facts for {epic_id}: {error}"
         ) from error
 
+    # FR-017: for every story this spec declares that the reader found no
+    # landing for, print the exact PR title and the exact trailer line a rescue
+    # must carry, ready to paste. The story list comes from the spec text already
+    # read above, so a story the spec does not declare is never suggested.
+    requirements = parse_spec(spec_text)
+    declared = [
+        (requirement.key, requirement.title)
+        for requirement in requirements
+        if requirement.kind is RequirementKind.STORY
+    ]
+
     if getattr(args, "as_json", False):
         document: dict[str, Any] = {"default_branch": default_branch, "facts": {}}
         for story_key, fact in sorted(facts.items()):
             document["facts"][story_key] = asdict(fact)
+        document["unlanded"] = [
+            {
+                "story_key": story_key,
+                "pr_title": _rescue_pr_title(epic_id, story_key, title),
+                "trailer": rescue_trailer(
+                    epic_id=epic_id,
+                    node_id=story_key.lower(),
+                    story_key=story_key,
+                ),
+            }
+            for story_key, title in declared
+            if story_key not in facts
+        ]
         print(json.dumps(document, indent=2))
     else:
         print(f"default branch: {default_branch}")
@@ -192,7 +223,29 @@ def landed_command(args: argparse.Namespace) -> int:
             if fact.external_completion:
                 line += "  [external completion]"
             print(line)
+        for story_key, title in declared:
+            if story_key in facts:
+                continue
+            print()
+            print(f"{story_key} has no landing yet. To rescue it by hand, open a PR with:")
+            print(f"  title:   {_rescue_pr_title(epic_id, story_key, title)}")
+            print(
+                f"  trailer: {rescue_trailer(epic_id=epic_id, node_id=story_key.lower(), story_key=story_key)}"
+            )
     return EXIT_OK
+
+
+def _rescue_pr_title(epic_id: str, story_key: str, story_title: str | None) -> str:
+    """The exact PR title a rescue of `story_key` must carry.
+
+    A rescue PR is opened by hand, so its title may be any prose; what makes it
+    attributable is the body trailer, not the title. The title printed is the one
+    the operator is expected to open — prose naming the story — so a rescue can
+    be read at a glance without the trailer doing the only work.
+    """
+    node_id = story_key.lower()
+    subject = story_title or story_key
+    return f"{epic_id}/{node_id}: {subject}"
 
 
 # --- derive: text in, artifact out, nothing on failure (US3-S4, SC-006) -------

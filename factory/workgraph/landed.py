@@ -49,16 +49,46 @@ _HISTORICAL_LANDING_RE = re.compile(
     r"(?P<branch>[^']+)$"
 )
 
-#: How `git log` separates hash from subject.
-_LOG_SEP = "\t"
+#: The rescue trailer grammar: a line in the commit BODY naming epic, node and
+#: story. The operator writes it into a hand-opened pull request's body; the
+#: forge carries it into the squash commit body, exactly like the subject. It is
+#: the third accepted grammar (107 FR-015). The `node_id` is the story key
+#: lowercased, matching the deriver's minting invariant; the story part is named
+#: explicitly so the grammar never has to guess.
+#:
+#: The render end is `rescue_trailer` below; a change to either must change both,
+#: on the same contract D-034 states for `_LANDING_RE` and `messages.pr_title`.
+_RESCUE_TRAILER_RE = re.compile(
+    r"^Rescue:\s*(?P<epic_id>[^/\s]+)/(?P<node_id>[^:\s]+):\s*(?P<story_key>US\d+)\s*$"
+)
+
+
+def rescue_trailer(*, epic_id: str, node_id: str, story_key: str) -> str:
+    """The exact trailer line a rescue must carry, ready to paste (107 FR-017).
+
+    This is the render end of the rescue-attribution contract; the parse end is
+    `_RESCUE_TRAILER_RE` above. A change to either must change both, on the same
+    contract D-034 states for `_LANDING_RE` and `messages.pr_title`.
+    """
+    return f"Rescue: {epic_id}/{node_id}: {story_key}"
+
+#: How `git log` separates the body from its subject within one record (`%x1f`,
+#: the ASCII unit separator), and how it separates records from each other (`-z`,
+#: NUL). Widening the read from subjects to bodies is a change to how the log is
+#: SPLIT (107 FR-016, trap 12): a subject may never be mistaken for a body line
+#: and a body line may never be mistaken for a subject.
+_LOG_SEP = "\x1f"
+_LOG_RECORD_SEP = "\x00"
 
 
 class LandedKind(StrEnum):
-    """Provenance of a landing fact: observed by queue grammar, attested by spec, or historical git merge."""
+    """Provenance of a landing fact: observed by queue grammar, attested by spec,
+    historical git merge, or rescued by a hand-opened PR carrying the body trailer."""
 
     OBSERVED = "observed"
     ATTESTED = "attested"
     HISTORICAL = "historical"
+    RESCUED = "rescued"
 
 
 @dataclass(frozen=True)
@@ -134,7 +164,12 @@ def landed_facts(
     # ever changes, that precedence rule (FR-007) must be preserved explicitly.
     observed: dict[str, LandedFact] = {}
     valid_story_keys = set(_story_keys(_spec_requirements_at(repo_path, head, spec_dir)))
-    for commit, subject in _git_log_subjects(repo_path, head):
+    for commit, subject, body in _git_log_subjects(repo_path, head):
+        # Precedence (107 FR-015, plan R11): a commit that matches a subject
+        # grammar AND carries the rescue trailer is recorded by the SUBJECT
+        # grammar, which wins over the trailer. The rule is asserted here, not
+        # left to scan order. `_LANDING_RE` first, `_HISTORICAL_LANDING_RE`
+        # second, the body trailer last.
         match = _LANDING_RE.match(subject)
         if match is not None and match.group("epic_id") == epic_id:
             story_key = match.group("story_key")
@@ -160,6 +195,30 @@ def landed_facts(
                     story_key=story_key,
                     commit=commit,
                     kind=LandedKind.HISTORICAL,
+                )
+            continue
+
+        # Rescue grammar: a trailer in the body naming epic, node and story.
+        # It must refuse an epic or story the spec does not declare, exactly as
+        # an unrecognised subject is refused — a rescue may never mark an unbuilt
+        # story landed (107 FR-015, trap 13). The node id must be the story key
+        # lowercased (the deriver's minting invariant), so a trailer whose node
+        # does not match its story is malformed and ignored, never credited. Only
+        # the FIRST trailer match of a body is considered, so a later body line
+        # cannot shadow a declared one or be shadowed by scan order.
+        rescue = _rescue_trailer_match(body)
+        if rescue is not None and rescue.group("epic_id") == epic_id:
+            story_key = rescue.group("story_key")
+            node_id = rescue.group("node_id")
+            if (
+                node_id == story_key.lower()
+                and story_key in valid_story_keys
+                and story_key not in observed
+            ):
+                observed[story_key] = LandedFact(
+                    story_key=story_key,
+                    commit=commit,
+                    kind=LandedKind.RESCUED,
                 )
             continue
 
@@ -228,24 +287,53 @@ def _resolve_default_head(repo: Path, default_branch: str, *, fetch: bool = True
     ) from last
 
 
-def _git_log_subjects(repo: Path, head: str) -> list[tuple[str, str]]:
-    """All commits reachable from `head`, each as (sha, subject)."""
+def _git_log_subjects(repo: Path, head: str) -> list[tuple[str, str, str]]:
+    """All commits reachable from `head`, each as (sha, subject, body).
+
+    Widened from subjects to bodies using a record separator (107 FR-016): a
+    NUL (`-z`) separates records and a unit separator (`%x1f`) separates the hash
+    from the rest, so the body is the whole remainder — subject on its first
+    line, message body below it. Because the separator is a byte git guarantees
+    never appears in a message, a multi-line body parses without any body line
+    being read as a subject and without any subject being truncated by a
+    delimiter a body happens to contain (trap 12). Rewriting the split here is
+    the change; the caller's matching is unchanged in shape.
+    """
     output = _git(
         repo,
         "log",
-        "--format=%H" + _LOG_SEP + "%s",
+        "-z",
+        "--format=%H" + _LOG_SEP + "%B",
         head,
         "--",
     )
-    results: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        if not line:
+    results: list[tuple[str, str, str]] = []
+    for record in output.split(_LOG_RECORD_SEP):
+        if not record:
             continue
-        commit, sep, subject = line.partition(_LOG_SEP)
+        commit, sep, rest = record.partition(_LOG_SEP)
         if sep != _LOG_SEP:
+            # Defensive: a record with no separator would otherwise be dropped.
             continue
-        results.append((commit, subject))
+        body = rest
+        subject, _, remainder = body.partition("\n")
+        results.append((commit, subject, remainder))
     return results
+
+
+def _rescue_trailer_match(body: str):
+    """The first `_RESCUE_TRAILER_RE` match in `body`, or None.
+
+    The body is the commit's full message below the subject. Only the first
+    trailer line that matches is returned, so scan order cannot shadow a
+    declared rescue with a later one — and a body with no trailer returns None,
+    which the caller treats exactly as an unrecognised subject.
+    """
+    for line in body.splitlines():
+        match = _RESCUE_TRAILER_RE.match(line.strip())
+        if match is not None:
+            return match
+    return None
 
 
 def _frontmatter_at(repo: Path, rev: str, spec_dir: str) -> dict:
@@ -278,7 +366,7 @@ def _attesting_commit(repo: Path, head: str, spec_dir: str) -> str | None:
     wrong: any later edit that preserves `state: landed` is not a new attestation.
     Returns None if no commit introduces the attestation.
     """
-    for commit, _subject in _git_log_subjects(repo, head):
+    for commit, _subject, _body in _git_log_subjects(repo, head):
         frontmatter = _frontmatter_at(repo, commit, spec_dir)
         if frontmatter.get("state") != "landed":
             continue
