@@ -334,6 +334,12 @@ def ensure(
     A recorded pin is reused only when it is still an ancestor of the target's
     current landing-branch head (US1 FR-001); otherwise the worktree is rebuilt
     and the old branch is archived, never deleted (FR-004).
+
+    Reuse of any kind is conditional on the directory being a worktree of
+    `target_repo`: `worktree_path` takes no repository, so two clones dispatched
+    under one factory root resolve the same directory for the same node id, and
+    an existing one belonging to the other clone raises `WorktreeOwnershipError`
+    rather than being returned or adopted (107 FR-002).
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
@@ -342,6 +348,17 @@ def ensure(
     recorded = _read_record(record_file)
 
     if path.is_dir():
+        # Ahead of both reuse branches, because both were blind to it (107
+        # FR-002). The recorded branch checks ancestry, which two clones of one
+        # repository pass identically; the adopt branch checks nothing at all,
+        # and fires precisely when the sidecar that might have said so is gone.
+        # Refuse, never repair: removing another repository's registration would
+        # delete work in a clone this epic was never asked to touch, and in the
+        # two-dispatcher configuration a live node may be writing there now (R3).
+        ownership = _worktree_ownership(repo, path)
+        if not ownership.owned:
+            raise WorktreeOwnershipError(_ownership_refusal(repo, path, ownership))
+
         if recorded is not None:
             # FR-002: the directory, branch, pin and sidecar are untouched if
             # the recorded base_ref still belongs to the target's history.
