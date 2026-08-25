@@ -56,6 +56,10 @@ def _build_wheel(tmp_path: Path, *, version: str | None = None) -> Path:
     # produced by the code in this worktree, copy the edited tracked files over.
     shutil.copy2(PYPROJECT, copy_root / "pyproject.toml")
     shutil.copy2(FACTORY_DIR / "cli" / "main.py", copy_root / "factory" / "cli" / "main.py")
+    shutil.copy2(
+        FACTORY_DIR / "supervision" / "engine_identity.py",
+        copy_root / "factory" / "supervision" / "engine_identity.py",
+    )
     shutil.copy2(REPO_ROOT / "personas.example.yaml", copy_root / "personas.example.yaml")
 
     if version is not None:
