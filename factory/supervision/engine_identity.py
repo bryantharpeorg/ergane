@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from factory.registry import resolve_state_home
+
 #: The filename of the engine identity record inside the supervision home.
 IDENTITY_FILENAME = "engine-identity.json"
 
@@ -50,6 +52,32 @@ def cli_version() -> str:
 def image_reference(version: str) -> str:
     """Fully-qualified image reference for a pinned CLI version."""
     return f"{IMAGE_REPOSITORY}:{version}"
+
+
+def engine_skew(identity: EngineIdentity | None) -> str | None:
+    """Refusal sentence when the running engine's version differs from the CLI.
+
+    Returns ``None`` when the versions match or when no identity file was found,
+    preserving today's "check activates only on evidence" behaviour for native
+    engines and pre-105 containers.
+
+    The sentence names both versions, the two remedies (`ergane engine upgrade`
+    and `docker pull <repo>:<cli>`), and the absolute path of the identity record
+    so an operator whose engine is gone can clear a stale record that a killed
+    container never removed.
+    """
+    if identity is None:
+        return None
+    cli = cli_version()
+    if identity.version == cli:
+        return None
+    path = identity_path(resolve_state_home()).resolve()
+    return (
+        f"engine is running ergane {identity.version}; this CLI is {cli} — they must match. "
+        f"Upgrade with `ergane engine upgrade`, or pull the pinned image directly: "
+        f"docker pull {image_reference(cli)}. "
+        f"If that engine is gone, this record is stale — remove {path}."
+    )
 
 
 def identity_path(state_home: str | Path) -> Path:

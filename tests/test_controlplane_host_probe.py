@@ -150,19 +150,30 @@ async def test_host_with_every_prerequisite_passes(
     )
     monkeypatch.setenv("ERGANE_CONFIG_PATH", str(config_path))
 
-    # Full registry: the two host-facing probes + five existing probes.
+    # Full registry: the two host-facing probes + engine + five existing probes.
     full_findings, _ = await verify_module.verify_controlplane_async(str(config_path))
-    full_non_host = [f for f in full_findings if f.check not in ("host", "forge")]
+    full_non_host = [
+        f
+        for f in full_findings
+        if f.check not in ("host", "forge", "engine")
+    ]
     host_finding = next(f for f in full_findings if f.check == "host")
     assert host_finding.passed is True
     assert "prerequisites are present" in host_finding.detail
 
-    # Registry without the host-facing probes: "today's" five probes in isolation.
+    # Registry without the host-facing or engine probes: the five pre-105 probes in isolation.
     original_registry = list(verify_module.REGISTRY)
     five_probe_registry = [
         p
         for p in original_registry
-        if not isinstance(p, (verify_module.HostProbe, verify_module.ForgeCapabilityProbe))
+        if not isinstance(
+            p,
+            (
+                verify_module.HostProbe,
+                verify_module.ForgeCapabilityProbe,
+                verify_module.EngineIdentityProbe,
+            ),
+        )
     ]
     assert len(five_probe_registry) == 5
     verify_module.REGISTRY[:] = five_probe_registry

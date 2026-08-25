@@ -95,8 +95,10 @@ RUN apt-get update && apt-get install -y libpq-dev
 ```
 
 The tag `X.Y.Z` is always equal to the CLI version; the startup handshake
-refuses to run a mismatched engine and prints the exact `docker pull` command to
-run.
+refuses to run a mismatched engine and prints both remedies — the exact
+`docker pull ghcr.io/bryantharpeorg/ergane:<cli>` command to run, and
+`ergane engine upgrade` — plus the absolute path of the stale identity record
+to remove if the engine is gone.
 
 ## Verbs the container does not support
 

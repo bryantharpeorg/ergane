@@ -680,11 +680,13 @@ async def test_verify_all_subsystems_pass(
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
 
     assert exit_code == 0
-    assert len(findings) == 7
+    assert len(findings) == 8
     assert {f.check for f in findings} == {
-        "host", "forge", "llm", "temporal", "memory", "telemetry", "escalation"
+        "host", "forge", "engine", "llm", "temporal", "memory", "telemetry", "escalation"
     }
     assert all(f.passed for f in findings)
+    engine_finding = next(f for f in findings if f.check == "engine")
+    assert "no engine identity record" in engine_finding.detail
     llm_finding = next(f for f in findings if f.check == "llm")
     assert "1-token" in llm_finding.detail
     assert "distinct alias" in llm_finding.detail
@@ -741,11 +743,11 @@ async def test_verify_no_masking_temporal_namespace_missing(
 
     assert exit_code == 1
     checks = {f.check: f for f in findings}
-    assert len(findings) == 7
+    assert len(findings) == 8
     assert checks["temporal"].passed is False
     assert "absent-namespace" in checks["temporal"].detail
     assert "temporal operator namespace create absent-namespace" in checks["temporal"].detail
-    for check in ("host", "forge", "llm", "memory", "telemetry", "escalation"):
+    for check in ("host", "forge", "engine", "llm", "memory", "telemetry", "escalation"):
         assert checks[check].passed is True
 
 

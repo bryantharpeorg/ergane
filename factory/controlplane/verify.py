@@ -1078,9 +1078,75 @@ class ForgeCapabilityProbe:
         )
 
 
+class EngineIdentityProbe:
+    """Does the running engine advertise the same version as this CLI? (105-US3)
+
+    The engine writes an identity record when it starts and removes it on a
+    clean exit. A mismatched record means the operator is about to dispatch into
+    version skew, which is refused at the dispatch sites. `install --verify`
+    surfaces the same fact so an operator can see the problem *before* trying
+    to start an epic.
+
+    **Why `install --verify` and not the doctor.** This is a first-run defect:
+    it is true from the moment the release is installed on a host that already
+    has an engine running, it is true before any epic exists for the doctor to
+    find wedged, and it recurs whenever the engine and the CLI diverge again.
+    The doctor answers "what is wrong with the work in flight"; this has to be
+    answerable when there is no work in flight at all.
+
+    An absent identity file is a **pass**: every native install and every
+    pre-105 container has none, and `verify_controlplane` has no skip verdict.
+    A missing record is not evidence of skew, only of "nothing to compare".
+    """
+
+    name = "engine"
+
+    def __init__(self, *, state_home: Any = None) -> None:
+        self._state_home = state_home
+
+    async def gather(self, config: ControlPlaneConfig) -> tuple[EngineIdentity | None, str]:
+        """Read the identity record from the host's state home.
+
+        A synchronous filesystem read off the async loop; kept thin so it can be
+        driven from the same `verify_controlplane` loop as every other probe.
+        """
+        from factory.supervision.engine_identity import read_identity
+        from factory.registry import resolve_state_home
+
+        state_home = self._state_home or resolve_state_home()
+        identity = read_identity(state_home)
+        return (identity, str(state_home))
+
+    def evaluate(self, snapshot: tuple[EngineIdentity | None, str]) -> Finding:
+        """Pass on match or absence; fail on mismatch with the shared sentence."""
+        from factory.supervision.engine_identity import cli_version, engine_skew
+
+        identity, state_home_str = snapshot
+        if identity is None:
+            record_path = Path(state_home_str) / "ergane" / "supervision" / "engine-identity.json"
+            return Finding(
+                check=self.name,
+                passed=True,
+                detail=(
+                    f"no engine identity record at {record_path}; "
+                    "the version handshake activates only on evidence"
+                ),
+            )
+        cli = cli_version()
+        sentence = engine_skew(identity)
+        if sentence is None:
+            return Finding(
+                check=self.name,
+                passed=True,
+                detail=f"engine version matches this CLI ({cli})",
+            )
+        return Finding(check=self.name, passed=False, detail=sentence)
+
+
 REGISTRY: list[Probe] = [
     HostProbe(),
     ForgeCapabilityProbe(),
+    EngineIdentityProbe(),
     LLMProbe(),
     TemporalProbe(),
     MemoryProbe(),

@@ -131,6 +131,7 @@ from factory.workgraph.models import (
 from factory.workgraph.preflight import (
     PreflightFinding,
     check_aliases,
+    engine_skew_findings,
     landing_readiness_preflight,
     prompt_assembly_preflight,
 )
@@ -335,7 +336,8 @@ async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
     run is the failure mode, and here each round trip is a dispatch that has to
     be started again.
     """
-    findings = prompt_assembly_preflight(
+    findings = engine_skew_findings()
+    findings += prompt_assembly_preflight(
         graph, Path(graph.specs_root) / graph.feature
     )
     findings += landing_readiness_preflight(graph, _preflight_factory_root())
