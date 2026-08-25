@@ -492,6 +492,20 @@ def push_branch(
     if not path.is_dir():
         raise WorktreeError(f"node worktree does not exist: {path}")
 
+    # US2 (107 FR-004): refuse a push against the wrong repository's ref store
+    # *before* git runs, or git would say `src refspec ... does not match any`
+    # and send the diagnosis elsewhere. The branch is pushed through `repo`'s
+    # ref store, so the directory it lives in must be a worktree OF `repo`; when
+    # it belongs to another clone the refusal names both repositories, the
+    # worktree and the branch (R3 — refuse, never relocate the push into the
+    # worktree, which would pass on this host only because both clones share one
+    # origin).
+    ownership = _worktree_ownership(repo, path)
+    if not ownership.owned:
+        raise WorktreeOwnershipError(
+            _ownership_refusal(repo, path, ownership, branch=branch)
+        )
+
     _git(repo, "push", "--quiet", remote, branch)
     return _head(path)
 
@@ -854,22 +868,43 @@ def _owning_clone(path: Path, common_dir: Path) -> Path:
         return common_dir.parent
 
 
-def _ownership_refusal(repo: Path, path: Path, ownership: WorktreeOwnership) -> str:
+def _ownership_refusal(
+    repo: Path,
+    path: Path,
+    ownership: WorktreeOwnership,
+    *,
+    branch: str | None = None,
+) -> str:
     """The refusal an operator meets, and the command that clears it (FR-003).
 
     Nothing in the tree sweeps the stale worktrees this refuses on, so this
     message is the operator's whole next move: it names the directory, the clone
     that owns it, the repository the epic was dispatched against, and a command
-    issued against the owner — the only repository git will accept it from.
+    issued against the owner — the only clone git will accept it from.
+
+    The landing path (US2) passes the branch it was about to push/pull, so its
+    refusal names the ref that lives nowhere in the dispatched repo's store
+    (US2-S1). The dispatch-time callers (US1) leave it out — their exact message
+    is pinned by `test_the_refusal_reads_exactly_as_the_operator_will_meet_it`.
     """
     here = path.resolve()
+    # The landing path (US2) passes the branch so the message can say which ref
+    # the push was about to miss; dispatch-time callers (US1) leave it out and
+    # their exact message is pinned by
+    # `test_the_refusal_reads_exactly_as_the_operator_will_meet_it`.
+    branch_clause = (
+        f". The branch {branch} lives in the owning clone's ref store, so a "
+        f"push here would find no such ref in the repository that was asked"
+        if branch
+        else ""
+    )
     if ownership.owner is not None:
         return (
             f"node worktree {here} is registered to {ownership.owner}, not to the "
             f"dispatched target repo {repo.resolve()}: refusing to build one "
-            f"clone's story in another clone's worktree. Clear it from the "
-            f"owning clone and dispatch again: "
-            f"git -C {ownership.owner} worktree remove --force {here}"
+            f"clone's story in another clone's worktree"
+            f"{branch_clause}. Clear it from the owning clone and dispatch "
+            f"again: git -C {ownership.owner} worktree remove --force {here}"
         )
     where = (
         f"git resolves its top level to {ownership.toplevel}, the clone it "
@@ -1092,6 +1127,17 @@ def sync_with_target(
 
     if not path.is_dir():
         raise WorktreeError(f"node worktree does not exist: {path}")
+
+    # US2 (107 FR-005): the sync fetches in `repo` and merges `remote/<default>`
+    # inside `path`. When `path` belongs to a different clone than `repo`, that
+    # merge would fold a ref from one repository's ref store into a worktree
+    # another owns — refused on the same terms as the push, naming both
+    # repositories and the branch.
+    ownership = _worktree_ownership(repo, path)
+    if not ownership.owned:
+        raise WorktreeOwnershipError(
+            _ownership_refusal(repo, path, ownership, branch=default)
+        )
 
     # Bring the remote's refs up to date against the target clone, so
     # `remote/<default>` names the head the queue just moved under the node.
