@@ -88,6 +88,32 @@ before dispatch, not discovered oversized after a build. The obligation sits wit
 the spec author here too: the ceiling binds the diff an agent produces, so a story
 scoped past it is a defect in the spec (D-050).
 
+### IX. A Governing Value Is Declared, Never Ambient
+
+When code needs a value that decides where work goes — which branch a landing targets,
+which repository owns a directory, which root a path resolves against, which model a
+node runs — it reads that value from the declaration that owns it (`factory.yaml`, the
+persona registry, the compiled workgraph, the node's own record). It never infers it
+from whatever the process happens to be sitting in: a checked-out `HEAD`, a current
+working directory, an inherited environment variable, or a default that is merely
+present.
+
+Ambient state is the most expensive kind of wrong answer this factory produces, because
+it is *plausible*. It is correct on the machine where the code was written, correct in
+every test that runs in a clean checkout, and wrong only in the configuration nobody
+tried — so it survives review, survives the suite, and fails later, far from its cause,
+wearing an error message that names something else. Three times in eight days a landing
+PR was opened against whatever branch a clone had checked out rather than the branch
+`factory.yaml` declares: `attest/023-042-landed` and `operator/apache-2-license` on
+2026-08-17, `spec-routing-plan` on 2026-08-24. Each one killed a node that had passed
+every gate and its judge — one of them cascading to two more — and each announced itself
+as an unrelated `gh` error about blank SHAs (D-051).
+
+Where the declaration is genuinely absent, the code **refuses and names the declaration
+it wanted**. It does not fall back to ambient state and proceed. A refusal at the seam
+where the value is read costs one clear error message; a fallback costs a full build,
+and spends it before it tells anyone.
+
 ## Environment Constraints
 
 - **Intent layer**: Spec Kit feature specs (`specs/<feature>/spec.md`) are the system
@@ -128,7 +154,11 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.5.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-22 (2.5.0 —
+**Version**: 2.6.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-24 (2.6.0 —
+D-051: Principle IX added; a value that governs where work goes is read from the
+declaration that owns it, never inferred from a checked-out branch, a working directory
+or an inherited environment, and an absent declaration is refused rather than defaulted.
+2.5.0 —
 D-050: Principle VIII amended; the evidence it mandates is charged to a bounded 64 KiB
 diff budget, and a story is sized for evidence and code together or split before
 dispatch. 2.4.0 —
