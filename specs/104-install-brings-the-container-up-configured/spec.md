@@ -1,5 +1,18 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-24. US1 625de8c8d621 (#308), US2 66bc2429ad1c (#309),
+# US3 a6b96803a135 (#310), US4 e247285fdd6b (#311), US5 df126f39593f (#312),
+# US6 60322264924d (#313), US7 9c87e42bc707 (#315) — all seven observed on
+# ergane-buildout by content, not inferred. Five of seven passed on the first
+# attempt; US2 and US5 each took a second (US5's first died at the deterministic
+# gate with judge_outcome null, so the judge was never called).
+#
+# This epic is the first unbroken run of the landing path since the stale-worktree
+# defect: seven consecutive factory-opened pull requests, zero hand-harvest. The
+# seven landed between 5:40 PM and 10:21 PM CT — 280 minutes, 46.7 min/story —
+# every node on persona opus-closer, model claude-opus-5, routed by subscription
+# rather than the gateway, so the epic cost nothing per token.
+#
 # DRAFTED 2026-08-23 ~10:15 PM CT by the operator session behind
 # docs/container-onramp-program.md. Spec-only draft: plan.md and tasks.md are
 # written at this spec's own refinement pass, once 088 has landed and its
