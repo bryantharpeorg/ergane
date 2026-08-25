@@ -146,9 +146,9 @@ def test_build_noun_run_preflight_refuses_on_engine_skew(
     graph_path = _minimal_graph(tmp_path)
     identity = _write_identity(isolated_state_home, "0.3.0")
 
-    from factory.workgraph import preflight as preflight_module
+    from factory.supervision import engine_identity as identity_module
 
-    monkeypatch.setattr(preflight_module, "cli_version", lambda: "0.4.0")
+    monkeypatch.setattr(identity_module, "cli_version", lambda: "0.4.0")
 
     async def fake_aliases(graph: Any, registry: Any, client: Any) -> list[Any]:
         return []
@@ -184,9 +184,9 @@ def test_build_start_prints_engine_skew_and_exits_user(
     graph_path = _minimal_graph(tmp_path)
     identity = _write_identity(isolated_state_home, "0.3.0")
 
-    from factory.workgraph import preflight as preflight_module
+    from factory.supervision import engine_identity as identity_module
 
-    monkeypatch.setattr(preflight_module, "cli_version", lambda: "0.4.0")
+    monkeypatch.setattr(identity_module, "cli_version", lambda: "0.4.0")
 
     async def fake_run_preflight(graph: Any) -> list[Any]:
         from factory.workgraph.preflight import PreflightFinding
@@ -235,9 +235,9 @@ def test_workgraph_cli_run_preflight_refuses_on_engine_skew(
     graph_path = _minimal_graph(tmp_path)
     identity = _write_identity(isolated_state_home, "0.3.0")
 
-    from factory.workgraph import preflight as preflight_module
+    from factory.supervision import engine_identity as identity_module
 
-    monkeypatch.setattr(preflight_module, "cli_version", lambda: "0.4.0")
+    monkeypatch.setattr(identity_module, "cli_version", lambda: "0.4.0")
 
     monkeypatch.setattr(workgraph_cli, "_open_preflight_client", _FakeLiteLLMClient)
 

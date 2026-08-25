@@ -75,6 +75,8 @@ from temporalio.service import RPCError
 from factory.activities.roadmap_activities import _OPEN_EPIC_STATUS
 from factory.activities.verify_activities import DEFAULT_VERIFICATION_DB_PATH
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
+from factory.registry import resolve_state_home
+from factory.supervision.engine_identity import cli_version, engine_skew, read_identity
 from factory.env import (
     ERGANE_VERIFICATION_DB_PATH_ENV,
     FACTORY_VERIFICATION_DB_PATH_ENV,
@@ -295,6 +297,10 @@ async def collect_floor(specs_root: Path) -> FloorStatus:
     disposition: RoadmapDisposition | None = None
     epics: list[EpicView] = []
     degraded = False
+
+    sentence = engine_skew(read_identity(resolve_state_home()))
+    if sentence is not None:
+        notes.append(sentence)
 
     from factory.cli.nouns import _open_client
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from factory.registry import resolve_state_home
+from factory.supervision import engine_identity as identity_module
 from factory.supervision.engine_identity import (
     EngineIdentity,
     engine_skew,
@@ -35,7 +36,9 @@ def test_engine_skew_mismatch_names_both_versions_and_remedies_and_path(
         image_digest=None,
     )
 
-    sentence = engine_skew(identity, "0.4.0")
+    monkeypatch.setattr(identity_module, "cli_version", lambda: "0.4.0")
+
+    sentence = engine_skew(identity)
     assert sentence is not None
     assert "engine is running ergane 0.3.0" in sentence
     assert "this CLI is 0.4.0" in sentence
@@ -47,7 +50,9 @@ def test_engine_skew_mismatch_names_both_versions_and_remedies_and_path(
     assert "~" not in sentence
 
 
-def test_engine_skew_matching_version_returns_none() -> None:
+def test_engine_skew_matching_version_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """T019 / US3-S2: matching versions produce no sentence."""
     identity = EngineIdentity(
         version="0.4.0",
@@ -55,12 +60,16 @@ def test_engine_skew_matching_version_returns_none() -> None:
         image_reference="ghcr.io/bryantharpeorg/ergane:0.4.0",
         image_digest=None,
     )
-    assert engine_skew(identity, "0.4.0") is None
+    monkeypatch.setattr(identity_module, "cli_version", lambda: "0.4.0")
+    assert engine_skew(identity) is None
 
 
-def test_engine_skew_absent_identity_returns_none() -> None:
+def test_engine_skew_absent_identity_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """T019 / US3-S3: no identity file means no refusal, native path untouched."""
-    assert engine_skew(None, "0.4.0") is None
+    monkeypatch.setattr(identity_module, "cli_version", lambda: "0.4.0")
+    assert engine_skew(None) is None
 
 
 def test_image_reference_uses_repository_constant() -> None:

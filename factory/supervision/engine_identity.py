@@ -54,7 +54,7 @@ def image_reference(version: str) -> str:
     return f"{IMAGE_REPOSITORY}:{version}"
 
 
-def engine_skew(identity: EngineIdentity | None, cli: str) -> str | None:
+def engine_skew(identity: EngineIdentity | None) -> str | None:
     """Refusal sentence when the running engine's version differs from the CLI.
 
     Returns ``None`` when the versions match or when no identity file was found,
@@ -68,6 +68,7 @@ def engine_skew(identity: EngineIdentity | None, cli: str) -> str | None:
     """
     if identity is None:
         return None
+    cli = cli_version()
     if identity.version == cli:
         return None
     path = identity_path(resolve_state_home()).resolve()

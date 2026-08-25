@@ -1133,7 +1133,7 @@ class EngineIdentityProbe:
                 ),
             )
         cli = cli_version()
-        sentence = engine_skew(identity, cli)
+        sentence = engine_skew(identity)
         if sentence is None:
             return Finding(
                 check=self.name,

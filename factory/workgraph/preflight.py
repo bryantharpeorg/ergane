@@ -693,7 +693,7 @@ def engine_skew_findings() -> list[PreflightFinding]:
     upgrade, not a proxy restart.
     """
     identity = read_identity(resolve_state_home())
-    sentence = engine_skew(identity, cli_version())
+    sentence = engine_skew(identity)
     if sentence is None:
         return []
     return [PreflightFinding(check="engine", passed=False, detail=sentence, transport=False)]
