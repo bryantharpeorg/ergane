@@ -49,8 +49,19 @@ RUN python3 -m venv .venv \
     && .venv/bin/ergane --help >/dev/null
 
 # Runtime user: non-root, fixed uid for compose file ownership parity.
-RUN useradd -m -u 1000 -s /bin/bash ergane \
-    && chown -R ergane:ergane /opt/ergane
+#
+# The uid is what matters and the account name is not: compose declares
+# `user: 1000:1000`, the AppArmor profile and the seccomp policy are written
+# against that uid, and `USER` below is numeric. ubuntu:24.04 already ships an
+# account at uid 1000 (`ubuntu`), so `useradd -u 1000` fails the build outright
+# with `UID 1000 is not unique` — which is why this creates the home directory
+# and takes ownership instead of minting a second account for an occupied id.
+#
+# $HOME is set below and nothing else creates it: `useradd -m` used to, so it is
+# made explicitly here. An unwritable $HOME is not cosmetic in this image — the
+# agent adapter writes a per-node home under it.
+RUN install -d -m 755 -o 1000 -g 1000 /home/ergane \
+    && chown -R 1000:1000 /opt/ergane
 USER 1000:1000
 
 ENV PATH="/opt/ergane/.venv/bin:/usr/local/bin:/usr/bin:$PATH"
