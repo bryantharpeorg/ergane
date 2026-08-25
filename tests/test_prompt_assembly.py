@@ -88,6 +88,7 @@ import pytest
 
 from factory.cli.main import main
 from factory.cli.nouns import build as build_noun, spec as spec_noun
+from factory.doctor.scaffold import ERGANE_TODO, scan_sentinels
 from factory.workgraph import preflight
 from factory.workgraph.derive import derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkNode
@@ -251,11 +252,15 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
     # US3 added a sixth layer over the same graph and the same `tasks.md`, and
     # 069-US2 a seventh. The list stays exhaustive — a layer that runs must
     # appear here — so it grows by exactly the layers that now run.
+    # 106-US3 adds an eighth layer, `sentinels`, that scans the authored
+    # documents for ERGANE-TODO markers and reports them on the `information`
+    # channel without changing the exit code.
     assert document["checked"] == [
         *EXISTING_LAYERS,
         "prompt_assembly",
         "slice_coverage",
         "slice_contention",
+        "sentinels",
     ]
     assert document["skipped"] == []
 
