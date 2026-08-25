@@ -164,6 +164,12 @@ def personas_path(tmp_path: Path, config_path: Path) -> Path:
     return tmp_path / "xdg" / "ergane" / "personas.yaml"
 
 
+@pytest.fixture(autouse=True)
+def _stub_closing_demonstration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """US6 is tested in its own file; keep persona tests focused on personas."""
+    monkeypatch.setattr(install_module, "_closing_demonstration", lambda *_a, **_k: None)
+
+
 @pytest.fixture
 def interview(
     monkeypatch: pytest.MonkeyPatch,

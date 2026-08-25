@@ -35,6 +35,7 @@ import copy
 import dataclasses
 import os
 import re
+import subprocess
 import tempfile
 import tomllib
 from pathlib import Path
@@ -59,7 +60,9 @@ from factory.controlplane.config import (
     render_controlplane_document,
     resolve_config_path,
 )
+from factory.controlplane.verify import Finding as ControlPlaneFinding
 from factory.controlplane.verify import render_findings, verify_controlplane
+from factory.doctor.scaffold import scaffold_spec
 from factory.discovery.llm_enrichment import EnrichmentRecord, enrich_aliases
 from factory.discovery.llm_scanner import (
     EndpointClassification,
@@ -870,6 +873,16 @@ def add_install_arguments(parser: argparse.ArgumentParser) -> None:
             f"config lock before refusing (default: {DEFAULT_LOCK_TIMEOUT_S:g})"
         ),
     )
+    parser.add_argument(
+        "--target-repo",
+        metavar="PATH",
+        dest="target_repo",
+        default=None,
+        help=(
+            "path to the repository the closing demonstration will scaffold "
+            "against; optional, and only used by the interactive path"
+        ),
+    )
 
 
 def install_command(args: argparse.Namespace) -> int:
@@ -929,6 +942,12 @@ def install_command(args: argparse.Namespace) -> int:
             print("verifying the control plane...")
             findings, exit_code = verify_controlplane(str(path))
             print(render_findings(findings))
+            _closing_demonstration(
+                init_module._prompter(),
+                findings,
+                target_repo=getattr(args, "target_repo", None),
+                config_path=path,
+            )
             return EXIT_OK if exit_code == 0 else EXIT_USER
     except LockUnavailable as error:
         raise OperatorError(
@@ -937,6 +956,145 @@ def install_command(args: argparse.Namespace) -> int:
             f"{error.target.name}.lock if no install is running",
             code=EXIT_USER,
         ) from None
+
+
+def _closing_demonstration(
+    prompter: Any,
+    findings: tuple[ControlPlaneFinding, ...],
+    *,
+    target_repo: str | None,
+    config_path: Path,
+) -> None:
+    """US6: ask, then run a free, local, offline smoke and print the next command.
+
+    The step runs only on the interactive host-side path, after the control-plane
+    findings have been printed. It never changes install's verdict.
+    """
+    if target_repo is None:
+        target_repo = "<path-to-your-repo>"
+
+    answer = prompter.ask(
+        "run a scaffold demonstration",
+        default="y",
+    ).strip()
+    if answer.lower() not in ("y", "yes"):
+        _print_next_command(target_repo)
+        return
+
+    with tempfile.TemporaryDirectory(prefix="ergane-install-demo-") as tmp:
+        repo_root = Path(tmp) / "repo"
+        repo_root.mkdir()
+        _git_init(repo_root)
+
+        manifest_text = _demo_manifest_text()
+        init_module._write_scaffold(repo_root, manifest_text)
+
+        print("")
+        print("ergane readiness for the demonstration repository")
+        profile = init_module.check_repo(
+            repo_root,
+            control_plane=(findings, None),
+        )
+        manifest_name = init_module.MANIFEST_NAME
+        print(init_module.render_check(profile, repo_root, manifest_name, remedy=_REMEDY_TABLE))
+
+        # Generate a sentinel-free demonstration spec and write it under specs/.
+        anchor = _demo_anchor(repo_root)
+        spec_text, plan_text, tasks_text = scaffold_spec(
+            slug="demo",
+            title="Demonstration",
+            anchor=anchor,
+            demonstration=True,
+        )
+        spec_dir = repo_root / "specs" / "001-demo"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "spec.md").write_text(spec_text, encoding="utf-8")
+        (spec_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+        (spec_dir / "tasks.md").write_text(tasks_text, encoding="utf-8")
+
+        print("")
+        print("demonstration spec validate")
+        _run_cli(_spec_validate_argv(spec_dir, repo_root))
+        print("")
+        print("demonstration spec derive")
+        _run_cli(_spec_derive_argv(spec_dir, repo_root))
+
+        artifact = spec_dir / _ARTIFACT_NAME
+        if artifact.is_file():
+            print("")
+            print(f"compiled graph: {artifact}")
+
+    _print_next_command(target_repo)
+
+
+def _git_init(repo_root: Path) -> None:
+    """One git init for the throwaway demonstration repository."""
+    subprocess.run(
+        ["git", "-C", str(repo_root), "init", "-b", "main", "--quiet"],
+        check=True,
+    )
+
+
+def _demo_manifest_text() -> str:
+    """A minimal manifest for the throwaway repository."""
+    return """version: 1
+runtime: bwrap
+gates:
+  test: echo demonstration gate
+landing_branch: main
+"""
+
+
+#: Artifact name inside a spec directory.
+_ARTIFACT_NAME = "workgraph.json"
+
+
+def _demo_anchor(repo_root: Path) -> str:
+    """Return a resolvable path:line in the throwaway repo.
+
+    The manifest is the only authored file, so anchor there.
+    """
+    return f"{init_module.MANIFEST_NAME}:1"
+
+
+def _run_cli(argv: list[str]) -> int:
+    """Run one `ergane` invocation, streaming its labeled output as-is."""
+    from factory.cli.main import main
+
+    return main(argv)
+
+
+def _spec_validate_argv(spec_dir: Path, repo_root: Path) -> list[str]:
+    """Build argv for the demonstration's validate stage."""
+    noun = "spec"
+    verb = "validate"
+    return [noun, verb, str(spec_dir), "--target-repo", str(repo_root)]
+
+
+def _spec_derive_argv(spec_dir: Path, repo_root: Path) -> list[str]:
+    """Build argv for the demonstration's derive stage."""
+    noun = "spec"
+    verb = "derive"
+    return [noun, verb, str(spec_dir), "--target-repo", str(repo_root)]
+
+
+def _print_next_command(target_repo: str) -> None:
+    """End the transcript with the verbatim next command."""
+    print("next, run:")
+    print(f"  ergane spec new <slug> --target-repo {target_repo}")
+
+
+#: Remedy table for the readiness report: check name → fixing command.
+_REMEDY_TABLE: dict[str, str] = {
+    "factory_yaml": "ergane init",
+    "landing_branch": "git checkout -b main",
+    "registry_entry": "ergane init",
+    "runtime_root_ignored": "echo '.ergane/' >> .gitignore",
+    "gated_landing": "enable merge queue / required checks in the forge",
+    "autonomous_landing": "enable auto-merge in the forge",
+    "gate_check": "add the required check to the forge branch protection",
+    "control_plane": "ergane install",
+}
 
 
 def _write_config(path: Path, text: str) -> None:
