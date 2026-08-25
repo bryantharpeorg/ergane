@@ -1,0 +1,68 @@
+105-US4 SC-004: seam-captured verification of `ergane engine upgrade`
+
+Every line below is output from `tests/test_engine_upgrade.py`, which injects
+all docker interaction and the open-epic read.  No test shells out to docker.
+The real-daemon half lives in the operator verification list in plan.md.
+
+=== pytest summary ===
+tests/test_engine_upgrade.py ...........                                 [100%]
+11 passed in 0.08s
+
+=== T033: in-flight refusal ===
+test name: test_upgrade_refuses_while_epics_in_flight
+refusal names: 105-test/us1
+refusal includes: "in flight", "strands", "--force"
+docker seam calls: []   (none)
+exit: OperatorError / EXIT_USER path
+
+=== T034: --force proceeds and records it ===
+test name: test_upgrade_force_proceeds_past_open_epics
+report.forced: True
+notes include: "105-test/us1"
+seam calls include: ("stop", ())
+
+=== T035: drained path seam order ===
+test name: test_upgrade_drained_path_calls_stop_start_verify_retention_in_order
+seam call order: stop, start, verify, list_images, remove_image, remove_image
+started image: ghcr.io/bryantharpeorg/ergane:0.4.0
+ERGANE_VERSION env at start: {"ERGANE_VERSION": "0.4.0"}
+
+=== T036: retention (four versions, known previous) ===
+test name: test_retention_keeps_current_and_previous_removes_older_two
+images present: 0.4.0, 0.3.0, 0.2.0, 0.1.0
+previous read from identity record: 0.3.0
+removed: [ghcr.io/bryantharpeorg/ergane:0.2.0, ghcr.io/bryantharpeorg/ergane:0.1.0]
+kept:   ghcr.io/bryantharpeorg/ergane:0.4.0, ghcr.io/bryantharpeorg/ergane:0.3.0
+
+=== T036: retention (unknown running version) ===
+test name: test_retention_unknown_running_version_removes_nothing
+identity record: absent
+removed: []
+note includes: "could not read the running engine version from the identity record; keeping every local image"
+
+=== T037: degraded keyed on engine finding alone ===
+test name: test_upgrade_degraded_when_engine_finding_mismatches
+engine finding: [FAIL] engine: engine mismatch
+degraded: True
+
+test name: test_upgrade_success_when_only_unrelated_probe_fails
+findings:
+  [PASS] engine: engine version matches this CLI (0.4.0)
+  [FAIL] llm: proxy refused
+  [FAIL] forge: gh not capable
+degraded: False
+
+=== T038: project directory derived and checked ===
+test name: test_upgrade_refuses_when_project_directory_missing
+derived directory: <state>/ergane/supervision/container
+refusal names the directory: True
+refusal names `ergane install`: True
+docker seam calls: []   (none)
+
+/test name: test_upgrade_refuses_when_compose_yaml_missing
+refusal names the directory and compose.yaml absence: True
+ERGANE_COMPOSE_PROJECT not mentioned in refusal: True
+
+test name: test_upgrade_compose_project_override_wins
+ERGANE_COMPOSE_PROJECT override used: True
+report.degraded: False

@@ -114,3 +114,15 @@ the repository so the drift tests can prove no required key is removed.  Your
 operational project is produced by `ergane install` (spec 104), which substitutes
 the actual state root, supervision home, registered repos, and per-repo
 same-path mounts from the interview answers.
+
+## Upgrading the engine
+
+`ergane engine upgrade` moves the running container to the image that matches
+this CLI version.  It refuses while any epic is in flight, naming the open
+epic and what stopping the engine now would cost; pass `--force` only when
+you are willing to strand that work.  Once the floor is drained, the verb stops
+the running engine, starts the new pinned image, verifies through it with the
+same `ergane install --verify` battery, and removes local images that are
+older than the immediately previous version.  It keeps exactly two versions:
+the one it just started and the one it replaced, so a failed upgrade has a
+known rollback target.
