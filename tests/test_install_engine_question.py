@@ -76,6 +76,31 @@ from tests.test_ergane_install_walkthrough import (  # noqa: F401
 ENGINE_PROMPT = "engine backend (container|systemd|none)"
 
 
+@pytest.fixture
+def acted(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """104-US5's acting half, closed off — this module is about the question.
+
+    Autouse, because every run here answering `container` would otherwise
+    generate a project, prompt for the AppArmor load and bring an engine up.
+    Recording rather than discarding, so "the choice reached the acting half"
+    is still assertable; the acting half itself is proven in
+    `tests/test_install_container_bringup.py`.
+    """
+    calls: list[Path] = []
+
+    def _acted(path: Path, _prompter: Any) -> int:
+        calls.append(path)
+        return 0
+
+    monkeypatch.setattr(install_module, "_install_engine_container", _acted)
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def _stub_engine_bringup(acted: list[Path]) -> None:
+    """Make `acted` autouse without making every test ask for it."""
+
+
 @pytest.fixture(autouse=True)
 def _stub_persona_step(monkeypatch: pytest.MonkeyPatch) -> None:
     """103's persona step is proven in its own file; these tests cover the rest.
@@ -168,19 +193,22 @@ def test_choosing_the_container_where_a_daemon_answers_is_accepted(
     monkeypatch: pytest.MonkeyPatch,
     walkthrough: Callable[..., tuple[Run, ScriptedPrompter]],
     config_path: Path,
+    acted: list[Path],
 ) -> None:
     """US1-S1: the offered answer is a real answer, and it reaches the operator.
 
-    US1 asks and holds the choice as a value (plan R2); the printed line is the
-    seam US5 replaces with generation, consent and bring-up. Nothing about the
-    container is written to `config.toml` — the carrier is the generated project
-    on disk (plan R1), so a config that mentioned the engine would be the defect.
+    US1 asks and holds the choice as a value (plan R2); 104-US5's acting half is
+    what consumes it, and it is stubbed here so this module keeps covering the
+    question. Nothing about the container is written to `config.toml` — the
+    carrier is the generated project on disk (plan R1), so a config that
+    mentioned the engine would be the defect.
     """
     _daemon(monkeypatch, True)
     run, prompter = walkthrough(_answers() + [ENGINE_CONTAINER])
 
     assert len(_engine_questions(prompter)) == 1
     assert f"engine backend: {ENGINE_CONTAINER}" in run.stdout
+    assert acted == [config_path]  # the choice reached the acting half, once
     assert "engine" not in config_path.read_text(encoding="utf-8")
 
 

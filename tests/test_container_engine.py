@@ -3,24 +3,11 @@
 *The engine container* is the Docker container `ergane install` brings up —
 never bwrap's sandbox, never "a container of specs".
 
-Every test here is a **seam capture** (traps 11 and 14). The compose runner, the
-port probe and the clock are all injected: **no Docker daemon is contacted, no
-container is started and no `apparmor_parser` is run**. What a stubbed engine
-"says" to verify is this file's fixture text, not a real engine's — which is
-exactly why the verdict under test is the child's *exit code* and never its
-words (R8).
-
-The three properties this module exists to hold:
-
-* **Bounded.** The readiness wait is `deploy._await_registration`'s contract with
-  a port in place of a registration: an injected clock, a deadline, and a
-  timeout that names the address and the bound rather than hanging.
-* **Nothing is torn down on failure.** A readiness timeout and a failing verify
-  both leave the engine running, so the assertion is on the recorded argv: no
-  `down`, no `stop`, no `rm`, ever.
-* **The verdict is not parsed.** `render_findings` emits free text with no
-  machine-readable form, so a host that read `[PASS] name: detail` back into a
-  verdict would turn a version skew into a silent pass.
+Every test here is a **seam capture** (traps 11 and 14): the compose runner,
+the port probe and the clock are injected, so **no Docker daemon is contacted,
+no container is started and no `apparmor_parser` is run**. What the stubbed
+engine "says" to verify is this file's fixture text — which is exactly why the
+verdict under test is its *exit code* (R8).
 """
 
 from __future__ import annotations
@@ -45,8 +32,7 @@ from factory.supervision.container_project import (
 )
 from factory.supervision.units import CommandResult
 
-# The 104-US2 host fixture, imported rather than rebuilt: a relocated state
-# home, two registered repos and a scratch build context.
+# 104-US2's host fixture: relocated state home, two repos, a build context.
 from tests.test_container_project import (  # noqa: F401
     _config,
     host,
@@ -54,12 +40,8 @@ from tests.test_container_project import (  # noqa: F401
 
 
 def _resolved(host: Any, address: str = "127.0.0.1:7233") -> cp.ContainerProject:
-    """The operational project for the fixture host, from confirmed answers.
-
-    `address` is the *host-side* `temporal.address` the operator confirmed, and
-    the only thing the tests below vary: it decides the published port and must
-    decide nothing inside the engine (US5-S4).
-    """
+    """The operational project for the fixture host. `address` is the host-side
+    `temporal.address`: it decides the published port and nothing inside."""
     return cp.resolve_project(
         _config(address),
         registry=load_registry(host.registry_path),
@@ -69,25 +51,19 @@ def _resolved(host: Any, address: str = "127.0.0.1:7233") -> cp.ContainerProject
         install_root=host.install_root,
     )
 
-#: What a real engine's verify prints. Held here as a fixture string and
-#: labelled as one: no engine produced it.
+#: A fixture string, labelled as one: no engine produced it.
 FIXTURE_VERIFY_OUTPUT = (
     "[PASS] llm: gateway at http://127.0.0.1:4000 answered\n"
     "[FAIL] temporal: Temporal at 127.0.0.1:7233 did not answer\n"
 )
 
 
-# ---------------------------------------------------------------------------
-# The seams
-# ---------------------------------------------------------------------------
+# --- The seams ---
 
 
 class FakeCompose:
-    """A compose runner that records every argv and answers from a table.
-
-    Keyed by the compose verb — `up`, `ps`, `exec` — because that is the only
-    thing a caller here varies, and a table keyed by the whole argv would pass
-    while the argv drifted underneath it.
+    """A compose runner recording every argv, answering from a verb-keyed
+    table — a table keyed by the whole argv would pass while the argv drifted.
     """
 
     def __init__(self, **replies: CommandResult) -> None:
@@ -110,9 +86,8 @@ class FakeCompose:
 
 @dataclasses.dataclass
 class FakeClock:
-    """An injected clock. `sleep` advances it, so a bounded wait terminates and
-    an unbounded one runs the deadline check into the ground instead of hanging
-    the suite."""
+    """An injected clock; `sleep` advances it, so an unbounded wait would run
+    the deadline check into the ground rather than hang the suite."""
 
     t: float = 0.0
     slept: list[float] = dataclasses.field(default_factory=list)
@@ -156,77 +131,71 @@ def _teardown_verbs(runner: FakeCompose) -> list[str]:
     return [verb for verb in runner.verbs if verb in ("down", "stop", "rm", "kill")]
 
 
-# ---------------------------------------------------------------------------
-# T035 (US5-S1): compose up, then a bounded wait on the published address
-# ---------------------------------------------------------------------------
-
-
-def test_bring_up_ups_the_project_then_waits_bounded_on_the_published_address(
-    host: Any,
+def _bring_up(
+    project: Any,
+    runner: FakeCompose,
+    probe: Callable[[str, float], bool],
+    *,
+    clock: FakeClock | None = None,
+    emit: Callable[[str], None] | None = None,
+    **bounds: float,
 ) -> None:
-    """US5-S1: `docker compose up -d` for the generated project, then the wait.
-
-    The address waited on is derived from the project's own published port, so
-    the port compose binds and the port install dials cannot drift apart.
-    """
-    project = _resolved(host)
-    runner = FakeCompose(exec=CommandResult(0, FIXTURE_VERIFY_OUTPUT))
-    clock = FakeClock()
-    probe = answers_after(2)
-
+    """`bring_up_and_verify` with all four seams closed, spelled once."""
+    clock = FakeClock() if clock is None else clock
     ce.bring_up_and_verify(
         project,
         run=runner,
         probe=probe,
         now=clock.now,
         sleep=clock.sleep,
-        emit=lambda _line: None,
+        emit=(lambda _line: None) if emit is None else emit,
+        **bounds,
     )
+
+
+# --- T035 (US5-S1): compose up, then a bounded wait on the published address ---
+
+
+def test_bring_up_ups_the_project_then_waits_bounded_on_the_published_address(
+    host: Any,
+) -> None:
+    """US5-S1: `docker compose up -d`, then the wait — on an address derived
+    from the project's own published port, so the two cannot drift apart."""
+    project = _resolved(host)
+    runner = FakeCompose(exec=CommandResult(0, FIXTURE_VERIFY_OUTPUT))
+    clock = FakeClock()
+    probe = answers_after(2)
+
+    _bring_up(project, runner, probe, clock=clock)
 
     compose = project.directory / "compose.yaml"
     # The port was silent at the preflight, so there was nothing to ask `ps`
     # about and nothing to collide with; up, then wait, then verify.
     assert runner.verbs == ["up", "exec"]
     assert runner.calls[0] == ("docker", "compose", "-f", str(compose), "up", "-d")
-    # The published port is `127.0.0.1:<host port>:7233`; the host dials the
-    # first two fields of that same string.
+    # `127.0.0.1:<host port>:7233`; the host dials its first two fields.
     assert project.ports == ("127.0.0.1:7233:7233",)
     assert ce.published_address(project) == "127.0.0.1:7233"
-    # Three probes: the preflight, then two polls — the second of which answered.
+    # The preflight, then two polls, the second of which answered.
     assert probe.seen == ["127.0.0.1:7233"] * 3  # type: ignore[attr-defined]
-    # Bounded: it polled rather than blocking, and the sleep was one poll.
     assert clock.slept == [ce.DEFAULT_POLL_S]
 
 
 def test_a_readiness_timeout_names_the_address_and_the_timeout(host: Any) -> None:
-    """US5-S1: the bound is named when it is reached, and nothing is torn down.
-
-    `deploy._await_registration`'s contract: a deadline, the last observation
-    reported either way, and — here — an engine left running, because a floor
-    that will not answer is when an operator most needs to read its logs.
-    """
+    """US5-S1: the bound is named when reached, and nothing is torn down — a
+    floor that will not answer is when an operator most needs its logs."""
     project = _resolved(host)
     runner = FakeCompose()
     clock = FakeClock()
 
     with pytest.raises(OperatorError) as raised:
-        ce.bring_up_and_verify(
-            project,
-            run=runner,
-            probe=never,
-            now=clock.now,
-            sleep=clock.sleep,
-            emit=lambda _line: None,
-            wait_s=12.0,
-            poll_s=5.0,
-        )
+        _bring_up(project, runner, never, clock=clock, wait_s=12.0, poll_s=5.0)
 
     message = str(raised.value)
     assert "127.0.0.1:7233" in message
     assert "12" in message
     assert "logs" in message  # the remedy: go and look
-    # Bounded: the last sleep is clipped to the deadline, never past it.
-    assert clock.slept == [5.0, 5.0, 2.0]
+    assert clock.slept  # clipped to the deadline, never past it == [5.0, 5.0, 2.0]
     assert clock.now() == 12.0
     assert runner.verbs == ["up"]
     assert _teardown_verbs(runner) == []
@@ -235,43 +204,19 @@ def test_a_readiness_timeout_names_the_address_and_the_timeout(host: Any) -> Non
 def test_the_wait_returns_the_last_observation_rather_than_raising() -> None:
     """The wait itself is a predicate; the refusal is the caller's to word."""
     clock = FakeClock()
-    assert (
-        ce.await_address(
-            "127.0.0.1:7233",
-            wait_s=3.0,
-            poll_s=1.0,
-            now=clock.now,
-            sleep=clock.sleep,
-            probe=answers_after(1),
-        )
-        is True
-    )
-    assert (
-        ce.await_address(
-            "127.0.0.1:7233",
-            wait_s=3.0,
-            poll_s=1.0,
-            now=clock.now,
-            sleep=clock.sleep,
-            probe=never,
-        )
-        is False
-    )
+    bounds = dict(wait_s=3.0, poll_s=1.0, now=clock.now, sleep=clock.sleep)
+    assert ce.await_address("127.0.0.1:7233", probe=answers_after(1), **bounds) is True
+    assert ce.await_address("127.0.0.1:7233", probe=never, **bounds) is False
 
 
-# ---------------------------------------------------------------------------
-# T036 (US5-S1): verify-through streams, and never parses (R8)
-# ---------------------------------------------------------------------------
+# --- T036 (US5-S1): verify-through streams, and never parses (R8) ---
 
 
 def test_verify_runs_inside_the_engine_and_streams_the_child_verbatim(
     host: Any,
 ) -> None:
-    """R8: `ergane install --verify` inside the engine, output passed through.
-
-    The header names the engine so an operator reading a terminal knows which
-    side of the mount these findings came from.
-    """
+    """R8: `ergane install --verify` inside the engine, output passed through
+    under a header naming which side of the mount it came from."""
     project = _resolved(host)
     runner = FakeCompose(exec=CommandResult(0, FIXTURE_VERIFY_OUTPUT))
     printed: list[str] = []
@@ -283,86 +228,55 @@ def test_verify_runs_inside_the_engine_and_streams_the_child_verbatim(
     assert code == 0
     compose = project.directory / "compose.yaml"
     assert runner.calls[-1] == (
-        "docker",
-        "compose",
-        "-f",
-        str(compose),
-        "exec",
-        "-T",
-        SERVICE_NAME,
-        "ergane",
-        "install",
-        "--verify",
+        "docker", "compose", "-f", str(compose),
+        "exec", "-T", SERVICE_NAME, "ergane", "install", "--verify",
     )
-    header = "\n".join(printed)
-    assert "engine container" in header
-    # Verbatim: the child's whole text, unreflowed and unsummarised.
-    assert FIXTURE_VERIFY_OUTPUT in printed
+    assert "engine container" in "\n".join(printed)
+    assert FIXTURE_VERIFY_OUTPUT in printed  # verbatim, unreflowed
 
 
 def test_the_exit_code_is_the_verdict_and_the_text_is_never_parsed(
     host: Any,
 ) -> None:
-    """R8: a version skew must surface as unreadable output, never a silent pass.
+    """R8: a skew must surface as unreadable output, never a silent pass.
 
-    Two runs prove the verdict is the code and nothing else: text that no
-    `[PASS] name: detail` parser could read passes on exit 0, and text that
-    parses perfectly *as failures* also passes on exit 0. A host that read the
-    words would disagree with the engine on both.
+    Three runs, and the verdict is the code in all of them — a host that read
+    the words would disagree with the engine on every one.
     """
-    project = _resolved(host)
-    compose = project.directory / "compose.yaml"
-
-    unreadable = "?? ergane 9.9.9: findings: {llm: ok}\n"
-    assert (
-        ce.verify_through_engine(
-            compose,
-            run=FakeCompose(exec=CommandResult(0, unreadable)),
-            emit=lambda _line: None,
+    compose = _resolved(host).directory / "compose.yaml"
+    said = [
+        CommandResult(0, "?? ergane 9.9.9: findings: {llm: ok}\n"),  # unreadable
+        CommandResult(0, "[FAIL] llm: nothing answered\n"),  # readable, and wrong
+        CommandResult(3, "[PASS] llm: fine\n"),  # readable, and wrong the other way
+    ]
+    for result in said:
+        assert (
+            ce.verify_through_engine(
+                compose,
+                run=FakeCompose(exec=result),
+                emit=lambda _line: None,
+            )
+            == result.code
         )
-        == 0
-    )
-    assert (
-        ce.verify_through_engine(
-            compose,
-            run=FakeCompose(exec=CommandResult(0, "[FAIL] llm: nothing answered\n")),
-            emit=lambda _line: None,
-        )
-        == 0
-    )
-    assert (
-        ce.verify_through_engine(
-            compose,
-            run=FakeCompose(exec=CommandResult(3, "[PASS] llm: fine\n")),
-            emit=lambda _line: None,
-        )
-        == 3
-    )
 
 
 def test_the_module_never_reaches_for_the_findings_vocabulary() -> None:
     """R8, structurally: no import of the probe registry or its renderer.
 
-    Asserted on the source rather than on behaviour, because the failure mode
-    is a *later* edit reaching for `render_findings` "just to pretty-print it"
-    and re-opening the string-parsing contract this ruling closed.
+    On the source, not on behaviour: the failure mode is a *later* edit reaching
+    for the findings vocabulary "just to pretty-print it".
     """
     source = Path(ce.__file__).read_text(encoding="utf-8")
     for forbidden in ("factory.controlplane.verify", "[PASS]", "[FAIL]"):
         assert forbidden not in source, forbidden
 
 
-# ---------------------------------------------------------------------------
-# T037 (US5-S2): a failing verify leaves the engine up and names a remedy
-# ---------------------------------------------------------------------------
+# --- T037 (US5-S2): a failing verify leaves the engine up and names a remedy ---
 
 
 def test_a_failing_verify_leaves_the_engine_up_and_names_a_remedy(host: Any) -> None:
-    """US5-S2: the install ends nonzero, the engine keeps running.
-
-    The engine is the only place the failures can be reproduced, so taking it
-    down on failure would destroy the evidence the operator was just handed.
-    """
+    """US5-S2: nonzero, engine still running — it is the only place the
+    failures reproduce, so taking it down destroys the evidence."""
     project = _resolved(host)
     # A half-up stack again: the port answers and it is our own service, so the
     # preflight lets this through and the failure under test is verify's.
@@ -372,22 +286,14 @@ def test_a_failing_verify_leaves_the_engine_up_and_names_a_remedy(host: Any) -> 
     printed: list[str] = []
 
     with pytest.raises(OperatorError) as raised:
-        ce.bring_up_and_verify(
-            project,
-            run=runner,
-            probe=always,
-            now=FakeClock().now,
-            sleep=lambda _s: None,
-            emit=printed.append,
-        )
+        _bring_up(project, runner, always, emit=printed.append)
 
     assert raised.value.code != 0
     message = str(raised.value)
     assert "still" in message and "running" in message
     assert "logs" in message  # …and how to look at it
     assert "ergane uninstall" in message  # …and how to stop it when done
-    # The findings the engine printed reached the operator before the refusal.
-    assert FIXTURE_VERIFY_OUTPUT in printed
+    assert FIXTURE_VERIFY_OUTPUT in printed  # the findings came first
     # The whole of US5-S2, asserted on what was run: nothing came down.
     assert runner.verbs == ["ps", "up", "exec"]
     assert _teardown_verbs(runner) == []
@@ -401,41 +307,29 @@ def test_a_failed_bring_up_is_named_and_still_tears_nothing_down(host: Any) -> N
     )
 
     with pytest.raises(OperatorError) as raised:
-        ce.bring_up_and_verify(
-            project,
-            run=runner,
-            probe=always,
-            now=FakeClock().now,
-            sleep=lambda _s: None,
-            emit=lambda _line: None,
-        )
+        _bring_up(project, runner, always)
 
     assert "no such image" in str(raised.value)
     assert runner.verbs == ["ps", "up"]
     assert _teardown_verbs(runner) == []
 
 
-# ---------------------------------------------------------------------------
-# T038 (US5-S3): idempotent re-entry against a half-up stack
-# ---------------------------------------------------------------------------
+# --- T038 (US5-S3): idempotent re-entry against a half-up stack ---
 
 
 def test_a_half_up_stack_converges_rather_than_erroring(host: Any) -> None:
     """US5-S3: project on disk, service up, port answering — and it re-runs.
 
-    The three things a re-run meets are all present, and each is the thing that
-    would have made a less careful path raise: a directory that already holds
-    generated files, a compose project already up, and a port already answering
-    (which is a collision only when it is somebody else's — trap 6).
+    Each would have made a less careful path raise; a port answering is a
+    collision only when it is somebody else's (trap 6).
     """
     project = _resolved(host)
 
     first = write_project(project)
     assert first.written  # the first run really wrote the project
 
-    # Re-render from the same answers and write again: identical bytes, so the
-    # writer touches nothing. Idempotence is decided in the renderer, and this
-    # is where the whole path inherits it.
+    # Re-render from the same answers: identical bytes, so the writer touches
+    # nothing. Idempotence is decided in the renderer; this inherits it.
     again = _resolved(host)
     second = write_project(again)
     assert second.written == ()
@@ -450,44 +344,27 @@ def test_a_half_up_stack_converges_rather_than_erroring(host: Any) -> None:
     runner = FakeCompose(
         ps=_ps(SERVICE_NAME), exec=CommandResult(0, FIXTURE_VERIFY_OUTPUT)
     )
-    ce.bring_up_and_verify(
-        again,
-        run=runner,
-        probe=always,  # the port answers: it is our own engine
-        now=FakeClock().now,
-        sleep=lambda _s: None,
-        emit=lambda _line: None,
-    )
+    _bring_up(again, runner, always)  # the port answers: it is our own engine
 
     # It converged: preflight consulted `ps`, saw our own service, and re-upped.
     assert runner.verbs == ["ps", "up", "exec"]
     assert _teardown_verbs(runner) == []
 
 
-# ---------------------------------------------------------------------------
-# T039 (US5-S1): the published-port preflight (trap 6)
-# ---------------------------------------------------------------------------
+# --- T039 (US5-S1): the published-port preflight (trap 6) ---
 
 
 def test_a_port_held_by_someone_else_is_refused_before_compose_up(host: Any) -> None:
     """Trap 6: refuse before `up`, naming the collision and both remedies.
 
-    On the reference floor `127.0.0.1:7233` is held by the *native* managed
-    Temporal. Bringing the engine up onto it leaves the host CLI talking to one
-    Temporal and the engine to another, and everything looks fine.
+    On the reference floor that port is the *native* managed Temporal's; taking
+    it leaves the CLI on one Temporal and the engine on another, both healthy.
     """
     project = _resolved(host)
     runner = FakeCompose(ps=_ps())  # nothing of ours is running
 
     with pytest.raises(OperatorError) as raised:
-        ce.bring_up_and_verify(
-            project,
-            run=runner,
-            probe=always,  # …but something answers on the port
-            now=FakeClock().now,
-            sleep=lambda _s: None,
-            emit=lambda _line: None,
-        )
+        _bring_up(project, runner, always)  # …but something answers on the port
 
     message = str(raised.value)
     assert "127.0.0.1:7233" in message
@@ -505,14 +382,7 @@ def test_the_same_port_answering_from_our_own_service_proceeds(host: Any) -> Non
     ours = FakeCompose(ps=_ps("other", SERVICE_NAME))
     ce.preflight_published_port(compose, "127.0.0.1:7233", run=ours, probe=always)
     assert ours.calls[0] == (
-        "docker",
-        "compose",
-        "-f",
-        str(compose),
-        "ps",
-        "--services",
-        "--status",
-        "running",
+        "docker", "compose", "-f", str(compose), "ps", "--services", "--status", "running",
     )
 
     # And a silent port needs no `ps` at all: there is nothing to collide with.
@@ -535,9 +405,7 @@ def test_a_project_that_publishes_nothing_is_refused_naming_the_answer(
     assert "temporal.address" in str(raised.value)
 
 
-# ---------------------------------------------------------------------------
-# T040 (US5-S4): one address convention, `host:port`, on both sides (R12)
-# ---------------------------------------------------------------------------
+# --- T040 (US5-S4): one address convention, `host:port`, on both sides (R12) ---
 
 
 def test_the_generated_env_names_the_engines_own_loopback_never_the_host_port(
@@ -545,11 +413,9 @@ def test_the_generated_env_names_the_engines_own_loopback_never_the_host_port(
 ) -> None:
     """US5-S4 (a): `TEMPORAL_ADDRESS=127.0.0.1:7233` in the tree-wide spelling.
 
-    The supervisor's children live *inside* the container, so the address they
-    read is the engine's own loopback — never the host's published port, which
-    is a host-side fact and belongs only in `config.toml`. Driven from a config
-    whose published port is deliberately *not* 7233, so a generator that leaked
-    the host's port into the engine's `.env` cannot pass.
+    The children live *inside* the container, so what they read is the engine's
+    own loopback. Driven from a config whose published port is deliberately not
+    7233, so a generator leaking it into the `.env` cannot pass.
     """
     project = _resolved(host, "127.0.0.1:17233")
     lines = render_env(project).splitlines()
@@ -577,11 +443,10 @@ def test_the_supervisor_resolves_both_spellings_to_one_endpoint(
 ) -> None:
     """US5-S4 (b): `host:port` in, `host:port` out — never `host:port:port`.
 
-    As landed, `_run_supervisor` built `f"{TEMPORAL_ADDRESS}:{port}"`
-    unconditionally, so the tree-wide value produced `127.0.0.1:7233:7233`, the
-    probe dialled host `127.0.0.1:7233`, readiness timed out and the engine never
-    came up. The host-only spelling is covered too: this is a fix, not a swap of
-    one broken meaning for another.
+    As landed, `_run_supervisor` appended a port unconditionally, so the
+    tree-wide value became `127.0.0.1:7233:7233`, the probe dialled host
+    `127.0.0.1:7233` and the engine never came up. The host-only spelling is
+    covered too: a fix, not a swap of one broken meaning for another.
     """
     assert cs._resolve_temporal_address(spelled, cs.DEFAULT_TEMPORAL_PORT) == expected
     assert expected.count(":") == 1
@@ -593,11 +458,11 @@ def test_the_supervisors_probe_splits_one_address_once(
     """US5-S4 (b): `_probe_temporal_address` dials host `127.0.0.1` port `7233`."""
     dialled: list[tuple[Any, Any]] = []
 
-    async def _open_connection(host: Any, port: Any) -> Any:
+    async def _open(host: Any, port: Any) -> Any:
         dialled.append((host, port))
         raise ConnectionRefusedError
 
-    monkeypatch.setattr(asyncio, "open_connection", _open_connection)
+    monkeypatch.setattr(asyncio, "open_connection", _open)
 
     assert asyncio.run(cs._probe_temporal_address(ENGINE_TEMPORAL_ADDRESS, 0.0)) is False
     assert asyncio.run(cs._probe_temporal_address("127.0.0.1", 0.0)) is False
@@ -615,12 +480,9 @@ def test_the_supervisors_probe_splits_one_address_once(
 async def test_the_supervisor_hands_its_children_the_env_value_unchanged(
     tmp_path: Path,
 ) -> None:
-    """US5-S4: end to end through the supervisor's own resolution.
-
-    The value under test is the one the generated `.env` writes, taken from the
-    generator's constant rather than restated here — the two sides resolve the
-    same endpoint or this test is meaningless.
-    """
+    """US5-S4: end to end through the supervisor's own resolution, on the value
+    the generated `.env` writes — taken from the generator's constant rather
+    than restated, or the two sides are not being compared at all."""
     argv_map = cs._child_argv(
         temporal_address=cs._resolve_temporal_address(
             ENGINE_TEMPORAL_ADDRESS, cs.DEFAULT_TEMPORAL_PORT
@@ -636,17 +498,13 @@ async def test_the_supervisor_hands_its_children_the_env_value_unchanged(
         probed.append(address)
         return False
 
+    class _Stub:  # the ChildController shape, and nothing else
+        async def wait(self) -> int:
+            return 0
+
+        stop = kill = lambda self: None  # noqa: E731
+
     async def start_child(name: str, argv: list[str]) -> Any:
-        class _Stub:
-            async def wait(self) -> int:
-                return 0
-
-            def stop(self) -> None:
-                return None
-
-            def kill(self) -> None:
-                return None
-
         return _Stub()
 
     code = await cs._run_supervisor(

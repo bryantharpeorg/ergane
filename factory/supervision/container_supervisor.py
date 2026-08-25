@@ -38,18 +38,16 @@ _CHILDREN: dict[str, str] = {
 
 DEFAULT_TEMPORAL_PORT = 7233
 
-#: The *host* alone — what is used when a resolved address names no port, and
-#: nothing else. It is spelled separately from the address below because the two
-#: are different facts: 104-US5 found this constant standing in for both, which
-#: is how `f"{address}:{port}"` came to build `127.0.0.1:7233:7233`.
+#: The *host* alone, used only when a resolved address names no port. Spelled
+#: apart from the address below because the two are different facts: 104-US5
+#: found this constant standing in for both, which is how `f"{address}:{port}"`
+#: came to build `127.0.0.1:7233:7233`.
 DEFAULT_TEMPORAL_HOST = "127.0.0.1"
 
-#: The whole endpoint, `host:port` — the one convention this tree uses
-#: everywhere (`factory/notify/service.py`, `factory/cli/install.py`'s blank
-#: document, `factory/cli/env.py`, `scripts/ergane-env.sh`), and the spelling
-#: the generated `.env` writes into `TEMPORAL_ADDRESS`. The supervisor's own
-#: children read that same variable and need the port in it, so there is one
-#: variable with one meaning on both sides of the mount.
+#: The whole endpoint, `host:port` — this tree's one convention
+#: (`factory/notify/service.py`, `factory/cli/env.py`, `scripts/ergane-env.sh`)
+#: and the spelling the generated `.env` writes. The supervisor's children read
+#: that same variable and need the port, so it has one meaning on both sides.
 DEFAULT_TEMPORAL_ADDRESS = f"{DEFAULT_TEMPORAL_HOST}:{DEFAULT_TEMPORAL_PORT}"
 DEFAULT_READINESS_TIMEOUT_S = 30.0
 DEFAULT_GRACE_PERIOD_S = 10.0
@@ -100,11 +98,10 @@ class _ProcessController:
 def _split_address(address: str) -> tuple[str, int]:
     """Split one `host:port` value **once**, tolerating a host-only spelling.
 
-    The convention is `host:port` (a bare IPv6 literal is not one of the
-    spellings this tree uses; bracket it if you ever need one). A value with no
-    port means the default port, never a `ValueError` out of `int()` — 088
-    landed a probe that would have raised on exactly that input, because in
-    practice it was only ever handed an address a port had just been appended to.
+    The convention is `host:port` (bracket a bare IPv6 literal; this tree uses
+    none). A value with no port means the default port, never a `ValueError` out
+    of `int()` — 088's probe would have raised on exactly that input, because it
+    was only ever handed an address a port had just been appended to.
     """
     host, separator, tail = address.rpartition(":")
     if separator and tail.isdigit():
@@ -116,15 +113,14 @@ def _resolve_temporal_address(address: str, port: int) -> str:
     """The one endpoint, from whichever spelling arrived (104-US5, plan R12).
 
     As 088 landed, `_run_supervisor` built `f"{address}:{port}"` unconditionally
-    while `TEMPORAL_ADDRESS` carries `host:port` everywhere else in this tree —
+    while `TEMPORAL_ADDRESS` carries `host:port` everywhere else in this tree,
     so the generated `.env`'s `127.0.0.1:7233` became `127.0.0.1:7233:7233`, the
     probe dialled host `127.0.0.1:7233`, readiness timed out and the engine
     never came up. An address that already carries a port **is** the address.
 
-    The host-only spelling still resolves, deliberately: writing a host-only
-    value instead would break `factory.worker` and `factory.notify.service`,
-    which read the same variable out of the same environment and need the port.
-    Two consumers, one variable, one meaning.
+    The host-only spelling still resolves, deliberately: a host-only value would
+    break `factory.worker` and `factory.notify.service`, which read the same
+    variable out of the same environment and need the port.
     """
     _host, _, tail = address.rpartition(":")
     if _host and tail.isdigit():
