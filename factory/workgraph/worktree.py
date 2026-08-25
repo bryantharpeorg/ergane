@@ -130,6 +130,21 @@ class WorktreeError(RuntimeError):
     """
 
 
+class WorktreeOwnershipError(WorktreeError):
+    """The node's directory belongs to a different clone than the dispatch names.
+
+    A `WorktreeError` by inheritance, so every caller that already classifies a
+    worktree failure keeps classifying this one — and a distinct type, because
+    the two boundaries that matter must tell it apart from an ordinary one. An
+    ordinary `WorktreeError` is a lock, a full disk or a slow filesystem, and a
+    second attempt is what fixes it; this is two repositories disagreeing about
+    who owns a directory, and it answers the same way on every retry. So
+    `prepare_worktree` raises it non-retryably (107 FR-003), and the landing
+    activity discriminates on it for the same reason. A message substring would
+    not survive a reworded message; the type does.
+    """
+
+
 class RuntimeRootChoice(StrEnum):
     """Which runtime root name `resolve_factory_root` chose."""
 
@@ -319,6 +334,12 @@ def ensure(
     A recorded pin is reused only when it is still an ancestor of the target's
     current landing-branch head (US1 FR-001); otherwise the worktree is rebuilt
     and the old branch is archived, never deleted (FR-004).
+
+    Reuse of any kind is conditional on the directory being a worktree of
+    `target_repo`: `worktree_path` takes no repository, so two clones dispatched
+    under one factory root resolve the same directory for the same node id, and
+    an existing one belonging to the other clone raises `WorktreeOwnershipError`
+    rather than being returned or adopted (107 FR-002).
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
@@ -327,6 +348,17 @@ def ensure(
     recorded = _read_record(record_file)
 
     if path.is_dir():
+        # Ahead of both reuse branches, because both were blind to it (107
+        # FR-002). The recorded branch checks ancestry, which two clones of one
+        # repository pass identically; the adopt branch checks nothing at all,
+        # and fires precisely when the sidecar that might have said so is gone.
+        # Refuse, never repair: removing another repository's registration would
+        # delete work in a clone this epic was never asked to touch, and in the
+        # two-dispatcher configuration a live node may be writing there now (R3).
+        ownership = _worktree_ownership(repo, path)
+        if not ownership.owned:
+            raise WorktreeOwnershipError(_ownership_refusal(repo, path, ownership))
+
         if recorded is not None:
             # FR-002: the directory, branch, pin and sidecar are untouched if
             # the recorded base_ref still belongs to the target's history.
@@ -702,6 +734,155 @@ def _main_worktree(path: Path) -> Path:
         if line.startswith("worktree "):
             return Path(line.split(" ", 1)[1])
     raise WorktreeError(f"git named no main worktree for {path}")
+
+
+@dataclass(frozen=True)
+class WorktreeOwnership:
+    """Git's answer to "which repository owns this directory" (107 FR-001).
+
+    `owned` is the whole question and the other three fields exist to phrase the
+    refusal when it is false. `is_worktree` separates the two ways a directory
+    can fail to be the dispatched repo's: it belongs to another clone, or it is
+    not a worktree of anything. `toplevel` is what git resolved the directory to
+    — for a bare directory nested inside a clone that is the *clone*, which is
+    the tell, not the ownership. `owner` is the clone a remedy must be run
+    against, and is `None` exactly when nothing owns the directory.
+    """
+
+    owned: bool
+    is_worktree: bool
+    toplevel: Path | None
+    owner: Path | None
+
+
+def _worktree_ownership(repo: Path, path: Path) -> WorktreeOwnership:
+    """Whether `path` is a worktree of `repo` — asked of git, not of a sidecar.
+
+    Two assertions from one `rev-parse`, and the first one is the one that
+    matters (107 R1). Git walks *up* from the directory it is handed, and the
+    worker host's runtime root normally sits inside a clone, so a bare `mkdir`
+    directory with no `.git` of any kind answers a legitimate `--show-toplevel`
+    and `--git-common-dir` with exit 0. Comparing common directories alone —
+    including a comparison built on `_main_worktree` — therefore calls a
+    directory that is not a worktree at all *owned*, which is the false pass
+    this check exists to refuse. So: the resolved top level must be the
+    directory itself, *and* its common git directory must be the one the
+    dispatched repo reports.
+
+    The common directory rather than the repo path because either side may
+    itself be a linked worktree, and a linked worktree reports the main
+    repository's `.git` — which is precisely the identity being compared.
+
+    A directory that is not a worktree is a returned answer and never an
+    escaping exception (FR-001): the caller phrases the refusal, and a
+    `WorktreeError` from here would be classified as retryable infrastructure
+    and spent three times over a directory that will answer the same forever.
+    Git failing to *run* is still an infrastructure failure and still raises.
+    """
+    identity = _repo_identity(path)
+    if identity is None:
+        return WorktreeOwnership(
+            owned=False, is_worktree=False, toplevel=None, owner=None
+        )
+
+    toplevel, common_dir = identity
+    if toplevel != path.resolve():
+        return WorktreeOwnership(
+            owned=False, is_worktree=False, toplevel=toplevel, owner=None
+        )
+
+    target = _repo_identity(repo)
+    if target is None:
+        raise WorktreeError(f"git found no repository at target repo {repo}")
+
+    return WorktreeOwnership(
+        owned=common_dir == target[1],
+        is_worktree=True,
+        toplevel=toplevel,
+        owner=_owning_clone(path, common_dir),
+    )
+
+
+def _repo_identity(cwd: Path) -> tuple[Path, Path] | None:
+    """`(top level, common git dir)` for `cwd`, or `None` if git finds no repo.
+
+    `--path-format=absolute` (git ≥ 2.31) so both halves are comparable without
+    joining them to a working directory that has already been changed out from
+    under them. Modelled on `_branch_exists`: a non-zero exit is an answer here,
+    not a failure, because "no repository there" is exactly one of the answers
+    the caller asked for.
+    """
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(cwd),
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            env=scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"},
+            timeout=GIT_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise WorktreeError(f"git rev-parse failed in {cwd}: {exc}") from exc
+    if completed.returncode != 0:
+        return None
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if len(lines) != 2:
+        return None
+    return Path(lines[0]).resolve(), Path(lines[1]).resolve()
+
+
+def _owning_clone(path: Path, common_dir: Path) -> Path:
+    """The clone whose `.git` holds this worktree's registration.
+
+    What the remedy in a refusal is run against: `git worktree remove` answers
+    `fatal: not a working tree` from any repository but this one, so naming the
+    dispatched repo instead would print a command that cannot work.
+    """
+    try:
+        return _main_worktree(path)
+    except WorktreeError:
+        # A repository git will not list a main worktree for is a shape it does
+        # not normally produce; name the directory beside its git directory
+        # rather than turning a refusal into an infrastructure error.
+        return common_dir.parent
+
+
+def _ownership_refusal(repo: Path, path: Path, ownership: WorktreeOwnership) -> str:
+    """The refusal an operator meets, and the command that clears it (FR-003).
+
+    Nothing in the tree sweeps the stale worktrees this refuses on, so this
+    message is the operator's whole next move: it names the directory, the clone
+    that owns it, the repository the epic was dispatched against, and a command
+    issued against the owner — the only repository git will accept it from.
+    """
+    here = path.resolve()
+    if ownership.owner is not None:
+        return (
+            f"node worktree {here} is registered to {ownership.owner}, not to the "
+            f"dispatched target repo {repo.resolve()}: refusing to build one "
+            f"clone's story in another clone's worktree. Clear it from the "
+            f"owning clone and dispatch again: "
+            f"git -C {ownership.owner} worktree remove --force {here}"
+        )
+    where = (
+        f"git resolves its top level to {ownership.toplevel}, the clone it "
+        f"merely sits inside"
+        if ownership.toplevel is not None
+        else "git finds no repository there"
+    )
+    return (
+        f"node worktree {here} is not a git worktree of any repository ({where}), "
+        f"and the dispatched target repo is {repo.resolve()}: refusing to "
+        f"dispatch into a directory no repository owns. Remove it and dispatch "
+        f"again: rm -rf {here}"
+    )
 
 
 class OffMachine(StrEnum):

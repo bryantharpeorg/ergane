@@ -111,6 +111,7 @@ from factory.workgraph.worktree import (
     DEFAULT_FACTORY_ROOT,
     PreparedWorktree,
     WorktreeError,
+    WorktreeOwnershipError,
 )
 
 #: Where the salvage mirror's outcome goes. A mirror failure is reported rather
@@ -135,6 +136,14 @@ STANDARDS_MISSING = "STANDARDS_MISSING"
 #: worktree the worker could not reach this second is the workflow's retry budget
 #: to spend, not the ladder's.
 WORKTREE_FAILED = "WORKTREE_FAILED"
+
+#: The activity error type for a node directory that belongs to a different
+#: clone than the dispatch names (107 FR-003). Never retryable, and that is the
+#: whole reason it is not `WORKTREE_FAILED`: two repositories disagreeing about
+#: who owns a directory is deterministic, so the retry budget above would spend
+#: three attempts arriving at the same refusal, interleaved with Temporal's own
+#: retry noise, over a fault only an operator can clear.
+WORKTREE_OWNERSHIP_MISMATCH = "WORKTREE_OWNERSHIP_MISMATCH"
 
 #: The activity error type for an agent that could not be started at all — no
 #: such adapter, or no such binary on the worker host. Distinct from a non-zero
@@ -388,8 +397,9 @@ async def prepare_worktree(request: PrepareWorktreeInput) -> PreparedWorktree:
     attempt opens the tree the previous attempt left behind.
 
     Raises non-retryable `STANDARDS_MISSING` when the target repo declares a
-    standards document the worktree does not have, and retryable
-    `WORKTREE_FAILED` when git itself refused.
+    standards document the worktree does not have, non-retryable
+    `WORKTREE_OWNERSHIP_MISMATCH` when the node's directory is a worktree of a
+    different clone, and retryable `WORKTREE_FAILED` when git itself refused.
 
     Runs in a worker thread: a first checkout of a large repository owns the wall
     clock for as long as it takes, and blocking the event loop would stall every
@@ -403,6 +413,12 @@ async def prepare_worktree(request: PrepareWorktreeInput) -> PreparedWorktree:
             request.node_id,
             factory_root=factory_root(),
         )
+    except WorktreeOwnershipError as exc:
+        # Before the ordinary handler, because it is a `WorktreeError` too: the
+        # discrimination is the type, so this clause has to see it first.
+        raise ApplicationError(
+            str(exc), type=WORKTREE_OWNERSHIP_MISMATCH, non_retryable=True
+        ) from exc
     except WorktreeError as exc:
         raise ApplicationError(str(exc), type=WORKTREE_FAILED) from exc
 
