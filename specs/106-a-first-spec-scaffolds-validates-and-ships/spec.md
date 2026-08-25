@@ -1,6 +1,20 @@
 ---
-state: ready
+state: landed
 depends_on_landed: [104-install-brings-the-container-up-configured]
+# Attested landed 2026-08-25. US1 954af6fca9a9 (#319), US2 606ffdb5718a (#321),
+# US3 c194ee23ef7f (#322), US4 2d5b850dc7cc (#323), US5 c5fbee55318c (#320),
+# US6 9201f60507cf (#324) — all six observed on ergane-buildout by content.
+# Four of six passed on the first attempt; US1 took a second after a judge FAIL
+# and US6 after a deterministic-gate refusal whose cause is recorded nowhere an
+# operator can read (verify/a-deterministic-gate-refusal-names-no-cause-an-
+# operator-can-read).
+#
+# First epic of the container onramp to run on the house implementer rather than
+# opus-closer: every node was persona implementer, model ollama-cloud/
+# kimi-k2.7-code, routed through the gateway and therefore billed per token,
+# because this spec's Work Graph declares no persona and the registry default
+# applies. 104 and 107 declare opus-closer explicitly and run on subscription.
+# The six landed between 12:17 AM and 3:52 AM CT.
 # DRAFTED 2026-08-23 ~10:25 PM CT by the operator session behind
 # docs/container-onramp-program.md. REPAIRED 2026-08-24 against an adversarial
 # review: US1 split on the seam the plan already named, the readiness-renderer
