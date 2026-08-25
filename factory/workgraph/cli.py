@@ -97,6 +97,7 @@ class _OperatorError(Exception):
 from factory.workgraph.preflight import (
     PreflightFinding,
     check_aliases,
+    engine_skew_findings,
 )
 
 
@@ -135,7 +136,9 @@ async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
 
     Returns `[]` when every check passes.
     """
-    return await check_aliases(graph, _preflight_registry(), _open_preflight_client())
+    findings = engine_skew_findings()
+    findings += await check_aliases(graph, _preflight_registry(), _open_preflight_client())
+    return findings
 
 
 async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:

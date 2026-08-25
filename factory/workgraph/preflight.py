@@ -93,6 +93,8 @@ from typing import Mapping, Sequence
 
 from factory.activities.usage_activities import key_alias_for
 from factory.config import Persona
+from factory.registry import resolve_state_home
+from factory.supervision.engine_identity import cli_version, engine_skew, read_identity
 from factory.usage.litellm_client import LiteLLMClient, LiteLLMError
 from factory.verify.criteria import mask_fences
 from factory.verify.factory_yaml import (
@@ -676,6 +678,25 @@ def _undeclared_landing_branch(repo: Path) -> str | None:
     except (FactoryConfigError, OSError) as error:
         return str(error)
     return None
+
+
+def engine_skew_findings() -> list[PreflightFinding]:
+    """Refuse dispatch when the running engine's version differs from this CLI.
+
+    Reads the identity record from the host's supervision home — the same
+    absolute path the container writes to because `compose.reference.yaml` passes
+    `HOME` through and mounts the state root same-path.  No identity file is a
+    silent pass: native engines and pre-105 containers have no record, and the
+    check activates only on evidence.
+
+    The refusal's `transport` is ``False`` because the operator's move is an
+    upgrade, not a proxy restart.
+    """
+    identity = read_identity(resolve_state_home())
+    sentence = engine_skew(identity, cli_version())
+    if sentence is None:
+        return []
+    return [PreflightFinding(check="engine", passed=False, detail=sentence, transport=False)]
 
 
 def landing_readiness_preflight(
