@@ -240,6 +240,48 @@ def test_the_refusal_prints_the_command_that_actually_clears_it(
     assert registered_worktrees(repo_b) == [str(Path(recovered.path).resolve())]
 
 
+def test_the_refusal_reads_exactly_as_the_operator_will_meet_it(
+    repo_a: Path, repo_b: Path, factory_root: Path
+) -> None:
+    """FR-003: the whole message, verbatim, in both shapes it can take.
+
+    Pinned rather than sampled with substrings, because this text *is* the
+    handover: it has to say which directory, which clone owns it, which
+    repository was dispatched, and what to run — in an order a reader can
+    follow. A message that carried all four values in an unreadable arrangement
+    would satisfy every substring assertion and none of the intent.
+    """
+    prepared = ensure(repo_a, EPIC, NODE, factory_root=factory_root)
+    path = Path(prepared.path).resolve()
+
+    with pytest.raises(WorktreeOwnershipError) as foreign:
+        ensure(repo_b, EPIC, NODE, factory_root=factory_root)
+
+    assert str(foreign.value) == (
+        f"node worktree {path} is registered to {repo_a.resolve()}, not to the "
+        f"dispatched target repo {repo_b.resolve()}: refusing to build one "
+        f"clone's story in another clone's worktree. Clear it from the owning "
+        f"clone and dispatch again: "
+        f"git -C {repo_a.resolve()} worktree remove --force {path}"
+    )
+
+    # The other shape: a directory nothing owns has no clone to run a remedy
+    # against, so it names the tell instead — what git resolved it to.
+    orphan_root = factory_root.parent / "orphan-root"
+    orphan = orphan_root / "worktrees" / EPIC / NODE
+    orphan.mkdir(parents=True)
+
+    with pytest.raises(WorktreeOwnershipError) as loose:
+        ensure(repo_a, EPIC, NODE, factory_root=orphan_root)
+
+    assert str(loose.value) == (
+        f"node worktree {orphan.resolve()} is not a git worktree of any "
+        f"repository (git finds no repository there), and the dispatched target "
+        f"repo is {repo_a.resolve()}: refusing to dispatch into a directory no "
+        f"repository owns. Remove it and dispatch again: rm -rf {orphan.resolve()}"
+    )
+
+
 # --- the adopt branch (US1-S2) ------------------------------------------------
 
 
