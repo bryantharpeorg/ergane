@@ -1,0 +1,63 @@
+107 US6 / SC-006 — a rescued landing is visible, and the unbuilt story is told
+exactly what a rescue must carry.
+
+Run on 2026-08-25 against this branch's `factory/workgraph/landed.py` and
+`factory/workgraph/cli.py`, on git 2.43.0, in a scratch clone whose checked-out
+and landing branches differ (checked out `main`, declared
+`landing_branch: ergane-buildout` — the split this epic exists for). The spec
+declares two stories. US1 was rescued by hand: a commit whose subject is prose
+and whose body carries the rescue trailer naming this epic, node and story. US2
+is genuinely unbuilt.
+
+Two things to read for, in order:
+
+1. **The rescued story is reported landed with its own kind.** The prose subject
+   matches no subject grammar, but the body trailer is read as a landing for US1
+   with `kind: rescued` — a provenance distinct from the queue-observed one.
+2. **The unbuilt story is printed with the exact PR title and the exact trailer
+   line a rescue must carry, ready to paste.** `ergane spec landed` names US2's
+   story title in the PR title shape and the trailer line an operator can put in
+   the PR body, so a future rescue of US2 is survivable without the operator
+   remembering an anchored grammar.
+
+--------------------------------------------------------------------------------
+
+=== `ergane spec landed --default-branch ergane-buildout` ===
+
+default branch: ergane-buildout
+US1 landed at 4923b57c687b (rescued)
+
+US2 has no landing yet. To rescue it by hand, open a PR with:
+  title:   107-a-landing-refuses-before-the-build-not-after/us2: Build the untouched thing
+  trailer: Rescue: 107-a-landing-refuses-before-the-build-not-after/us2: US2
+
+=== the same facts in --json, showing the rescue kind and the unlanded list ===
+
+{
+  "default_branch": "ergane-buildout",
+  "facts": {
+    "US1": {
+      "story_key": "US1",
+      "commit": "4923b57c687beb8d0aa9b7276c8ba4a6edaca5e9",
+      "kind": "rescued",
+      "external_completion": null
+    }
+  },
+  "unlanded": [
+    {
+      "story_key": "US2",
+      "pr_title": "107-a-landing-refuses-before-the-build-not-after/us2: Build the untouched thing",
+      "trailer": "Rescue: 107-a-landing-refuses-before-the-build-not-after/us2: US2"
+    }
+  ]
+}
+
+--------------------------------------------------------------------------------
+
+**The honest limit, stated (plan trap 14):** no grammar recovers an
+already-merged prose-titled rescue whose commit predates this reader. The
+trailer is written into the PR body at rescue time and is immutable afterwards,
+exactly like the subject — so a rescue merged before this story (PR #297 is the
+standing case) is not recoverable by any grammar, and one story of spec 088
+stays permanently invisible to `spec landed` and to `--delta`. This story makes
+future rescues survivable; it does not rewrite history.

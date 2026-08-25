@@ -411,6 +411,155 @@ def test_end_to_end_real_merge_commit(repo_builder: Callable[..., Path]) -> None
     assert facts == {"US2": LandedFact(story_key="US2", commit=merge_sha, kind=LandedKind.HISTORICAL)}
 
 
+# --- US6: rescue trailer grammar (T048-T051, FR-015/FR-016) -------------------
+
+
+def _commit_with_body(
+    repo: Path, subject: str, body: str, *, env: dict[str, str]
+) -> str:
+    """Commit with an explicit subject and body via stdin, returning the sha."""
+    message = f"{subject}\n\n{body}" if body else subject
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "--quiet", "--allow-empty", "-F", "-"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+        input=message,
+    )
+    return _git(repo, "rev-parse", "HEAD", env=env).strip()
+
+
+def test_prose_subject_with_rescue_trailer_yields_rescued_fact(
+    repo_builder: Callable[..., Path],
+) -> None:
+    """US6-S1 / FR-015: a prose subject whose body carries the trailer is a landing.
+
+    The trailer names this epic, node and story; the commit is read as a landing
+    for that story with a provenance kind distinct from the queue-observed one.
+    """
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    sha = _commit_with_body(
+        repo,
+        "Rescue the landing by hand",
+        f"Hand-opened PR merging the verified work.\n\nRescue: {EPIC_ID}/us1: US1",
+        env=env,
+    )
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {"US1": LandedFact(story_key="US1", commit=sha, kind=LandedKind.RESCUED)}
+    assert facts["US1"].kind not in {LandedKind.OBSERVED, LandedKind.ATTESTED, LandedKind.HISTORICAL}
+
+
+def test_multiline_bodies_and_delimiters_never_mistaken_for_subjects(
+    repo_builder: Callable[..., Path],
+) -> None:
+    """US6-S2 / FR-016: widening the read is a split change; bodies never become subjects.
+
+    A history of commits with multi-line bodies, blank lines and subjects
+    containing every delimiter the reader uses must parse completely, with the
+    subject and the trailer each read from the right place. A body line that is
+    not a trailer must never be read as one.
+    """
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    # A subject containing the tab/separator that the old line-oriented read
+    # keyed on, with a body that itself contains a rescue-shaped line that is NOT
+    # the trailer the commit carries.
+    _commit_with_body(
+        repo,
+        f"{EPIC_ID}/us1\tUS1\t(#1)",
+        "Body line one.\n\nNot the trailer:\nRescue: 999-other/us1: US9\n\nFinal line.",
+        env=env,
+    )
+    # A body with a blank line and a trailer on a later line.
+    _commit_with_body(
+        repo,
+        "Rescue prose two",
+        f"Body.\n\n\nRescue: {EPIC_ID}/us1: US1\n\nTail.",
+        env=env,
+    )
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    # Newest-first: the second commit's subject is prose so it matches nothing;
+    # its trailer wins for US1 with kind RESCUED. Neither body line was read as a
+    # subject and the trailer-shaped body line in commit 1 was not credited.
+    assert facts == {"US1": LandedFact(story_key="US1", commit=_git(repo, "rev-parse", "HEAD", env=env).strip(), kind=LandedKind.RESCUED)}
+
+
+def test_subject_grammar_wins_over_trailer_on_same_commit(
+    repo_builder: Callable[..., Path],
+) -> None:
+    """US6-S3 / FR-015: a commit matching a subject grammar AND the trailer is
+    recorded by the subject grammar — the declared precedence, asserted."""
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    sha = _commit_with_body(
+        repo,
+        f"{EPIC_ID}/us1: US1 (#1)",
+        f"Body.\n\nRescue: {EPIC_ID}/us1: US1",
+        env=env,
+    )
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    # `_LANDING_RE` is tried first, so the subject wins and the kind is OBSERVED,
+    # not RESCUED — the rule is asserted rather than left to scan order (plan R11).
+    assert facts == {"US1": LandedFact(story_key="US1", commit=sha, kind=LandedKind.OBSERVED)}
+
+
+def test_trailer_naming_undeclared_epic_or_story_is_ignored(
+    repo_builder: Callable[..., Path],
+) -> None:
+    """US6-S4 / FR-015: a rescue trailer may not mark an unbuilt story landed.
+
+    A trailer naming an epic the spec does not declare, or a story the spec does
+    not declare, is ignored exactly as an unrecognised subject is.
+    """
+    repo = repo_builder({"spec.md": _spec(stories=["US1"])})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    # Trailer names a different epic.
+    _commit_with_body(repo, "Prose one", "Rescue: 999-other/us1: US1", env=env)
+    # Trailer names a story this spec does not declare (US9).
+    _commit_with_body(repo, "Prose two", f"Rescue: {EPIC_ID}/us9: US9", env=env)
+    # Trailer names a node id that maps to no declared story (node 'us9').
+    _commit_with_body(repo, "Prose three", f"Rescue: {EPIC_ID}/us9: US1", env=env)
+    facts = landed_facts(repo, EPIC_ID, default_branch=DEFAULT_BRANCH)
+    assert facts == {}
+
+
+def test_cli_prints_rescue_title_and_trailer_for_unlanded_stories(
+    repo_builder: Callable[..., Path],
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """US6-S5 / FR-017: `spec landed` prints the exact PR title and trailer for
+    every story it found no landing for, and nothing for the landed one."""
+    from factory.workgraph.cli import landed_command
+
+    spec = _spec(stories=["US1", "US2", "US3"])
+    repo = repo_builder({"spec.md": spec})
+    env = _git_env(Path(os.environ.get("HOME", "/tmp")))
+    # US1 is rescued; US2 and US3 are unlanded.
+    _commit_with_body(
+        repo,
+        "Rescue the first story",
+        f"Body.\n\nRescue: {EPIC_ID}/us1: US1",
+        env=env,
+    )
+
+    class Args:
+        spec_dir = str(repo / "specs" / EPIC_ID)
+        default_branch = DEFAULT_BRANCH
+        as_json = False
+
+    landed_command(Args())
+    out = capsys.readouterr().out
+    assert "US1 landed at" in out
+    assert "rescued" in out
+    # Every unlanded story gets the exact PR title and trailer, ready to paste.
+    assert "US2 has no landing yet" in out
+    assert f"Rescue: {EPIC_ID}/us2: US2" in out
+    assert "US3 has no landing yet" in out
+    assert f"Rescue: {EPIC_ID}/us3: US3" in out
+
+
 # --- T004: attestation fallback per story, not per spec ----------------------
 
 
