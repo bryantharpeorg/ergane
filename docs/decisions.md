@@ -1251,3 +1251,53 @@ passed. The wasted first attempt was the whole bill, and stating the ceiling up 
 what stops paying it.
 
 Constitution version bumped from 2.4.0 to 2.5.0.
+
+## D-051 · A governing value is declared, never ambient: the landing base comes from `factory.yaml`, not from a checked-out branch (decided)
+
+Decided 2026-08-24, claimed from the ledger rather than from a spec landing. Two finding
+keys — `mergequeue/landing-base-follows-the-operator-checkout` (2026-08-17) and
+`merge/landing-base-comes-from-the-target-repos-checked-out-branch` (2026-08-24) — turn
+out to describe one mechanism, seven days apart. Because the key drifted, each was filed
+as a first occurrence and the ledger never showed a recurrence at all.
+
+`open_landing_pr` derived its `--base` from `prepared.default_branch`, which is whatever
+branch the target repository happens to have checked out at dispatch. `factory.yaml`
+declares the landing branch (`ergane-buildout`) and was never consulted. GitHub's own
+declared default is also `ergane-buildout`, so the value did not come from `gh repo view`
+either — it came from the ambient state of a clone.
+
+The three observations, each a node that had already passed every gate and its judge:
+
+| date | node | base it was opened against | outcome |
+| --- | --- | --- | --- |
+| 2026-08-17 00:56Z | 053/us1 | `attest/023-042-landed` | PR #187 could never enter the queue; the landing poller read the absence as `DEQUEUED_BY_HUMAN` and killed us1, cascading to us2 and us3 before either was dispatched |
+| 2026-08-17 19:16Z | 035/us3 | `operator/apache-2-license` | same shape; recovered by retargeting the PR over REST and re-deriving with `--delta` |
+| 2026-08-24 16:50Z | 088/us3 | `spec-routing-plan` | 6 commits and 1,480 insertions — the complete container deliverable — refused with `GraphQL: Head sha can't be blank, Base sha can't be blank` |
+
+The third one is the reason this is a principle and not a bug report. `spec-routing-plan`
+is an operator working branch that was never pushed to origin, so the failure surfaced as
+a `gh` error about blank SHAs: a message that names neither the branch, nor the
+declaration that was ignored, nor the fact that a base was chosen at all. The cause was
+seven days old, and the error pointed nowhere near it.
+
+1. **The declaration owns the value.** A value that decides where work goes is read from
+   the file, registry or record that declares it. `factory.yaml` owns the landing branch;
+   the persona registry owns the model; the compiled workgraph owns the node's identity.
+   Ambient process state — a checked-out `HEAD`, a working directory, an inherited
+   environment variable — is never the source, because it is right in every clean
+   checkout and wrong only in the configuration nobody tried.
+2. **An absent declaration is refused, not defaulted.** Falling back to ambient state
+   converts a missing configuration into a plausible wrong answer that fails later and
+   elsewhere. The refusal names the declaration it wanted.
+3. **This is generalised deliberately.** The landing base is the instance that has been
+   measured three times, but the same shape produced
+   `workgraph/a-stale-node-worktree-from-another-target-repo-is-silently-reused` (a
+   worktree path resolved from `factory_root` while its git registration belonged to a
+   different clone) in the same week. Spec 107 closes both instances; Principle IX is
+   what binds the next one.
+4. **A drifted finding key hides a recurrence.** The promotion bar is "has bitten twice",
+   and the ledger is what makes that a fact rather than a recollection. Two keys for one
+   mechanism each reported a single occurrence, so nothing crossed the bar until the
+   notes were read side by side. Prefer an existing key over a better-worded new one.
+
+Constitution version bumped from 2.5.0 to 2.6.0.
