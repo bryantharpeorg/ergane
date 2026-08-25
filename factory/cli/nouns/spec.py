@@ -1,4 +1,4 @@
-"""The `spec` noun: list, validate, derive, landed.
+"""The `spec` noun: list, validate, derive, new, landed.
 
 Everything that costs money to run lives elsewhere; this noun is the cheap
 room.  It reuses the existing handlers from `factory.roadmap.cli` and
@@ -12,7 +12,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
@@ -20,6 +22,7 @@ from typing import Any, Sequence
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
 from factory.cli.nouns import Noun
 from factory.config import ConfigError, Persona, WriteScope, load_personas
+from factory.doctor.scaffold import scaffold_spec
 from factory.roadmap.cli import (
     _OperatorError as RoadmapOperatorError,
     _render_roadmap,
@@ -32,15 +35,17 @@ from factory.workgraph.cli import (
     DEFAULT_SPECS_ROOT,
     SPEC_NAME,
     _OperatorError as WorkgraphOperatorError,
+    _resolve_identity_path,
     _target_repo_for_spec,
     derive_command,
     landed_command,
     workflow_id,
 )
+from factory.workgraph.contention import _BARE_EXTENSIONS, _FILENAME_RE
 from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkGraphError, WorkNode, validate_workgraph
 from factory.workgraph.preflight import check_prompt_assembly, check_slice_coverage
-from factory.workgraph.prompt import TASKS_DOCUMENT
+from factory.workgraph.prompt import TASKS_DOCUMENT, task_slice_bounds
 from factory.workgraph.worktree import landing_branch
 
 #: The id grammar the criteria parser mints for acceptance scenarios.
@@ -162,6 +167,27 @@ def _add_spec_parser(subparsers: Any) -> None:
     )
     derive_cmd.set_defaults(run=_derive_command)
 
+    new_cmd = commands.add_parser(
+        "new", help="scaffold a numbered spec directory under <specs-root>"
+    )
+    new_cmd.add_argument("slug", help="the feature slug for the new spec")
+    new_cmd.add_argument(
+        "--target-repo",
+        required=True,
+        help="worker-host path to the repository the epic builds in",
+    )
+    new_cmd.add_argument(
+        "--specs-root",
+        default=DEFAULT_SPECS_ROOT,
+        help=f"where the new spec directory is created (default: {DEFAULT_SPECS_ROOT})",
+    )
+    new_cmd.add_argument(
+        "--title",
+        default=None,
+        help="human-readable title for the worked story (default: the slug)",
+    )
+    new_cmd.set_defaults(run=_new_command)
+
     landed_cmd = commands.add_parser(
         "landed", help="report landed facts for <spec-dir>/spec.md"
     )
@@ -182,7 +208,7 @@ def _add_spec_parser(subparsers: Any) -> None:
 
 NOUN = Noun(
     name="spec",
-    summary="work with specs: list, validate, derive, landed",
+    summary="work with specs: list, validate, derive, new, landed",
     order=20,
     add_parser=_add_spec_parser,
 )
@@ -206,6 +232,160 @@ def _derive_command(args: argparse.Namespace) -> int:
         return derive_command(args)
     except (RoadmapOperatorError, WorkgraphOperatorError) as error:
         raise _translate_old_error(error) from error
+
+
+# --- new ---------------------------------------------------------------------
+
+
+#: Direct child directory name matching `<NNN>-<slug>`.
+_SPEC_NUMBER_RE = re.compile(r"^(\d+)-")
+
+
+def _pick_spec_number(specs_root: Path, slug: str) -> str:
+    """Return the next free three-digit spec number, or raise OperatorError."""
+    seen: dict[int, list[str]] = {}
+    slug_pattern = re.compile(rf"^\d+-{re.escape(slug)}$")
+    for entry in specs_root.iterdir():
+        if not entry.is_dir():
+            continue
+        if slug_pattern.match(entry.name):
+            raise OperatorError(
+                f"spec directory {entry.resolve()} already exists; spec new refuses to overwrite"
+            )
+        match = _SPEC_NUMBER_RE.match(entry.name)
+        if not match:
+            continue
+        number = int(match.group(1))
+        seen.setdefault(number, []).append(entry.name)
+
+    duplicates = [number for number, names in seen.items() if len(names) > 1]
+    if duplicates:
+        duplicates.sort()
+        raise OperatorError(
+            f"specs root {specs_root} has multiple directories claiming number "
+            f"{', '.join(f'{n:03d}' for n in duplicates)}; refusing to guess"
+        )
+
+    next_number = max(seen, default=0) + 1
+    return f"{next_number:03d}"
+
+
+def _pick_anchor(target_repo: Path) -> str:
+    """Pick a tracked `path:line` anchor that resolves, or raise OperatorError."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(target_repo), "ls-files"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise OperatorError(
+            f"cannot list tracked files in {target_repo.resolve()}: {error.stderr.strip()}",
+            code=EXIT_USER,
+        ) from error
+
+    candidates: list[str] = []
+    for line in completed.stdout.splitlines():
+        path = line.strip()
+        if not path:
+            continue
+        tail = path.rpartition("/")[2]
+        if _FILENAME_RE.match(tail) is None:
+            continue
+        _, _, extension = tail.rpartition(".")
+        if not path.rpartition("/")[1] and extension.lower() not in _BARE_EXTENSIONS:
+            continue
+        candidates.append(path)
+
+    candidates.sort()
+
+    for path in candidates:
+        file_path = target_repo / path
+        try:
+            lines = file_path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for index, text in enumerate(lines, start=1):
+            if text.strip():
+                return f"{path}:{index}"
+
+    raise OperatorError(
+        f"target repository {target_repo.resolve()} offers no tracked file with an "
+        f"eligible extension ({', '.join(sorted(_BARE_EXTENSIONS))}) that contains a "
+        "resolvable line for an anchor"
+    )
+
+
+def _persona_install_hint() -> bool:
+    """True when the deriver's default persona is not resolvable from the registry."""
+    from factory.config import load_personas as _load_personas
+    from factory.workgraph.derive import IMPLEMENTER
+
+    try:
+        personas = _load_personas()
+    except ConfigError:
+        return True
+    return IMPLEMENTER not in personas
+
+
+def _new_command(args: argparse.Namespace) -> int:
+    specs_root = Path(args.specs_root)
+    specs_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        target_repo = Path(
+            _resolve_identity_path(args.target_repo, "--target-repo", must_exist=True)
+        )
+    except WorkgraphOperatorError as error:
+        raise _translate_old_error(error) from error
+
+    number = _pick_spec_number(specs_root, args.slug)
+    anchor = _pick_anchor(target_repo)
+    title = args.title or args.slug
+
+    spec_text, plan_text, tasks_text = scaffold_spec(
+        slug=args.slug, title=title, anchor=anchor
+    )
+
+    spec_dir = specs_root / f"{number}-{args.slug}"
+    with tempfile.TemporaryDirectory(
+        dir=specs_root, prefix=f".tmp-new-{args.slug}-"
+    ) as tmp:
+        temp_dir = Path(tmp)
+        (temp_dir / "spec.md").write_text(spec_text, encoding="utf-8")
+        (temp_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+        (temp_dir / "tasks.md").write_text(tasks_text, encoding="utf-8")
+
+        try:
+            graph = derive_workgraph(
+                spec_text,
+                epic_id=f"{number}-{args.slug}",
+                feature=f"{number}-{args.slug}",
+                specs_root=str(specs_root.resolve()),
+                target_repo=str(target_repo.resolve()),
+                tasks_text=tasks_text,
+            )
+        except DerivationError as error:
+            raise OperatorError(f"scaffold does not compile: {error}") from error
+
+        for node in graph.nodes:
+            try:
+                task_slice_bounds(node, tasks_text)
+            except Exception as error:
+                raise OperatorError(
+                    f"scaffold task slice for {node.id} does not resolve: {error}"
+                ) from error
+
+        temp_dir.rename(spec_dir)
+
+    spec_dir_abs = spec_dir.resolve()
+    print(spec_dir_abs)
+    print("next, run:")
+    print(f"  ergane spec validate {spec_dir_abs} --target-repo {target_repo.resolve()}")
+    if _persona_install_hint():
+        print("  ergane install")
+    return EXIT_OK
 
 
 # --- landed ------------------------------------------------------------------

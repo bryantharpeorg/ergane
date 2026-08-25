@@ -1,0 +1,15 @@
+=== specs root before failed self-proof ===
+total 0
+drwxrwxr-x 2 1000 1000 40 Aug 25 05:50 .
+drwx------ 4 1000 1000 80 Aug 25 05:50 ..
+
+=== ergane spec new with forced derive failure (seam capture) ===
+ergane: scaffold does not compile: the `## Work Graph` section does not compile (1 declaration rejected):
+  - forced self-proof failure
+exit code: 1
+
+=== specs root after failed self-proof ===
+total 0
+drwxrwxr-x 2 1000 1000 40 Aug 25 05:50 .
+drwx------ 4 1000 1000 80 Aug 25 05:50 ..
+
