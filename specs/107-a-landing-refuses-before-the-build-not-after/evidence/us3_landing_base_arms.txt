@@ -1,0 +1,85 @@
+107 US3 (T028, spec US3-S1/US3-S2, SC-003) — the landing base, on two clones.
+
+Both clones sit on `some-operator-branch`. One declares a landing branch and one
+has no readable manifest at all, so the two arms of the resolution are exercised
+against real repositories rather than described. Run on 2026-08-25 in this
+worktree. Temp paths are the pytest/tempfile ones the run produced.
+
+================================================================================
+1. The resolver, against both clones — the declaration wins over the checkout,
+   and the fallback is labelled as a fallback rather than returned bare.
+================================================================================
+
+$ uv run python /tmp/us3_demo.py     # builds both clones, calls resolve_landing_base
+
+clone: declaring
+  checked-out HEAD : some-operator-branch
+  manifest says    : landing_branch: ergane-buildout
+  resolved base    : ergane-buildout
+  arm              : manifest
+  detail           : declared in ergane.yaml
+
+clone: no-manifest
+  checked-out HEAD : some-operator-branch
+  manifest says    : <no ergane.yaml in the clone>
+  resolved base    : some-operator-branch
+  arm              : checked-out-head
+  detail           : fell back to the checked-out HEAD: /tmp/tmpi4duz9sn/no-manifest/ergane.yaml: [missing_manifest] cann
+
+The first clone is the one that matters: HEAD says `some-operator-branch`, the
+manifest says `ergane-buildout`, and the base is `ergane-buildout`. Every other
+target-repo fixture in this tree sets checked-out, declared and `main` to one
+value, which is exactly why the suite was green against a base read from HEAD.
+
+================================================================================
+2. The activity's own log line, through `open_landing_pr` — the same two arms,
+   plus the supplied-base case an upgrade window produces.
+================================================================================
+
+$ uv run pytest tests/test_merge_activities.py -p no:randomly --log-cli-level=INFO -v \
+    -k "declared_landing_branch or manifest_arm or fallback or supplied_base or \
+        sidecar_already_records or one_resolution_path"
+
+collected 31 items / 24 deselected / 7 selected
+
+tests/test_merge_activities.py::test_open_landing_pr_opens_against_the_declared_landing_branch
+-------------------------------- live log call ---------------------------------
+INFO     factory.activities.merge_activities:merge_activities.py:399 landing base for 003-merge-queue/us1: ergane-buildout (declared in ergane.yaml), read from <tmp>/test_open_landing_pr_opens_aga0/target
+PASSED                                                                   [ 14%]
+tests/test_merge_activities.py::test_open_landing_pr_names_the_manifest_arm_that_answered
+-------------------------------- live log call ---------------------------------
+INFO     factory.activities.merge_activities:merge_activities.py:399 landing base for 003-merge-queue/us1: ergane-buildout (declared in ergane.yaml), read from <tmp>/test_open_landing_pr_names_the0/target
+PASSED                                                                   [ 28%]
+tests/test_merge_activities.py::test_open_landing_pr_labels_the_checked_out_head_fallback[missing-manifest]
+-------------------------------- live log call ---------------------------------
+INFO     factory.activities.merge_activities:merge_activities.py:399 landing base for 003-merge-queue/us1: some-operator-branch (fell back to the checked-out HEAD: <tmp>/test_open_landing_pr_labels_th0/target/ergane.yaml: [missing_manifest] cannot be read (No such file or directory); every target repo must commit a ergane.yaml declaring its gates), read from <tmp>/test_open_landing_pr_labels_th0/target
+PASSED                                                                   [ 42%]
+tests/test_merge_activities.py::test_open_landing_pr_labels_the_checked_out_head_fallback[malformed-manifest]
+-------------------------------- live log call ---------------------------------
+INFO     factory.activities.merge_activities:merge_activities.py:399 landing base for 003-merge-queue/us1: some-operator-branch (fell back to the checked-out HEAD: <tmp>/test_open_landing_pr_labels_th1/target/ergane.yaml: [malformed_yaml] is not parseable YAML: while parsing a flow sequence in "<unicode string>", line 10, column 8: gates: [unclosed ^ expected ',' or ']', but got '<stream end>' in "<unicode string>", line 11, column 1: ^), read from <tmp>/test_open_landing_pr_labels_th1/target
+PASSED                                                                   [ 57%]
+tests/test_merge_activities.py::test_open_landing_pr_ignores_a_supplied_base_and_logs_the_disagreement
+-------------------------------- live log call ---------------------------------
+INFO     factory.activities.merge_activities:merge_activities.py:399 landing base for 003-merge-queue/us1: ergane-buildout (declared in ergane.yaml), read from <tmp>/test_open_landing_pr_ignores_a0/target; ignored the base supplied in the request, spec-routing-plan, which disagreed
+PASSED                                                                   [ 71%]
+tests/test_merge_activities.py::test_open_landing_pr_ignores_the_base_a_prepared_sidecar_already_records
+-------------------------------- live log call ---------------------------------
+INFO     factory.activities.merge_activities:merge_activities.py:399 landing base for 003-merge-queue/us1: ergane-buildout (declared in ergane.yaml), read from <tmp>/test_open_landing_pr_ignores_t0/target
+PASSED                                                                   [ 85%]
+tests/test_merge_activities.py::test_both_landing_call_sites_leave_the_base_to_the_one_resolution_path PASSED [100%]
+
+======================= 7 passed, 24 deselected in 0.70s =======================
+
+Note the fifth line: the request carried `base="spec-routing-plan"` — the shape
+an activity task scheduled by a pre-107 worker carries, and on the live host the
+value it carries today — and the activity opened against `ergane-buildout`
+anyway, without raising, saying on the line that the supplied value was ignored
+and what it disagreed with (plan R7). A refusal there would have killed the
+ordinary upgrade-window payload, which is the defect class this spec removes.
+
+================================================================================
+3. The whole suite, unchanged elsewhere.
+================================================================================
+
+$ uv run pytest -q -p no:randomly
+4853 passed, 52 skipped, 7 warnings in 358.57s (0:05:58)
