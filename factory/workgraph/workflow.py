@@ -2836,7 +2836,12 @@ class EpicWorkflow:
                 epic_id=graph.epic_id,
                 node_id=node.id,
                 target_repo=graph.target_repo,
-                base=prepared.default_branch,
+                # No base: the activity resolves it from the target repository's
+                # own declaration (107 FR-006). The workflow cannot read a
+                # manifest (constitution IV), and the only branch fact it holds
+                # is `prepared.default_branch` — an observation of whatever an
+                # operator had checked out when the worktree was prepared, which
+                # is what killed three landings in eight days (D-051).
                 branch=record.branch,
                 title=rendered.title,
                 body_file=rendered.body_file,
@@ -3550,7 +3555,11 @@ class EpicWorkflow:
                 epic_id=graph.epic_id,
                 node_id=record.node_id,
                 target_repo=graph.target_repo,
-                base=prepared.default_branch,
+                # No base here either, and this is the site that matters most:
+                # every node whose sibling lands ahead of it comes back through
+                # the requeue, so a fix that reached only the first landing would
+                # pass every happy path and leave the common case broken. One
+                # resolution path, in the activity, for both (107 FR-008).
                 branch=record.branch,
                 title=rendered.title,
                 body_file=rendered.body_file,

@@ -42,6 +42,7 @@ would rewrite the one file whose stillness is the evidence (trap 14).
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,11 @@ from factory.workgraph.adapter import transcript_dir
 #: cwd, and a relative root silently splits the two (see the absolute-root rule
 #: in scripts/ergane-env.sh).
 FACTORY_ROOT_ENV = "FACTORY_ROOT"
+
+#: The landing surface's log. `open_landing_pr` states the base it resolved and
+#: the arm that answered on every open (FR-007) — the one place an operator can
+#: read a landing's governing value without re-deriving it.
+logger = logging.getLogger(__name__)
 
 #: The activity error type for a landing that must not proceed — an enqueue the
 #: queue will not accept for a reason that is not an outage. Non-retryable: the
@@ -117,15 +123,26 @@ class OpenLandingPrInput:
     `body_file` is a path `prepare_landing_pr` wrote (rendered by
     `factory/mergequeue/messages.py`); the activity passes it to
     `gh pr create --body-file` so the body's quoting needs no shell care.
+
+    `base` is **not a decision** and is last for that reason (107 FR-006/FR-007).
+    The workflow used to supply it from `PreparedWorktree.default_branch` — an
+    observation of whatever branch an operator had checked out when the worktree
+    was prepared — and three landings in eight days died on it (D-051). The
+    activity now resolves the base from the target repository's own declaration,
+    and the field survives with an empty default for one reason only: an activity
+    task scheduled by a pre-107 worker still has to deserialise during an upgrade
+    window. A value that arrives is **ignored and logged, never refused** (plan
+    R7) — refusing it would kill exactly the ordinary pre-upgrade payload this
+    spec exists to stop losing.
     """
 
     epic_id: str
     node_id: str
     target_repo: str
-    base: str
     branch: str
     title: str
     body_file: str
+    base: str = ""
 
 
 @dataclass(frozen=True)
@@ -136,11 +153,21 @@ class OpenLandingPrResult:
     so a later recovery can compare the tree the queue rejected against the tree
     it is about to re-enqueue (FR-009). Default `None` keeps pre-spec histories
     replayable.
+
+    107 US3: `base` is the branch the proposal was actually opened against and
+    `base_source` is the arm that decided it — `worktree.LANDING_BASE_MANIFEST`
+    when the repository declared it, `worktree.LANDING_BASE_HEAD` when no
+    readable manifest did and the clone's checked-out `HEAD` answered instead.
+    Both travel in the result rather than only in a log line because a fallback
+    that nobody can see is a silent reinstatement of the defect (FR-007). Empty
+    defaults keep pre-107 histories replayable.
     """
 
     number: int
     url: str
     pushed_sha: str | None = None
+    base: str = ""
+    base_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -343,6 +370,35 @@ async def prepare_landing_pr(request: PrepareLandingPrInput) -> PrepareLandingPr
     return PrepareLandingPrResult(body_file=str(body_file), title=title)
 
 
+def _log_landing_base(
+    request: OpenLandingPrInput, resolved: worktrees.LandingBase
+) -> None:
+    """State the base, the repository it was read from, and the arm (107 FR-007).
+
+    Trap 5 is why the arm is on the line even when the declaration answered:
+    `resolve_landing_base` fails open, so the fallback branch is shaped exactly
+    like a declared one and only the label tells them apart. An operator reading
+    `fell back to the checked-out HEAD` on a clone that was supposed to declare
+    knows the manifest is broken before a build is spent on it.
+
+    A base the request still carried is reported as ignored, with what it
+    disagreed with, rather than honoured or refused (plan R7). Silence there
+    would leave the payload's claim standing unchallenged in the history.
+    """
+    message = "landing base for %s/%s: %s (%s), read from %s"
+    args: list[object] = [
+        request.epic_id,
+        request.node_id,
+        resolved.branch,
+        resolved.detail,
+        request.target_repo,
+    ]
+    if request.base and request.base != resolved.branch:
+        message += "; ignored the base supplied in the request, %s, which disagreed"
+        args.append(request.base)
+    logger.info(message, *args)
+
+
 @activity.defn
 async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
     """Push the node branch, then offer it to the target (FR-001, FR-009).
@@ -353,9 +409,23 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
     for the branch is reused, so a retry after an unrecorded success does not
     open a second PR for one head.
 
+    The base is resolved *here*, from the dispatched target repository's own
+    declaration, and never taken from the request (107 FR-006). Open time rather
+    than prepare time is the whole point: a node prepared before this fix carries
+    a sidecar recording whatever branch the clone had checked out, and `ensure`
+    hands that sidecar back untouched — so a fix that only changed what future
+    sidecars record would leave every already-prepared node landing on the wrong
+    base. A manifest read inside an activity is legal where the workflow's would
+    not be (constitution IV).
+
     Raises `PUSH_FAILED` (retryable) when git refused, and lets the forge's own
     `ForgeError` through when it refused the offer.
     """
+    resolved = await asyncio.to_thread(
+        worktrees.resolve_landing_base, request.target_repo
+    )
+    _log_landing_base(request, resolved)
+
     try:
         pushed_sha = await asyncio.to_thread(
             worktrees.push_branch,
@@ -372,17 +442,25 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
     existing = forge.find_proposal(request.branch)
     if existing is not None:
         return OpenLandingPrResult(
-            number=existing.number, url=existing.url, pushed_sha=pushed_sha
+            number=existing.number,
+            url=existing.url,
+            pushed_sha=pushed_sha,
+            base=resolved.branch,
+            base_source=resolved.source,
         )
 
     created = forge.open_proposal(
-        base=request.base,
+        base=resolved.branch,
         head=request.branch,
         title=request.title,
         body_file=request.body_file,
     )
     return OpenLandingPrResult(
-        number=created.number, url=created.url, pushed_sha=pushed_sha
+        number=created.number,
+        url=created.url,
+        pushed_sha=pushed_sha,
+        base=resolved.branch,
+        base_source=resolved.source,
     )
 
 

@@ -961,22 +961,78 @@ def _conflicted_files(path: Path) -> tuple[str, ...]:
     return tuple(line for line in out.splitlines() if line)
 
 
-def landing_branch(repo: Path | str) -> str:
-    """The branch the target repo declares the factory lands on, or today's path.
+#: `LandingBase.source` when the repository's own manifest answered — the
+#: declaration constitution IX says a governing value is read from.
+LANDING_BASE_MANIFEST = "manifest"
 
-    Reads the manifest first; absent or malformed manifest falls back to the
-    clone's currently checked-out branch via `_default_branch`. This is a
-    *decision* about which branch matters for landing, and it replaces the three
-    separate guesses the factory used to make.
+#: `LandingBase.source` when no readable manifest answered and the clone's
+#: checked-out `HEAD` did. This arm is exactly the ambient state D-051 names, so
+#: it is labelled everywhere it is used: an unlabelled fallback reinstates the
+#: defect silently, and a caller that cannot tell the arms apart cannot report
+#: the difference to an operator (107 FR-007).
+LANDING_BASE_HEAD = "checked-out-head"
+
+
+@dataclass(frozen=True)
+class LandingBase:
+    """Which branch a landing targets, and which arm decided it (107 FR-007).
+
+    `landing_branch` fails open on purpose — a target clone with a typo'd or
+    missing manifest keeps working — and that is precisely why the branch alone
+    is not a sufficient answer: the fallback value is indistinguishable from a
+    declared one, and on the wrong clone it *is* the defect. `source` is the
+    machine-readable arm (`LANDING_BASE_MANIFEST` or `LANDING_BASE_HEAD`) and
+    `detail` is the phrase a log line or an operator message can print as-is.
+    """
+
+    branch: str
+    source: str
+    detail: str
+
+    @property
+    def declared(self) -> bool:
+        """True when the repository's manifest is what answered."""
+        return self.source == LANDING_BASE_MANIFEST
+
+
+def resolve_landing_base(repo: Path | str) -> LandingBase:
+    """The branch the target repo declares the factory lands on, and who said so.
+
+    The one derivation: `landing_branch` is this function's `.branch`, so no
+    caller can end up with a branch whose provenance a second reader would
+    disagree about. Reads the manifest first; an absent or malformed manifest
+    falls back to the clone's currently checked-out branch via `_default_branch`,
+    with the loader's own complaint carried in `detail` so the operator learns
+    *why* the guess was made rather than only that a branch came back.
     """
     try:
-        manifest_path, _ = resolve_manifest_path(repo)
-        return load_factory_config(manifest_path).landing_branch
-    except (FactoryConfigError, OSError):
+        manifest_path, manifest_name = resolve_manifest_path(repo)
+        declared = load_factory_config(manifest_path).landing_branch
+    except (FactoryConfigError, OSError) as error:
         # Missing manifest or one the schema refuses: preserve today's behaviour.
         # The gate run will report the bad manifest as a CONFIG_ERROR; a branch
         # reader should not pre-empt that with a less informative exception.
-        return _default_branch(Path(repo))
+        return LandingBase(
+            branch=_default_branch(Path(repo)),
+            source=LANDING_BASE_HEAD,
+            detail=f"fell back to the checked-out HEAD: {error}",
+        )
+    return LandingBase(
+        branch=declared,
+        source=LANDING_BASE_MANIFEST,
+        detail=f"declared in {manifest_name}",
+    )
+
+
+def landing_branch(repo: Path | str) -> str:
+    """The branch the target repo declares the factory lands on, or today's path.
+
+    A *decision* about which branch matters for landing, replacing the three
+    separate guesses the factory used to make. Callers that must report which
+    arm answered take `resolve_landing_base` instead — this is the same read
+    with the provenance dropped, never a second derivation.
+    """
+    return resolve_landing_base(repo).branch
 
 
 def _default_branch(repo: Path) -> str:

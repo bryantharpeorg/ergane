@@ -464,11 +464,19 @@ async def test_open_landing_pr_ignores_the_base_a_prepared_sidecar_already_recor
     assert opened.base != "spec-routing-plan"
 
 
+def _workflow_tree() -> ast.Module:
+    """The interpreter module parsed — asserted against as code, not as text.
+
+    A text search would match the very comments that explain why the base is no
+    longer supplied, so both assertions below read the tree.
+    """
+    return ast.parse(Path(workflow.__file__).read_text(encoding="utf-8"))
+
+
 def _open_landing_call_sites() -> dict[str, ast.Call]:
     """Every `OpenLandingPrInput(...)` in the workflow, keyed by its enclosing def."""
-    source = Path(workflow.__file__).read_text(encoding="utf-8")
     sites: dict[str, ast.Call] = {}
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(_workflow_tree()):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for call in ast.walk(node):
@@ -499,10 +507,19 @@ def test_both_landing_call_sites_leave_the_base_to_the_one_resolution_path() -> 
         supplied = {keyword.arg for keyword in call.keywords}
         assert "base" not in supplied, f"{name} still supplies a landing base"
 
-    # And the field the workflow used to reach for is gone from the module: the
-    # sidecar's observation of the clone is not a landing decision (trap 3).
-    source = Path(workflow.__file__).read_text(encoding="utf-8")
-    assert "prepared.default_branch" not in source
+    # And the field the workflow used to reach for is read nowhere in it: the
+    # sidecar's observation of the clone is not a landing decision (trap 3). The
+    # field itself stays exactly where 020 pinned it — this asserts the workflow
+    # stopped consulting it, not that it stopped existing.
+    reads = [
+        node
+        for node in ast.walk(_workflow_tree())
+        if isinstance(node, ast.Attribute)
+        and node.attr == "default_branch"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "prepared"
+    ]
+    assert reads == []
 
 
 # --- enqueue_landing ----------------------------------------------------------
