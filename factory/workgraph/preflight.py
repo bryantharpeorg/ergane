@@ -43,6 +43,16 @@ the work the author wrote for a story is inside the slice that story's node will
 be handed. It reads the slices through `task_slice_bounds` for the same reason
 assembly reads through `build_attempt_prompt` — one grammar, one answer.
 
+107 US4 adds the two facts the *landing* turns on, for the same bargain a third
+time: which repository owns each node's worktree, and whether the branch the
+landing will target is declared or inferred from whatever the target clone is
+checked out on. Both are one git read; both were previously read for the first
+time after the agent, the gate and the judge had been paid, and on 2026-08-24
+seven of eight stories passed everything and then died in the landing path. They
+belong here rather than in `_onboard_target` for the reason everything else here
+does — this is the one module both dispatch surfaces already share — and because
+the factory root they need is a worker-host fact a workflow cannot read.
+
 This is the pure core shared by the two callers that run a preflight:
 
 - `ergane build start` runs it in-process (CLI) before starting the workflow,
@@ -76,6 +86,7 @@ it so nothing that imported the CLI's name changes.
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -84,6 +95,12 @@ from factory.activities.usage_activities import key_alias_for
 from factory.config import Persona
 from factory.usage.litellm_client import LiteLLMClient, LiteLLMError
 from factory.verify.criteria import mask_fences
+from factory.verify.factory_yaml import (
+    MANIFEST_NAME,
+    FactoryConfigError,
+    load_factory_config,
+    resolve_manifest_path,
+)
 from factory.workgraph.models import WorkGraph
 from factory.workgraph.prompt import (
     PLAN_DOCUMENT,
@@ -94,6 +111,13 @@ from factory.workgraph.prompt import (
     task_slice_bounds,
 )
 from factory.workgraph.workflow import JUDGE_PERSONA
+from factory.workgraph.worktree import (
+    WorktreeError,
+    _ownership_refusal,
+    _worktree_ownership,
+    landing_branch,
+    worktree_path,
+)
 
 
 @dataclass(frozen=True)
@@ -518,6 +542,161 @@ def check_slice_coverage(
         except (OSError, UnicodeDecodeError):
             return None
     return slice_coverage_findings(graph, tasks_text=tasks_text)
+
+
+# --- what the landing needs, asked before the build (107 US4) -----------------
+
+#: The two checks in the `model-aliases-served` house style: a hyphenated fact
+#: about the epic, stable enough for an operator to grep a park history for.
+WORKTREE_OWNERSHIP_CHECK = "node-worktree-ownership"
+LANDING_BRANCH_CHECK = "landing-branch-declared"
+
+
+def worktree_ownership_findings(
+    graph: WorkGraph, factory_root: Path | str
+) -> list[PreflightFinding]:
+    """Every node whose existing worktree belongs to another clone (FR-009).
+
+    The predicate is US1's, imported rather than re-derived (plan R2): the tree
+    already held three independent answers to "which repository owns this
+    directory", and this is the report of the same fact `ensure()` refuses on, so
+    a second derivation could disagree with the enforcement it is warning about.
+    Both of its assertions matter here for the reason they matter there (plan
+    trap 1) — the runtime root normally sits inside a clone, and git walks *up*,
+    so a bare directory answers a legitimate `--show-toplevel` with exit 0.
+
+    `factory_root` is the caller's to supply and is never read from the
+    environment, because the two surfaces resolve different ones: `ergane build
+    start` runs in the operator's shell and the roadmap's activity on the worker.
+    On a deployment where those differ this arm reads a directory tree that is
+    not the one the epic will build in, so the root it read is *part of the
+    answer* — printed in every finding, so an operator can tell "checked and
+    clean" from "checked the wrong disk" (plan R5). This is the cheap early
+    report; `ensure()`, which runs beside the directory it judges, is the
+    guarantee.
+
+    One git call per *existing* directory and none for the rest: the first
+    dispatch of every epic has no worktrees at all, and paying a subprocess per
+    node to learn what `Path.is_dir()` already answered would tax the common path
+    for nothing.
+
+    Every offending node, never the first: a graph of sixteen with three foreign
+    directories needs one cleanup pass, not three dispatches.
+    """
+    root = Path(factory_root)
+    repo = Path(graph.target_repo)
+    findings: list[PreflightFinding] = []
+    for node in graph.nodes:
+        path = worktree_path(root, graph.epic_id, node.id)
+        if not path.is_dir():
+            continue
+        try:
+            ownership = _worktree_ownership(repo, path)
+        except WorktreeError:
+            # Git would not answer — most often because the dispatched clone is
+            # not on the host running this check. There is no identity to
+            # compare against, and every remaining node would fail the same way,
+            # so stop rather than repeat one infrastructure failure per node.
+            # Unchecked, never a pass: `ensure()` still refuses on the worker.
+            break
+        if ownership.owned:
+            continue
+        findings.append(
+            PreflightFinding(
+                check=WORKTREE_OWNERSHIP_CHECK,
+                passed=False,
+                detail=(
+                    f"node {node.id}, under the factory root this check read "
+                    f"({root.resolve()}): "
+                    f"{_ownership_refusal(repo, path, ownership)}"
+                ),
+            )
+        )
+    return findings
+
+
+def landing_branch_findings(graph: WorkGraph) -> list[PreflightFinding]:
+    """The landing branch, when it would be a guess rather than a declaration.
+
+    `landing_branch` fails open on purpose — a target clone with a missing or
+    malformed manifest keeps working by reading whatever branch the clone is
+    checked out on — and that fallback is the ambient state constitution IX
+    names: correct on the machine where it was written, wrong in the
+    configuration nobody tried, and silent either way. Three times in eight days
+    it opened a landing PR against an operator's working branch, each time after
+    a full build had been paid for. So the branch is resolved here the way the
+    landing resolves it, and the *arm that answered* is reported (FR-010).
+
+    The value comes from `landing_branch` and from nowhere else, so no caller can
+    end up with a branch this check did not see. What is asked separately is
+    whether the repository's own manifest answered — the same
+    `(FactoryConfigError, OSError)` pair `landing_branch` treats as "no
+    declaration", so the two cannot disagree about which arm ran.
+
+    A repository this host cannot read at all is silent rather than reported:
+    there is no branch that "would be used", and a check that cannot see the
+    clone must not be confused with one that read a broken manifest (plan R5).
+    """
+    repo = Path(graph.target_repo)
+    complaint = _undeclared_landing_branch(repo)
+    if complaint is None:
+        return []
+    try:
+        branch = landing_branch(repo)
+    except (WorktreeError, OSError, subprocess.SubprocessError):
+        return []
+    return [
+        PreflightFinding(
+            check=LANDING_BRANCH_CHECK,
+            passed=False,
+            detail=(
+                f"the target repo {repo.resolve()} declares no landing branch "
+                f"this check could read ({complaint}), so the landing would "
+                f"target `{branch}` — inferred from that clone's checked-out "
+                f"HEAD, not declared. Add `landing_branch: <branch>` to its "
+                f"{MANIFEST_NAME} so the landing targets the branch the "
+                "repository chose rather than the one it happens to be sitting "
+                "on. Nothing was dispatched."
+            ),
+        )
+    ]
+
+
+def _undeclared_landing_branch(repo: Path) -> str | None:
+    """The loader's own complaint when no manifest declared a branch, else `None`.
+
+    Quoted rather than paraphrased, the same discipline the assembly findings
+    apply to the assembler's refusal: an operator told "the manifest is
+    unreadable" has been handed a description of the defect, and one told which
+    key the parser refused has been handed the defect.
+    """
+    try:
+        manifest_path, _ = resolve_manifest_path(repo)
+        load_factory_config(manifest_path)
+    except (FactoryConfigError, OSError) as error:
+        return str(error)
+    return None
+
+
+def landing_readiness_preflight(
+    graph: WorkGraph, factory_root: Path | str
+) -> list[PreflightFinding]:
+    """Both landing preconditions, collected, for both dispatch surfaces (FR-011).
+
+    One entry point so `ergane build start` and the roadmap's pre-dispatch
+    activity cannot drift in *which* checks they run any more than they can drift
+    in what those checks say — the split the module docstring draws is that the
+    caller owns its host's facts (its factory root, its client, its registry) and
+    this module owns the checks and the wording.
+
+    Collected rather than short-circuited, like every other check here: an
+    operator fixing one refusal per run is the failure mode, and it is dearer at
+    this seam than at the others because each round trip is a dispatch that has
+    to be started again.
+    """
+    return worktree_ownership_findings(graph, factory_root) + landing_branch_findings(
+        graph
+    )
 
 
 def first_attempt_aliases(graph: WorkGraph) -> set[str]:

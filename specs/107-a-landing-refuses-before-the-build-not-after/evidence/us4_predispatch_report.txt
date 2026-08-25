@@ -1,0 +1,80 @@
+107 US4 / SC-004 — the pre-dispatch report for a graph with two cross-registered
+nodes, and the remedy block an operator runs.
+
+Run on 2026-08-25 against this branch's `factory/workgraph/preflight.py`, on git
+2.43.0, in a scratch directory holding three `git init` repositories and one
+shared runtime root. `clone-a` and `clone-b` each commit an `ergane.yaml`
+declaring `landing_branch: ergane-buildout`; `clone-c` commits no manifest at
+all. Both node worktrees were created by `worktrees.ensure(clone-a, ...)`, so
+clone-a holds their registrations and their branches. The epic is then
+dispatched against clone-b — the two-dispatcher configuration this spec exists
+for — and `landing_readiness_preflight` is asked before anything else happens.
+Each finding is printed in the shape `ergane build start` prints it.
+
+Four things to read for, in order:
+
+1. **Both nodes, in one pass.** The report names us1 *and* us2. Before this
+   story nothing asked at all, and each node discovered it separately, hours
+   apart, after its agent had been paid for. A check that returned the first
+   would trade one dispatch per stale directory.
+2. **The factory root is stated, not assumed.** `ergane build start` resolves
+   the operator host's runtime root and the roadmap activity resolves the
+   worker's, and on a split host those differ (plan R5), so a finding that did
+   not name the root it read would leave "checked and clean" and "checked the
+   wrong disk" indistinguishable.
+3. **The remedy block is issued against the owning clone, and it works.** The
+   same command run against the *dispatched* repo answers `fatal: ... is not a
+   working tree` — reproduced below at exit 128 — which is why the message names
+   clone-a rather than the repository the epic was started against (trap 6).
+   Nothing sweeps these directories (plan R12), so this block is the operator's
+   whole next move.
+4. **The landing branch is silent when declared and named when guessed.**
+   clone-b's checkout sits on `main` while its manifest declares
+   `ergane-buildout`: the disagreement that killed seven stories on 2026-08-24,
+   and nothing is reported, because a declaration answered. clone-c has no
+   manifest, so the branch resolves from HEAD — and the finding says which
+   branch would be used and that HEAD, not a declaration, produced it.
+
+--------------------------------------------------------------------------------
+
+=== 1. two nodes of one graph, both registered to another clone ===
+    factory root: /tmp/us4-evidence-h81ydcd3/.ergane
+    dispatched:   /tmp/us4-evidence-h81ydcd3/clone-b
+    registered:   /tmp/us4-evidence-h81ydcd3/clone-a
+    git -C clone-a worktree list:
+        /tmp/us4-evidence-h81ydcd3/clone-a                                      de3fe83 [main]
+        /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us1  de3fe83 [factory/107-a-landing-refuses/us1]
+        /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us2  de3fe83 [factory/107-a-landing-refuses/us2]
+
+    ergane: preflight [node-worktree-ownership]: node us1, under the factory root this check read (/tmp/us4-evidence-h81ydcd3/.ergane): node worktree /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us1 is registered to /tmp/us4-evidence-h81ydcd3/clone-a, not to the dispatched target repo /tmp/us4-evidence-h81ydcd3/clone-b: refusing to build one clone's story in another clone's worktree. Clear it from the owning clone and dispatch again: git -C /tmp/us4-evidence-h81ydcd3/clone-a worktree remove --force /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us1
+    ergane: preflight [node-worktree-ownership]: node us2, under the factory root this check read (/tmp/us4-evidence-h81ydcd3/.ergane): node worktree /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us2 is registered to /tmp/us4-evidence-h81ydcd3/clone-a, not to the dispatched target repo /tmp/us4-evidence-h81ydcd3/clone-b: refusing to build one clone's story in another clone's worktree. Clear it from the owning clone and dispatch again: git -C /tmp/us4-evidence-h81ydcd3/clone-a worktree remove --force /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us2
+
+=== 2. the remedy block, exactly as the report printed it ===
+    git -C /tmp/us4-evidence-h81ydcd3/clone-a worktree remove --force /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us1
+    git -C /tmp/us4-evidence-h81ydcd3/clone-a worktree remove --force /tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us2
+
+    ...the same command run against the DISPATCHED repo instead:
+      exit 128  fatal: '/tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us1' is not a working tree
+      exit 128  fatal: '/tmp/us4-evidence-h81ydcd3/.ergane/worktrees/107-a-landing-refuses/us2' is not a working tree
+
+    ...run against the clone the report named:
+      exit 0  (silent)
+      exit 0  (silent)
+
+=== 3. the same check, once the block has been run ===
+    (no findings)
+
+=== 4. the landing branch, declared vs inferred ===
+    clone-b declares landing_branch: ergane-buildout, HEAD is main
+    (no findings)
+    clone-c has no manifest at all, HEAD is main
+    ergane: preflight [landing-branch-declared]: the target repo /tmp/us4-evidence-h81ydcd3/clone-c declares no landing branch this check could read (/tmp/us4-evidence-h81ydcd3/clone-c/ergane.yaml: [missing_manifest] cannot be read (No such file or directory); every target repo must commit a ergane.yaml declaring its gates), so the landing would target `main` — inferred from that clone's checked-out HEAD, not declared. Add `landing_branch: <branch>` to its ergane.yaml so the landing targets the branch the repository chose rather than the one it happens to be sitting on. Nothing was dispatched.
+
+--------------------------------------------------------------------------------
+
+Every line above is reproduced by committed tests rather than resting on this
+paste: `tests/test_predispatch_landing_preflight.py` asserts both nodes are
+named with their owning clone and the factory root, runs the printed remedy and
+asserts the next check is silent, asserts the declared and inferred arms of the
+landing branch, and asserts `ergane build start` and the roadmap's pre-dispatch
+activity return the *same* findings for one fixture (FR-011).
