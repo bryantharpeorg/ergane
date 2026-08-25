@@ -56,8 +56,10 @@ from factory.workgraph.models import WorkGraph
 from factory.workgraph.preflight import (
     PreflightFinding,
     check_aliases,
+    landing_readiness_preflight,
     prompt_assembly_preflight,
 )
+from factory.workgraph.worktree import resolve_factory_root
 from factory.workgraph.workflow import JUDGE_PERSONA
 from factory.workgraph.worktree import landing_branch
 from factory.verify.factory_yaml import load_loop_config
@@ -402,22 +404,42 @@ async def preflight_spec(request: PreflightInput) -> list[PreflightFinding]:
     is the defect class that killed the schedule on 2026-08-13. The workflow
     hands over the root it already holds; the activity opens the trio.
 
-    Assembly goes first, and both checks run. First because it is the cheaper
+    Assembly goes first, and every check runs. First because it is the cheaper
     and more certain fact — no service is consulted, so it cannot be wrong about
     a proxy that is merely slow — and the workflow parks on the first finding,
-    which makes it the one the operator is shown. Both, rather than returning
-    early, because an author fixing one refusal per run is the failure mode the
-    collected-findings discipline exists to avoid: a spec with a broken
+    which makes it the one the operator is shown. All of them, rather than
+    returning early, because an author fixing one refusal per run is the failure
+    mode the collected-findings discipline exists to avoid: a spec with a broken
     `tasks.md` *and* an unserved alias needs one edit pass, not two roadmap
     passes.
+
+    107 US4 adds the two landing preconditions between the two, through the same
+    shared module (FR-011): a node worktree registered to another clone, and a
+    landing branch that would be inferred from the target clone's checked-out
+    HEAD rather than declared. The activity owns the *root* — `PreflightInput`
+    gains no field, because the runtime root is a worker-host fact the workflow
+    cannot read and must not carry — and the module owns the check and the
+    wording, exactly as it does for the registry and the client.
     """
     findings = prompt_assembly_preflight(
         request.graph, Path(request.specs_root) / request.spec_dir
     )
+    findings += landing_readiness_preflight(request.graph, _preflight_factory_root())
     findings += await check_aliases(
         request.graph, _preflight_registry(), _preflight_client(request.proxy_url)
     )
     return findings
+
+
+def _preflight_factory_root() -> Path:
+    """The worker host's runtime root, resolved as the dispatch path resolves it.
+
+    The same read `agent_activities.factory_root()` makes before it prepares a
+    worktree, so the directories this checks are the directories `ensure()` will
+    be handed one dispatch later.
+    """
+    root, _choice, _source = resolve_factory_root()
+    return root
 
 
 # --- onboarding: reuse 003's activity as it stands ----------------------------

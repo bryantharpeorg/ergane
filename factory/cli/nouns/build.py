@@ -131,6 +131,7 @@ from factory.workgraph.models import (
 from factory.workgraph.preflight import (
     PreflightFinding,
     check_aliases,
+    landing_readiness_preflight,
     prompt_assembly_preflight,
 )
 from factory.workgraph.cli import DEFAULT_SPECS_ROOT
@@ -314,22 +315,45 @@ def _preflight_registry() -> dict[str, Persona]:
 
 
 async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
-    """Check that every prompt assembles, then what the proxy serves.
+    """Check that every prompt assembles and the landing can happen, then the proxy.
 
-    The same two checks the roadmap's pre-dispatch activity runs, in the same
-    order and from the same module (044 FR-004): an epic started by hand dies of
-    an unassemblable `tasks.md` exactly the way a scheduled one does, so it is
-    refused here rather than one tick after `ergane build start` printed a
+    The same checks the roadmap's pre-dispatch activity runs, in the same order
+    and from the same module (044 FR-004, 107 FR-011): an epic started by hand
+    dies of an unassemblable `tasks.md` exactly the way a scheduled one does, so
+    it is refused here rather than one tick after `ergane build start` printed a
     workflow id. Assembly reads `specs_root/feature` — where the graph itself
     says its authored trio lives, and where dispatch will read it.
+
+    107 adds the two facts the landing turns on, and they go second because they
+    are the same bargain one step later: a node worktree registered to another
+    clone, and a landing branch that would be inferred rather than declared, both
+    cost a full build before they announce themselves. This arm resolves *this*
+    host's runtime root, the way `_reset_epic` does; the worker resolves its own,
+    and on a split host the finding names which root it read (plan R5).
+
+    All three collected, none short-circuited: an operator fixing one refusal per
+    run is the failure mode, and here each round trip is a dispatch that has to
+    be started again.
     """
     findings = prompt_assembly_preflight(
         graph, Path(graph.specs_root) / graph.feature
     )
+    findings += landing_readiness_preflight(graph, _preflight_factory_root())
     findings += await check_aliases(
         graph, _preflight_registry(), _open_preflight_client()
     )
     return findings
+
+
+def _preflight_factory_root() -> Path:
+    """The runtime root this host keeps node worktrees under (107 FR-009).
+
+    Read the way the worker's `factory_root()` reads it, so the directories this
+    checks are the directories a dispatch on this host would reuse — the env
+    override first, then `.ergane/`, then the legacy `.factory/`.
+    """
+    root, _choice, _source = resolve_factory_root(FACTORY_ROOT_ENV)
+    return root
 
 
 async def _preflight_exit_code(findings: list[PreflightFinding]) -> int:
