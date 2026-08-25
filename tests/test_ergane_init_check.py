@@ -30,7 +30,7 @@ from factory.controlplane.config import resolve_config_path
 from factory.env import ERGANE_CONFIG_PATH_ENV, FACTORY_CONFIG_PATH_ENV
 from factory.mergequeue.gh import GhClient
 from factory.mergequeue.github_forge import GithubForge
-from factory.mergequeue.models import Finding, TargetRepoProfile
+from factory.mergequeue.models import Finding, Severity, TargetRepoProfile
 from factory.roadmap import schedule as schedule_module
 
 from tests.fake_gh import FakeGh
@@ -52,6 +52,20 @@ gates:
 {gates}
 landing_branch: {landing_branch}
 """
+
+
+def make_profile(findings: tuple[Finding, ...]) -> TargetRepoProfile:
+    """A profile whose only purpose is to drive `render_check`."""
+    return TargetRepoProfile(
+        repo="acme/widgets",
+        default_branch="main",
+        visibility="public",
+        queue_enabled=True,
+        required_checks=(),
+        declared_gates=(),
+        findings=findings,
+        passed=all(f.passed or not f.blocking for f in findings),
+    )
 
 
 def make_repo(
@@ -673,6 +687,71 @@ def test_a_full_init_ends_by_running_the_check(
     assert "readiness" in result.stdout.lower()
     assert "[PASS] registry_entry" in result.stdout
     assert "[FAIL] control_plane" in result.stdout
+
+
+# --- US5: every non-passing readiness line names its fix -----------------------
+
+
+def _render_check(profile: TargetRepoProfile, remedy: dict[str, str] | None = None) -> str:
+    """Call the function under test without touching a real repository."""
+    return init_module.render_check(profile, Path("/dev/null"), "ergane.yaml", remedy=remedy)
+
+
+US5_PROFILE: tuple[Finding, ...] = (
+    Finding("well_known_pass", True, "this one passes"),
+    Finding("well_known_fail", False, "blocking detail", severity=Severity.ERROR),
+    Finding("well_known_warn", False, "warning detail", severity=Severity.WARNING),
+    Finding("unknown_check", False, "something obscure failed", severity=Severity.ERROR),
+)
+
+US5_REMEDY: dict[str, str] = {
+    "well_known_fail": "ergane fix blocking",
+    "well_known_warn": "ergane fix warning",
+}
+
+
+def test_render_check_with_remedy_emits_fix_clause_on_non_passing_lines() -> None:
+    """US5-S1: blocking and warning lines carry the command that clears them.
+
+    Passing lines stay clean, and a check the table does not know falls back to
+    naming `ergane init --check` rather than printing nothing.
+    """
+    profile = make_profile(US5_PROFILE)
+    report = _render_check(profile, remedy=US5_REMEDY)
+
+    lines = report.splitlines()
+
+    pass_line = next(line for line in lines if "well_known_pass" in line)
+    fail_line = next(line for line in lines if "well_known_fail" in line)
+    warn_line = next(line for line in lines if "well_known_warn" in line)
+    unknown_line = next(line for line in lines if "unknown_check" in line)
+
+    assert pass_line == "  [PASS] well_known_pass: this one passes"
+    assert "ergane fix blocking" in fail_line
+    assert "ergane fix warning" in warn_line
+    assert "ergane init --check" in unknown_line
+    # Each fix clause must be clearly delimited from the detail.
+    assert fail_line == "  [FAIL] well_known_fail: blocking detail — fix: ergane fix blocking"
+    assert warn_line == "  [WARN] well_known_warn: warning detail — fix: ergane fix warning"
+    assert (
+        unknown_line
+        == "  [FAIL] unknown_check: something obscure failed — fix: run `ergane init --check`"
+    )
+
+
+def test_render_check_without_remedy_is_byte_identical_to_baseline() -> None:
+    """US5-S2: omitting the remedy table leaves today's output untouched."""
+    profile = make_profile(US5_PROFILE)
+    report = _render_check(profile)
+
+    expected = """\
+ergane readiness for /dev/null (ergane.yaml)
+  [PASS] well_known_pass: this one passes
+  [FAIL] well_known_fail: blocking detail
+  [WARN] well_known_warn: warning detail
+  [FAIL] unknown_check: something obscure failed
+2 of 4 checks failed, 1 warned"""
+    assert report == expected
 
 
 # =============================================================================
