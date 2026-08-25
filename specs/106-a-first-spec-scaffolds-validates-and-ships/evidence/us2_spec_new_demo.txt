@@ -1,0 +1,57 @@
+=== specs root before ===
+total 0
+drwxrwxr-x 2 1000 1000 40 Aug 25 05:50 .
+drwx------ 4 1000 1000 80 Aug 25 05:50 ..
+
+=== ergane spec new ===
+/tmp/tmp.uEHbOyOZ3k/specs-root/001-charlie
+next, run:
+  ergane spec validate /tmp/tmp.uEHbOyOZ3k/specs-root/001-charlie --target-repo /tmp/tmp.uEHbOyOZ3k/target-repo
+
+=== specs root after ===
+total 0
+drwxrwxr-x 3 1000 1000  60 Aug 25 05:50 .
+drwx------ 4 1000 1000  80 Aug 25 05:50 ..
+drwx------ 2 1000 1000 100 Aug 25 05:50 001-charlie
+
+=== validate the created directory ===
+{
+  "spec_dir": "/tmp/tmp.uEHbOyOZ3k/specs-root/001-charlie",
+  "checked": [
+    "frontmatter",
+    "workgraph_derivation",
+    "persona_registry",
+    "scenario_coverage",
+    "prompt_assembly",
+    "slice_coverage",
+    "slice_contention"
+  ],
+  "skipped": [],
+  "findings": [],
+  "information": []
+}
+
+=== read tasks.md slice ===
+# Tasks: charlie
+
+## Phase 1: User Story 1 — charlie
+
+- [ ] [P] [US1-S1] Write the generator's failing tests around `src/calc.py:1` — must fail.
+- [ ] [US1] Implement the scaffold generator so the tests pass. Anchor with `src/calc.py:1`.
+- [ ] [US1] Paste the validator transcript and the demonstration mode output.
+
+## Phase 2: User Story 2 — charlie — partial
+
+- [ ] [P] [US2-S1] Wire the `spec new` verb and numbering logic.
+- [ ] [US2-S1] Pick a tracked anchor in the target repo and prove it resolves.
+- [ ] ERGANE-TODO: add the next US2 task here.
+
+## Phase 3: User Story 3 — charlie — skeletal
+
+- [ ] ERGANE-TODO: write US3-S1 task when the sentinel gate is added.
+- [ ] ERGANE-TODO: write US3-S2 task for the derive refusal.
+- [ ] ERGANE-TODO: write US3-S3 task for the missing assertion.
+
+## Verification
+
+- [ ] Final gate command passes green.

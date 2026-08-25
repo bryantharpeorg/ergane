@@ -1,0 +1,22 @@
+=== specs root before (gaps and collision) ===
+total 0
+drwxrwxr-x 5 1000 1000 100 Aug 25 05:50 .
+drwx------ 4 1000 1000  80 Aug 25 05:50 ..
+drwxrwxr-x 2 1000 1000  40 Aug 25 05:50 001-alpha
+drwxrwxr-x 2 1000 1000  40 Aug 25 05:50 007-bravo
+drwxrwxr-x 2 1000 1000  40 Aug 25 05:50 008-no-spec-md
+
+=== ergane spec new charlie ===
+/tmp/tmp.cTD6YtxnW6/specs-root/009-charlie
+next, run:
+  ergane spec validate /tmp/tmp.cTD6YtxnW6/specs-root/009-charlie --target-repo /tmp/tmp.cTD6YtxnW6/target-repo
+
+=== specs root after (should show 009-charlie) ===
+total 0
+drwxrwxr-x 6 1000 1000 120 Aug 25 05:50 .
+drwx------ 4 1000 1000  80 Aug 25 05:50 ..
+drwxrwxr-x 2 1000 1000  40 Aug 25 05:50 001-alpha
+drwxrwxr-x 2 1000 1000  40 Aug 25 05:50 007-bravo
+drwxrwxr-x 2 1000 1000  40 Aug 25 05:50 008-no-spec-md
+drwx------ 2 1000 1000 100 Aug 25 05:50 009-charlie
+
