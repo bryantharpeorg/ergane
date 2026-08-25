@@ -74,6 +74,18 @@ from factory.discovery.proposal import (
     build_proposal,
 )
 from factory.locking import LockUnavailable, exclusive_lock
+
+# 104-US5: the engine container's four modules — render, consent, write, bring
+# up. By module rather than by symbol, so rebinding a seam on one of them
+# (`container_engine._run_compose`) is seen at this file's call sites.
+# `container_project.derived_environment_names` imports *this* module from
+# inside its body, which is where the cycle between the two is broken.
+from factory.supervision import (
+    container_engine,
+    container_manifest,
+    container_profile,
+    container_project,
+)
 from factory.notify.service import DEFAULT_TEMPORAL_NAMESPACE
 from factory.usage.litellm_client import LiteLLMClient
 
@@ -757,10 +769,45 @@ def _interview_engine(
         raise OperatorError(offered.unavailable_reason, code=EXIT_USER)
 
     if choice == ENGINE_CONTAINER:
-        # US5 replaces this line with generation, consent, bring-up and
-        # verify-through. US1 asks the question; it does not act on the answer.
+        # Announced with the answer, not with the act: plan R3 asks every
+        # question before anything is done, and `_install_engine_container`
+        # below is the acting half, which runs after the persona registry the
+        # engine reads has been written.
         print(f"engine backend: {choice}")
     return choice
+
+
+def _install_engine_container(path: Path, prompter: Any) -> int:
+    """Generate the engine container's project, bring it up, and verify through
+    it (104-US5) — the acting half of the answer `_interview_engine` took.
+
+    The order is the story. **Resolve first, before anything privileged**: that
+    is where an install with no build context refuses (R10) and where a path no
+    mount covers refuses (trap 4), and both must fire before the sudo prompt.
+    **Then consent** (104-US4), which decides the confinement variant and so the
+    project — before a byte is written, so a declined load produces a whole
+    config-F project rather than half a config-G one. **Then write**, through
+    US3's digest manifest. **Then bring up, wait and verify**.
+
+    There is no host-side `verify_controlplane` here: the engine is where the
+    factory will actually run, so the battery runs *there* (R8).
+    """
+    config = load_controlplane_config(str(path))
+
+    project = container_project.resolve_project(config)
+    decision = container_profile.load_profile(prompter)
+    if decision.confinement != container_project.CONFINEMENT_PROFILE:
+        project = container_project.resolve_project(
+            config, confinement=decision.confinement
+        )
+
+    print("")
+    print(container_manifest.write_project(project).render())
+
+    container_engine.bring_up_and_verify(project)
+    print("")
+    print(f"the engine container is up and verified at {project.directory}.")
+    return EXIT_OK
 
 
 def _refuse_engine_flag_beside_a_flag_driven_path(
@@ -859,7 +906,7 @@ def install_command(args: argparse.Namespace) -> int:
             # asked before the first thing is done, so an install that is going
             # to refuse the chosen backend refuses with nothing written. US5
             # acts on this local; US1 only asks.
-            engine_backend = _interview_engine(  # noqa: F841 — consumed by US5
+            engine_backend = _interview_engine(
                 init_module._prompter(), document, path, requested=requested_engine
             )
             text = render_controlplane_document(document)
@@ -872,6 +919,12 @@ def install_command(args: argparse.Namespace) -> int:
             _interview_personas(
                 init_module._prompter(), document, personas_path
             )
+            # 104-US5, plan R3 — act late: the engine reads the persona registry
+            # that was just written, so this is the earliest point the container
+            # can be generated, brought up and verified. The two other backends
+            # keep today's host-side verification, unchanged.
+            if engine_backend == ENGINE_CONTAINER:
+                return _install_engine_container(path, init_module._prompter())
             print("")
             print("verifying the control plane...")
             findings, exit_code = verify_controlplane(str(path))
