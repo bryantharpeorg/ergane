@@ -138,6 +138,14 @@ Removal reads the manifest and nothing else — no render, no config, no daemon
 `config.toml` and `repos.json` first, so `resolve_project` could not have run,
 and the teardown still knows what to remove.
 
+A file that cannot be read at all is kept on both paths rather than raised over.
+The digest rule reads a file to compare it, and the two ways a file here becomes
+unreadable are both real — bytes that are not UTF-8, and a root-owned file left
+by an earlier `sudo ergane install`. Unreadable is *unproven*, and unproven is
+left alone. `test_removal_keeps_a_recorded_file_it_cannot_read` was checked
+against a mutant: with the guard reverted to the bare rule it fails with the
+`UnicodeDecodeError` the guard exists to prevent.
+
 ## 5. A clean project is removed whole, and state is not
 
 Same host, nothing in the directory but the engine's own files:
@@ -163,9 +171,9 @@ does not, and US5, US6 and US7 ask exactly this question.
 
 ```
 $ uv run pytest tests/test_container_manifest.py
-collected 22 items
+collected 24 items
 
-tests/test_container_manifest.py ......................                  [100%]
+tests/test_container_manifest.py ........................                [100%]
 
-============================== 22 passed in 0.55s ==============================
+============================== 24 passed in 0.59s ==============================
 ```
