@@ -1014,10 +1014,10 @@ def _closing_demonstration(
 
         print("")
         print("demonstration spec validate")
-        _run_cli(["spec", "validate", str(spec_dir), "--target-repo", str(repo_root)])
+        _run_cli(_spec_validate_argv(spec_dir, repo_root))
         print("")
         print("demonstration spec derive")
-        _run_cli(["spec", "derive", str(spec_dir), "--target-repo", str(repo_root)])
+        _run_cli(_spec_derive_argv(spec_dir, repo_root))
 
         artifact = spec_dir / _ARTIFACT_NAME
         if artifact.is_file():
@@ -1062,6 +1062,20 @@ def _run_cli(argv: list[str]) -> int:
     from factory.cli.main import main
 
     return main(argv)
+
+
+def _spec_validate_argv(spec_dir: Path, repo_root: Path) -> list[str]:
+    """Build argv for the demonstration's validate stage."""
+    noun = "spec"
+    verb = "validate"
+    return [noun, verb, str(spec_dir), "--target-repo", str(repo_root)]
+
+
+def _spec_derive_argv(spec_dir: Path, repo_root: Path) -> list[str]:
+    """Build argv for the demonstration's derive stage."""
+    noun = "spec"
+    verb = "derive"
+    return [noun, verb, str(spec_dir), "--target-repo", str(repo_root)]
 
 
 def _print_next_command(target_repo: str) -> None:
