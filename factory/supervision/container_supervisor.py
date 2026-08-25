@@ -36,8 +36,21 @@ _CHILDREN: dict[str, str] = {
     "bridge": "factory.notify.service",
 }
 
-DEFAULT_TEMPORAL_ADDRESS = "127.0.0.1"
 DEFAULT_TEMPORAL_PORT = 7233
+
+#: The *host* alone — what is used when a resolved address names no port, and
+#: nothing else. It is spelled separately from the address below because the two
+#: are different facts: 104-US5 found this constant standing in for both, which
+#: is how `f"{address}:{port}"` came to build `127.0.0.1:7233:7233`.
+DEFAULT_TEMPORAL_HOST = "127.0.0.1"
+
+#: The whole endpoint, `host:port` — the one convention this tree uses
+#: everywhere (`factory/notify/service.py`, `factory/cli/install.py`'s blank
+#: document, `factory/cli/env.py`, `scripts/ergane-env.sh`), and the spelling
+#: the generated `.env` writes into `TEMPORAL_ADDRESS`. The supervisor's own
+#: children read that same variable and need the port in it, so there is one
+#: variable with one meaning on both sides of the mount.
+DEFAULT_TEMPORAL_ADDRESS = f"{DEFAULT_TEMPORAL_HOST}:{DEFAULT_TEMPORAL_PORT}"
 DEFAULT_READINESS_TIMEOUT_S = 30.0
 DEFAULT_GRACE_PERIOD_S = 10.0
 DEFAULT_DB_FILENAME = "/var/lib/ergane/temporal.sqlite"
@@ -84,16 +97,49 @@ class _ProcessController:
         _kill_process(self.proc, self.name)
 
 
+def _split_address(address: str) -> tuple[str, int]:
+    """Split one `host:port` value **once**, tolerating a host-only spelling.
+
+    The convention is `host:port` (a bare IPv6 literal is not one of the
+    spellings this tree uses; bracket it if you ever need one). A value with no
+    port means the default port, never a `ValueError` out of `int()` — 088
+    landed a probe that would have raised on exactly that input, because in
+    practice it was only ever handed an address a port had just been appended to.
+    """
+    host, separator, tail = address.rpartition(":")
+    if separator and tail.isdigit():
+        return (host or DEFAULT_TEMPORAL_HOST), int(tail)
+    return (address or DEFAULT_TEMPORAL_HOST), DEFAULT_TEMPORAL_PORT
+
+
+def _resolve_temporal_address(address: str, port: int) -> str:
+    """The one endpoint, from whichever spelling arrived (104-US5, plan R12).
+
+    As 088 landed, `_run_supervisor` built `f"{address}:{port}"` unconditionally
+    while `TEMPORAL_ADDRESS` carries `host:port` everywhere else in this tree —
+    so the generated `.env`'s `127.0.0.1:7233` became `127.0.0.1:7233:7233`, the
+    probe dialled host `127.0.0.1:7233`, readiness timed out and the engine
+    never came up. An address that already carries a port **is** the address.
+
+    The host-only spelling still resolves, deliberately: writing a host-only
+    value instead would break `factory.worker` and `factory.notify.service`,
+    which read the same variable out of the same environment and need the port.
+    Two consumers, one variable, one meaning.
+    """
+    _host, _, tail = address.rpartition(":")
+    if _host and tail.isdigit():
+        return address
+    return f"{address}:{port}"
+
+
 async def _probe_temporal_address(address: str, timeout_s: float) -> bool:
     """Return True once the Temporal frontend answers TCP."""
     deadline = asyncio.get_event_loop().time() + timeout_s
-    host, _, port = address.rpartition(":")
-    if not host:
-        host = DEFAULT_TEMPORAL_ADDRESS
+    host, port = _split_address(address)
     while asyncio.get_event_loop().time() < deadline:
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, int(port)), timeout=1.0
+                asyncio.open_connection(host, port), timeout=1.0
             )
             writer.close()
             await writer.wait_closed()
@@ -217,7 +263,9 @@ async def _run_supervisor(
         config.get("temporal_address") or os.environ.get("TEMPORAL_ADDRESS") or DEFAULT_TEMPORAL_ADDRESS
     )
     temporal_port = int(config.get("temporal_port") or DEFAULT_TEMPORAL_PORT)
-    full_address = f"{temporal_address}:{temporal_port}"
+    # Never `f"{address}:{port}"`: the value in `TEMPORAL_ADDRESS` usually
+    # already carries its port, and appending a second one is 088's defect.
+    full_address = _resolve_temporal_address(temporal_address, temporal_port)
     readiness_timeout_s = float(config.get("readiness_timeout_s") or DEFAULT_READINESS_TIMEOUT_S)
     grace_period_s = float(config.get("grace_period_s") or DEFAULT_GRACE_PERIOD_S)
     db_filename = str(config.get("db_filename") or DEFAULT_DB_FILENAME)
@@ -362,7 +410,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--temporal-address",
         default=os.environ.get("TEMPORAL_ADDRESS") or DEFAULT_TEMPORAL_ADDRESS,
-        help="Temporal frontend host (default: 127.0.0.1)",
+        help=(
+            "Temporal frontend endpoint as host:port; a host on its own takes "
+            f"--temporal-port (default: {DEFAULT_TEMPORAL_ADDRESS})"
+        ),
     )
     parser.add_argument(
         "--temporal-port",
