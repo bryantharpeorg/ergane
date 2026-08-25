@@ -1,0 +1,76 @@
+107 US1 — what git says about three directories, and the refusal that follows.
+
+Run on 2026-08-25 against this branch's `factory/workgraph/worktree.py`, on git
+2.43.0, in a scratch directory holding two `git init` repositories (`clone-a`,
+`clone-b`) and one shared runtime root (`.ergane`). `ensure()` registered the
+node worktree to clone-a; the probe then asked `_worktree_ownership` about three
+directories and printed git's own two lines beside each answer.
+
+Case 3 is the one to read twice. The directory is a bare `mkdir` with no `.git`
+of any kind, and git still answers exit 0 with a legitimate top level and common
+directory — clone-a's, because git walks *up* and the runtime root sits inside
+the clone. Dispatched against clone-a, a check comparing only common directories
+would call that owned and dispatch an agent into a directory that is not a
+worktree at all. `--show-toplevel != the directory itself` is what refuses it.
+
+--- 1. correctly owned: dispatched against the clone that registered it
+    directory:    /tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1
+    dispatched:   /tmp/us1-evidence-cpf8kxh0/clone-a
+    git rev-parse --path-format=absolute --show-toplevel --git-common-dir
+      exit 0
+      /tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1
+      /tmp/us1-evidence-cpf8kxh0/clone-a/.git
+    _worktree_ownership -> owned=True is_worktree=True
+                           toplevel=/tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1
+                           owner=/tmp/us1-evidence-cpf8kxh0/clone-a
+
+--- 2. owned by another clone: same directory, dispatched against clone-b
+    directory:    /tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1
+    dispatched:   /tmp/us1-evidence-cpf8kxh0/clone-b
+    git rev-parse --path-format=absolute --show-toplevel --git-common-dir
+      exit 0
+      /tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1
+      /tmp/us1-evidence-cpf8kxh0/clone-a/.git
+    _worktree_ownership -> owned=False is_worktree=True
+                           toplevel=/tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1
+                           owner=/tmp/us1-evidence-cpf8kxh0/clone-a
+
+--- 3. not a worktree at all: a bare mkdir nested inside clone-a
+    directory:    /tmp/us1-evidence-cpf8kxh0/clone-a/.ergane/worktrees/107-a-landing-refuses/us1
+    dispatched:   /tmp/us1-evidence-cpf8kxh0/clone-a
+    git rev-parse --path-format=absolute --show-toplevel --git-common-dir
+      exit 0
+      /tmp/us1-evidence-cpf8kxh0/clone-a
+      /tmp/us1-evidence-cpf8kxh0/clone-a/.git
+    _worktree_ownership -> owned=False is_worktree=False
+                           toplevel=/tmp/us1-evidence-cpf8kxh0/clone-a
+                           owner=None
+
+--- the refusal an operator sees (case 2)
+node worktree /tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1 is
+registered to /tmp/us1-evidence-cpf8kxh0/clone-a, not to the dispatched target repo
+/tmp/us1-evidence-cpf8kxh0/clone-b: refusing to build one clone's story in another
+clone's worktree. Clear it from the owning clone and dispatch again: git -C
+/tmp/us1-evidence-cpf8kxh0/clone-a worktree remove --force
+/tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1
+
+(One line as printed; wrapped here only to fit the page. The verbatim text is
+pinned in test_the_refusal_reads_exactly_as_the_operator_will_meet_it.)
+
+--- the printed remedy, pasted
+    against the dispatched repo (clone-b): exit 128
+      fatal: '/tmp/us1-evidence-cpf8kxh0/.ergane/worktrees/107-a-landing-refuses/us1' is not a working tree
+    against the owning clone (clone-a): exit 0
+    directory still there afterwards: False
+
+That asymmetry is why the message names the owning clone rather than the
+repository the epic was dispatched against. Nothing in the tree sweeps these
+directories — `remove`, `reset` and `_archive_node` all shell
+`git -C <target_repo> worktree remove`, which is the repo git has just refused —
+so the operator's paste is the whole remedy, and the wrong one fails with an
+error that names neither clone.
+
+Reproduce: two `git init` repositories side by side, one `ensure(clone_a, ...)`
+against a shared `factory_root`, then `ensure(clone_b, ...)`. The three cases and
+both remedy outcomes are asserted in `tests/test_worktree_ownership.py`; the
+scratch paths above differ per run and are the only thing that will not match.
