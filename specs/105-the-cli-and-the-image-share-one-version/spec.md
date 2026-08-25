@@ -1,5 +1,41 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-25. US1 a646ce468b77 (#316), US2 3405b3344fbf (#318),
+# US3 9796036a4997 (#334), US4 7e1936a4acaf (#335) — all four observed on
+# ergane-buildout by content. Every story passed on its first attempt.
+#
+# This spec closes the container onramp: 088, 103, 104, 105, 106 and 107, all
+# landed and attested.
+#
+# IT TOOK TWO DISPATCHES, AND THE GAP IS THE INTERESTING PART. The first run
+# died on 2026-08-25 at 03:47Z with US1 verified and judge-PASSed: every factory
+# node pushes from the target repo, that clone pushed over HTTPS with an OAuth
+# App token, and GitHub refuses an OAuth push that creates or updates any file
+# under .github/workflows/ without the `workflow` scope. US1 writes
+# .github/workflows/release.yml, so it was unlandable by construction, and the
+# cascade killed US3 and US4 at attempt 0 before either was dispatched
+# (merge/a-story-touching-github-workflows-cannot-be-pushed-by-the-factory).
+# US1 was rescued by hand as #316 — its title deliberately follows
+# factory/workgraph/landed.py's grammar so the landing stays visible to
+# `spec landed` and `--delta`, which is what an earlier prose-titled rescue got
+# wrong permanently.
+#
+# The operator repointed the target clone's push URL at SSH at 03:02 CT and the
+# transport has carried every factory push since. Note what that does NOT prove:
+# no story after US1 touches a workflow file, so a FACTORY push of
+# .github/workflows/* remains untested, and that finding stays open.
+#
+# The second dispatch — US3 and US4 only, from a --delta remainder — was an
+# operator `build start` rather than a roadmap tick, because the roadmap records
+# a concluded epic in `_landed` and never re-dispatches it, landed or not
+# (factory/roadmap/workflow.py:855-868, FR-006). The status board still printed
+# 105 as `[*] ready`, so a permanently stranded spec advertised itself as queued
+# (roadmap/the-status-board-marks-a-spec-dispatchable-that-the-roadmap-will-never-dispatch).
+#
+# Every node ran persona `implementer` on `ollama-cloud/kimi-k2.7-code`, gateway-
+# routed and billed per token, because this spec's Work Graph declares no persona
+# and the registry default applies.
+#
 # DRAFTED 2026-08-23 ~10:20 PM CT by the operator session behind
 # docs/container-onramp-program.md. Spec-only draft: plan.md and tasks.md at
 # refinement. US1 (workflow) can land before 088; US2-US4 need 088's
