@@ -353,6 +353,11 @@ DECLARED_EXCLUSIONS = {
         "external-completion-count takes no positional at all. It reports a "
         "store-wide count across every spec, so there is no single epic to name."
     ),
+    "ship": (
+        "ship creates the epic from a spec directory. The epic id does not exist "
+        "until after validate, derive and confirmation; the spec directory is the "
+        "only handle the operator has (106-US4)."
+    ),
 }
 
 

@@ -780,6 +780,64 @@ def status_command(args: argparse.Namespace) -> int:
     return asyncio.run(_query_status(args.epic_id, as_json=args.as_json))
 
 
+def ship_command(args: argparse.Namespace) -> int:
+    """Validate, derive, summarise and — with confirmation — dispatch one spec."""
+    from factory.cli.nouns.spec import derive_spec_command, validate_spec_command
+    from factory.config import ConfigError, load_personas
+
+    spec_dir = Path(args.spec_dir)
+    epic_id = spec_dir.resolve().name
+
+    # Stage 1: validate.  Stream the full labeled output and stop on refusal.
+    print(f"ship: validating {spec_dir / ARTIFACT_NAME}")
+    validate_code = validate_spec_command(args)
+    if validate_code != EXIT_OK:
+        return validate_code
+
+    # Stage 2: derive.  Stream the full labeled output and stop on failure.
+    print(f"ship: deriving {spec_dir / ARTIFACT_NAME}")
+    derive_code = derive_spec_command(args)
+    if derive_code != EXIT_OK:
+        return derive_code
+
+    # Resolve the artifact path exactly the way derive does.
+    artifact_path = Path(args.output) if args.output else spec_dir / ARTIFACT_NAME
+    if not artifact_path.is_file():
+        raise OperatorError(
+            f"ship expected compiled graph at {artifact_path}; "
+            "derive reported success but wrote no artifact"
+        )
+
+    # Stage 3: load the graph and print the summary.
+    graph = load_workgraph(artifact_path)
+    print(f"ship: compiled graph '{graph.epic_id}' has {len(graph.nodes)} node(s)")
+
+    try:
+        personas = load_personas()
+    except ConfigError as error:
+        raise OperatorError(
+            f"ship cannot resolve personas for the summary: {error}"
+        ) from error
+
+    # Declaration order is scheduling order (R10); the summary says both.
+    order = [node.id for node in graph.nodes]
+    print(f"dispatch order: {' '.join(order)}")
+    for node in graph.nodes:
+        persona = personas.get(node.persona)
+        alias = persona.model if persona is not None and persona.model is not None else "<registry default>"
+        print(f"  {node.id}  persona {node.persona}  model {alias}")
+
+    # Stage 4: confirm unless --yes, then dispatch.
+    if not args.yes:
+        refused = _confirm_dispatch(epic_id)
+        if refused is not None:
+            return refused
+
+    # Ship sets exactly one attribute on its namespace: the compiled graph path.
+    args.graph = str(artifact_path)
+    return start_command(args)
+
+
 async def _query_status(epic_id: str, *, as_json: bool) -> int:
     client = await _connect()
     handle = client.get_workflow_handle(workflow_id(epic_id))
@@ -879,6 +937,23 @@ def kill_command(args: argparse.Namespace) -> int:
             print("ergane: kill cancelled", file=sys.stderr)
             return EXIT_USER
     return asyncio.run(_send_signal(args.epic_id, KILL_SIGNAL))
+
+
+def _confirm_dispatch(epic_id: str) -> int | None:
+    """Reusable confirmation primitive: ask once, return EXIT_USER on decline.
+
+    Same shape as `kill_command`'s confirmation: one `input`, `EOFError` as a
+    decline, the same cancelled-message shape, and `EXIT_USER` on decline.
+    Returns `None` when confirmed so callers can keep returning their own code.
+    """
+    try:
+        confirmed = input(f"Dispatch epic '{epic_id}'? [y/N] ")
+    except EOFError:
+        confirmed = ""
+    if confirmed.lower() not in ("y", "yes"):
+        print("ergane: ship cancelled", file=sys.stderr)
+        return EXIT_USER
+    return None
 
 
 def complete_node_externally_command(args: argparse.Namespace) -> int:
@@ -1546,6 +1621,62 @@ def add_parser(subparsers: Any) -> None:
     # start` offers the same five flags with the same spellings and refusals.
     add_landing_dial_flags(start)
     start.set_defaults(run=start_command)
+
+    ship = commands.add_parser(
+        "ship",
+        help="validate, derive and start one epic with a confirmation pause",
+        description=(
+            "Run `spec validate` and `spec derive` for one spec, print a summary "
+            "of the compiled graph, then pause for confirmation before dispatching "
+            "the epic.  With --yes the pause is skipped."
+        ),
+    )
+    ship.add_argument("spec_dir", help="the feature directory holding spec.md")
+    ship.add_argument(
+        "--target-repo",
+        required=True,
+        help="worker-host path to the repository the epic builds in",
+    )
+    ship.add_argument(
+        "--specs-root",
+        dest="specs_root",
+        default=DEFAULT_SPECS_ROOT,
+        help=f"where the worker finds feature specs (default: {DEFAULT_SPECS_ROOT})",
+    )
+    ship.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="write the artifact here instead of <spec-dir>/workgraph.json",
+    )
+    ship.add_argument(
+        "--delta",
+        action="store_true",
+        help="derive only the work that remains against the landed baseline",
+    )
+    ship.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="emit validate/derive output as JSON instead of human prose",
+    )
+    ship.add_argument(
+        "--max-concurrent-nodes",
+        type=_positive_int,
+        default=1,
+        help=(
+            "how many ready nodes the scheduler may have in flight at once "
+            "(default: 1)"
+        ),
+    )
+    add_promotion_persona_flag(ship)
+    add_landing_dial_flags(ship)
+    ship.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the interactive confirmation",
+    )
+    ship.set_defaults(run=ship_command)
 
     status = commands.add_parser("status", help="what one epic is doing right now")
     status.add_argument("epic_id", help="the epic id (the spec directory's name)")

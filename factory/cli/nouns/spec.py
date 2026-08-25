@@ -37,7 +37,7 @@ from factory.workgraph.cli import (
     _OperatorError as WorkgraphOperatorError,
     _resolve_identity_path,
     _target_repo_for_spec,
-    derive_command,
+    derive_command as _derive_command_impl,
     landed_command,
     workflow_id,
 )
@@ -242,9 +242,29 @@ def _derive_command(args: argparse.Namespace) -> int:
             f"{lines}"
         )
     try:
-        return derive_command(args)
+        return _derive_command_impl(args)
     except (RoadmapOperatorError, WorkgraphOperatorError) as error:
         raise _translate_old_error(error) from error
+
+
+def validate_spec_command(args: argparse.Namespace) -> int:
+    """Public wrapper around the shipped `spec validate` handler.
+
+    US4's `build ship` streams validate's full labeled output and returns its
+    exit code without re-implementing the report.  The private name and its
+    `set_defaults(run=...)` wiring stay unchanged so existing imports survive.
+    """
+    return _validate_command(args)
+
+
+def derive_spec_command(args: argparse.Namespace) -> int:
+    """Public wrapper around the shipped `spec derive` handler.
+
+    US4's `build ship` streams derive's full labeled output and returns its
+    exit code.  The sentinel gate lives in the private `_derive_command`, which
+    this delegates to unchanged.
+    """
+    return _derive_command(args)
 
 
 # --- new ---------------------------------------------------------------------
