@@ -316,6 +316,207 @@ def _workflow_is_operator_tag_trigger_only(workflow_text: str) -> bool:
     return False
 
 
+# --- US1 drift tests: the release workflow gains the image job -----------------
+
+
+_IMAGES_DIR = REPO_ROOT / "container"
+_COMPOSE_REFERENCE = _IMAGES_DIR / "compose.reference.yaml"
+
+
+def _load_release_workflow() -> dict[str, Any]:
+    if not RELEASE_WORKFLOW.is_file():
+        pytest.fail(f"release workflow not found at {RELEASE_WORKFLOW}")
+    return yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _job_ids(workflow: dict[str, Any]) -> list[str]:
+    jobs = workflow.get("jobs", {})
+    assert isinstance(jobs, dict), f"workflow jobs block must be a dict, got {jobs!r}"
+    return list(jobs.keys())
+
+
+def _image_job_text() -> str:
+    """Return the raw text of the image job, starting at its id line."""
+    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r"^  build-and-publish-image:\s*$", text, re.MULTILINE)
+    assert match is not None, "image job 'build-and-publish-image' not found"
+    # Slice from the id line to the end of the file (it is the last job).
+    # Strip the leading two spaces so PyYAML parses the job block as top-level.
+    return text[match.start():]
+
+
+def test_us1_image_job_exists_with_correct_needs() -> None:
+    """FR-001: image job exists in release.yml with needs: [build-and-publish]."""
+    workflow = _load_release_workflow()
+    jobs = workflow.get("jobs", {})
+    assert "build-and-publish-image" in jobs, (
+        f"image job missing; jobs are: {list(jobs.keys())}"
+    )
+    image_job = jobs["build-and-publish-image"]
+    assert image_job.get("needs") == ["build-and-publish"], (
+        f"image job needs wrong: {image_job.get('needs')!r}"
+    )
+
+
+def _bash_run_blocks(job_text: str) -> list[str]:
+    """Return the body of every `run: |` block in a job's raw YAML text."""
+    blocks: list[str] = []
+    for match in re.finditer(r'^\s+run:\s*\|\s*\n((?:\s+.*\n?)+)', job_text, re.MULTILINE):
+        blocks.append(match.group(1))
+    return blocks
+
+
+def test_us1_image_job_is_single_multi_arch_buildx_push() -> None:
+    """FR-002: exactly one buildx build invocation carries both platforms and --push."""
+    job_text = _image_job_text()
+    # The command is split across backslash-continued lines; join the run blocks
+    # so the assertion is about the whole invocation, not a single trimmed line.
+    run_blocks = _bash_run_blocks(job_text)
+    assert run_blocks, "no run blocks found in image job"
+    # The build command is the only one that starts with `docker buildx build`.
+    invocations = [
+        block
+        for block in run_blocks
+        if "docker buildx build" in block
+    ]
+    assert len(invocations) == 1, (
+        f"expected exactly one 'docker buildx build' invocation, got {invocations!r}"
+    )
+    invocation = invocations[0]
+    assert "--push" in invocation, f"buildx invocation missing --push: {invocation}"
+    assert "--platform" in invocation, f"buildx invocation missing --platform: {invocation}"
+    assert "linux/amd64" in invocation and "linux/arm64" in invocation, (
+        f"buildx invocation missing required platforms: {invocation}"
+    )
+
+
+def test_us1_image_job_uses_github_token_for_ghcr_login() -> None:
+    """FR-004: GHCR login uses the GitHub token and the declared repository."""
+    job_text = _image_job_text()
+    # Registry is either the literal or the env reference; either is acceptable
+    # because the repository is declared once and referenced.
+    assert ("registry: ghcr.io" in job_text or "registry: ${{ env.IMAGE_REPOSITORY }}" in job_text), (
+        "GHCR registry missing"
+    )
+    assert "password: ${{ github.token }}" in job_text, (
+        "GHCR login must use github.token"
+    )
+
+
+def test_us1_image_job_signs_pushed_digest_with_cosign() -> None:
+    """FR-005: a cosign step signs the pushed digest, not a tag."""
+    job_text = _image_job_text()
+    assert "uses: sigstore/cosign-installer@v3" in job_text, "cosign-installer missing"
+    cosign_lines = [
+        line.strip()
+        for line in job_text.splitlines()
+        if line.strip().startswith("cosign sign")
+    ]
+    assert len(cosign_lines) == 1, f"expected exactly one cosign sign line, got {cosign_lines}"
+    sign_line = cosign_lines[0]
+    assert "${DIGEST}" in sign_line or "@" in sign_line, (
+        f"cosign must sign digest, got: {sign_line}"
+    )
+    assert ":" not in sign_line.split("@")[0] or "${IMAGE_REPOSITORY}" in sign_line, (
+        f"cosign target must be repo@digest form: {sign_line}"
+    )
+
+
+def test_us1_image_job_inserts_platform_assertion() -> None:
+    """FR-005: imagetools inspect step exits nonzero unless both platforms appear."""
+    job_text = _image_job_text()
+    assert "docker buildx imagetools inspect" in job_text, "imagetools inspect step missing"
+    # The step must check for linux/amd64 and linux/arm64 explicitly.
+    assert "linux/amd64" in job_text and "linux/arm64" in job_text, (
+        "platform assertion must name both linux/amd64 and linux/arm64"
+    )
+    # It must be able to fail the build.
+    assert "exit 1" in job_text, "platform assertion must be able to exit 1"
+
+
+def test_us1_image_job_has_own_packages_write_permission() -> None:
+    """FR-004: image job has packages: write; build-and-publish block unchanged."""
+    workflow = _load_release_workflow()
+    jobs = workflow.get("jobs", {})
+    assert "build-and-publish" in jobs, "original build-and-publish job missing"
+    assert "build-and-publish-image" in jobs, "image job missing"
+    original = jobs["build-and-publish"].get("permissions", {})
+    assert original == {"contents": "read", "id-token": "write"}, (
+        f"build-and-publish permissions block must remain exactly {{contents: read, id-token: write}}, got {original!r}"
+    )
+    image = jobs["build-and-publish-image"].get("permissions", {})
+    assert image.get("packages") == "write", (
+        f"image job must declare packages: write, got {image!r}"
+    )
+    assert image.get("contents") == "read" and image.get("id-token") == "write", (
+        f"image job permissions must include contents: read and id-token: write, got {image!r}"
+    )
+
+
+def test_us1_image_tag_derives_from_same_git_tag_as_pypi() -> None:
+    """FR-003: image tag derives from GITHUB_REF_NAME, the same source the PyPI job uses."""
+    workflow = _load_release_workflow()
+    job_text = _image_job_text()
+    # The tag must be produced from GITHUB_REF_NAME with a leading v stripped.
+    assert "GITHUB_REF_NAME" in job_text, "image job must reference GITHUB_REF_NAME"
+    assert "${TAG#v}" in job_text or "${GITHUB_REF_NAME#v}" in job_text, (
+        "image tag must strip leading v from the git tag"
+    )
+    # The original job already validates the tag against pyproject.toml version.
+    original = workflow.get("jobs", {}).get("build-and-publish", {})
+    original_text = yaml.safe_dump(original)  # rough
+    assert "GITHUB_REF_NAME" in original_text, (
+        "original job must still derive its version from GITHUB_REF_NAME"
+    )
+
+
+def test_us1_image_repository_declared_once_in_workflow() -> None:
+    """FR-007/US1-S2: repository declared once as env and referenced everywhere.
+
+    The repository is not restated in the test; it is read out of the workflow.
+    US3 will pin this value to container/compose.reference.yaml:10.
+    """
+    workflow = _load_release_workflow()
+    image_job = workflow.get("jobs", {}).get("build-and-publish-image", {})
+    env = image_job.get("env", {})
+    assert "IMAGE_REPOSITORY" in env, (
+        "IMAGE_REPOSITORY must be declared once as an env key on the image job"
+    )
+    job_text = _image_job_text()
+    # Count references to the env variable, not the literal string.
+    # The login step uses ${{ env.IMAGE_REPOSITORY }}; the bash steps use
+    # ${IMAGE_REPOSITORY}. Either way, the repository is the one declared env.
+    var_uses = job_text.count("${IMAGE_REPOSITORY}") + job_text.count("${{ env.IMAGE_REPOSITORY }}")
+    # It must be used in login, build tag, cosign target, and inspect assertion.
+    assert var_uses >= 4, (
+        f"IMAGE_REPOSITORY must be referenced via env variable in login, build, cosign, and inspect; got {var_uses} uses"
+    )
+
+
+def test_us1_dockerignore_contents() -> None:
+    """FR-006: .dockerignore excludes host state and preserves wheel inputs."""
+    ignore_path = REPO_ROOT / ".dockerignore"
+    assert ignore_path.is_file(), ".dockerignore must exist"
+    text = ignore_path.read_text(encoding="utf-8")
+    lines = {line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")}
+    required_excludes = {
+        ".git",
+        ".venv",
+        ".factory",
+        ".claude",
+        "dist",
+        "build",
+        "**/__pycache__",
+        "*.egg-info",
+    }
+    missing_excludes = required_excludes - lines
+    assert not missing_excludes, f".dockerignore missing excludes: {sorted(missing_excludes)}"
+
+    must_not_exclude = {"pyproject.toml", "README.md", "personas.example.yaml", "factory/"}
+    for item in must_not_exclude:
+        assert item not in lines, f".dockerignore must NOT exclude {item!r}"
+
+
 def test_no_workflow_can_publish_on_branch_pr_or_merge_group() -> None:
     """FR-011/SC-005: publishing is reachable only from an explicit operator action on a version tag.
 

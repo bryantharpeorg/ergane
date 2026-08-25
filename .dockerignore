@@ -1,0 +1,26 @@
+# Build context exclusions: keep the image small and deterministic.
+#
+# The Dockerfile copies the whole repository (`COPY . /opt/ergane`) and does an
+# editable install.  These entries protect the build from host state that is not
+# part of the committed distribution:
+#
+# - `.git` is large and unnecessary after the tag is baked into the version.
+# - `.venv` on the host may point at a foreign interpreter (e.g. aarch64 CPython
+#   3.13 under `~/.local/share/uv/`); copying it without `--clear` then running
+#   `python3 -m venv .venv` with Ubuntu's python3.12 produces a broken mix.
+# - `.factory` and `.claude` hold attempt and worktree state.
+# - `dist`, `build`, `**/__pycache__` and `*.egg-info` are build residue.
+#
+# Must NOT exclude files the wheel needs:
+# - `pyproject.toml` and `README.md` are required by `readme = "README.md"`.
+# - `personas.example.yaml` is force-included into the wheel as
+#   `factory/personas.yaml`.
+# - `factory/` is the package itself.
+.git
+.venv
+.factory
+.claude
+dist
+build
+**/__pycache__
+*.egg-info
