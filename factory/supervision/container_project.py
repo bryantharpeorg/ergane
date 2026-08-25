@@ -61,6 +61,68 @@ CONFINED_SECURITY_OPT: tuple[str, ...] = (
     f"apparmor={APPARMOR_PROFILE_NAME}",
 )
 
+#: Config F (104-US4): what the operator gets when the profile was declined or
+#: `apparmor_parser` refused it. AppArmor is the only thing that changes —
+#: seccomp and no-new-privileges are identical, because F is a relaxation of one
+#: layer and not of the contract.
+UNCONFINED_SECURITY_OPT: tuple[str, ...] = (
+    "no-new-privileges:true",
+    f"seccomp:./{SECCOMP_ARTIFACT}",
+    "apparmor=unconfined",
+)
+
+#: The two confinement variants, named by what they ask Docker for. Only
+#: `resolve_project` takes one; `reference_project()` takes no parameters at all
+#: (trap 9), so the committed reference cannot go red on a changed default.
+CONFINEMENT_PROFILE = "profile"
+CONFINEMENT_UNCONFINED = "unconfined"
+
+_SECURITY_OPT_BY_CONFINEMENT: dict[str, tuple[str, ...]] = {
+    CONFINEMENT_PROFILE: CONFINED_SECURITY_OPT,
+    CONFINEMENT_UNCONFINED: UNCONFINED_SECURITY_OPT,
+}
+
+#: Annotation key for the comment block above `security_opt:` — where config F
+#: explains itself in the generated file.
+SECURITY_OPT_KEY = "security_opt"
+
+#: Why an F project is an F project, as data (R4) so it reaches both the
+#: generated file's comments and the installer's own output from one source. A
+#: renderer literal would put it in *every* render, including G's.
+#:
+#: Both measured facts in it are trap 8's, and both are the reason the decline
+#: path may not be described as "the safe option": the stub F depends on is
+#: hand-installed on the reference floor and owned by no package, and removing
+#: the profile on Ubuntu >= 23.10 makes the situation worse rather than neutral.
+UNCONFINED_EXPLANATION: tuple[str, ...] = (
+    "Confinement: config F -- `apparmor=unconfined`, which is NOT the shipped",
+    f"configuration. The shipped one is config G, `apparmor={APPARMOR_PROFILE_NAME}`:",
+    f"the named profile in {APPARMOR_ARTIFACT} beside this file. It was not loaded",
+    "into the kernel, so this project asks Docker for no AppArmor profile at all.",
+    "seccomp and no-new-privileges are identical in both variants; AppArmor is the",
+    "whole of the difference.",
+    "",
+    "This is a completely generated, honestly annotated engine, and these are its",
+    "remaining prerequisites -- config F is not the privilege-free option, it is",
+    "the other one:",
+    "",
+    "  1. A /etc/apparmor.d/bwrap stub must already be loaded on this host. It is",
+    "     not stock Ubuntu 24.04 and no package owns it -- it is hand-installed",
+    "     on the reference floor. Without it bwrap fails at `write failed",
+    "     /proc/self/uid_map: Operation not permitted` with no obvious cause",
+    "     (measured: docs/container-onramp-research-findings.md section 8, item",
+    "     3).",
+    "  2. To reach config G instead, load the profile from this directory and",
+    f"     re-run install:  sudo apparmor_parser -r ./{APPARMOR_ARTIFACT}",
+    "     then `ergane install`.",
+    "",
+    'Do not read this as "AppArmor is off". On Ubuntu 23.10 and later, removing',
+    "the profile activates the kernel's capability-stripping unprivileged_userns",
+    "transition: the namespace is created and the uid_map write is then refused.",
+    "Turning AppArmor off to debug this makes it worse, always (findings section",
+    "8, item 4).",
+)
+
 #: The top-level key carrying the per-repo same-path mount list.
 REPO_MOUNT_KEY = "x-ergane-repos"
 
@@ -480,10 +542,25 @@ def resolve_project(
     home: Path | None = None,
     install_root: Path | None = None,
     image_source: str = IMAGE_SOURCE_LOCAL,
+    confinement: str = CONFINEMENT_PROFILE,
 ) -> ContainerProject:
     """Resolve the operational project for this host from confirmed answers.
     Everything resolves here, once, so the project is data and the renderer pure;
-    every path comes from a resolver, never a literal (trap 5)."""
+    every path comes from a resolver, never a literal (trap 5).
+
+    `confinement` is US4's decision, and it reaches *only* this function: the
+    consent step decides it, and a declined or failed profile load is the whole
+    of what makes an F project. The reference is unaffected by construction
+    (trap 9) — it takes no parameters at all.
+    """
+    security_opt = _SECURITY_OPT_BY_CONFINEMENT.get(confinement)
+    if security_opt is None:
+        raise OperatorError(
+            f"unknown confinement variant {confinement!r} for the engine "
+            f"container; expected {CONFINEMENT_PROFILE!r} (config G, the shipped "
+            f"one) or {CONFINEMENT_UNCONFINED!r} (config F)"
+        )
+
     version = _engine_image_version()
     install_root = (
         resolve_layout().install_root if install_root is None else Path(install_root)
@@ -555,6 +632,10 @@ def resolve_project(
         ),
         ENV_FILE_KEY: _env_header(version),
     }
+    if confinement == CONFINEMENT_UNCONFINED:
+        # Only F annotates itself. G is the shipped configuration and a file that
+        # explains why it is normal teaches nobody anything.
+        annotations[SECURITY_OPT_KEY] = UNCONFINED_EXPLANATION
     for mount in repo_mounts:
         annotations[mount.source] = (
             "Registered repository, same-path so worktrees resolve on both sides.",
@@ -563,7 +644,7 @@ def resolve_project(
     return ContainerProject(
         image=image,
         build=build,
-        security_opt=CONFINED_SECURITY_OPT,
+        security_opt=security_opt,
         user=user,
         roots=(state_root, supervision, config_dir, *repo_paths),
         mounts=mounts,
@@ -611,6 +692,10 @@ def render_compose(project: ContainerProject) -> str:
     lines.append("    init: true")
     lines.append(f'    user: "{project.user}"')
     lines.append("    cap_drop: [ALL]")
+    # An annotation slot, empty for the shipped confinement: config F's
+    # explanation is data on the project (R4), so it lands here on an F render
+    # and nowhere at all on a G one — including the reference's (trap 9).
+    lines.extend(_comments(project.annotations.get(SECURITY_OPT_KEY, ()), "    "))
     lines.append("    security_opt:")
     lines.extend(f"      - {option}" for option in project.security_opt)
     if project.ports:
