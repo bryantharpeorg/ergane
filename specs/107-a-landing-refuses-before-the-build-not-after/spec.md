@@ -1,5 +1,5 @@
 ---
-state: ready
+state: landed
 fixes:
   - workgraph/a-stale-node-worktree-from-another-target-repo-is-silently-reused
   - merge/open-landing-pr-pushes-from-a-repo-without-the-node-branch
@@ -7,6 +7,38 @@ fixes:
   - mergequeue/landing-base-follows-the-operator-checkout
   - workgraph/concurrent-nodes-collide-on-agent-session-ids
   - merge/a-hand-harvested-pr-title-makes-the-landing-invisible
+#
+# Attested landed 2026-08-25. US1 ec324c5a8328 (#325), US2 4c42030c456c (#329),
+# US3 7995c04b0a98 (#327), US4 a57c59d3f726 (#328), US5 6c94be39abe2 (#330),
+# US6 721103276705 (#331) — all six observed on ergane-buildout by content.
+#
+# THE `fixes:` KEYS ABOVE ARE A CLAIM, NOT A RESOLUTION. None is resolved in the
+# doctor's ledger on the strength of this landing. A spec naming a finding is not
+# proof it closed it, and the resolution wants its own evidence — for most of
+# these, a run that reproduces the original conditions and does not fail.
+#
+# COST, and it is worth reading before this epic is used as a cadence baseline.
+# Thirteen attempts for six stories. Nine of those were not builds at all: the
+# operator's Claude Code OAuth session expired mid-epic, and every subscription-
+# routed attempt died in under a second with a 73-byte stdout.log reading
+# `Failed to authenticate: OAuth session expired and could not be refreshed`.
+# The factory recorded each as verdict FAIL with judge_outcome null, which is
+# indistinguishable from a deterministic-gate refusal
+# (agent/an-expired-subscription-oauth-session-burns-every-attempt-and-reports-it-
+# as-an-empty-diff). The operator re-authenticated at 6:48 AM and the next
+# dispatch ran clean.
+#
+# The escalation ladder is what finished this epic. US2, US5 and US6 each
+# exhausted three subscription attempts and then passed on attempt 4 as persona
+# `debugger` on `ollama-cloud/deepseek-v4-flash` — gateway-routed and billed per
+# token. So three of six stories did NOT run on the declared opus-closer/
+# subscription route, and this epic is not the zero-per-token run 104 was. Note
+# also that the model DID change on escalation, which contradicts
+# interpreter/debugger-escalation-does-not-change-the-model; that finding is
+# stale and needs re-verifying.
+#
+# The six landed between 4:24 AM and 7:27 AM CT.
+#
 # DRAFTED 2026-08-25 by an operator session, from five findings measured on this
 # host on 2026-08-23 and 2026-08-24 and from three parallel anchor readers whose
 # every file:line was opened individually against the tree at 0f77873.
