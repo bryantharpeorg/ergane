@@ -228,6 +228,19 @@ def _list_command(args: argparse.Namespace) -> int:
 
 
 def _derive_command(args: argparse.Namespace) -> int:
+    spec_dir = Path(args.spec_dir)
+    sentinels = _scan_sentinels_in_trio(spec_dir)
+    if sentinels:
+        lines = "\n".join(
+            f"  {document}:{line}: {text} — not ready to derive"
+            for document, line, text in sentinels
+        )
+        verb = "ergane spec derive"
+        raise OperatorError(
+            f"{spec_dir / SPEC_NAME}: refuses to derive until ERGANE-TODO sentinels are resolved; "
+            f"resolve them with {verb}:\n"
+            f"{lines}"
+        )
     try:
         return derive_command(args)
     except (RoadmapOperatorError, WorkgraphOperatorError) as error:
@@ -401,6 +414,27 @@ def _landed_command(args: argparse.Namespace) -> int:
 # --- validate ----------------------------------------------------------------
 
 
+def _scan_sentinels_in_trio(spec_dir: Path) -> list[tuple[str, int, str]]:
+    """Return every ERGANE-TODO sentinel in the authored documents.
+
+    Each tuple is `(document_name, 1-indexed_line, line_text)`.  Only the
+    authored documents are scanned; a sentinel inside `workgraph.json` or any
+    other file is not a blank the author is meant to fill.
+    """
+    from factory.doctor.scaffold import ERGANE_TODO, scan_sentinels
+
+    results: list[tuple[str, int, str]] = []
+    for name in ("spec.md", "plan.md", TASKS_DOCUMENT):
+        path = spec_dir / name
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line_no, line_text in scan_sentinels(text):
+            results.append((name, line_no, line_text))
+    return results
+
+
 class _ValidateFinding:
     def __init__(self, layer: str, message: str, *, severity: str = "refusal") -> None:
         self.layer = layer
@@ -549,6 +583,20 @@ def _validate_command(args: argparse.Namespace) -> int:
             }
         )
 
+    # 8. Sentinels that mark mandatory blanks (106-US3).
+    #
+    # These are stated, never counted: they ride the `information` channel and do
+    # not change the exit code.  The layer runs unconditionally because it only
+    # reads text, so it is always reported in `checked`.
+    for document, line_no, line_text in _scan_sentinels_in_trio(spec_dir):
+        information.append(
+            _ValidateFinding(
+                "sentinel",
+                f"{document}:{line_no}: {line_text.strip()} — not ready to derive",
+            )
+        )
+    checked.append("sentinels")
+
     report = {
         "spec_dir": str(spec_dir),
         "checked": checked,
@@ -602,6 +650,14 @@ def _validate_command(args: argparse.Namespace) -> int:
             print(
                 f"ergane spec validate — noted, not a refusal: "
                 f"[{note.layer}] {note.message}",
+                file=sys.stderr,
+            )
+        if any(note.layer == "sentinel" for note in information):
+            count = sum(1 for note in information if note.layer == "sentinel")
+            noun = "sentinel" if count == 1 else "sentinels"
+            print(
+                f"{count} ERGANE-TODO {noun} remain; "
+                "ergane spec derive will refuse until they are resolved.",
                 file=sys.stderr,
             )
 

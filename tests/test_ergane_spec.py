@@ -18,7 +18,9 @@ from typing import Any, Awaitable, Callable, NamedTuple
 import pytest
 
 from factory.cli.main import main
+from factory.doctor.scaffold import scaffold_spec, scan_sentinels
 from factory.roadmap.models import Roadmap, Readiness, compute_readiness, read_roadmap
+from factory.workgraph.derive import derive_workgraph
 
 CORPUS = Path(__file__).resolve().parent / "fixtures"
 ROADMAP_CORPUS = CORPUS / "roadmap"
@@ -715,3 +717,233 @@ def test_validate_json_reports_findings(
     doc = result.json
     assert "findings" in doc
     assert len(doc["findings"]) >= 1
+
+
+# --- T019-T023: 106-US3 sentinel gating ----------------------------------------
+
+
+def _scaffold_dir(tmp_path: Path) -> Path:
+    """Write a fresh US1 scaffold to a spec directory and return it."""
+    spec_text, plan_text, tasks_text = scaffold_spec(
+        slug="demo", title="Demo Story", anchor="factory/cli/main.py:171"
+    )
+    spec_dir = tmp_path / "001-demo"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.md").write_text(spec_text, encoding="utf-8")
+    (spec_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+    (spec_dir / "tasks.md").write_text(tasks_text, encoding="utf-8")
+    return spec_dir
+
+
+def test_validate_over_fresh_scaffold_lists_sentinels_on_information_channel(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """T019 / US3-S1: structure passes, sentinels are stated, exit stays 0."""
+    spec_dir = _scaffold_dir(tmp_path)
+
+    result = run("spec", "validate", "--json", str(spec_dir))
+
+    doc = result.json
+    assert result.code == 0
+    assert doc["findings"] == []
+    # The new layer runs and is reported in `checked`, never `skipped`.
+    assert "sentinels" in doc["checked"]
+    assert "sentinels" not in [entry["layer"] for entry in doc["skipped"]]
+    # Every sentinel appears with document, line and the required wording.
+    information = doc["information"]
+    assert len(information) == 4
+    for entry in information:
+        assert entry["layer"] == "sentinel"
+        assert "tasks.md:" in entry["message"]
+        assert "not ready to derive" in entry["message"]
+    # Human transcript: the all-pass sentence on stdout, sentinel block on stderr.
+    human = run("spec", "validate", str(spec_dir))
+    assert human.code == 0
+    assert (
+        f"{spec_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
+        "scenario coverage, prompt assembly and slice coverage all pass"
+    ) in human.stdout
+    assert "ergane spec validate — refusal:" not in human.stderr
+    for entry in information:
+        assert entry["message"] in human.stderr
+    assert "ERGANE-TODO sentinels remain" in human.stderr
+    assert "ergane spec derive" in human.stderr
+
+
+def test_validate_advisory_all_pass_sentence_and_sentinel_checked_bit(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """T020 / US3-S1: both all-pass sentences stay byte-identical, and the
+    advisory variant (the one a real spec actually prints) is protected for
+    the first time.  Also pins `sentinels` in `checked` even when the graph
+    fails to compile.
+    """
+    spec_dir = _scaffold_dir(tmp_path)
+
+    # Create a case that definitely hits the advisory branch: a sound spec
+    # plus an injected uncovered scenario advisory from an extra scenario with
+    # no task reference, plus a sentinel in tasks.md.
+    repo = tmp_path / "advisory-repo"
+    repo.mkdir()
+    env = _git_env(tmp_path / "empty-home")
+    _git(repo, "init", "-b", "main", "--quiet", env=env)
+    specs_dir = repo / "specs" / "advisory-spec"
+    specs_dir.mkdir(parents=True)
+    spec = _spec(
+        state="ready",
+        stories=["US1"],
+        work_graph="US1:\n  depends_on: []\n  implements: [FR-001]\n",
+        scenarios={"US1": ["it works", "it also works"]},
+    )
+    (specs_dir / "spec.md").write_text(spec, encoding="utf-8")
+    (specs_dir / "plan.md").write_text("# Plan\n\nOne store.\n", encoding="utf-8")
+    (specs_dir / "tasks.md").write_text(
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
+        "- [ ] T001 [US1-S1] write the first test\n"
+        "- [ ] ERGANE-TODO: a sentinel that should not block validate\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "-A", env=env)
+    _commit(repo, "fixture skeleton", env=env)
+
+    result = run("spec", "validate", str(specs_dir))
+
+    assert result.code == 0
+    # This is the advisory variant, asserted here for the first time.
+    assert (
+        f"{specs_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
+        "scenario coverage, prompt assembly and slice coverage all pass; see advisory above"
+    ) in result.stdout
+    assert "not ready to derive" in result.stderr
+    # The clean sentence must remain byte-identical and not appear here.
+    assert (
+        f"{specs_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
+        "scenario coverage, prompt assembly and slice coverage all pass\n"
+    ) not in result.stdout
+
+    # Sentinel checked even when derivation fails.
+    bad_dir = tmp_path / "bad-spec"
+    bad_dir.mkdir()
+    bad_spec = _spec(
+        state="ready",
+        stories=["US1"],
+        work_graph="US1:\n  depends_on: [US9]\n  implements: [FR-001]\n",
+    )
+    (bad_dir / "spec.md").write_text(bad_spec, encoding="utf-8")
+    (bad_dir / "plan.md").write_text("# Plan\n\nOne store.\n", encoding="utf-8")
+    (bad_dir / "tasks.md").write_text(
+        "# Tasks\n\n"
+        "## Phase 1: User Story 1 - US1\n\n"
+        "- [ ] T001 [US1-S1] write the first test\n"
+        "- [ ] ERGANE-TODO: a sentinel that should not block validate\n",
+        encoding="utf-8",
+    )
+    bad_result = run("spec", "validate", "--json", str(bad_dir))
+    assert bad_result.code == 1
+    assert "sentinels" in bad_result.json["checked"]
+    assert "sentinels" not in [entry["layer"] for entry in bad_result.json["skipped"]]
+
+
+def test_derive_refuses_while_sentinels_remain_and_does_not_write_artifact(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """T021 / US3-S2: derive names every sentinel and writes nothing."""
+    spec_dir = _scaffold_dir(tmp_path)
+    artifact = spec_dir / "workgraph.json"
+
+    result = run("spec", "derive", str(spec_dir), "--target-repo", ABS_TARGET_REPO)
+
+    assert result.code != 0
+    assert not artifact.exists() or artifact.stat().st_size == 0
+    stderr = result.stderr
+    assert "ERGANE-TODO" in stderr
+    assert "spec derive" in stderr or "ergane spec derive" in stderr
+    # Each sentinel is named with its file:line.
+    for line_no, text in scan_sentinels((spec_dir / "tasks.md").read_text(encoding="utf-8")):
+        assert f"tasks.md:{line_no}" in stderr
+
+    # Same refusal with --delta, and the tracked artifact is untouched.
+    pre_size = artifact.stat().st_size if artifact.exists() else None
+    delta_result = run(
+        "spec", "derive", str(spec_dir), "--target-repo", ABS_TARGET_REPO, "--delta"
+    )
+    assert delta_result.code != 0
+    post_size = artifact.stat().st_size if artifact.exists() else None
+    assert pre_size == post_size
+
+
+def test_derive_succeeds_once_sentinels_are_resolved(
+    run: Callable[..., Run], tmp_path: Path
+) -> None:
+    """T022 / US3-S2: with no sentinels, derive writes the same bytes as before."""
+    # Build the sentinel-free version by replacing each ERGANE-TODO with real text.
+    spec_dir = _scaffold_dir(tmp_path)
+    tasks_path = spec_dir / "tasks.md"
+    tasks_text = tasks_path.read_text(encoding="utf-8")
+    cleaned = "\n".join(
+        line.replace("ERGANE-TODO: ", "[US2] completed task. ") if "ERGANE-TODO" in line else line
+        for line in tasks_text.splitlines()
+    )
+    tasks_path.write_text(cleaned, encoding="utf-8")
+
+    assert scan_sentinels(tasks_path.read_text(encoding="utf-8")) == []
+
+    result = run("spec", "derive", str(spec_dir), "--target-repo", ABS_TARGET_REPO)
+
+    assert result.code == 0
+    artifact = spec_dir / "workgraph.json"
+    assert artifact.exists()
+    # The artifact is the compiled graph the verb wrote; the exact specs_root
+    # depends on how DEFAULT_SPECS_ROOT resolves inside the CLI.  We assert the
+    # structural facts that matter: the graph compiled and contains the expected
+    # nodes, and the sentinel-free text is what allowed it.
+    doc = json.loads(artifact.read_text(encoding="utf-8"))
+    assert doc["epic_id"] == spec_dir.name
+    assert doc["feature"] == spec_dir.name
+    assert doc["target_repo"] == ABS_TARGET_REPO
+    assert [node["story_key"] for node in doc["nodes"]] == ["US1", "US2", "US3"]
+
+
+def test_sentinel_gate_lives_at_the_verb_not_the_deriver(
+    run: Callable[..., Run], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T023 / US3-S2: derive_workgraph compiles sentinel text; spec validate does
+    not refuse it; and other derive entry points are untouched (trap 9).
+    """
+    spec_text, plan_text, tasks_text = scaffold_spec(
+        slug="demo", title="Demo Story", anchor="factory/cli/main.py:171"
+    )
+
+    # The pure deriver compiles sentinel-bearing text.
+    graph = derive_workgraph(
+        spec_text,
+        epic_id="001-demo",
+        feature="001-demo",
+        specs_root=str(tmp_path),
+        target_repo=ABS_TARGET_REPO,
+        tasks_text=tasks_text,
+    )
+    assert graph is not None
+    assert [node.story_key for node in graph.nodes] == ["US1", "US2", "US3"]
+
+    # spec validate over the same scaffold does not refuse on sentinels.
+    spec_dir = tmp_path / "001-demo"
+    spec_dir.mkdir()
+    (spec_dir / "spec.md").write_text(spec_text, encoding="utf-8")
+    (spec_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+    (spec_dir / "tasks.md").write_text(tasks_text, encoding="utf-8")
+    result = run("spec", "validate", "--json", str(spec_dir))
+    assert result.code == 0
+    assert all(entry["layer"] == "sentinel" for entry in result.json["information"])
+
+    # Other entry points are not changed by this story.
+    from factory.workgraph import delta, cli as workgraph_cli
+    from factory.cli import doctor as doctor_cli
+    from factory.doctor import cli as doctor_raw_cli
+
+    assert "sentinel" not in delta.__file__
+    assert "ERGANE_TODO" not in (Path(delta.__file__).read_text(encoding="utf-8"))
+    assert "ERGANE_TODO" not in (Path(workgraph_cli.__file__).read_text(encoding="utf-8"))
+    assert "ERGANE_TODO" not in (Path(doctor_cli.__file__).read_text(encoding="utf-8"))
+    assert "ERGANE_TODO" not in (Path(doctor_raw_cli.__file__).read_text(encoding="utf-8"))
