@@ -275,9 +275,9 @@ def test_no_directory_or_import_renamed_to_ergane_cli() -> None:
     """
     for path in sorted(FACTORY_DIR.rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        if path == FACTORY_DIR / "cli" / "main.py":
-            # The distribution name is allowed to appear exactly once, as the
-            # argument to `version(...)`.
+        if path == FACTORY_DIR / "supervision" / "engine_identity.py":
+            # FR-009: the distribution name is allowed to appear exactly once, as the
+            # argument to `version(...)` inside `cli_version()`.
             occurrences = list(re.finditer(r"\bergane[-_]cli\b", text))
             assert len(occurrences) == 1, (
                 f"{path.relative_to(REPO_ROOT)} must reference `ergane-cli` only as the "
