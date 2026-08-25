@@ -23,6 +23,15 @@ parameters it already has. Nothing beneath teardown is reshaped to suit it, and
 no seam is added to `factory/cli/roadmap.py`: teardown's own table is the seam,
 so this story and 085's rewrite of that file cannot collide at landing.
 
+**104-US7 added a sixth, and it is called as it stands too.** The engine
+container comes down through `container_engine.compose_argv` and teardown's own
+`run` seam, and its generated project is removed through
+`container_manifest.remove_project` — provenance by digest, so what goes is
+exactly what `ergane install` wrote and nothing beside it. Neither module gains
+a function for this. The step sits third (104 plan, R9), which renumbers every
+step after it in the printed plan and in `_stop`'s "step N of M": the names are
+constants precisely so that the numbers can move.
+
 **What teardown keeps is a judgement it does not make for the operator** (US4).
 State is cheap to recreate and credentials are not, so the last two steps have
 opposite defaults: `--purge` empties Ergane's state home and the lock siblings
@@ -77,6 +86,21 @@ from factory.env import ERGANE_STATE_HOME_ENV, FACTORY_STATE_HOME_ENV
 from factory.locking import lock_path_for
 from factory.roadmap.discovery import RoadmapLocation, RoadmapOwner, resolve_roadmap
 from factory.roadmap.schedule import SPECS_DIR_NAME
+
+# `compose_argv` builds the argv; `_run_compose` is the default runner behind
+# teardown's own `run` seam. Imported rather than re-implemented, and imported
+# rather than *added to*: `container_engine`'s docstring says plainly that
+# nothing in it ever takes the engine down, because bring-up deliberately leaves
+# a failed engine running to be diagnosed and `down` is this verb's. The
+# underscore is privacy by convention, the way `container_manifest.py` imports
+# `units._digest` — one implementation of one act beats two that can disagree.
+from factory.supervision.container_engine import _run_compose, compose_argv
+from factory.supervision.container_manifest import (
+    RemovalReport,
+    installed_project,
+    remove_project,
+)
+from factory.supervision.container_project import project_dir
 from factory.supervision.units import (
     CommandResult,
     InstallLayout,
@@ -87,10 +111,16 @@ from factory.supervision.units import (
 from factory.verify.gates import scrubbed_env
 from factory.workgraph.worktree import GIT_TIMEOUT_S, SALVAGE_REF_ROOT, branch_name
 
-#: The five step names, in the order the spec declares them. Named constants
+#: The six step names, in the order the spec declares them. Named constants
 #: because the report, the refusals and the tests all say them.
+#:
+#: 104-US7 inserted the engine container at position three (R9), which renumbers
+#: every step after it in the printed plan and in `_stop`'s "step N of M". That
+#: is the whole reason the names are constants: the numbers move, the names do
+#: not, and an operator reads a step by its name.
 PAUSE_DISPATCH = "pause dispatch"
 FORGET_REPOSITORIES = "forget repositories"
+STOP_ENGINE_CONTAINER = "stop the engine container"
 STOP_AND_REMOVE_UNITS = "stop and remove units"
 CLEAR_STATE = "clear state"
 ACCOUNT_FOR_REFS = "account for git refs"
@@ -322,7 +352,204 @@ def _perform_forget(request: TeardownRequest, survey: StepSurvey) -> tuple[str, 
     return tuple(said)
 
 
-# --- step three: stop and remove units ----------------------------------------
+# --- step three: take the engine container down (104-US7) ---------------------
+#
+# *The engine container* is the Docker container `ergane install` brings up —
+# never bwrap's sandbox, never "a container of specs".
+#
+# Third, not last (R9): dispatch is paused first and the repositories forgotten
+# second, and the engine must be down before `clear state` could remove anything
+# it is writing. `_kept`, `_removed` and `_state_home` are step five's, read from
+# here on purpose — one labelled grammar for every path this verb keeps or
+# removes, whichever step produced the line.
+
+#: `docker compose down` and nothing else: it stops the containers this project
+#: declares and removes them and their network. Not `down -v`, which would take
+#: named volumes — the project declares none, and a flag that would delete data
+#: if one were ever added is not a flag to carry speculatively.
+ENGINE_DOWN = "down"
+
+_WHY_ENGINE_KEPT_STATE = (
+    "the state root; this step removes nothing outside the engine container's "
+    "own project directory"
+)
+_WHY_ENGINE_KEPT_DIR = "it still holds files ergane did not write; --purge takes them"
+
+
+def _engine_notes() -> tuple[str, ...]:
+    """The two paths US7-S1 promises survive this step, named on every path.
+
+    They print whether or not this host has an engine container, for the reason
+    `StepSurvey.notes` exists: a report that only speaks when it deletes is the
+    defect 083 closed, and "the config is kept" is worth as much on the host that
+    never ran a container as on the one being unplugged.
+    """
+    return (
+        _kept(_state_home(), _WHY_ENGINE_KEPT_STATE),
+        _kept(resolve_config_path(), _WHY_CONFIG),
+    )
+
+
+def _survey_engine(request: TeardownRequest) -> StepSurvey:
+    """What this host has, read from the manifest and nothing else.
+
+    `installed_project` is R1's record: a generated project on disk *is* the fact
+    that this installation runs the container tier, so the question is never put
+    to `config.toml`, to a daemon, or to the renderer.
+    """
+    directory = project_dir(request.layout)
+    installed = installed_project(request.layout)
+    if installed is None:
+        return StepSurvey(
+            plan=f"nothing to do: no engine container project at {directory}, so "
+            "this host runs no engine container",
+            notes=_engine_notes(),
+            nothing_to_do=True,
+        )
+    extension = (
+        "; --purge takes whatever else that directory holds"
+        if request.purge
+        else ""
+    )
+    return StepSurvey(
+        plan=f"take the engine container down from {installed.compose_path} and "
+        f"remove the {len(installed.files)} file(s) this engine wrote under "
+        f"{directory}: {', '.join(installed.files)}{extension}",
+        subjects=installed.files,
+        notes=_engine_notes(),
+    )
+
+
+def _engine_down(request: TeardownRequest, compose_path: Path) -> tuple[str, ...]:
+    """`docker compose down` — reported when it cannot happen, never raised.
+
+    **Bring-down may not require what bring-up requires** (plan trap 13).
+    `factory/cli/nouns/worker.py:30` refuses three verbs without a systemd user
+    session and `_uninstall` (`:49`) deliberately does not call it, because
+    removal has to work everywhere; this is the same asymmetry against a Docker
+    daemon that has been stopped, uninstalled, or was never there. The recorded
+    manifest still says what to remove, and raising here would strand those files
+    on the host to spite a container that a host-level teardown was going to
+    outlive anyway.
+    """
+    if not compose_path.is_file():
+        return (
+            f"the engine container was not addressed: {compose_path} is gone, so "
+            "compose has no project to act on; removing what the manifest records",
+        )
+    argv = compose_argv(compose_path, ENGINE_DOWN)
+    runner = _run_compose if request.run is None else request.run
+    spelled = " ".join(argv)
+    try:
+        result = runner(argv)
+    except (OSError, subprocess.SubprocessError) as failure:
+        # The shape `_git` above uses, for the same reason: a host being
+        # dismantled is exactly where the tool is already gone.
+        return _engine_unreachable(f"`{spelled}` could not be run: {failure}")
+    if result.code != 0:
+        # One line: teardown's report is one indented line per fact, and compose
+        # says most of what matters across several.
+        said = " ".join(result.out.split())
+        return _engine_unreachable(f"`{spelled}` exited {result.code}: {said}")
+    return (f"took the engine container down: {spelled}",)
+
+
+def _engine_unreachable(reason: str) -> tuple[str, ...]:
+    """One report, two ways of not reaching the daemon, one remedy.
+
+    Deliberately not a remedy naming this compose file: the removal below is
+    about to delete it, so pointing an operator back at it would be pointing at
+    a path that no longer exists by the time they read the line.
+    """
+    return (
+        f"could not take the engine container down — {reason}",
+        "  the files below were removed from what the manifest records anyway; "
+        "if that container is still running, `docker ps` names it",
+    )
+
+
+def _engine_removed(report: RemovalReport, *, purge: bool) -> tuple[str, ...]:
+    """US3's removal, re-labelled into 083's grammar (FR-013).
+
+    Rendered here rather than through `RemovalReport.render()` so every path this
+    verb removes or keeps wears the same label at the same width of claim,
+    whichever step produced the line — which is what makes the report readable
+    for what survived as easily as for what did not.
+
+    Under `--purge` the kept lines are dropped rather than printed: the sweep
+    below is about to remove those same paths and name them, and one path
+    labelled both `kept` and `removed` in one block is worse than either.
+    """
+    said = [_removed(report.directory / name) for name in report.removed]
+    said += [f"already gone: {report.directory / name}" for name in report.missing]
+    if not purge:
+        said += [
+            _kept(report.directory / kept.name, kept.reason) for kept in report.kept
+        ]
+    if report.directory_removed:
+        said.append(_removed(report.directory))
+    elif not purge:
+        # The directory wears a label too, for the same reason its contents do:
+        # a project directory that survives is a fact about this host, and one
+        # the operator learns from silence otherwise.
+        said.append(_kept(report.directory, _WHY_ENGINE_KEPT_DIR))
+    return tuple(said)
+
+
+def _purge_project_directory(directory: Path) -> tuple[str, ...]:
+    """US7-S2: `--purge` extends to the generated artifacts, each removal named.
+
+    The bare run's rule is provenance by digest: a file this engine cannot prove
+    it wrote stays, because the operator's edit was probably a response to
+    something. `--purge` is the operator asking for the host to be emptied — and
+    in the default layout `project_dir` is under `supervision_home()`, which is
+    under the state home step five empties, so those bytes were going regardless,
+    in one `shutil.rmtree` that names nothing. The extension is therefore less
+    "remove more" than *name* it: one labelled line per path, here, where the
+    step that owns the engine container can say which paths were its.
+    """
+    if not directory.is_dir():
+        return ()
+    said: list[str] = []
+    for path in sorted(directory.iterdir()):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+        said.append(_removed(path))
+    directory.rmdir()
+    said.append(_removed(directory))
+    return tuple(said)
+
+
+def _perform_engine(request: TeardownRequest, _survey: StepSurvey) -> tuple[str, ...]:
+    """Down first, then remove exactly what the manifest claims (US7-S1).
+
+    Read again here rather than threaded through `subjects`, for the reason
+    `_perform_refs` gives for its own second read: the name removed and the name
+    reported should come from the same read.
+    """
+    installed = installed_project(request.layout)
+    if installed is None:  # pragma: no cover - the survey found one a moment ago
+        return ()
+    said = list(_engine_down(request, installed.compose_path))
+    said += _engine_removed(remove_project(request.layout), purge=request.purge)
+    if request.purge:
+        said += _purge_project_directory(installed.directory)
+    return tuple(said)
+
+
+def _engine_removal_targets(request: TeardownRequest) -> tuple[Path, ...]:
+    """The one directory this step deletes out of, for the FR-018 guard.
+
+    Offered on every path, not only under `--purge`: unlike `clear state`, this
+    step removes the files it generated whether or not purge was asked for, so
+    the guard has something to test on every run.
+    """
+    return (project_dir(request.layout),)
+
+
+# --- step four: stop and remove units ------------------------------------------
 
 
 def _installed_units(request: TeardownRequest) -> tuple[str, ...]:
@@ -360,7 +587,7 @@ def _unit_removal_targets(request: TeardownRequest) -> tuple[Path, ...]:
     return (request.layout.unit_dir, request.layout.generated_dir)
 
 
-# --- step four: clear state, keep config --------------------------------------
+# --- step five: clear state, keep config --------------------------------------
 
 #: Everything the engine keeps under the state home lives in this one child:
 #: `factory/registry.py`'s `ergane/repos.json` and `supervision_home()`'s
@@ -566,7 +793,7 @@ def _state_removal_targets(request: TeardownRequest) -> tuple[Path, ...]:
     return (_state_home(),) if request.purge else ()
 
 
-# --- step five: account for the git refs --------------------------------------
+# --- step six: account for the git refs ----------------------------------------
 
 #: `branch_name(epic, node)` is `factory/<epic>/<node>`, so every node branch
 #: this host ever made is under one prefix. Derived from that function rather
@@ -699,9 +926,19 @@ def _perform_refs(_request: TeardownRequest, survey: StepSurvey) -> tuple[str, .
 #: State comes after the units because `supervision_home()` puts what supervision
 #: generated *inside* the state home, and the refs come last because they are
 #: the only thing here teardown reports on without owning.
+#:
+#: The engine container is third (104-US7, R9), for the same family of reason:
+#: dispatch is paused first and the repositories forgotten second, and the engine
+#: has to be down before `clear state` could empty a directory it is writing to.
 STEPS: tuple[Step, ...] = (
     Step(name=PAUSE_DISPATCH, survey=_survey_pause, perform=_perform_pause),
     Step(name=FORGET_REPOSITORIES, survey=_survey_forget, perform=_perform_forget),
+    Step(
+        name=STOP_ENGINE_CONTAINER,
+        survey=_survey_engine,
+        perform=_perform_engine,
+        removal_targets=_engine_removal_targets,
+    ),
     Step(
         name=STOP_AND_REMOVE_UNITS,
         survey=_survey_units,
@@ -883,7 +1120,8 @@ def add_uninstall_parser(subparsers: Any) -> argparse.ArgumentParser:
         help="take Ergane off this host, in the order that is safe",
         description=(
             "Perform teardown in the declared order — pause dispatch, forget "
-            "repositories, stop and remove units, clear state, account for the "
+            "repositories, stop the engine container, stop and remove units, "
+            "clear state, account for the "
             "git refs — naming each step as it completes. A step with nothing to "
             "do says so; a step that refuses stops the verb before the next one "
             "acts. The control-plane config and the secrets beside it are kept "
@@ -900,7 +1138,8 @@ def add_uninstall_parser(subparsers: Any) -> argparse.ArgumentParser:
     parser.add_argument(
         "--purge",
         action="store_true",
-        help="also empty Ergane's state home, lock-file siblings included; the "
+        help="also empty Ergane's state home, lock-file siblings included, and "
+        "whatever else the engine container's project directory holds; the "
         "control-plane config and the secrets beside it are kept either way",
     )
     parser.add_argument(
