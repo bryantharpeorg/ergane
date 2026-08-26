@@ -358,12 +358,79 @@ def test_us1_image_job_exists_with_correct_needs() -> None:
     )
 
 
+def _preflight_job_text() -> str:
+    """Return the raw text of the preflight image job only."""
+    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r"^  build-image-preflight:\s*$", text, re.MULTILINE)
+    assert match is not None, "preflight job 'build-image-preflight' not found"
+    start = match.start()
+    next_job = re.search(r"^  [a-zA-Z0-9_-]+:\s*$", text[start + 1 :], re.MULTILINE)
+    end = start + 1 + next_job.start() if next_job else len(text)
+    return text[start:end]
+
+
 def _bash_run_blocks(job_text: str) -> list[str]:
     """Return the body of every `run: |` block in a job's raw YAML text."""
     blocks: list[str] = []
     for match in re.finditer(r'^\s+run:\s*\|\s*\n((?:\s+.*\n?)+)', job_text, re.MULTILINE):
         blocks.append(match.group(1))
     return blocks
+
+
+def test_us2_preflight_job_exists_with_correct_needs() -> None:
+    """FR-011/FR-013: preflight job exists and build-and-publish needs it."""
+    workflow = _load_release_workflow()
+    jobs = workflow.get("jobs", {})
+    assert "build-image-preflight" in jobs, (
+        f"preflight job missing; jobs are: {list(jobs.keys())}"
+    )
+    assert "build-and-publish" in jobs, "build-and-publish job missing"
+    assert jobs["build-and-publish"].get("needs") == ["build-image-preflight"], (
+        f"build-and-publish needs wrong: {jobs['build-and-publish'].get('needs')!r}"
+    )
+
+
+def test_us2_preflight_job_builds_amd64_without_push() -> None:
+    """FR-011: preflight builds for linux/amd64 and never pushes."""
+    job_text = _preflight_job_text()
+    run_blocks = _bash_run_blocks(job_text)
+    assert run_blocks, "no run blocks found in preflight job"
+    invocations = [block for block in run_blocks if "docker buildx build" in block]
+    assert len(invocations) == 1, (
+        f"expected exactly one 'docker buildx build' invocation, got {invocations!r}"
+    )
+    invocation = invocations[0]
+    assert "linux/amd64" in invocation, "preflight must build for linux/amd64"
+    assert "--push" not in invocation, "preflight build must not contain --push"
+
+
+def test_us2_preflight_job_has_no_publish_credential() -> None:
+    """FR-012: preflight has no packages:write, no --push, no registry login."""
+    workflow = _load_release_workflow()
+    jobs = workflow.get("jobs", {})
+    preflight = jobs.get("build-image-preflight", {})
+    permissions = preflight.get("permissions", {})
+    assert permissions.get("packages") != "write", (
+        f"preflight must not declare packages: write, got {permissions!r}"
+    )
+    job_text = _preflight_job_text()
+    assert "--push" not in job_text, "preflight must not contain --push anywhere"
+    assert "docker/login-action" not in job_text, "preflight must not log in to a registry"
+    assert "registry:" not in job_text, "preflight must not reference a registry"
+
+
+def test_us2_ghcr_login_assertion_rejects_non_ghcr_registry() -> None:
+    """FR-016: the GHCR login assertion fails when the registry is not GHCR."""
+    bad_job_text = """
+      - name: Log in to wrong registry
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+    """
+    with pytest.raises(AssertionError):
+        _assert_ghcr_login_registry(bad_job_text)
 
 
 def test_us1_image_job_is_single_multi_arch_buildx_push() -> None:
@@ -390,14 +457,27 @@ def test_us1_image_job_is_single_multi_arch_buildx_push() -> None:
     )
 
 
-def test_us1_image_job_uses_github_token_for_ghcr_login() -> None:
-    """FR-004: GHCR login uses the GitHub token and the declared repository."""
-    job_text = _image_job_text()
-    # Registry is either the literal or the env reference; either is acceptable
-    # because the repository is declared once and referenced.
-    assert ("registry: ghcr.io" in job_text or "registry: ${{ env.IMAGE_REPOSITORY }}" in job_text), (
-        "GHCR registry missing"
+def _assert_ghcr_login_registry(job_text: str) -> None:
+    """Assert the GHCR login step resolves to the GHCR host.
+
+    The login step must reference the workflow's declared IMAGE_REPOSITORY,
+    and that variable must resolve to ghcr.io/bryantharpeorg/ergane.
+    """
+    workflow = _load_release_workflow()
+    image_job = workflow.get("jobs", {}).get("build-and-publish-image", {})
+    image_repository = image_job.get("env", {}).get("IMAGE_REPOSITORY")
+    assert image_repository == "ghcr.io/bryantharpeorg/ergane", (
+        f"IMAGE_REPOSITORY must resolve to ghcr.io/bryantharpeorg/ergane, got {image_repository!r}"
     )
+    assert "registry: ${{ env.IMAGE_REPOSITORY }}" in job_text, (
+        "GHCR login must reference IMAGE_REPOSITORY so it resolves to ghcr.io/bryantharpeorg/ergane"
+    )
+
+
+def test_us1_image_job_uses_github_token_for_ghcr_login() -> None:
+    """FR-004/FR-015: GHCR login uses the GitHub token and resolves to ghcr.io."""
+    job_text = _image_job_text()
+    _assert_ghcr_login_registry(job_text)
     assert "password: ${{ github.token }}" in job_text, (
         "GHCR login must use github.token"
     )
