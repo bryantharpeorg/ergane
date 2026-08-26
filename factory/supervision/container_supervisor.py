@@ -42,6 +42,18 @@ _CHILDREN: dict[str, str] = {
     "bridge": "factory.notify.service",
 }
 
+#: The one-shot demo driver (110-US1). It is spelled here rather than in
+#: `_CHILDREN` on purpose: a child in that map is supervised, and a supervised
+#: one-shot kills the container at the moment it succeeds, because a child dying
+#: unprompted is a fault (:418-426). The driver is spawned beside the supervised
+#: set and reaped by a task whose result is logged and never fatal.
+DEMO_DRIVER_MODULE = "factory.supervision.demo_driver"
+
+#: The environment flag that opts a container into the demo. Literal in
+#: `container/compose.demo.yaml`; absent everywhere else, which is why an engine
+#: that is not the demo behaves exactly as it did before this existed.
+DEMO_ENV_VAR = "ERGANE_DEMO"
+
 DEFAULT_TEMPORAL_PORT = 7233
 
 #: The *host* alone, used only when a resolved address names no port. Spelled
@@ -223,6 +235,56 @@ def _child_argv(
     }
 
 
+def _demo_driver_argv() -> list[str]:
+    """The demo driver's argv, in the same spelling `_child_argv` returns.
+
+    Module name only: the interpreter is prepended at spawn, exactly as it is
+    for the supervised three, so no value authored here contains `python -`.
+    """
+    return [DEMO_DRIVER_MODULE]
+
+
+def _demo_requested(config: Mapping[str, object]) -> bool:
+    """Whether this container was asked for the demo (FR-001)."""
+    declared = config.get("demo")
+    if declared is None:
+        declared = os.environ.get(DEMO_ENV_VAR)
+    return str(declared or "").strip() == "1"
+
+
+async def _start_real_demo_driver() -> ChildController:
+    """Spawn the one-shot demo driver as a plain subprocess."""
+    cmd = _demo_driver_argv()
+    logger.info("starting demo driver: %s", " ".join(cmd))
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+    )
+    return _ProcessController(proc, "demo")
+
+
+async def _reap_demo_driver(controller: ChildController) -> None:
+    """Wait for the demo driver and log what it did.  Never fatal (trap T1).
+
+    Every branch here ends in a log line and a return: the driver is a one-shot
+    whose whole job can fail — a refused sandbox, a spend the operator's key
+    could not cover — without the engine having anything wrong with it.
+    """
+    try:
+        status = await controller.wait()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("demo driver could not be reaped (%s); the engine keeps running", exc)
+        return
+    if status == 0:
+        logger.info("demo driver finished")
+    else:
+        logger.warning(
+            "demo driver exited with status %s; the engine keeps running", status
+        )
+
+
 async def _start_real_child(name: str, argv: Sequence[str]) -> ChildController:
     """Spawn one child with `python3 -m <module> ...` and return a controller."""
     interpreter = sys.executable
@@ -262,14 +324,16 @@ async def _run_supervisor(
     *,
     start_child: Callable[[str, list[str]], Awaitable[ChildController]] | None = None,
     probe_address: Callable[[str, float], Awaitable[bool]] | None = None,
+    start_demo_driver: Callable[[], Awaitable[ChildController]] | None = None,
 ) -> int:
     """Run all three children to completion.
 
-    `start_child` and `probe_address` are injectable so tests can drive the
-    supervisor with stubs.
+    `start_child`, `probe_address` and `start_demo_driver` are injectable so
+    tests can drive the supervisor with stubs.
     """
     start_child = start_child or _start_real_child
     probe_address = probe_address or _probe_temporal_address
+    start_demo_driver = start_demo_driver or _start_real_demo_driver
 
     state_home = config.get("state_home") or os.environ.get("ERGANE_STATE_HOME")
     if state_home is None:
@@ -346,6 +410,15 @@ async def _run_supervisor(
         "bridge": asyncio.create_task(bridge.wait(), name="bridge"),
     }
 
+    # The demo driver, if this container asked for it. Deliberately in neither
+    # map above: it is a one-shot, and the wait loop below reads a completed
+    # task as a dead child and stops the container. Its own task only logs.
+    demo_driver: ChildController | None = None
+    demo_task: asyncio.Task[None] | None = None
+    if _demo_requested(config):
+        demo_driver = await start_demo_driver()
+        demo_task = asyncio.create_task(_reap_demo_driver(demo_driver), name="demo")
+
     shutdown_requested = asyncio.Event()
     first_dead: str | None = None
     first_status: int | None = None
@@ -407,6 +480,17 @@ async def _run_supervisor(
 
         await asyncio.gather(*tasks.values(), return_exceptions=True)
     finally:
+        # The supervised set has stopped, so the one-shot beside it is told to
+        # go too. It is stopped here rather than in `_stop_all_except` because
+        # it is not a member of that set and must not become one.
+        if demo_task is not None and not demo_task.done():
+            if demo_driver is not None:
+                demo_driver.stop()
+            demo_task.cancel()
+            try:
+                await demo_task
+            except (asyncio.CancelledError, Exception):
+                pass
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(sig)
         # Best-effort: remove the identity record so a stopped engine advertises nothing.
