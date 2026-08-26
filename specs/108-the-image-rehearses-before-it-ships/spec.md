@@ -43,6 +43,32 @@ fixes:
 #     is what makes the leftovers obviously disposable. Cleanup is an operator
 #     act, documented, not automated.
 #
+# REFINED 2026-08-25 ~8:00 PM CT, after the operator granted the operator token
+# `write:packages` so the registry could be measured rather than assumed. Three
+# facts came back, and two of them added requirements:
+#
+#   1. TRAP T3 IS SETTLED. The organization does NOT forbid creating container
+#      packages. `bryantharpeorg` held zero packages of every type (container,
+#      npm, maven, rubygems, nuget, docker — all `0`), so nothing could be
+#      concluded by reading; a throwaway push under the deliberately-different
+#      name `ghcr-preflight-probe` succeeded. The trap stays in the plan as a
+#      narrower hazard, because a 403 is still possible for a reason that is not
+#      org policy.
+#   2. A PACKAGE CREATED BY A PAT IS UNLINKED. The probe came back
+#      `visibility=private repo=UNLINKED`. GHCR grants a workflow's
+#      `github.token` access to packages LINKED to that repository, so a
+#      hand-created `ergane` package would have denied the release workflow the
+#      write it needs — the probe would have manufactured the blocker it was
+#      testing for. This is why the probe used a different name, and it is why
+#      FR-018 and trap T8 now exist.
+#   3. NEW PACKAGES DEFAULT TO PRIVATE. `bryantharpeorg/ergane` is a public
+#      repository, so a package created by Actions and auto-linked to it should
+#      inherit public visibility. SHOULD. Nobody has observed it, the workflow
+#      asserts nothing about it, and a private release image is failure mode 13
+#      wearing a different coat: a public CLI pointing at an image that refuses
+#      every user who is not the operator. FR-019 exists to make the first
+#      rehearsal answer it.
+#
 # NOT A DEFECT — tested and withdrawn before drafting. The GHCR login passes
 # `registry: ${{ env.IMAGE_REPOSITORY }}` (= ghcr.io/bryantharpeorg/ergane)
 # rather than the bare host. Docker normalizes the path away: both that form and
@@ -159,6 +185,19 @@ back what it produced.
    committed workflow, **Then** the job's own comment names what credential it
    uses and states that none is stored in this repository — the same claim
    `build-and-publish-test` already makes about PyPI.
+6. **Given** the rehearsal has pushed, **When** the job reads the package back
+   from the GitHub API, **Then** it asserts the package's linked repository is
+   this repository and exits non-zero naming both values if it is not — because
+   GHCR authorises a workflow token against packages **linked** to its
+   repository, and an unlinked package silently denies the next push. Measured
+   2026-08-25: a package created outside Actions comes back `repo=UNLINKED`.
+7. **Given** the same package, **When** the job reads its visibility, **Then** it
+   asserts `public` and exits non-zero naming the package settings page if it is
+   not — because new packages default to private, and a private image published
+   against a public CLI is unreachable for every user who is not the operator.
+   Neither assertion may be satisfied by a hardcoded owner or package name:
+   both derive from the single `IMAGE_REPOSITORY` declaration and the running
+   workflow's own repository.
 
 ### User Story 2 - The irreversible step goes last (Priority: P1)
 
@@ -219,7 +258,8 @@ plan's contention note for the one direction they observe each other.
 Rehearsal job identity and location; single multi-arch buildx push; throwaway tag
 grammar and the semver prohibition; GHCR login credential; per-job
 `packages: write`; cosign keyless over the digest; platform assertion; duration
-report; trigger non-widening; preflight job shape, platform and credential floor;
+report; **package repository-linkage assertion; package visibility assertion**;
+trigger non-widening; preflight job shape, platform and credential floor;
 `build-and-publish` gaining `needs:`; the login assertion tightened to one answer
 with a red-first control.
 
@@ -233,6 +273,12 @@ stories.
 **Operator verification, which is the point of the spec**: `gh workflow run
 test-release.yml` completes; `docker buildx imagetools inspect
 ghcr.io/bryantharpeorg/ergane:rehearsal-<run_id>` reports both `linux/amd64` and
-`linux/arm64`; `cosign verify` accepts the signature; and the printed build
-duration is recorded so the next reader of `timeout-minutes` is reading a
-measurement.
+`linux/arm64`; `cosign verify` accepts the signature; the package reads back
+`repository.full_name = bryantharpeorg/ergane` and `visibility = public`; and the
+printed build duration is recorded so the next reader of `timeout-minutes` is
+reading a measurement.
+
+Two of those can fail for reasons that are **operator settings rather than
+defects in the job** — a 403 on the push, or a package that comes back private.
+Both are results this spec exists to produce cheaply, under a tag nothing
+depends on, instead of expensively after a version number is spent.

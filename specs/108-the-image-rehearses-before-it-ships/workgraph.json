@@ -1,8 +1,8 @@
 {
   "epic_id": "108-the-image-rehearses-before-it-ships",
   "feature": "108-the-image-rehearses-before-it-ships",
-  "specs_root": "/tmp/claude-1000/-home-admin-code-ergane/7d769fe8-eb9f-4e94-a560-d35dd235a6fc/scratchpad/wt-108/specs",
-  "target_repo": "/tmp/claude-1000/-home-admin-code-ergane/7d769fe8-eb9f-4e94-a560-d35dd235a6fc/scratchpad/wt-108",
+  "specs_root": "/tmp/claude-1000/-home-admin-code-ergane/7d769fe8-eb9f-4e94-a560-d35dd235a6fc/scratchpad/wt-108b/specs",
+  "target_repo": "/home/admin/code/ergane",
   "nodes": [
     {
       "id": "us1",

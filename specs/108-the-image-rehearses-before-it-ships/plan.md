@@ -55,6 +55,26 @@ assembled into every attempt prompt, so they reach the implementer intact.
   same claim `test-release.yml:26-28` already makes about PyPI. This is a
   documentation requirement with a test: the drift test asserts the comment
   mentions `github.token`.
+- **FR-018**: After the push, the job MUST read the package back from the GitHub
+  API and MUST exit non-zero unless its linked repository equals the repository
+  the workflow is running in. GHCR authorises a workflow token against packages
+  **linked** to its repository; an unlinked package denies the write and the
+  release job would be the thing that discovers it. Measured 2026-08-25: a
+  package created outside Actions comes back
+  `visibility=private repo=UNLINKED`. The failure message MUST name both the
+  expected and the observed repository.
+- **FR-019**: The same step MUST exit non-zero unless the package's visibility is
+  `public`, naming the package settings page in the failure. New GHCR packages
+  default to private; `bryantharpeorg/ergane` is a public repository so an
+  auto-linked package *should* inherit public visibility, but nobody has observed
+  it and nothing in the pipeline asserts it. A private image behind a public CLI
+  is unreachable for every user who is not the operator.
+- **FR-020**: FR-018 and FR-019 MUST derive the org and package name from the
+  existing `IMAGE_REPOSITORY` declaration and the workflow's own
+  `github.repository`. Neither may hardcode `bryantharpeorg` or `ergane` — the
+  single-declaration property is already pinned by
+  `test_us1_image_repository_declared_once_in_workflow`
+  (`tests/test_release_path.py:473`) and a second literal would break it.
 
 **US2 — the irreversible step goes last**
 
@@ -162,6 +182,40 @@ For FR-003, the strongest form of the test is not "the tag starts with
 the positive names the grammar, the negative is what actually protects the
 version namespace.
 
+**FR-018/FR-019/FR-020 — the package read-back.** One step, after the
+`imagetools` assertion, using the token the job already holds. The shape:
+
+```bash
+# IMAGE_REPOSITORY is ghcr.io/<org>/<name>; derive rather than re-declare (FR-020)
+REPO_PATH="${IMAGE_REPOSITORY#ghcr.io/}"
+PKG_NAME="${REPO_PATH##*/}"
+PKG="$(gh api "orgs/${{ github.repository_owner }}/packages/container/${PKG_NAME}")"
+LINKED="$(jq -r '.repository.full_name // "UNLINKED"' <<<"$PKG")"
+VIS="$(jq -r '.visibility' <<<"$PKG")"
+```
+
+Then two comparisons: `LINKED` against `${{ github.repository }}`, and `VIS`
+against `public`. Both failures must print the observed value, not just the
+expectation — an assertion that says "linkage wrong" without saying what it saw
+sends the reader back to the API by hand.
+
+`gh` is preinstalled on GitHub-hosted runners and reads `GH_TOKEN` from the
+environment; export `GH_TOKEN: ${{ github.token }}` on the step rather than
+inventing a second credential. The `packages: write` the job already declares
+(FR-004) is sufficient to read the package back.
+
+Two things about this step that are easy to get wrong:
+
+- **It runs after the push, necessarily.** On the very first rehearsal the
+  package does not exist until the push creates it, so a read-back placed before
+  the build asserts against a 404. This is the one ordering constraint in the
+  job beyond the cosign-after-build one.
+- **`.repository` is null, not absent, for an unlinked package.** `jq -r
+  '.repository.full_name'` on a null parent yields the string `null`, which
+  compares unequal to the expected value and therefore fails correctly — but the
+  message reads better with the `// "UNLINKED"` fallback above, and "UNLINKED" is
+  the word the operator's own probe produced.
+
 ### US2 — the irreversible step goes last
 
 Two independent edits that happen to share a file.
@@ -209,12 +263,26 @@ test file.** `tests/test_release_path.py:520` scans every `*.yml` under
 test it — turns that guard red in a file US1 does not own, and the failure will
 read as unrelated.
 
-**T3 — the GHCR package may not exist, and the org may forbid creating it.**
-Nobody has pushed `ghcr.io/bryantharpeorg/ergane`. If the first push returns 403,
-that is an **organization setting only the operator can change**, not a defect in
-the job. Do not "fix" a 403 by removing the push, downgrading to a single
-platform, or switching registries. Report it; that answer is worth more than a
-green run.
+**T3 — a 403 on the push is a result, not a bug to code around.** Nobody has
+pushed `ghcr.io/bryantharpeorg/ergane`; the package does not exist and the first
+rehearsal creates it. The org-policy form of this hazard was **measured and
+eliminated on 2026-08-25**: `bryantharpeorg` held zero packages of every type, and
+a throwaway push under a different name succeeded, so the organization does not
+forbid container package creation. A 403 remains possible for other reasons —
+notably FR-018's. Whatever the cause, do not "fix" it by removing the push,
+downgrading to a single platform, or switching registries. Report it verbatim;
+that answer is worth more than a green run.
+
+**T8 — never create the `ergane` package by hand, and do not "pre-create" it to
+make the job easier.** A package pushed by a personal access token is owned by
+the org but linked to **no repository** — verified 2026-08-25, the probe came back
+`repo=UNLINKED`. GHCR grants a workflow's `github.token` access to packages
+linked to its repository, so hand-creating `ghcr.io/bryantharpeorg/ergane` would
+deny the release workflow the write it needs and would do it in a way that reads
+as a mysterious 403 rather than as a consequence. The package must be created by
+the first Actions push and by nothing else. This is also why FR-018 exists: it
+turns that invariant into an assertion the run checks rather than a fact somebody
+has to remember.
 
 **T4 — `registry: ${{ env.IMAGE_REPOSITORY }}` is correct. Do not "fix" it.**
 It resolves to `ghcr.io/bryantharpeorg/ergane`, which looks like it should be a
@@ -247,7 +315,7 @@ affordance; cleanup is an operator act.
 
 ```yaml
 US1:
-  implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010]
+  implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-009, FR-010, FR-018, FR-019, FR-020]
   depends_on: []
 US2:
   implements: [FR-011, FR-012, FR-013, FR-014, FR-015, FR-016, FR-017]
@@ -294,6 +362,14 @@ long as US1 leaves the `on:` block alone, either merge order is safe and no
   operator gate therefore turns a **node's** gate red for a reason the node
   cannot see or fix. The test passes standalone (`1 passed in 0.23s`) and fails
   only inside the gate's own scratch worktree.
+- **Re-derive the workgraph at dispatch; do not `build start` the committed
+  one.** `specs/108-…/workgraph.json` is a compile-time snapshot and carries the
+  absolute paths of the worktree it was compiled in — `specs_root` currently
+  points into a scratch directory that will not exist when you dispatch. This is
+  true of every committed workgraph in the tree (`specs/003-merge-queue`'s names
+  `/home/admin/code/ergane-003-target`), and it is why the file is a record of
+  the derivation rather than an input to it. Re-derive with `--target-repo
+  "$PWD"` from the operator checkout and dispatch *that*.
 - **US1's landing is the experiment.** If it fails at the push step, read T1
   before concluding anything about the code.
 - **Nothing here provisions the host or restarts the worker.** Both stories are
@@ -311,11 +387,20 @@ gh run watch                                   # read the FR-007 duration line
 docker buildx imagetools inspect ghcr.io/bryantharpeorg/ergane:rehearsal-<run_id>
 cosign verify ghcr.io/bryantharpeorg/ergane:rehearsal-<run_id> \
   --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*'
+gh api orgs/bryantharpeorg/packages/container/ergane \
+  --jq '"linked=\(.repository.full_name // "UNLINKED") visibility=\(.visibility)"'
 ```
 
-Both platforms must appear in the `imagetools` output, and the recorded build
+Both platforms must appear in the `imagetools` output; the last command must
+report `linked=bryantharpeorg/ergane visibility=public`; and the recorded build
 duration is the number that tells the next reader whether `timeout-minutes: 90`
 is generous or tight.
+
+That last command is the operator's own copy of FR-018 and FR-019, and it is
+worth running by hand as well as in the job — the job asserting its own success
+and the operator observing it from outside are two different pieces of evidence,
+and this repository has shipped a fully green run of a command that could not
+start.
 
 **Only after that run is green should `v0.4.0` be tagged.** That ordering is the
 entire purpose of this spec, and no gate can enforce it.
