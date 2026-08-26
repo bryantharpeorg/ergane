@@ -188,6 +188,7 @@ def _capture_epic_input(
         stall_after_s=None,
         max_recovery_cycles=None,
         max_free_rebases=None,
+        halt_after_pass=None,
     )
     for name, value in dials.items():
         setattr(namespace, name, value)
@@ -608,6 +609,16 @@ def test_every_dial_the_config_has_is_offered_by_the_command() -> None:
     assert set(LANDING_DIAL_FLAGS) <= declared
 
 
+def test_the_halt_after_pass_flag_is_offered_by_the_command() -> None:
+    """109-US3, FR-012: the parser declares --halt-after-pass."""
+    declared = {
+        option
+        for action in _start_verb_parser()._actions
+        for option in action.option_strings
+    }
+    assert "--halt-after-pass" in declared
+
+
 # --- T006 / US1-S6 (FR-005): every construction site --------------------------
 
 
@@ -684,6 +695,29 @@ def test_no_epic_input_site_default_constructs_a_landing_config() -> None:
             )
 
 
+def test_no_epic_input_site_forgets_halt_after_pass() -> None:
+    """109-US3, FR-012/FR-015: every construction site carries the halting flag.
+
+    A site that omits `halt_after_pass` dispatches an epic that cannot be told
+    from today's behaviour, so a flag the operator typed would be silently
+    ignored. Read from the tree with `ast` so a fourth site is caught too.
+    """
+    root = Path(__file__).resolve().parents[1]
+    calls = _epic_input_calls(root)
+
+    assert set(EPIC_INPUT_SITES) <= set(calls), (
+        f"an EpicInput construction site moved or vanished; found {sorted(calls)}"
+    )
+
+    for location, site_calls in calls.items():
+        for call in site_calls:
+            keywords = {kw.arg for kw in call.keywords}
+            assert "halt_after_pass" in keywords, (
+                f"{location}:{call.lineno} constructs EpicInput without "
+                "halt_after_pass; halting mode dies here"
+            )
+
+
 def test_the_build_noun_site_carries_the_operator_set_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -695,6 +729,22 @@ def test_the_build_noun_site_carries_the_operator_set_config(
     """
     epic_input = _capture_epic_input(tmp_path, monkeypatch, max_recovery_cycles=4)
     assert epic_input.landing_config.max_recovery_cycles == 4
+
+
+def test_the_build_noun_site_carries_the_halt_after_pass_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """109-US3, FR-012: --halt-after-pass reaches EpicInput from the build noun."""
+    epic_input = _capture_epic_input(tmp_path, monkeypatch, halt_after_pass=True)
+    assert epic_input.halt_after_pass is True
+
+
+def test_the_build_noun_site_default_halt_after_pass_is_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """109-US3, FR-015: omitting --halt-after-pass leaves the mode off."""
+    epic_input = _capture_epic_input(tmp_path, monkeypatch)
+    assert epic_input.halt_after_pass is False
 
 
 def test_the_workgraph_cli_site_carries_the_operator_set_config(

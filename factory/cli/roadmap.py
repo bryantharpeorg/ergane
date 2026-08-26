@@ -39,6 +39,7 @@ from temporalio.service import RPCError
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, OperatorError
 from factory.cli.landing import (
     add_landing_dial_flags,
+    halt_after_pass_from_args,
     landing_config_from_args,
     landing_overrides_from_args,
 )
@@ -277,6 +278,8 @@ async def roadmap_start_command(args: argparse.Namespace) -> int:
         # reading a child epic's status can tell this roadmap's choice from the
         # code default it happens to equal.
         landing_overrides=landing_overrides_from_args(args),
+        # 109-US3: forward the halting mode to every child epic.
+        halt_after_pass=halt_after_pass_from_args(args),
         # The only field of `VerificationConfig` a roadmap's operator sets: the
         # rest of every child's ladder is read from the target clone's manifest
         # at dispatch (023 US2), and this rides alongside it as an overlay the

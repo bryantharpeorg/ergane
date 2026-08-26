@@ -286,9 +286,11 @@ _TERMINAL_ACTIONS = frozenset({NextAction.PASSED, NextAction.KILLED})
 #: Node states nothing may move a node out of. The kill sequence writes over
 #: every node that is not already in one of these, which is what makes a killed
 #: epic's status an account of the whole graph rather than of the part that ran.
-#: `PASSED` (verified, landing not terminal) is deliberately not here — a verified
-#: node still owes its landing a terminal, and `MERGED` is what a passed node
-#: reaches when the queue confirms it (FR-009).
+#: `PASSED` is normally not terminal — a verified node still owes its landing a
+#: terminal, and `MERGED` is what a passed node reaches when the queue confirms it
+#: (FR-009). In halting mode (109-US3) `PASSED` is made terminal by the code that
+#: dispatches the node, not by this set, so the default path through `MERGED` is
+#: unchanged.
 _TERMINAL_STATES = frozenset({NodeState.MERGED, NodeState.FAILED, NodeState.KILLED})
 
 #: Landing states that end a landing and admit no recovery: MERGED (the queue
@@ -542,6 +544,10 @@ class EpicInput:
     #: dispatch so the worker that will serve the epic advertises its own revision
     #: up front, and the query answer can return it without re-reading the tree.
     worker_revision: str | None = None
+    #: 109-US3 (FR-012): when true, a node whose ladder PASSes stops at PASSED
+    #: and the landing phase never begins. The default is false, preserving today's
+    #: behaviour through MERGED (FR-015).
+    halt_after_pass: bool = False
 
 
 @dataclass(frozen=True)
@@ -632,6 +638,12 @@ class EpicStatus:
     #: config above cannot say — 60 is 60 whoever chose it — and telling "set to
     #: 60" from "defaulted to 60" is the whole value of the reading.
     landing_overrides: tuple[str, ...] = ()
+    #: 109-US3 (FR-014): whether the epic was dispatched in halting mode, so a
+    #: reader can tell "landing was not attempted" from "landing failed". Carried
+    #: on the result/status even though the workflow already knows it, because the
+    #: CLI renders from this document and a worker that predates the field simply
+    #: omits it.
+    halt_after_pass: bool = False
 
 
 @dataclass(frozen=True)
@@ -683,6 +695,9 @@ class EpicWorkflow:
         #: saying so is honester than answering with the code defaults.
         self._landing_config: LandingConfig | None = None
         self._landing_overrides: tuple[str, ...] = ()
+        #: 109-US3: whether this epic halts at PASSED. Recorded with the other
+        #: dispatch flags so a status query answers it without holding the request.
+        self._halt_after_pass: bool = False
 
         #: The epic's persona snapshot: one resolved entry per persona any
         #: attempt of this epic may be built for — every node's persona, the
@@ -801,6 +816,7 @@ class EpicWorkflow:
             worker_revision=self._worker_revision,
             landing_config=self._landing_config,
             landing_overrides=self._landing_overrides,
+            halt_after_pass=self._halt_after_pass,
         )
 
     # --- the main loop (R10) -------------------------------------------------
@@ -826,6 +842,9 @@ class EpicWorkflow:
         # cannot drift from it.
         self._landing_config = request.landing_config
         self._landing_overrides = tuple(request.landing_overrides)
+        # 109-US3 (FR-012): record the halting mode alongside the other dispatch
+        # flags so every status/query answer carries it.
+        self._halt_after_pass = request.halt_after_pass
         # The concurrency cap is validated here as well as in the CLI (FR-002):
         # `EpicInput` can be constructed without the CLI, so CLI-only validation
         # is not validation. A non-positive cap is a wiring error, not a dispatch
@@ -1490,7 +1509,9 @@ class EpicWorkflow:
             workflow.logger.exception(
                 "node %s coroutine raised; ended KILLED", node_id
             )
-        if self._nodes[node_id].state != NodeState.PASSED:
+        # 109-US3: in halting mode PASSED is terminal, so a finished node at
+        # PASSED must not lock out its dependents.
+        if self._nodes[node_id].state not in {NodeState.PASSED, NodeState.MERGED}:
             self._lock_out_dependents(resolved)
 
     async def _kill_landings(self, target_repo: str) -> None:
@@ -2105,7 +2126,22 @@ class EpicWorkflow:
             record.verified = True
             record.state = NodeState.PASSED
             await self._close_out(graph, node, record, termination, state=None)
-            await self._land(graph, request, resolved, record, prepared, results[-1])
+            if request.halt_after_pass:
+                # 109-US3 (FR-012/FR-013): in halting mode PASSED is terminal and
+                # the landing phase never begins. The worktree is removed now,
+                # because the landing phase that would have removed it later is
+                # not happening, and the record is left at PASSED (FR-014).
+                await workflow.execute_activity(
+                    remove_worktree,
+                    RemoveWorktreeInput(
+                        epic_id=graph.epic_id,
+                        node_id=node.id,
+                        target_repo=graph.target_repo,
+                    ),
+                    **_GIT,
+                )
+            else:
+                await self._land(graph, request, resolved, record, prepared, results[-1])
         elif parked:
             # 079-US4: a `PAUSE_EPIC` press. The node ends parked rather than
             # killed — `_PARKED` is outside `_UNREACHABLE`, so nothing waiting on

@@ -77,6 +77,7 @@ from factory.env import (
 from factory.cli.landing import (
     LANDING_DIAL_FLAGS,
     add_landing_dial_flags,
+    halt_after_pass_from_args,
     landing_config_from_args,
     landing_overrides_from_args,
 )
@@ -464,6 +465,7 @@ def render_status(
         f"execution {execution_status}"
     ]
     lines.extend(_landing_dial_lines(document))
+    lines.extend(_halt_after_pass_lines(document))
     for node_id, node in nodes.items():
         figure = live.get(node_id)
         spend_token = (
@@ -552,6 +554,27 @@ def _landing_dial_lines(document: Mapping[str, Any]) -> list[str]:
     ]
 
 
+#: What the halting-mode block says, and what it says when the reading cannot be
+#: taken. The wording distinguishes an absent landing from a failed one (FR-014).
+_HALT_HEADER = "halting mode"
+_HALT_UNAVAILABLE = f"{_HALT_HEADER}  unavailable"
+_LANDING_NOT_ATTEMPTED = (
+    "landing not attempted: the epic was dispatched with --halt-after-pass; "
+    "to land, start the epic without that flag and ensure the target repo has "
+    "a forge configured"
+)
+
+
+def _halt_after_pass_lines(document: Mapping[str, Any]) -> list[str]:
+    """One line when halting mode is in force, otherwise nothing."""
+    try:
+        if not document.get("halt_after_pass"):
+            return []
+    except Exception:
+        return []
+    return ["", _LANDING_NOT_ATTEMPTED]
+
+
 def _reason_token(node: Mapping[str, Any]) -> str:
     """Why a node ended, when the ladder did not produce the ending (078-US3).
 
@@ -619,6 +642,8 @@ def start_command(args: argparse.Namespace) -> int:
     # system that still knows the difference between a dial the operator typed
     # and a dial that happens to equal its default.
     landing_overrides = landing_overrides_from_args(args)
+    # 109-US3: whether to halt at PASSED rather than attempting to land.
+    halt_after_pass = halt_after_pass_from_args(args)
 
     try:
         graph = load_workgraph(args.graph)
@@ -660,6 +685,7 @@ def start_command(args: argparse.Namespace) -> int:
             verify_order=verify_order,
             landing_config=landing_config,
             landing_overrides=landing_overrides,
+            halt_after_pass=halt_after_pass,
         )
     )
 
@@ -703,6 +729,7 @@ async def _start_epic(
     verify_order: tuple[str, ...] | None = None,
     landing_config: LandingConfig | None = None,
     landing_overrides: tuple[str, ...] = (),
+    halt_after_pass: bool = False,
 ) -> int:
     client = await _connect()
 
@@ -750,6 +777,8 @@ async def _start_epic(
                 # names none — the default — dispatches an epic that reports
                 # every dial as defaulted, which is what it is.
                 landing_overrides=landing_overrides,
+                # 109-US3: halting mode stops at PASSED and never attempts to land.
+                halt_after_pass=halt_after_pass,
             ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,
