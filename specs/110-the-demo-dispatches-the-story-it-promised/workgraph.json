@@ -1,0 +1,47 @@
+{
+  "epic_id": "110-the-demo-dispatches-the-story-it-promised",
+  "feature": "110-the-demo-dispatches-the-story-it-promised",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "110-the-demo-dispatches-the-story-it-promised:US1",
+      "requirement_keys": [
+        "US1"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "110-the-demo-dispatches-the-story-it-promised:US2",
+      "requirement_keys": [
+        "US2"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "110-the-demo-dispatches-the-story-it-promised:US3",
+      "requirement_keys": [
+        "US3"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}
