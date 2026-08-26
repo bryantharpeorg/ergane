@@ -312,7 +312,7 @@ The sets are disjoint. US3 reads US2's file path in prose only, which is why
 ## Verification the operator will run, independent of the gate
 
 ```bash
-export ANTHROPIC_API_KEY=…
+export UPSTREAM_MODEL_API_KEY=…
 curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/compose.yaml \
   | docker compose -f - up
 ```

@@ -648,3 +648,74 @@ def test_demo_project_comes_up_and_install_verify_passes_inside_it() -> None:
             capture_output=True,
             text=True,
         )
+
+
+# --- the documented command must name the variable the file actually needs ----
+
+
+#: The three documents that carry the one-command install verbatim. A reader
+#: copies whichever they land on first, so all three must agree with the file.
+INSTALL_DOCS = (
+    Path("specs") / "109-a-stranger-runs-the-factory-in-one-command" / "spec.md",
+    Path("specs") / "109-a-stranger-runs-the-factory-in-one-command" / "plan.md",
+    Path("specs") / "109-a-stranger-runs-the-factory-in-one-command" / "tasks.md",
+)
+
+
+def _documented_exports(text: str) -> set[str]:
+    """Every variable the documented install tells a reader to export."""
+    return set(re.findall(r"^export ([A-Z][A-Z0-9_]*)=", text, re.MULTILINE))
+
+
+def _mandatory_compose_vars() -> set[str]:
+    """The compose file's operator-required variables (the T010 computation)."""
+    compose = _load_yaml(_repo_root() / DEMO_COMPOSE)
+    mandatory: set[str] = set()
+    for service in compose.get("services", {}).values():
+        for name, value in _env_entries(service).items():
+            if _is_mandatory(value) and name not in SUBSTITUTED_AT_RELEASE:
+                mandatory.add(name)
+    return mandatory
+
+
+def test_documented_install_exports_the_variable_the_compose_file_needs() -> None:
+    """The documented command and the file it fetches must name the same variable.
+
+    This is the check whose absence let a real defect ship. T010 counts the
+    compose file's mandatory variables and never compares them to the command a
+    reader is told to run, so on 2026-08-26 all three documents said
+
+        export ANTHROPIC_API_KEY=...
+
+    while the file required `UPSTREAM_MODEL_API_KEY`. `ANTHROPIC_API_KEY`
+    appeared zero times in the compose file.
+
+    The failure shape is why this is worth a test rather than a proofread: the
+    stack still comes up. Postgres reports healthy, LiteLLM's liveliness probe
+    does not validate upstream credentials, and every one of the six demo
+    aliases silently resolves its key to the empty string. The demo looks like
+    it worked and dies at the first agent call with a 401 that does not name its
+    cause — which is the exact experience this spec exists to prevent.
+    """
+    mandatory = _mandatory_compose_vars()
+    root = _repo_root()
+
+    for doc in INSTALL_DOCS:
+        path = root / doc
+        if not path.exists():  # pragma: no cover - the spec set is in the tree
+            continue
+        exported = _documented_exports(path.read_text(encoding="utf-8"))
+        if not exported:
+            continue
+        missing = mandatory - exported
+        assert not missing, (
+            f"{doc} documents `export {sorted(exported)}` but the demo compose "
+            f"file requires {sorted(missing)}. A reader following this command "
+            f"gets an empty credential and a stack that looks healthy."
+        )
+        stray = exported - mandatory
+        assert not stray, (
+            f"{doc} tells the reader to export {sorted(stray)}, which "
+            f"{DEMO_COMPOSE} never reads. The file's mandatory variables are "
+            f"{sorted(mandatory)}."
+        )
