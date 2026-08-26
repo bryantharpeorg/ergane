@@ -42,6 +42,7 @@ asserts each surface.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
@@ -177,49 +178,63 @@ async def derive_spec(request: DeriveInput) -> WorkGraph:
     would otherwise burn three attempts before the workflow ever saw it). The
     workflow reads the original message off the `ApplicationError` verbatim.
     """
-    from pathlib import Path
-
-    from factory.workgraph.delta import derive_delta
-    from factory.workgraph.landed import landed_facts
-
     runner = _derive_runner
     if runner is not None:
         return runner(request)
 
     try:
-        facts = landed_facts(
-            request.target_repo,
-            request.epic_id,
-            default_branch=landing_branch(Path(request.target_repo)),
-        )
-        baseline = {
-            story_key: {
-                "commit": fact.commit,
-                "fingerprint": _fingerprint_for_spec(
-                    request.target_repo, request.epic_id, fact.commit, story_key
-                ),
-            }
-            for story_key, fact in facts.items()
-        }
-        delta = derive_delta(
-            request.spec_text,
-            baseline=baseline,
-            epic_id=request.epic_id,
-            feature=request.feature,
-            specs_root=request.specs_root,
-            target_repo=request.target_repo,
-            # 069-US2: the task slices, read here rather than carried in the
-            # payload. This is the path that dispatches epics *by itself*, so it
-            # is where siblings actually race — an inference wired only into the
-            # operator's `spec derive` would never reach the fan-out it exists to
-            # order. The activity reads them; the workflow cannot.
-            tasks_text=_tasks_text(request.specs_root, request.epic_id),
-        )
-        return delta.graph
+        return await asyncio.to_thread(_derive_from_git, request)
     except DerivationError as exc:
         from temporalio.exceptions import ApplicationError
 
         raise ApplicationError(str(exc), non_retryable=True, type="DerivationError")
+
+
+def _derive_from_git(request: DeriveInput) -> WorkGraph:
+    """The blocking half of derivation: git reads, fingerprints, compilation.
+
+    Split out of `derive_spec` so it runs on a worker thread rather than the
+    event loop. Every call here shells git — `landed_facts` resolves the default
+    head through `subprocess.run(..., timeout=GIT_TIMEOUT_S)`, and that timeout
+    is 300 seconds. Awaiting it directly on the loop stops every other coroutine
+    in the worker, including the heartbeat of an in-flight agent attempt, whose
+    timeout is 120 seconds. See `_drift_from_git` for the incident this pair
+    exists to prevent.
+    """
+    from pathlib import Path
+
+    from factory.workgraph.delta import derive_delta
+    from factory.workgraph.landed import landed_facts
+
+    facts = landed_facts(
+        request.target_repo,
+        request.epic_id,
+        default_branch=landing_branch(Path(request.target_repo)),
+    )
+    baseline = {
+        story_key: {
+            "commit": fact.commit,
+            "fingerprint": _fingerprint_for_spec(
+                request.target_repo, request.epic_id, fact.commit, story_key
+            ),
+        }
+        for story_key, fact in facts.items()
+    }
+    delta = derive_delta(
+        request.spec_text,
+        baseline=baseline,
+        epic_id=request.epic_id,
+        feature=request.feature,
+        specs_root=request.specs_root,
+        target_repo=request.target_repo,
+        # 069-US2: the task slices, read here rather than carried in the
+        # payload. This is the path that dispatches epics *by itself*, so it
+        # is where siblings actually race — an inference wired only into the
+        # operator's `spec derive` would never reach the fan-out it exists to
+        # order. The activity reads them; the workflow cannot.
+        tasks_text=_tasks_text(request.specs_root, request.epic_id),
+    )
+    return delta.graph
 
 
 def _tasks_text(specs_root: str, spec_dir: str) -> str | None:
@@ -290,6 +305,25 @@ async def drift_for_spec(request: DriftInput) -> bool:
     if runner is not None:
         return runner(request)
 
+    return await asyncio.to_thread(_drift_from_git, request)
+
+
+def _drift_from_git(request: DriftInput) -> bool:
+    """The blocking half of drift detection: git reads and pinned fingerprints.
+
+    Split out of `drift_for_spec` so it runs on a worker thread rather than the
+    event loop.
+
+    This is not a hypothetical. On 2026-08-26 this body ran directly on the
+    worker's loop: `landed_facts` resolves the default head through
+    `subprocess.run(..., timeout=GIT_TIMEOUT_S)` — 300 seconds — and one slow
+    fetch held the loop for 5m12s. The heartbeat of an in-flight agent attempt
+    times out at 120s, so Temporal killed a node that was working correctly and
+    had 138 insertions on disk. The roadmap schedule ticks every 300s, which
+    made the exposure recur every five minutes until the schedule was paused.
+
+    The rule this encodes: an `async` activity may not shell git on the loop.
+    """
     from factory.workgraph.delta import fingerprint_for
     from factory.workgraph.landed import landed_facts
 
