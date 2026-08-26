@@ -197,6 +197,81 @@ def _is_mandatory(value: str) -> bool:
 SUBSTITUTED_AT_RELEASE: frozenset[str] = {"ERGANE_VERSION"}
 
 
+def test_demo_compose_references_no_relative_paths() -> None:
+    """The demo compose file must be self-contained. It has no siblings.
+
+    This is the invariant the *delivery mechanism* demands, and it is the one
+    the other drift tests here did not cover. The advertised install is
+
+        curl -fsSL …/releases/latest/download/compose.yaml | docker compose -f - up
+
+    which fetches exactly one file and pipes it to stdin. With `-f -`, Compose
+    sets the project directory to the caller's working directory, so every
+    relative path resolves against a directory that contains nothing.
+
+    Both ways this failed were found live on 2026-08-26, and they fail
+    differently, which is why neither `docker compose config` nor a green gate
+    caught them:
+
+      * `security_opt: seccomp:./seccomp-ergane.json` is a HARD failure --
+        "opening seccomp profile (./seccomp-ergane.json) failed: … no such file
+        or directory" -- and no container starts.
+      * A long-form bind whose `source` is missing is NOT an error. Docker
+        silently creates it as a root-owned empty DIRECTORY, so the service
+        finds a directory where its config file should be and fails without
+        naming the cause.
+
+    `docker compose config` renders cleanly in both cases: it does not check
+    that referenced paths exist. So this assertion is textual on purpose --
+    there is no rendering step that would reveal the problem.
+
+    The operational project (`compose.reference.yaml`) is exempt and keeps its
+    relative paths: it is generated into a directory alongside its artifacts by
+    `ergane install --engine=container`, so its siblings are really there.
+    """
+    text = (_repo_root() / DEMO_COMPOSE).read_text(encoding="utf-8")
+
+    offenders: list[tuple[int, str]] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        without_comment = line.split("#", 1)[0]
+        if "./" in without_comment or "../" in without_comment:
+            offenders.append((number, line.strip()))
+
+    assert not offenders, (
+        f"{DEMO_COMPOSE} must contain no relative path reference — it is "
+        "delivered on its own by `curl … | docker compose -f -` and has no "
+        "sibling files on the far side. Inline the content (see "
+        "configs.gateway_config_file) or drop the reference. Offending lines: "
+        + "; ".join(f"{number}: {body}" for number, body in offenders)
+    )
+
+
+def test_demo_compose_mounts_no_bind_sources() -> None:
+    """No service may bind-mount a host path, under either mount syntax.
+
+    The sibling of the test above, at the parsed layer rather than the textual
+    one: an absolute bind source would slip past the relative-path check and
+    still assume something exists on a stranger's machine.
+    """
+    compose = _load_yaml(_repo_root() / DEMO_COMPOSE)
+
+    offenders: list[str] = []
+    for name, service in (compose.get("services") or {}).items():
+        for mount in service.get("volumes") or []:
+            if isinstance(mount, dict):
+                if mount.get("type") == "bind":
+                    offenders.append(f"{name}: bind -> {mount.get('source')}")
+            elif isinstance(mount, str):
+                source = mount.split(":", 1)[0]
+                if source.startswith((".", "/", "~")):
+                    offenders.append(f"{name}: bind -> {source}")
+
+    assert not offenders, (
+        "the demo project may not bind-mount host paths; every mount is a named "
+        f"volume or an inline config. Offenders: {offenders}"
+    )
+
+
 def test_demo_compose_requires_exactly_one_mandatory_env_var() -> None:
     """FR-009: only the upstream model credential is mandatory; all else defaults.
 
@@ -270,15 +345,51 @@ def test_demo_registry_aliases_carry_no_example_prefix(
     )
 
 
+def _inline_gateway_config() -> dict[str, Any]:
+    """The gateway config as it actually ships — inline in the compose file.
+
+    Read from `configs.gateway_config_file.content` rather than from
+    `container/gateway-config.yaml`, because the inline copy is the one a
+    stranger receives. The file on disk is the readable copy and is held equal
+    to this by `test_demo_inline_gateway_config_matches_committed_copy`.
+    """
+    compose = _load_yaml(_repo_root() / DEMO_COMPOSE)
+    content = compose["configs"]["gateway_config_file"]["content"]
+    parsed = yaml.safe_load(content)
+    assert isinstance(parsed, dict), "inline gateway config must parse to a mapping"
+    return parsed
+
+
+def test_demo_inline_gateway_config_matches_committed_copy() -> None:
+    """The inline gateway config and its readable copy may never diverge.
+
+    `container/gateway-config.yaml` stays in the tree because it is far easier
+    to read and diff than a block scalar, and `personas.demo.yaml` names it. But
+    only the inline copy ships, so a silent divergence would mean the file every
+    reviewer reads is not the file the demo runs.
+    """
+    inline = _load_yaml(_repo_root() / DEMO_COMPOSE)["configs"]["gateway_config_file"][
+        "content"
+    ]
+    committed = (_repo_root() / "container" / "gateway-config.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert inline == committed, (
+        "container/gateway-config.yaml and the inline "
+        "configs.gateway_config_file.content in container/compose.demo.yaml have "
+        "diverged. They are byte-identical by contract: edit both, or neither."
+    )
+
+
 def test_demo_registry_aliases_match_gateway_config() -> None:
     """FR-010: every alias the registry dispatches must be served by the gateway.
 
     A registry naming an alias the bundled gateway does not serve would fail
     FR-005's probe three stages later wearing a different error. The gateway's
-    config file is the authority for what it serves.
+    config is the authority for what it serves.
     """
     registry = _load_yaml(_repo_root() / "container" / "personas.demo.yaml")
-    gateway = _load_yaml(_repo_root() / "container" / "gateway-config.yaml")
+    gateway = _inline_gateway_config()
 
     gateway_aliases = {
         entry["model_name"]

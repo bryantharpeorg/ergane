@@ -19,10 +19,16 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-      - seccomp:./seccomp-ergane.json
-      # The demo uses the unconfined AppArmor profile so it starts on a stock
-      # host without the shipped engine profile loaded. The operational project
-      # (config G) keeps apparmor=ergane-engine; this is config F for portability.
+      # Both confinement profiles are unconfined here for the same reason, and
+      # that reason is the delivery mechanism: this file is fetched on its own by
+      # `curl … | docker compose -f -`, so it has no sibling files. A
+      # `seccomp:./seccomp-ergane.json` reference resolves against the caller's
+      # working directory and hard-fails with "opening seccomp profile … no such
+      # file or directory" before any container starts. The operational project
+      # (config G) is generated into a directory alongside its artifacts and
+      # keeps both seccomp-ergane.json and apparmor=ergane-engine; this is
+      # config F, and portability is the whole of its job.
+      - seccomp:unconfined
       - apparmor=unconfined
     environment:
       # PATH/LANG/TERM/HOME are compose passthroughs from the container default.
@@ -88,13 +94,20 @@ services:
       - UPSTREAM_MODEL_API_KEY=${UPSTREAM_MODEL_API_KEY}
     volumes:
       - gateway_config:/app/config
-      # The gateway's static config is a bundled artifact (not host state), so
-      # this read-only bind is intentional. It is exempt from the named-volume
-      # contract asserted by the drift test.
-      - type: bind
-        source: ./gateway-config.yaml
+    # The gateway's static config arrives as an inline compose config rather than
+    # a bind of ./gateway-config.yaml. A relative bind source cannot work here:
+    # this file is delivered on its own by `curl … | docker compose -f -`, and a
+    # missing bind source is not an error — Docker silently creates it as a
+    # root-owned empty DIRECTORY, so LiteLLM would find a directory where its
+    # config file should be and fail without naming the cause.
+    #
+    # The content below is kept byte-identical to container/gateway-config.yaml,
+    # which stays in the tree as the readable copy; the drift test asserts they
+    # never diverge. Edit both, or neither.
+    configs:
+      - source: gateway_config_file
         target: /app/config.yaml
-        read_only: true
+        mode: 0444
     networks:
       - ergane
     depends_on:
@@ -138,3 +151,46 @@ volumes:
 networks:
   ergane:
     driver: bridge
+
+configs:
+  # Byte-identical to container/gateway-config.yaml — see the note on the
+  # gateway service. tests/test_109_us2_demo_compose.py asserts they agree.
+  gateway_config_file:
+    content: |
+      # LiteLLM proxy configuration for the Ergane demo project.
+      #
+      # This file is bundled with the demo compose project and mounted read-only into
+      # the gateway container. It declares the model aliases the bundled persona
+      # registry references and the upstream provider the operator's one required
+      # credential reaches.
+
+      model_list:
+        - model_name: demo/implementer
+          litellm_params:
+            model: anthropic/claude-sonnet-4-20250514
+            api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
+        - model_name: demo/judge
+          litellm_params:
+            model: anthropic/claude-sonnet-4-20250514
+            api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
+        - model_name: demo/debugger
+          litellm_params:
+            model: anthropic/claude-sonnet-4-20250514
+            api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
+        - model_name: demo/closer
+          litellm_params:
+            model: anthropic/claude-sonnet-4-20250514
+            api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
+        - model_name: demo/architect
+          litellm_params:
+            model: anthropic/claude-sonnet-4-20250514
+            api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
+        - model_name: demo/researcher
+          litellm_params:
+            model: anthropic/claude-sonnet-4-20250514
+            api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
+
+      general_settings:
+        master_key: "os.environ/LITELLM_MASTER_KEY"
+        store_model_in_db: true
+        database_url: "os.environ/DATABASE_URL"
