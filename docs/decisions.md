@@ -5,6 +5,30 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-052 · The compose demo's first-boot spend is bounded by halt-after-pass; install's closing demonstration stays free (decided)
+
+Decided 2026-08-26, claimed at landing of spec `110-the-demo-dispatches-the-story-it-promised` US1.
+`ergane install`'s closing demonstration (`_closing_demonstration`,
+`factory/cli/install.py:972-1038`) is a free, local, offline smoke: it stops at
+`spec derive` on purpose (program doc decision 7) and never dispatches an
+agent.  The compose demo is the stranger's opt-in to spending one API key:
+`UPSTREAM_MODEL_API_KEY` is the single mandatory variable in
+`container/compose.demo.yaml`, and the driver's `build ship` carries
+`--halt-after-pass` so the dispatch stops after the first story lands.
+
+1. **Install's demonstration remains free.** It does not write sentinels, it
+   does not commit, and it does not run `build ship`.  The decision-7 boundary
+   is preserved verbatim.
+2. **The compose demo's exported key is the spend opt-in.** A stranger who sets
+   `UPSTREAM_MODEL_API_KEY` and runs `docker compose -f container/compose.demo.yaml up`
+   gets exactly one first boot and one dispatched story, bounded by the
+   halt-after-pass flag.
+3. **Two sentinels carry two different promises.** `prepared` records that
+   first-boot setup completed and the sandbox probe succeeded; it is written
+   only after the probe.  `dispatch-attempted` records that `build ship` was
+   entered; it is written before the command.  Merging them would make a
+   retryable host problem look like a spent key.
+
 ## D-049 · The merge-queue precondition now covers ownership as well as visibility (decided)
 
 Decided 2026-08-19, claimed at landing of spec `059-a-wired-repo-can-land` US3.
