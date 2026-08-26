@@ -1301,3 +1301,36 @@ seven days old, and the error pointed nowhere near it.
    notes were read side by side. Prefer an existing key over a better-worded new one.
 
 Constitution version bumped from 2.5.0 to 2.6.0.
+
+---
+
+## D-052 · The install demonstration stays free; the demo compose project is where money is opted into (decided)
+
+Decided 2026-08-26, during 110-US1. Program decision 7 drew a line that `ergane
+install` has honoured since: its closing demonstration scaffolds a throwaway repository,
+validates it, derives it, and **stops** — no dispatch, no agent, no key, so anybody may
+run the installer without it costing anything. Epic 110 puts a driver in the demo
+container that goes further, and this entry records where the line moved to and why it
+did not move for install.
+
+1. **Install's demonstration is unchanged and stays free.** It runs in a tempdir, ends
+   at derive, and prints the next command. Nothing in this epic adds a spend to that
+   path, and the demo driver reuses its steps (`_demo_manifest_text`, `_git_init`,
+   `scaffold_spec(demonstration=True)`) rather than a second copy of them.
+2. **The exported credential is the opt-in.** `container/compose.demo.yaml` requires
+   exactly one variable, `UPSTREAM_MODEL_API_KEY`. Exporting it is a deliberate act by
+   somebody who has read what the project does; nothing infers consent from the mere
+   presence of a container. `ERGANE_DEMO=1` selects the demo, but with no key the
+   gateway serves nothing and the dispatch fails before it bills.
+3. **The spend is bounded to one story.** The driver dispatches with
+   `--halt-after-pass`, so the demo ends at a passing story and its statement rather
+   than at a landing. One story is the demonstration; a queue of them is a bill.
+4. **Two sentinels, because there are two promises.** `prepared` is written only after
+   the sandbox probe succeeds, so a host problem the stranger can fix leaves nothing
+   behind and a restart retries. `dispatch-attempted` is written before the dispatch
+   verb, so a crash in the window after the key was spent cannot re-spend it. One
+   sentinel for both would make a retryable host problem indistinguishable from money
+   already gone — the failure this epic's first attempt was refused for.
+
+This narrows nothing and supersedes nothing: install behaves exactly as decision 7 left
+it, and the new spend lives only where an operator exported a key to reach it.
