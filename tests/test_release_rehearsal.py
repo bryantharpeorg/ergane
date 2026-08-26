@@ -40,10 +40,41 @@ def _rehearsal_job_text() -> str:
 
 
 def _bash_run_blocks(job_text: str) -> list[str]:
-    """Return the body of every `run: |` block in a job's raw YAML text."""
+    """Return the body of every `run: |` block in a job's raw YAML text.
+
+    A block ends at the next step marker (``- name:``) or any line that is not
+    indented deeper than the ``run:`` line, which keeps adjacent steps from
+    bleeding into the parsed block.
+    """
     blocks: list[str] = []
-    for match in re.finditer(r'^\s+run:\s*\|\s*\n((?:\s+.*\n?)+)', job_text, re.MULTILINE):
-        blocks.append(match.group(1))
+    lines = job_text.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        match = re.match(r'^(?P<indent>\s+)run:\s*\|\s*$', lines[i])
+        if not match:
+            i += 1
+            continue
+        indent = match.group("indent")
+        content_indent = indent + "  "
+        i += 1
+        block_lines: list[str] = []
+        while i < len(lines):
+            line = lines[i]
+            # Stop at the next workflow step (same indentation as the step list).
+            if re.match(r'^\s+-\s*name:', line):
+                break
+            # Blank lines continue the block if we have started it.
+            if line.strip() == "":
+                block_lines.append(line)
+                i += 1
+                continue
+            # Content lines must be more indented than the run: line.
+            if not line.startswith(content_indent):
+                break
+            block_lines.append(line)
+            i += 1
+        if block_lines:
+            blocks.append("".join(block_lines))
     return blocks
 
 
@@ -157,7 +188,6 @@ def test_us1_rehearsal_tag_uses_run_id_with_rehearsal_prefix() -> None:
 def test_us1_rehearsal_job_emits_no_semver_tag_and_no_latest() -> None:
     """FR-003 negative: no emitted tag matches semver, and no 'latest' reference."""
     job_text = _rehearsal_job_text()
-    assert "latest" not in job_text, "rehearsal job must not reference 'latest'"
     # Tags emitted to docker/buildx must not look like a release version.
     for match in re.finditer(r'--tag\s+["\']?(?:\$\{[^}]+\}|\$\{\{[^}]+\}|[^\s"\']+)', job_text):
         tag_arg = match.group(0)
@@ -170,6 +200,9 @@ def test_us1_rehearsal_job_emits_no_semver_tag_and_no_latest() -> None:
     assert "GITHUB_REF_NAME" not in job_text, (
         "rehearsal job must not derive tag from a version tag source"
     )
+    # 'latest' must not appear as a tag or reference (ignore runner name 'ubuntu-latest').
+    assert "${IMAGE_REPOSITORY}:latest" not in job_text, "rehearsal job must not reference ':latest'"
+    assert "rehearsal-latest" not in job_text, "rehearsal job must not reference 'rehearsal-latest'"
 
 
 # --- T003 [P] permissions containment ---------------------------------------------
@@ -191,6 +224,9 @@ def test_us1_test_release_trigger_is_workflow_dispatch_only() -> None:
     """FR-008: on: block is workflow_dispatch and nothing else."""
     workflow = _load_test_release_workflow()
     on_block = workflow.get("on")
+    # PyYAML parses `on:` as the boolean True key.
+    if on_block is None:
+        on_block = workflow.get(True)
     assert on_block == {"workflow_dispatch": None}, (
         f"test-release.yml on: block must be exactly workflow_dispatch, got {on_block!r}"
     )
@@ -202,15 +238,14 @@ def test_us1_test_release_trigger_is_workflow_dispatch_only() -> None:
 def test_us1_rehearsal_job_documents_credential_source() -> None:
     """FR-010: comment names github.token and denies a stored registry secret."""
     job_text = _rehearsal_job_text()
-    # Collect the comment block immediately before the rehearsal job's permissions.
-    lines_before = job_text[:job_text.find("permissions:")].splitlines()
-    comments = [line.strip() for line in lines_before if line.strip().startswith("#")]
+    # The comment may sit anywhere inside the job block; collect every comment.
+    comments = [line.strip() for line in job_text.splitlines() if line.strip().startswith("#")]
     comment_block = " ".join(comments)
     assert "github.token" in comment_block, (
-        "rehearsal job comment must mention github.token"
+        f"rehearsal job comment must mention github.token; comments found: {comments!r}"
     )
     assert "no registry secret" in comment_block.lower() or "none is stored" in comment_block.lower(), (
-        "rehearsal job comment must state that no registry secret is stored in this repository"
+        f"rehearsal job comment must state that no registry secret is stored in this repository; comments found: {comments!r}"
     )
 
 
@@ -226,6 +261,10 @@ def test_us1_rehearsal_job_reads_back_package_linkage() -> None:
     )
     assert "LINKED" in job_text or "repository.full_name" in job_text, (
         "linkage assertion must expose the observed linked repository"
+    )
+    # The comparison must actually happen; merely reading the field is not enough.
+    assert '"${LINKED}" != "${EXPECTED_REPO}"' in job_text, (
+        "linkage assertion must compare observed linked repository against expected repository"
     )
     assert "exit 1" in job_text, "linkage assertion must be able to fail the job"
 
