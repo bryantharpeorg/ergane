@@ -13,38 +13,55 @@ seam.  Both are local, deterministic and spend nothing.
 
 ## Evidence (T008)
 
-T002's prepare-phase transcript, from the scratch run it asserts on:
+The prepare phase T002 asserts on, run for real against scratch paths with the
+same steps and the same seams (`python3 -m factory.supervision.demo_driver
+--state-home … --repo … --answers-file container/ergane-install-answer.demo.toml`,
+2026-08-26), transcript trimmed only where install's own findings repeat:
 
     ergane demo: first boot preparing the demonstration project
-    ergane demo: step 1/5 ergane install --from-file .../ergane-install-answer.demo.toml
+    ergane demo: step 1/5 ergane install --from-file container/ergane-install-answer.demo.toml
     applied default: temporal.tls_enabled = false
-    wrote /tmp/.../config.toml
-    ...
-    ergane demo: control-plane verification reported findings (exit 1); the
-      configuration was written, so preparation continues
-    ergane demo: step 2/5 git init -b main /tmp/.../repo
-    ergane demo: step 3/5 wrote /tmp/.../repo/factory.yaml
-    ergane demo: step 4/5 wrote /tmp/.../repo/specs/001-demo
+    wrote /tmp/demo-drive/config.toml
+    wrote /tmp/demo-drive/home/.config/ergane/personas.yaml
+
+    verifying the control plane...
+    [FAIL] host: gh is present but unauthenticated ...
+    [PASS] engine: no engine identity record ...; the version handshake activates only on evidence
+    [FAIL] llm: ERGANE_LLM_MASTER_KEY is not set; no credential to complete a round trip
+    [FAIL] temporal: Temporal at 127.0.0.1:7233 does not have namespace `ergane` ...
+    [PASS] memory / [PASS] telemetry / [PASS] escalation
+    ergane demo: control-plane verification reported findings (exit 1); the configuration was written, so preparation continues
+    ergane demo: step 2/5 git init -b main /tmp/demo-drive/repo
+    ergane demo: step 3/5 wrote /tmp/demo-drive/repo/ergane.yaml
+    ergane demo: step 4/5 wrote /tmp/demo-drive/repo/specs/001-demo
     ergane demo: step 5/5 committed the demonstration project as Ergane Demo <demo@ergane.invalid>
     ergane demo: agent sandbox probe succeeded
-    ergane demo: first boot complete; /tmp/.../state/demo/prepared
+    ergane demo: first boot complete; /tmp/demo-drive/state/demo/prepared
+    EXIT=0
 
-T005(a)'s second-run line, verbatim:
+    $ git -C /tmp/demo-drive/repo log --format='%an <%ae> | %s'
+    Ergane Demo <demo@ergane.invalid> | The demonstration project, prepared on first boot
 
-    ergane demo: first boot already happened (/tmp/.../state/demo/prepared); nothing to prepare
+The second run's line (T005(a)), verbatim and alone:
 
-Full suite before this story: 4368 passed, 46 skipped.
-Full suite after this story:  4379 passed, 46 skipped.
+    ergane demo: first boot already happened (/tmp/demo-drive/state/demo/prepared); nothing to prepare
+    EXIT=0
+
+Full suite on this tree with this file ignored: 4994 passed, 57 skipped in 358.29s.
+Full suite on this tree with this file:         5006 passed, 57 skipped in 356.15s.
+The delta is this file's twelve tests and nothing else (`--collect-only`: 5051
+without it, 5063 with it).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 import subprocess
 from pathlib import Path
-from typing import Awaitable, Callable, Sequence
+from typing import Callable, Sequence
 
 import pytest
 
@@ -286,6 +303,34 @@ def test_demo_driver_argv_avoids_the_pkill_substring(supervisor_mod) -> None:
     assert supervisor_mod.DEMO_DRIVER_MODULE in argv
 
 
+async def test_the_real_spawn_is_a_plain_module_subprocess(
+    supervisor_mod, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The driver is spawned as `<interpreter> -m <module>`, with no shell."""
+    import sys
+
+    seen: list[tuple] = []
+
+    async def fake_exec(*cmd, **kwargs):
+        seen.append((cmd, kwargs))
+
+        class _Proc:
+            pid = 4321
+            returncode = None
+
+        return _Proc()
+
+    monkeypatch.setattr(supervisor_mod.asyncio, "create_subprocess_exec", fake_exec)
+    controller = await supervisor_mod._start_real_demo_driver()
+
+    assert seen and list(seen[0][0]) == [
+        sys.executable,
+        "-m",
+        supervisor_mod.DEMO_DRIVER_MODULE,
+    ]
+    assert controller.name == "demo"
+
+
 # -----------------------------------------------------------------------------
 # T002 [US1-S2, FR-002, FR-003] the prepare phase, driven offline
 # -----------------------------------------------------------------------------
@@ -367,10 +412,8 @@ def test_prepared_repository_validates_and_derives(
     artifact = spec_dir / "workgraph.json"
     assert artifact.is_file()
 
-    import json
-
     graph = json.loads(artifact.read_text(encoding="utf-8"))
-    assert graph
+    assert graph["nodes"], graph
 
 
 # -----------------------------------------------------------------------------
@@ -512,6 +555,26 @@ def test_second_run_after_a_successful_first_boot_is_a_one_line_no_op(
     assert second_probe.calls == []
     assert len(printed.splitlines()) == 1, printed
     assert "already" in printed
+
+
+def test_a_failing_step_leaves_as_a_named_line_not_a_traceback(
+    driver_mod, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    """`main` turns any failure into one line and a nonzero status (FR-001)."""
+    paths = _isolate(monkeypatch, tmp_path)
+
+    def explode(**kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "init"])
+
+    monkeypatch.setattr(driver_mod, "run_prepare_phase", explode)
+    status = driver_mod.main(
+        ["--state-home", str(paths.state), "--repo", str(paths.repo)]
+    )
+    printed = capsys.readouterr().out
+
+    assert status == 1
+    assert "first boot failed" in printed
+    assert "CalledProcessError" in printed
 
 
 def test_second_run_after_a_probe_refusal_retries_the_probe(

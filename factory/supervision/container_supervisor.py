@@ -254,7 +254,7 @@ def _demo_requested(config: Mapping[str, object]) -> bool:
 
 async def _start_real_demo_driver() -> ChildController:
     """Spawn the one-shot demo driver as a plain subprocess."""
-    cmd = _demo_driver_argv()
+    cmd = [sys.executable, "-m", *_demo_driver_argv()]
     logger.info("starting demo driver: %s", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -416,8 +416,14 @@ async def _run_supervisor(
     demo_driver: ChildController | None = None
     demo_task: asyncio.Task[None] | None = None
     if _demo_requested(config):
-        demo_driver = await start_demo_driver()
-        demo_task = asyncio.create_task(_reap_demo_driver(demo_driver), name="demo")
+        try:
+            demo_driver = await start_demo_driver()
+        except Exception as exc:
+            # A demo that cannot even be spawned is still not a reason to stop
+            # an engine that is up: the three children are already running.
+            logger.warning("demo driver could not be started (%s); the engine keeps running", exc)
+        else:
+            demo_task = asyncio.create_task(_reap_demo_driver(demo_driver), name="demo")
 
     shutdown_requested = asyncio.Event()
     first_dead: str | None = None
@@ -489,7 +495,9 @@ async def _run_supervisor(
             demo_task.cancel()
             try:
                 await demo_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
+                pass
+            except Exception:
                 pass
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.remove_signal_handler(sig)

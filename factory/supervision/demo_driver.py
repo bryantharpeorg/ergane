@@ -364,14 +364,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point for `python3 -m factory.supervision.demo_driver`."""
+    """Entry point for `python3 -m factory.supervision.demo_driver`.
+
+    Every failure leaves as a named line and a nonzero status rather than as a
+    traceback: this process's stdout is the `docker compose up` stream a
+    stranger is reading, and the supervisor beside it only logs what it reaped.
+    """
     args = _build_parser().parse_args(argv)
     state_home = Path(args.state_home) if args.state_home else _default_state_home()
-    return run_prepare_phase(
-        state_home=state_home,
-        repo_root=Path(args.repo),
-        answers_path=Path(args.answers_file),
-    )
+    try:
+        return run_prepare_phase(
+            state_home=state_home,
+            repo_root=Path(args.repo),
+            answers_path=Path(args.answers_file),
+        )
+    except Exception as error:
+        _emit(f"first boot failed: {type(error).__name__}: {error}")
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover - process entry point
