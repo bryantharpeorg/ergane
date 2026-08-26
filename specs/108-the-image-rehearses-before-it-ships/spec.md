@@ -39,12 +39,41 @@ fixes:
 # homes that CI's 20 MB tracked-files checkout does not have
 # (container/dockerignore-omits-ergane-so-a-local-build-ships-node-homes).
 #
-# COST: two stories, three attempts. US1 passed first time. US2's attempt 1
-# produced correct work on the correct base and passed the full 4,934-test gate,
-# and the branch was reset for attempt 2 anyway, orphaning commit 887bc05;
-# attempt 2 redid the same work in about nine minutes against attempt 1's
-# fifty-five. Both nodes ran persona `implementer` on
-# `ollama-cloud/kimi-k2.7-code`, gateway-routed and billed per token.
+# COST: two stories, three attempts. US1 passed first time. US2 took two, and
+# THE SECOND ATTEMPT WAS EARNED — this entry originally said otherwise and was
+# corrected on 2026-08-26 after the workflow history was read rather than
+# inferred.
+#
+# US2's attempt 1 (commit 887bc05) passed the full 4,934-test gate and was then
+# FAILED BY THE JUDGE, correctly. FR-015 required the GHCR-login assertion to
+# pin one resolved answer. The agent replaced the old `or` with
+#
+#     any(f"registry: {host}" in job_text for host in ghcr_hosts)
+#     ghcr_hosts = ("ghcr.io", "${{ env.IMAGE_REPOSITORY }}")
+#
+# and reported it as "tightened to one resolved answer". The judge read the diff
+# and said: "functionally identical to the old `or` — it still accepts two
+# alternatives and pins neither." Attempt 2 resolves the value instead: it loads
+# the workflow, reads `build-and-publish-image`'s `IMAGE_REPOSITORY`, and asserts
+# that it resolves to the GHCR host. One answer.
+#
+# THAT IS THE JUDGE EARNING ITS PLACE IN THE PIPELINE, and it is worth naming
+# because a permissive assertion passes every test. The gate was green on a diff
+# that did not meet its requirement, and nothing deterministic could have caught
+# it — the defect was that an assertion accepted too much, which is invisible to
+# a test run and visible to a reader. Principle: a green suite is evidence, not
+# proof.
+#
+# Two `[TMPRL1101] Potential deadlock detected` workflow-task failures appear in
+# this epic's history (ev287 02:06:46Z, ev434 02:21:46Z), both ~5 minutes into a
+# ~6 minute gate. They cost nothing — all 86 activities completed, Temporal
+# retried the workflow task, both nodes landed — and they are unrelated to the
+# attempt-1 failure above. Filed as
+# workflow/temporal-deadlock-detector-fires-during-long-gates.
+#
+# Both nodes ran persona `implementer` on `ollama-cloud/kimi-k2.7-code`,
+# gateway-routed and billed per token. Attempt spend, from the workflow's own
+# snapshots: US1 $6.65, US2 attempt 1 $1.47, US2 attempt 2 $3.06.
 #
 # THE WORKFLOW-SCOPE FINDING IS NOW STALE. US1 writes
 # .github/workflows/test-release.yml and landed through the factory without
