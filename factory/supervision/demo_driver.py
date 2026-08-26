@@ -171,14 +171,39 @@ def _git_config_identity(repo_root: Path) -> None:
 
 
 def _git_commit(repo_root: Path, message: str) -> None:
-    """Stage and commit every file in the repository."""
+    """Stage and commit every file under the explicit demo identity.
+
+    Repo-local config is set by ``_git_config_identity``, but git author/committer
+    environment variables take precedence over config.  This invocation forces the
+    demo identity for this commit regardless of inherited env vars, so an
+    ambient ``GIT_AUTHOR_NAME`` from an earlier test cannot leak in.
+    """
+    env = os.environ.copy()
+    env["GIT_AUTHOR_NAME"] = DEMO_AUTHOR_NAME
+    env["GIT_AUTHOR_EMAIL"] = DEMO_AUTHOR_EMAIL
+    env["GIT_COMMITTER_NAME"] = DEMO_AUTHOR_NAME
+    env["GIT_COMMITTER_EMAIL"] = DEMO_AUTHOR_EMAIL
+
     subprocess.run(
         ["git", "-C", str(repo_root), "add", "."],
         check=True,
     )
     subprocess.run(
-        ["git", "-C", str(repo_root), "commit", "-m", message, "--quiet"],
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "-c",
+            f"user.name={DEMO_AUTHOR_NAME}",
+            "-c",
+            f"user.email={DEMO_AUTHOR_EMAIL}",
+            "commit",
+            "-m",
+            message,
+            "--quiet",
+        ],
         check=True,
+        env=env,
     )
 
 
