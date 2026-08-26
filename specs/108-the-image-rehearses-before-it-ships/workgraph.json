@@ -1,0 +1,33 @@
+{
+  "epic_id": "108-the-image-rehearses-before-it-ships",
+  "feature": "108-the-image-rehearses-before-it-ships",
+  "specs_root": "/tmp/claude-1000/-home-admin-code-ergane/7d769fe8-eb9f-4e94-a560-d35dd235a6fc/scratchpad/wt-108/specs",
+  "target_repo": "/tmp/claude-1000/-home-admin-code-ergane/7d769fe8-eb9f-4e94-a560-d35dd235a6fc/scratchpad/wt-108",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "108-the-image-rehearses-before-it-ships:US1",
+      "requirement_keys": [
+        "US1"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "108-the-image-rehearses-before-it-ships:US2",
+      "requirement_keys": [
+        "US2"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}
