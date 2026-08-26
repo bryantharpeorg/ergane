@@ -30,6 +30,11 @@ services:
       # config F, and portability is the whole of its job.
       - seccomp:unconfined
       - apparmor=unconfined
+      # `systempaths=unconfined` is needed because Docker's masked /proc paths
+      # trip the kernel's fully-visible-proc refusal when bwrap mounts a fresh
+      # procfs in its user namespace (bubblewrap#284). Without this option the
+      # agent sandbox cannot start. Measured on kernel 6.17.0-1018 on 2026-08-26.
+      - systempaths:unconfined
     environment:
       # PATH/LANG/TERM/HOME are compose passthroughs from the container default.
       - PATH=/opt/ergane/.venv/bin:/usr/local/bin:/usr/bin
@@ -57,6 +62,13 @@ services:
       - ERGANE_OTLP_ENDPOINT=
       - TELEGRAM_BOT_TOKEN=
       - TELEGRAM_CHAT_ID=
+      # Demo flag: the engine supervisor spawns the one-shot demo driver when
+      # this is set. The flag is literal so the demo starts without an extra
+      # required variable.
+      - ERGANE_DEMO=1
+      # Gateway endpoint for exec'd shells inside the engine container. The
+      # bundled gateway is reachable on the compose network at this address.
+      - LITELLM_PROXY_URL=http://gateway:4000
       # Version source: the release workflow substitutes this with the tag it
       # is publishing (FR-017/FR-018). The fetched file carries the real tag.
       - ERGANE_VERSION=${ERGANE_VERSION}
