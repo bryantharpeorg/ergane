@@ -1,0 +1,71 @@
+# Demo persona registry for the Ergane one-command compose project.
+#
+# This registry is bundled with the demo compose project and mounted into the
+# engine container. Every alias below matches an entry in gateway-config.yaml,
+# and none carry the example/ placeholder prefix — so the demo satisfies the
+# refusal at verify.py:441 rather than bypassing it.
+
+architect:
+  agent: claude-code
+  model: demo/architect
+  fallback: demo/researcher
+  skills: [codebase-design, design-an-interface, domain-modeling]
+  write_scope: docs
+  needs_worktree: true
+  timeout: 7200
+
+implementer:
+  agent: claude-code
+  model: demo/implementer
+  fallback: demo/debugger
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400
+  context_window: 262144
+
+verifier:
+  agent: none
+  model: null
+  fallback: null
+  skills: []
+  write_scope: read
+  needs_worktree: true
+  timeout: null
+
+judge:
+  agent: claude-code
+  model: demo/judge
+  fallback: demo/debugger
+  skills: [code-review]
+  write_scope: read
+  needs_worktree: false
+  timeout: 3600
+
+closer:
+  agent: claude-code
+  model: demo/closer
+  fallback: demo/implementer
+  skills: [implement, tdd]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 14400
+  context_window: 1000000
+
+debugger:
+  agent: claude-code
+  model: demo/debugger
+  fallback: demo/implementer
+  skills: [diagnosing-bugs]
+  write_scope: worktree
+  needs_worktree: true
+  timeout: 10800
+
+researcher:
+  agent: claude-code
+  model: demo/researcher
+  fallback: demo/architect
+  skills: [research, grill-with-docs]
+  write_scope: read
+  needs_worktree: false
+  timeout: 7200
