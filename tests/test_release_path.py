@@ -681,6 +681,51 @@ def test_us4_compose_asset_published_after_image_job() -> None:
     )
 
 
+def test_us4_publish_job_creates_the_release_before_uploading() -> None:
+    """A pushed tag is not a release, and `gh release upload` requires one.
+
+    Measured 2026-08-26: v0.4.0 ran every job in this workflow green, shipped to
+    PyPI and GHCR, and left no release object behind — `gh release view v0.4.0`
+    answered "release not found". Release objects were being made by hand. So a
+    publish job that only uploads fails on any tag whose release nobody created
+    first, and the version number is spent with nothing to show.
+
+    The ordering matters as much as the presence: creating after uploading is
+    the same bug with extra steps.
+    """
+    workflow = _load_release_workflow()
+
+    publish_job_id: str | None = None
+    for job_id in workflow.get("jobs", {}):
+        if "container/compose.demo.yaml" in _job_text(job_id):
+            publish_job_id = job_id
+            break
+
+    assert publish_job_id is not None, (
+        "no job references container/compose.demo.yaml; a release asset step is required"
+    )
+
+    # Compare commands, not prose: a comment that mentions `gh release upload`
+    # would otherwise satisfy or defeat the ordering check depending on where it
+    # sits, which makes the test a test of the comments.
+    job_text = _job_text(publish_job_id)
+    commands = "\n".join(
+        line for line in job_text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+    assert "gh release create" in commands, (
+        f"job {publish_job_id} uploads a release asset but never creates the "
+        "release to upload it to; a pushed tag is not a release object"
+    )
+    assert commands.index("gh release create") < commands.index("gh release upload"), (
+        f"job {publish_job_id} creates the release after uploading to it"
+    )
+    assert "--verify-tag" in commands, (
+        f"job {publish_job_id} must pass --verify-tag so a mistyped tag fails "
+        "here instead of creating a release that points at nothing"
+    )
+
+
 # --- T023 [P] [US4] tag-agreement check lives in the workflow ------------------
 
 
