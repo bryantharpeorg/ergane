@@ -284,6 +284,15 @@ def _fake_install_runner(answers_path: Path) -> Callable[[list[str]], int]:
     return runner
 
 
+def _passing_probe(argv: list[str]) -> tuple[int, str, str]:
+    """A fake sandbox probe that always succeeds.
+
+    Driver tests run against seams, never live processes (plan T8); the
+    refusal test is the only one that injects a failing probe.
+    """
+    return (0, "", "")
+
+
 def _drive_prepare(
     demo_mod,
     monkeypatch: pytest.MonkeyPatch,
@@ -303,7 +312,7 @@ def _drive_prepare(
         state_home=state_home,
         repo_root=repo_root,
         answers_file=answers,
-        sandbox_probe=sandbox_probe,
+        sandbox_probe=sandbox_probe or _passing_probe,
     )
     return repo_root
 
