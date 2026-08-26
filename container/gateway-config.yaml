@@ -4,31 +4,43 @@
 # the gateway container. It declares the model aliases the bundled persona
 # registry references and the upstream provider the operator's one required
 # credential reaches.
+#
+# The upstream is Ollama Cloud, so UPSTREAM_MODEL_API_KEY is an Ollama API key
+# (https://ollama.com/settings/keys). The authoring roles run kimi-k2.7-code —
+# the same model the factory's own implementer runs — and the judge runs
+# glm-5.2, a deliberately different lineage from the authors, mirroring the
+# factory's own persona registry.
 
 model_list:
   - model_name: demo/implementer
     litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: openai/kimi-k2.7-code
+      api_base: https://ollama.com/v1
       api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
   - model_name: demo/judge
     litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: openai/glm-5.2
+      api_base: https://ollama.com/v1
       api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
   - model_name: demo/debugger
     litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: openai/kimi-k2.7-code
+      api_base: https://ollama.com/v1
       api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
   - model_name: demo/closer
     litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: openai/kimi-k2.7-code
+      api_base: https://ollama.com/v1
       api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
   - model_name: demo/architect
     litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: openai/kimi-k2.7-code
+      api_base: https://ollama.com/v1
       api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
   - model_name: demo/researcher
     litellm_params:
-      model: anthropic/claude-sonnet-4-20250514
+      model: openai/kimi-k2.7-code
+      api_base: https://ollama.com/v1
       api_key: "os.environ/UPSTREAM_MODEL_API_KEY"
 
 general_settings:
