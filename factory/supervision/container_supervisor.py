@@ -346,6 +346,31 @@ async def _run_supervisor(
         "bridge": asyncio.create_task(bridge.wait(), name="bridge"),
     }
 
+    # Demo driver (US1): a one-shot plain subprocess, never a supervised child.
+    # It is reaped by a background task whose failure is logged and never fatal.
+    demo_enabled = os.environ.get("ERGANE_DEMO") == "1"
+    demo_task: asyncio.Task[int] | None = None
+    if demo_enabled:
+        # Pass the module name only, mirroring how the three supervised children
+        # are started; `start_child` prepends `python3 -m`.  No assembled value may
+        # contain the substring `python -` (the interpreter path can, but the
+        # argv passed here does not).
+        demo_argv = ["factory.supervision.demo_driver"]
+        logger.info("starting demo driver: python3 -m %s", " ".join(demo_argv))
+        demo_controller = await start_child("demo_driver", demo_argv)
+
+        async def _reap_demo_driver(controller: ChildController) -> int:
+            code = await controller.wait()
+            if code == 0:
+                logger.info("demo driver exited with status %s", code)
+            else:
+                logger.error("demo driver exited with status %s", code)
+            return code
+
+        demo_task = asyncio.create_task(
+            _reap_demo_driver(demo_controller), name="demo_driver"
+        )
+
     shutdown_requested = asyncio.Event()
     first_dead: str | None = None
     first_status: int | None = None
