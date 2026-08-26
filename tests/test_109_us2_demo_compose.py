@@ -494,6 +494,108 @@ def test_demo_compose_opens_with_disclaimer_header() -> None:
 
 
 # -----------------------------------------------------------------------------
+# T015 [US3-S1, FR-011] demo flag and gateway endpoint are literal env values
+# -----------------------------------------------------------------------------
+
+
+DEMO_FLAG_LITERAL: str = "ERGANE_DEMO=1"
+GATEWAY_URL_LITERAL: str = "LITELLM_PROXY_URL=http://gateway:4000"
+
+
+def test_demo_compose_engine_env_carries_demo_flag_and_gateway_url() -> None:
+    """FR-011: the engine service environment carries two literal demo values."""
+    compose = _load_yaml(_repo_root() / DEMO_COMPOSE)
+    ergane = compose.get("services", {}).get("ergane", {})
+    raw_env = ergane.get("environment", [])
+
+    assert DEMO_FLAG_LITERAL in raw_env, (
+        f"engine environment must contain literal {DEMO_FLAG_LITERAL!r}"
+    )
+    assert GATEWAY_URL_LITERAL in raw_env, (
+        f"engine environment must contain literal {GATEWAY_URL_LITERAL!r}"
+    )
+    # Literal values contain no `${`, so the mandatory-count test continues to
+    # see exactly one required variable (UPSTREAM_MODEL_API_KEY).
+    assert not any("${" in entry for entry in (DEMO_FLAG_LITERAL, GATEWAY_URL_LITERAL))
+
+
+def test_demo_compose_requires_exactly_one_mandatory_env_var_extended() -> None:
+    """T015: the literal additions do not introduce a second mandatory variable."""
+    compose = _load_yaml(_repo_root() / DEMO_COMPOSE)
+    services = compose.get("services", {})
+
+    mandatory: set[str] = set()
+    for service in services.values():
+        for name, value in _env_entries(service).items():
+            if _is_mandatory(value) and name not in SUBSTITUTED_AT_RELEASE:
+                mandatory.add(name)
+
+    assert len(mandatory) == 1, (
+        f"expected exactly one mandatory environment variable across the demo, "
+        f"got {len(mandatory)}: {sorted(mandatory)}"
+    )
+    required_name = mandatory.pop()
+    assert required_name.endswith("_API_KEY"), (
+        f"the single mandatory variable must be the upstream model credential, got {required_name!r}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# T016 [P] [US3-S2, FR-012] systempaths=unconfined with its mechanism comment
+# -----------------------------------------------------------------------------
+
+
+def test_demo_compose_security_opt_systempaths_has_mechanism_comment() -> None:
+    """FR-012: systempaths=unconfined is present and the comment names the bug."""
+    text = (_repo_root() / DEMO_COMPOSE).read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    # Find the engine service's security_opt block and its leading comment.
+    in_ergane = False
+    in_security_opt = False
+    block_start = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "ergane:":
+            in_ergane = True
+        elif in_ergane and stripped.startswith("services:"):
+            # Safety: do not walk into the next service definition.
+            in_ergane = False
+        elif in_ergane and stripped == "security_opt:":
+            in_security_opt = True
+            block_start = i
+            break
+
+    assert in_security_opt and block_start >= 0, "engine security_opt block not found"
+
+    # The security_opt list is indented six spaces (`      - item`). Collect all
+    # lines belonging to the list: entries, blank lines, and comments at that
+    # indentation or deeper, stopping at the next service-level key.
+    block_lines: list[str] = []
+    for j in range(block_start + 1, len(lines)):
+        line = lines[j]
+        if not line.strip():
+            block_lines.append(line)
+            continue
+        # List items (`      - ...`) and comments (`      # ...`) belong to the
+        # block; any other non-blank line at the service indentation ends it.
+        if line.startswith(("      -", "      #")):
+            block_lines.append(line)
+            continue
+        if not line.startswith("        "):
+            break
+        block_lines.append(line)
+
+    full_block = "\n".join(block_lines)
+    assert "systempaths:unconfined" in full_block, (
+        f"security_opt must contain 'systempaths:unconfined'; block was:\n{full_block}"
+    )
+    assert "bubblewrap#284" in full_block, (
+        f"systempaths comment must name the mechanism via bubblewrap#284; block was:\n{full_block}"
+    )
+
+
+# -----------------------------------------------------------------------------
 # T013+ implementation tests (turned green by the files this story writes)
 # -----------------------------------------------------------------------------
 
