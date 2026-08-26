@@ -99,6 +99,7 @@ def xdg_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 #: All network addresses are closed loopback ports so verify fails fast.
 GATEWAY_ANSWERS: list[str] = [
     "gateway",  # llm mode
+    "external",  # gateway mode (external|managed)
     "http://127.0.0.1:1/v1",  # llm gateway base_url
     "ERGANE_LLM_MASTER_KEY",  # llm gateway master key env-var name
     "none",  # memory backend

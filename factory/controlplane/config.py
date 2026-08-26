@@ -50,6 +50,10 @@ KNOWN_TEMPORAL_MODES = ("external", "managed")
 #: registered name missing here is not selectable.
 KNOWN_ESC_ADAPTERS = ("telegram", "webhook", "none")
 
+#: Allowed gateway modes (109-US1 FR-001).  "managed" records the bundled
+#: gateway's address and the fact that the compose project owns its lifecycle.
+KNOWN_GATEWAY_MODES = ("external", "managed")
+
 #: Default relative path under XDG_CONFIG_HOME / HOME (FR-001).
 DEFAULT_CONFIG_REL = Path("ergane") / "config.toml"
 
@@ -59,6 +63,7 @@ RULE_UNKNOWN_KEY = "unknown_key"
 RULE_UNKNOWN_LLM_MODE = "unknown_llm_mode"
 RULE_LLM_DIRECT_NOT_SUPPORTED = "llm_direct_not_supported"
 RULE_LLM_DIRECT_MISSING_BASE_URL = "llm_direct_missing_base_url"
+RULE_UNKNOWN_GATEWAY_MODE = "unknown_gateway_mode"
 RULE_UNKNOWN_MEMORY_BACKEND = "unknown_memory_backend"
 RULE_UNKNOWN_TEMPORAL_MODE = "unknown_temporal_mode"
 RULE_TEMPORAL_MANAGED_NOT_IMPLEMENTED = "temporal_managed_not_implemented"
@@ -122,6 +127,7 @@ class ControlPlaneConfig:
 
         base_url: str
         master_key_env: str
+        gateway_mode: str = "external"
         timeout_s: int = 300
 
     @dataclasses.dataclass(frozen=True)
@@ -380,11 +386,21 @@ def _read_llm(document: Mapping[str, Any], source: str) -> ControlPlaneConfig.LL
     # gateway mode
     base_url = _require_string(block, "llm.base_url", source)
     master_key_env = _require_secret_ref(block, "master_key_env", source)
+    gateway_mode = block.get("gateway_mode", "external")
+    if gateway_mode not in KNOWN_GATEWAY_MODES:
+        raise ControlPlaneConfigError(
+            RULE_UNKNOWN_GATEWAY_MODE,
+            f"declares `llm.gateway_mode = {gateway_mode!r}`; supported modes are "
+            f"{_names(KNOWN_GATEWAY_MODES)}",
+            source=source,
+            field="llm.gateway_mode",
+        )
     return ControlPlaneConfig.LLM(
         mode="gateway",
         gateway=ControlPlaneConfig.LLMGateway(
             base_url=base_url,
             master_key_env=master_key_env,
+            gateway_mode=gateway_mode,
         ),
     )
 
@@ -581,7 +597,7 @@ def _read_responders(block: Mapping[str, Any], source: str) -> tuple[str, ...]:
 #: off the parsed mode rather than this tuple, so `master_key_env` is simply not
 #: emitted for `direct`.
 _RENDER_ORDER: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("llm", ("mode", "base_url", "master_key_env", "api_key_env", "timeout_s")),
+    ("llm", ("mode", "gateway_mode", "base_url", "master_key_env", "api_key_env", "timeout_s")),
     ("memory", ("backend", "url", "api_key_env", "timeout_s")),
     (
         "temporal",
@@ -613,6 +629,8 @@ def controlplane_document(config: ControlPlaneConfig) -> dict[str, Any]:
     # is refused now, so the key has no reader at all.)
     llm: dict[str, Any] = {"mode": config.llm.mode}
     if config.llm.mode == "gateway" and config.llm.gateway is not None:
+        if config.llm.gateway.gateway_mode != "external":
+            llm["gateway_mode"] = config.llm.gateway.gateway_mode
         llm["base_url"] = config.llm.gateway.base_url
         llm["master_key_env"] = config.llm.gateway.master_key_env
     elif config.llm.mode == "direct" and config.llm.direct is not None:
