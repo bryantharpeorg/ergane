@@ -587,8 +587,20 @@ def test_demo_compose_security_opt_systempaths_has_mechanism_comment() -> None:
         block_lines.append(line)
 
     full_block = "\n".join(block_lines)
-    assert "systempaths:unconfined" in full_block, (
-        f"security_opt must contain 'systempaths:unconfined'; block was:\n{full_block}"
+    # The separator is the assertion: dockerd parses generic --security-opt
+    # values only with `=` and rejects `systempaths:unconfined` at container
+    # create ("invalid --security-opt"), so the colon form ships a stack that
+    # cannot start. Only the `seccomp:` key is compose-special-cased, which is
+    # what made the colon look like this file's house style. Measured
+    # 2026-08-26; finding
+    # container/demo-compose-systempaths-separator-rejected-by-daemon.
+    assert "systempaths=unconfined" in full_block, (
+        f"security_opt must contain 'systempaths=unconfined' (equals, not "
+        f"colon: the daemon rejects the colon form); block was:\n{full_block}"
+    )
+    assert "systempaths:unconfined" not in full_block, (
+        "the colon form is rejected by dockerd at container create; use "
+        "systempaths=unconfined"
     )
     assert "bubblewrap#284" in full_block, (
         f"systempaths comment must name the mechanism via bubblewrap#284; block was:\n{full_block}"

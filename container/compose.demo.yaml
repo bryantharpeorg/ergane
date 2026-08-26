@@ -34,7 +34,7 @@ services:
       # trip the kernel's fully-visible-proc refusal when bwrap mounts a fresh
       # procfs in its user namespace (bubblewrap#284). Without this option the
       # agent sandbox cannot start. Measured on kernel 6.17.0-1018 on 2026-08-26.
-      - systempaths:unconfined
+      - systempaths=unconfined
     environment:
       # PATH/LANG/TERM/HOME are compose passthroughs from the container default.
       - PATH=/opt/ergane/.venv/bin:/usr/local/bin:/usr/bin
