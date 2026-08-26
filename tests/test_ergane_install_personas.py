@@ -238,6 +238,7 @@ LLM_ADDRESS = "http://127.0.0.1:4001"
 # persona step quickly.  Telemetry/escalation are left empty where optional.
 BASE_ANSWERS: list[str] = [
     "gateway",  # llm mode
+    "external",  # gateway mode (external|managed)
     LLM_ADDRESS,  # llm base_url
     "ERGANE_LLM_MASTER_KEY",  # llm master_key_env
     "none",  # memory backend

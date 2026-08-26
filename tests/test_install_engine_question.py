@@ -445,13 +445,13 @@ def test_the_answer_list_the_five_modules_share_is_unchanged(
     shapes = {
         "tests/test_ergane_install_walkthrough.py": (
             definer.GATEWAY_ANSWERS,
-            15,
-            {0: "gateway", 3: "hindsight", 6: "external", 12: "telegram"},
+            16,
+            {0: "gateway", 1: "external", 4: "hindsight", 7: "external", 13: "telegram"},
         ),
         "tests/test_us2_shipped_registry.py": (
             duplicator.GATEWAY_ANSWERS,
-            11,
-            {0: "gateway", 3: "none", 4: "external", 10: "none"},
+            12,
+            {0: "gateway", 1: "external", 4: "none", 5: "external", 11: "none"},
         ),
     }
     for name, (answers, length, anchors) in shapes.items():

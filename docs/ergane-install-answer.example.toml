@@ -17,6 +17,7 @@ version = 1
 
 [llm]
 mode = "gateway"
+gateway_mode = "external"
 base_url = "http://127.0.0.1:4000"
 master_key_env = "ERGANE_LLM_MASTER_KEY"
 

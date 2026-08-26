@@ -96,6 +96,11 @@ from factory.usage.litellm_client import LiteLLMClient
 #: refuses. Overridable per invocation with `--lock-timeout`.
 DEFAULT_LOCK_TIMEOUT_S = 30.0
 
+#: Address of the bundled LiteLLM gateway inside the compose project
+#: (109-US1 FR-003).  The engine reaches this DNS name because the gateway is a
+#: compose sibling, not a fourth supervised child (T3).
+BUNDLED_GATEWAY_URL = "http://gateway:4000"
+
 #: The answer that clears an optional field that currently has a value.
 CLEAR = "-"
 
@@ -154,10 +159,15 @@ def _controlplane_default(document: Mapping[str, Any], field: tuple[str, ...]) -
 
     if field == ("llm", "mode"):
         return "gateway"
-    if field == ("llm", "base_url"):
-        return "http://127.0.0.1:4000"
+    if field == ("llm", "gateway_mode"):
+        return "external"
 
     llm_mode = _deep_get(document, ("llm", "mode")) or "gateway"
+    if field == ("llm", "base_url"):
+        gateway_mode = _deep_get(document, ("llm", "gateway_mode")) or "external"
+        if llm_mode == "gateway" and gateway_mode == "managed":
+            return BUNDLED_GATEWAY_URL
+        return "http://127.0.0.1:4000"
     if field == ("llm", "master_key_env") and llm_mode == "gateway":
         return "ERGANE_LLM_MASTER_KEY"
     if field == ("llm", "api_key_env") and llm_mode == "direct":
@@ -233,6 +243,7 @@ BLANK_DOCUMENT: dict[str, Any] = {
     "version": 1,
     "llm": {
         "mode": "gateway",
+        "gateway_mode": "external",
         "base_url": "http://127.0.0.1:4000",
         "master_key_env": "ERGANE_LLM_MASTER_KEY",
     },
@@ -1359,9 +1370,14 @@ def _plan_file_answers(
     # LLM
     llm_mode = take(("llm", "mode"), required=True)
     answers.append(_answer_text(llm_mode))
-    base_url = take(("llm", "base_url"), required=True)
-    answers.append(_answer_text(base_url))
     if llm_mode == "gateway":
+        gateway_mode = take(("llm", "gateway_mode"), required=True)
+        answers.append(_answer_text(gateway_mode))
+        # base_url is always required by the parser; for managed mode the bundled
+        # address is the default and no interview question is asked.
+        base_url = take(("llm", "base_url"), required=True)
+        if gateway_mode == "external":
+            answers.append(_answer_text(base_url))
         master_key_env = take(("llm", "master_key_env"), required=True)
         answers.append(_answer_text(master_key_env))
     elif llm_mode == "direct":
@@ -1551,12 +1567,28 @@ def _ask_llm(
     if mode == "gateway":
         document = _ask(
             prompter,
-            "llm gateway base_url",
+            "gateway mode (external|managed)",
             document,
             path,
-            default=document["llm"].get("base_url"),
-            apply=lambda doc, value: _set(doc, ("llm", "base_url"), value),
+            default=document["llm"].get("gateway_mode", "external"),
+            apply=_apply_gateway_mode,
         )
+        gateway_mode = document["llm"].get("gateway_mode", "external")
+        if gateway_mode == "managed":
+            # Managed mode uses the bundled gateway; the compose project owns its
+            # lifecycle (109-US1 FR-003, T3).  The address is fixed, but the
+            # operator may still name the env-var that holds the gateway's master key.
+            document["llm"]["base_url"] = BUNDLED_GATEWAY_URL
+            _validate_in_progress(document, path)
+        else:
+            document = _ask(
+                prompter,
+                "llm gateway base_url",
+                document,
+                path,
+                default=document["llm"].get("base_url"),
+                apply=lambda doc, value: _set(doc, ("llm", "base_url"), value),
+            )
         document = _ask(
             prompter,
             "llm gateway master key env-var name",
@@ -2037,6 +2069,34 @@ def _apply_memory_backend(document: dict[str, Any], backend: Any) -> dict[str, A
     else:
         document["memory"] = {**current, "backend": backend}
     return document
+
+
+def _apply_gateway_mode(document: dict[str, Any], mode: Any) -> dict[str, Any]:
+    """Switch the gateway sub-mode, preserving the current base_url/master_key_env.
+
+    `external` is the implicit default and is omitted from the rendered document,
+    so a post-US1 external config stays byte-identical to pre-US1 output (FR-002).
+    """
+    current = document.get("llm") or {}
+    if mode == "external":
+        # Default mode: do not write the key; the parser supplies the default.
+        updated = {**current}
+        updated.pop("gateway_mode", None)
+    else:
+        updated = {**current, "gateway_mode": mode}
+    document["llm"] = updated
+    return document
+
+
+def _validate_in_progress(document: dict[str, Any], path: Path) -> None:
+    """Parse the in-progress document so a fixed assignment fails closed."""
+    try:
+        parse_controlplane_config(render_controlplane_document(document), source=str(path))
+    except ControlPlaneConfigError as refusal:
+        raise OperatorError(
+            f"{refusal}; fix or remove that file, then re-run `ergane install`",
+            code=EXIT_USER,
+        ) from None
 
 
 def _apply_temporal_mode(document: dict[str, Any], mode: Any) -> dict[str, Any]:

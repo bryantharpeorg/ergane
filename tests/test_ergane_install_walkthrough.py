@@ -131,9 +131,9 @@ pasted in `tests/test_direct_mode_refused.py`; everything else below still holds
 
 .. code-block:: text
 
-    $ printf 'gateway\nhttp://127.0.0.1:1/v1\nsk-live-pasted-by-mistake\nERGANE_LLM_MASTER_KEY\nnone\nmanaged\nexternal\n127.0.0.1:4\nergane\n\n\nhttp://127.0.0.1:3\n\n\n\n' \
+    $ printf 'gateway\nexternal\nhttp://127.0.0.1:1/v1\nsk-live-pasted-by-mistake\nERGANE_LLM_MASTER_KEY\nnone\nmanaged\nexternal\n127.0.0.1:4\nergane\n\n\nhttp://127.0.0.1:3\n\n\n\n' \
         | ERGANE_CONFIG_PATH=…/config.toml uv run ergane install
-    llm mode (gateway|direct) [gateway]: llm gateway base_url [http://127.0.0.1:4000]: llm gateway master key env-var name [ERGANE_LLM_MASTER_KEY]:   ~/.config/ergane/config.toml: [secret_value_not_reference] `master_key_env` looks like a credential (<value withheld>); it must name an environment variable, not contain the secret value
+    llm mode (gateway) [gateway]: gateway mode (external|managed) [external]: llm gateway base_url [http://127.0.0.1:4000]: llm gateway master key env-var name [ERGANE_LLM_MASTER_KEY]:   ~/.config/ergane/config.toml: [secret_value_not_reference] `master_key_env` looks like a credential (<value withheld>); it must name an environment variable, not contain the secret value
     llm gateway master key env-var name [ERGANE_LLM_MASTER_KEY]: memory backend (hindsight|none) [none]: temporal mode (external|managed) [external]:   ~/.config/ergane/config.toml: [temporal_managed_not_implemented] `temporal.mode = "managed"` is not implemented; it arrives with epic 042 (managed Temporal + worker units)
     temporal mode (external|managed) [external]: temporal address [127.0.0.1:7233]: temporal namespace [ergane]: temporal api key env-var name (optional): temporal TLS enabled (true|false) [false]: telemetry OTLP endpoint (optional): escalation adapter (telegram) [telegram]: escalation bot token env-var name (optional) [TELEGRAM_BOT_TOKEN]: escalation chat id env-var name (optional) [TELEGRAM_CHAT_ID]: wrote ~/.config/ergane/config.toml
 
@@ -211,7 +211,7 @@ The full suite
 .. code-block:: text
 
     $ uv run pytest -q
-    2486 passed, 44 skipped, 4 warnings in 282.56s (0:04:42)
+    4953 passed, 56 skipped, 6 warnings in 357.81s (0:05:57)
 """
 
 from __future__ import annotations
@@ -401,6 +401,7 @@ TEMPORAL_ADDRESS = "127.0.0.1:4"
 #: A gateway-mode interview, in the order the walkthrough asks.
 GATEWAY_ANSWERS: list[str] = [
     "gateway",  # llm mode
+    "external",  # gateway mode (external|managed)
     LLM_ADDRESS,  # llm gateway base_url
     "ERGANE_LLM_MASTER_KEY",  # llm gateway master key env-var name
     "hindsight",  # memory backend
@@ -422,6 +423,7 @@ def _answers(**overrides: str) -> list[str]:
     """GATEWAY_ANSWERS with individual positions replaced by name."""
     order = [
         "llm_mode",
+        "gateway_mode",
         "llm_base_url",
         "llm_master_key_env",
         "memory_backend",
@@ -440,6 +442,9 @@ def _answers(**overrides: str) -> list[str]:
     answers = list(GATEWAY_ANSWERS)
     for name, value in overrides.items():
         answers[order.index(name)] = value
+    # Direct mode skips the gateway-mode question entirely (109-US1 FR-006).
+    if answers[order.index("llm_mode")] == "direct":
+        del answers[order.index("gateway_mode")]
     return answers
 
 
@@ -565,7 +570,7 @@ def test_walkthrough_asks_only_the_fields_the_chosen_mode_needs(
 
     none_answers = _answers(memory_backend="none")
     # `none` needs neither a url nor an api key, so those two answers go unused.
-    del none_answers[4:6]
+    del none_answers[5:7]
     _, without = walkthrough(none_answers)
     none_prompts = without.prompts
 
@@ -599,7 +604,7 @@ def test_the_real_terminal_prompter_drives_the_interview(
     # hand, because only the real prompter renders the error at all.
     pasted = "sk-live-pasted-by-mistake"
     answers = _answers()
-    answers.insert(2, pasted)
+    answers.insert(3, pasted)
     monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(answers) + "\n"))
 
     # US3 runs a scan before the LLM question. On this host that scan finds an
@@ -657,7 +662,7 @@ def test_rerun_offers_the_existing_file_as_defaults_and_touches_only_telemetry(
 
     # Re-run: every answer empty (accept the offered default) except telemetry.
     rerun_answers = [""] * len(GATEWAY_ANSWERS)
-    rerun_answers[11] = "http://127.0.0.1:5"
+    rerun_answers[12] = "http://127.0.0.1:5"
     _, prompter = walkthrough(rerun_answers)
     after = config_path.read_text(encoding="utf-8")
 
@@ -754,7 +759,7 @@ def test_a_plaintext_secret_is_refused_at_entry_with_the_parsers_rule(
     secret = "sk-live-super-secret-value"
     answers = _answers(llm_master_key_env=secret)
     # After the refusal the operator is asked again; supply the good answer.
-    answers.insert(3, "ERGANE_LLM_MASTER_KEY")
+    answers.insert(4, "ERGANE_LLM_MASTER_KEY")
 
     result, prompter = walkthrough(answers)
 
