@@ -75,6 +75,16 @@ state: draft
 #     manifest and spec — with an explicit git identity, because the container
 #     user has none. This is exactly the class of gap that made 109's US2 take
 #     three attempts; it is named here so it costs nothing this time.
+#
+# US3 LANDED BEFORE THIS FILE DID. Its landing commit (7d3c06ab, #353; the
+# systempaths separator corrected by #354) predates the trio's own landing
+# (#355), so the delta baseline reads the spec at US3's landing commit, finds
+# no file there, and pins a None fingerprint — every delta derive reopens the
+# landed story (observed 2026-08-26 on the first remainder dispatch, which
+# needed a hand-edited workgraph). The commit that introduces this comment
+# carries the rescue trailer (107 FR-015) in its body, making it US3's newest
+# landing fact at a revision where this spec exists. That pins the real
+# fingerprint and keeps US3 closed in every future delta.
 ---
 
 # Feature Specification: the demo dispatches the story it promised
