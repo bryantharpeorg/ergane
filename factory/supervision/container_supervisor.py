@@ -335,6 +335,28 @@ async def _run_supervisor(
     worker = await start_child("worker", argv_map["worker"])
     bridge = await start_child("bridge", argv_map["bridge"])
 
+    # Optionally spawn the demo driver as a plain subprocess through the
+    # injectable start_child seam so tests can assert on its argv and lifecycle.
+    # It is never a supervised child: the reaper task is separate and its exit
+    # is never fatal (FR-001, plan T1, T2).
+    demo_driver_task: asyncio.Task[None] | None = None
+    if os.environ.get("ERGANE_DEMO"):
+        interpreter = sys.executable
+        driver_argv = ["factory.supervision.demo_driver"]
+        logger.info("starting demo driver: %s", " ".join([interpreter, "-m", *driver_argv]))
+        demo_proc = await start_child("demo_driver", driver_argv)
+
+        async def _reap_demo_driver(proc: ChildController) -> None:
+            try:
+                status = await proc.wait()
+                logger.info("demo driver exited with status %s", status)
+            except Exception as exc:
+                logger.exception("demo driver reaper raised: %s", exc)
+
+        demo_driver_task = asyncio.create_task(
+            _reap_demo_driver(demo_proc), name="demo_driver_reaper"
+        )
+
     controllers: dict[str, ChildController] = {
         "temporal": temporal,
         "worker": worker,

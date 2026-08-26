@@ -5,6 +5,35 @@ Status: `given` = pre-decided constraint from the project brief; `decided` = set
 
 ---
 
+## D-052 · The compose demo's opt-in is the exported API key; install's closing demonstration stays free (decided)
+
+Decided 2026-08-26, claimed at landing of spec `110-the-demo-dispatches-the-story-it-promised` US1.
+
+`ergane install`'s closing demonstration (`_closing_demonstration`) stays a free,
+local, offline smoke: it stops intentionally at `ergane spec derive` and prints
+the next command. It is not the compose demo, and expanding it to finish a story
+would turn the install walkthrough into a spend path inside a free command.
+
+The demo project started by `container/compose.demo.yaml` is where a single real
+attempt is intentionally spent. That spend is bounded to one story by
+`--halt-after-pass`: a successful `build ship` stops at `PASSED` and never
+reaches landing or merge. The operator's opt-in is the one required environment
+variable the compose file demands — `UPSTREAM_MODEL_API_KEY` — which the bundled
+LiteLLM gateway forwards to the upstream provider. Nothing else in the demo
+project asks for a credential.
+
+1. **Install's demonstration remains free.** It writes a tempdir, validates the
+   scaffold, derives the graph, prints the artifact path, and stops. It never
+   starts Temporal, a worker, a gateway, or an adapter.
+2. **The compose demo is the one permitted spend.** First boot installs the
+   control plane, scaffolds the throwaway repository, proves the sandbox can
+   start, and dispatches exactly one epic with `--halt-after-pass`. The halt
+   mode stops at `PASSED` and does not attempt to land, so the operator's key
+   buys exactly one attempt's worth of agent work.
+3. **No second spend on restart.** A sentinel under `$ERGANE_STATE_HOME/demo/`
+   makes every later driver run a stated no-op, even if the first attempt
+   crashed between dispatch and terminal status.
+
 ## D-049 · The merge-queue precondition now covers ownership as well as visibility (decided)
 
 Decided 2026-08-19, claimed at landing of spec `059-a-wired-repo-can-land` US3.
