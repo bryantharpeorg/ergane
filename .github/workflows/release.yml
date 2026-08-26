@@ -184,6 +184,32 @@ jobs:
           echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
+      - name: Ensure the release object exists
+        # `gh release upload` requires a release, and a pushed tag is not one.
+        # Nothing else in this workflow creates it: v0.4.0 ran every job green,
+        # shipped to PyPI and GHCR, and left no release object behind — which is
+        # exactly why releases/latest/download/compose.yaml returns 404. Without
+        # this step the upload below fails on any tag whose release an operator
+        # has not already made by hand, and the version number is spent.
+        #
+        # `--verify-tag` is the guard that keeps this honest: it refuses to
+        # invent a release for a tag that was never pushed, so a typo fails here
+        # rather than creating a release pointing at nothing.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.meta.outputs.release_tag }}"
+          if gh release view "${TAG}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; leaving its notes alone"
+          else
+            gh release create "${TAG}" \
+              --repo "${{ github.repository }}" \
+              --title "${TAG}" \
+              --generate-notes \
+              --verify-tag
+          fi
+
       - name: Publish compose demo asset
         shell: bash
         env:

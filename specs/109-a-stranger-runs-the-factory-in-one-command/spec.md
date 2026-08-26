@@ -314,7 +314,7 @@ counts.
 has never had Ergane installed:
 
 ```bash
-export ANTHROPIC_API_KEY=…
+export UPSTREAM_MODEL_API_KEY=…
 curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/compose.yaml \
   | docker compose -f - up
 ```
