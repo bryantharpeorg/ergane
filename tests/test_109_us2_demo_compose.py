@@ -5,13 +5,18 @@ Docker and one API key. It is deliberately *not* the operational project:
 its volumes are named, not same-path binds, and it does not share the host's
 state. These tests fail if any of those invariants erode.
 
-Verification evidence (constitution VIII) will be pasted here once the project
-comes up and `ergane install --verify` passes inside it.
+A live integration test at the bottom of this file brings the project up and
+runs `ergane install --verify --from-file` inside it when a Docker daemon and a
+real upstream model credential are available; otherwise it skips.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -265,6 +270,36 @@ def test_demo_registry_aliases_carry_no_example_prefix(
     )
 
 
+def test_demo_registry_aliases_match_gateway_config() -> None:
+    """FR-010: every alias the registry dispatches must be served by the gateway.
+
+    A registry naming an alias the bundled gateway does not serve would fail
+    FR-005's probe three stages later wearing a different error. The gateway's
+    config file is the authority for what it serves.
+    """
+    registry = _load_yaml(_repo_root() / "container" / "personas.demo.yaml")
+    gateway = _load_yaml(_repo_root() / "container" / "gateway-config.yaml")
+
+    gateway_aliases = {
+        entry["model_name"]
+        for entry in gateway.get("model_list", [])
+        if isinstance(entry, dict) and isinstance(entry.get("model_name"), str)
+    }
+    registry_aliases: set[str] = set()
+    for entry in registry.values():
+        if not isinstance(entry, dict):
+            continue
+        for value in (entry.get("model"), entry.get("fallback")):
+            if isinstance(value, str) and value and value != "null":
+                registry_aliases.add(value)
+
+    unserved = registry_aliases - gateway_aliases
+    assert not unserved, (
+        f"demo registry aliases not served by gateway config: {sorted(unserved)}; "
+        f"gateway serves: {sorted(gateway_aliases)}"
+    )
+
+
 def test_verify_refusal_for_all_example_registry_is_untouched() -> None:
     """FR-010: the shipped refusal at verify.py:441 still exists and still fires.
 
@@ -363,3 +398,142 @@ def test_bundled_demo_registry_exists(demo_registry_path: Path) -> None:
 
 def test_bundled_demo_answers_exists(demo_answers_path: Path) -> None:
     assert demo_answers_path.is_file(), f"{demo_answers_path} must exist"
+
+
+# -----------------------------------------------------------------------------
+# T015 [US2-S4, SC-002] live integration: the project comes up and verifies
+# -----------------------------------------------------------------------------
+
+
+def _docker_binary() -> str | None:
+    """Return the docker binary path only when a daemon actually answers."""
+    binary = shutil.which("docker")
+    if binary is None:
+        return None
+    probe = subprocess.run(
+        [binary, "version", "--format", "{{.Server.Version}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return binary if probe.returncode == 0 else None
+
+
+DOCKER = _docker_binary()
+
+
+@pytest.mark.skipif(
+    DOCKER is None, reason="docker daemon is not reachable; integration test skipped"
+)
+@pytest.mark.live_proxy
+def test_demo_project_comes_up_and_install_verify_passes_inside_it() -> None:
+    """Bring up the demo project and run `ergane install --verify` inside it.
+
+    This is the evidence for US2-S4/SC-002: the bundled gateway and persona
+    registry satisfy the shipped refusal at verify.py:441, and the key-management
+    probe (mint, constrain, spend logs, revoke) passes end-to-end.
+
+    Requires:
+      - a Docker daemon (skipped otherwise),
+      - UPSTREAM_MODEL_API_KEY set to a real provider credential,
+      - the engine image referenced by ERGANE_VERSION to be pullable or built.
+    """
+    upstream_key = os.environ.get("UPSTREAM_MODEL_API_KEY")
+    if not upstream_key:
+        pytest.skip("UPSTREAM_MODEL_API_KEY is not set; cannot run live integration")
+
+    # The shipped HostProbe requires `gh` to be authenticated; GH_TOKEN is the
+    # optional credential the compose file forwards into the engine.
+    gh_token = os.environ.get("GH_TOKEN")
+    if not gh_token:
+        pytest.skip("GH_TOKEN is not set; cannot run live integration")
+
+    repo_root = _repo_root()
+    compose_path = repo_root / DEMO_COMPOSE
+    answers_path = repo_root / "container" / "ergane-install-answer.demo.toml"
+
+    assert compose_path.is_file()
+    assert answers_path.is_file()
+
+    env = os.environ.copy()
+    env["UPSTREAM_MODEL_API_KEY"] = upstream_key
+    env["GH_TOKEN"] = gh_token
+    # Allow the operator to pin the image tag; otherwise use the CLI version so
+    # the local build/tag path works.
+    env.setdefault(
+        "ERGANE_VERSION",
+        __import__("factory.supervision.engine_identity", fromlist=["cli_version"]).cli_version(),
+    )
+
+    project_name = f"ergane-demo-verify-{uuid.uuid4().hex[:8]}"
+    compose_argv = [
+        str(DOCKER),
+        "compose",
+        "-f",
+        str(compose_path),
+        "-p",
+        project_name,
+    ]
+
+    def _compose_run(argv: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [*compose_argv, *argv],
+            check=check,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def _compose_exec(argv: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        return _compose_run(["exec", "-T", "ergane", *argv], check=check)
+
+    # Validate the compose file before touching the daemon.
+    _compose_run(["config"], check=True)
+
+    try:
+        # Bring the stack up. The gateway and postgres healthchecks gate ergane.
+        up = _compose_run(["up", "-d"], check=False)
+        assert up.returncode == 0, (
+            f"docker compose up failed:\nstdout={up.stdout}\nstderr={up.stderr}"
+        )
+
+        # Wait long enough for the engine to finish its own readiness wait.
+        _compose_run(["ps"], check=True)
+
+        # Run the verification inside the engine, using the bundled answers file.
+        verify = _compose_exec(
+            [
+                "ergane",
+                "install",
+                "--verify",
+                "--from-file",
+                "/opt/ergane/container/ergane-install-answer.demo.toml",
+            ],
+            check=False,
+        )
+        output = verify.stdout + verify.stderr
+
+        assert verify.returncode == 0, (
+            f"ergane install --verify failed inside the demo engine:\n{output}"
+        )
+
+        # The key-management probe must leave its own evidence in the output.
+        output_lower = output.lower()
+        assert "mint" in output_lower or "constrain" in output_lower, (
+            f"key-management probe evidence (mint/constrain) missing:\n{output}"
+        )
+        assert "spend logs" in output_lower, (
+            f"key-management probe evidence (spend logs) missing:\n{output}"
+        )
+        assert "revoke" in output_lower, (
+            f"key-management probe evidence (revoke) missing:\n{output}"
+        )
+    finally:
+        # Tear the stack down and discard the named volumes.
+        subprocess.run(
+            [*compose_argv, "down", "-v"],
+            check=False,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
