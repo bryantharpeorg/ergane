@@ -24,6 +24,7 @@ from temporalio.service import RPCError, RPCStatusCode
 
 from factory.activities.merge_activities import onboard_target_repo
 from factory.cli.landing import (
+    halt_after_pass_from_args,
     landing_config_from_args,
     landing_overrides_from_args,
 )
@@ -613,6 +614,7 @@ def start_command(args: argparse.Namespace) -> int:
             args.max_concurrent_nodes,
             landing_config=landing_config_from_args(args),
             landing_overrides=landing_overrides_from_args(args),
+            halt_after_pass=halt_after_pass_from_args(args),
         )
     )
 
@@ -624,6 +626,7 @@ async def _start_epic(
     *,
     landing_config: LandingConfig | None = None,
     landing_overrides: tuple[str, ...] = (),
+    halt_after_pass: bool = False,
 ) -> int:
     client = await _connect()
 
@@ -657,6 +660,8 @@ async def _start_epic(
                 # 081-US3 (FR-009): which of them the operator named, so the
                 # epic's status can tell a set dial from a defaulted one.
                 landing_overrides=landing_overrides,
+                # 109-US3: halting mode stops at PASSED and never attempts to land.
+                halt_after_pass=halt_after_pass,
             ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,

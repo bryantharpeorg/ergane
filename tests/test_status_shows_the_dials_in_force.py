@@ -53,6 +53,7 @@ from temporalio.testing import WorkflowEnvironment
 
 from factory.cli.landing import (
     LANDING_DIAL_FLAGS,
+    halt_after_pass_from_args,
     landing_config_from_args,
     landing_overrides_from_args,
 )
@@ -129,6 +130,7 @@ def dials_typed(*command_line: str) -> dict[str, Any]:
     return {
         "landing_config": landing_config_from_args(args),
         "landing_overrides": landing_overrides_from_args(args),
+        "halt_after_pass": halt_after_pass_from_args(args),
     }
 
 
@@ -288,6 +290,39 @@ async def test_a_dial_set_to_its_default_value_still_reads_as_set(
         # And the dial beside it, at the same number of seconds nobody typed,
         # reads the other way. The pair is the evidence.
         assert block["--stall-after-s"] == (str(LandingConfig.stall_after_s), "default")
+
+        await bounded(handle.result())
+
+
+# --- T022 [US3] (spec US3-S2, FR-014): halting mode says landing was not attempted
+
+
+async def test_a_halting_epic_says_landing_was_not_attempted(
+    env: WorkflowEnvironment,
+) -> None:
+    """109-US3, FR-014: the printed line distinguishes absent from failed landing.
+
+    A reader who has only seen runs that land will assume a PASSED node with no
+    PR number is a failed landing. The status line must say explicitly that the
+    landing was not attempted and what would be required to land.
+    """
+    typed = dials_typed("--halt-after-pass")
+
+    async with start_epic(env, one_passing_node(env), graph=one_node(), **typed) as handle:
+        status = await wait_for_status(
+            handle,
+            lambda answer: bool(answer.nodes),
+            what="the epic to resolve its graph",
+        )
+        rendered = render_status(EPIC_ID, as_json_document(status), "RUNNING")
+        lines = rendered.splitlines()
+        assert status.halt_after_pass is True
+        assert any("landing not attempted" in line for line in lines), (
+            f"halting epic status did not declare landing unattempted:\n{rendered}"
+        )
+        assert any("--halt-after-pass" in line for line in lines), (
+            f"halting epic status did not name the flag:\n{rendered}"
+        )
 
         await bounded(handle.result())
 

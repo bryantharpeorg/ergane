@@ -180,22 +180,33 @@ def add_landing_dial_flags(parser: argparse.ArgumentParser) -> None:
             f"and requeued for free (default: {LandingConfig.max_free_rebases})"
         ),
     )
+    parser.add_argument(
+        "--halt-after-pass",
+        action="store_true",
+        default=None,
+        help=(
+            "stop a passing node at PASSED and do not attempt to land; "
+            "useful for demos and dry runs"
+        ),
+    )
 
 
 def _typed_dials(args: Any) -> dict[str, Any]:
-    """Every dial the operator actually typed, by `LandingConfig` field name.
-
-    Read with `getattr(..., None)` rather than by attribute, and that is load
-    bearing rather than defensive: `start_command` is called with hand-built
-    namespaces by several tests and by neighbouring code, and a namespace that
-    predates these flags means "the operator said nothing" — the same answer as
-    a flag left off the command line — not an `AttributeError` at dispatch.
-    """
+    """Every dial the operator actually typed, by `LandingConfig` field name."""
     typed = {
         field: getattr(args, flag.lstrip("-").replace("-", "_"), None)
         for flag, field in LANDING_DIAL_FLAGS.items()
     }
     return {field: value for field, value in typed.items() if value is not None}
+
+
+def halt_after_pass_from_args(args: Any) -> bool:
+    """109-US3: whether the operator asked for halting mode.
+
+    `store_true` with default `None` lets callers distinguish "not set" from
+    "set to false"; this returns `True` only when the flag is present.
+    """
+    return getattr(args, "halt_after_pass", None) is True
 
 
 def landing_config_from_args(args: Any) -> LandingConfig:

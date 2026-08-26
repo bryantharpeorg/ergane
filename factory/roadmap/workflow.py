@@ -267,6 +267,9 @@ class RoadmapInput:
     #: child that carried the values without them would report every dial as
     #: defaulted — "set but unreadable", the same defect US2 ended one layer up.
     landing_overrides: tuple[str, ...] = ()
+    #: 109-US3: whether each child epic halts at PASSED rather than attempting
+    #: to land. Forwarded unchanged to every child `EpicInput`.
+    halt_after_pass: bool = False
     #: The operator's ladder overlay, not the ladder itself: every child epic's
     #: caps are read from the target clone's manifest at dispatch (023 US2),
     #: and `_child_config` lays the one field set here — `promotion_persona`
@@ -1012,6 +1015,7 @@ class RoadmapWorkflow:
                 max_concurrent_nodes=request.max_concurrent_nodes,
                 landing_config=request.landing_config,
                 landing_overrides=request.landing_overrides,
+                halt_after_pass=request.halt_after_pass,
                 config=request.config,
                 poll_interval_s=request.poll_interval_s,
                 idle_rescan_s=request.idle_rescan_s,
@@ -1286,6 +1290,7 @@ class RoadmapWorkflow:
                     landing_config=request.landing_config,
                     landing_overrides=request.landing_overrides,
                     max_concurrent_nodes=request.max_concurrent_nodes,
+                    halt_after_pass=request.halt_after_pass,
                 ),
                 id=child_workflow_id,
                 task_queue=TASK_QUEUE,
