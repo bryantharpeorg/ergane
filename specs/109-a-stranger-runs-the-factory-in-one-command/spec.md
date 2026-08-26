@@ -1,5 +1,26 @@
 ---
-state: draft
+state: landed
+# Attested landed 2026-08-26. US1 e4b111b4fc6b (#345), US2 25763d85c993 (#346),
+# US3 88390c7ac833 (#349), US4 0ce6f62d9673 (#347) — all four observed on
+# ergane-buildout by content, not by a merged flag.
+#
+# US2 took three attempts. US3's first run was killed at 05:56Z by infrastructure
+# rather than by the agent: `drift_for_spec` shelled git on the worker's event
+# loop, starved it for 5m12s, and blew the 120s heartbeat of a node that had 138
+# insertions already on disk. It passed on attempt 1 when re-dispatched against a
+# paused roadmap schedule. The cause is fixed in the same change that writes this
+# line; the tests are `tests/test_roadmap_activities_off_the_event_loop.py`.
+#
+# WHAT THIS ATTESTATION DOES NOT CLAIM. `landed` here means all four stories are
+# on the branch, gated and judged. It does not mean the spec's own acceptance
+# test has run. That test is in tasks.md under "What no task here can prove" —
+# a stranger's first five minutes on a machine that has never had Ergane — and it
+# is still outstanding for a concrete reason: no GitHub Release object carries
+# `compose.yaml` yet, so the `releases/latest/download/compose.yaml` URL in the
+# one-command install 404s. US4 built the publish job; nothing has tagged a
+# release that contains it. Until that release exists, this spec is landed and
+# unproven, and those are different words on purpose.
+#
 # DRAFTED 2026-08-25 ~11:05 PM CT by the operator session, against ergane-buildout
 # at 5918ea5 (v0.4.0 shipped, 108 attested). Every file:line below was read from
 # that commit on 2026-08-25 and verified against the tree before drafting.
