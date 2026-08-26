@@ -1,7 +1,58 @@
 ---
-state: draft
+state: landed
 fixes:
   - release/the-image-half-of-a-release-has-no-rehearsal-and-runs-after-the-irreversible-half
+#
+# Attested landed 2026-08-25. US1 bcee81510bb5 (#340), US2 8b8b9bc1bd06 (#341) —
+# both observed on ergane-buildout by content, not by a merged flag.
+#
+# THE SPEC'S OWN ACCEPTANCE TEST RAN, AND IT CAUGHT SOMETHING. This is the rare
+# case where the `fixes:` key above is more than a claim: `gh workflow run
+# test-release.yml` was executed twice on the night US1 landed, and the first run
+# failed at FR-019 —
+#
+#   PACKAGE-VISIBILITY-FAIL: expected public, observed private
+#
+# A new GHCR package defaults to private, and nothing else in the release
+# pipeline looks at package visibility. Had `v0.4.0` been tagged two hours
+# earlier — which was the plan before this spec existed — the wheel would have
+# gone to PyPI irreversibly, pointing at an image that refuses every user who is
+# not the operator. That is failure mode 13 arriving in the one direction 105's
+# job ordering could not protect. The operator flipped the package to public and
+# the re-run went green end to end.
+#
+# FR-019 was added to this spec THREE HOURS before it fired, during a refinement
+# pass (#339) prompted by a hand probe of the registry. The probe pushed a
+# throwaway image under a deliberately different name and found
+# `visibility=private repo=UNLINKED`, which falsified the working assumption that
+# a public repository yields a public package. Had the probe used the real name
+# to be maximally informative, it would have created an unlinked `ergane` package
+# and denied the release workflow the write it needs — manufacturing the blocker
+# it was testing for. That near-miss is trap T8 in the plan.
+#
+# MEASURED, and worth keeping: the multi-arch build including the emulated
+# linux/arm64 layer took 489s and 527s across two rehearsal runs, and 511s on the
+# real release. Against `timeout-minutes: 90` that is under 10% of the budget, so
+# the ceiling is generous rather than tight. Nobody had this number before; it is
+# what FR-007 exists to produce. A 48-minute figure measured locally on the
+# factory host is NOT comparable — that build carried 11.8 GB of `.ergane` node
+# homes that CI's 20 MB tracked-files checkout does not have
+# (container/dockerignore-omits-ergane-so-a-local-build-ships-node-homes).
+#
+# COST: two stories, three attempts. US1 passed first time. US2's attempt 1
+# produced correct work on the correct base and passed the full 4,934-test gate,
+# and the branch was reset for attempt 2 anyway, orphaning commit 887bc05;
+# attempt 2 redid the same work in about nine minutes against attempt 1's
+# fifty-five. Both nodes ran persona `implementer` on
+# `ollama-cloud/kimi-k2.7-code`, gateway-routed and billed per token.
+#
+# THE WORKFLOW-SCOPE FINDING IS NOW STALE. US1 writes
+# .github/workflows/test-release.yml and landed through the factory without
+# incident, which is the first time a story touching that directory has done so.
+# `merge/a-story-touching-github-workflows-cannot-be-pushed-by-the-factory` was
+# opened when the target clone pushed over HTTPS with an OAuth App token; the
+# operator repointed it to SSH and this landing is the evidence that closes it.
+#
 # DRAFTED 2026-08-25 ~7:30 PM CT by the operator session, against ergane-buildout
 # at 6d3b3d3 (0.4.0 declared, main converged). Written because the operator asked
 # to test a GHCR push before cutting v0.4.0, and the measurement behind that ask
