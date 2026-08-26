@@ -57,7 +57,13 @@ fi
 # because the suite had run in a tree that shared most of its content with the
 # commit but not all of it. Nothing staged, unstaged, stashed or untracked can
 # reach this verdict.
-wt="$(mktemp -d "${TMPDIR:-/tmp}/ergane-gate-XXXXXX")"
+#
+# The template must not contain "ergane": the demo-residue scan in
+# tests/test_ergane_install_closing_step.py treats any tempdir with that name
+# holding a specs/ directory as leaked demo state, and this worktree is a full
+# checkout — the suite running inside it would fail on the very worktree it
+# runs in (2026-08-26, twice, on a docs-only commit).
+wt="$(mktemp -d "${TMPDIR:-/tmp}/factory-gate-XXXXXX")"
 if ! git worktree add --detach --quiet "$wt" "$TARGET" 2>/dev/null; then
   echo "gate-commit: could not materialise ${TARGET:0:12} in a scratch worktree" >&2
   rm -rf "$wt"
