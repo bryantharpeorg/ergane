@@ -377,6 +377,36 @@ def _bash_run_blocks(job_text: str) -> list[str]:
     return blocks
 
 
+def _job_text(job_id: str) -> str:
+    """Return the raw text of a job, starting at its id line and ending at the next job."""
+    text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(rf"^  {re.escape(job_id)}:\s*$", text, re.MULTILINE)
+    assert match is not None, f"job '{job_id}' not found"
+    start = match.start()
+    next_job = re.search(r"^  [a-zA-Z0-9_-]+:\s*$", text[start + 1 :], re.MULTILINE)
+    end = start + 1 + next_job.start() if next_job else len(text)
+    return text[start:end]
+
+
+def _job_is_ordered_after(target: str, job_id: str, workflow: dict[str, Any]) -> bool:
+    """Return True if job_id directly or transitively needs target."""
+    jobs = workflow.get("jobs", {})
+    seen: set[str] = set()
+
+    def _walk(current: str) -> bool:
+        if current in seen:
+            return False
+        seen.add(current)
+        needs = jobs.get(current, {}).get("needs", [])
+        if isinstance(needs, str):
+            needs = [needs]
+        if target in needs:
+            return True
+        return any(_walk(dep) for dep in needs)
+
+    return _walk(job_id)
+
+
 def test_us2_preflight_job_exists_with_correct_needs() -> None:
     """FR-011/FR-013: preflight job exists and build-and-publish needs it."""
     workflow = _load_release_workflow()
@@ -617,4 +647,112 @@ def test_no_workflow_can_publish_on_branch_pr_or_merge_group() -> None:
     assert forbidden == [], (
         "publishing workflows must be triggered only by an operator action on a version tag; "
         f"these can fire from branch/PR/merge-group: {forbidden}"
+    )
+
+
+# --- T022 [US4] compose demo asset is published after the image job --------------
+
+
+def test_us4_compose_asset_published_after_image_job() -> None:
+    """FR-017/T022: a step publishes container/compose.demo.yaml, ordered after the image job.
+
+    A compose file naming an image that does not exist yet is failure mode 13 in
+    a new costume; the publish step must therefore run only after
+    build-and-publish-image has pushed the image.
+    """
+    workflow = _load_release_workflow()
+
+    publish_job_id: str | None = None
+    for job_id in workflow.get("jobs", {}):
+        if "container/compose.demo.yaml" in _job_text(job_id):
+            publish_job_id = job_id
+            break
+
+    assert publish_job_id is not None, (
+        "no job references container/compose.demo.yaml; a release asset step is required"
+    )
+    assert _job_is_ordered_after("build-and-publish-image", publish_job_id, workflow), (
+        f"job {publish_job_id} must be ordered after build-and-publish-image"
+    )
+
+    job_text = _job_text(publish_job_id)
+    assert "gh release upload" in job_text, (
+        f"job {publish_job_id} must upload a release asset with gh release upload"
+    )
+
+
+# --- T023 [P] [US4] tag-agreement check lives in the workflow ------------------
+
+
+def test_us4_compose_asset_tag_agreement_checked_in_workflow() -> None:
+    """FR-018/T023: the workflow fails the release if the published compose engine tag mismatches.
+
+    The check must be in the workflow, not a human procedure. It fetches the
+    published asset back, extracts the engine image tag, and exits non-zero on
+    mismatch with the tag being released.
+    """
+    workflow = _load_release_workflow()
+
+    publish_job_id: str | None = None
+    for job_id in workflow.get("jobs", {}):
+        if "container/compose.demo.yaml" in _job_text(job_id):
+            publish_job_id = job_id
+            break
+
+    assert publish_job_id is not None, (
+        "no job references container/compose.demo.yaml; cannot locate tag-agreement check"
+    )
+    job_text = _job_text(publish_job_id)
+
+    assert "releases/download/" in job_text, (
+        "publish job must fetch the published release asset back from GitHub"
+    )
+    assert "image:" in job_text, (
+        "publish job must read the engine image reference from the compose asset"
+    )
+    assert "exit 1" in job_text, (
+        "tag-agreement assertion must be able to fail the release by exiting non-zero"
+    )
+
+
+# --- T024 [P] [US4] regression guard for 105 and 108 landed tests --------------
+
+
+def test_us4_release_workflow_regression_guard() -> None:
+    """FR-019/T024: preflight/image ordering and 108 package/visibility assertions still hold."""
+    workflow = _load_release_workflow()
+    jobs = workflow.get("jobs", {})
+
+    # Preflight ordering (release.yml:21, :42-43).
+    assert "build-image-preflight" in jobs, "preflight job missing"
+    assert "build-and-publish" in jobs, "build-and-publish job missing"
+    assert jobs["build-and-publish"].get("needs") == ["build-image-preflight"], (
+        f"build-and-publish needs wrong: {jobs['build-and-publish'].get('needs')!r}"
+    )
+
+    # Image job needs (release.yml:98-99).
+    assert "build-and-publish-image" in jobs, "image job missing"
+    assert jobs["build-and-publish-image"].get("needs") == ["build-and-publish"], (
+        f"image job needs wrong: {jobs['build-and-publish-image'].get('needs')!r}"
+    )
+
+    # Package linkage and visibility assertions (108/US1).
+    original = jobs["build-and-publish"].get("permissions", {})
+    assert original == {"contents": "read", "id-token": "write"}, (
+        f"build-and-publish permissions changed: {original!r}"
+    )
+    image = jobs["build-and-publish-image"].get("permissions", {})
+    assert image.get("packages") == "write", (
+        f"image job must declare packages: write, got {image!r}"
+    )
+    assert image.get("contents") == "read" and image.get("id-token") == "write", (
+        f"image job permissions must include contents: read and id-token: write, got {image!r}"
+    )
+
+    # Repository env declaration (108/US1-S2).
+    image_job = jobs["build-and-publish-image"]
+    env = image_job.get("env", {})
+    assert "IMAGE_REPOSITORY" in env, "IMAGE_REPOSITORY must be declared on the image job"
+    assert env["IMAGE_REPOSITORY"] == "ghcr.io/bryantharpeorg/ergane", (
+        f"IMAGE_REPOSITORY must resolve to ghcr.io/bryantharpeorg/ergane, got {env['IMAGE_REPOSITORY']!r}"
     )

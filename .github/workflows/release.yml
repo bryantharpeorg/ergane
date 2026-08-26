@@ -162,3 +162,74 @@ jobs:
               exit 1
             fi
           done
+
+  publish-compose-asset:
+    # FR-017: publish the one-command demo compose file as a release asset.
+    # This must run after the image job so the asset never names an image that
+    # has not been pushed yet (failure mode 13 in a new costume).
+    needs: [build-and-publish-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set release and image tag from git tag
+        id: meta
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          IMAGE_TAG="${TAG#v}"
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish compose demo asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ERGANE_VERSION: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          tmpdir="$(mktemp -d)"
+          # Substitute the version source so the fetched file names the real tag.
+          python -c "
+            import os
+            version = os.environ['ERGANE_VERSION']
+            with open('container/compose.demo.yaml') as f:
+                content = f.read()
+            content = content.replace('\${ERGANE_VERSION}', version)
+            with open('${tmpdir}/compose.yaml', 'w') as f:
+                f.write(content)
+          "
+          gh release upload "${{ steps.meta.outputs.release_tag }}" \
+            "${tmpdir}/compose.yaml" --clobber --repo "${{ github.repository }}"
+
+      - name: Assert published compose engine tag matches release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_TAG="${{ steps.meta.outputs.release_tag }}"
+          IMAGE_TAG="${{ steps.meta.outputs.image_tag }}"
+          ASSET_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/compose.yaml"
+
+          # Give the release asset a short window to become available.
+          for _ in $(seq 1 6); do
+            if curl -fsSL "${ASSET_URL}" -o /tmp/compose.yaml; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [ ! -f /tmp/compose.yaml ]; then
+            echo "ASSET-MISSING: could not fetch published compose asset from ${ASSET_URL}" >&2
+            exit 1
+          fi
+
+          PUBLISHED_IMAGE="$(grep -A 3 '^  ergane:' /tmp/compose.yaml | grep 'image:' | sed 's/^.*image: *//' | tr -d ' ')"
+          PUBLISHED_TAG="${PUBLISHED_IMAGE##*:}"
+          if [ "${PUBLISHED_TAG}" != "${IMAGE_TAG}" ]; then
+            echo "TAG-MISMATCH: published compose image tag ${PUBLISHED_TAG} does not match release tag ${IMAGE_TAG} (image: ${PUBLISHED_IMAGE})" >&2
+            exit 1
+          fi
+          echo "Published compose asset tag ${PUBLISHED_TAG} matches release tag ${IMAGE_TAG}"
