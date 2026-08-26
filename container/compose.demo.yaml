@@ -1,0 +1,140 @@
+# Demonstration compose project for Ergane.
+#
+# This project is a demonstration with volume-local state. It is intended to be
+# fetched and run on a machine that has never had Ergane installed. It does not
+# land: it carries no merge queue, writes no PRs, and persists state only in the
+# volumes created here. For the operational project — same-path mounts, host
+# state, and generated project lifecycle — run `ergane install --engine=container`
+# instead.
+#
+# Exactly one environment variable is required: the upstream model credential
+# that the bundled LiteLLM gateway will proxy. Every other value has a working
+# default baked into this file.
+
+services:
+  ergane:
+    image: ghcr.io/bryantharpeorg/ergane:${ERGANE_VERSION}
+    init: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:./seccomp-ergane.json
+      # The demo uses the unconfined AppArmor profile so it starts on a stock
+      # host without the shipped engine profile loaded. The operational project
+      # (config G) keeps apparmor=ergane-engine; this is config F for portability.
+      - apparmor=unconfined
+    environment:
+      # PATH/LANG/TERM/HOME are compose passthroughs from the container default.
+      - PATH=/opt/ergane/.venv/bin:/usr/local/bin:/usr/bin
+      - LANG=C.UTF-8
+      - TERM=xterm
+      - HOME=/home/ergane
+      # State paths: in the demo they point at named volumes mounted below.
+      - ERGANE_STATE_HOME=/home/ergane/.local/state/ergane
+      - FACTORY_STATE_HOME=/home/ergane/.local/state/ergane
+      - ERGANE_CONFIG_PATH=/home/ergane/.config/ergane/config.toml
+      - FACTORY_CONFIG_PATH=/home/ergane/.config/ergane/config.toml
+      # LiteLLM credential primitives: the master key is generated for the demo
+      # by the gateway container; the API key is unused in gateway mode but kept
+      # in the environment list with an empty default so the reference contract
+      # is satisfied.
+      - ERGANE_LLM_MASTER_KEY=${ERGANE_LLM_MASTER_KEY:-sk-dummy-master}
+      - ERGANE_LLM_API_KEY=${ERGANE_LLM_API_KEY:-}
+      # Memory and Temporal defaults for the demo project.
+      - ERGANE_MEMORY_URL=
+      - ERGANE_MEMORY_API_KEY=
+      - TEMPORAL_ADDRESS=127.0.0.1:7233
+      - TEMPORAL_NAMESPACE=ergane
+      - ERGANE_TEMPORAL_API_KEY=
+      # Telemetry and notifier defaults are intentionally empty in the demo.
+      - ERGANE_OTLP_ENDPOINT=
+      - TELEGRAM_BOT_TOKEN=
+      - TELEGRAM_CHAT_ID=
+      # Version source: the release workflow substitutes this with the tag it
+      # is publishing (FR-017/FR-018). The fetched file carries the real tag.
+      - ERGANE_VERSION=${ERGANE_VERSION}
+      # Registry path: point at the bundled demo registry so the engine never
+      # resolves to the shipped example/ aliases. The file is inside the image at
+      # /opt/ergane because the Dockerfile copies the repository there.
+      - ERGANE_PERSONAS_PATH=/opt/ergane/container/personas.demo.yaml
+      - ERGANE_TEMPORAL_DB_FILENAME=/home/ergane/.local/state/ergane/temporal/engine.db
+      # Optional GitHub credential. On a stock host `gh` is unauthenticated, so
+      # `ergane install --verify` reports that fact rather than failing silently.
+      # Set GH_TOKEN in your shell to authenticate `gh` inside the engine; the
+      # demo itself does not require it to start.
+      - GH_TOKEN=${GH_TOKEN:-}
+    volumes:
+      - ergane_state:/home/ergane/.local/state/ergane
+      - ergane_supervision:/home/ergane/.local/state/ergane/supervision
+      - ergane_config:/home/ergane/.config/ergane
+      - ergane_repo:/home/ergane/repo
+    networks:
+      - ergane
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+
+  gateway:
+    image: ghcr.io/berriai/litellm:main-stable
+    environment:
+      - DATABASE_URL=postgresql://postgres:demo-password@postgres:5432/litellm
+      - LITELLM_MASTER_KEY=${ERGANE_LLM_MASTER_KEY:-sk-dummy-master}
+      - STORE_MODEL_IN_DB=True
+      # The one required credential: forwarded to the upstream provider through
+      # the bundled gateway config.
+      - UPSTREAM_MODEL_API_KEY=${UPSTREAM_MODEL_API_KEY}
+    volumes:
+      - gateway_config:/app/config
+      # The gateway's static config is a bundled artifact (not host state), so
+      # this read-only bind is intentional. It is exempt from the named-volume
+      # contract asserted by the drift test.
+      - type: bind
+        source: ./gateway-config.yaml
+        target: /app/config.yaml
+        read_only: true
+    networks:
+      - ergane
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    command: ["--config", "/app/config.yaml"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      # Baked default for a demo database reachable only on the compose network.
+      # This is not a secret: the Postgres is not exposed to the host and holds
+      # only LiteLLM key metadata for a throwaway demo.
+      - POSTGRES_PASSWORD=demo-password
+      - POSTGRES_DB=litellm
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ergane
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  ergane_state:
+  ergane_supervision:
+  ergane_config:
+  ergane_repo:
+  gateway_config:
+  postgres_data:
+
+networks:
+  ergane:
+    driver: bridge

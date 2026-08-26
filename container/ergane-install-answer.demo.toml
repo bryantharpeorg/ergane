@@ -1,0 +1,30 @@
+# Demo answer file for `ergane install --from-file <path>` (109-US2).
+#
+# Use this file with the demo compose project. Set exactly one environment
+# variable in your shell before running:
+#
+#   export UPSTREAM_MODEL_API_KEY=<your provider API key>
+#
+# Every other value has a working default baked into container/compose.demo.yaml.
+
+version = 1
+
+[llm]
+mode = "gateway"
+gateway_mode = "managed"
+base_url = "http://gateway:4000"
+master_key_env = "ERGANE_LLM_MASTER_KEY"
+
+[memory]
+backend = "none"
+
+[temporal]
+mode = "external"
+address = "127.0.0.1:7233"
+namespace = "ergane"
+
+[telemetry]
+otlp_endpoint = ""
+
+[escalation]
+adapter = "none"
