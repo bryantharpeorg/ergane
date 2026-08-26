@@ -218,14 +218,21 @@ jobs:
         run: |
           tmpdir="$(mktemp -d)"
           # Substitute the version source so the fetched file names the real tag.
+          # The python body sits at this block's OWN indentation, not one level
+          # deeper. YAML strips the block scalar's common indent before the shell
+          # ever sees the script, so a body indented further than `python -c`
+          # reaches the interpreter with a leading space and dies on
+          # IndentationError. That is what shipped until v0.5.0, in a job no tag
+          # had ever exercised. Dedenting to column 0 is not the fix either — it
+          # would terminate the block scalar and make the workflow unparseable.
           python -c "
-            import os
-            version = os.environ['ERGANE_VERSION']
-            with open('container/compose.demo.yaml') as f:
-                content = f.read()
-            content = content.replace('\${ERGANE_VERSION}', version)
-            with open('${tmpdir}/compose.yaml', 'w') as f:
-                f.write(content)
+          import os
+          version = os.environ['ERGANE_VERSION']
+          with open('container/compose.demo.yaml') as f:
+              content = f.read()
+          content = content.replace('\${ERGANE_VERSION}', version)
+          with open('${tmpdir}/compose.yaml', 'w') as f:
+              f.write(content)
           "
           gh release upload "${{ steps.meta.outputs.release_tag }}" \
             "${tmpdir}/compose.yaml" --clobber --repo "${{ github.repository }}"
