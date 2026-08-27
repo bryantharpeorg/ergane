@@ -245,6 +245,10 @@ def make_child() -> ChildFactory:
 
 @pytest.fixture
 def config(tmp_path: Path) -> dict:
+    # The token keeps the three-child contract the `while "bridge" not in
+    # order` wait below depends on; the bridge is conditional on its credential
+    # since 2026-08-26, and a zero-sleep spin on a child that never starts is a
+    # full-CPU hang, not a failure (see test_container_supervisor.py's fixture).
     return {
         "temporal_address": "127.0.0.1",
         "temporal_port": 7233,
@@ -252,6 +256,7 @@ def config(tmp_path: Path) -> dict:
         "grace_period_s": 0.2,
         "state_home": str(tmp_path / "state"),
         "db_filename": str(tmp_path / "temporal.sqlite"),
+        "telegram_bot_token": "123:stub-token-for-the-three-child-contract",
     }
 
 
@@ -445,6 +450,10 @@ async def test_identity_path_isolated_to_config_state_home(supervisor_mod, monke
         "grace_period_s": 0.2,
         "state_home": str(tmp_path / "state"),
         "db_filename": str(tmp_path / "temporal.sqlite"),
+        # This test awaits bridge._started_event; without the token the bridge
+        # is never started (conditional since 2026-08-26) and the await parks
+        # forever at 0% CPU — the quiet twin of the sleep(0) spins.
+        "telegram_bot_token": "123:stub-token-for-the-three-child-contract",
     }
 
     temporal = await make_child("temporal")
