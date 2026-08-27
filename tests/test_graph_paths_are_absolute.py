@@ -63,7 +63,17 @@ def _load(artifact: Path) -> WorkGraph:
 
 
 def test_derive_writes_absolute_specs_root(tmp_path: Path) -> None:
-    """US3-S1: a relative specs root is stored as an absolute path."""
+    """US3-S1: a relative specs root is stored as an absolute path.
+
+    Which absolute path changed on 2026-08-26: an un-overridden default used to
+    resolve `"specs"` against the CWD, which is correct only when the operator
+    stands in the repo being built — in the demo container (WORKDIR
+    /opt/ergane) it compiled `specs_root=/opt/ergane/specs` for a spec in
+    /home/ergane/repo, and every dispatch was refused at prompt assembly. The
+    default now follows the spec directory itself; this test pinned the old
+    resolution and held US3-S1's real claim (absoluteness) at the same time.
+    tests/test_derive_specs_root_default.py owns the resolution contract.
+    """
     output = tmp_path / "workgraph.json"
     args = _args(
         spec_dir=str(FIXTURE),
@@ -74,7 +84,7 @@ def test_derive_writes_absolute_specs_root(tmp_path: Path) -> None:
 
     graph = _load(output)
     assert Path(graph.specs_root).is_absolute()
-    assert graph.specs_root == str(Path("specs").resolve())
+    assert graph.specs_root == str(FIXTURE.parent)
 
 
 def test_derive_writes_absolute_target_repo(tmp_path: Path) -> None:
