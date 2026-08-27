@@ -85,6 +85,19 @@ state: draft
 # carries the rescue trailer (107 FR-015) in its body, making it US3's newest
 # landing fact at a revision where this spec exists. That pins the real
 # fingerprint and keeps US3 closed in every future delta.
+#
+# US1 LANDED AS A RESCUE, TWICE OVER. Its verified attempt (opus-closer, gate
+# 5007 passed exit 0, judge PASS on US1-S1..S5) could not push its node branch:
+# the epic had been killed and re-dispatched to move the story off the house
+# implementer, and while the stale LOCAL node branch was archived, the remote
+# one still pointed at the killed run's tip, so `open_landing_pr` was rejected
+# non-fast-forward and terminated the epic with both nodes KILLED. The code
+# reached the branch via PR #360 (ccc7a28). That squash carried no landing
+# attribution: the rescue TITLE is human-readable by design and does not match
+# the landing subject grammar, and GitHub builds a multi-commit squash body
+# from the commit list rather than the pull request body, so the trailer that
+# was in the PR description never reached the commit. This commit is the
+# attribution — single-commit, so its own message becomes the squash body.
 ---
 
 # Feature Specification: the demo dispatches the story it promised
