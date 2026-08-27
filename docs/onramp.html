@@ -1,0 +1,481 @@
+<meta charset="utf-8">
+<title>Ergane · the onramp</title>
+<style>
+  /* Tokens: the pane's second world — ergane-web DESIGN.md (D-015), verbatim. */
+  :root {
+    --ground:   #EDF0F2;
+    --surface:  #FFFFFF;
+    --sunken:   #E3E8EB;
+    --ink:      #14202A;
+    --muted:    #566873;
+    --faint:    #7D8F9A;
+    --rule:     #C7D1D7;
+    --hairline: #D8E0E4;
+    --accent:   #0E6F79;
+    --accent-w: #DCEDEF;
+    --olive:    #5A6B2F;
+    --olive-w:  #EBEFD9;
+    --gold:     #7E5D12;
+    --gold-w:   #F4EBD4;
+    --alarm:    #9E3319;
+    --alarm-w:  #F6E3DD;
+    --shadow:   0 1px 2px rgba(20,32,42,.05), 0 8px 24px -12px rgba(20,32,42,.14);
+    --serif: ui-serif, "Iowan Old Style", Georgia, "Times New Roman", serif;
+    --sans:  ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono:  ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0D1418; --surface:#131E24; --sunken:#0A1013;
+      --ink:#D8E3E8; --muted:#8A9EA9; --faint:#6B7F8A;
+      --rule:#27373F; --hairline:#1E2C33;
+      --accent:#46B7C1; --accent-w:#102D31;
+      --olive:#A9BC62; --olive-w:#20260F;
+      --gold:#D3A845; --gold-w:#2B2210;
+      --alarm:#E2795A; --alarm-w:#2E1710;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0D1418; --surface:#131E24; --sunken:#0A1013;
+    --ink:#D8E3E8; --muted:#8A9EA9; --faint:#6B7F8A;
+    --rule:#27373F; --hairline:#1E2C33;
+    --accent:#46B7C1; --accent-w:#102D31;
+    --olive:#A9BC62; --olive-w:#20260F;
+    --gold:#D3A845; --gold-w:#2B2210;
+    --alarm:#E2795A; --alarm-w:#2E1710;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+  :root[data-theme="light"] {
+    --ground:#EDF0F2; --surface:#FFFFFF; --sunken:#E3E8EB;
+    --ink:#14202A; --muted:#566873; --faint:#7D8F9A;
+    --rule:#C7D1D7; --hairline:#D8E0E4;
+    --accent:#0E6F79; --accent-w:#DCEDEF;
+    --olive:#5A6B2F; --olive-w:#EBEFD9;
+    --gold:#7E5D12; --gold-w:#F4EBD4;
+    --alarm:#9E3319; --alarm-w:#F6E3DD;
+    --shadow:0 1px 2px rgba(20,32,42,.05), 0 8px 24px -12px rgba(20,32,42,.14);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 15.5px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 50rem; margin: 0 auto; padding: 0 1.4rem 4rem; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  code {
+    font-family: var(--mono); font-size: .85em;
+    background: var(--sunken); padding: .1em .35em; border-radius: 2px;
+  }
+  p, li { font-size: .9rem; max-width: 68ch; text-wrap: pretty; }
+  p { margin: 0 0 .9rem; }
+  strong { font-weight: 600; }
+
+  /* ── intro strip ─────────────────────────────────────────── */
+  header.intro { border-bottom: 2px solid var(--ink); padding: 3rem 0 1.7rem; margin-bottom: 2.4rem; }
+  .eyebrow {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); font-weight: 600;
+  }
+  h1 {
+    font-family: var(--serif); font-size: clamp(1.9rem, 4.5vw, 2.7rem);
+    line-height: 1.08; letter-spacing: -.02em; font-weight: 600;
+    margin: .45rem 0 .6rem; text-wrap: balance;
+  }
+  .standfirst {
+    font-family: var(--serif); font-size: 1.12rem; color: var(--muted);
+    max-width: 46rem; margin: 0;
+  }
+  .provenance { font-family: var(--mono); font-size: .72rem; color: var(--faint); margin-top: 1rem; }
+
+  /* ── sections ────────────────────────────────────────────── */
+  section { margin: 0 0 2.6rem; }
+  .kicker {
+    font-family: var(--mono); font-size: .66rem; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--accent);
+    margin: 0 0 .3rem;
+  }
+  h2 {
+    font-family: var(--serif); font-size: 1.35rem; font-weight: 600;
+    letter-spacing: -.01em; margin: 0 0 .7rem; text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--serif); font-size: 1.08rem; font-weight: 600;
+    margin: 1.4rem 0 .45rem;
+  }
+  hr.seam { border: 0; border-top: 1px solid var(--rule); margin: 2.6rem 0; }
+
+  /* ── code wells ──────────────────────────────────────────── */
+  pre.well {
+    background: var(--sunken); border: 1px solid var(--hairline); border-radius: 2px;
+    padding: .8rem 1rem; margin: .9rem 0 1.1rem;
+    overflow-x: auto;
+  }
+  pre.well code {
+    background: none; padding: 0; font-size: .82rem; line-height: 1.6;
+    display: block; white-space: pre;
+  }
+  pre.well .cmt { color: var(--faint); }
+
+  /* ── chips (the pane's vocabulary, worn only where true) ─── */
+  .chip {
+    font-family: var(--mono); font-size: .62rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .08em;
+    padding: .24em .55em; border: 1px solid currentColor;
+    white-space: nowrap; border-radius: 0; vertical-align: .12em;
+  }
+  .chip.done  { color: var(--olive);  background: var(--olive-w); }
+  .chip.live  { color: var(--accent); background: var(--accent-w); }
+
+  /* ── the demo card ───────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 2px;
+    box-shadow: var(--shadow); padding: 1.3rem 1.5rem 1.4rem; margin: 1.2rem 0 1.3rem;
+  }
+  .card .kicker { color: var(--muted); }
+
+  /* Six-stop status ladder — the signature. Compact bars, then named steps. */
+  .ladder { display: flex; gap: 3px; margin: .9rem 0 .4rem; max-width: 30rem; }
+  .ladder span { flex: 1; height: 4px; background: var(--sunken); }
+  .ladder span.done { background: var(--olive); }
+  .ladder span.live { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .ladder span.live { animation: none; } }
+  .ladder-legend {
+    display: flex; justify-content: space-between; max-width: 30rem;
+    font-family: var(--mono); font-size: .62rem; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 1.1rem;
+  }
+  .ladder-legend .done { color: var(--olive); }
+  .ladder-legend .live { color: var(--accent); font-weight: 600; }
+
+  .steps { list-style: none; margin: .4rem 0 0; padding: 0; }
+  .steps li {
+    display: grid; grid-template-columns: 7.2rem 1fr; gap: 1rem;
+    padding: .45rem 0; border-top: 1px solid var(--hairline);
+    font-size: .85rem; max-width: none;
+  }
+  .steps li:first-child { border-top: 0; }
+  .steps .sname { font-family: var(--mono); font-size: .78rem; font-weight: 600; color: var(--ink); }
+  .steps .sdesc { color: var(--muted); max-width: 52ch; }
+  .steps li.pending .sname, .steps li.pending .sdesc { color: var(--faint); }
+
+  .haltline {
+    font-family: var(--mono); font-size: .78rem; color: var(--olive);
+    background: var(--olive-w); border: 1px solid currentColor; border-radius: 0;
+    padding: .5rem .8rem; margin-top: 1.1rem; overflow-x: auto; white-space: nowrap;
+  }
+
+  /* ── trap callouts — the pane's gold: a wash wearing its own hue's ink ── */
+  .trap {
+    color: var(--gold); background: var(--gold-w);
+    border: 1px solid currentColor; border-radius: 0;
+    padding: .75rem 1rem .6rem; margin: 1rem 0 1.2rem;
+  }
+  .trap .tlabel {
+    font-family: var(--mono); font-size: .66rem; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase;
+    display: block; margin-bottom: .3rem;
+  }
+  .trap p { margin: 0 0 .5rem; }
+  .trap p:last-child { margin-bottom: .2rem; }
+  .trap code { background: transparent; padding: 0; font-weight: 600; }
+
+  /* ── tables ──────────────────────────────────────────────── */
+  .tbl { width: 100%; overflow-x: auto; margin: .9rem 0 1.1rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th {
+    font-family: var(--mono); font-size: .66rem; font-weight: 600;
+    letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
+    text-align: left; padding: 0 .8rem .35rem 0; border-bottom: 1px solid var(--rule);
+  }
+  td {
+    font-size: .85rem; padding: .5rem .8rem .5rem 0;
+    border-top: 1px solid var(--hairline); vertical-align: baseline;
+  }
+  tr:first-child td { border-top: 0; }
+  td.cmd { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+  td.why { color: var(--muted); }
+
+  /* ── step numbering (the onramp is a real sequence) ──────── */
+  .stepno { color: var(--muted); }
+
+  /* ── footer ──────────────────────────────────────────────── */
+  footer {
+    border-top: 2px solid var(--ink); margin-top: 3rem; padding-top: 1rem;
+    font-size: .82rem; color: var(--muted);
+  }
+  footer .provenance { margin-top: .6rem; }
+
+  @media (max-width: 640px) {
+    .steps li { grid-template-columns: 1fr; gap: .1rem; }
+    header.intro { padding-top: 2rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="intro">
+    <p class="eyebrow">Ergane · the onramp</p>
+    <h1>From a bare machine to a dispatched epic</h1>
+    <p class="standfirst">
+      Ergane is a software factory: Spec&nbsp;Kit feature specs go in, merged and
+      verified code comes out. A Temporal workflow compiles each spec into a graph
+      of user stories, dispatches every story to a headless coding agent in its own
+      sandboxed worktree, runs deterministic gates and an LLM judge over what comes
+      back, and lands what passes through a merge queue — with every token of spend
+      attributed to the node that spent it.
+    </p>
+    <p class="provenance">written against v0.5.0 · 2026-08-27 · every command below is real; run them in order</p>
+  </header>
+
+  <section>
+    <p class="kicker">Before anything else</p>
+    <h2>Prove it in one command</h2>
+    <p>
+      You do not have to take any of this page's word for it. The released demo
+      boots the whole factory — engine, Temporal, LiteLLM gateway, Postgres — on a
+      machine that has only Docker, and runs one real story end to end in front of
+      you. You need an <a href="https://ollama.com">Ollama</a> API key; the demo's
+      gateway fronts Ollama&nbsp;Cloud.
+    </p>
+
+    <pre class="well"><code><span class="cmt"># exporting the key is the opt-in: the demo spends a few</span>
+<span class="cmt"># attempts' worth of tokens on it, and nothing else does</span>
+export UPSTREAM_MODEL_API_KEY=&lt;your ollama key&gt;
+
+curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/compose.yaml \
+  | docker compose -f - up</code></pre>
+
+    <div class="card">
+      <p class="kicker">What you will watch</p>
+
+      <div class="ladder" role="img" aria-label="Status ladder: ready and building done, verifying active, pr open, queue and merged never reached — the demo halts before landing.">
+        <span class="done"></span><span class="done"></span><span class="live"></span><span></span><span></span><span></span>
+      </div>
+      <div class="ladder-legend">
+        <span class="done">ready</span><span class="done">building</span><span class="live">verifying</span><span>pr open</span><span>queue</span><span>merged</span>
+      </div>
+
+      <ol class="steps">
+        <li><span class="sname">install</span><span class="sdesc">the engine interviews itself from a bundled answer file and verifies its own stack</span></li>
+        <li><span class="sname">scaffold</span><span class="sdesc">a demonstration spec is written into a fresh git repository inside the container</span></li>
+        <li><span class="sname">derive</span><span class="sdesc">the spec compiles into a one-story work graph</span></li>
+        <li><span class="sname">dispatch</span><span class="sdesc">an agent takes the story in a bwrap sandbox and writes real code against real tests</span></li>
+        <li><span class="sname">gate · judge</span><span class="sdesc">deterministic checks run first; then an LLM judge rules on the diff against the spec's own criteria</span></li>
+        <li class="pending"><span class="sname">halt</span><span class="sdesc">nothing lands anywhere — the ladder freezes before a pull request ever opens, deliberately</span></li>
+      </ol>
+
+      <div class="haltline">landing not attempted: the epic was dispatched with --halt-after-pass</div>
+    </div>
+
+    <p>
+      First boot is the slow one — Postgres initialises and the gateway can take a
+      few minutes to come healthy before the show starts. If the agent's first
+      attempt fails its gate, that is part of the show too: you will watch the
+      recovery ladder produce a second attempt and pass. When the epic completes,
+      the halt statement above is the last thing the stack prints. Setting
+      <code>GH_TOKEN</code> is optional and the demo never needs it.
+    </p>
+  </section>
+
+  <hr class="seam">
+
+  <section>
+    <p class="kicker">Step 1 <span class="stepno">of 6</span></p>
+    <h2>What you must already have</h2>
+    <p>
+      The demo carries its own stack. Running Ergane against <em>your</em>
+      repositories does not, and one prerequisite in particular looks satisfied
+      when it is not.
+    </p>
+
+    <div class="trap">
+      <span class="tlabel">The trap</span>
+      <p>
+        <strong>Your LiteLLM gateway must be database-backed.</strong> Every
+        attempt runs on its own model-constrained, TTL'd virtual key: Ergane mints
+        it with <code>POST /key/generate</code>, reads spend through
+        <code>GET /key/info</code> and <code>GET /spend/logs/v2</code>, and revokes
+        it when the attempt ends. Those endpoints exist only when LiteLLM has a
+        <code>DATABASE_URL</code>. A config-only proxy answers chat completions
+        perfectly, passes a casual smoke test, and fails at the first dispatch.
+      </p>
+      <p>
+        The gateway must also serve every model alias the persona registry names —
+        <code>ergane install --requirements</code> prints the exact set, and
+        <code>ergane install --scan</code> shows what a candidate endpoint actually
+        offers before you commit to it.
+      </p>
+    </div>
+
+    <div class="tbl"><table>
+      <thead><tr><th>You need</th><th>Because</th></tr></thead>
+      <tbody>
+        <tr><td>an authenticated <code>gh</code> CLI</td><td class="why">it must push to and administer the repositories Ergane targets</td></tr>
+        <tr><td>an organization-owned target repo</td><td class="why">GitHub merge queues need an org owner (public repo, or private under Enterprise Cloud) — a user-owned repository cannot host one at any plan level</td></tr>
+        <tr><td>Spec Kit's authoring skills, in your agent</td><td class="why">specs are Spec Kit documents; the skills that write and check them come from <a href="https://github.com/github/spec-kit">github/spec-kit</a> and live outside the tree</td></tr>
+        <tr><td><code>bwrap</code> on <code>PATH</code></td><td class="why">the default runtime sandboxes agent work with it</td></tr>
+        <tr><td><code>git</code>, <code>uv</code>, Python ≥ 3.11, Node.js</td><td class="why">the toolchain the engine and the agent CLI run on</td></tr>
+        <tr><td>a systemd user session</td><td class="why">only if you want <code>ergane worker install</code> to run managed units</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <p class="kicker">Step 2 <span class="stepno">of 6</span></p>
+    <h2>Install the CLI</h2>
+    <p>
+      There are two install paths and they are not interchangeable. To run Ergane
+      against your own repositories, install the published distribution — the PyPI
+      name is <code>ergane-cli</code>; the command it puts on your
+      <code>PATH</code> is <code>ergane</code>:
+    </p>
+    <pre class="well"><code>uv tool install ergane-cli</code></pre>
+    <p>To work on Ergane itself, install from a checkout in editable mode:</p>
+    <pre class="well"><code>git clone https://github.com/bryantharpeorg/ergane.git
+cd ergane
+uv venv
+uv pip install -e .</code></pre>
+
+    <div class="trap">
+      <span class="tlabel">The trap</span>
+      <p>
+        The two paths resolve the persona registry from different places. An
+        editable checkout reads the <code>personas.yaml</code> at its root, so
+        edits take effect immediately. A published install reads the copy packaged
+        inside the distribution — editing a <code>personas.yaml</code> in whatever
+        directory you happen to be standing in changes nothing.
+        <code>ergane install</code> reports the path it resolved, and that path is
+        the answer.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">Step 3 <span class="stepno">of 6</span></p>
+    <h2>Configure the control plane</h2>
+    <p>
+      Run the interview and let it write the config. It asks for environment
+      variable <em>names</em>, not values — set the variables in your shell before
+      running anything that needs them.
+    </p>
+    <pre class="well"><code>ergane install            <span class="cmt"># the interview; writes the control-plane config</span>
+ergane install --verify   <span class="cmt"># re-check without the interview, any time the environment changes</span>
+ergane install --scan     <span class="cmt"># discover what an endpoint offers first; writes nothing</span></code></pre>
+    <p>
+      Ergane refuses <code>llm.mode = "direct"</code> by design: a bare provider
+      endpoint has no keys to mint, revoke, or attribute. Put a LiteLLM-shaped
+      gateway in front and declare <code>llm.mode = "gateway"</code>.
+    </p>
+  </section>
+
+  <section>
+    <p class="kicker">Step 4 <span class="stepno">of 6</span></p>
+    <h2>Install the worker</h2>
+    <pre class="well"><code>ergane worker install     <span class="cmt"># bridge + probe under systemd user supervision</span>
+ergane worker deploy      <span class="cmt"># freeze a commit into its own checkout and serve it</span></code></pre>
+    <p>
+      Install writes a <em>versioned</em> unit template rather than a worker;
+      <code>deploy</code> starts an instance serving one frozen commit, so every
+      epic finishes on the code it started with.
+    </p>
+  </section>
+
+  <section>
+    <p class="kicker">Step 5 <span class="stepno">of 6</span></p>
+    <h2>Join a repository</h2>
+    <pre class="well"><code>ergane init --check       <span class="cmt"># judge readiness; writes nothing</span>
+ergane init               <span class="cmt"># enroll — resolves upward and asks before assuming the root</span>
+ergane init --wire        <span class="cmt"># also enable the merge queue + required checks on GitHub</span>
+ergane repo onboard &lt;target-repo-path&gt;   <span class="cmt"># register it with the engine</span></code></pre>
+    <p>
+      <code>ergane init</code> resolves upward to the nearest enclosing repository,
+      which is not always the one you meant — when the directory you run it in is
+      not itself the root, it names the root it resolved and asks first.
+    </p>
+  </section>
+
+  <section>
+    <p class="kicker">Step 6 <span class="stepno">of 6</span></p>
+    <h2>Dispatch your first epic</h2>
+    <pre class="well"><code>ergane spec derive specs/&lt;dir&gt; --target-repo &lt;target-repo-path&gt;   <span class="cmt"># compile the spec to a work graph</span>
+ergane build start specs/&lt;dir&gt;/workgraph.json                     <span class="cmt"># put it on the floor</span></code></pre>
+    <p>
+      Then watch it the way the demo taught you: every story climbs the same six
+      stops — <span class="chip done">merged</span> is the last word, and
+      <code>ergane build status &lt;epic-id&gt;</code> narrates the climb.
+    </p>
+  </section>
+
+  <hr class="seam">
+
+  <section>
+    <p class="kicker">While it runs</p>
+    <h2>Ask the system, not a document</h2>
+    <p>
+      Ergane answers questions about its own state, and those answers are live.
+      Prefer them to anything written down — including this page.
+    </p>
+    <div class="tbl"><table>
+      <thead><tr><th>Question</th><th>Command</th></tr></thead>
+      <tbody>
+        <tr><td class="why">What is the whole floor doing right now</td><td class="cmd">ergane status</td></tr>
+        <tr><td class="why">What state is every spec in, and what blocks each</td><td class="cmd">ergane spec list specs</td></tr>
+        <tr><td class="why">Which of a spec's stories are landed in git</td><td class="cmd">ergane spec landed &lt;spec-dir&gt;</td></tr>
+        <tr><td class="why">What is one epic doing right now</td><td class="cmd">ergane build status &lt;epic-id&gt;</td></tr>
+        <tr><td class="why">What defects are open</td><td class="cmd">ergane findings list</td></tr>
+        <tr><td class="why">What did the work cost</td><td class="cmd">ergane usage</td></tr>
+        <tr><td class="why">Is anything waiting on me</td><td class="cmd">ergane escalations list</td></tr>
+        <tr><td class="why">Is the installation healthy</td><td class="cmd">ergane doctor</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="trap">
+      <span class="tlabel">The trap</span>
+      <p>
+        <code>ergane spec landed</code> scans the default branch unless told
+        otherwise, and a factory does not necessarily land there. Pass
+        <code>--default-branch &lt;branch&gt;</code> whenever the answer matters.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">When you go</p>
+    <h2>Leaving cleanly</h2>
+    <p>
+      One verb performs the whole teardown in the order that is safe — pause
+      dispatch, forget repositories, stop the engine, remove the units, clear
+      state — naming each step as it completes, and stopping if any step refuses:
+    </p>
+    <pre class="well"><code>ergane uninstall --check     <span class="cmt"># print the plan a real run would follow; touches nothing</span>
+ergane uninstall             <span class="cmt"># the teardown itself; add --purge to also empty the state home</span>
+uv tool uninstall ergane-cli <span class="cmt"># the package itself is your package manager's job</span></code></pre>
+    <p>
+      For a partial exit, the fine-grained inverses still exist:
+      <code>ergane repo forget &lt;repo-slug&gt;</code> unregisters one repository
+      without touching its files, and <code>ergane worker uninstall</code> removes
+      the worker units exactly as install wrote them. The control-plane config and
+      the secrets beside it are kept on every path — removing those is yours to do
+      by hand, deliberately.
+    </p>
+  </section>
+
+  <footer>
+    <p>
+      The binding documents live in the tree:
+      <code>.specify/memory/constitution.md</code> is what every dispatched agent
+      obeys, <code>docs/architecture.md</code> is how the factory works,
+      <code>docs/decisions.md</code> is the immutable decision log, and
+      <code>CONTEXT.md</code> is the vocabulary. When this page and
+      <code>ergane status</code> disagree, one of the two readings is older — and
+      it is this one.
+    </p>
+    <p class="provenance">ergane · github.com/bryantharpeorg/ergane · set in the pane's second world (DESIGN.md, D-015)</p>
+  </footer>
+
+</div>
