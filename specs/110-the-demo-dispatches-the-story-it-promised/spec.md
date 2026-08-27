@@ -1,5 +1,46 @@
 ---
-state: draft
+state: landed
+# Attested landed 2026-08-26. US1 82301e8d386d (#360 + #361), US2 9ec0fcfc07da
+# (#362), US3 7f1f1d510721 (#353 + #356) — all three observed on ergane-buildout
+# by content, not by a merged flag.
+#
+# TWO OF THE THREE LANDED BY RESCUE, and the attestation says so because the
+# rescues are the finding. Neither story was rebuilt; in both cases a verified
+# node's CODE reached the branch and the landing was not RECORDED, so the delta
+# would have re-dispatched work that already existed.
+#   - US3's code landed at 7d3c06ab (#353) BEFORE the spec itself reached the
+#     branch, so `fingerprint()` read the spec at the landing commit, found no
+#     file, and returned digest=None — which reopens the story on every derive.
+#     #356 re-pinned it with a rescue trailer.
+#   - US1's landing PR died at `open_landing_pr` with a non-fast-forward push:
+#     the kill-and-re-dispatch onto opus-closer archived the STALE LOCAL node
+#     branch and left the REMOTE at dbbfed7. The code was rescued in #360, whose
+#     title deliberately does not match _LANDING_RE; GitHub then built that
+#     four-commit PR's squash body from the commit messages and discarded the PR
+#     body carrying the trailer, so #360 registered nothing either. #361 is the
+#     single-commit attribution that finally recorded it.
+# Both mechanisms are filed as critical findings
+# (landing/kill-and-redispatch-leaves-a-stale-remote-node-branch-that-kills-the-next-landing,
+# landing/the-printed-rescue-recipe-does-not-survive-a-multi-commit-squash).
+#
+# ATTEMPTS: US2 and US3 passed first attempt. US1 took four — three on the house
+# implementer (kimi-k2.7-code), then one on opus-closer. Attempt 1 gate-FAILED on
+# a single test of 5,060, `assert 'Ergane Gate <gate@ergane.local>' ==
+# 'Ergane Demo <demo@ergane.invalid>'`: the boundary gate exports GIT_AUTHOR_* /
+# GIT_COMMITTER_* (factory/verify/gates.py:791-814) and those env vars override
+# repo-local `git config user.name`. Attempts 2 and 3 received that evidence,
+# diagnosed it as a host artifact, and returned EMPTY DIFFS. The Opus attempt
+# fixed it test-side by neutralising GIT_CONFIG_GLOBAL/SYSTEM and deleting the
+# four env vars. That is the WEAKER half of the fix — the driver still inherits
+# rather than owns its commit identity — and it stands because it satisfied all
+# five scenarios; the stronger version exists in the archived kimi branch as
+# 66bb2d6 if this ever bites outside the boundary.
+#
+# LANDED AND UNPROVEN, and those are still different words. Every story here is
+# green in CI and judged PASS, but no container has yet booted this code and run
+# the sequence end to end. The rehearsal is the operator's next move, before any
+# v0.5.0 tag is spent.
+#
 # DRAFTED 2026-08-26 ~1:10 PM CT by the operator session, against ergane-buildout
 # at 4aae6b7 (109 landed and attested, #351 landed). Every file:line below was
 # read from that commit on 2026-08-26 and verified against the tree before
