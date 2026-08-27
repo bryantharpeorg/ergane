@@ -9,7 +9,22 @@
 #   3.13 under `~/.local/share/uv/`); copying it without `--clear` then running
 #   `python3 -m venv .venv` with Ubuntu's python3.12 produces a broken mix.
 # - `.factory` and `.claude` hold attempt and worktree state.
+# - `.ergane` and `.temporal` are runtime roots the ENGINE ITSELF creates inside
+#   the repository, and omitting them was a credential leak, not a size problem.
+#   `.ergane/homes/<spec>/<node>/.claude/.credentials.json` is a real Claude Code
+#   credential per dispatched node, retained for every spec ever run; a local
+#   `docker build` copied all of them into the image. Measured on this tree
+#   2026-08-26: `.ergane` 11G (47 spec homes), `.temporal/dev.db` 1.8G, against a
+#   457MB published image. CI never saw it because `actions/checkout@v4` produces
+#   a clean clone — so the published images are unaffected and only the LOCAL
+#   build path, the one a rehearsal and a brownfield container install both take,
+#   was exposed.
 # - `dist`, `build`, `**/__pycache__` and `*.egg-info` are build residue.
+#
+# This list is a deny-list guarding against directories created by the very
+# program it ships, which is a losing shape: the next runtime root added will be
+# absent here too, and the failure is silent. Inverting it to an allow-list is
+# the real fix and wants a spec.
 #
 # Must NOT exclude files the wheel needs:
 # - `pyproject.toml` and `README.md` are required by `readme = "README.md"`.
@@ -20,6 +35,8 @@
 .venv
 .factory
 .claude
+.ergane
+.temporal
 dist
 build
 **/__pycache__
