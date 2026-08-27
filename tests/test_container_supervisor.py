@@ -107,7 +107,17 @@ def make_child() -> ChildFactory:
 
 @pytest.fixture
 def config(tmp_path: Path) -> dict:
-    """Default supervisor configuration for stub runs."""
+    """Default supervisor configuration for stub runs.
+
+    Carries a bridge token because these tests pin the THREE-child contract,
+    and since 2026-08-26 the bridge is started only when it can be configured —
+    without this key the supervisor takes the demo's no-notifier path, the
+    scripted `bridge` child is never requested, and every `while "bridge" not
+    in order` wait here spins forever. That is not hypothetical: the boundary
+    gate burned 53 minutes at 97% CPU on exactly that loop the night the
+    conditional landed. The token-absent path has its own tests in
+    tests/test_container_bridge_optional.py.
+    """
     return {
         "temporal_address": "127.0.0.1",
         "temporal_port": 7233,
@@ -115,6 +125,7 @@ def config(tmp_path: Path) -> dict:
         "grace_period_s": 0.2,
         "state_home": str(tmp_path / "state"),
         "db_filename": str(tmp_path / "temporal.sqlite"),
+        "telegram_bot_token": "123:stub-token-for-the-three-child-contract",
     }
 
 
@@ -390,7 +401,10 @@ async def test_empty_registry_starts_normally(
 
     run_task = asyncio.create_task(
         supervisor_mod._run_supervisor(
-            {"state_home": str(state_home)},
+            # The token keeps the three-child contract these spins wait on; the
+            # bridge is conditional on it since 2026-08-26 (see the config
+            # fixture's docstring).
+            {"state_home": str(state_home), "telegram_bot_token": "123:stub"},
             start_child=start_child,
             probe_address=never_probe,
         )
@@ -424,7 +438,10 @@ async def test_absent_registry_file_starts_normally(
 
     run_task = asyncio.create_task(
         supervisor_mod._run_supervisor(
-            {"state_home": str(state_home)},
+            # The token keeps the three-child contract these spins wait on; the
+            # bridge is conditional on it since 2026-08-26 (see the config
+            # fixture's docstring).
+            {"state_home": str(state_home), "telegram_bot_token": "123:stub"},
             start_child=start_child,
             probe_address=never_probe,
         )

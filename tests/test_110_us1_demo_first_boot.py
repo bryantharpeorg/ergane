@@ -91,7 +91,14 @@ def supervisor_mod():
 
 @pytest.fixture
 def config(tmp_path: Path) -> dict:
-    """Supervisor configuration for stub runs (mirrors 088's own fixture)."""
+    """Supervisor configuration for stub runs (mirrors 088's own fixture).
+
+    The token is here because these tests assert the three-child set, and the
+    bridge has been conditional on its credential since 2026-08-26 — absent the
+    key, the scripted `bridge` child is never requested and the started-order
+    waits spin forever. tests/test_container_bridge_optional.py owns the
+    token-absent path.
+    """
     return {
         "temporal_address": "127.0.0.1",
         "temporal_port": 7233,
@@ -99,6 +106,7 @@ def config(tmp_path: Path) -> dict:
         "grace_period_s": 0.2,
         "state_home": str(tmp_path / "supervisor-state"),
         "db_filename": str(tmp_path / "temporal.sqlite"),
+        "telegram_bot_token": "123:stub-token-for-the-three-child-contract",
     }
 
 
