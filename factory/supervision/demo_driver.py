@@ -16,8 +16,9 @@ Three properties are deliberate and each one has a scar behind it:
   kill the stack at the moment of success. It is spawned beside that set and
   merely reaped.
 - **It is a subprocess, never an in-process call.** It blocks on an install, on
-  git, and (in US2) on a long watch loop; running that on the supervisor's event
-  loop is the shape that starved a Temporal heartbeat for 5m12s on 2026-08-24.
+  git, and on a watch loop that outlives the epic it is watching; running that
+  on the supervisor's event loop is the shape that starved a Temporal heartbeat
+  for 5m12s on 2026-08-24.
 - **Its command line carries no `python -`.** Same reason the supervisor's does
   not: a cleanup sweep once ran `pkill -f "python -"` and matched a factory
   process (`container_supervisor.py:8-12`).
@@ -26,19 +27,31 @@ First boot is bounded by two sentinels under `$ERGANE_STATE_HOME/demo/`, and
 they carry two different promises. `prepared` is written only *after* the
 sandbox probe succeeds, so a probe refusal leaves nothing behind and a stranger
 who fixes their host and restarts gets the demo rather than a permanent sulk.
-`dispatch-attempted` (US2) is written *before* the dispatch verb, so a crash
-between spending the stranger's key and recording that fact cannot re-spend it.
-Merging them would collapse "retryable host problem" into "money was spent".
+`dispatch-attempted` is written *before* the dispatch verb, so a crash between
+spending the stranger's key and recording that fact cannot re-spend it. Merging
+them would collapse "retryable host problem" into "money was spent".
+
+110-US2 adds the second phase: one `ergane build ship … --yes
+--halt-after-pass`, then a poll of `ergane build status` that narrates each node
+state as it changes and closes on the render the CLI itself produces — which in
+halting mode carries the statement that landing was not attempted. The driver
+never writes that statement itself; it prints what `build status` printed, so
+the demo's last words and an operator's own reading of the epic are the same
+words.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
+import json
 import os
 import subprocess
+import time
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from factory.cli import init as init_module
 from factory.cli.install import (
@@ -88,6 +101,42 @@ DEMO_GIT_EMAIL = "demo@ergane.invalid"
 DEMO_STATE_DIRNAME = "demo"
 PREPARED_SENTINEL = "prepared"
 DISPATCH_SENTINEL = "dispatch-attempted"
+
+#: How often the watch loop asks the epic what changed, and how long it keeps
+#: asking. The interval is a compromise between a narration that feels live and
+#: a query the worker answers thousands of times for nothing; the ceiling exists
+#: because the demo runs unattended in a stranger's terminal, and a node parked
+#: on an operator who is not there would otherwise poll until the container is
+#: killed. Expiry prints the last reading and leaves, rather than pretending the
+#: epic ended.
+DEFAULT_POLL_INTERVAL_S = 5.0
+DEFAULT_WATCH_TIMEOUT_S = 7200.0
+
+#: How many `build status` reads in a row may fail before the watch gives up.
+#: A dispatch races its own workflow's first moments and a Temporal blip is not
+#: news, so single failures are absorbed; a wall of them is reported with the
+#: CLI's own words and ends the watch.
+MAX_CONSECUTIVE_POLL_FAILURES = 10
+
+#: Node states no further transition follows, whatever the mode. `PASSED` is
+#: deliberately absent: a verified node normally still owes its landing a
+#: terminal (`factory/workgraph/workflow.py:284-294`), and it is the *dispatch*
+#: that makes PASSED terminal, not the state's name. The watch reads which of
+#: the two it is watching off the status document's own `halt_after_pass`, so a
+#: driver run without the flag would keep watching through the landing rather
+#: than declaring victory one state early.
+_TERMINAL_NODE_STATES = frozenset({"MERGED", "FAILED", "KILLED"})
+_HALTED_TERMINAL_NODE_STATE = "PASSED"
+
+#: Epic states that end the epic whatever its nodes say — a killed epic's nodes
+#: are rewritten to KILLED on the way out, but the epic says so first.
+_TERMINAL_EPIC_STATES = frozenset({"COMPLETED", "KILLED"})
+
+#: Node states that mean the node got where it was going. Read only for the
+#: driver's exit status, which the supervisor logs and nothing else consults;
+#: what the *stream* says about a failure is `build status`'s render and not a
+#: word more (FR-010).
+_SUCCEEDED_NODE_STATES = frozenset({"PASSED", "MERGED"})
 
 #: The one remedy line a sandbox refusal prints under the probe's own stderr.
 #: Docker masks parts of `/proc`, and the kernel refuses a fresh procfs mount in
@@ -335,6 +384,283 @@ def run_prepare_phase(
     return 0
 
 
+@dataclass(frozen=True)
+class CliRun:
+    """One `ergane` invocation's status and the two streams it wrote.
+
+    The prepare phase's seam returns a bare status and lets the CLI's output go
+    straight to the container log, because an install transcript is something a
+    stranger should watch arrive. This phase needs the text itself: it decides
+    what to print (a refusal, verbatim), and it parses one answer (`build status
+    --json`) rather than showing it. The streams stay apart because the JSON is
+    on one of them and a skew notice is on the other.
+    """
+
+    status: int
+    stdout: str
+    stderr: str
+
+
+def _run_cli_captured(argv: Sequence[str]) -> CliRun:
+    """Run one `ergane` invocation in-process, capturing what it wrote.
+
+    In-process for the same reason `_run_cli` is: this *is* the ergane CLI, and
+    spawning a second interpreter to reach it would double the import cost and
+    lose the exit code's meaning behind a shell. `SystemExit` is caught because
+    `argparse` raises it for a malformed argv, and a driver that died of a
+    traceback here would take the demo's narration with it.
+    """
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            status = _run_cli(list(argv))
+    except SystemExit as exit_request:
+        status = int(exit_request.code or 0)
+    return CliRun(status=status, stdout=out.getvalue(), stderr=err.getvalue())
+
+
+def ship_argv(
+    repo_root: Path | str, *, spec_dirname: str = DEMO_SPEC_DIRNAME
+) -> list[str]:
+    """The dispatch, whole: one verb, `--yes`, and halting mode (FR-007).
+
+    `build ship` already chains validate → derive → summary → confirm → dispatch
+    (`factory/cli/nouns/build.py:838-893`), so the driver assembles this argv and
+    nothing else. A driver that ran `spec validate`, then `spec derive`, then
+    `build start` would be a second implementation of that chain, drifting from
+    the one an operator types the first time either of them changed.
+
+    The spec directory is absolute. The driver's working directory is whatever
+    the supervisor was started in, which is nobody's declaration of where the
+    demonstration project lives — the repository root it was handed is
+    (constitution IX).
+    """
+    repo_root = Path(repo_root)
+    return [
+        "build",
+        "ship",
+        str(repo_root / "specs" / spec_dirname),
+        "--target-repo",
+        str(repo_root),
+        "--yes",
+        "--halt-after-pass",
+    ]
+
+
+def status_argv(epic_id: str, *, as_json: bool = False) -> list[str]:
+    """`ergane build status <epic>`, in either of the two forms this phase reads."""
+    argv = ["build", "status", epic_id]
+    if as_json:
+        argv.append("--json")
+    return argv
+
+
+def _print_transcript(run: CliRun) -> None:
+    """Print what a CLI invocation wrote, unprefixed and unedited.
+
+    Both streams, stdout first, because a refusal is often a finding on one and
+    an `ergane:` line on the other and the reader needs both halves. Nothing is
+    added, reflowed or summarised: this is the CLI's own voice, and the whole
+    point of FR-010 is that the driver does not acquire one of its own for it.
+    """
+    for stream in (run.stdout, run.stderr):
+        text = stream.rstrip("\n")
+        if text:
+            print(text, flush=True)
+
+
+def _transition_line(node_id: str, previous: str | None, state: str) -> str:
+    """One node's change of state, as the compose stream will read it.
+
+    The first sighting of a node has no arrow: there is no state it came from,
+    and `PENDING -> PENDING` would read as a transition that did not happen.
+    ASCII, because this line goes to whatever encoding a stranger's terminal
+    turned out to have.
+    """
+    if previous is None:
+        return f"{node_id}  {state}"
+    return f"{node_id}  {previous} -> {state}"
+
+
+def _node_states(document: Mapping[str, Any]) -> dict[str, str]:
+    """Each node's state, by node id, in the order the query reported them."""
+    nodes = document.get("nodes")
+    if not isinstance(nodes, Mapping):
+        return {}
+    states: dict[str, str] = {}
+    for node_id, node in nodes.items():
+        if isinstance(node, Mapping) and node.get("state") is not None:
+            states[str(node_id)] = str(node["state"])
+    return states
+
+
+def _is_terminal(document: Mapping[str, Any]) -> bool:
+    """Whether this reading is the epic's last one.
+
+    Two independent answers, because they become true at different moments: the
+    epic declares itself COMPLETED only once its workflow returns, while a
+    single-node graph in halting mode is *done* the instant its node reaches
+    PASSED. Waiting for the first alone would leave the demo's closing render a
+    teardown behind the thing it describes.
+    """
+    if str(document.get("epic_state", "")) in _TERMINAL_EPIC_STATES:
+        return True
+    states = _node_states(document)
+    if not states:
+        return False
+    terminal = set(_TERMINAL_NODE_STATES)
+    if document.get("halt_after_pass"):
+        terminal.add(_HALTED_TERMINAL_NODE_STATE)
+    return all(state in terminal for state in states.values())
+
+
+def _succeeded(document: Mapping[str, Any]) -> bool:
+    """Whether every node in that last reading got where it was going."""
+    states = _node_states(document)
+    return bool(states) and all(
+        state in _SUCCEEDED_NODE_STATES for state in states.values()
+    )
+
+
+def _decode_status(run: CliRun) -> Mapping[str, Any] | None:
+    """The status document a `--json` read returned, or `None` if it did not.
+
+    A poll that failed and a poll that answered something this driver cannot
+    read are the same event to the loop above: no new reading. Distinguishing
+    them would buy a second error message for one retry budget.
+    """
+    if run.status != 0:
+        return None
+    try:
+        document = json.loads(run.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return document if isinstance(document, Mapping) else None
+
+
+def run_watch_phase(
+    *,
+    epic_id: str = DEMO_SPEC_DIRNAME,
+    run_cli_captured: Callable[[Sequence[str]], CliRun] = _run_cli_captured,
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    timeout_s: float = DEFAULT_WATCH_TIMEOUT_S,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    emit: Callable[[str], None] = _emit,
+) -> int:
+    """Narrate one epic to its terminal state, then print the render (FR-008).
+
+    Every line this loop writes is one of two things: a node whose state is not
+    what it was last time, or — once — the text `ergane build status` prints.
+    That division is the story. The transitions exist because a stranger reading
+    `docker compose up` needs to see the epic moving; the render exists because
+    the closing statement about landing has to be the CLI's sentence and not a
+    rephrasing of it, and the only way to guarantee that is to not write it.
+
+    Returns 0 when the epic ended with every node where it was going, nonzero
+    otherwise. Nothing in the stream reports that distinction a second time: a
+    failure's account is the render, verbatim (FR-010).
+    """
+    seen: dict[str, str] = {}
+    failures = 0
+    deadline = clock() + timeout_s
+
+    while True:
+        run = run_cli_captured(status_argv(epic_id, as_json=True))
+        document = _decode_status(run)
+        if document is None:
+            failures += 1
+            if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
+                emit(
+                    f"refusing: `ergane build status {epic_id}` has not answered "
+                    f"{failures} times running; giving up the watch"
+                )
+                _print_transcript(run)
+                return 1
+            sleep(poll_interval_s)
+            continue
+        failures = 0
+
+        for node_id, state in _node_states(document).items():
+            previous = seen.get(node_id)
+            if previous == state:
+                continue
+            emit(_transition_line(node_id, previous, state))
+            seen[node_id] = state
+
+        if _is_terminal(document):
+            _print_transcript(run_cli_captured(status_argv(epic_id)))
+            return 0 if _succeeded(document) else 1
+
+        if clock() >= deadline:
+            emit(
+                f"the epic has not reached a terminal state in {timeout_s:.0f}s; "
+                "the last reading follows and the demo stops watching"
+            )
+            _print_transcript(run_cli_captured(status_argv(epic_id)))
+            return 1
+
+        sleep(poll_interval_s)
+
+
+def run_dispatch_phase(
+    *,
+    state_home: Path | str,
+    repo_root: Path | str,
+    spec_dirname: str = DEMO_SPEC_DIRNAME,
+    run_cli_captured: Callable[[Sequence[str]], CliRun] = _run_cli_captured,
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    timeout_s: float = DEFAULT_WATCH_TIMEOUT_S,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    emit: Callable[[str], None] = _emit,
+) -> int:
+    """Dispatch the demonstration epic once, then watch it (FR-007…FR-010).
+
+    The sentinel goes down *before* `build ship`, and that order is the design
+    rather than an oversight (plan T4). This is the moment the stranger's key
+    starts being spent; a driver that recorded the fact afterwards would, in the
+    window between the dispatch and the record, answer a container restart by
+    spending it again. Writing it first can at worst cost a demo that never ran
+    — recoverable by deleting one file — where the other order costs money.
+
+    A refusal from `build ship` is printed as it was written and is the last
+    thing this process says. There is nothing to stop and nothing to roll back:
+    the driver is not a supervised child (FR-001), so the services it never
+    touched go on running and the container stays up for the stranger to look
+    around in.
+    """
+    state_home = Path(state_home)
+    repo_root = Path(repo_root)
+
+    attempted = sentinel_path(state_home, DISPATCH_SENTINEL)
+    if attempted.is_file():
+        emit(
+            f"the demonstration epic was already dispatched ({attempted}); "
+            f"read it with `ergane build status {spec_dirname}`"
+        )
+        return 0
+
+    argv = ship_argv(repo_root, spec_dirname=spec_dirname)
+    write_sentinel(state_home, DISPATCH_SENTINEL)
+    emit("dispatching: ergane " + " ".join(argv))
+
+    run = run_cli_captured(argv)
+    _print_transcript(run)
+    if run.status != 0:
+        return run.status
+
+    return run_watch_phase(
+        epic_id=spec_dirname,
+        run_cli_captured=run_cli_captured,
+        poll_interval_s=poll_interval_s,
+        timeout_s=timeout_s,
+        sleep=sleep,
+        clock=clock,
+        emit=emit,
+    )
+
+
 def _default_state_home() -> Path:
     """The state home this container declares, or the resolver's default."""
     declared = os.environ.get("ERGANE_STATE_HOME")
@@ -369,15 +695,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     Every failure leaves as a named line and a nonzero status rather than as a
     traceback: this process's stdout is the `docker compose up` stream a
     stranger is reading, and the supervisor beside it only logs what it reaped.
+
+    The two phases are strictly ordered and the gate between them is absolute: a
+    nonzero prepare — a control plane that wrote no config, a sandbox that could
+    not start — stops the driver *before* any spend, which is the whole reason
+    the probe lives at the end of prepare rather than the start of dispatch. On
+    a second boot both phases are one-line no-ops, each for its own sentinel's
+    own reason.
     """
     args = _build_parser().parse_args(argv)
     state_home = Path(args.state_home) if args.state_home else _default_state_home()
+    repo_root = Path(args.repo)
     try:
-        return run_prepare_phase(
+        prepared = run_prepare_phase(
             state_home=state_home,
-            repo_root=Path(args.repo),
+            repo_root=repo_root,
             answers_path=Path(args.answers_file),
         )
+        if prepared != 0:
+            return prepared
+        return run_dispatch_phase(state_home=state_home, repo_root=repo_root)
     except Exception as error:
         _emit(f"first boot failed: {type(error).__name__}: {error}")
         return 1

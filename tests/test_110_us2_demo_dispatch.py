@@ -17,10 +17,11 @@ Two things the seam does *not* fake, on purpose:
 ## Evidence (T014)
 
 The scripted narration of T010, as the driver printed it (states PENDING →
-RUNNING → VERIFYING → PASSED, then the terminal render), captured from the test
-run itself:
+RUNNING → VERIFYING → PASSED, then the terminal render), captured by running
+this file's own scenario against `run_dispatch_phase` on 2026-08-27 with the
+demo's real repository path:
 
-    ergane demo: dispatching: ergane build ship <repo>/specs/001-demo --target-repo <repo> --yes --halt-after-pass
+    ergane demo: dispatching: ergane build ship /home/ergane/repo/specs/001-demo --target-repo /home/ergane/repo --yes --halt-after-pass
     ship: compiled graph '001-demo' has 1 node(s)
     dispatch order: US1
     001-demo-US1
@@ -287,16 +288,18 @@ def test_each_transition_is_printed_once_and_the_halt_statement_reaches_the_stre
         transition("PASSED", "VERIFYING"),
     ]
     for line in expected:
-        assert lines.count(line) == 1, f"{line!r} appeared {lines.count(line)}x\n{printed}"
+        seen = lines.count(line)
+        assert seen == 1, f"{line!r} appeared {seen}x\n{printed}"
 
     # In the order they happened, and nothing else narrated between them.
-    assert [line for line in lines if line.startswith(f"ergane demo: {NODE_ID}")] == expected
+    narrated = [line for line in lines if line.startswith(f"ergane demo: {NODE_ID}")]
+    assert narrated == expected, printed
 
     # The terminal render, whole, and the statement inside it word for word.
     terminal = human_render(status_document("PASSED", epic_state="COMPLETED"))
     assert terminal in printed, printed
     assert HALT_STATEMENT in printed, printed
-    assert HALT_STATEMENT in lines, "the statement was reflowed rather than passed through"
+    assert HALT_STATEMENT in lines, "the statement was reflowed, not passed through"
 
 
 def test_a_passed_node_is_terminal_only_because_the_epic_is_halting(
