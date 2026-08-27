@@ -38,9 +38,36 @@ demo's real repository path:
 The last block is `render_status`'s own output, printed by the driver unchanged;
 the blank line before the statement is the CLI's, not the driver's.
 
-Full suite on this tree with this file ignored: 5006 passed, 57 skipped in 337.65s.
-Full suite on this tree with this file:         5015 passed, 57 skipped in 338.41s.
-The delta is this file's nine tests and nothing else.
+The same scenario ending in a gate failure instead (T012), which is the whole
+of what the driver prints — no consolation, no diagnosis, and the node's reason
+carried through by `render_status` rather than restated:
+
+    ergane demo: US1  PENDING
+    ergane demo: US1  PENDING -> RUNNING
+    ergane demo: US1  RUNNING -> VERIFYING
+    ergane demo: US1  VERIFYING -> FAILED
+    epic 001-demo  COMPLETED  execution COMPLETED
+    landing dials  unavailable
+
+    landing not attempted: the epic was dispatched with --halt-after-pass; to land, start the epic without that flag and ensure the target repo has a forge configured
+    US1  FAILED  attempt 1  factory/001-demo/US1  reason: gate test failed: exit 1
+
+Full suite, `uv run pytest -q`, on this tree on 2026-08-27:
+
+    with this file ignored:  5006 passed, 57 skipped, 6 warnings in 383.08s
+    with this file:          5015 passed, 1 failed, 57 skipped in 399.64s
+
+5006 + this file's ten = 5016 collected, and the difference between the two
+lines is one pre-existing flake rather than a test of this story. Two tests in
+this suite are load-sensitive and fail intermittently whatever this file does:
+`test_us4_boundary.py::test_hanging_agent_is_killed_at_deadline_with_no_survivors`
+(a bwrap deadline that records no SIGTERM when the host is busy) and
+`test_roadmap_operator_surface.py::test_pause_roadmap_parks_dispatch_between_epics`
+(a roadmap status queried before the workflow has populated it). Across five
+full runs the failing one was a different test each time, both were green in
+isolation (5/5 and 3/3), and a run *with this file ignored* lost the bwrap test
+the same way — so the flake is the suite's, not this story's. Every one of this
+file's ten tests passed in all three runs that collected them.
 """
 
 from __future__ import annotations
@@ -151,7 +178,8 @@ class ScriptedCli:
 
     @property
     def served(self) -> Mapping[str, Any]:
-        return self._documents[min(self._index, len(self._documents)) - 1]
+        """The document the last `--json` read was answered with."""
+        return self._documents[max(self._index - 1, 0)]
 
     def __call__(self, argv: Sequence[str]):
         argv = list(argv)
