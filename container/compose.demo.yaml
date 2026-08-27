@@ -77,6 +77,25 @@ services:
       # /opt/ergane because the Dockerfile copies the repository there.
       - ERGANE_PERSONAS_PATH=/opt/ergane/container/personas.demo.yaml
       - ERGANE_TEMPORAL_DB_FILENAME=/home/ergane/.local/state/ergane/temporal/engine.db
+      # Where node worktrees and the three stores live. Without this the
+      # resolver falls back to `.ergane/` RELATIVE TO THE WORKING DIRECTORY
+      # (worktree.py resolve_factory_root), which inside this container is the
+      # image root — so every attempt tried to build in a read-only image layer
+      # and died before the agent ever started:
+      #
+      #   FileNotFoundError: [Errno 2] No such file or directory:
+      #     '/opt/ergane/.ergane/worktrees/001-demo/us1'
+      #   AdapterError: could not launch sandbox backend 'bwrap' for
+      #     ['claude', '-p', ...]
+      #
+      # Measured 2026-08-26; both attempts of the demo's only story failed this
+      # way and the node ended KILLED.
+      #
+      # It points at the STATE volume rather than at `<repo>/.ergane`, which is
+      # the floor's convention, because the onboarding gate checks that the
+      # runtime root is gitignored and the scaffolded demo repo has no reason to
+      # ignore a directory the demo alone creates.
+      - ERGANE_ROOT=/home/ergane/.local/state/ergane/runtime
       # Optional GitHub credential. On a stock host `gh` is unauthenticated, so
       # `ergane install --verify` reports that fact rather than failing silently.
       # Set GH_TOKEN in your shell to authenticate `gh` inside the engine; the
@@ -130,7 +149,29 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-      start_period: 10s
+      # 300s, and the number is not padding. LiteLLM's first boot against an
+      # empty Postgres applies 127 Prisma migrations before it serves
+      # /health/liveliness. The previous window was start_period + retries *
+      # interval = 10 + 25 = ~35 SECONDS, and the migrations had only just begun
+      # when it expired: measured 2026-08-26 on this host, gateway up at
+      # 02:41:44, "Running prisma migrate deploy" at 02:42:07, compose aborting
+      # on an unhealthy dependency at ~02:42:19, and the gateway finally healthy
+      # twelve minutes later — long after compose had abandoned the engine
+      # container in state "Created".
+      #
+      # The stranger saw `dependency failed to start: container … is unhealthy`
+      # and nothing else. No install, no scaffold, no dispatch. The whole demo.
+      #
+      # This is COLD-VOLUME-ONLY, which is why it survived: a second `up` finds
+      # the migrations applied and answers in seconds, so it passes for anyone
+      # who has run it before and fails for everyone who has not. Every stranger
+      # is in the second group.
+      #
+      # A large start_period costs nothing on a warm boot. Docker does not count
+      # failures during it toward `retries`, and a success during it flips the
+      # container healthy immediately — so this window is only ever spent when
+      # it is actually needed.
+      start_period: 300s
     command: ["--config", "/app/config.yaml"]
 
   postgres:

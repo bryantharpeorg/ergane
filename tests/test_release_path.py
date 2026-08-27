@@ -614,6 +614,16 @@ def test_us1_dockerignore_contents() -> None:
         ".venv",
         ".factory",
         ".claude",
+        # The engine creates these two inside the repository, and their absence
+        # from this set is why the assertion below passed for months while the
+        # requirement in the docstring was violated: a local `docker build`
+        # copied .ergane/homes/<spec>/<node>/.claude/.credentials.json -- one real
+        # credential per dispatched node -- into the image. 11G of it on the
+        # floor host, 2026-08-26. CI never reproduced it because
+        # actions/checkout@v4 yields a clean clone, which is precisely why a test
+        # rather than a green release run has to hold this.
+        ".ergane",
+        ".temporal",
         "dist",
         "build",
         "**/__pycache__",

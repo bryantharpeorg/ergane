@@ -777,6 +777,32 @@ class BwrapGateExecutor:
         # launcher, and deriving one from the other lost the payload there.
         runner = next((t for t in resolved if t.name == DEFAULT_AGENT_RUNNER), None)
         root = find_install_root(DEFAULT_AGENT_RUNNER, tool=runner)
+
+        # A runner that lives inside the system tree needs NOTHING from this
+        # method: `system_tree_argv` ro-binds `/usr` wholesale, and that bind
+        # already carries the launcher symlink, its target and its whole
+        # ancestry. Emitting the `--symlink` anyway is not merely redundant —
+        # bwrap refuses to create a symlink where the bound tree already has
+        # one, and the gate dies before running anything:
+        #
+        #   bwrap: Can't make symlink at /usr/bin/claude: existing destination
+        #     is ../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+        #
+        # Measured 2026-08-26 in the demo container, where npm installed the
+        # runner as `/usr/bin/claude`: all four attempts of the demo's story
+        # gate-FAILED in ~8ms each on this line while the agent boundary —
+        # which ro-binds over the same path instead of symlinking — ran fine.
+        # On the floor the runner is `~/.local/bin/claude`, no bind covers it,
+        # and the symlink is what keeps nested gates resolving the versioned
+        # install; that path is unchanged.
+        def _inside_system_tree(path: Path) -> bool:
+            return str(path).startswith(str(self.system_root / "usr") + "/")
+
+        if runner is not None and _inside_system_tree(runner.found_at):
+            if root is not None and not _inside_system_tree(root):
+                binds.append(("--ro-bind", str(root), str(root)))
+            return binds
+
         if root is not None:
             binds.append(("--ro-bind", str(root), str(root)))
         if runner is not None:

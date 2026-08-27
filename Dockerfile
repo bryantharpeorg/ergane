@@ -60,7 +60,29 @@ RUN python3 -m venv .venv \
 # $HOME is set below and nothing else creates it: `useradd -m` used to, so it is
 # made explicitly here. An unwritable $HOME is not cosmetic in this image — the
 # agent adapter writes a per-node home under it.
-RUN install -d -m 755 -o 1000 -g 1000 /home/ergane \
+# Every path a compose project mounts a named volume at must ALSO exist here,
+# owned by 1000. Docker seeds a fresh named volume from the image's contents at
+# that path -- ownership included -- but when the path is absent from the image
+# it creates the mount point root-owned, and this container runs as uid 1000.
+# All four demo volumes landed root-owned for exactly that reason and the engine
+# died on its first write:
+#
+#   PermissionError: [Errno 13] Permission denied:
+#     '/home/ergane/.local/state/ergane/temporal'
+#
+# Measured 2026-08-26. The paths below are the mount points in
+# container/compose.demo.yaml; tests/test_container_volume_ownership.py asserts
+# the two files agree, because nothing else connects them and the failure only
+# appears on a cold volume.
+RUN install -d -m 755 -o 1000 -g 1000 \
+        /home/ergane \
+        /home/ergane/.local \
+        /home/ergane/.local/state \
+        /home/ergane/.local/state/ergane \
+        /home/ergane/.local/state/ergane/supervision \
+        /home/ergane/.config \
+        /home/ergane/.config/ergane \
+        /home/ergane/repo \
     && chown -R 1000:1000 /opt/ergane
 USER 1000:1000
 
