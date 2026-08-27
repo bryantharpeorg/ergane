@@ -409,6 +409,15 @@ def _run_cli_captured(argv: Sequence[str]) -> CliRun:
     lose the exit code's meaning behind a shell. `SystemExit` is caught because
     `argparse` raises it for a malformed argv, and a driver that died of a
     traceback here would take the demo's narration with it.
+
+    Capturing costs the dispatch its live stream: `build ship`'s validate,
+    derive and preflight output arrives in one block when the verb returns
+    rather than line by line while it works. That is the price of the phase
+    being able to decide what to print, and it buys the thing FR-009 is about —
+    a refusal printed as the driver's last words rather than as a line the watch
+    loop then talks over. The polls are captured for the opposite reason: a
+    status document every few seconds would bury the narration it is there to
+    produce.
     """
     out, err = io.StringIO(), io.StringIO()
     try:
@@ -528,6 +537,14 @@ def _decode_status(run: CliRun) -> Mapping[str, Any] | None:
     A poll that failed and a poll that answered something this driver cannot
     read are the same event to the loop above: no new reading. Distinguishing
     them would buy a second error message for one retry budget.
+
+    `epic_state` is what makes an answer a reading. A workflow that refuses to
+    describe itself is reported by `build status` as a successful command with a
+    document of `{"nodes": {}, "refusal": …}` (`build.py:900-909`) — exit 0, no
+    epic state, no nodes. Taken at face value that is a run that never moves and
+    never ends, and the watch would poll it until its ceiling. Counted as an
+    unreadable answer instead, it spends the retry budget and then leaves,
+    printing the refusal the CLI put in the document.
     """
     if run.status != 0:
         return None
@@ -535,7 +552,9 @@ def _decode_status(run: CliRun) -> Mapping[str, Any] | None:
         document = json.loads(run.stdout)
     except (json.JSONDecodeError, TypeError):
         return None
-    return document if isinstance(document, Mapping) else None
+    if not isinstance(document, Mapping) or "epic_state" not in document:
+        return None
+    return document
 
 
 def run_watch_phase(
@@ -572,8 +591,9 @@ def run_watch_phase(
             failures += 1
             if failures >= MAX_CONSECUTIVE_POLL_FAILURES:
                 emit(
-                    f"refusing: `ergane build status {epic_id}` has not answered "
-                    f"{failures} times running; giving up the watch"
+                    f"refusing: `ergane build status {epic_id}` has not given a "
+                    f"readable reading {failures} times running; the last answer "
+                    "follows and the demo stops watching"
                 )
                 _print_transcript(run)
                 return 1

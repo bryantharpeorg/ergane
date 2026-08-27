@@ -467,3 +467,35 @@ def test_an_unreadable_status_is_retried_and_then_refused(
     assert status != 0
     assert len(cli.calls) == driver_mod.MAX_CONSECUTIVE_POLL_FAILURES
     assert "connection refused" in printed
+
+
+def test_a_workflow_that_refuses_to_describe_itself_is_not_watched_forever(
+    driver_mod, capsys
+) -> None:
+    """`build status` reports a query refusal as exit 0 and an empty document.
+
+    Read literally that is an epic with no nodes and no state — one that never
+    moves and never ends — so it has to spend the same budget an unreachable
+    server spends, and leave with the refusal the CLI recorded.
+    """
+    refusal = {"nodes": {}, "refusal": "query handler not registered: epic_status"}
+
+    class RefusingCli:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def __call__(self, argv: Sequence[str]):
+            self.calls.append(list(argv))
+            return driver_mod.CliRun(
+                status=0, stdout=json.dumps(refusal, indent=2), stderr=""
+            )
+
+    cli = RefusingCli()
+    status = driver_mod.run_watch_phase(
+        epic_id=EPIC_ID, run_cli_captured=cli, sleep=lambda _seconds: None
+    )
+    printed = capsys.readouterr().out
+
+    assert status != 0
+    assert len(cli.calls) == driver_mod.MAX_CONSECUTIVE_POLL_FAILURES
+    assert "query handler not registered" in printed
