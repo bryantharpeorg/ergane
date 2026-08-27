@@ -312,9 +312,29 @@ def derive_command(args: argparse.Namespace) -> int:
         raise _OperatorError(f"cannot read {spec_path}: {error}") from error
 
     epic_id = spec_dir.resolve().name
-    specs_root = _resolve_identity_path(
-        args.specs_root, "--specs-root", must_exist=True
-    )
+    # An un-overridden `--specs-root` means "wherever this spec lives", not
+    # "./specs relative to whatever directory this process happens to be in".
+    # The two agree whenever the operator stands in the target repo, which is why
+    # the CWD-relative default went unnoticed: on the floor `specs/110-…` under
+    # the repo root resolves to the same absolute path either way.
+    #
+    # They stop agreeing the moment the CLI is not run from the repo it builds.
+    # In the demo container the working directory is the IMAGE root, so
+    # `ergane build ship /home/ergane/repo/specs/001-demo --target-repo
+    # /home/ergane/repo` compiled a graph reading
+    # `specs_root: '/opt/ergane/specs'` — the CLI's own tree — and dispatch was
+    # refused with `cannot read /opt/ergane/specs/001-demo/spec.md` for all three
+    # trio documents. Measured 2026-08-26. The operator named an absolute spec
+    # directory and its parent is not a guess.
+    #
+    # `--specs-root` still wins when it is given, for the split-host topology
+    # where the worker's path differs from the CLI's.
+    if args.specs_root == DEFAULT_SPECS_ROOT:
+        specs_root = str(spec_dir.resolve().parent)
+    else:
+        specs_root = _resolve_identity_path(
+            args.specs_root, "--specs-root", must_exist=True
+        )
     target_repo = _resolve_identity_path(
         args.target_repo, "--target-repo", must_exist=True
     )

@@ -19,6 +19,7 @@ import asyncio
 import logging
 import socket
 import sys
+from pathlib import Path
 from typing import Sequence
 
 from temporalio.runtime import Runtime
@@ -97,6 +98,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Dev-server log level (default: {DEFAULT_LOG_LEVEL})",
     )
     args = parser.parse_args(argv)
+
+    # The dev server stats the database file's PARENT and refuses to create it:
+    # `failed checking dir for database file: stat <dir>: no such file or
+    # directory`. Nothing else along this path makes the directory, so on a cold
+    # state volume the server dies on the first boot and takes the whole
+    # container with it. Measured 2026-08-26 in the demo project, where
+    # ERGANE_TEMPORAL_DB_FILENAME is .../state/ergane/temporal/engine.db and the
+    # `temporal/` component exists in no image layer and no volume — the sibling
+    # `supervision/` component exists only because it happens to be a mount
+    # point. The process that names the file is the one that should ensure its
+    # directory.
+    Path(args.db_filename).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
     port = _free_port(args.ip) if args.port == 0 else args.port
     logging.basicConfig(level=logging.INFO)

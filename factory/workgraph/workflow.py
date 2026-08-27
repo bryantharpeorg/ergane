@@ -361,6 +361,24 @@ _ISSUE_KEY_RETRIES = RetryPolicy(
     backoff_coefficient=2.0,
 )
 
+#: Onboarding checks that describe how an epic would LAND, and therefore say
+#: nothing about an epic dispatched with --halt-after-pass. Every one of them
+#: needs a forge the factory can read; the rest of onboarding judges the local
+#: tree and still gates every dispatch. Exact names first, then prefixes for the
+#: per-gate families `evaluate_repo` generates one finding each for.
+_LANDING_ONLY_CHECKS = frozenset(
+    {"repo_read", "gated_landing", "autonomous_landing", "landing_title"}
+)
+_LANDING_ONLY_CHECK_PREFIXES = ("gate_check:", "noop_gate:", "unknown_check:")
+
+
+def _is_landing_only_check(check: str) -> bool:
+    """Whether this onboarding finding is only about landing (109-US3/FR-012)."""
+    return check in _LANDING_ONLY_CHECKS or check.startswith(
+        _LANDING_ONLY_CHECK_PREFIXES
+    )
+
+
 #: Reads and small writes: a registry parse, a spec parse, a git diff, a SQLite
 #: upsert, two API calls.
 _FAST = {
@@ -1080,16 +1098,49 @@ class EpicWorkflow:
             ValidateTargetRepoInput(target_repo=graph.target_repo),
             **_FAST,
         )
-        if not profile.passed:
-            findings = "\n".join(
-                f"  [{f.mark}] {f.check}: {f.detail}" for f in profile.findings
-            )
-            raise ApplicationError(
-                f"target repo {graph.target_repo} failed onboarding; nothing "
-                f"dispatches against an unvalidated repo:\n{findings}",
-                type=GRAPH_INVALID,
-                non_retryable=True,
-            )
+        if profile.passed:
+            return
+
+        failed = [f for f in profile.findings if not f.passed]
+
+        # An epic dispatched with --halt-after-pass will never open a proposal,
+        # never enter a queue and never land, so the onboarding findings that
+        # describe HOW it would land cannot disqualify it. Every forge-dependent
+        # check is a landing check — see `_LANDING_ONLY_CHECKS` — and the local
+        # tree checks (gitignore, registry, manifest) still gate the dispatch.
+        #
+        # Without this, the demo could not run at all. Its repo is a local
+        # git init with no remote, `gh` in the image is unauthenticated, and
+        # `container/compose.demo.yaml` documents GH_TOKEN as optional --
+        # "the demo itself does not require it to start". It did:
+        #
+        #   GRAPH_INVALID: target repo /home/ergane/repo failed onboarding;
+        #     nothing dispatches against an unvalidated repo:
+        #     [FAIL] repo_read: could not read the repo via its forge
+        #       (GH_REFUSED): To get started with GitHub CLI, please run:
+        #       gh auth login
+        #
+        # Measured 2026-08-26. `evaluate_init_facts` already exists because "a
+        # repo with no GitHub remote is exactly the repo whose *local* findings
+        # matter most" (onboard.py:405-412); this is that same reasoning applied
+        # to the verdict rather than only to which findings get collected.
+        if self._halt_after_pass:
+            failed = [f for f in failed if not _is_landing_only_check(f.check)]
+            if not failed:
+                workflow.logger.info(
+                    "target repo %s has no forge the factory can read; dispatching "
+                    "anyway because --halt-after-pass means this epic never lands",
+                    graph.target_repo,
+                )
+                return
+
+        findings = "\n".join(f"  [{f.mark}] {f.check}: {f.detail}" for f in failed)
+        raise ApplicationError(
+            f"target repo {graph.target_repo} failed onboarding; nothing "
+            f"dispatches against an unvalidated repo:\n{findings}",
+            type=GRAPH_INVALID,
+            non_retryable=True,
+        )
 
     async def _resolve(
         self, graph: WorkGraph, config: VerificationConfig

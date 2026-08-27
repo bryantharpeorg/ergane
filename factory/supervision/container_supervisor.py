@@ -54,6 +54,14 @@ DEMO_DRIVER_MODULE = "factory.supervision.demo_driver"
 #: that is not the demo behaves exactly as it did before this existed.
 DEMO_ENV_VAR = "ERGANE_DEMO"
 
+#: The credential the notifier bridge cannot run without. Spelled here rather
+#: than imported from `factory.notify.service` so the supervisor can decide
+#: whether to start that module without importing it — the import pulls in the
+#: Telegram client stack, and this decision is made before any child exists.
+#: `factory/notify/service.py:119` holds the same name; they are checked against
+#: each other by tests/test_container_bridge_optional.py.
+BRIDGE_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
+
 DEFAULT_TEMPORAL_PORT = 7233
 
 #: The *host* alone, used only when a resolved address names no port. Spelled
@@ -244,6 +252,19 @@ def _demo_driver_argv() -> list[str]:
     return [DEMO_DRIVER_MODULE]
 
 
+def _bridge_is_configured(config: Mapping[str, object]) -> bool:
+    """Whether the notifier bridge has the one credential it cannot run without.
+
+    An empty string counts as absent, because that is exactly how the demo
+    compose file spells "no notifier" — `TELEGRAM_BOT_TOKEN=` with nothing after
+    it — and `os.environ.get` returns "" rather than None for it.
+    """
+    declared = config.get("telegram_bot_token")
+    if declared is None:
+        declared = os.environ.get(BRIDGE_TOKEN_ENV)
+    return bool(str(declared or "").strip())
+
+
 def _demo_requested(config: Mapping[str, object]) -> bool:
     """Whether this container was asked for the demo (FR-001)."""
     declared = config.get("demo")
@@ -397,18 +418,43 @@ async def _run_supervisor(
 
     # Start worker and bridge.
     worker = await start_child("worker", argv_map["worker"])
-    bridge = await start_child("bridge", argv_map["bridge"])
 
     controllers: dict[str, ChildController] = {
         "temporal": temporal,
         "worker": worker,
-        "bridge": bridge,
     }
     tasks: dict[str, asyncio.Task[int]] = {
         "temporal": temporal_task,
         "worker": asyncio.create_task(worker.wait(), name="worker"),
-        "bridge": asyncio.create_task(bridge.wait(), name="bridge"),
     }
+
+    # The bridge is started only when it can be configured. `factory.notify.
+    # service` raises SystemExit on an unset TELEGRAM_BOT_TOKEN, which is right
+    # for the systemd deployment -- a notifier unit deployed without a token
+    # should fail loudly -- but fatal here, because this supervisor treats a
+    # supervised child dying unprompted as a fault (:418-426) and stops the
+    # container.
+    #
+    # compose.demo.yaml sets TELEGRAM_BOT_TOKEN= empty ON PURPOSE ("notifier
+    # defaults are intentionally empty in the demo"), so the demo shipped a
+    # configuration that killed itself: three files each correct alone. Measured
+    # 2026-08-26 -- Temporal up, worker polling 46 activities, the demo driver
+    # into step 1/5, then `child bridge exited first with status 1; stopping
+    # container`.
+    #
+    # Not starting it is the honest option. An idle process that polls nothing
+    # would satisfy the supervisor by pretending to be a notifier, and there is
+    # nothing to notify with.
+    if _bridge_is_configured(config):
+        bridge = await start_child("bridge", argv_map["bridge"])
+        controllers["bridge"] = bridge
+        tasks["bridge"] = asyncio.create_task(bridge.wait(), name="bridge")
+    else:
+        logger.warning(
+            "%s is not set; the notifier bridge is not started and this container "
+            "will send no notifications. Everything else runs normally.",
+            BRIDGE_TOKEN_ENV,
+        )
 
     # The demo driver, if this container asked for it. Deliberately in neither
     # map above: it is a one-shot, and the wait loop below reads a completed
