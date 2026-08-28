@@ -229,7 +229,7 @@
       back, and lands what passes through a merge queue — with every token of spend
       attributed to the node that spent it.
     </p>
-    <p class="provenance">written against v0.5.0 · 2026-08-27 · every command below is real; run them in order</p>
+    <p class="provenance">written against v0.5.0 · 2026-08-27 · every command below is real; the demo was run from this page, from cold, and passed</p>
   </header>
 
   <section>
@@ -237,10 +237,12 @@
     <h2>Prove it in one command</h2>
     <p>
       You do not have to take any of this page's word for it. The released demo
-      boots the whole factory — engine, Temporal, LiteLLM gateway, Postgres — on a
-      machine that has only Docker, and runs one real story end to end in front of
-      you. You need an <a href="https://ollama.com">Ollama</a> API key; the demo's
-      gateway fronts Ollama&nbsp;Cloud.
+      boots the whole factory — engine, Temporal, LiteLLM gateway, Postgres —
+      from one file, and runs one real story end to end in front of you. Docker
+      is the only thing you install; the kernel underneath it has to agree to one
+      more thing, named in the trap below. You need an
+      <a href="https://ollama.com">Ollama</a> API key; the demo's gateway fronts
+      Ollama&nbsp;Cloud.
     </p>
 
     <pre class="well"><code><span class="cmt"># exporting the key is the opt-in: the demo spends a few</span>
@@ -273,13 +275,59 @@ curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/com
     </div>
 
     <p>
-      First boot is the slow one — Postgres initialises and the gateway can take a
-      few minutes to come healthy before the show starts. If the agent's first
-      attempt fails its gate, that is part of the show too: you will watch the
-      recovery ladder produce a second attempt and pass. When the epic completes,
-      the halt statement above is the last thing the stack prints. Setting
-      <code>GH_TOKEN</code> is optional and the demo never needs it.
+      First boot is the slow one — Postgres initialises and the gateway applies
+      its whole migration history before it answers a health check, so the show
+      starts a few minutes in. The install transcript that scrolls past carries
+      two <code>[FAIL]</code> lines of its own: <code>gh</code> is unauthenticated
+      on a stock host, and the <code>gh</code> in the image may be too old to
+      declare <code>baseRefOid</code>. Neither stops a demo that never lands
+      anything, and setting <code>GH_TOKEN</code> is optional. If the agent's
+      first attempt fails its gate, that is part of the show too: you will watch
+      the recovery ladder produce a second attempt and pass.
     </p>
+
+    <p>
+      The halt statement is the <em>epic's</em> last word, not the stack's. The
+      status render prints it above the node's own line, and the engine, the
+      gateway and Postgres go on running and logging once the demo driver
+      finishes — nothing exits, so press <code>Ctrl-C</code> when you have seen
+      enough. The two sentinels the demo writes live in the named volumes, which
+      is what stops a restart from spending your key twice; it also means a second
+      <code>up</code> in the same directory finds the work already done and says
+      so. To watch it again from cold, take the volumes with it:
+      <code>docker compose -p &lt;project&gt; down -v</code>.
+    </p>
+
+    <div class="trap">
+      <span class="tlabel">The trap</span>
+      <p>
+        <strong>Docker is what you install; a user namespace is what you
+        need.</strong> Every attempt runs inside <code>bwrap</code>, and on
+        Ubuntu&nbsp;23.10 and later
+        <code>kernel.apparmor_restrict_unprivileged_userns=1</code> denies that by
+        default. The <code>apparmor=unconfined</code> this project sets does not
+        lift it: AppArmor re-attaches a profile by executable path on exec, so
+        <code>bwrap</code> inside the container is mediated by the
+        <em>host's</em> policy, and without a profile granting it
+        <code>userns</code> the sandbox dies at
+        <code>setting up uid map: Permission denied</code>.
+      </p>
+      <p>
+        The demo probes for this before it spends anything and refuses by name if
+        it fails, so the failure is cheap — but it is a refusal, not a run. On
+        such a host, load a profile for <code>bwrap</code> once, with the two
+        commands below. Hosts that do not restrict unprivileged user namespaces
+        at all — most non-Ubuntu Linux, and Docker Desktop's own VM — need
+        neither.
+      </p>
+    </div>
+
+    <pre class="well"><code><span class="cmt"># only on a host that restricts unprivileged user namespaces</span>
+printf '%s\n' 'abi &lt;abi/4.0&gt;,' 'include &lt;tunables/global&gt;' \
+  'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' \
+  '  include if exists &lt;local/bwrap&gt;' '}' | sudo tee /etc/apparmor.d/bwrap
+
+sudo apparmor_parser -r /etc/apparmor.d/bwrap</code></pre>
   </section>
 
   <hr class="seam">
@@ -367,9 +415,14 @@ uv pip install -e .</code></pre>
 ergane install --verify   <span class="cmt"># re-check without the interview, any time the environment changes</span>
 ergane install --scan     <span class="cmt"># discover what an endpoint offers first; writes nothing</span></code></pre>
     <p>
-      Ergane refuses <code>llm.mode = "direct"</code> by design: a bare provider
-      endpoint has no keys to mint, revoke, or attribute. Put a LiteLLM-shaped
-      gateway in front and declare <code>llm.mode = "gateway"</code>.
+      <code>llm.mode</code> takes <code>gateway</code> or <code>direct</code>.
+      Ergane accepts <code>direct</code> and tells you, at the moment you choose
+      it, exactly what it costs: the declared key is handed to every attempt
+      unexpiring, the registry's model bindings become a hint rather than a gate,
+      and spend attribution goes away entirely, because there is no proxy to read
+      per-key spend from. Those three properties are most of what the factory is
+      for. Put a LiteLLM-shaped gateway in front and declare
+      <code>llm.mode = "gateway"</code> unless you have decided to give them up.
     </p>
   </section>
 
@@ -428,7 +481,7 @@ ergane build start specs/&lt;dir&gt;/workgraph.json                     <span cl
         <tr><td class="why">Which of a spec's stories are landed in git</td><td class="cmd">ergane spec landed &lt;spec-dir&gt;</td></tr>
         <tr><td class="why">What is one epic doing right now</td><td class="cmd">ergane build status &lt;epic-id&gt;</td></tr>
         <tr><td class="why">What defects are open</td><td class="cmd">ergane findings list</td></tr>
-        <tr><td class="why">What did the work cost</td><td class="cmd">ergane usage</td></tr>
+        <tr><td class="why">What did the work cost</td><td class="cmd">ergane usage --by epic</td></tr>
         <tr><td class="why">Is anything waiting on me</td><td class="cmd">ergane escalations list</td></tr>
         <tr><td class="why">Is the installation healthy</td><td class="cmd">ergane doctor</td></tr>
       </tbody>

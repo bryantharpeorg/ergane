@@ -1004,7 +1004,7 @@ class ClaudeCodeAdapter:
                 raise AdapterError(
                     "subscription credential not found: no .claude/.credentials.json "
                     f"under {operator_home / '.claude'} or XDG_CONFIG_HOME. "
-                    "Run `claude login` on the worker host."
+                    "Run `claude auth login` on the worker host."
                 )
         _seed_node_home(home, credential_path)
         await self._reap(pids)

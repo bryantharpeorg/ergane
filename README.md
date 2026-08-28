@@ -8,6 +8,12 @@ verification, and merge-queue discipline.
 This page takes a new operator from a bare machine to a dispatched epic. Every
 command below is real; run them in order.
 
+The same path is also set as a single illustrated page — the one-command demo
+with the ladder it climbs, the six steps, and the trap each one hides — at
+[`docs/onramp.html`](docs/onramp.html). Open it in a browser rather than on
+GitHub, which renders it as markup. It is the shorter read; this page is the
+fuller one.
+
 ## What you must already have
 
 ### A LiteLLM gateway, backed by a database
@@ -30,9 +36,13 @@ declared `agent: none`, which have no model by construction. Run
 `ergane install --scan` to see what a candidate endpoint actually offers before
 you commit to it.
 
-The control plane refuses `llm.mode = "direct"` for the same reason: a per-persona
-provider endpoint has no key to mint, revoke or attribute. Put a LiteLLM-shaped
-gateway in front of the provider and declare `llm.mode = "gateway"`.
+`llm.mode` takes `gateway` or `direct`, and the control plane accepts either. It
+names what `direct` costs at the moment you choose it: the declared key is handed
+to every attempt unexpiring, the registry's model bindings become a hint rather
+than a gate, and spend attribution goes away entirely, because there is no proxy
+to read per-key spend from. Two of those three are security properties rather
+than bookkeeping. Put a LiteLLM-shaped gateway in front of the provider and
+declare `llm.mode = "gateway"` unless you have decided to give them up.
 
 ### Everything else
 
@@ -204,7 +214,7 @@ them to anything written down, including this page.
 | Which of a spec's stories are landed in git | `ergane spec landed <spec-dir>` |
 | What is one epic doing right now | `ergane build status <epic-id>` |
 | What defects are open | `ergane findings list` |
-| What did the work cost | `ergane usage` |
+| What did the work cost | `ergane usage --by epic` |
 | Is anything waiting on me | `ergane escalations list` |
 | Is the installation healthy | `ergane doctor` |
 
