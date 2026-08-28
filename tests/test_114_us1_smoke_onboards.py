@@ -113,6 +113,10 @@ moved:
     $ uv run pytest -q      # this branch
     5060 passed, 57 skipped, 7 warnings in 338.05s (0:05:38)
 
+(The warning tally is run-to-run noise — pytest dedupes by first location, and a
+repeat of the "after" run reported `5060 passed, 57 skipped, 6 warnings`. The
+claim here is about the passed and skipped counts.)
+
 The skip count is identical: the live tier still skips without credentials, and
 the five tests added here are not in it. That is the point — before this branch,
 whether the smoke could dispatch at all was proven by nothing a credential-free
