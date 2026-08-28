@@ -129,6 +129,7 @@ from factory.notify.service import (
 )
 from factory.usage.litellm_client import MASTER_KEY_ENV, PROXY_URL_ENV
 from factory.usage.models import Termination
+from factory.verify.factory_yaml import SUPPORTED_BACKENDS
 from factory.verify.models import VerificationConfig
 from factory.cli.main import main as ergane_main
 from factory.workgraph import cli
@@ -296,11 +297,20 @@ TASKS_SOURCE = f"""# Tasks: Greeting
 
 
 def manifest_source(gate_command: str) -> str:
-    """The scratch repo's `factory.yaml`, declaring its gate and its standards."""
+    """The scratch repo's `factory.yaml`, declaring its gate and its standards.
+
+    The backend is read out of `SUPPORTED_BACKENDS` rather than written here as
+    a literal. `runtime:` used to name a container image, `011-agent-sandbox`
+    made it a sandbox backend name, and this fixture went on declaring the old
+    kind for twelve days — dispatchable-looking, refused by the loader, and
+    invisible because the only test that read it needed a proxy to run. Derived,
+    the next tightening of that tuple fails at `tests/test_114_us1_smoke_onboards.py`
+    in two seconds instead of at the next live dispatch.
+    """
     return f"""# What "green" means for this scratch repository (schema v1).
 
 version: 1
-runtime: python:3.11-bookworm
+runtime: {SUPPORTED_BACKENDS[0]}
 
 gates:
   {GATE_NAME}: {json.dumps(gate_command)}
@@ -599,7 +609,19 @@ async def connect(config: LiveConfig) -> Client:
 async def start(
     client: Client, config: LiveConfig, workspace: Workspace, graph: Any
 ) -> Any:
-    """Dispatch the compiled graph under the id `ergane build status` reads."""
+    """Dispatch the compiled graph under the id `ergane build status` reads.
+
+    `halt_after_pass` is not a workaround for the scratch repo's missing remote;
+    it is the accurate description of this epic. It is minted by `git init` per
+    run, so there is no forge to open a proposal on and no queue to enter, and
+    every assertion below is at or under PASSED — including the two that read
+    most like landing facts, the salvage commit on the branch and the swept
+    worktree, both of which are exactly what the halt branch does
+    (`factory/workgraph/workflow.py:2179`). What it buys is dispatchability: the
+    forge-dependent `repo_read` finding is a landing-only check, so onboarding
+    stops disqualifying an epic that will never land (109-US3, FR-012). Landing
+    itself is proven against a real repo by `tests/test_live_merge.py`.
+    """
     try:
         return await client.start_workflow(
             EpicWorkflow.run,
@@ -608,6 +630,7 @@ async def start(
                 proxy_url=config.proxy_url,
                 config=SMOKE_LADDER,
                 poll_interval_s=POLL_INTERVAL_S,
+                halt_after_pass=True,
             ),
             id=cli.workflow_id(workspace.epic_id),
             task_queue=workspace.task_queue,
