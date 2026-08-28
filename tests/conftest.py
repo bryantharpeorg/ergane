@@ -23,6 +23,10 @@ The `target_repo` / `node_worktree` fixtures at the bottom go the other way: no
 fake at all. Gates run real subprocesses and the diff check reads real `git`
 output, so those tests get a real repository built from
 `tests/fixtures/target_repo/` (see `tests/target_repo.py`) under `tmp_path`.
+
+Last in the file is `pytest_terminal_summary` (114-US3): the report that tells
+the reader which live tiers this run did *not* exercise, and what would have
+exercised them. It describes and never decides — see its own docstring.
 """
 
 from __future__ import annotations
@@ -736,3 +740,101 @@ def _docker_daemon_unavailable_in_tests(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         "factory.cli.install._docker_daemon_available", lambda *_a, **_k: False
     )
+
+
+# --- what this run did not exercise, said out loud (114-US3) ------------------
+
+#: Every live tier's marker name starts with this, and the registered `markers`
+#: list in `pyproject.toml` is the only place any of them is declared. Selecting
+#: by prefix rather than by an enumerated list is the point: a seventh tier
+#: registered tomorrow is reported the day it is registered, with no second list
+#: here to remember to update.
+LIVE_MARKER_PREFIX = "live_"
+
+#: The phrase each live registration uses to introduce its own precondition —
+#: `"live_epic: runs a live one-node epic; auto-skips unless Tier 1 env is set"`.
+#: What follows it is the condition the report quotes. A registration that omits
+#: the phrase falls back to its whole description, which is still the marker's
+#: own words rather than a copy kept here.
+_AUTO_SKIP_PHRASE = "auto-skips unless "
+
+#: The report's section heading; `tests/test_114_us3_live_tier_summary.py` finds
+#: the block by it.
+LIVE_TIER_REPORT_TITLE = "live tiers"
+
+
+def _registered_live_tiers(config: pytest.Config) -> dict[str, str]:
+    """`{marker: the condition that would run it}`, from the registrations.
+
+    Both halves are parsed out of the `markers` ini entry at the
+    `<name>: <description>` boundary, so the name the report prints and the
+    condition it names have exactly one source (114 FR-008). Markers other
+    plugins register — `asyncio`, `parametrize`, `skipif` — are filtered out by
+    the prefix.
+    """
+    tiers: dict[str, str] = {}
+    for registration in config.getini("markers"):
+        name, _, description = str(registration).partition(":")
+        name = name.strip()
+        if not name.startswith(LIVE_MARKER_PREFIX):
+            continue
+        _, phrase, condition = description.partition(_AUTO_SKIP_PHRASE)
+        tiers[name] = (condition if phrase else description).strip()
+    return tiers
+
+
+def _live_tiers_that_ran(terminalreporter: Any) -> dict[str, int]:
+    """`{marker: how many of its tests executed}`, from the session's own reports.
+
+    "Executed" means a call-phase report that is not a skip: a tier whose tests
+    were collected and then auto-skipped for a missing credential did not run,
+    and that is precisely the case this report exists to make visible. Reading
+    it off the reports rather than off the environment means the answer is what
+    the session did, not what the session intended to do.
+    """
+    ran: dict[str, int] = {}
+    for reports in terminalreporter.stats.values():
+        for report in reports:
+            if getattr(report, "when", None) != "call":
+                continue
+            if getattr(report, "outcome", None) == "skipped":
+                continue
+            for keyword in getattr(report, "keywords", ()):
+                if str(keyword).startswith(LIVE_MARKER_PREFIX):
+                    ran[str(keyword)] = ran.get(str(keyword), 0) + 1
+    return ran
+
+
+def pytest_terminal_summary(
+    terminalreporter: Any, exitstatus: int, config: pytest.Config
+) -> None:
+    """Name every live tier, and for the ones that did not run, what would run them.
+
+    `5069 passed, 57 skipped` is a line that reads as *everything is fine* and
+    means *everything that ran is fine*. Between 2026-08-15 and 2026-08-27 the
+    live-epic smoke could not have started at all, and twelve days of that line
+    said nothing, because the six live tiers in `pyproject.toml:81-88` skip
+    silently without credentials. This is the sentence those runs were missing.
+
+    It is a describer and not a gate (114 FR-009). It reads `exitstatus`,
+    changes nothing, sets nothing, raises nothing, and is emitted on green runs
+    and red ones alike — a notice that appeared only on failure would be a
+    notice nobody reads on the day it matters, and one that could fail a run
+    would turn every developer's `uv run pytest -q` red for lacking production
+    credentials, which is a hook that gets deleted within the week.
+    """
+    tiers = _registered_live_tiers(config)
+    if not tiers:
+        return
+
+    ran = _live_tiers_that_ran(terminalreporter)
+    width = max(len(name) for name in tiers)
+
+    terminalreporter.section(LIVE_TIER_REPORT_TITLE)
+    for name, condition in sorted(tiers.items()):
+        count = ran.get(name, 0)
+        if count:
+            state = f"ran ({count} test{'' if count == 1 else 's'})"
+        else:
+            state = f"did not run — runs when {condition}"
+        terminalreporter.write_line(f"{name:<{width}}   {state}")
