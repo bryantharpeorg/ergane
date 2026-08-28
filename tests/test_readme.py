@@ -25,9 +25,10 @@ from factory.controlplane.config import _SECRET_PATTERNS
 from tests.page_holds_true import (
     BIN_DIR,
     REPO_ROOT,
+    _help_text,
     extract_commands,
     extract_paths,
-    run_help,
+    parse_argv,
     split_argv,
     status_claims,
     verbs_of,
@@ -46,42 +47,38 @@ COMMANDS = extract_commands(TEXT)
 
 
 @pytest.mark.parametrize("argv", COMMANDS, ids=lambda argv: " ".join(argv))
-def test_every_command_the_file_names_resolves(argv: tuple[str, ...]) -> None:
+def test_every_command_the_file_names_parses(argv: tuple[str, ...]) -> None:
     executable = BIN_DIR / argv[0]
     assert executable.exists(), (
         f"README.md tells the reader to run `{' '.join(argv)}`, but there is no "
         f"{argv[0]} entry point installed — check [project.scripts] in pyproject.toml"
     )
 
-    positionals, flags = split_argv(argv)
-    command = [str(executable)]
-    result = run_help(command)
-    assert result.returncode == 0, f"{argv[0]} --help does not parse:\n{result.stderr.strip()}"
+    parse_argv(argv)
 
+    positionals, flags = split_argv(argv)
+    command: list[str] = [argv[0]]
+    # Walk the subparser chain so we can validate flags against the leaf help.
     for word in positionals:
-        verbs = verbs_of(result.stdout)
+        verbs = verbs_of(command)
         if not verbs:
             break
         assert word in verbs, (
             f"README.md tells the reader to run `{' '.join(argv)}`, but "
-            f"`{' '.join([argv[0], *positionals[: positionals.index(word)]])}` has no "
+            f"`{' '.join(command)}` has no "
             f"`{word}` verb — it has {sorted(verbs)}"
         )
         command.append(word)
-        result = run_help(command)
-        assert result.returncode == 0, (
-            f"`{' '.join(command)} --help` does not parse:\n{result.stderr.strip()}"
-        )
 
-    named = " ".join(Path(command[0]).name if part == command[0] else part for part in command)
+    help_text = _help_text(tuple(command))
     for flag, value in flags:
-        assert flag in result.stdout, (
+        assert flag in help_text, (
             f"README.md recommends `{' '.join(argv)}`, but `{flag}` is not in the help "
-            f"for `{named}` — the option was renamed or removed"
+            f"for `{' '.join(command)}` — the option was renamed or removed"
         )
         if value is not None:
-            assert value in result.stdout, (
-                f"README.md recommends `{' '.join(argv)}`, but `{named}` no longer "
+            assert value in help_text, (
+                f"README.md recommends `{' '.join(argv)}`, but `{' '.join(command)}` no longer "
                 f"accepts {value!r} for `{flag}`"
             )
 

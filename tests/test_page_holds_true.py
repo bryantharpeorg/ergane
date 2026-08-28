@@ -7,6 +7,9 @@ on a deliberately bad page, so the guard cannot be quietly removed.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from tests.page_holds_true import (
@@ -14,7 +17,7 @@ from tests.page_holds_true import (
     REPO_ROOT,
     UnrecognizedCommandError,
     extract_commands,
-    run_help,
+    parse_argv,
 )
 
 NEAR_MISS_PAGE = REPO_ROOT / "tests" / "fixtures" / "near_miss_page.md"
@@ -73,7 +76,77 @@ def test_readme_and_claude_md_have_no_near_misses() -> None:
         extract_commands(text)
 
 
-# --- T005: pipelines and correctly-spelled nonexistent commands ---------------
+# --- US1 T001: parse check rejects a missing required argument ---------------
+
+
+def test_parse_argv_rejects_missing_required_argument() -> None:
+    """`ergane usage` without --by fails, naming the missing argument."""
+    with pytest.raises(AssertionError) as exc_info:
+        parse_argv(("ergane", "usage"))
+    assert "--by" in str(exc_info.value), (
+        "the parse failure must name the missing `--by` argument"
+    )
+
+
+# --- US1 T002: parse check accepts the corrected form -----------------------
+
+
+def test_parse_argv_accepts_usage_by_epic() -> None:
+    """`ergane usage --by epic` parses cleanly."""
+    parse_argv(("ergane", "usage", "--by", "epic"))
+
+
+# --- US1 T003: placeholder substitution by shape ------------------------------
+
+
+def test_parse_argv_substitutes_path_placeholder() -> None:
+    """A path-shaped placeholder is replaced and the command parses."""
+    # README.md and docs/onramp.html both print `ergane repo onboard <target-repo-path>`.
+    parse_argv(("ergane", "repo", "onboard", "<target-repo-path>"))
+
+
+def test_parse_argv_substitutes_spec_dir_placeholder() -> None:
+    """The spec-dir placeholder is replaced and the command parses."""
+    # README.md and CLAUDE.md both print `ergane spec landed <spec-dir>`.
+    parse_argv(("ergane", "spec", "landed", "<spec-dir>"))
+
+
+def test_parse_argv_substitutes_epic_id_placeholder() -> None:
+    """An id-shaped placeholder is replaced and the command parses."""
+    # README.md and CLAUDE.md both print `ergane build status <epic-id>`.
+    parse_argv(("ergane", "build", "status", "<epic-id>"))
+
+
+def test_parse_argv_substitutes_repo_slug_placeholder() -> None:
+    """A slug-shaped placeholder is replaced and the command parses."""
+    # README.md prints `ergane repo forget <repo-slug>`.
+    parse_argv(("ergane", "repo", "forget", "<repo-slug>"))
+
+
+# --- US1 T004: parse check never spawns a subprocess ------------------------
+
+
+def test_parse_argv_never_spawns_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The parse check drives argparse directly and never calls a verb."""
+    import subprocess
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
+        raise AssertionError("parse_argv must not spawn subprocesses")
+
+    monkeypatch.setattr(subprocess, "run", fail_if_called)
+
+    parse_argv(("ergane", "build", "start", "<workgraph.json>"))
+    parse_argv(("ergane", "repo", "forget", "<repo-slug>"))
+    parse_argv(("ergane", "uninstall"))
+    parse_argv(("ergane", "usage", "--by", "epic"))
+
+    assert not calls, "subprocess.run was called during parse_argv"
+
+
+# --- T005: pipelines and correctly-spelled nonexistent commands --------------
 
 
 def test_edge_cases_do_not_mask_real_failures() -> None:
@@ -83,11 +156,9 @@ def test_edge_cases_do_not_mask_real_failures() -> None:
     # `cat file | grep thing` is a pipeline; it must not trip the detector.
     assert ("cat", "file", "|", "grep", "thing") not in commands
     # `ergane nonexistent` is correctly spelled as a root command, so the
-    # near-miss detector lets it through and the clearer --help check fails.
+    # near-miss detector lets it through and the parse check fails.
     assert ("ergane", "nonexistent") in commands
     executable = BIN_DIR / "ergane"
-    result = run_help([str(executable), "nonexistent"])
-    assert result.returncode != 0, (
-        "a correctly-spelled but nonexistent command must fail through --help, "
-        "not be masked by the near-miss detector"
-    )
+    assert executable.exists(), "the ergane console script must be installed"
+    with pytest.raises(AssertionError):
+        parse_argv(("ergane", "nonexistent"))
