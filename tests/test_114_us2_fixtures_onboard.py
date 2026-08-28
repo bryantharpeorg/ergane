@@ -143,9 +143,15 @@ class CoveredLiveModule:
     dispatched_epic_input: Callable[[Path], Any]
 
 
+#: The live-epic smoke's own file name, read off the module rather than spelled
+#: again: the tests below name it in their failure messages, and a rename that
+#: left this behind would report a file nobody could go and open.
+SMOKE_FILENAME = Path(smoke.__file__).name
+
+
 COVERED_LIVE_MODULES = (
     CoveredLiveModule(
-        filename="test_live_epic.py",
+        filename=SMOKE_FILENAME,
         build_scratch_repo=smoke.build_scratch_repo,
         dispatched_epic_input=smoke_dispatch,
     ),
@@ -157,8 +163,29 @@ COVERED_FILENAMES = frozenset(module.filename for module in COVERED_LIVE_MODULES
 # --- the check ----------------------------------------------------------------
 
 
+def onboarding_findings(repo: Path) -> tuple[Finding, ...]:
+    """Every finding the real onboarding produces about `repo`, offline.
+
+    `onboard_target_repo` is the same function the dispatch gate's activity
+    calls (`factory/activities/merge_activities.py:612`, `:758`); the forge is
+    resolved against the clone exactly as `validate_target_repo` resolves it.
+    Nothing here needs a proxy, an agent, a Temporal server or a network: the
+    manifest is read off disk and the forge refuses a repository it cannot read
+    locally.
+    """
+    profile = onboard_target_repo(_forge(repo_path=str(repo)), str(repo))
+    return profile.findings
+
+
 def blocking_findings(repo: Path, *, halting: bool) -> list[Finding]:
-    """What onboarding would refuse `repo` for, as the dispatch gate reads it.
+    """What onboarding would refuse `repo` for, as the dispatch gate reads it."""
+    return surviving_failures(onboarding_findings(repo), halting=halting)
+
+
+def surviving_failures(
+    findings: tuple[Finding, ...], *, halting: bool
+) -> list[Finding]:
+    """The failures that still refuse a repository, filtered as the gate filters.
 
     The same two lines as `EpicWorkflow._onboard`
     (`factory/workgraph/workflow.py:1104-1127`): every finding that did not
@@ -166,12 +193,19 @@ def blocking_findings(repo: Path, *, halting: bool) -> list[Finding]:
     predicate is imported, never restated — a second copy of
     `_LANDING_ONLY_CHECKS` here is two lists that drift while both stay green.
     """
-    raise NotImplementedError
+    failed = [finding for finding in findings if not finding.passed]
+    if halting:
+        failed = [
+            finding for finding in failed if not _is_landing_only_check(finding.check)
+        ]
+    return failed
 
 
 def render_findings(findings: list[Finding]) -> str:
     """The findings, one per line, marked as the onboarding gate marks them."""
-    raise NotImplementedError
+    return "\n".join(
+        f"  [{finding.mark}] {finding.check}: {finding.detail}" for finding in findings
+    )
 
 
 def check_repository_onboards(
@@ -186,7 +220,19 @@ def check_repository_onboards(
     Returns every finding onboarding produced, so a caller can prove this did
     the work rather than declining to.
     """
-    raise NotImplementedError
+    findings = onboarding_findings(repo)
+    survivors = surviving_failures(findings, halting=halting)
+    if survivors:
+        raise AssertionError(
+            f"the scratch repository {module_name} dispatches against does not "
+            "onboard, so every epic built on it dies at the onboarding gate "
+            "before a virtual key is issued "
+            "(`factory/workgraph/workflow.py:1098`)"
+            + ("" if halting else ", and this module does not dispatch halting")
+            + ":\n"
+            + render_findings(survivors)
+        )
+    return findings
 
 
 # --- the coverage guard -------------------------------------------------------
@@ -197,6 +243,11 @@ def check_repository_onboards(
 #: be the manifest a live module is dispatching against.
 MANIFEST_KEYS = frozenset({"version", "runtime", "gates"})
 
+#: What an f-string's interpolations stand in as while the literal around them
+#: is read: a plain scalar, so `runtime: {SUPPORTED_BACKENDS[0]}` is still a
+#: mapping entry and the document still parses.
+MANIFEST_PLACEHOLDER = "interpolated"
+
 #: The live tier's modules, by the name they are collected under.
 LIVE_MODULE_GLOB = "test_live_*.py"
 
@@ -205,7 +256,7 @@ TESTS_DIR = Path(__file__).resolve().parent
 
 def discover_live_modules() -> list[Path]:
     """Every `tests/test_live_*.py`, found rather than listed."""
-    raise NotImplementedError
+    return sorted(TESTS_DIR.glob(LIVE_MODULE_GLOB))
 
 
 def hand_authors_manifest(module_path: Path) -> bool:
@@ -218,17 +269,96 @@ def hand_authors_manifest(module_path: Path) -> bool:
     manifest is not a manifest — and a *generated* manifest is invisible to
     this by construction, which is exactly the boundary FR-007 draws.
     """
-    raise NotImplementedError
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    return any(
+        parses_as_manifest(text) for text in authored_literals(tree)
+    )
 
 
 def uncovered_live_modules(module_paths: list[Path]) -> list[Path]:
     """The modules that hand-author a manifest and are not covered above."""
-    raise NotImplementedError
+    return [
+        path
+        for path in module_paths
+        if path.name not in COVERED_FILENAMES and hand_authors_manifest(path)
+    ]
+
+
+def authored_literals(tree: ast.Module) -> Iterator[str]:
+    """Every string this module writes out, docstrings excluded.
+
+    An f-string counts, with each interpolation standing in as a scalar: the
+    manifest a live module writes is nearly always one
+    (`manifest_source`, `tests/test_live_epic.py:299`), and a rule that could
+    not see through interpolation would see no manifests at all.
+    """
+    prose = {id(node) for node in docstring_nodes(tree)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            yield "".join(
+                part.value
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                else MANIFEST_PLACEHOLDER
+                for part in node.values
+            )
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in prose
+        ):
+            yield node.value
+
+
+def parses_as_manifest(text: str) -> bool:
+    """Whether `text` is a repository manifest rather than some other string."""
+    try:
+        document = yaml.safe_load(text)
+    except (yaml.YAMLError, ValueError):
+        return False
+    return isinstance(document, dict) and MANIFEST_KEYS <= {
+        str(key) for key in document
+    }
+
+
+def docstring_nodes(tree: ast.Module) -> list[ast.Constant]:
+    """The string literals that are documentation: one per module, class and def."""
+    found: list[ast.Constant] = []
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            found.append(first.value)
+    return found
 
 
 def code_without_prose(source: str) -> str:
-    """`source` with every docstring and comment gone, so a scan reads only code."""
-    raise NotImplementedError
+    """`source` with every docstring and comment gone, so a scan reads only code.
+
+    Round-tripped through `ast.unparse`, which drops comments by construction —
+    so a scan over the result reads what this module *does* and never what it
+    says about what it does.
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body = node.body[1:] or [ast.Pass()]
+    return ast.unparse(tree)
 
 
 # --- US2-S1: it runs when nothing else in the tier does -----------------------
@@ -421,7 +551,7 @@ def test_a_broken_manifest_is_reported_by_name(tmp_path: Path) -> None:
     declare_runtime(repo, "not-a-backend")
 
     with pytest.raises(AssertionError) as raised:
-        check_repository_onboards(smoke.__name__, repo, halting=True)
+        check_repository_onboards(SMOKE_FILENAME, repo, halting=True)
 
     message = str(raised.value)
     assert "factory_yaml" in message, message
@@ -442,14 +572,14 @@ def test_the_check_fails_when_the_smoke_s_runtime_is_reverted(tmp_path: Path) ->
     the supported backend is what to change it to.
     """
     corrected = smoke.build_scratch_repo(tmp_path / "target-repo")
-    check_repository_onboards(smoke.__name__, corrected, halting=True)
+    check_repository_onboards(SMOKE_FILENAME, corrected, halting=True)
 
     reverted = tmp_path / "reverted-repo"
     shutil.copytree(corrected, reverted)
     declare_runtime(reverted, REFUSED_RUNTIME)
 
     with pytest.raises(AssertionError) as raised:
-        check_repository_onboards(smoke.__name__, reverted, halting=True)
+        check_repository_onboards(SMOKE_FILENAME, reverted, halting=True)
 
     message = str(raised.value)
     assert REFUSED_RUNTIME in message, message
@@ -476,6 +606,18 @@ def test_the_guard_demands_coverage_of_every_hand_authored_manifest() -> None:
     assert COVERED_FILENAMES <= names, (
         f"this module claims to cover {sorted(COVERED_FILENAMES - names)}, which "
         f"no longer exists under {TESTS_DIR}"
+    )
+
+    unseen = sorted(
+        filename
+        for filename in COVERED_FILENAMES
+        if not hand_authors_manifest(TESTS_DIR / filename)
+    )
+    assert not unseen, (
+        f"the guard reads {unseen} as writing no manifest of its own, while this "
+        "module covers it for doing exactly that — either the module stopped and "
+        "its coverage should go, or the guard has stopped seeing manifests and is "
+        "now reporting zero uncovered modules about nothing"
     )
 
     uncovered = uncovered_live_modules(discovered)
