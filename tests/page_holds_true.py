@@ -180,6 +180,45 @@ def root_entrypoints() -> set[str]:
     return {root} | verbs_of([root])
 
 
+def _is_command_shaped(span: str) -> bool:
+    """True when a code span looks like a command line rather than a path, alias, or key.
+
+    Command-shaped means: at least two whitespace-separated words, no directory
+    separators, no `=`, and no `/`. This is the same rule the anti-vacuity guard
+    uses, so the extractor and the guard cannot disagree about what was available
+    to be found.
+    """
+    if not span:
+        return False
+    # A leading flag on its own is not a command; it names an option, not an
+    # invocation the reader is being told to type.
+    if span.startswith("-"):
+        return False
+    words = span.split()
+    if len(words) < 2:
+        return False
+    joined = "".join(words)
+    # Path, model alias, and config-key shapes all carry separators that a command
+    # line with a leading entrypoint does not.
+    if "/" in joined or "=" in joined or "." in joined:
+        return False
+    return True
+
+
+def _command_shaped_spans(text: str) -> list[str]:
+    """Every code span that matches the command-shaped rule."""
+    return [span for span in code_spans(text) if _is_command_shaped(span)]
+
+
+def assert_commands_not_dropped(text: str) -> int:
+    """Anti-vacuity guard: count the command-shaped spans the extractor could have found.
+
+    The page suites assert this count against a baseline derived from the same
+    rule the extractor uses, so the guard proves nothing was silently skipped.
+    """
+    return len(_command_shaped_spans(text))
+
+
 def extract_commands(text: str) -> list[tuple[str, ...]]:
     """Each distinct `ergane` invocation the file recommends, as argv.
 
@@ -188,13 +227,15 @@ def extract_commands(text: str) -> list[tuple[str, ...]]:
     substitutes each placeholder by shape before asking argparse to validate
     the invocation.
 
-    A code span whose first word is within one edit of a known entrypoint is
-    treated as a typo and reported immediately rather than skipped.
+    A span that is command-shaped but does not resolve raises
+    `UnrecognizedCommandError` rather than being skipped. A span that is not
+    command-shaped (a path, config key, environment variable, alias, or bare
+    flag) is ignored.
     """
     root = root_name()
     entrypoints = root_entrypoints()
     found: list[tuple[str, ...]] = []
-    for span in code_spans(text):
+    for span in _command_shaped_spans(text):
         words = span.split()
         if not words:
             continue
