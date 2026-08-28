@@ -30,6 +30,93 @@ pinned below:
   answered by dispatching in the halting mode 109-US3 built for precisely this
   situation, where an epic that will never open a proposal is not judged by the
   checks that describe landing.
+
+Verification evidence (constitution VIII; US1-S4, FR-003, SC-001)
+-----------------------------------------------------------------
+
+The offline onboarding transcript, produced by building the smoke's scratch repo
+through `build_scratch_repo` and calling the real `onboard_target_repo`. No
+proxy, no agent, no Temporal server, no network — about two seconds each.
+
+**Before** (at 1045370, the manifest declaring the pre-`011-agent-sandbox` value):
+
+.. code-block:: text
+
+    manifest declares 'runtime: python:3.11-bookworm'
+    passed: False
+      [FAIL] repo_read: could not read the repo via its forge (GH_REFUSED): To
+        get started with GitHub CLI, please run: gh auth login ...
+      [FAIL] factory_yaml: manifest failed to load: /tmp/.../factory.yaml:
+        [runtime] declares `runtime: 'python:3.11-bookworm'`; the supported
+        backend is `bwrap`
+    after --halt-after-pass filter -> remaining failures: 1
+      [BLOCKS] factory_yaml: manifest failed to load: /tmp/.../factory.yaml:
+        [runtime] declares `runtime: 'python:3.11-bookworm'`; the supported
+        backend is `bwrap`
+    PASSES ONBOARDING UNDER HALT: False
+
+**After** (this branch):
+
+.. code-block:: text
+
+    manifest declares 'runtime: bwrap'
+    passed: False
+      [FAIL] repo_read: could not read the repo via its forge (GH_REFUSED): To
+        get started with GitHub CLI, please run: gh auth login ...
+    after --halt-after-pass filter -> remaining failures: 0
+    PASSES ONBOARDING UNDER HALT: True
+
+Both findings are real and independent: correcting the manifest alone still
+leaves `repo_read` fatal, and halting mode alone still leaves `factory_yaml`
+fatal. The `repo_read` detail differs from the one `plan.md` recorded ("no git
+remotes found") only because this host's `gh` is unauthenticated and complains
+about that first; either way it is the same forge refusal, the same `repo_read`
+check, and the same landing-only classification.
+
+**Nothing the smoke asserts changed** (FR-003). The twelve tests in
+`tests/test_live_epic.py`, collected on this branch, all unmodified —
+`git diff 1045370 HEAD -- tests/test_live_epic.py` touches no test function, no
+assertion and no fixture, only `manifest_source`'s runtime line, `start`'s
+`EpicInput`, one import and two docstrings:
+
+.. code-block:: text
+
+    $ uv run pytest tests/test_live_epic.py --collect-only -q
+    tests/test_live_epic.py::test_the_node_passed_and_the_epic_completed
+    tests/test_live_epic.py::test_the_node_passed_on_its_first_attempt
+    tests/test_live_epic.py::test_the_branch_holds_the_salvage_commit_for_the_attempt
+    tests/test_live_epic.py::test_the_branch_carries_the_agent_s_work
+    tests/test_live_epic.py::test_the_worktree_was_swept_and_the_branch_outlived_it
+    tests/test_live_epic.py::test_the_attempt_has_its_ledger_row
+    tests/test_live_epic.py::test_the_attempt_has_its_verification_row
+    tests/test_live_epic.py::test_the_gate_the_repository_declared_is_the_gate_that_ran
+    tests/test_live_epic.py::test_the_attempt_s_stdout_was_archived
+    tests/test_live_epic.py::test_the_agent_s_session_transcript_was_found_and_archived
+    tests/test_live_epic.py::test_factory_epic_status_reports_what_the_workflow_reported
+    tests/test_live_epic.py::test_no_stored_byte_of_the_epic_repeats_the_master_key
+
+    12 tests collected in 0.11s
+
+The three that could plausibly have been disturbed by halting mode — the salvage
+commit on the branch, the branch carrying the agent's work, and the swept
+worktree — are precisely what `factory/workgraph/workflow.py:2179-2193` does
+before it stops at PASSED.
+
+**Full suite, before and after** — the five new tests here, and nothing else
+moved:
+
+.. code-block:: text
+
+    $ uv run pytest -q      # at 1045370
+    5055 passed, 57 skipped, 6 warnings in 332.84s (0:05:32)
+
+    $ uv run pytest -q      # this branch
+    5060 passed, 57 skipped, 7 warnings in 338.05s (0:05:38)
+
+The skip count is identical: the live tier still skips without credentials, and
+the five tests added here are not in it. That is the point — before this branch,
+whether the smoke could dispatch at all was proven by nothing a credential-free
+`uv run pytest -q` executed.
 """
 
 from __future__ import annotations
