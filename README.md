@@ -218,9 +218,9 @@ them to anything written down, including this page.
 | Is anything waiting on me | `ergane escalations list` |
 | Is the installation healthy | `ergane doctor` |
 
-`ergane spec landed` scans the default branch unless told otherwise, and a
-factory does not necessarily land there — pass `--default-branch` whenever the
-answer matters.
+`ergane spec landed <spec-dir>` scans the default branch unless told otherwise,
+and a factory does not necessarily land there — pass `--default-branch` whenever
+the answer matters.
 
 ## Leaving
 

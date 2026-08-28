@@ -41,7 +41,7 @@ between the day it was written and the day you read it.
 | Which of a spec's stories are landed in git, story by story | `ergane spec landed <spec-dir>` |
 | What one epic is doing right now | `ergane build status <epic-id>` |
 | What defects are open, and how often each has recurred | `ergane findings list` |
-| What an epic cost | `ergane usage` with `--by epic` |
+| What an epic cost | `ergane usage --by epic` |
 | What a running workflow is actually doing | Temporal's Web UI on `:8233` |
 
 `scripts/ergane-env.sh` puts the environment those commands need into your shell.
@@ -55,10 +55,11 @@ eval "$(scripts/ergane-env.sh)"
 Sourcing it appears to work and sets nothing, which then presents as a CLI that
 cannot reach Temporal for no visible reason.
 
-One trap in that table: `ergane spec landed` scans `main` unless told otherwise, and the
-factory does not land on `main` — it lands on the buildout branch, and `main` moves only
-when an operator promotes. Between promotions the default under-reports. Pass
-`--default-branch <branch>` whenever the answer matters.
+One trap in that table: `ergane spec landed <spec-dir>` scans `main` unless told
+otherwise, and the factory does not land on `main` — it lands on the buildout
+branch, and `main` moves only when an operator promotes. Between promotions the
+default under-reports. Pass `--default-branch <branch>` whenever the answer
+matters.
 
 ## How to work here
 

@@ -3,7 +3,7 @@
 `tests/test_claude_md.py` and `tests/test_readme.py` both need the same three
 checks:
 
-- every command the page names still resolves,
+- every command the page names still parses,
 - every path the page cites still exists,
 - the page states no status a live source already answers.
 
@@ -14,11 +14,14 @@ stay green.
 
 from __future__ import annotations
 
+import argparse
 import functools
+import io
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+from factory.cli.main import _build_parser
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BIN_DIR = Path(sys.executable).parent
@@ -43,7 +46,84 @@ def code_spans(text: str) -> list[str]:
     return spans
 
 
-# --- every command the file names still exists ---------------------------------
+# --- every command the file names still parses -------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _parser() -> argparse.ArgumentParser:
+    """The real `ergane` parser, built once per session.
+
+    Reusing the parser avoids importing every noun module once per command on
+    the page. `argparse.parse_args` validates the invocation without dispatching
+    the handler, so no verb runs and no subprocess spawns.
+    """
+    return _build_parser()
+
+
+def _help_text(argv: tuple[str, ...]) -> str:
+    """Capture the help output the parser would print for `argv`.
+
+    `argv` includes the program name ("ergane") at index 0; the parser expects
+    arguments after the program name, so we strip it before asking for `--help`.
+    """
+    parser = _parser()
+    old_stderr = sys.stderr
+    old_stdout = sys.stdout
+    err_buffer = io.StringIO()
+    out_buffer = io.StringIO()
+    sys.stderr = err_buffer
+    sys.stdout = out_buffer
+    try:
+        try:
+            parser.parse_args(list(argv[1:]) + ["--help"])
+        except SystemExit:
+            pass
+        return out_buffer.getvalue()
+    finally:
+        sys.stderr = old_stderr
+        sys.stdout = old_stdout
+
+
+#: Placeholders that appear on the swept pages, mapped to a value of the right
+#: shape. Shape is what matters: `<spec-dir>` is a path, `<epic-id>` is an
+#: identifier, `<repo-slug>` is a slug, and `<target-repo-path>` is a path.
+_PLACEHOLDER_VALUES: dict[str, str] = {
+    "<spec-dir>": "specs/001",
+    "<target-repo-path>": "factory/target_repo",
+    "<epic-id>": "001",
+    "<repo-slug>": "ergane-cli",
+    "<workgraph.json>": "specs/001/workgraph.json",
+    "<repository-root>": "factory/target_repo",
+}
+
+
+def _substitute_placeholders(argv: tuple[str, ...]) -> tuple[str, ...]:
+    """Replace angle-bracket placeholders with values that argparse will accept."""
+    return tuple(_PLACEHOLDER_VALUES.get(word, word) for word in argv)
+
+
+def parse_argv(argv: tuple[str, ...]) -> argparse.Namespace:
+    """Parse one Ergane argv using the real CLI parser.
+
+    Placeholders are substituted before parsing. On success the returned
+    namespace proves the invocation is syntactically valid; on failure an
+    `AssertionError` is raised carrying argparse's own message. No verb handler
+    is called and no subprocess is spawned.
+    """
+    parser = _parser()
+    substituted = _substitute_placeholders(argv)
+    command = list(substituted[1:])  # argparse expects argv without the program name
+    old_stderr = sys.stderr
+    try:
+        buffer = io.StringIO()
+        sys.stderr = buffer
+        try:
+            return parser.parse_args(command)
+        except SystemExit as exc:
+            message = buffer.getvalue().strip() or f"invalid arguments: {argv}"
+            raise AssertionError(f"parse failed for `{' '.join(argv)}`: {message}") from exc
+    finally:
+        sys.stderr = old_stderr
 
 
 def _damerau_levenshtein(a: str, b: str) -> int:
@@ -84,43 +164,29 @@ def _near_entrypoints(word: str, entrypoints: set[str], threshold: int = 1) -> s
     return near
 
 
-#: The program name on the usage line is the command the reader is meant to type.
-_USAGE_PROG = re.compile(r"^usage:\s+(\S+)", re.IGNORECASE)
-
-
-@functools.lru_cache(maxsize=None)
-def _root_help() -> subprocess.CompletedProcess[str]:
-    result = run_help([str(BIN_DIR / "ergane")])
-    if result.returncode != 0:
-        raise RuntimeError(f"could not run `ergane --help`:\n{result.stderr.strip()}")
-    return result
-
-
 def root_name() -> str:
     """The console script name the page should use as a command."""
-    result = _root_help()
-    match = _USAGE_PROG.search(result.stdout)
-    if match is None:
-        raise RuntimeError("could not parse program name from `ergane --help`")
-    return match.group(1)
+    return _parser().prog
 
 
 def root_entrypoints() -> set[str]:
     """The root command plus every noun the CLI advertises.
 
     This is the set a near-miss detector compares against. It is derived from
-    argparse's own help output so it cannot drift behind the implementation.
+    the configured argparse parser so it cannot drift behind the implementation
+    and never needs to spawn a subprocess.
     """
-    result = _root_help()
-    return {root_name()} | verbs_of(result.stdout)
+    root = root_name()
+    return {root} | verbs_of([root])
 
 
 def extract_commands(text: str) -> list[tuple[str, ...]]:
     """Each distinct `ergane` invocation the file recommends, as argv.
 
     Flags are kept — a renamed `--by` is as broken a recommendation as a
-    renamed verb — but placeholders are not, because `<spec-dir>` is the
-    reader's to fill in and `--help` does not want it.
+    renamed verb — but placeholders are not stripped, because the parse check
+    substitutes each placeholder by shape before asking argparse to validate
+    the invocation.
 
     A code span whose first word is within one edit of a known entrypoint is
     treated as a typo and reported immediately rather than skipped.
@@ -141,7 +207,7 @@ def extract_commands(text: str) -> list[tuple[str, ...]]:
                     f"did you mean {sorted(near)}?"
                 )
             continue
-        argv = tuple(w for w in words if not w.startswith("<") and not w.endswith(">"))
+        argv = tuple(words)
         if argv not in found:
             found.append(argv)
     return found
@@ -157,7 +223,8 @@ _POSITIONALS = re.compile(r"positional arguments:\n(.*?)(?:\n\n|\noptions:)", re
 _INDENTED_VERB = re.compile(r"^    ([A-Za-z0-9_-]+)", re.MULTILINE)
 
 
-def verbs_of(help_text: str) -> set[str]:
+def verbs_of(command: list[str]) -> set[str]:
+    help_text = _help_text(tuple(command))
     section = _POSITIONALS.search(help_text)
     if section is None:
         return set()
@@ -189,10 +256,6 @@ def split_argv(argv: tuple[str, ...]) -> tuple[list[str], list[tuple[str, str | 
             positionals.append(word)
             index += 1
     return positionals, flags
-
-
-def run_help(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command + ["--help"], capture_output=True, text=True, timeout=120)
 
 
 # --- every path it cites still exists -----------------------------------------
