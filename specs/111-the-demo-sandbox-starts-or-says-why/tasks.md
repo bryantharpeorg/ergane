@@ -1,13 +1,94 @@
 # Tasks: the demo sandbox starts, or says why
 
-**Input**: `spec.md` and `plan.md` in this directory, both drafted 2026-08-27
-against ergane-buildout at 3e5c940.
+**Input**: `spec.md` and `plan.md` in this directory, drafted 2026-08-27 against
+ergane-buildout at 3e5c940 and amended 2026-08-28 with US3 against `1045370`.
 
 Tests are written first and must fail before their implementation task runs.
 `[P]` marks tasks that can proceed in parallel within their story because they
 touch different files or independent test functions.
 
-## Phase 1: User Story 1 — A refused sandbox names the restriction that refused it
+**Phase order is US3 → US1 → US2**, which is not the story-key order. US3 is the
+failure that has already happened on a real machine; US1 and US2 are the one that
+will happen on the next stranger's. See the Work Graph in `plan.md`.
+
+## Phase 1: User Story 3 — The demo refuses a credential it has already proven unusable
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T101 [US3] (spec US3-S1, FR-013, FR-015) Fatal-finding test, in a new
+  `tests/test_111_us3_credential_preflight.py`: drive `run_prepare_phase` with an
+  injected preflight seam returning `Finding(check="llm", passed=False,
+  detail="<the gateway's own error>")` and assert three things — the return is
+  nonzero, the printed output contains that detail verbatim **and** the string
+  `UPSTREAM_MODEL_API_KEY`, and `sentinel_path(state_home,
+  PREPARED_SENTINEL).exists()` is False. The sentinel assertion is the one that
+  matters: a stranger who fixes their key must get a demo, not a sulk.
+- [ ] T102 [P] [US3] (spec US3-S2, FR-014) Non-fatal-finding test: drive the same
+  phase with a failed `host` finding and a passing `llm` finding and assert
+  preparation continues to the sandbox probe and returns 0. An unauthenticated
+  `gh` is the ordinary state of a demo container and must stay non-fatal (plan
+  T9); this test is what stops the next editor widening the set by accident.
+- [ ] T103 [P] [US3] (spec US3-S3, FR-014) Fatal-set test: assert the named
+  constant equals exactly `{"llm"}`. Assert on the constant, not on behaviour —
+  the point is that changing which checks stop the demo is an edit with a test
+  attached.
+- [ ] T104 [P] [US3] (spec US3-S1, FR-016) No-lookup test: assert the remedy text
+  contains `UPSTREAM_MODEL_API_KEY` **and** that
+  `factory/supervision/demo_driver.py` never reads that name from the
+  environment — the variable is set only on the gateway service
+  (`container/compose.demo.yaml:125`; the engine's environment is `:38-103`), so
+  a driver that looks for it refuses every healthy stack (plan T8).
+- [ ] T105 [P] [US3] (FR-017) Raising-probe test: make the preflight seam's
+  underlying probe raise, and assert the phase produces the refusal with the
+  exception named — not a traceback caught by `main`'s handler at
+  `demo_driver.py:738-740`, which prints `first boot failed:` and names no
+  remedy.
+- [ ] T106 [P] [US3] (spec US3-S4, FR-011) Compose-declaration test, in
+  `tests/test_109_us2_demo_compose.py`: assert the gateway service declares
+  `UPSTREAM_MODEL_API_KEY` in the `${NAME:?message}` required form and that the
+  message names both the variable and where an Ollama key comes from. Add the
+  live half behind the existing docker gate (`:633-651`): with the variable
+  absent from the environment, `docker compose config` exits nonzero and its
+  stderr names the variable.
+- [ ] T107 [P] [US3] (spec US3-S5, FR-012) Anti-vacuity test, same file: assert
+  `_is_mandatory("${UPSTREAM_MODEL_API_KEY:?anything}")` is True, directly on the
+  helper at `:181-193`. Four committed tests are computed from
+  `_mandatory_compose_vars()`; if that set silently empties, all four pass while
+  checking nothing (plan T11).
+
+### Implementation for this story
+
+- [ ] T108 [US3] (FR-011) Change `container/compose.demo.yaml:125` to the
+  required form with a message naming the variable and `https://ollama.com/settings/keys`.
+  One line. Do not touch the engine service's environment, and do not change the
+  teardown command documented at `docs/onramp.html:297-298` (plan T15).
+- [ ] T109 [US3] (FR-012) Update `_is_mandatory`'s docstring examples to include
+  the `:?` case, so the helper's contract and its new caller agree in writing.
+- [ ] T110 [US3] (FR-013, FR-014, FR-015, FR-016, FR-017) Add the preflight to
+  `run_prepare_phase`, immediately after the install block at
+  `factory/supervision/demo_driver.py:329-347` and before step 2's `git init`: a
+  seam defaulting to a function that loads the config install just wrote, runs
+  `LLMProbe().gather(...)` / `.evaluate(...)` under `asyncio.run`, and wraps a
+  raising probe into a failed finding the way `factory/controlplane/verify.py:1170-1181`
+  does. Run **only** that probe, never the whole sweep (plan, US3 approach). Add
+  the fatal-set constant and the remedy constant beside `SANDBOX_REMEDY`. Keep
+  the `gh` reasoning in the comment at `:339-347`; narrow its width only. Do not
+  renumber `step N/5` (plan T13).
+- [ ] T111 [US3] (T10) Update the seven existing `run_prepare_phase` call sites in
+  `tests/test_110_us1_demo_first_boot.py` (`:349, 442, 494, 538, 552, 596, 610`)
+  to inject a passing `llm` finding. **This is part of this story.** Without it a
+  seam with a production default sends every one of those tests down the new
+  refusal path, and the story lands red.
+
+### Verification for this story
+
+- [ ] T112 [US3] (spec US3-S1, spec US3-S4, SC-003) Paste into the PR: the
+  refusal as the driver prints it for a failed `llm` finding — the gateway's own
+  detail above, the remedy below — beside the `docker compose config` refusal for
+  an unset variable; and the full-suite before-and-after counts, which must show
+  the seven updated 110 tests still passing.
+
+## Phase 2: User Story 1 — A refused sandbox names the restriction that refused it
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -59,7 +140,7 @@ touch different files or independent test functions.
   refusal transcripts side by side — the same probe failing two ways, producing
   two different remedies — and the full-suite before-and-after counts.
 
-## Phase 2: User Story 2 — The grant is a file this project ships
+## Phase 3: User Story 2 — The grant is a file this project ships
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -107,15 +188,26 @@ touch different files or independent test functions.
 
 ## What no task here can prove
 
-Every task above runs against captured strings and committed files. **None of
-them proves the thing the spec is for**, because proving it requires a host that
-the floor host is not: one where `kernel.apparmor_restrict_unprivileged_userns=1`
-and `/etc/apparmor.d/bwrap` does not exist. On this machine the profile has been
-in place since 2026-07-16, which is precisely why the defect survived a released
-demo, a passing suite, and a successful end-to-end run on 2026-08-27.
+Every task above runs against captured strings and committed files. **For US1 and
+US2, none of them proves the thing the spec is for**, because proving it requires
+a host that the floor host is not: one where
+`kernel.apparmor_restrict_unprivileged_userns=1` and `/etc/apparmor.d/bwrap` does
+not exist. On this machine the profile has been in place since 2026-07-16, which
+is precisely why the defect survived a released demo, a passing suite, and a
+successful end-to-end run on 2026-08-27.
 
 That proof is the operator verification in `plan.md`: a stock box, or this one
 with the profile moved aside and reloaded, reading the refusal and doing only
 what it says. `tasks.md` forbids attempting it here on purpose — a test that
 modifies host confinement policy is a test that has acquired privilege, which
 plan T1 refuses.
+
+**US3 is different, and it is worth saying why.** Its tasks prove the refusal
+fires, that it names the right variable, that the non-fatal case still passes,
+and that the compose file declares the credential as required — all of it from
+committed files and injected findings, none of it needing a special host. What
+they cannot prove is that the *released artifact* carries the change: strangers
+fetch `compose.yaml` from a GitHub release and run an image from ghcr, and
+neither exists until the next release publishes them. A landed US3 and a fixed
+demo are two events, and the second one needs an operator (plan, dispatch
+hazards).

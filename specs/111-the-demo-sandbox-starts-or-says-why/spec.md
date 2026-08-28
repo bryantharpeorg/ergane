@@ -62,12 +62,74 @@ state: draft
 # a different consent surface than a tool that tells you what to widen and why.
 # Placing it stays the operator's deliberate act. This spec ships the file, names
 # it in every refusal, and proves the file the refusal names exists.
+#
+# ── AMENDED 2026-08-28 ────────────────────────────────────────────────────────
+# US3 was added after the released demo was run on a stranger-shaped machine — a
+# fresh multipass VM, Docker newly installed, cold volumes — and failed in a way
+# this spec's rule already covers but none of its stories reached.
+#
+# WHAT WAS OBSERVED, in the `docker compose up` stream:
+#
+#     gateway-1 | litellm.exceptions.AuthenticationError: OpenAIException -
+#         {"error":{"message":"Unauthorized","type":"api_error","param":null,"code":null}}
+#     gateway-1 | . Received Model Group=demo/implementer
+#     gateway-1 | INFO: 172.18.0.4:46220 - "POST /v1/messages?beta=true" 401 Unauthorized
+#     gateway-1 | LiteLLM Proxy:ERROR: No deployments available for selected model,
+#         Try again in 5 seconds. Passed model=demo/implementer
+#         cooldown_list=['37d908d8fa93c875108b8e7481b2e932c223eda34ffc139cefc32e247a97a229']
+#
+# Read in order: the upstream (Ollama Cloud) rejected the credential; LiteLLM put
+# the alias's only deployment into cooldown; every call after that returned 429
+# "No deployments available", which reads like a rate limit and is not one. The
+# second error is louder than the first and names the wrong cause.
+#
+# By the time that printed, the demo had installed, scaffolded, committed, probed
+# the sandbox, derived a one-story graph, and DISPATCHED. It spent the stranger's
+# attempt against a credential the stack had already proven it could not use.
+#
+# WHY IT GOT THAT FAR, and this is the whole of US3. `ergane install --from-file`
+# runs the full control-plane verification and returns EXIT_USER when any check
+# fails (`factory/cli/install.py:1279-1281`). The LLM probe completes one token
+# per distinct registry alias (`factory/controlplane/verify.py:534-581`), so with
+# a bad upstream key every `demo/` alias fails and the `llm` finding is FAIL.
+# That verdict was computed, rendered, and printed. The driver then discarded it:
+#
+#     factory/supervision/demo_driver.py:339-347
+#         if install_status != 0:
+#             # Install's exit code is control-plane *verification*, not whether
+#             # the config was written: an unauthenticated `gh` is a FAIL and is
+#             # also the normal state of a demo container. …
+#             emit("control-plane verification reported findings (exit …); "
+#                  "the configuration was written, so preparation continues")
+#
+# That tolerance is right about `gh` and wrong in its width. One exit code stands
+# for seven checks, so the check that means "nothing you do next can work" is
+# indistinguishable from the check that means "you are not logged in to GitHub",
+# which this demo never needs — it halts before a pull request by construction.
+#
+# `main`'s own docstring (`demo_driver.py:719-724`) calls the gate between the
+# phases absolute and then enumerates it: "a control plane that wrote no config,
+# a sandbox that could not start". The design was right. The enumeration was one
+# item short, and the missing item is the one that costs money.
+#
+# ALSO OBSERVED: `container/compose.demo.yaml:125` declares the credential as
+# `${UPSTREAM_MODEL_API_KEY}`, and Compose answers an unset variable with a
+# warning and an empty string. A stranger who never exported it gets a stack that
+# starts, looks healthy for six minutes, and then fails identically to one whose
+# key is merely wrong. `tests/test_109_us2_demo_compose.py:795-830` already
+# predicted this experience in prose — "the demo looks like it worked and dies at
+# the first agent call with a 401 that does not name its cause" — while testing
+# only that the docs and the compose file name the same variable.
+#
+# THE OPERATOR'S RULING, 2026-08-28: fix it first. US3 is dispatched ahead of US1
+# and US2. The Work Graph's order is deliberate and is not the story-key order.
 ---
 
 # Feature Specification: the demo sandbox starts, or says why
 
-**Created**: 2026-08-27
-**Depends on**: 110 (landed, attested). US1 → US2 are sequential; both touch
+**Created**: 2026-08-27 · **Amended**: 2026-08-28 (US3)
+**Depends on**: 110 (landed, attested). US3 → US1 → US2 are sequential: US3 and
+US1 both edit `factory/supervision/demo_driver.py`, US1 and US2 both edit
 `factory/controlplane/verify.py`.
 
 ## The gap, stated precisely
@@ -114,6 +176,14 @@ command that would work.
 mechanism that actually fired, and names a remedy that is present in this
 repository — and the grant the factory depends on is a file this project ships
 and tests, not a property it attributes to a distribution.**
+
+**And: the demo stops before it spends anything on a stack that has already told
+it the spend cannot succeed.** The demo's own verification runs before dispatch
+and its verdicts are printed; a verdict that means "the dispatch you are about to
+make cannot complete" must stop the driver rather than scroll past. This is the
+same rule as the first one, applied to the other thing that has to be true before
+an agent starts: the sandbox must be able to run it, and the gateway must be able
+to answer it.
 
 ### What this spec is not
 
@@ -202,38 +272,112 @@ two corrected comments; no host, no privilege.
    documented procedure and asserts it equals the committed profile, so the page
    and the artifact cannot drift.
 
+### User Story 3 - The demo refuses a credential it has already proven unusable (Priority: P0)
+
+As a stranger whose upstream key is missing, wrong or expired, I am told so
+before the demo dispatches a story against it, in a refusal that names the one
+environment variable the demo asks me for — rather than after, in a two-hundred
+line LiteLLM traceback whose loudest error is a rate limit that is not one.
+
+**Why this priority**: P0 and first. This fired on a real machine on 2026-08-28
+and cost a dispatched attempt (spec.md frontmatter). Unlike the sandbox refusal,
+it is not conditional on an unusual host: every stranger supplies this credential
+by hand, and every way of getting it wrong lands here. The information needed to
+refuse is already computed, already rendered, and already on the stranger's
+screen when the driver decides to continue past it.
+
+**Independent Test**: drive `run_prepare_phase` with an injected control-plane
+verification that returns a failed `llm` finding and assert it returns nonzero,
+writes no `prepared` sentinel, and prints a remedy naming the variable; then
+drive it with a failed `gh`/`escalation` finding and assert preparation
+continues. No container, no gateway, no network.
+
+**Acceptance Scenarios**:
+
+1. **Given** a control plane whose `llm` check fails — the gateway cannot
+   complete a token for the aliases the demo dispatches — **When**
+   `run_prepare_phase` runs, **Then** it prints the finding's own detail
+   verbatim, prints a remedy naming `UPSTREAM_MODEL_API_KEY`, and returns
+   nonzero **without** writing the `prepared` sentinel — proven by a committed
+   test asserting the return value, the two printed strings, and
+   `sentinel_path(state_home, PREPARED_SENTINEL).exists() is False`.
+2. **Given** a control plane whose `llm` check passes and whose `host`,
+   `escalation`, `memory` or `telemetry` checks fail — an unauthenticated `gh`
+   being the ordinary state of a demo container — **When** `run_prepare_phase`
+   runs, **Then** preparation continues to the sandbox probe exactly as it does
+   today — proven by a committed test that fails a non-`llm` check and asserts
+   the phase reaches the probe. The tolerance at `demo_driver.py:339-347` is
+   narrowed, not removed.
+3. **Given** the set of checks that stop the demo, **When** a test reads it,
+   **Then** it is exactly `{"llm"}` — proven by a committed assertion on the
+   named constant, so widening or narrowing it is an edit with a test to change
+   rather than a judgement buried in a conditional.
+4. **Given** an environment with no `UPSTREAM_MODEL_API_KEY` set, **When**
+   `docker compose` interpolates the demo file, **Then** it refuses before any
+   container is created, with a message naming the variable — proven by a
+   committed test asserting the gateway service declares the variable in the
+   `${NAME:?message}` required form and that the message names both the variable
+   and where an Ollama key comes from, plus the same assertion driven through a
+   real `docker compose config` when a daemon is reachable
+   (`tests/test_109_us2_demo_compose.py:633-651`).
+5. **Given** the demo's own drift tests, **When** the required form changes from
+   `${NAME}` to `${NAME:?message}`, **Then** `_is_mandatory`
+   (`tests/test_109_us2_demo_compose.py:181-193`) still classifies it as
+   mandatory — proven by a committed assertion on that helper directly, so the
+   four tests computed from `_mandatory_compose_vars()` cannot become vacuous by
+   silently returning an empty set.
+
 ## Work Graph
 
 ```yaml
+US3:
+  implements: []
+  depends_on: []
 US1:
   implements: []
   depends_on: []
+  depends_on_merged: [US3]
 US2:
   implements: []
   depends_on: []
   depends_on_merged: [US1]
 ```
 
-Chain depth 2. US2 is sequential rather than concurrent because US1 introduces
-the shared remedy constant that US2's committed-path assertion reads, and both
-stories edit `factory/controlplane/verify.py`.
+Chain depth 3, and the order is not the story-key order. US3 runs first by
+operator ruling (spec.md frontmatter): it is the failure that has actually
+happened, and it is the only one of the three that costs money when it is not
+fixed. US1 follows because it edits the same file US3 does
+(`factory/supervision/demo_driver.py`), and US2 follows US1 because US1
+introduces the shared remedy source that US2's committed-path assertion reads and
+both edit `factory/controlplane/verify.py`.
 
 ## Requirements (summary — numbered at refinement)
 
 Two named sandbox refusals distinguished by their measured stderr; one shared
 remedy source across both tiers; an unrecognised failure that admits it; the
 committed AppArmor profile and its parsed-directive test; the two corrected
-comments with the path pin retained; and the docs procedure pinned to the
-committed file.
+comments with the path pin retained; the docs procedure pinned to the committed
+file; a demo-fatal check set of exactly `{llm}` enforced before the `prepared`
+sentinel; and a compose declaration that refuses an unset credential at
+interpolation time.
 
 ## Success Criteria (summary)
 
 Pasted: the two refusal transcripts side by side, showing different remedies for
 different stderr; the profile-directive test output; the before-and-after of both
-corrected comments.
+corrected comments; and the credential refusal as the driver prints it, beside
+the `docker compose config` refusal for an unset variable.
 
 **Operator verification, which is the point of the spec**, and which no task in
 this spec can perform: on a machine that has never had Ergane and has never had
 `/etc/apparmor.d/bwrap`, run the released demo, read the refusal, follow only
 what it says, and run it again. The second run reaches the halt statement. Until
 that has been done once, this spec has improved a sentence and proved nothing.
+
+US3 has its own, and it is cheap: run the demo from cold volumes with
+`UPSTREAM_MODEL_API_KEY` unset (it must refuse in one second, before Postgres
+starts), then with it set to a syntactically plausible but invalid key (it must
+refuse after install, before dispatch, naming the variable), then with a real
+key (it must reach the halt statement). Three runs, one of which spends. The
+middle run is the one that failed on 2026-08-28 and is the reason this story
+exists.
