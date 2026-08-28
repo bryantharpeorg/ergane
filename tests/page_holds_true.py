@@ -18,7 +18,6 @@ import argparse
 import functools
 import io
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -165,35 +164,20 @@ def _near_entrypoints(word: str, entrypoints: set[str], threshold: int = 1) -> s
     return near
 
 
-#: The program name on the usage line is the command the reader is meant to type.
-_USAGE_PROG = re.compile(r"^usage:\s+(\S+)", re.IGNORECASE)
-
-
-@functools.lru_cache(maxsize=None)
-def _root_help() -> subprocess.CompletedProcess[str]:
-    result = run_help([str(BIN_DIR / "ergane")])
-    if result.returncode != 0:
-        raise RuntimeError(f"could not run `ergane --help`:\n{result.stderr.strip()}")
-    return result
-
-
 def root_name() -> str:
     """The console script name the page should use as a command."""
-    result = _root_help()
-    match = _USAGE_PROG.search(result.stdout)
-    if match is None:
-        raise RuntimeError("could not parse program name from `ergane --help`")
-    return match.group(1)
+    return _parser().prog
 
 
 def root_entrypoints() -> set[str]:
     """The root command plus every noun the CLI advertises.
 
     This is the set a near-miss detector compares against. It is derived from
-    argparse's own help output so it cannot drift behind the implementation.
+    the configured argparse parser so it cannot drift behind the implementation
+    and never needs to spawn a subprocess.
     """
-    result = _root_help()
-    return {root_name()} | verbs_of(result.stdout)
+    root = root_name()
+    return {root} | verbs_of([root])
 
 
 def extract_commands(text: str) -> list[tuple[str, ...]]:
@@ -272,10 +256,6 @@ def split_argv(argv: tuple[str, ...]) -> tuple[list[str], list[tuple[str, str | 
             positionals.append(word)
             index += 1
     return positionals, flags
-
-
-def run_help(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command + ["--help"], capture_output=True, text=True, timeout=120)
 
 
 # --- every path it cites still exists -----------------------------------------

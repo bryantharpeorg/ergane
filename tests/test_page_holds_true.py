@@ -146,6 +146,28 @@ def test_parse_argv_never_spawns_subprocess(monkeypatch: pytest.MonkeyPatch) -> 
     assert not calls, "subprocess.run was called during parse_argv"
 
 
+def test_page_sweep_never_spawns_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Extracting and parsing every command on the swept pages never runs a subprocess."""
+    import subprocess
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
+        raise AssertionError("the page sweep must not spawn subprocesses")
+
+    monkeypatch.setattr(subprocess, "run", fail_if_called)
+
+    import tests.test_claude_md as tc
+    import tests.test_readme as tr
+
+    for text in (tr.TEXT, tc.TEXT):
+        for argv in extract_commands(text):
+            parse_argv(argv)
+
+    assert not calls, "subprocess.run was called while sweeping the committed pages"
+
+
 # --- T005: pipelines and correctly-spelled nonexistent commands --------------
 
 
