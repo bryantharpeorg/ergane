@@ -1,7 +1,7 @@
-"""Shared machinery for asserting that a markdown page still describes the tree.
+"""Shared machinery for asserting that a page still describes the tree.
 
-`tests/test_claude_md.py` and `tests/test_readme.py` both need the same three
-checks:
+`tests/test_claude_md.py`, `tests/test_readme.py` and `tests/test_onramp_html.py`
+all need the same three checks:
 
 - every command the page names still parses,
 - every path the page cites still exists,
@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import argparse
 import functools
+import html
 import io
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 from factory.cli.main import _build_parser
@@ -44,6 +46,77 @@ def code_spans(text: str) -> list[str]:
             if stripped:
                 spans.append(stripped)
     return spans
+
+
+class _HTMLCodeExtractor(HTMLParser):
+    """Collect text inside `<code>` spans and `<pre class="well">` blocks.
+
+    HTML entities are unescaped, and `<span class="cmt">` subtrees are dropped
+    so shell comments in code wells do not look like commands.  Fenced bash
+    blocks are split line-by-line; inline `<code>` spans are returned whole.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.spans: list[str] = []
+        self._in_code = False
+        self._in_well = False
+        self._buf: list[str] = []
+        self._cmt_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {k: v for k, v in attrs}
+        if self._cmt_depth:
+            self._cmt_depth += 1
+            return
+        if attr_map.get("class") == "cmt":
+            self._cmt_depth = 1
+            return
+        if tag == "pre" and attr_map.get("class") == "well":
+            self._in_well = True
+            self._buf = []
+        elif tag == "code" and not self._in_well:
+            self._in_code = True
+            self._buf = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._cmt_depth:
+            self._cmt_depth -= 1
+            return
+        if tag == "pre" and self._in_well:
+            text = html.unescape("".join(self._buf))
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped:
+                    self.spans.append(stripped)
+            self._in_well = False
+            self._buf = []
+        elif tag == "code" and self._in_code:
+            text = html.unescape("".join(self._buf)).strip()
+            if text:
+                self.spans.append(text)
+            self._in_code = False
+            self._buf = []
+
+    def _append(self, data: str) -> None:
+        if (self._in_code or self._in_well) and not self._cmt_depth:
+            self._buf.append(data)
+
+    def handle_data(self, data: str) -> None:
+        self._append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self._append(html.unescape(f"&{name};"))
+
+    def handle_charref(self, name: str) -> None:
+        self._append(html.unescape(f"&#{name};"))
+
+
+def html_code_spans(text: str) -> list[str]:
+    """Everything the page sets in `<code>`, plus each line of a `<pre class="well">`."""
+    parser = _HTMLCodeExtractor()
+    parser.feed(text)
+    return parser.spans
 
 
 # --- every command the file names still parses -------------------------------
@@ -94,6 +167,8 @@ _PLACEHOLDER_VALUES: dict[str, str] = {
     "<repo-slug>": "ergane-cli",
     "<workgraph.json>": "specs/001/workgraph.json",
     "<repository-root>": "factory/target_repo",
+    "<dir>": "001",
+    "<branch>": "main",
 }
 
 
@@ -207,7 +282,11 @@ def _is_command_shaped(span: str) -> bool:
 
 def _command_shaped_spans(text: str) -> list[str]:
     """Every code span that matches the command-shaped rule."""
-    return [span for span in code_spans(text) if _is_command_shaped(span)]
+    if text.strip().startswith("<"):
+        spans = html_code_spans(text)
+    else:
+        spans = code_spans(text)
+    return [span for span in spans if _is_command_shaped(span)]
 
 
 def assert_commands_not_dropped(text: str) -> int:
@@ -310,7 +389,11 @@ def extract_paths(
     text: str, *, suffixes: tuple[str, ...] = SUFFIXES
 ) -> list[str]:
     found: list[str] = []
-    for span in code_spans(text):
+    if text.strip().startswith("<"):
+        spans = html_code_spans(text)
+    else:
+        spans = code_spans(text)
+    for span in spans:
         if " " in span or span.startswith("-") or "<" in span or span.startswith(":"):
             continue
         if "/" not in span and not span.endswith(suffixes):

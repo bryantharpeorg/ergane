@@ -53,17 +53,29 @@ def test_extract_commands_passes_on_non_ergane_commands() -> None:
     )
 
 
-# --- T003: both page suites exercise the same shared code path ---------------
+# --- T003/T016: every page suite exercises the same shared code path ----------
 
 
-def test_both_page_suites_use_the_same_extract_commands() -> None:
-    """The two page suites must not grow separate extractors (054 trap 3)."""
+def test_all_page_suites_use_the_same_extract_commands() -> None:
+    """The three page suites must not grow separate extractors (054 trap 3)."""
     import tests.test_claude_md as tc
+    import tests.test_onramp_html as to
     import tests.test_readme as tr
 
-    assert tr.extract_commands is tc.extract_commands is extract_commands, (
-        "the README and CLAUDE.md suites must share the same extractor"
-    )
+    assert (
+        tr.extract_commands is tc.extract_commands is to.extract_commands is extract_commands
+    ), "the README, CLAUDE.md and onramp suites must share the same extractor"
+
+
+def test_all_page_suites_use_the_same_parse_check() -> None:
+    """The three page suites must not grow separate parse checks (plan T6)."""
+    import tests.test_claude_md as tc
+    import tests.test_onramp_html as to
+    import tests.test_readme as tr
+
+    assert (
+        tr.parse_argv is tc.parse_argv is to.parse_argv is parse_argv
+    ), "the README, CLAUDE.md and onramp suites must share the same parse check"
 
 
 # --- T004: the committed pages are clean under the fixed sweep ---------------
