@@ -371,16 +371,22 @@ def _sound_trio(specs_root: Path, spec_dir: str, frontmatter: str) -> Path:
 
 
 def test_validate_reports_the_same_result_with_and_without_fixes(
-    run: Callable[..., Run], tmp_path: Path
+    run: Callable[..., Run], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """US1-S5: `validate`'s verdict over a corpus carrying both forms is one verdict.
+    """US1-S5 / US3-S4: a spec omitting `fixes:` is unchanged; one declaring it
+    now has the fixes layer reported.
 
-    The corpus holds the same spec twice — once declaring `fixes:`, once
-    omitting it — and validate's whole report must be identical but for the
-    directory it was pointed at. That is the strongest available statement of
-    "unchanged from before this story": the key that did not exist yesterday
-    changes nothing about what validate says today, on either form.
+    089-US3 added a ledger check for declared `fixes:` keys, so the two specs no
+    longer produce identical reports. The control that still matters is the
+    spec without the key: it must take no new code path and get the same
+    layers and verdict it did before US3.
     """
+    # Point the runtime root at an empty temp directory so a previous test in the
+    # same session cannot have created a findings store that changes the fixes
+    # layer's outcome.
+    monkeypatch.setenv("ERGANE_ROOT", str(tmp_path))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+
     specs_root = tmp_path / "specs"
     _sound_trio(
         specs_root,
@@ -394,13 +400,16 @@ def test_validate_reports_the_same_result_with_and_without_fixes(
 
     assert declaring.code == 0
     assert omitting.code == 0
-    declared_report = declaring.json
-    omitted_report = omitting.json
-    # The path validate was pointed at is the one legitimate difference.
-    declared_report.pop("spec_dir")
-    omitted_report.pop("spec_dir")
-    assert declared_report == omitted_report
-    assert declared_report["findings"] == []
+    assert declaring.json["findings"] == []
+    assert omitting.json["findings"] == []
+
+    # The spec that omits `fixes:` must show no trace of the new layer.
+    assert "fixes" not in omitting.json["checked"]
+    assert "fixes" not in [entry["layer"] for entry in omitting.json["skipped"]]
+
+    # The spec that declares `fixes:` now has the layer reported.  With no
+    # ledger supplied, it is skipped rather than refused.
+    assert "fixes" in [entry["layer"] for entry in declaring.json["skipped"]]
 
 
 def test_validate_refuses_a_scalar_fixes_naming_the_frontmatter_layer(
