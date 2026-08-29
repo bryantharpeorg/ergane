@@ -108,14 +108,42 @@ implementer:
   # it holds no gateway key, so such a fallback validates cleanly and then fails
   # at runtime with nothing to authenticate against. A session that cannot
   # refresh therefore has no second route, which is what spec 095 makes legible.
+  # POINTED AT GLM 5.3 ON 2026-08-29 ~9:10 AM CT (Bryan): "glm 5.3 for coding,
+  # kimi k2.7 code for the judge, opus 5 as the debugger". All three rungs moved
+  # together; see `judge` and `debugger` below.
+  #
+  # THE ALIAS HAD TO BE CREATED FIRST, and the reason matters for the next
+  # person who reaches for a model the proxy 404s. At 9:10 AM the gateway served
+  # 17 aliases and the only 5.3 among them was `-flash`, which reads as "Ollama
+  # has no full 5.3". It does. Probed directly against https://ollama.com/v1
+  # from inside the litellm container: both `glm-5.3` and `glm-5.3:cloud`
+  # returned HTTP 200, content='ready', finish=stop. The alias was then added to
+  # the homelab config (`stacks/llm/litellm/config.yaml`) and the proxy
+  # restarted, taking it to 18. `ollama-cloud/glm-5.3` is probe-verified through
+  # the gateway, not merely listed.
+  #
+  # A MISSING ALIAS AND A MISSING MODEL LOOK IDENTICAL FROM THE FACTORY SIDE.
+  # Both present as a builder that fails every attempt while the gateway looks
+  # broken. Probe the upstream before concluding the model does not exist.
+  #
+  # LINEAGE HOLDS, AND IT IS STRONGER THAN IT WAS. The rule since 2026-08-07 is
+  # that the judge may not review its own family's output. This rotation puts
+  # three distinct vendors on the three rungs — Zhipu builds, Moonshot judges,
+  # Anthropic debugs — where before it was two.
   agent: claude-code
-  model: ollama-cloud/kimi-k2.7-code
+  model: ollama-cloud/glm-5.3
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
-  context_window: 262144
+  # 1M, read from Ollama's own model card (`glm5_next.context_length = 1048576`,
+  # 321B FP8) and recorded alongside the alias in the homelab litellm config.
+  # NOT carried over from kimi's 262144 — that was Moonshot's 256K and declaring
+  # it here would hide 79% of this model's window behind a stale number. Unset
+  # is no better: the CLI then assumes 200k for an alias it does not recognise,
+  # which is the 037 defect that cost kimi 23.7% of its own.
+  context_window: 1048576
 
 verifier:
   agent: none
@@ -128,15 +156,25 @@ verifier:
 
 judge:
   agent: claude-code
-  # Moved 5.2 -> 5.3 on 2026-08-29 at Bryan's instruction. THE ALIAS IS NOT
-  # `ollama-cloud/glm-5.3`: the gateway does not serve that name. Probed against
-  # the live proxy on 2026-08-29 — the only 5.3 it serves is
-  # `ollama-cloud/glm-5.3-flash`, and a real chat completion against it returned
-  # `content='ready'` with `finish_reason=stop`, so this is a verified route and
-  # not a listing entry. Re-probe before changing it again; external model
-  # catalogs churn, and a judge pointed at an unserved alias fails every call
-  # while looking like a broken gateway.
-  model: ollama-cloud/glm-5.3-flash
+  # MOVED TO KIMI ON 2026-08-29 ~9:10 AM CT (Bryan), as one third of the rung
+  # rotation recorded under `implementer`: glm builds, kimi judges, opus debugs.
+  # Kimi was this repository's builder from 2026-08-07 until this morning, so
+  # the alias is proven on the proxy — it is the same one every landed story
+  # since then was written by.
+  #
+  # THE LINEAGE DOCTRINE IS WHY THIS IS A ROTATION AND NOT TWO EDITS. The judge
+  # may not review its own family's output. Moving the builder to Zhipu made
+  # Zhipu an illegal judge, so the judge had to move in the same breath. Reverting
+  # one rung without the other silently puts glm on both ends.
+  #
+  # HISTORY, so a revert has somewhere to go: `ollama-cloud/glm-5.2` from
+  # 2026-08-07, moved to `ollama-cloud/glm-5.3-flash` earlier on 2026-08-29
+  # (the gateway serves no plain `ollama-cloud/glm-5.3` — see `implementer`).
+  #
+  # NO `context_window` HERE, ever: the judge is not a CLI-driven persona. It is
+  # one bounded HTTP chat completion through the proxy (`factory/verify/judge.py`),
+  # so `CLAUDE_CODE_MAX_CONTEXT_TOKENS` never reaches it and the key would be inert.
+  model: ollama-cloud/kimi-k2.7-code
   fallback: local/qwen3.6-27b
   skills: [code-review]
   write_scope: read
@@ -201,16 +239,37 @@ debugger:
   # "everything" was true for three attempts and false for the three after,
   # which is the shadowing this sprint's spec 095 is about elsewhere.
   #
-  # HELD with `implementer` above, and for the same reason — see that entry.
-  # TO APPLY: `agent: subscription`, `model: claude-opus-5`, `fallback: null`,
-  # `context_window: 1000000`.
-  agent: claude-code
-  model: ollama-cloud/deepseek-v4-flash
-  fallback: local/qwen3.6-27b
+  # APPLIED 2026-08-29 ~9:10 AM CT (Bryan): "opus 5 as the debugger". The hold
+  # recorded above was never about this entry — it was about `implementer`, and
+  # specifically about two tests that pin the DEFAULT BUILDER:
+  #   tests/test_us2_shipped_registry.py:344  asserts a "/" in implementer.model
+  #   tests/test_usage_activities.py:819-834  leases a virtual key for it
+  # Neither names `debugger`, and a grep of the suite finds no test that reads
+  # this entry's model at all. So the swap that reddens trunk on the implementer
+  # is free here, and `ci/test-suite-pins-the-operator-dial` does not block it.
+  #
+  # SUBSCRIPTION, NOT THE GATEWAY ALIAS. `anthropic/claude-opus-5` is served by
+  # the proxy and `closer` uses it, but it bills per token. This route runs on
+  # the operator's own Claude Code login and costs no metered spend, which is
+  # the standing preference. The rung fires only after three ordinary attempts
+  # have failed, so it is rare by construction — but a rare rung on a metered
+  # model is still a bill nobody decided to pay.
+  #
+  # THE COST OF THE ROUTE IS THE FALLBACK. A subscription persona holds no
+  # gateway key, so an `ollama-cloud/*` fallback would validate here and then
+  # fail at runtime with nothing to authenticate against. Null is the honest
+  # value: a session that cannot refresh has no second route, which is exactly
+  # what spec 095 makes legible.
+  agent: subscription
+  model: claude-opus-5
+  fallback: null
   skills: [diagnosing-bugs]
   write_scope: worktree
   needs_worktree: true
   timeout: 10800
+  # Opus 5's published window. Unset, the CLI assumes 200k for an alias it does
+  # not recognise — the 037 defect that cost kimi 23.7% of its window.
+  context_window: 1000000
 
 researcher:
   agent: claude-code
