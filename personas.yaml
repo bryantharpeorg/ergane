@@ -158,8 +158,35 @@ implementer:
   # Related and previously known for kimi:
   # `litellm-nil-content` / "a reasoning model with a tight max_tokens returns
   # empty content that looks like a broken gateway". Same shape, new model.
+  # BACK TO THE FULL 5.3 ON 2026-08-29 3:50 PM CT (Bryan): "switch the glm 5.3
+  # flash over to glm 5.3 full, see if it does any better as a primary builder."
+  #
+  # AND THE MORNING'S VERDICT ON THIS MODEL WAS WRONG. It was recorded as unable
+  # to return code. It is not. It is a reasoning model that needs headroom, and
+  # both probes that condemned it starved it:
+  #
+  #   max_tokens 4000   -> 0 chars, finish=length, 4000 burned   (too small)
+  #   max_tokens 16000  -> no answer inside a 120s curl timeout  (MY timeout)
+  #   max_tokens 32000  -> 2888 chars, finish=stop, 80s          (works)
+  #
+  # That last run spent 53,547 characters of reasoning and 14,875 completion
+  # tokens before emitting a line. Give it room and it answers; starve it and it
+  # returns an empty `content` that looks exactly like a broken gateway.
+  # `agent/a-reasoning-model-passes-the-alias-probe-and-returns-no-code` has been
+  # corrected to say so.
+  #
+  # WHAT IS STILL UNKNOWN, and is the reason this is an experiment rather than a
+  # fix: the agent that failed at 10:55 died with `API Error: The operation timed
+  # out`, and the CLI chooses its own request budget and deadline. A model that
+  # needs 80 seconds and 15k tokens per turn may still exceed what the runner
+  # allows, in which case this fails the same way and the answer is flash.
+  #
+  # LINEAGE IS UNAFFECTED: flash and full are both Zhipu, so the three rungs stay
+  # Zhipu / Moonshot / Anthropic. No conflict arose, so the deepseek-v4-pro
+  # fallback the operator offered is not needed -- and is not currently served by
+  # the gateway anyway; only `ollama-cloud/deepseek-v4-flash` has an alias.
   agent: claude-code
-  model: ollama-cloud/glm-5.3-flash
+  model: ollama-cloud/glm-5.3
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
