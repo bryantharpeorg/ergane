@@ -147,6 +147,29 @@ class OperatorAnswer:
     answer_text: str
 
 
+@dataclass(frozen=True)
+class PeerMessage:
+    """One routed peer message, as the prompt renders it (017-US1, FR-002/003).
+
+    The sibling of `OperatorAnswer` for the peer channel. `body` is the
+    message text with its header split off — verbatim (FR-003); `sender` is the
+    sending node's id as the prompt names it; `sender_epic_id` travels so a
+    cross-epic message (US4) is attributed where it came from, not only what it
+    said; `reply` is `None` for a message being *delivered* and the reply text
+    for an exchange being *replayed* to the asker (FR-003).
+
+    Text here enters prompts and parks nodes and is unreadable by gates and
+    judge (FR-005): the judge reads `AttemptEvidence`, this type never reaches
+    one, and the guard test holds that line as the code changes.
+    """
+
+    message_id: str
+    sender_epic_id: str
+    sender_node_id: str
+    body: str
+    reply: str | None = None
+
+
 # --- the fixed sections -------------------------------------------------------
 
 _ROLE = """## Role and scope
@@ -274,6 +297,28 @@ _ANSWER_PREAMBLE = (
     "operator's decision and proceed on it."
 )
 
+#: 017-US1: the peer channel's preambles. The incoming message is a peer's
+#: words, verbatim (FR-002); the reply is the answer to the question *you*
+#: asked a peer, verbatim (FR-003). Neither is the operator's voice and neither
+#: is the ladder's — the preambles say to proceed on a message that answers the
+#: asker's own question, and never to mistake one for a verdict (FR-005).
+_PEER_MESSAGE_PREAMBLE = (
+    "A peer node of this epic sent you the message below, reproduced "
+    "verbatim. It is the peer's words, not the operator's and not the "
+    "ladder's. If it answers a question your work depends on, proceed on it; "
+    "if it asks you one and you can answer in your final message, answer it "
+    "under your own `## OPERATOR QUESTION` heading addressed back with a "
+    "`To:` line naming the node that asked."
+)
+
+_PEER_REPLY_PREAMBLE = (
+    "You asked a peer node of this epic a question on your previous attempt, "
+    "and the peer replied. The reply is reproduced verbatim — the question "
+    "you asked, then the reply the peer gave. Read the reply as the peer's "
+    "answer and proceed on it; it is not the operator's decision and not a "
+    "verdict."
+)
+
 _NOTHING_FAILED_LOUDLY = (
     "No failing gate output and no judge feedback were recorded for this "
     "attempt."
@@ -366,6 +411,14 @@ _LANDING_HEADING = "## Landing rejection"
 #: nor the gates' verdict, so it has its own heading.
 _ANSWER_HEADING = "## Operator answer"
 
+#: 017-US1: the dedicated sections the peer channel delivers through (FR-002,
+#: FR-003). Distinct from `_ANSWER_HEADING` (the operator's voice), from
+#: `_EVIDENCE_HEADING` (the ladder's) and from the agent's own marker — a peer's
+#: words are none of those, so they render under their own headings and the
+#: two directions (incoming message, returning reply) are never confusable.
+PEER_MESSAGE_HEADING = "## Peer message"
+PEER_REPLY_HEADING = "## Peer reply"
+
 # --- requirement keys ---------------------------------------------------------
 
 #: A story key as the deriver mints it (`US1`); the number is what a heading
@@ -390,6 +443,7 @@ def build_attempt_prompt(
     prior_attempts: Sequence[AttemptEvidence] = (),
     landing_evidence: LandingEvidence | None = None,
     operator_answer: OperatorAnswer | None = None,
+    peer_messages: Sequence[PeerMessage] = (),
 ) -> str:
     """Assemble one attempt's prompt (contracts/prompt-assembly.md § Prompt shape).
 
@@ -437,6 +491,7 @@ def build_attempt_prompt(
         parts.append(_landing_section(landing_evidence))
     if operator_answer is not None:
         parts.append(_answer_section(operator_answer))
+    parts.extend(_peer_sections(peer_messages))
     if prior_attempts:
         parts.append(_evidence_section(prior_attempts))
 
@@ -682,6 +737,67 @@ def _answer_section(answer: OperatorAnswer) -> str:
             f"Answer:\n\n{_quote(answer.answer_text)}",
         ]
     )
+
+
+# --- peer messages (017-US1 FR-002/FR-003) ------------------------------------
+
+
+def _peer_message_section(message: PeerMessage) -> str:
+    """One delivered peer message, verbatim, attributed (FR-002).
+
+    The dedicated section the spec names: a peer's message is not an operator
+    answer and not the ladder's evidence, so it renders under its own heading.
+    The sender is named so the agent can address its reply back (FR-003); the
+    body travels verbatim — a paraphrase would break the round trip the
+    Independent Test asserts.
+    """
+    return "\n\n".join(
+        [
+            PEER_MESSAGE_HEADING,
+            _PEER_MESSAGE_PREAMBLE,
+            f"From: {message.sender_node_id} (epic {message.sender_epic_id}, "
+            f"message {message.message_id})",
+            f"Message:\n\n{_quote(message.body)}",
+        ]
+    )
+
+
+def _peer_reply_section(message: PeerMessage) -> str:
+    """One returned peer reply, verbatim, threaded (FR-003).
+
+    The asker's side of the exchange: the message it asked and the reply the
+    peer gave, rendered whole under the reply heading — the same shape the
+    operator-answer section renders, for the peer's voice.
+    """
+    parts = [
+        PEER_REPLY_HEADING,
+        _PEER_REPLY_PREAMBLE,
+    ]
+    if message.reply is not None:
+        parts.append(f"Your question:\n\n{_quote(message.body)}")
+        parts.append(f"Reply:\n\n{_quote(message.reply)}")
+    else:
+        # A delivery and a reply share the type; a delivery with no reply yet
+        # renders the message alone. Never reached by the caller that hands a
+        # reply, but the section must not render an empty `Reply:` clause.
+        parts.append(f"Message:\n\n{_quote(message.body)}")
+    return "\n\n".join(parts)
+
+
+def _peer_sections(messages: Sequence[PeerMessage]) -> list[str]:
+    """Every buffered peer message for this attempt, arrival order.
+
+    `reply is None` means the message is being *delivered* to this node
+    (FR-002); a message carrying a reply is being *returned* to its asker
+    (FR-003). One section each, in the order the routing buffered them.
+    """
+    sections: list[str] = []
+    for message in messages:
+        if message.reply is not None:
+            sections.append(_peer_reply_section(message))
+        else:
+            sections.append(_peer_message_section(message))
+    return sections
 
 
 # --- prior failure evidence (002 FR-006) --------------------------------------

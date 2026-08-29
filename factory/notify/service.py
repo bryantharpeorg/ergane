@@ -109,6 +109,13 @@ SIGNAL_NAME = "escalation_resolved"
 #: prompt verbatim (FR-003).
 QUESTION_SIGNAL_NAME = "question_answered"
 
+#: 017-US1: the peer channel's reply signal — the sibling of
+#: `question_answered` for a message that named an addressee. Same wire shape
+#: `(message_id, reply_text)`, same incurious buffering on the receiving side,
+#: same rule that only the store decides first-wins. Named once here, the way
+#: every signal name is, so the bridge and the workflow cannot drift.
+MESSAGE_REPLY_SIGNAL_NAME = "message_replied"
+
 #: 035-US1: the operator hand-back signal, sent as
 #: `complete_node_externally(node_id, branch, provenance)`. It is accepted only
 #: when the node's ladder is exhausted; otherwise it is refused and recorded.

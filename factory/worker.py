@@ -78,6 +78,7 @@ from factory.activities import (
 )
 from factory import versioning
 from factory.controlplane.resolve import resolve_temporal_target
+from factory.escalation.message import MessageWorkflow
 from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
 from factory.notify.redact import configure_logging
@@ -100,7 +101,13 @@ logger = logging.getLogger(__name__)
 #: poll serves epics an operator started, epics the roadmap dispatched, and the
 #: escalations either of them raised. A child inherits its parent's queue, so a
 #: worker missing the last two would park every escalation forever.
-WORKFLOWS = [EpicWorkflow, RoadmapWorkflow, EscalationWorkflow, QuestionWorkflow]
+WORKFLOWS = [
+    EpicWorkflow,
+    RoadmapWorkflow,
+    EscalationWorkflow,
+    QuestionWorkflow,
+    MessageWorkflow,
+]
 
 #: Every activity the three components ship, grouped by the component that owns
 #: it. The interpreter's own surface is first because it is the one whose
@@ -153,6 +160,14 @@ ACTIVITIES = [
     # its branch landed), so the day that wiring lands takes no worker edit.
     notify_activities.send_question,
     notify_activities.expire_question,
+    # 017-US1 — the peer channel: routing (deliver-or-refuse, the row written
+    # before any delivery), and the row's lifecycle transitions the
+    # `MessageWorkflow` child settles through. Registered beside the question
+    # surface they mirror, so the day US2/US3 wire the ferry and the mailbox no
+    # worker edit is needed (the registration is data, like `run_judge`).
+    notify_activities.route_peer_message_activity,
+    notify_activities.deliver_peer_message_activity,
+    notify_activities.resolve_message_row,
     # 008 — US3's dedup: before the US1 degrade path re-sends, it asks the store
     # (not the adapter result) whether the in-attempt ferry already shipped a
     # question for this attempt, so the operator is paged once, not twice. The

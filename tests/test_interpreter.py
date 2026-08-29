@@ -189,6 +189,7 @@ from factory.activities.verify_activities import (
     SnapshotCriteriaInput,
 )
 from factory.config import Persona, WriteScope
+from factory.verify.peer_grammar import parse_addressee as _parse_addressee
 from factory.notify.service import QUESTION_SIGNAL_NAME, SIGNAL_NAME
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
 from factory.verify.ladder import DEBUGGER_PERSONA
@@ -226,6 +227,7 @@ from factory.workgraph.models import (
 )
 from factory.workgraph import workflow as workflow_module
 from factory.workgraph.worktree import PreparedWorktree, branch_name
+from factory.escalation.message import MessageWorkflow
 from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
 from factory.workgraph.workflow import EpicInput, EpicWorkflow
@@ -753,6 +755,13 @@ class QuestionMarker:
 
     is_question: bool
     text: str = ""
+    #: 017-US1: the addressee the body's `To:` line names, None for the 008
+    #: addressee-less body. Mirrors `factory.verify.question.QuestionMarker`
+    #: field-for-field so the workflow's peer branch and this fake cannot
+    #: disagree about what a marker carries.
+    addressee: str | None = None
+    body: str | None = None
+    in_reply_to: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1678,7 +1687,21 @@ class ScriptedWorld:
             body = script.question_bodies.pop(script._node, None)
             if body is None:
                 return QuestionMarker(is_question=False, text="")
-            return QuestionMarker(is_question=True, text=body)
+            # 017-US1: the fake answers through the real grammar, so a scripted
+            # body carrying a `To:` line names its addressee the way the
+            # detector's own scan does. A body without one parses to None and
+            # the marker is exactly what 008's tests read (addressee None,
+            # body the whole text).
+            parsed = _parse_addressee(body)
+            if parsed is None:
+                return QuestionMarker(is_question=True, text=body)
+            return QuestionMarker(
+                is_question=True,
+                text=body,
+                addressee=parsed.addressee,
+                body=parsed.body,
+                in_reply_to=parsed.in_reply_to,
+            )
 
         @activity.defn(name="send_question")
         async def send_question(request: SendQuestionInput) -> SentQuestion:
@@ -1780,6 +1803,13 @@ class ScriptedWorld:
             send_question,
             expire_question,
             find_ferried_question,
+            # 017-US1: the peer channel's routing, delivery and row settlement —
+            # real rather than scripted, for the same reason settle_question is:
+            # the row the routing writes is what the tests read back, and a
+            # scripted refusal would test the script.
+            notify_activities.route_peer_message_activity,
+            notify_activities.deliver_peer_message_activity,
+            notify_activities.resolve_message_row,
         ]
 
 
@@ -1838,7 +1868,7 @@ async def start_epic(
         env.client,
         task_queue=TASK_QUEUE,
         # 041-US3: a child runs on its parent's queue.
-        workflows=[EpicWorkflow, EscalationWorkflow, QuestionWorkflow],
+        workflows=[EpicWorkflow, EscalationWorkflow, QuestionWorkflow, MessageWorkflow],
         activities=script.activities(),
         workflow_runner=UnsandboxedWorkflowRunner(),
         # 006-US4: mirror the production heartbeat-throttle cap so tests that
@@ -2989,7 +3019,7 @@ async def test_sdk_eviction_during_attempt_emits_no_teardown_or_unraisable(
         env.client,
         task_queue=TASK_QUEUE,
         # 041-US3: a child runs on its parent's queue.
-        workflows=[EpicWorkflow, EscalationWorkflow, QuestionWorkflow],
+        workflows=[EpicWorkflow, EscalationWorkflow, QuestionWorkflow, MessageWorkflow],
         activities=script.activities(),
         workflow_runner=UnsandboxedWorkflowRunner(),
     ):

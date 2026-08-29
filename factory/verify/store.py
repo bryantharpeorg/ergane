@@ -91,6 +91,7 @@ from factory.verify.models import (
     JudgeOutcome,
     JudgeScenarioFinding,
     JudgeVerdict,
+    MessageRecord,
     OutputCheck,
     OverallVerdict,
     QuestionRecord,
@@ -117,7 +118,7 @@ from factory.verify.models import (
 #: here that is not additive — SQLite cannot alter a CHECK — so `_migrate`
 #: rebuilds the table. It has to run: a store whose constraint predates the
 #: button rejects the settling write and leaves the escalation pending.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -234,6 +235,36 @@ CREATE TABLE IF NOT EXISTS questions (
 
 CREATE INDEX IF NOT EXISTS idx_q_pending ON questions (resolution) WHERE resolution IS NULL;
 CREATE INDEX IF NOT EXISTS idx_q_node    ON questions (epic_id, node_id);
+
+-- 017-US1: a sibling to questions for peer messages. The shape mirrors the
+-- questions table — the row is written before the send (R11), a terminal
+-- transition is one guarded UPDATE, and the id is a 12-hex token a reply
+-- threads to (FR-003) — but the vocabulary is the message lifecycle's:
+-- DELIVERED (routed to a peer that can answer it, US1), ANSWERED (the reply
+-- came back, or degraded and the operator replied — first-wins either way),
+-- EXPIRED (the message's own window ran out, FR-004), REFUSED (the routing
+-- refused the send to the asker — unknown addressee, terminal target,
+-- self-address, or the outstanding-message bound, FR-006). REFUSED carries its
+-- reason in `reply` — the one free-text column a refusal has — so a send
+-- refused "to the asker, naming the configuration field" (FR-006) is a fact
+-- in the store, not a log line nobody can read later.
+CREATE TABLE IF NOT EXISTS messages (
+    message_id      TEXT PRIMARY KEY,      -- 12-hex token (the reply-routing key)
+    sender_epic_id  TEXT NOT NULL,
+    sender_node_id  TEXT NOT NULL,
+    sender_attempt  INTEGER NOT NULL CHECK (sender_attempt >= 1),
+    addressee       TEXT NOT NULL,
+    body            TEXT NOT NULL,         -- the message verbatim, header split off (FR-002)
+    reply           TEXT,                  -- the peer's reply verbatim (FR-003)
+    resolution      TEXT CHECK (resolution IN ('DELIVERED', 'ANSWERED', 'EXPIRED', 'REFUSED')),
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL,         -- created_at + the message's own window (FR-004)
+    resolved_at     TEXT,
+    CHECK ((resolution IS NULL) = (resolved_at IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_m_open    ON messages (resolution) WHERE resolution IS NULL;
+CREATE INDEX IF NOT EXISTS idx_m_address ON messages (sender_epic_id, addressee);
 
 -- 035-US1: every external-completion signal the workflow receives, accepted or
 -- refused. The signal is buffered by the workflow and validated at the ladder
@@ -1302,6 +1333,250 @@ def _question_from_row(row: tuple[Any, ...]) -> QuestionRecord:
         expires_at=values["expires_at"],
         resolution=values["resolution"],
         answer_text=values["answer_text"],
+        resolved_at=values["resolved_at"],
+    )
+
+
+# --- peer messages (017-US1) ------------------------------------------------
+#
+# A sibling table to questions, for a message that names its addressee. The
+# shape mirrors the questions table — row before send (R11), one guarded
+# UPDATE per terminal transition, a 12-hex id as the reply-routing key — but
+# the vocabulary is the message lifecycle's (DELIVERED/ANSWERED/EXPIRED/REFUSED,
+# documented on the DDL), because a message that names its recipient has more
+# ways to end than a question addressed to one human.
+
+#: `DELIVERED` — the routing accepted the message for a peer that can answer
+#: it (US1). `ANSWERED` — a reply came back (FR-003), the operator's reply on a
+#: degraded exchange included (the degradation hands the row to the 008 path).
+#: `EXPIRED` — the message's own window ran out unanswered (FR-004).
+#: `REFUSED` — the routing refused the send to the asker (FR-006) or could not
+#: deliver at all (FR-004): unknown addressee, terminal target, self-address,
+#: the outstanding bound.
+MESSAGE_DELIVERED = "DELIVERED"
+MESSAGE_ANSWERED = "ANSWERED"
+MESSAGE_EXPIRED = "EXPIRED"
+MESSAGE_REFUSED = "REFUSED"
+
+#: The columns identifying one message, in the order `_SELECT_MESSAGE_SQL`
+#: returns them — the same order `_message_from_row` reads.
+_MESSAGE_COLUMNS = (
+    "message_id",
+    "sender_epic_id",
+    "sender_node_id",
+    "sender_attempt",
+    "addressee",
+    "body",
+    "reply",
+    "resolution",
+    "created_at",
+    "expires_at",
+    "resolved_at",
+)
+
+_SELECT_MESSAGE_SQL = f"SELECT {', '.join(_MESSAGE_COLUMNS)} FROM messages"
+
+_INSERT_MESSAGE_SQL = (
+    "INSERT INTO messages (message_id, sender_epic_id, sender_node_id, "
+    "sender_attempt, addressee, body, reply, resolution, created_at, expires_at, "
+    "resolved_at) VALUES (:message_id, :sender_epic_id, :sender_node_id, "
+    ":sender_attempt, :addressee, :body, :reply, :resolution, :created_at, "
+    ":expires_at, :resolved_at)"
+)
+
+#: The guarded transition a reply (FR-003) or the message's own expiry (FR-004)
+#: closes — the `resolve_question` pattern: whichever arrives second matches no
+#: rows and is told so.
+_MESSAGE_TRANSITION_SQL = (
+    "UPDATE messages SET resolution = ?, reply = ?, resolved_at = ? "
+    "WHERE message_id = ? AND resolution IS NULL"
+)
+
+
+def insert_message(
+    store: str | Path | sqlite3.Connection, record: MessageRecord
+) -> None:
+    """Write a pending message row (R11).
+
+    Called *before* the message is delivered, so a crash in between leaves
+    something the expiry path can close rather than an untracked message.
+    Raises `sqlite3.IntegrityError` if the id is already taken — a reused
+    token would let a reply to last week's message land on this one's. Opens
+    its own connection when handed a path, the way the notify activities use
+    the questions store; the workflow-side caller always has one open.
+    """
+    conn = _own_or_given(store)
+    try:
+        conn.execute(
+            _INSERT_MESSAGE_SQL,
+            {
+                "message_id": record.message_id,
+                "sender_epic_id": record.sender_epic_id,
+                "sender_node_id": record.sender_node_id,
+                "sender_attempt": record.sender_attempt,
+                "addressee": record.addressee,
+                "body": record.body,
+                "reply": record.reply,
+                "resolution": record.resolution,
+                "created_at": record.created_at,
+                "expires_at": record.expires_at,
+                "resolved_at": record.resolved_at,
+            },
+        )
+        conn.commit()
+    finally:
+        if conn is not store:
+            conn.close()
+
+
+def _own_or_given(store: str | Path | sqlite3.Connection) -> sqlite3.Connection:
+    """A connection the caller owns when given a path, the one given otherwise.
+
+    The message store is written from two worlds — the workflow's routing
+    activity (a path) and the tests (a path) — vs. readers that already hold a
+    connection. Same pattern `_connect_question` serves on the notify side.
+    """
+    if isinstance(store, sqlite3.Connection):
+        return store
+    return connect(store)
+
+
+def get_message(
+    store: str | Path | sqlite3.Connection, message_id: str
+) -> MessageRecord | None:
+    """One message by its id, or None if there is no such row.
+
+    None rather than an exception: a reply naming a message the store has no
+    record of is answered with a refusal, not a crashed routing path (the
+    `get_question` posture).
+    """
+    conn = _own_or_given(store)
+    try:
+        row = conn.execute(
+            f"{_SELECT_MESSAGE_SQL} WHERE message_id = ?", (message_id,)
+        ).fetchone()
+    finally:
+        if conn is not store:
+            conn.close()
+    return None if row is None else _message_from_row(row)
+
+
+def outstanding_message_count(
+    store: str | Path | sqlite3.Connection,
+    *,
+    sender_epic_id: str,
+    sender_node_id: str,
+) -> int:
+    """How many messages this node has sent and not yet settled (FR-006).
+
+    The bound the asker's next send is checked against: a row stops counting
+    when its resolution is set — answered, expired, or refused — because a
+    settled exchange is no longer outstanding no matter which side ended it.
+    """
+    conn = _own_or_given(store)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE sender_epic_id = ? "
+            "AND sender_node_id = ? AND resolution IS NULL",
+            (sender_epic_id, sender_node_id),
+        ).fetchone()
+    finally:
+        if conn is not store:
+            conn.close()
+    return int(row[0])
+
+
+def resolve_message(
+    store: str | Path | sqlite3.Connection,
+    message_id: str,
+    *,
+    reply_text: str,
+    resolved_at: str,
+) -> bool:
+    """Record the peer's reply (FR-003). True if this call is what resolved it.
+
+    The `resolve_question` pattern: whichever of a reply and the expiry arrives
+    second matches no rows and is told so, instead of overwriting a resolution
+    already set.
+    """
+    conn = _own_or_given(store)
+    try:
+        cursor = conn.execute(
+            _MESSAGE_TRANSITION_SQL,
+            (MESSAGE_ANSWERED, reply_text, resolved_at, message_id),
+        )
+        conn.commit()
+    finally:
+        if conn is not store:
+            conn.close()
+    return cursor.rowcount == 1
+
+
+def expire_message(
+    store: str | Path | sqlite3.Connection,
+    message_id: str,
+    *,
+    resolved_at: str,
+) -> bool:
+    """Record the message's own window elapsing (FR-004). True if this call expired it.
+
+    The one resolution no reply can produce, the same way `EXPIRED` is the one
+    escalation resolution no button can produce.
+    """
+    conn = _own_or_given(store)
+    try:
+        cursor = conn.execute(
+            _MESSAGE_TRANSITION_SQL,
+            (MESSAGE_EXPIRED, None, resolved_at, message_id),
+        )
+        conn.commit()
+    finally:
+        if conn is not store:
+            conn.close()
+    return cursor.rowcount == 1
+
+
+def refuse_message(
+    store: str | Path | sqlite3.Connection,
+    message_id: str,
+    *,
+    reason: str,
+    resolved_at: str,
+) -> bool:
+    """Record the routing's refusal of the send (FR-004, FR-006).
+
+    `reason` is the refusal *to the asker*, verbatim — for the cap it names the
+    configuration field and its value (FR-006), for an unknown addressee it
+    names what was unknown. Stored so the refusal is a fact in the record and
+    not a log line.
+    """
+    conn = _own_or_given(store)
+    try:
+        cursor = conn.execute(
+            _MESSAGE_TRANSITION_SQL,
+            (MESSAGE_REFUSED, reason, resolved_at, message_id),
+        )
+        conn.commit()
+    finally:
+        if conn is not store:
+            conn.close()
+    return cursor.rowcount == 1
+
+
+def _message_from_row(row: tuple[Any, ...]) -> MessageRecord:
+    """Rebuild a record from a `_MESSAGE_COLUMNS`-ordered row."""
+    values = dict(zip(_MESSAGE_COLUMNS, row))
+    return MessageRecord(
+        message_id=values["message_id"],
+        sender_epic_id=values["sender_epic_id"],
+        sender_node_id=values["sender_node_id"],
+        sender_attempt=values["sender_attempt"],
+        addressee=values["addressee"],
+        body=values["body"],
+        reply=values["reply"],
+        resolution=values["resolution"],
+        created_at=values["created_at"],
+        expires_at=values["expires_at"],
         resolved_at=values["resolved_at"],
     )
 

@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Sequence
 
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
+from factory.verify.peer_grammar import parse_addressee
 
 #: The fixed heading the agent writes in its final message (spec § US1). Exactly
 #: two hashes — a level-2 heading, not a mention, not a level-3 subsection. The
@@ -76,10 +77,20 @@ class QuestionMarker:
     marker — nothing changes from today, acceptance scenario 3); the workflow
     never consults gates or a judge for a question, and for ``False`` it carries
     on as today (FR-010).
+
+    017-US1 adds the address. `addressee` is the peer the body's ``To:`` line
+    names, ``None`` for the addressee-less body 008 taught the workflow — the
+    common case, and the compatibility contract (FR-001). `body` is the text
+    with its header split off; `text` is what it always was, the body verbatim
+    *including* any header, unchanged for every 008 caller (the page the
+    operator reads quotes what the agent wrote, whatever it was addressed).
     """
 
     is_question: bool
     text: str = ""
+    addressee: str | None = None
+    body: str | None = None
+    in_reply_to: str | None = None
 
 
 def detect_operator_question(transcript_path: Path) -> QuestionMarker | None:
@@ -110,7 +121,22 @@ def detect_operator_question(transcript_path: Path) -> QuestionMarker | None:
         # an empty body parks nothing, so the attempt falls through to FAIL the
         # same as a message with no marker at all.
         return None
-    return QuestionMarker(is_question=True, text=body)
+    # 017-US1: the addressee is an optional first line of the body. Parsed here,
+    # in the leaf that already owns "what does this body say", so every caller
+    # — the final-message scan and the ferry read alike — splits it one way.
+    # An addressee-less body parses to `None` and the marker carries the body
+    # unchanged; a header with no body behind it is malformed the same way an
+    # empty body is, and falls through to the existing FAIL.
+    addressed = parse_addressee(body)
+    if addressed is None:
+        return QuestionMarker(is_question=True, text=body, addressee=None, body=body)
+    return QuestionMarker(
+        is_question=True,
+        text=body,
+        addressee=addressed.addressee,
+        body=addressed.body,
+        in_reply_to=addressed.in_reply_to,
+    )
 
 
 # --- the read ----------------------------------------------------------------

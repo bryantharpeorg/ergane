@@ -829,3 +829,32 @@ class QuestionRecord:
     resolution: str | None = None
     answer_text: str | None = None
     resolved_at: str | None = None
+
+
+@dataclass(frozen=True)
+class MessageRecord:
+    """One peer message — a store row before it is ever a delivery (017-US1).
+
+    The sibling of `QuestionRecord` for the peer channel (FR-008). The row is
+    written before the send, the escalation-and-question precedent (R11): a
+    crash in between leaves something the expiry path can close rather than an
+    untracked message. `message_id` is a 12-hex token minted by the sender's
+    workflow, the key every reply threads to (FR-003) — the same shape the
+    questions table keys on.
+
+    `resolution` is ``None`` while the message is outstanding,
+    ``DELIVERED``/`ANSWERED`/`EXPIRED`/`REFUSED` once its lifecycle decides
+    (see `factory/verify/store.py` for the vocabulary and who writes which).
+    """
+
+    message_id: str
+    sender_epic_id: str
+    sender_node_id: str
+    sender_attempt: int
+    addressee: str
+    body: str
+    created_at: str
+    expires_at: str
+    reply: str | None = None
+    resolution: str | None = None
+    resolved_at: str | None = None

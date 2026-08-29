@@ -103,6 +103,7 @@ it (SC-001), and what makes `pause` durable without a line of persistence code
 from __future__ import annotations
 
 import asyncio
+import secrets
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -157,8 +158,16 @@ with workflow.unsafe.imports_passed_through():
         sync_landing_branch,
         validate_target_repo,
     )
-    from factory.activities.notify_activities import QUESTION_TIMEOUT_S
+    from factory.activities.notify_activities import (
+        QUESTION_TIMEOUT_S,
+        RoutePeerMessageInput,
+        route_peer_message_activity,
+    )
     from factory.notify.service import EXTERNAL_COMPLETION_SIGNAL
+    from factory.escalation.message import (
+        MessageRequest,
+        MessageWorkflow,
+    )
     from factory.escalation.question import (
         QuestionRequest,
         QuestionWorkflow,
@@ -250,6 +259,7 @@ with workflow.unsafe.imports_passed_through():
         AttemptEvidence,
         LandingEvidence,
         OperatorAnswer,
+        PeerMessage,
         build_attempt_prompt,
     )
     from factory.workgraph.worktree import DEFAULT_FACTORY_ROOT, PreparedWorktree, branch_name
@@ -330,6 +340,28 @@ _PARKED = NodeState.WAITING_OPERATOR
 _RECOVERY_OUTCOMES = frozenset(
     {QueueOutcome.CHECKS_FAILED, QueueOutcome.CONFLICT}
 )
+
+#: 017-US1 (FR-006): the outstanding-peer-message bound, as a module constant so
+#: the refusal wording and the `EpicInput` default name one number.
+MAX_OUTSTANDING_PEER_MESSAGES = 1
+
+
+def describe_peer_send_refusal(*, outstanding: int, maximum: int) -> str:
+    """The refusal a send beyond the bound gets, spelled to be shown to an agent.
+
+    FR-006 pins the wording to the shape `max_concurrent_nodes must be a
+    positive integer` is spelled in — configuration field, required shape,
+    got — because the refusal reaches the implementer verbatim inside its
+    prompt, and `test_final_sweep.py` (D-021) forbids the enforcement
+    vocabulary in any identifier or non-docstring string literal under
+    `factory/`. The field's own name carries that weight here: it says what it
+    bounds without spelling a word the suite rejects.
+    """
+    return (
+        f"peer send refused: {outstanding} message(s) already unanswered and "
+        f"max_outstanding_peer_messages is {maximum} — resolve or wait for an "
+        f"answer before asking again"
+    )
 
 #: Activities here are idempotent reads, guarded upserts, and sends that mint a
 #: fresh id per call — all safe to retry, none worth retrying for long while the
@@ -556,6 +588,15 @@ class EpicInput:
     #: general cap caps subscription nodes specifically; a higher value is harmless
     #: because the general cap is still enforced first.
     max_concurrent_subscription_nodes: int | None = None
+    #: 017-US1 (FR-006): how many unanswered peer messages one node may have
+    #: outstanding at once. A send beyond the bound is refused *to the asker*,
+    #: the refusal naming this field and its value — the wording
+    #: `max_concurrent_nodes must be a positive integer` is spelled the same
+    #: way (`describe_peer_send_refusal`), because the refusal text reaches the
+    #: implementing agent verbatim inside its prompt. Defaulting to 1 keeps
+    #: SC-004's ping-pong bounded without operator configuration; 0 disables
+    #: peer sends entirely.
+    max_outstanding_peer_messages: int = MAX_OUTSTANDING_PEER_MESSAGES
     #: 053 US3: the revision of the worker code that imported this workflow,
     #: captured once at worker boot and carried in the query answer. `None` when
     #: the worker predates this story or runs from a non-git tree. It is part of
@@ -891,6 +932,19 @@ class EpicWorkflow:
                 type=GRAPH_INVALID,
                 non_retryable=True,
             )
+        # 017-US1 (FR-006): the outstanding-message bound is validated with the
+        # other dispatch dials, the same way the concurrency caps are — the
+        # refuse-and-name-the-field shape FR-006's refusal wording points at.
+        # Zero is legal: a bound of 0 disables peer sends for this epic.
+        if not isinstance(request.max_outstanding_peer_messages, int) or isinstance(
+            request.max_outstanding_peer_messages, bool
+        ) or request.max_outstanding_peer_messages < 0:
+            raise ApplicationError(
+                f"max_outstanding_peer_messages must be a non-negative integer, "
+                f"got {request.max_outstanding_peer_messages!r}",
+                type=GRAPH_INVALID,
+                non_retryable=True,
+            )
         # US3 onboarding gate (FR-010, SC-005): the target repo must conform to
         # the factory's assumptions — public, merge queue enabled on the default
         # branch, required checks matching factory.yaml's gates — before a single
@@ -999,7 +1053,19 @@ class EpicWorkflow:
             for item in self._ready_set(resolved):
                 if self._kill_requested:
                     break
-                if len(in_flight) >= request.max_concurrent_nodes:
+                # 017-US1 (FR-016): a node parked on a peer reply holds no
+                # dispatch slot — it is alive by design, but its wait must not
+                # spend the epic's capacity, or the addressee that would answer
+                # it can never be dispatched. WAITING_OPERATOR is NOT excluded
+                # here: the operator park pauses the epic anyway (the scheduler
+                # never reaches this loop while it waits), and excluding it
+                # would widen 008's pause semantics as a side effect.
+                dispatching = {
+                    node_id
+                    for node_id in in_flight
+                    if self._nodes[node_id].state != NodeState.WAITING_PEER
+                }
+                if len(dispatching) >= request.max_concurrent_nodes:
                     break
                 if item.node.id in in_flight:
                     continue
@@ -1047,8 +1113,15 @@ class EpicWorkflow:
             # activation, so a completion is picked up the moment it lands and a
             # slot frees immediately (FR-001). The predicate is a pure function
             # of task state and the kill/pause flags, so it replays identically.
+            # 017-US1 (FR-016): a node parking WAITING_PEER is not a completion —
+            # its task stays alive — but it *is* a capacity change: the parked
+            # asker holds no dispatch slot, so the scheduler must wake and
+            # recompute the ready set or the addressee that would answer is
+            # never dispatched. Hence the peer-park clause, the same pure read
+            # the completion clause is.
             await workflow.wait_condition(
                 lambda: any(task.done() for task in in_flight.values())
+                or self._peer_parked(in_flight)
                 or self._kill_requested
                 or self._paused
             )
@@ -1323,6 +1396,21 @@ class EpicWorkflow:
         except Exception:
             return {}
 
+    def _peer_parked(self, in_flight: dict[str, "asyncio.Task[None]"]) -> bool:
+        """Whether any in-flight node just parked on a peer reply (017-US1, FR-016).
+
+        A peer park is not a completion — the node's `_run_node` stays alive —
+        but it is a capacity change: the parked asker holds no dispatch slot, so
+        the scheduler must wake and recompute the ready set, or the addressee
+        that would answer is never dispatched and the park dead-waits its window.
+        A pure read of workflow state, the same property the completion clause's
+        `task.done()` has.
+        """
+        return any(
+            self._nodes[node_id].state == NodeState.WAITING_PEER
+            for node_id in in_flight
+        )
+
     def _is_subscription_node(self, persona_name: str) -> bool:
         """Whether a node routed to this persona runs against the operator's subscription.
 
@@ -1512,11 +1600,19 @@ class EpicWorkflow:
         is reaped when its answer (or expiry) ends its `_run_node`. The pause's
         `wait_condition(not self._paused)` is what parks the scheduler while the
         parked node waits.
+
+        017-US1 (FR-016): the same exemption covers WAITING_PEER, for the same
+        reason and a third one. A peer park is alive by design, the scheduler
+        keeps dispatching around it (no pause is ever raised), and the parked
+        asker holds no dispatch slot — so the drain's `len(in_flight) >= cap`
+        arithmetic must not count it, or a parked asker would spend the epic's
+        last slot waiting for a peer the scheduler can no longer dispatch.
         """
         drainable = {
             node_id: task
             for node_id, task in in_flight.items()
-            if self._nodes[node_id].state != NodeState.WAITING_OPERATOR
+            if self._nodes[node_id].state
+            not in (NodeState.WAITING_OPERATOR, NodeState.WAITING_PEER)
             # 079-US3: "in-flight but not done" is the exemption, and a finished
             # task is not that case whatever the record still says. A parked node
             # whose coroutine already raised must be reaped here — waiting on it
@@ -1727,6 +1823,7 @@ class EpicWorkflow:
                 standards=sources.standards,
                 prior_attempts=evidence,
                 operator_answer=record.operator_answer,
+                peer_messages=record.pending_peer_messages,
             )
             # 008-US2: the operator answer is consumed by this one attempt's
             # prompt, then cleared so a *second* question on the same node
@@ -1735,6 +1832,12 @@ class EpicWorkflow:
             # expiry path never sets it, so an expired question's retry gets no
             # answer section (the operator never engaged, FR-004).
             record.operator_answer = None
+            # 017-US1: peer messages render under their own section and are
+            # consumed the same way — one attempt's delivery, then cleared, so
+            # a later message starts clean and an agent cannot read the same
+            # message twice (FR-002). An empty buffer is the common case and
+            # adds nothing to the prompt.
+            record.pending_peer_messages = []
 
             lease = await workflow.execute_activity(
                 issue_attempt_key,
@@ -1840,9 +1943,216 @@ class EpicWorkflow:
                         # (FR-002). The send happens after salvage, so the branch the
                         # operator might be asked about is the one the question names.
                         #
+                        # 017-US1: an addressee-bearing marker routes to the peer
+                        # branch below and never reaches this send; this is the
+                        # addressee-less path, byte-for-byte 008 (FR-001, SC-006).
+                        #
                         # 041-US3: the lifecycle is a `QuestionWorkflow` now — send,
                         # ferry dedup, the 8h window and the signal are all its, and
                         # its row names *it*, so a reply reaches what is waiting.
+                        if marker.addressee:
+                            # --- the peer branch (017-US1) -------------------
+                            # The story's one structural trap lives here: 008's
+                            # park below raises `self._paused` — an epic waiting
+                            # on a sleeping human should idle rather than spend
+                            # — and reusing that path for a peer question
+                            # deadlocks the feature by construction: the node
+                            # that must answer is a node of this same epic, and
+                            # the pause is exactly what stops it from being
+                            # dispatched (FR-016). So a peer park writes **no**
+                            # pause flag: the node parks WAITING_PEER, its
+                            # `_run_node` stays alive parked in a wait_condition
+                            # (the 008 shape), and the scheduler keeps
+                            # dispatching — the addressee in particular, at any
+                            # configured concurrency.
+                            message_id = secrets.token_hex(6)
+                            delivered = await workflow.execute_activity(
+                                route_peer_message_activity,
+                                RoutePeerMessageInput(
+                                    message_id=message_id,
+                                    sender_epic_id=graph.epic_id,
+                                    sender_node_id=node.id,
+                                    sender_attempt=record.attempt,
+                                    addressee=marker.addressee,
+                                    body=marker.body or "",
+                                    configured_outstanding_bound=(
+                                        request.max_outstanding_peer_messages
+                                    ),
+                                    node_states={
+                                        known_id: known.state.value
+                                        for known_id, known in self._nodes.items()
+                                    },
+                                ),
+                                **_FAST,
+                            )
+                            if delivered.deliverable:
+                                # FR-002: the message reaches the target as
+                                # *workflow state* — appended to its
+                                # `pending_peer_messages` here, in the epic's
+                                # own bookkeeping, so the addressee's next
+                                # assembled prompt renders it under the
+                                # dedicated section verbatim. US1 delivers by
+                                # next prompt (the spec's straddle paragraph
+                                # puts the in-flight ferry direction in US2);
+                                # the store row the routing wrote is what makes
+                                # the exchange replay-safe either way.
+                                target_record = self._nodes[marker.addressee]
+                                target_record.pending_peer_messages.append(
+                                    PeerMessage(
+                                        message_id=delivered.message_id,
+                                        sender_epic_id=graph.epic_id,
+                                        sender_node_id=node.id,
+                                        body=marker.body or "",
+                                        reply=None,
+                                    )
+                                )
+                            if not delivered.deliverable:
+                                # FR-004/FR-006: the routing refused the send —
+                                # an unknown addressee, a terminal target, a
+                                # self-address, or the outstanding-message
+                                # bound. The refusal is the asker's, named (the
+                                # cap refusal spells the configuration field
+                                # and its value), and the asker re-enters the
+                                # ladder as a FAIL: a refused send is the
+                                # asker's signal to stop asking, never a hang
+                                # and never a silent drop. The FAIL
+                                # `AttemptRecord` is what consumes the slot —
+                                # the expiry path's exact accounting.
+                                record.history.append(
+                                    AttemptRecord(
+                                        attempt=record.attempt,
+                                        persona=persona,
+                                        verdict=OverallVerdict.FAIL,
+                                        model_alias=routing.model_alias,
+                                    )
+                                )
+                                await self._teardown(
+                                    lease, termination, record.last_snapshot
+                                )
+                                teardown_done = True
+                                continue
+                            delivered_to = await workflow.start_child_workflow(
+                                MessageWorkflow.run,
+                                MessageRequest(
+                                    epic_id=graph.epic_id,
+                                    node_id=node.id,
+                                    attempt=record.attempt,
+                                    message_id=delivered.message_id,
+                                    body=marker.body or "",
+                                    addressee=marker.addressee,
+                                    workflow_id=workflow.info().workflow_id,
+                                    timeout_s=QUESTION_TIMEOUT_S,
+                                ),
+                                id=child_correlation_id(),
+                            )
+                            # The park, and what it deliberately does not raise
+                            # (FR-016): no `self._paused` write, ever, on this
+                            # path. WAITING_PEER is non-terminal and not a dead
+                            # edge — dependents stay PENDING.
+                            record.state = NodeState.WAITING_PEER
+                            record.pending_peer_message_id = delivered.message_id
+                            # Close the attempt key before the long wait: the
+                            # park is non-terminal and may outlive this
+                            # activation, so teardown runs while the event loop
+                            # is present (the operator park's reason,
+                            # constitution V).
+                            await self._teardown(
+                                lease, termination, record.last_snapshot
+                            )
+                            teardown_done = True
+                            # Wait for the child to settle or for an operator's
+                            # kill — the 008 shape, `Task.done()` being a pure
+                            # read so this replays identically.
+                            await workflow.wait_condition(
+                                lambda: delivered_to.done() or self._kill_requested
+                            )
+                            if not delivered_to.done():
+                                # A kill landed while parked: cancel the child
+                                # so its window dies with the park, leave the
+                                # row pending (a stopped epic is neither a reply
+                                # nor a burn), and leave the node parked for the
+                                # post-loop.
+                                delivered_to.cancel()
+                                action = NextAction.KILLED
+                                break
+                            settled = await delivered_to
+                            if not settled.answered:
+                                # The peer never answered; the child expired the
+                                # row. Degrade to the 008 operator question path
+                                # (FR-004): page the operator with the message
+                                # body, park under the *operator* semantics the
+                                # way 008 parks (the pause is right for a human
+                                # at the other end), and let the operator's
+                                # answer or the window end it. Reaching here via
+                                # the loop's `continue` keeps every 008
+                                # accounting rule intact.
+                                question = await workflow.start_child_workflow(
+                                    QuestionWorkflow.run,
+                                    QuestionRequest(
+                                        epic_id=graph.epic_id,
+                                        node_id=node.id,
+                                        attempt=record.attempt,
+                                        question_text=marker.body or "",
+                                        timeout_s=QUESTION_TIMEOUT_S,
+                                    ),
+                                    id=child_correlation_id(),
+                                )
+                                record.pending_peer_message_id = None
+                                record.state = NodeState.WAITING_OPERATOR
+                                record.pending_question_id = question.id
+                                self._paused = True
+                                await self._teardown(
+                                    lease, termination, record.last_snapshot
+                                )
+                                teardown_done = True
+                                await workflow.wait_condition(
+                                    lambda: question.done() or self._kill_requested
+                                )
+                                if not question.done():
+                                    question.cancel()
+                                    action = NextAction.KILLED
+                                    break
+                                answered = await question
+                                if not answered.answered:
+                                    record.history.append(
+                                        AttemptRecord(
+                                            attempt=record.attempt,
+                                            persona=persona,
+                                            verdict=OverallVerdict.FAIL,
+                                            model_alias=routing.model_alias,
+                                        )
+                                    )
+                                else:
+                                    record.operator_answer = OperatorAnswer(
+                                        question_text=marker.body or "",
+                                        answer_text=answered.answer_text,
+                                    )
+                                record.pending_question_id = None
+                                self._paused = False
+                                continue
+                            # The peer replied. Carry the exchange verbatim into
+                            # the next attempt's prompt under a dedicated
+                            # section (FR-003). No `AttemptRecord` is appended:
+                            # the QUESTION attempt broke the loop before the
+                            # history append, so `_attempts_spent` excludes it
+                            # by construction and the reply costs no slot (the
+                            # 008 no-burn rule).
+                            record.pending_peer_messages.append(
+                                PeerMessage(
+                                    message_id=delivered.message_id,
+                                    sender_epic_id=graph.epic_id,
+                                    sender_node_id=node.id,
+                                    body=marker.body or "",
+                                    reply=settled.reply_text,
+                                )
+                            )
+                            # Un-park: no pause was ever raised, so there is
+                            # none to clear — FR-016 is this branch's whole
+                            # point. `continue` re-enters the `while True` loop,
+                            # which increments the attempt and builds a fresh
+                            # prompt carrying the reply.
+                            record.pending_peer_message_id = None
+                            continue
                         question = await workflow.start_child_workflow(
                             QuestionWorkflow.run,
                             QuestionRequest(

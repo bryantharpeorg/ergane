@@ -78,6 +78,7 @@ class NodeState(StrEnum):
     PENDING → KEY_ISSUED → RUNNING → VERIFYING → PASSED → PR_OPEN → ENQUEUED → MERGED
                                               ↘ FAILED
                                               ↘ WAITING_OPERATOR
+                                              ↘ WAITING_PEER
     any non-terminal ───────────────────────────────────────────────→ KILLED
     ```
 
@@ -118,6 +119,19 @@ class NodeState(StrEnum):
     MERGED = "MERGED"
     FAILED = "FAILED"
     KILLED = "KILLED"
+    #: 017-US1 (FR-016): the node is parked on a peer's reply. Deliberately NOT
+    #: `WAITING_OPERATOR`: the operator park raises the scheduler's pause flag —
+    #: an epic waiting on a sleeping human should idle rather than spend — and
+    #: reusing that path here deadlocks the feature by construction, because the
+    #: node that must answer a peer question is a node of this same epic and the
+    #: pause is exactly what stops it from being dispatched. A peer park leaves
+    #: the scheduler dispatching: the asker's `_run_node` task stays alive and
+    #: parked in a `wait_condition` (the 008 shape), but the epic's pause flag is
+    #: never written, the parked node holds no dispatch slot, and `_drain_in_flight`
+    #: leaves it in-flight across dispatch the way it leaves a parked question.
+    #: Non-terminal, and not a dead edge — dependents stay PENDING, and no other
+    #: node's eligibility is touched (FR-016).
+    WAITING_PEER = "WAITING_PEER"
     #: The node is parked on the operator. Two doors reach it: an agent asked a
     #: question and is waiting for the answer (008-US1, FR-001), or an operator
     #: pressed `PAUSE_EPIC` and stopped the epic on this node (079-US4, FR-013).
@@ -342,6 +356,19 @@ class NodeRecord:
     #: the expiry) back to *this* node on un-park. `None` unless the node is
     #: parked, and cleared on re-dispatch.
     pending_question_id: str | None = None
+    #: 017-US1: the peer message this node is parked on while WAITING_PEER —
+    #: set at park time from the started `MessageWorkflow` child's outcome, and
+    #: consumed into the un-park decision the way `pending_question_id` is.
+    #: `None` unless the node is parked on a peer message, and cleared when the
+    #: park ends whichever way it does.
+    pending_peer_message_id: str | None = None
+    #: 017-US1 (FR-002): peer messages routed to this node and not yet consumed
+    #: by an assembled prompt, in arrival order. Buffered incuriously — the same
+    #: discipline the epic's signal handlers apply, because a delivery may land
+    #: in workflow state before the node that will read it has ever been
+    #: dispatched. Consumed by the next attempt's prompt build and cleared in
+    #: the same breath, so a second message starts from a clean prompt.
+    pending_peer_messages: list[PeerMessage] = field(default_factory=list)
     #: 068-US2: the escalation child this node is paged on, set when the child
     #: starts and cleared when it settles or is cancelled; `None` when nobody is
     #: waited on. It is what tells an operator surface that a node in a

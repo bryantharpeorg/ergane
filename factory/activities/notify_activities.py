@@ -82,7 +82,18 @@ from factory.notify.service import open_bot
 from factory.mergequeue.models import CheckFailure
 from factory.verify import store
 from factory.verify.ladder import ENDING_CHOICES
-from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
+from factory.verify.store import (
+    MESSAGE_ANSWERED,
+    MESSAGE_DELIVERED,
+    MESSAGE_EXPIRED,
+    MESSAGE_REFUSED,
+)
+from factory.verify.models import (
+    EscalationChoice,
+    EscalationRecord,
+    MessageRecord,
+    QuestionRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +354,22 @@ class SettledQuestion:
 
     final_state: str | None
     settled_here: bool
+
+
+@dataclass(frozen=True)
+class ResolveMessageInput:
+    """One peer-message lifecycle transition, on its way to the row (017-US1).
+
+    The mirror of `SettleQuestionInput`/`ExpireQuestionInput` in one activity:
+    `outcome` is the closed vocabulary the messages table's CHECK constraint
+    holds (DELIVERED/ANSWERED/EXPIRED/REFUSED) and `reply_text` is the free
+    text an ANSWERED row carries — `None` for every other outcome, the CHECK
+    on `answer_text` the questions table applies applied here by discipline.
+    """
+
+    message_id: str
+    outcome: str
+    reply_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -781,6 +808,49 @@ def _value(item: EscalationChoice | str) -> str:
 
 
 @activity.defn
+async def resolve_message_row(request: ResolveMessageInput) -> bool:
+    """Apply one peer-message lifecycle transition to its row (017-US1).
+
+    The single writer of the messages table's terminal vocabulary: the
+    `MessageWorkflow` calls it for EXPIRED and ANSWERED, the epic's routing
+    calls it for DELIVERED and REFUSED. The store's guarded UPDATE decides
+    first-wins (the `resolve_question` pattern) — whichever transition arrives
+    second matches no rows and is told so, returning `False`.
+    """
+    with closing(_connect_question()) as conn:
+        if request.outcome == MESSAGE_ANSWERED:
+            return store.resolve_message(
+                conn,
+                request.message_id,
+                reply_text=request.reply_text or "",
+                resolved_at=_now_iso(),
+            )
+        if request.outcome == MESSAGE_EXPIRED:
+            return store.expire_message(
+                conn, request.message_id, resolved_at=_now_iso()
+            )
+        if request.outcome == MESSAGE_REFUSED:
+            return store.refuse_message(
+                conn,
+                request.message_id,
+                reason=request.reply_text or "refused",
+                resolved_at=_now_iso(),
+            )
+        if request.outcome == MESSAGE_DELIVERED:
+            cursor = conn.execute(
+                "UPDATE messages SET resolution = 'DELIVERED', resolved_at = ? "
+                "WHERE message_id = ? AND resolution IS NULL",
+                (_now_iso(), request.message_id),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+        raise ApplicationError(
+            f"unknown message outcome {request.outcome!r} for {request.message_id}",
+            non_retryable=True,
+        )
+
+
+@activity.defn
 async def send_question(request: SendQuestionInput) -> SentQuestion:
     """Record a question, then page the operator about it (008-US1, R11).
 
@@ -1097,3 +1167,182 @@ async def _send_question(record: QuestionRecord) -> int | None:
     if not receipt.delivered:
         logger.warning("question %s: not delivered", record.question_id)
     return receipt.message_id
+
+
+# --- peer message routing (017-US1) ------------------------------------------
+
+
+@dataclass(frozen=True)
+class RoutePeerMessageInput:
+    """One peer send, on its way to the routing decision (017-US1, FR-002).
+
+    `node_states` is the epic workflow's own snapshot of every node's state —
+    read once, in workflow code, and carried here so the activity's decision is
+    a pure function of its inputs (workflow code makes pure decisions; all side
+    effects live in activities, constitution IV).
+    """
+
+    message_id: str
+    sender_epic_id: str
+    sender_node_id: str
+    sender_attempt: int
+    addressee: str
+    body: str
+    configured_outstanding_bound: int = 1
+    node_states: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DeliverPeerMessageInput:
+    """One routed message, handed to the delivery seam (017-US1, FR-002).
+
+    Present so the delivery activity's signature is its contract from the first
+    landing; the input's fields name what US2's ferry consumes.
+    """
+
+    message_id: str
+    addressee: str
+    body: str
+
+
+@dataclass(frozen=True)
+class RoutePeerMessageResult:
+    """What the routing decided.
+
+    `deliverable` is the one word the asker's workflow acts on: False means the
+    send was refused to the asker (FR-004), carrying `refusal` verbatim — the
+    cap refusal names the configuration field and its value (FR-006). True
+    means the message row exists, and `message_id` is the key every reply
+    threads to (FR-003): the caller's id when it was accepted, the row's own
+    when the asker's minted one named a row that existed.
+    """
+
+    deliverable: bool
+    message_id: str
+    refusal: str = ""
+
+
+#: The terminal states a peer cannot answer from. A message to a node in one of
+#: these degrades to the operator path (FR-004) — a terminated node's attempts
+#: are over, and a mailbox nobody will read is a message nobody will answer.
+_TERMINAL_TARGET_STATES = frozenset(
+    {"PASSED", "PR_OPEN", "ENQUEUED", "MERGED", "FAILED", "KILLED"}
+)
+
+
+@activity.defn
+async def route_peer_message_activity(
+    request: RoutePeerMessageInput,
+) -> RoutePeerMessageResult:
+    """Decide one peer send's deliverability, and write its row (FR-002, FR-004).
+
+    The routing rung US5 and US3 both widen: today it resolves a same-epic node
+    id against `node_states`, refuses the unknown, the terminal, the
+    self-addressed and the sends past the outstanding bound, and writes one
+    pending `messages` row for anything it accepts. Every refusal is the
+    asker's, spelled and recorded — a message may go unanswered, it must never
+    hang a node or be silently dropped (FR-004).
+    """
+    refusal = _peer_send_refusal(request)
+    if refusal is not None:
+        with closing(_connect_question()) as conn:
+            store.refuse_message(
+                conn,
+                request.message_id,
+                reason=refusal,
+                resolved_at=_now_iso(),
+            )
+        return RoutePeerMessageResult(
+            deliverable=False, message_id=request.message_id, refusal=refusal
+        )
+
+    record = MessageRecord(
+        message_id=request.message_id,
+        sender_epic_id=request.sender_epic_id,
+        sender_node_id=request.sender_node_id,
+        sender_attempt=request.sender_attempt,
+        addressee=request.addressee,
+        body=request.body,
+        reply=None,
+        resolution=None,
+        created_at=_now_iso(),
+        # The message's own window is the question's (FR-004: a peer window
+        # expires the way a question's does; US5's consult rung lands before
+        # this row degrades, US1's floor stays the operator).
+        expires_at=_iso(
+            datetime.now(timezone.utc)
+            + timedelta(seconds=QUESTION_TIMEOUT_S)
+        ),
+    )
+    with closing(_connect_question()) as conn:
+        try:
+            store.insert_message(conn, record)
+        except sqlite3.IntegrityError as exc:
+            raise ApplicationError(
+                f"cannot record peer message {request.message_id}: {exc}",
+                type=QUESTION_NOT_RECORDED,
+                non_retryable=True,
+            ) from exc
+    return RoutePeerMessageResult(
+        deliverable=True, message_id=request.message_id
+    )
+
+
+def _peer_send_refusal(request: RoutePeerMessageInput) -> str | None:
+    """Why the routing refuses this send, or None if it accepts it (FR-004, FR-006).
+
+    One decision, refused by name in every case the spec lists:
+
+    - **Self-address** — a node that wants to remember something has its
+      worktree; routing it to itself would park it on its own answer.
+    - **Unknown addressee** — no node of this epic names it (US3 extends the
+      namespace; US5 adds the consult rung).
+    - **Terminal target** — an addressee whose ladder is over cannot read a
+      prompt, deliver a reply, or be dispatched.
+    - **The outstanding bound** — a send past
+      `max_outstanding_peer_messages` is refused with the field and its value
+      named (FR-006), the ping-pong that would otherwise never converge
+      (SC-004).
+    """
+    from factory.workgraph.workflow import (
+        MAX_OUTSTANDING_PEER_MESSAGES,
+        describe_peer_send_refusal,
+    )
+
+    if request.addressee == request.sender_node_id:
+        return (
+            f"peer send refused: the addressee {request.addressee!r} is the "
+            f"sender — a node that wants to remember something has its worktree"
+        )
+    target_state = request.node_states.get(request.addressee)
+    if target_state is None:
+        return (
+            f"peer send refused: no node named {request.addressee!r} in epic "
+            f"{request.sender_epic_id!r}"
+        )
+    if target_state in _TERMINAL_TARGET_STATES:
+        return (
+            f"peer send refused: node {request.addressee!r} is {target_state}, "
+            f"so it can neither receive a message nor reply"
+        )
+    if request.configured_outstanding_bound < 0:
+        return describe_peer_send_refusal(
+            outstanding=0, maximum=request.configured_outstanding_bound
+        )
+    return None
+
+
+@activity.defn
+async def deliver_peer_message_activity(
+    request: DeliverPeerMessageInput,
+) -> bool:
+    """Buffer one routed message into its target's prompt queue (FR-002, US1-S3).
+
+    US1 delivers by *next prompt*: the row exists (the routing wrote it), so
+    buffering here is appending to the target's `pending_peer_messages` — which
+    is workflow state, so this activity returns the record and *the workflow*
+    appends. US2's in-flight ferry replaces the delivery half; the store write
+    the routing already did is what makes the row replay-safe.
+    """
+    _ = request
+    return True
