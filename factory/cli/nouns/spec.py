@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -19,16 +20,19 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
+import factory.doctor.cli as _doctor_cli
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
 from factory.cli.nouns import Noun
 from factory.config import ConfigError, Persona, WriteScope, load_personas
 from factory.doctor.scaffold import scaffold_spec
+from factory.doctor.store import connect_readonly, get_finding
+from factory.doctor.triage import _declaration
 from factory.roadmap.cli import (
     _OperatorError as RoadmapOperatorError,
     _render_roadmap,
     render_command,
 )
-from factory.roadmap.models import RoadmapError, SpecState, compute_readiness, read_roadmap
+from factory.roadmap.models import RoadmapError, SpecState, _split_frontmatter, compute_readiness, read_roadmap
 from factory.verify.criteria import parse_spec
 from factory.verify.models import RequirementKind
 from factory.workgraph.cli import (
@@ -46,7 +50,7 @@ from factory.workgraph.derive import DerivationError, derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkGraphError, WorkNode, validate_workgraph
 from factory.workgraph.preflight import check_prompt_assembly, check_slice_coverage
 from factory.workgraph.prompt import TASKS_DOCUMENT, task_slice_bounds
-from factory.workgraph.worktree import landing_branch
+from factory.workgraph.worktree import landing_branch, resolve_factory_root
 
 #: The id grammar the criteria parser mints for acceptance scenarios.
 _SCENARIO_ID_RE = re.compile(r"US\d+-S\d+")
@@ -482,11 +486,21 @@ def _validate_command(args: argparse.Namespace) -> int:
     # confirms or acts on, not a refusal, so they ride a separate list and the
     # exit code below reads `findings` alone.
     information: list[_ValidateFinding] = []
+    checked = [
+        "frontmatter",
+        "workgraph_derivation",
+        "persona_registry",
+        "scenario_coverage",
+    ]
+    skipped: list[dict[str, str]] = []
 
     # 1. Frontmatter grammar against the spec's own corpus.
     _check_frontmatter(spec_dir, epic_id, findings)
 
-    # 2. Work-graph derivation.
+    # 2. `fixes:` declarations, if any, against the findings ledger.
+    _check_fixes(spec_dir, findings, information, skipped, checked)
+
+    # 3. Work-graph derivation.
     #
     # Derived against `tasks.md` when there is one (069-US2): an overlap whose
     # only ordering would close a cycle is a refusal an author must meet here
@@ -505,7 +519,7 @@ def _validate_command(args: argparse.Namespace) -> int:
     except DerivationError as error:
         findings.append(_ValidateFinding("workgraph", str(error)))
 
-    # 3. Structural work-graph validation and persona-registry check.
+    # 4. Structural work-graph validation and persona-registry check.
     if graph is not None:
         _check_workgraph(graph, findings)
         _check_personas(graph, findings)
@@ -515,18 +529,10 @@ def _validate_command(args: argparse.Namespace) -> int:
         # failure no matter why the graph did not compile (FR-007).
         _check_personas(_candidate_graph(spec_text, epic_id), findings)
 
-    # 4. Scenario coverage across spec.md and tasks.md.
+    # 5. Scenario coverage across spec.md and tasks.md.
     _check_scenario_coverage(spec_dir, spec_text, findings)
 
-    checked = [
-        "frontmatter",
-        "workgraph_derivation",
-        "persona_registry",
-        "scenario_coverage",
-    ]
-    skipped: list[dict[str, str]] = []
-
-    # 5. Every node's attempt prompt, assembled offline (044 FR-001).
+    # 6. Every node's attempt prompt, assembled offline (044 FR-001).
     #
     # The layer that would have caught the 2026-08-15 kill: a `tasks.md` whose
     # phase headings name no story leaves every node without a task slice, and
@@ -642,6 +648,7 @@ def _validate_command(args: argparse.Namespace) -> int:
     if args.as_json:
         print(json.dumps(report, indent=2))
     else:
+        all_pass_phrases = _all_pass_phrases(checked)
         if findings:
             for finding in findings:
                 if finding.severity == "advisory":
@@ -654,15 +661,11 @@ def _validate_command(args: argparse.Namespace) -> int:
                 )
             if has_advisory and not has_refusal:
                 print(
-                    f"{spec_path}: frontmatter, work-graph derivation, persona registry, "
-                    "scenario coverage, prompt assembly and slice coverage all pass; "
+                    f"{spec_path}: {', '.join(all_pass_phrases)} all pass; "
                     "see advisory above"
                 )
         else:
-            print(
-                f"{spec_path}: frontmatter, work-graph derivation, persona registry, "
-                "scenario coverage, prompt assembly and slice coverage all pass"
-            )
+            print(f"{spec_path}: {', '.join(all_pass_phrases)} all pass")
         # Deliberately not the finding prefix, on either line below: a layer that
         # did not run is not a refusal, and neither is a fact the author is
         # merely told. A reader counting refusals must not count them.
@@ -690,6 +693,24 @@ def _validate_command(args: argparse.Namespace) -> int:
     return EXIT_USER if has_refusal else EXIT_OK
 
 
+def _all_pass_phrases(checked: list[str]) -> list[str]:
+    """The ordered phrases in the all-pass sentence.
+
+    `fixes` is inserted only when the layer actually ran, so a spec that omits
+    the key prints the same sentence as before this story.
+    """
+    phrases = [
+        "frontmatter",
+        "work-graph derivation",
+        "persona registry",
+        "scenario coverage",
+        "prompt assembly and slice coverage",
+    ]
+    if "fixes" in checked:
+        phrases.insert(1, "fixes")
+    return phrases
+
+
 def _tasks_text(spec_dir: Path) -> str | None:
     """The epic's `tasks.md`, or None when there is none to read (069-US2).
 
@@ -714,6 +735,79 @@ def _check_frontmatter(spec_dir: Path, epic_id: str, findings: list[_ValidateFin
                 findings.append(_ValidateFinding("frontmatter", str(finding)))
     except OSError as error:
         findings.append(_ValidateFinding("frontmatter", f"cannot read specs root {specs_root}: {error}"))
+
+
+def _check_fixes(
+    spec_dir: Path,
+    findings: list[_ValidateFinding],
+    information: list[_ValidateFinding],
+    skipped: list[dict[str, str]],
+    checked: list[str],
+) -> None:
+    """Verify every `fixes:` key names a row in the findings ledger.
+
+    A spec that omits the key takes no new code path.  An absent ledger is
+    reported as `not checked` rather than a refusal, because a freshly
+    initialised target repo has no store by construction.  The store is opened
+    read-only and only when it already exists, so validate cannot create it.
+    """
+    spec_path = spec_dir / SPEC_NAME
+    try:
+        spec_text = spec_path.read_text(encoding="utf-8")
+    except OSError:
+        # The frontmatter layer already reports a missing spec.md; do not double-report.
+        return
+
+    block_text, _body = _split_frontmatter(spec_text)
+    _state, fixes = _declaration(block_text)
+    if not fixes:
+        return
+
+    root, _choice, _source = resolve_factory_root()
+    store_path = _doctor_cli._resolve_store_path(root)
+
+    if not store_path.exists():
+        skipped.append(
+            {
+                "layer": "fixes",
+                "reason": f"no findings store at {store_path}",
+            }
+        )
+        return
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = connect_readonly(store_path)
+    except sqlite3.Error as exc:
+        skipped.append(
+            {
+                "layer": "fixes",
+                "reason": f"cannot read findings store at {store_path}: {exc}",
+            }
+        )
+        return
+
+    try:
+        missing = [key for key in fixes if get_finding(conn, key) is None]
+        if missing:
+            findings.append(
+                _ValidateFinding(
+                    "fixes",
+                    f"spec declares unknown finding key(s): {', '.join(missing)} "
+                    f"(store: {store_path})",
+                )
+            )
+        else:
+            information.append(
+                _ValidateFinding(
+                    "fixes",
+                    f"verified {len(fixes)} finding key(s) against {store_path}",
+                )
+            )
+    finally:
+        conn.close()
+
+    checked.append("fixes")
 
 
 def _check_workgraph(graph: WorkGraph, findings: list[_ValidateFinding]) -> None:
