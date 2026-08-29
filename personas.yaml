@@ -65,25 +65,56 @@ architect:
   timeout: 7200
 
 implementer:
+  # SWAPPED TO THE SUBSCRIPTION OPUS ROUTE 2026-08-29 ~12:30 AM CT (Bryan),
+  # for the defect sprint that dispatches specs 089-120. The instruction was
+  # "run everything as opus closer", and this is the only place that can express
+  # it: `derive.py` hardcodes `persona=IMPLEMENTER` and *refuses* a `persona:`
+  # key in a spec's `## Work Graph`, and neither `build start` nor
+  # `roadmap start` has a builder-persona dial — only `--promotion-persona`.
+  # So "everything" means this entry and `debugger` below.
+  #
+  # THE LINEAGE DOCTRINE SURVIVES THE SWAP. The rule this file has carried since
+  # 2026-08-07 is that the judge may not review its own family's output (U3).
+  # Anthropic now authors and Zhipu still judges, so the constraint holds — it
+  # was kimi/glm, it is now opus/glm.
+  #
+  # WHAT THE PREVIOUS WIRING WAS, so reverting is one edit: kimi was chosen
+  # 2026-08-07 ~22:45 CT to extend the homelab's ADR-0016 lineage doctrine —
+  # `model: ollama-cloud/kimi-k2.7-code`, `fallback: local/qwen3.6-27b`,
+  # `context_window: 262144` (256K per the ollama.com model card,
+  # operator-confirmed 2026-08-11; without it the CLI assumes 200k for the
+  # unrecognised alias and 62,144 tokens — 23.7% — of every attempt's window are
+  # unreachable, measured on 032/us1 via Langfuse).
+  #
+  # HELD, NOT ABANDONED — 2026-08-29 00:45 CT. The swap below was applied and
+  # then reverted within the hour, because it reddens trunk and therefore makes
+  # the very sprint it was for undispatchable. Two tests assume the default
+  # builder persona routes through the gateway:
+  #   tests/test_us2_shipped_registry.py:344  asserts a "/" in implementer.model
+  #   tests/test_usage_activities.py:819-834  leases a virtual key for it
+  # A subscription persona has neither a slash-shaped alias nor a minted key, so
+  # both fail, the gate command fails with them, and no node of any epic can
+  # land. Filed as `ci/test-suite-pins-the-operator-dial` — the THIRD recurrence
+  # of a defect 037 already un-pinned once for `context_window`.
+  #
+  # TO APPLY THE SWAP once that finding is fixed, replace the four keys below
+  # with:
+  #   agent: subscription
+  #   model: claude-opus-5
+  #   fallback: null
+  #   context_window: 1000000
+  # and note the cost: the fallback goes away. See the `opus-closer` entry for
+  # why a `ollama-cloud/*` fallback cannot be kept on a subscription persona —
+  # it holds no gateway key, so such a fallback validates cleanly and then fails
+  # at runtime with nothing to authenticate against. A session that cannot
+  # refresh therefore has no second route, which is what spec 095 makes legible.
   agent: claude-code
-  # Swapped to kimi 2026-08-07 ~22:45 CT (Bryan): extends the homelab's
-  # ADR-0016 lineage doctrine to the factory — kimi (Moonshot) authors,
-  # glm (Zhipu) judges. The interim glm implementer (07:20 UTC swap after
-  # deepseek's emission shape hit the LiteLLM nil-content bug; went 9-for-9
-  # across 007/009/008) had the judge reviewing its own family's output,
-  # which U3 forbids. Alias carries Moonshot-list synthetic pricing.
   model: ollama-cloud/kimi-k2.7-code
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
-  # 256K per the ollama.com model card, operator-confirmed 2026-08-11. Without
-  # this the CLI assumes 200k for the unrecognized alias and 62,144 tokens
-  # (23.7%) of every attempt's window are unreachable — measured on 032/us1 via
-  # Langfuse. Set 2026-08-13 the moment 037 landed (60a6b22) — the first
-  # attempt at setting it (2026-08-13 03:00Z) reddened trunk because a test
-  # pinned this dial to None; 037 un-pinned it (ci/test-suite-pins-the-operator-dial).
   context_window: 262144
 
 verifier:
@@ -97,7 +128,15 @@ verifier:
 
 judge:
   agent: claude-code
-  model: ollama-cloud/glm-5.2
+  # Moved 5.2 -> 5.3 on 2026-08-29 at Bryan's instruction. THE ALIAS IS NOT
+  # `ollama-cloud/glm-5.3`: the gateway does not serve that name. Probed against
+  # the live proxy on 2026-08-29 — the only 5.3 it serves is
+  # `ollama-cloud/glm-5.3-flash`, and a real chat completion against it returned
+  # `content='ready'` with `finish_reason=stop`, so this is a verified route and
+  # not a listing entry. Re-probe before changing it again; external model
+  # catalogs churn, and a judge pointed at an unserved alias fails every call
+  # while looking like a broken gateway.
+  model: ollama-cloud/glm-5.3-flash
   fallback: local/qwen3.6-27b
   skills: [code-review]
   write_scope: read
@@ -156,6 +195,15 @@ closer:
   context_window: 1000000
 
 debugger:
+  # Swapped with `implementer` on 2026-08-29 for the defect sprint (Bryan,
+  # "run everything as opus closer"). The debugger is the ladder's second rung —
+  # `ladder.next_action` knows it by name — so leaving it on deepseek would mean
+  # "everything" was true for three attempts and false for the three after,
+  # which is the shadowing this sprint's spec 095 is about elsewhere.
+  #
+  # HELD with `implementer` above, and for the same reason — see that entry.
+  # TO APPLY: `agent: subscription`, `model: claude-opus-5`, `fallback: null`,
+  # `context_window: 1000000`.
   agent: claude-code
   model: ollama-cloud/deepseek-v4-flash
   fallback: local/qwen3.6-27b

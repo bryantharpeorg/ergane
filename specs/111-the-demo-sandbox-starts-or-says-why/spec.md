@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 # DRAFTED 2026-08-27 by the operator session, against ergane-buildout at 3e5c940
 # (0.5.0 released, 110 landed and attested). Every file:line below was read from
 # that commit and verified against the tree before drafting.
