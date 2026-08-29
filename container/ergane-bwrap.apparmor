@@ -1,0 +1,14 @@
+# AppArmor profile for /usr/bin/bwrap used by Ergane's default runtime.
+#
+# This profile grants bwrap the ability to create unprivileged user namespaces
+# despite kernel.apparmor_restrict_unprivileged_userns=1. It is not shipped by
+# any OS package; it is a deliberate host-side act by the operator, loaded
+# once from this repository.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}

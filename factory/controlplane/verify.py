@@ -246,8 +246,11 @@ def _telegram_bot_factory(config: ControlPlaneConfig.Escalation, *, timeout_s: i
 HostSeam = Callable[[], dict[str, Any]]
 
 
-#: Pinned system path for the bwrap binary. Only `/usr/bin/bwrap` carries the
-#: AppArmor grant the adapter relies on (`factory/workgraph/adapter.py:285-288`).
+#: Pinned system path for the bwrap binary. The pin is required because
+#: AppArmor attaches a profile by executable path on exec, so only a binary at
+#: this path carries the host's grant. The grant comes from the profile this
+#: repository ships at container/ergane-bwrap.apparmor, which no OS package
+#: installs; loading it is the operator's deliberate act.
 _BWRAP_PINNED_PATH = Path("/usr/bin/bwrap")
 
 #: Literal argv strings for the GitHub CLI probe. The binary name is split
