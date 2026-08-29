@@ -134,6 +134,7 @@ from factory.activities.agent_activities import (
     ReadWorktreeDiffInput,
     RemoveWorktreeInput,
     ResolvePersonaInput,
+    ResolveStandardsInput,
     SalvageWorktreeInput,
 )
 from factory.activities.merge_activities import (
@@ -219,6 +220,8 @@ from factory.workgraph.models import (
     NodeState,
     ResolvedNode,
     ResolvedPersona,
+    STANDARDS_SOURCE_LANDING,
+    StandardsResolution,
     WorkGraph,
     WorkGraphError,
     WorkNode,
@@ -955,6 +958,7 @@ class ScriptedWorld:
         self.graphs: list[WorkGraph] = []
         self.persona_requests: list[ResolvePersonaInput] = []
         self.prompt_source_requests: list[LoadPromptSourcesInput] = []
+        self.standards_requests: list[ResolveStandardsInput] = []
         self.criteria_requests: list[SnapshotCriteriaInput] = []
         self.prepare_requests: list[PrepareWorktreeInput] = []
         self.key_requests: list[IssueKeyInput] = []
@@ -1282,6 +1286,18 @@ class ScriptedWorld:
                 plan_text=PLAN_TEXT,
                 tasks_text=TASKS_TEXT,
                 standards=STANDARDS_PATH,
+            )
+
+        @activity.defn(name="resolve_standards")
+        async def resolve_standards(request: ResolveStandardsInput) -> StandardsResolution:
+            # 118 US3: the scripted world resolves to the landing arm — the
+            # fake has no repository behind it, and the prompt-shape assertions
+            # downstream read the section this feeds.
+            script._log("resolve_standards", request.node_id)
+            script.standards_requests.append(request)
+            return StandardsResolution(
+                text=f"scripted standards for {STANDARDS_PATH}",
+                source=STANDARDS_SOURCE_LANDING,
             )
 
         @activity.defn(name="snapshot_criteria")
@@ -1746,6 +1762,7 @@ class ScriptedWorld:
             resolve_graph,
             resolve_persona,
             load_prompt_sources,
+            resolve_standards,
             snapshot_criteria,
             prepare_worktree,
             issue_attempt_key,
@@ -2014,6 +2031,10 @@ async def test_one_nodes_lifecycle_composes_the_verification_contract(
     assert script.sequence("us1") == [
         "snapshot_criteria",
         "prepare_worktree",
+        # 118 US3: the attempt's standards are resolved before anything is
+        # issued — a prompt assembled before the key exists is one no retry
+        # can be charged for.
+        "resolve_standards",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
         "detect_operator_question_activity",
@@ -2632,8 +2653,10 @@ async def test_every_attempt_is_bracketed_by_a_key_and_recorded_before_acting(
                 segments.append([])
             segments[-1].append(name)
 
-        # Everything before the first key is per-node setup, never an attempt.
-        assert segments[0] == ["snapshot_criteria", "prepare_worktree"]
+        # Everything before the first key is per-node setup, never an attempt
+        # — and since 118 US3 that setup includes the attempt's standards
+        # resolution, which runs before anything is issued.
+        assert segments[0] == ["snapshot_criteria", "prepare_worktree", "resolve_standards"]
         for segment in segments[1:]:
             assert segment[0].startswith("issue_attempt_key")
             assert "record_verification" in segment
@@ -3094,6 +3117,7 @@ async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
         assert script.sequence("us1") == [
             "snapshot_criteria",
             "prepare_worktree",
+            "resolve_standards",
             "issue_attempt_key:implementer",
             "run_agent_attempt",
             "detect_operator_question_activity",
@@ -3283,9 +3307,10 @@ async def test_kill_cancels_the_attempt_salvages_and_kills_every_node(
     assert script.sequence("us3") == []
 
     sequence = script.sequence("us1")
-    assert sequence[:4] == [
+    assert sequence[:5] == [
         "snapshot_criteria",
         "prepare_worktree",
+        "resolve_standards",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
     ]
@@ -4069,6 +4094,7 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
     assert script.sequence("us1") == [
         "snapshot_criteria",
         "prepare_worktree",
+        "resolve_standards",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
         "detect_operator_question_activity",
@@ -4481,6 +4507,8 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
     assert script.sequence("us1") == [
         "snapshot_criteria",
         "prepare_worktree",
+        # 118 US3: both attempts resolve their standards — the recovery's too.
+        "resolve_standards",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
         "detect_operator_question_activity",
@@ -4495,6 +4523,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "poll_landing",
         "sync_landing_branch",
         "fetch_check_failure",
+        "resolve_standards",
         "issue_attempt_key:implementer",
         "run_agent_attempt",
         "run_gates",
@@ -5456,9 +5485,10 @@ async def test_pause_with_n_in_flight_starts_nothing_new_and_lets_all_finish(
         # salvaged, landed — not one of them parked halfway.
         for node_id in ("us1", "us2", "us3"):
             sequence = script.sequence(node_id)
-            assert sequence[:4] == [
+            assert sequence[:5] == [
                 "snapshot_criteria",
                 "prepare_worktree",
+                "resolve_standards",
                 "issue_attempt_key:implementer",
                 "run_agent_attempt",
             ], f"{node_id} did not run its full pre-landing ladder"

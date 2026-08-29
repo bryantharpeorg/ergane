@@ -295,6 +295,12 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.activities.agent_activities.LoadPromptSourcesInput": (
         "specs_root", "feature", "target_repo"
     ),
+    # 118 US3: kind 1 (coordinates — the trees the resolution reads, and the
+    # node whose attempt it belongs to) and kind 2 (the declared path; defaulting
+    # it would convert "the repo declares none" into "the payload did not say").
+    "factory.activities.agent_activities.ResolveStandardsInput": (
+        "epic_id", "node_id", "target_repo", "worktree_path", "standards"
+    ),
     "factory.activities.agent_activities.PrepareWorktreeInput": (
         "epic_id", "node_id", "target_repo"
     ),
@@ -535,6 +541,10 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
         "node", "model_alias", "models", "write_scope", "timeout_s"
     ),
     "factory.workgraph.models.ResolvedPersona": ("persona", "model_alias", "models",),
+    # 118 US3: kind 2 — the resolved text and which arm produced it. An empty
+    # default text would read as "the repo declares no standards", which is a
+    # different fact from "this attempt's standards could not be resolved".
+    "factory.workgraph.models.StandardsResolution": ("text", "source",),
     "factory.workgraph.models.WorkGraph": (
         "epic_id", "feature", "specs_root", "target_repo", "nodes"
     ),

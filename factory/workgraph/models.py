@@ -68,6 +68,33 @@ class WorkGraphError(ValueError):
     """A graph that must not dispatch (FR-002)."""
 
 
+#: `StandardsResolution.source` when the landing branch answered — the updated
+#: text, which is the whole point of resolving per attempt (118 US3-S1).
+STANDARDS_SOURCE_LANDING = "landing-branch"
+
+#: `StandardsResolution.source` when the landing branch could not be read and
+#: the pinned tree's copy answered instead (118 FR-008's fallback, trap 7).
+STANDARDS_SOURCE_PINNED = "pinned-tree"
+
+
+@dataclass(frozen=True)
+class StandardsResolution:
+    """One attempt's standards text, and where it was read from (118 FR-008).
+
+    Resolved per attempt by the activity that reads the target repository, and
+    carried into prompt assembly as already-read data so the builder stays pure
+    (trap 6). `source` is one of the two constants above; `detail` is the reason
+    a fallback fired — empty when the landing branch answered, the failure's own
+    wording when the pinned copy was used, and quoted into the prompt so the
+    archived record says not only *what* an attempt was told but *why it was
+    told that version* (trap 8).
+    """
+
+    text: str
+    source: str
+    detail: str = ""
+
+
 # State machines (data-model.md § NodeState, § EpicState) ---------------------
 
 

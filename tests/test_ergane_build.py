@@ -110,6 +110,7 @@ from factory.workgraph.models import (
     AttemptContext,
     ResolvedNode,
     ResolvedPersona,
+    StandardsResolution,
     WorkGraph,
     validate_workgraph,
 )
@@ -401,6 +402,12 @@ class ScriptedEpic:
                 standards=None,
             )
 
+        @activity.defn(name="resolve_standards")
+        async def resolve_standards(request: Any) -> StandardsResolution:
+            # 118 US3: this world's fixture repo declares no standards, so the
+            # resolution is None — the shape the control scenario (US3-S4) pins.
+            return None
+
         @activity.defn(name="snapshot_criteria")
         async def snapshot_criteria(request: SnapshotCriteriaInput) -> CriteriaSet:
             return criteria_for(request.spec_ref)
@@ -548,6 +555,7 @@ class ScriptedEpic:
             resolve_graph,
             resolve_persona,
             load_prompt_sources,
+            resolve_standards,
             snapshot_criteria,
             prepare_worktree,
             issue_attempt_key,

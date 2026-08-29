@@ -55,7 +55,12 @@ from factory.verify.models import (
     OutputCheck,
     VerificationResult,
 )
-from factory.workgraph.models import WorkNode
+from factory.workgraph.models import (
+    STANDARDS_SOURCE_LANDING,
+    STANDARDS_SOURCE_PINNED,
+    StandardsResolution,
+    WorkNode,
+)
 from factory.workgraph.worktree import branch_name
 
 
@@ -225,6 +230,29 @@ Read `{standards}` in this worktree before you write code, and obey it.
 It is the target repository's standing instruction to every node that touches
 it."""
 
+#: 118 FR-009: appended when the attempt's standards were resolved from the
+#: landing branch. The resolved document travels with the prompt — the worktree's
+#: copy is pinned at first dispatch and may predate a correction the operator
+#: landed mid-epic, so the copy the agent can act on is the one in the prompt.
+#: The worktree read stays first because the file is the canonical location;
+#: the quote is what makes the record auditable (trap 8) and what carries a
+#: correction a pinned tree cannot.
+_STANDARDS_LANDED_NOTE = (
+    "\n\nStandards source: `landing-branch` — resolved from the landing branch "
+    "at this attempt's preparation, so the text quoted below is the version now "
+    "in force. If it differs from the worktree's copy, obey this one:"
+)
+
+#: 118 FR-009, fallback arm: appended when the landing branch could not be read
+#: and the pinned tree's copy was used. The reason travels verbatim — the next
+#: person debugging a stale-guidance failure is exactly where this spec's
+#: author was (trap 8).
+_STANDARDS_PINNED_NOTE = (
+    "\n\nStandards source: `pinned-tree` — the landing branch's copy could not "
+    "be read ({detail}), so this attempt was given the pinned tree's copy, "
+    "quoted below:"
+)
+
 _STORY_PREAMBLE = (
     "The story you implement and the functional requirements it is verified\n"
     "against, exactly as the specification declares them:"
@@ -374,6 +402,36 @@ _STORY_KEY_RE = re.compile(r"^US(\d+)$")
 
 _FR_KEY_RE = re.compile(r"^FR-\d+$")
 
+
+def _standards_source_section(
+    node: WorkNode, resolution: StandardsResolution
+) -> str:
+    """The source record, and the text itself (118 FR-008/FR-009).
+
+    One paragraph naming the arm the resolution travelled by — the archived
+    prompt is the record of what an attempt was actually told, and this is
+    what makes the standards half of it auditable (trap 8). On either arm the
+    resolved document is quoted verbatim beneath the note: on the landing
+    branch it is the correction a pinned tree cannot hold, on the fallback it
+    is what was actually read, and the quote of a pinned copy is the same bytes
+    the agent finds on disk either way.
+
+    Rendering off the record's own `source` keeps the two arms exhaustive: an
+    unknown source is refused rather than silently dropped.
+    """
+    if resolution.source == STANDARDS_SOURCE_LANDING:
+        return _STANDARDS_LANDED_NOTE + f"\n\n{_quote(resolution.text)}"
+    if resolution.source == STANDARDS_SOURCE_PINNED:
+        return _STANDARDS_PINNED_NOTE.format(detail=resolution.detail) + (
+            f"\n\n{_quote(resolution.text)}"
+        )
+    raise PromptAssemblyError(
+        f"node '{node.id}': standards resolution names unknown source "
+        f"{resolution.source!r}",
+        document=SPEC_DOCUMENT,
+    )
+
+
 #: Any run of backticks, so a quoted gate tail can be fenced by something longer
 #: than anything inside it — the tail travels verbatim or not at all.
 _BACKTICKS_RE = re.compile(r"`+")
@@ -387,6 +445,7 @@ def build_attempt_prompt(
     plan_text: str,
     tasks_text: str,
     standards: str | None = None,
+    standards_resolution: StandardsResolution | None = None,
     prior_attempts: Sequence[AttemptEvidence] = (),
     landing_evidence: LandingEvidence | None = None,
     operator_answer: OperatorAnswer | None = None,
@@ -395,8 +454,18 @@ def build_attempt_prompt(
 
     Pure: the four texts, the optional standards *path* (not the document — the
     agent reads that in its own worktree, where `prepare_worktree` has already
-    confirmed it exists), and the prior attempts already in workflow state are
-    the whole input. Same inputs, same bytes.
+    confirmed it exists), the optional standards *resolution* the dispatch path
+    resolved before calling (118 US3: which copy the agent is being pointed at,
+    and where it came from, already read — never fetched here), and the prior
+    attempts already in workflow state are the whole input. Same inputs, same
+    bytes.
+
+    `standards_resolution` names the source the standards text came from
+    (FR-009): the section notes `landing-branch` or `pinned-tree` — with the
+    fallback's own reason quoted — so the archived prompt is an auditable
+    record of what an attempt was told and why that version. A None resolution
+    assembles the standards section exactly as it stood before 118, unchanged
+    byte for byte.
 
     `landing_evidence` is the US2 recovery input: a queue rejection quoted into
     the attempt's prompt so the re-driven node is shown the outcome, the queue
@@ -414,6 +483,13 @@ def build_attempt_prompt(
     node's `requirement_keys`, or when `tasks.md` has no phase naming the node's
     story — the dispatch fails there, before a key is issued.
     """
+    if standards_resolution is not None and not standards:
+        raise PromptAssemblyError(
+            f"node '{node.id}': a standards resolution arrived but the repo "
+            "declares no standards path; the resolution has nothing to attach to",
+            document=SPEC_DOCUMENT,
+        )
+
     sections = _requirement_sections(node, spec_text)
     slice_text = _task_slice(node, tasks_text)
 
@@ -430,6 +506,8 @@ def build_attempt_prompt(
     ]
     if standards:
         parts.append(_STANDARDS.format(standards=standards))
+        if standards_resolution is not None:
+            parts.append(_standards_source_section(node, standards_resolution))
     parts.append("\n\n".join([_STORY_HEADING, _STORY_PREAMBLE, *sections]))
     parts.append("\n\n".join([_PLAN_HEADING, _PLAN_PREAMBLE, plan_text.strip()]))
     parts.append("\n\n".join([_SLICE_HEADING, _SLICE_PREAMBLE, slice_text]))

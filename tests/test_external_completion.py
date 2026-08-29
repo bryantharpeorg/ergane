@@ -296,6 +296,12 @@ class ConfigurableScript:
                 tasks_text=TASKS_TEXT, standards=None,
             )
 
+        @activity.defn(name="resolve_standards")
+        async def resolve_standards(request: Any) -> None:
+            # 118 US3: this world's fixture repo declares no standards, so the
+            # resolution is None — the control shape.
+            return None
+
         @activity.defn(name="snapshot_criteria")
         async def snapshot_criteria(request: SnapshotCriteriaInput) -> CriteriaSet:
             return _criteria_for(request.spec_ref)
@@ -430,8 +436,8 @@ class ConfigurableScript:
 
         return [
             validate_target_repo, resolve_graph, resolve_persona, load_prompt_sources,
-            snapshot_criteria, prepare_worktree, issue_attempt_key, run_agent_attempt,
-            poll_usage, run_gates, check_output, record_verification,
+            resolve_standards, snapshot_criteria, prepare_worktree, issue_attempt_key,
+            run_agent_attempt, poll_usage, run_gates, check_output, record_verification,
             record_external_completion, teardown_attempt, salvage_worktree,
             remove_worktree, prepare_landing_pr, open_landing_pr, enqueue_landing,
             poll_landing, disable_auto_merge, detect_operator_question_activity,
