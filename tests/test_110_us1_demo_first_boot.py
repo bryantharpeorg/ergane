@@ -344,6 +344,13 @@ async def test_the_real_spawn_is_a_plain_module_subprocess(
 # -----------------------------------------------------------------------------
 
 
+def _passing_preflight() -> "Finding":
+    """A preflight finding that lets the prepare phase continue."""
+    from factory.mergequeue.models import Finding
+
+    return Finding(check="llm", passed=True, detail="probe ok")
+
+
 def _prepare_for_real(driver_mod, paths: DemoPaths, probe: ScriptedProbe) -> int:
     """Run the prepare phase with the real CLI seam and a scripted probe."""
     return driver_mod.run_prepare_phase(
@@ -351,6 +358,7 @@ def _prepare_for_real(driver_mod, paths: DemoPaths, probe: ScriptedProbe) -> int
         repo_root=paths.repo,
         answers_path=paths.answers,
         probe=probe,
+        preflight=_passing_preflight,
     )
 
 
@@ -445,6 +453,7 @@ def test_probe_refusal_prints_stderr_and_a_remedy_and_dispatches_nothing(
         answers_path=paths.answers,
         run_cli=cli,
         probe=probe,
+        preflight=_passing_preflight,
     )
     printed = capsys.readouterr().out
 
@@ -497,6 +506,7 @@ async def test_driver_refusal_leaves_all_three_children_running(
         answers_path=paths.answers,
         run_cli=FakeCli(paths.config),
         probe=ScriptedProbe(driver_mod, ok=False, stderr="bwrap: Can't mount proc"),
+        preflight=_passing_preflight,
     )
     capsys.readouterr()
     assert refusal_status != 0
@@ -541,6 +551,7 @@ def test_second_run_after_a_successful_first_boot_is_a_one_line_no_op(
             answers_path=paths.answers,
             run_cli=first_cli,
             probe=first_probe,
+            preflight=_passing_preflight,
         )
         == 0
     )
@@ -555,6 +566,7 @@ def test_second_run_after_a_successful_first_boot_is_a_one_line_no_op(
         answers_path=paths.answers,
         run_cli=second_cli,
         probe=second_probe,
+        preflight=_passing_preflight,
     )
     printed = capsys.readouterr().out.strip()
 
@@ -599,6 +611,7 @@ def test_second_run_after_a_probe_refusal_retries_the_probe(
             answers_path=paths.answers,
             run_cli=FakeCli(paths.config),
             probe=refused,
+            preflight=_passing_preflight,
         )
         != 0
     )
@@ -613,6 +626,7 @@ def test_second_run_after_a_probe_refusal_retries_the_probe(
         answers_path=paths.answers,
         run_cli=FakeCli(paths.config),
         probe=retried,
+        preflight=_passing_preflight,
     )
     capsys.readouterr()
 

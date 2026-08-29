@@ -121,8 +121,9 @@ services:
       - LITELLM_MASTER_KEY=${ERGANE_LLM_MASTER_KEY:-sk-dummy-master}
       - STORE_MODEL_IN_DB=True
       # The one required credential: forwarded to the upstream provider through
-      # the bundled gateway config.
-      - UPSTREAM_MODEL_API_KEY=${UPSTREAM_MODEL_API_KEY}
+      # the bundled gateway config. The required form makes Compose refuse at
+      # interpolation, before any container is created, when the variable is absent.
+      - UPSTREAM_MODEL_API_KEY=${UPSTREAM_MODEL_API_KEY:?UPSTREAM_MODEL_API_KEY is required. Get an Ollama Cloud key from https://ollama.com/settings/keys}
     volumes:
       - gateway_config:/app/config
     # The gateway's static config arrives as an inline compose config rather than
