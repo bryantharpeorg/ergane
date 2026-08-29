@@ -1,5 +1,41 @@
 ---
-state: draft
+state: landed
+# Attested landed 2026-08-29 by the away-mode loop. US1 847c4e4c2c17 (#375),
+# US2 c810654679c6 (#374), US3 f328e6c73223 (#376) — all three observed on
+# ergane-buildout by `ergane spec landed --default-branch ergane-buildout`.
+#
+# FIRST EPIC EVER DISPATCHED AT --max-concurrent-nodes 2, and the concurrency
+# question it was run to answer came back clean. us1 and us2 built side by side
+# from 08:40 and both merged by 09:20 — 40 minutes for two stories against ~82
+# serial. No session-ID collision: the two live agents carried distinct
+# `--session-id` values, which is the mechanism, because `workflow.uuid4()`
+# issues one per node. The open critical
+# `workgraph/concurrent-nodes-collide-on-agent-session-ids` predicts collision
+# above cap 1 and is not refuted by this — its mechanism is a retry overlapping
+# its original, which did not occur here — but this is its first
+# counter-observation and the first concurrent pair in the transcript record.
+#
+# US3 TOOK THREE ATTEMPTS, WITH THREE DIFFERENT ENDINGS, and the distinction is
+# worth keeping because only one of them is the system working:
+#   attempt 1  boundary gate exit 1 on a single test —
+#              `tests/test_us4_boundary.py::test_hanging_agent_is_killed_at_deadline_with_no_survivors`.
+#              The agent's own run had SKIPPED that test (5154 passed / 58
+#              skipped vs the gate's 5154 / 57 / 1 failed). Known flake, filed as
+#              `ci/the-deadline-boundary-test-fails-intermittently-in-the-full-suite`,
+#              occurrence 3 — and the operator session was running a 112-spec git
+#              scan on the same host during that exact 341-second window, so the
+#              likely cause is operator load, not decay.
+#   attempt 2  gate PASSED outright (5155 passed, exit 0); judge returned RETRY
+#              on one of four scenarios. This one is the ladder working.
+#   attempt 3  gate and judge both passed.
+#
+# THE JUDGE FOR THIS EPIC WAS `ollama-cloud/glm-5.3-flash`, not the
+# `ollama-cloud/kimi-k2.7-code` the registry names now, and the implementer was
+# kimi rather than the glm-5.3 now wired. The registry is snapshotted once at
+# epic start (`_persona_snapshot`, factory/workgraph/workflow.py:1319) and the
+# rotation landed at 09:10, mid-epic. A persona change reaches the NEXT epic.
+# Recorded here because `ergane build status --json` resolves against the live
+# registry and will therefore misreport this epic forever.
 fixes:
   - doctor/promote-scaffolds-a-spec-that-names-its-findings-in-prose-and-declares-none-of-them
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.
