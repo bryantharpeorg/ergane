@@ -104,9 +104,10 @@ def test_present_but_unrunnable_remedy_names_user_namespaces_and_artifacts(
 
     assert unrunnable_remedy is not None
     assert unrunnable_remedy != absent_remedy
-    assert "user namespaces" in unrunnable_remedy.lower()
-    assert "container/seccomp-ergane.json" in unrunnable_remedy
-    assert "container/ergane-engine.profile" in unrunnable_remedy
+    assert "unprivileged user namespaces" in unrunnable_remedy.lower()
+    # The fallback names both known remedies as candidates without asserting either.
+    assert "container/ergane-bwrap.apparmor" in unrunnable_remedy
+    assert "systempaths=unconfined" in unrunnable_remedy
 
 
 # ---------------------------------------------------------------------------

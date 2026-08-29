@@ -38,6 +38,7 @@ from factory.mergequeue.gh import (
 )
 from factory.mergequeue.models import Finding
 from factory.usage.litellm_client import LiteLLMClient
+from factory.verify.sandbox_remedy import sandbox_remedy
 from factory.verify.toolchain import SystemTreeError, system_tree_argv
 
 #: What a Temporal value's source is called here. Nothing renders it: findings
@@ -256,6 +257,19 @@ _GH_BINARY = "".join(["g", "h"])
 _GH_AUTH_STATUS = (_GH_BINARY, "auth", "status")
 
 
+def _build_bwrap_remedy(stderr: str = "") -> str:
+    """Return the remedy for a present-but-unrunnable bwrap, from the probe seam.
+
+    `_inspect_host` calls this only when the pinned binary exists but the probe
+    returned nonzero. When stderr is available it is passed through so the
+    remedy can distinguish AppArmor's uid-map denial from Docker's masked
+    ``/proc`` denial. When it is not available (OSError, timeout, or empty
+    stderr), the fallback passes an empty string and lets `sandbox_remedy` list
+    both known remedies without asserting either.
+    """
+    return sandbox_remedy(stderr)
+
+
 def _bwrap_probe_argv() -> tuple[str, ...]:
     """Argv that exercises the production mount shape for the host probe.
 
@@ -315,12 +329,15 @@ def _inspect_host() -> dict[str, Any]:
     # separate so a blocked binary reports present-but-unrunnable.
     bwrap_present = bwrap_path is not None
     bwrap_usable = False
+    bwrap_stderr = ""
     if _BWRAP_PINNED_PATH.is_file():
         try:
             bwrap_result = _run_bwrap_probe(_bwrap_probe_argv())
             bwrap_usable = bwrap_result.returncode == 0
+            bwrap_stderr = (bwrap_result.stderr or "").strip()
         except (subprocess.TimeoutExpired, OSError):
             bwrap_usable = False
+            bwrap_stderr = ""
 
     github_cli_authenticated = False
     if github_cli_path:
@@ -342,14 +359,8 @@ def _inspect_host() -> dict[str, Any]:
             "usable": bwrap_usable,
             "purpose": "sandboxing agent worktrees",
             "remedy": "install bubblewrap (bwrap)",
-            "unauthenticated_remedy": (
-                "bwrap is present at /usr/bin/bwrap but cannot start a sandbox; "
-                "unprivileged user namespaces are likely disabled. "
-                "If you are running as root inside a container, the uid-0 path "
-                "needs the SYS_ADMIN Linux privilege that unprivileged containers "
-                "lack. Ensure the committed confinement artifacts are installed: "
-                "container/seccomp-ergane.json and container/ergane-engine.profile."
-            ),
+            "unauthenticated_remedy": _build_bwrap_remedy(bwrap_stderr),
+            "stderr": bwrap_stderr,
         },
         "git": {
             "present": git_path is not None,
