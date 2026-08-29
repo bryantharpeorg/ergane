@@ -4,7 +4,7 @@
 
 One function is wrong and one function is right. `_refresh_to_default`
 (`factory/activities/roadmap_activities.py:105`) picks its branch with
-`_default_branch`; `resolve_landing_base` (`factory/workgraph/worktree.py:1225`)
+`_default_branch`; `resolve_landing_base` (`factory/workgraph/worktree.py:1295`)
 picks it from the manifest and says who answered. This epic converts the caller
 and adds a guard so the conversion cannot destroy work on the way.
 
@@ -17,7 +17,7 @@ and adds a guard so the conversion cannot destroy work on the way.
   says the epic derives from "the trunk's current head" — read it, and note that
   the code does not do what it says.
 - **The right read** is `resolve_landing_base(repo) -> LandingBase`
-  (`factory/workgraph/worktree.py:1225`): manifest first, `_default_branch` only
+  (`factory/workgraph/worktree.py:1295`): manifest first, `_default_branch` only
   when the manifest is absent or malformed, with `.source` carrying which arm
   answered and `.detail` carrying the loader's complaint. `LANDING_BASE_MANIFEST`
   and `LANDING_BASE_HEAD` are its two arm values.

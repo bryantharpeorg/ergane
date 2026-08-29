@@ -16,7 +16,7 @@ fixes:
 #     _git(repo, "checkout", "--quiet", default)
 #     _git(repo, "reset", "--quiet", "--hard", f"origin/{default}")
 #
-# and `_default_branch` (`factory/workgraph/worktree.py:1265`) is
+# and `_default_branch` (`factory/workgraph/worktree.py:1335`) is
 # `git symbolic-ref --short HEAD` — documented, correctly, as "the target
 # clone's default branch (its current HEAD's symbolic ref)". So the docstring
 # says *the trunk* and the code reads *whatever branch the operator happens to

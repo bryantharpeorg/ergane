@@ -23,8 +23,8 @@ fixes:
 # ref up between dispatches, and nothing checks for it at dispatch time.
 #
 # THE LOCAL HALF IS ALREADY RIGHT, AND THAT IS THE CLUE. Teardown
-# (`factory/workgraph/worktree.py:1354`) removes the directory, archives the node
-# branch and deletes the sidecar, and the docstring at `:1358` is explicit that
+# (`reset`, `factory/workgraph/worktree.py:1412`) removes the directory, archives the node
+# branch and deletes the sidecar, and the docstring at `:1419` is explicit that
 # "the node branch remains reachable from an archive ref" — archived, never
 # deleted (`:336`, FR-004). The content is preserved. The design is sound and it
 # stops at the edge of the local clone: `_archive_node` (`:1369`) never touches

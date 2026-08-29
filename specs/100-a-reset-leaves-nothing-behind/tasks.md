@@ -31,8 +31,8 @@ swallowing the failure) are the four that decide whether an attempt lands.
 
 ### Implementation for this story
 
-- [ ] T007 [US1] (FR-001, trap 1) In teardown
-      (`factory/workgraph/worktree.py:1354-1370`), after the local archive, ask
+- [ ] T007 [US1] (FR-001, trap 1) In `reset`
+      (`factory/workgraph/worktree.py:1412`), after the local archive, ask
       git whether the remote tip is reachable from the archive namespace and
       delete the remote branch only when it is.
 - [ ] T008 [US1] (FR-002) Report a remote branch left in place, naming it and
@@ -55,7 +55,7 @@ swallowing the failure) are the four that decide whether an attempt lands.
 ### Implementation for this story
 
 - [ ] T013 [US2] (FR-004, trap 4) In `push_branch`
-      (`factory/workgraph/worktree.py:509`), capture git's stderr on failure and
+      (`factory/workgraph/worktree.py:527`), capture git's stderr on failure and
       carry it into the error, without making the success path noisier.
 - [ ] T014 [US2] (FR-005) Ensure the captured reason reaches the node's terminal
       reason rather than being flattened on the way.

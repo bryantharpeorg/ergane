@@ -7,7 +7,7 @@ one deterministic refusal moves out of the retryable class.
 
 ## What already exists, and where
 
-- **Teardown**: `factory/workgraph/worktree.py:1354` — removes the directory,
+- **Teardown**: `reset` (`factory/workgraph/worktree.py:1412`) — removes the directory,
   archives the node branch, deletes the sidecar. Documented idempotent at
   `:1354`, and `:1358` states that "the node branch remains reachable from an
   archive ref". `_archive_node` is called at `:1369` and at three points in the
