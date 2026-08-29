@@ -1,5 +1,13 @@
 ---
-state: ready
+state: landed
+# LANDED 2026-08-29. All three stories are on ergane-buildout: US3 at 50a82f1
+# (#371), US1 at 5345044 (#372), US2 at eda14ed (#373), all merged 2026-08-28
+# evening. Flipped off `ready` because a spec left at `ready` after its stories
+# land is re-dispatched by the next roadmap tick: on 2026-08-29 that happened,
+# and the re-dispatched US3 was handed a base_ref (eda14ed) that already
+# contained its own work, so four attempts produced empty diffs before the agent
+# escalated. See specs/090-the-factory-reads-origin-not-the-operators-checkout.
+#
 # DRAFTED 2026-08-27 by the operator session, against ergane-buildout at 3e5c940
 # (0.5.0 released, 110 landed and attested). Every file:line below was read from
 # that commit and verified against the tree before drafting.
