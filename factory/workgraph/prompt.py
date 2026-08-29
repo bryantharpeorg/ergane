@@ -404,9 +404,9 @@ _FR_KEY_RE = re.compile(r"^FR-\d+$")
 
 
 def _standards_source_section(
-    node: WorkNode, standards: str, resolution: StandardsResolution
+    node: WorkNode, resolution: StandardsResolution
 ) -> str:
-    """The source record, and when it differs, the text itself (118 FR-008/FR-009).
+    """The source record, and the text itself (118 FR-008/FR-009).
 
     One paragraph naming the arm the resolution travelled by — the archived
     prompt is the record of what an attempt was actually told, and this is
@@ -507,9 +507,7 @@ def build_attempt_prompt(
     if standards:
         parts.append(_STANDARDS.format(standards=standards))
         if standards_resolution is not None:
-            parts.append(
-                _standards_source_section(node, standards, standards_resolution)
-            )
+            parts.append(_standards_source_section(node, standards_resolution))
     parts.append("\n\n".join([_STORY_HEADING, _STORY_PREAMBLE, *sections]))
     parts.append("\n\n".join([_PLAN_HEADING, _PLAN_PREAMBLE, plan_text.strip()]))
     parts.append("\n\n".join([_SLICE_HEADING, _SLICE_PREAMBLE, slice_text]))
