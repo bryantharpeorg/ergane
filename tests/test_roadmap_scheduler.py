@@ -293,6 +293,7 @@ class RoadmapWorld:
         self,
         *,
         clone_ok: bool = True,
+        clone_refusal: str | None = None,
         preflight: Callable[[str], list] | None = None,
         onboarding_profile: TargetRepoProfile | None = None,
         open_epics: Callable[[], set[str]] | None = None,
@@ -300,6 +301,12 @@ class RoadmapWorld:
         drift_runner: Callable[..., bool] | None = None,
     ) -> None:
         self.clone_ok = clone_ok
+        # 090 US2: the refusal the scripted clone seam reports, or None for a
+        # clean refresh. This is the *data* arm of the clone contract — a
+        # refused clone returns (trap 1), and only a git error raises — so the
+        # world scripts it as a field on the result rather than as an
+        # exception the workflow would catch by accident.
+        self.clone_refusal = clone_refusal
         self.preflight = preflight or (lambda epic_id: [])
         self.onboarding_profile = onboarding_profile or _passing_profile()
         self.open_epics = open_epics or (lambda: set())
@@ -408,7 +415,10 @@ class RoadmapWorld:
     def _clone(self, target_repo: str) -> CloneResult:
         self.clone_calls.append(target_repo)
         return CloneResult(
-            path=target_repo, default_branch="main", head_ref="abc123"
+            path=target_repo,
+            default_branch="main",
+            head_ref="abc123",
+            refused=self.clone_refusal or "",
         )
 
     async def _onboard(self, target_repo: str) -> TargetRepoProfile:
@@ -846,6 +856,57 @@ async def test_an_onboarding_failure_parks_the_spec(
     assert "001-alpha" in parked
     assert parked["001-alpha"].check == "onboarding"
     assert "merge-queue-enabled" in parked["001-alpha"].detail
+
+
+async def test_a_refused_clone_parks_the_spec_with_the_refusal_verbatim(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """090 US2 / FR-003, T012: a clone the activity *refused* parks the spec.
+
+    The refusal is data on `CloneResult`, not an exception (trap 1): the
+    workflow reads the returned result and parks on it explicitly, alongside
+    — never instead of — the `FailureError` arm that a genuine git error still
+    takes. This is the workflow's half of the contract; the activity's half
+    (that a refusal returns rather than raises) is proven against real git in
+    `tests/test_090_refresh_refuses_to_destroy.py` (trap 6).
+
+    The seam is scripted because the property under test is the *workflow's*
+    handling of the result, not git's: a real repository would make this a
+    test of the guard instead of the park.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    refusal = (
+        "refusing to refresh dev to origin/dev: the clone carries work the "
+        "reset would discard (modified: README.md; unpushed commits: the "
+        "unpushed step). Commit or push this work, or move it off the "
+        "landing branch, and the next tick will refresh."
+    )
+    world = RoadmapWorld(clone_refusal=refusal)
+    async with run_roadmap(env, world, str(specs_root)) as handle:
+        status = await handle.result()
+
+    parked = {p.spec_dir: p for p in status.parked}
+    assert "001-alpha" in parked, "a refused clone must park the spec (FR-003)"
+    assert parked["001-alpha"].check == "clone"
+    assert parked["001-alpha"].detail == refusal, (
+        "the refusal must park verbatim: it is the one line the operator "
+        "reads, and it already names the branch, the work at risk and the "
+        "act that clears it (FR-004)"
+    )
+    # The refusal is not a child failure — no `EpicStatus` was recorded, so
+    # the spec is parked rather than failed.
+    assert status.running == []
+    # And the line did not stall: bravo never shares alpha's clone refusal —
+    # the seam scripts one refusal for every call here, so bravo parks too,
+    # which is the honest reading of "the clone is the operator's, shared by
+    # every spec". The roadmap completed rather than raising either way.
+    assert "002-bravo" in parked
 
 
 # ============================================================================
