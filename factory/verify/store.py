@@ -91,6 +91,7 @@ from factory.verify.models import (
     JudgeOutcome,
     JudgeScenarioFinding,
     JudgeVerdict,
+    MessageRecord,
     OutputCheck,
     OverallVerdict,
     QuestionRecord,
@@ -234,6 +235,39 @@ CREATE TABLE IF NOT EXISTS questions (
 
 CREATE INDEX IF NOT EXISTS idx_q_pending ON questions (resolution) WHERE resolution IS NULL;
 CREATE INDEX IF NOT EXISTS idx_q_node    ON questions (epic_id, node_id);
+
+-- 017-US1: the peer channel's sibling of `questions`. A message differs from a
+-- question in one column: `addressee` names who it is for, where a question's
+-- audience is fixed at the operator. The sender is attributed the way a ledger
+-- row is (epic/node/attempt/persona, FR-008) because a message is evidence
+-- about a node even though it costs no ladder slot. `message_id` is the
+-- threading key a reply routes by (FR-003) — 12 hex, the shape the questions
+-- table established, minted where the row is written. `resolution` is the same
+-- vocabulary as a question's: ANSWERED (the peer replied) or EXPIRED (the
+-- message's own window ran out, FR-004). A `reply` on an EXPIRED row is a late
+-- reply the store kept and nothing read — the `_answers` discipline extended,
+-- which is why the CHECK that pins a question's `answer_text` to an ANSWERED
+-- row does not appear here: evidence of what a peer said survives even when
+-- the exchange it answered is already closed.
+CREATE TABLE IF NOT EXISTS messages (
+    message_id     TEXT PRIMARY KEY,         -- 12-hex threading key (FR-003)
+    epic_id        TEXT NOT NULL,
+    sender_node    TEXT NOT NULL,
+    sender_attempt INTEGER NOT NULL CHECK (sender_attempt >= 1),
+    sender_persona TEXT NOT NULL,
+    addressee      TEXT NOT NULL,
+    body           TEXT NOT NULL,             -- the text under the address line, verbatim (FR-002)
+    sent_at        TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,             -- sent_at + the message's own window
+    reply          TEXT,                       -- the peer's reply (ANSWERED: delivered; EXPIRED: late, never read)
+    resolution     TEXT CHECK (resolution IN ('ANSWERED', 'EXPIRED')),
+    resolved_at    TEXT,
+    CHECK ((resolution IS NULL) = (resolved_at IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_msg_pending ON messages (resolution) WHERE resolution IS NULL;
+CREATE INDEX IF NOT EXISTS idx_msg_epic    ON messages (epic_id, sender_node);
+CREATE INDEX IF NOT EXISTS idx_msg_addr    ON messages (epic_id, addressee);
 
 -- 035-US1: every external-completion signal the workflow receives, accepted or
 -- refused. The signal is buffered by the workflow and validated at the ladder
@@ -1302,6 +1336,194 @@ def _question_from_row(row: tuple[Any, ...]) -> QuestionRecord:
         expires_at=values["expires_at"],
         resolution=values["resolution"],
         answer_text=values["answer_text"],
+        resolved_at=values["resolved_at"],
+    )
+
+
+# --- peer messages (017-US1) --------------------------------------------------
+#
+# The sibling of the question section, in the same discipline: the row before
+# the delivery (R11, so a crash in between leaves something the expiry can
+# close), the guarded UPDATE as the only arbiter of a reply-versus-expiry race
+# (plan trap 2), and a late reply stored rather than dropped — the `_answers`
+# discipline, extended to a second table. What differs is the address: a
+# question's audience is the operator by construction, a message's is a column.
+
+
+#: The columns identifying one message, in the order `_SELECT_MESSAGE_SQL`
+#: returns them — the same order `_message_from_row` reads.
+_MESSAGE_COLUMNS = (
+    "message_id",
+    "epic_id",
+    "sender_node",
+    "sender_attempt",
+    "sender_persona",
+    "addressee",
+    "body",
+    "sent_at",
+    "expires_at",
+    "reply",
+    "resolution",
+    "resolved_at",
+)
+
+_SELECT_MESSAGE_SQL = f"SELECT {', '.join(_MESSAGE_COLUMNS)} FROM messages"
+
+_INSERT_MESSAGE_SQL = (
+    "INSERT INTO messages (message_id, epic_id, sender_node, sender_attempt, "
+    "sender_persona, addressee, body, sent_at, expires_at, reply, resolution, "
+    "resolved_at) VALUES (:message_id, :epic_id, :sender_node, :sender_attempt, "
+    ":sender_persona, :addressee, :body, :sent_at, :expires_at, :reply, "
+    ":resolution, :resolved_at)"
+)
+
+#: The guarded transition a reply (FR-003) or the message's own expiry (FR-004)
+#: closes. Whichever arrives second matches no rows and is told so — the same
+#: single arbiter the questions table settles its race with.
+_MESSAGE_TRANSITION_SQL = (
+    "UPDATE messages SET resolution = ?, reply = ?, resolved_at = ? "
+    "WHERE message_id = ? AND resolution IS NULL"
+)
+
+
+def insert_message(conn: sqlite3.Connection, record: MessageRecord) -> None:
+    """Write a pending message row (FR-008, the `insert_question` precedent).
+
+    Called before the message is delivered, so a crash in between leaves a row
+    the expiry path can close rather than an exchange nobody can account for.
+    Raises `sqlite3.IntegrityError` if the id is already taken, since a reused
+    threading key would let a reply to last week's message land on this one's.
+    """
+    conn.execute(
+        _INSERT_MESSAGE_SQL,
+        {
+            "message_id": record.message_id,
+            "epic_id": record.epic_id,
+            "sender_node": record.sender_node,
+            "sender_attempt": record.sender_attempt,
+            "sender_persona": record.sender_persona,
+            "addressee": record.addressee,
+            "body": record.body,
+            "sent_at": record.sent_at,
+            "expires_at": record.expires_at,
+            "reply": record.reply,
+            "resolution": record.resolution,
+            "resolved_at": record.resolved_at,
+        },
+    )
+    conn.commit()
+
+
+def get_message(conn: sqlite3.Connection, message_id: str) -> MessageRecord | None:
+    """One message by its threading key, or None if there is no such row.
+
+    None rather than an exception: a reply naming an id the store has no record
+    of is refused at routing, never a crashed sweeper.
+    """
+    row = conn.execute(
+        f"{_SELECT_MESSAGE_SQL} WHERE message_id = ?", (message_id,)
+    ).fetchone()
+    return None if row is None else _message_from_row(row)
+
+
+def resolve_message(
+    conn: sqlite3.Connection,
+    message_id: str,
+    *,
+    reply_text: str,
+    resolved_at: str,
+) -> bool:
+    """Record the peer's reply (FR-003). True if this call is what resolved it.
+
+    The guarded UPDATE settles the race between a reply and the message's own
+    expiry (FR-004): whichever arrives second matches no rows and is told so,
+    instead of overwriting a resolution already set — the `resolve_question`
+    pattern, one table over.
+    """
+    cursor = conn.execute(
+        _MESSAGE_TRANSITION_SQL,
+        (ANSWERED, reply_text, resolved_at, message_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def expire_message(
+    conn: sqlite3.Connection, message_id: str, *, resolved_at: str
+) -> bool:
+    """Record the message's window elapsing (FR-004). True if this call expired it.
+
+    The one resolution no reply can produce — the same way `EXPIRED` is the one
+    escalation resolution no button can produce. Degradation is the floor: the
+    row stays, closed, so an operator reading the store sees the question that
+    was asked and never answered.
+    """
+    cursor = conn.execute(
+        _MESSAGE_TRANSITION_SQL,
+        (EXPIRED, None, resolved_at, message_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def record_late_reply(
+    conn: sqlite3.Connection, message_id: str, *, reply_text: str
+) -> bool:
+    """Store a reply on a row whose window is already closed, and read it never.
+
+    The `_answers` discipline extended to messages: a reply arriving after the
+    expiry is evidence of what the peer said, not a delivery — reopening the
+    window would park a node that has already moved on, and an asker that
+    expired cannot un-expire by receiving mail. The resolution stands and the
+    text survives; nothing delivers it. True if a row was updated.
+    """
+    cursor = conn.execute(
+        "UPDATE messages SET reply = ? WHERE message_id = ?",
+        (reply_text, message_id),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def pending_messages(
+    conn: sqlite3.Connection, *, epic_id: str | None = None
+) -> list[MessageRecord]:
+    """Every message still awaiting a reply, oldest first.
+
+    The expiry sweep's input — the enumeration `pending_questions` gives the
+    question expiry path, one table over. Scoped to one epic when asked, the
+    same scoping the question path has, so a sibling epic's open exchange is
+    never another epic's expiry to close.
+    """
+    if epic_id is None:
+        rows = conn.execute(
+            f"{_SELECT_MESSAGE_SQL} WHERE resolution IS NULL "
+            "ORDER BY sent_at, message_id"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"{_SELECT_MESSAGE_SQL} WHERE resolution IS NULL AND epic_id = ? "
+            "ORDER BY sent_at, message_id",
+            (epic_id,),
+        ).fetchall()
+    return [_message_from_row(row) for row in rows]
+
+
+def _message_from_row(row: tuple[Any, ...]) -> MessageRecord:
+    """Rebuild a record from a `_MESSAGE_COLUMNS`-ordered row."""
+    values = dict(zip(_MESSAGE_COLUMNS, row))
+    return MessageRecord(
+        message_id=values["message_id"],
+        epic_id=values["epic_id"],
+        sender_node=values["sender_node"],
+        sender_attempt=values["sender_attempt"],
+        sender_persona=values["sender_persona"],
+        addressee=values["addressee"],
+        body=values["body"],
+        sent_at=values["sent_at"],
+        expires_at=values["expires_at"],
+        reply=values["reply"],
+        resolution=values["resolution"],
         resolved_at=values["resolved_at"],
     )
 

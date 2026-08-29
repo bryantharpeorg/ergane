@@ -829,3 +829,40 @@ class QuestionRecord:
     resolution: str | None = None
     answer_text: str | None = None
     resolved_at: str | None = None
+
+
+@dataclass(frozen=True)
+class MessageRecord:
+    """One peer message — a store row before it is ever a delivery.
+
+    The sibling of `QuestionRecord` for the peer channel (017-US1). The sender
+    is attributed the way a teardown's ledger row is — epic, node, attempt,
+    persona — because a message is spend-shaped evidence about a node even
+    though it costs no ladder slot (FR-008). `addressee` is the name the
+    grammar peeled off the body: a node id of this epic today, a registry name
+    or an epic id in later stories, one namespace. `message_id` is the
+    threading key a reply routes by (FR-003) — 12 hex, the shape the
+    questions table established, minted where the row is written so a reply
+    can never thread to a message nobody recorded.
+
+    `resolution` is ``None`` while the addressee has not answered,
+    ``ANSWERED`` once a reply arrives, or ``EXPIRED`` when the message's own
+    window runs out (FR-004 — degradation, never a hang). `reply` holds the
+    peer's text: on an ANSWERED row it is the delivered reply, on an EXPIRED
+    row it is a late reply the store kept and nothing read — the `_answers`
+    discipline, extended, so evidence of what a peer said survives even when
+    the exchange it answered is already closed.
+    """
+
+    message_id: str
+    epic_id: str
+    sender_node: str
+    sender_attempt: int
+    sender_persona: str
+    addressee: str
+    body: str
+    sent_at: str
+    expires_at: str
+    reply: str | None = None
+    resolution: str | None = None
+    resolved_at: str | None = None

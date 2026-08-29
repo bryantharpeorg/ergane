@@ -212,12 +212,18 @@ def test_an_expiry_wins_when_the_reply_never_came(
 ) -> None:
     """FR-004: the message's own window elapsing is the one resolution no
     reply can overwrite — and the expiry, landing first, is what a late reply
-    finds."""
+    finds.
+
+    The losing transition writes *nothing* — the guarded UPDATE is pure
+    first-wins (plan trap 2), so a reply that arrives late changes no field it
+    lost the race for. Recording the late reply is the caller's explicit act,
+    the test below it.
+    """
     store.insert_message(conn, a_message())
 
     assert store.expire_message(conn, MESSAGE_ID, resolved_at="2026-08-29T17:31:00Z")
-    # The late reply is stored on the row — it is evidence of what the peer
-    # said — but it resolves nothing, and nothing reopens the window.
+    # The late reply resolves nothing, and stores nothing by itself: a guarded
+    # UPDATE with a side effect would be a second writer of the transition.
     assert not store.resolve_message(
         conn, MESSAGE_ID, reply_text=REPLY, resolved_at="2026-08-29T18:00:00Z"
     )
@@ -225,9 +231,7 @@ def test_an_expiry_wins_when_the_reply_never_came(
     record = store.get_message(conn, MESSAGE_ID)
     assert record is not None
     assert record.resolution == store.EXPIRED
-    # Stored and never read: the reply text survives on the row, the workflow
-    # that asked is gone, and the resolution stands.
-    assert record.reply == REPLY
+    assert record.reply is None
 
 
 def test_an_expired_row_is_not_deleted_but_closed(conn: sqlite3.Connection) -> None:
