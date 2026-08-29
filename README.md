@@ -73,6 +73,27 @@ declare `llm.mode = "gateway"` unless you have decided to give them up.
 See `factory/controlplane/config.py` for the exact control-plane schema, and
 `factory.yaml` for the gate and loop composition this repository declares.
 
+On Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1`
+denies user namespaces by default. The `apparmor=unconfined` option on the
+demo container does not lift it: AppArmor attaches a profile by executable
+path on exec, so `bwrap` inside the container is mediated by the *host's*
+policy. The profile this repository ships grants `/usr/bin/bwrap` the
+`userns` permission. Load it once from a checkout:
+
+```bash
+printf '%s\n' \
+  'abi <abi/4.0>,' \
+  'include <tunables/global>' \
+  'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
+  '  userns,' \
+  '  include if exists <local/bwrap>' \
+  '}' | sudo tee /etc/apparmor.d/bwrap
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```
+
+The profile is at `container/ergane-bwrap.apparmor` and is not installed by any
+package; running the two commands above is the operator's deliberate act.
+
 ## Installing Ergane
 
 There are two install paths and they are not interchangeable. Pick by what you

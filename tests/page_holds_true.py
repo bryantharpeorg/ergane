@@ -396,6 +396,11 @@ def extract_paths(
     for span in spans:
         if " " in span or span.startswith("-") or "<" in span or span.startswith(":"):
             continue
+        if span.startswith("/"):
+            # Host-absolute paths (/usr/bin/bwrap, /etc/apparmor.d/bwrap) are
+            # deliberately cited by procedure text, but they are not paths inside
+            # this repository and cannot be checked with REPO_ROOT / span.
+            continue
         if "/" not in span and not span.endswith(suffixes):
             continue
         if span not in found:

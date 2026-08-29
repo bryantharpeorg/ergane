@@ -323,9 +323,13 @@ curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/com
     </div>
 
     <pre class="well"><code><span class="cmt"># only on a host that restricts unprivileged user namespaces</span>
-printf '%s\n' 'abi &lt;abi/4.0&gt;,' 'include &lt;tunables/global&gt;' \
-  'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' \
-  '  include if exists &lt;local/bwrap&gt;' '}' | sudo tee /etc/apparmor.d/bwrap
+printf '%s\n' \
+  'abi &lt;abi/4.0&gt;,' \
+  'include &lt;tunables/global&gt;' \
+  'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
+  '  userns,' \
+  '  include if exists &lt;local/bwrap&gt;' \
+  '}' | sudo tee /etc/apparmor.d/bwrap
 
 sudo apparmor_parser -r /etc/apparmor.d/bwrap</code></pre>
   </section>

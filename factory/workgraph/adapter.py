@@ -290,9 +290,11 @@ class AgentBackend(Protocol):
     ) -> asyncio.subprocess.Process: ...
 
 
-#: Absolute path the bwrap backend is pinned to. Ubuntu 24.04's AppArmor profile
-#: permits unprivileged user namespaces only for the system binary at this path
-#: (trap 6); a copied or vendored binary has no profile and fails with EPERM.
+#: Absolute path the bwrap backend is pinned to. The pin is required because
+#: AppArmor attaches a profile by executable path on exec, so a copied or vendored
+#: binary does not carry the host's grant and fails with EPERM. The grant comes
+#: from the profile this repository ships at container/ergane-bwrap.apparmor,
+#: which no OS package installs; loading it is the operator's deliberate act.
 BWRAP_BACKEND_BINARY = Path("/usr/bin/bwrap")
 
 
