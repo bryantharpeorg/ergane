@@ -30,6 +30,7 @@ def scaffold_spec(
     title: str | None = None,
     anchor: str | None = None,
     findings: list[Finding] | None = None,
+    fixes: list[str] | None = None,
     specs_root: str = "",
     target_repo: str = "",
     demonstration: bool = False,
@@ -63,11 +64,11 @@ def scaffold_spec(
     if not anchor:
         raise ValueError("anchor is required")
 
-    return _build_trio(slug, title, anchor, demonstration=demonstration)
+    return _build_trio(slug, title, anchor, fixes=fixes or [], demonstration=demonstration)
 
 
 def _build_trio(
-    slug: str, title: str, anchor: str, *, demonstration: bool
+    slug: str, title: str, anchor: str, *, fixes: list[str], demonstration: bool
 ) -> tuple[str, str, str]:
     """The US1 generator: three story slots and a tasks.md that validates."""
     safe_slug = _sanitize_text(slug) or slug
@@ -75,7 +76,7 @@ def _build_trio(
     safe_anchor = _sanitize_text(anchor) or anchor
 
     slots = _story_slots(safe_title, anchor=safe_anchor, demonstration=demonstration)
-    spec_text = _build_spec_md_from_slots(safe_slug, slots, demonstration=demonstration)
+    spec_text = _build_spec_md_from_slots(safe_slug, slots, fixes=fixes, demonstration=demonstration)
     plan_text = _build_plan_md_from_slots(safe_slug, slots, demonstration=demonstration)
     tasks_text = _build_tasks_md_from_slots(safe_slug, slots, demonstration=demonstration)
     return spec_text, plan_text, tasks_text
@@ -150,11 +151,15 @@ def _story_slots(
 
 
 def _build_spec_md_from_slots(
-    slug: str, slots: list[dict[str, Any]], *, demonstration: bool
+    slug: str, slots: list[dict[str, Any]], *, fixes: list[str], demonstration: bool
 ) -> str:
     lines: list[str] = []
     lines.append("---")
     lines.append("state: draft")
+    if fixes:
+        lines.append("fixes:")
+        for key in fixes:
+            lines.append(f"  - {key}")
     lines.append("---")
     lines.append("")
     lines.append(f"# Feature Specification: {slug}")
