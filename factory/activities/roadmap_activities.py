@@ -106,12 +106,109 @@ class CloneResult:
     apart — the arm is what lets an operator see that the refresh guessed.
     US3 populates it from the `LandingBase` the refresh already holds;
     the empty default keeps pre-090 histories replayable.
+
+    `refused` is 090 US2's refusal, non-empty when the refresh would have
+    discarded work and did not run (FR-003). It is *data*, never an exception:
+    `clone_target`'s contract draws that line — a refused clone returns and
+    the workflow parks it, while a git error propagates as an activity
+    failure (trap 1). The text names the branch, the paths or commits at
+    risk, and the operator act that clears it (FR-004), because the park
+    reason is the one line an operator reads. The empty default keeps
+    pre-090 histories replayable, the same reason `default_source` has one.
     """
 
     path: str
     default_branch: str
     head_ref: str
     default_source: str = ""
+    refused: str = ""
+
+
+#: `git status --porcelain` status codes that name a change to a *tracked*
+#: path — the edits a `reset --hard` discards. `??` is deliberately absent:
+#: an untracked file survives a reset (only `git clean` removes those), so
+#: counting it would park every clone with a scratch file in it.
+_TRACKED_CHANGE_CODES = frozenset({"M", "A", "D", "R", "C", "T", "U"})
+
+#: How many dirty paths and unpushed commits a refusal names before it stops
+#: and says "and N more". The refusal is one line an operator reads; a clone
+#: with forty dirty files needs the branch named and a hint, not a listing
+#: that pushes the clearing act off the screen.
+_RISK_NAMES_LIMIT = 5
+
+
+def _work_the_reset_would_discard(repo: Path, branch: str) -> str | None:
+    """What a `reset --hard origin/<branch>` would destroy here, or None.
+
+    Two questions, both answered by git rather than by any list this module
+    keeps (trap 3: the exclusion list written against one repo is a mistake
+    this repository has already paid for once):
+
+    - **Dirty tracked paths** — `git status --porcelain` with the target
+      repo's *own* ignore rules applied, filtered to tracked-change codes.
+      Ignored files are not listed at all, so `reset --hard`'s habit of
+      leaving them alone is honoured for free (FR-005): a build's
+      `.factory/` and `__pycache__` never park anything.
+    - **Commits the remote does not have** — `git rev-list origin/<branch>..<branch>`
+      counts them, and their subjects name them. This is the half the dirty
+      check misses (trap 2): the tree is clean while the work is at risk,
+      because the work was committed *to be safe* and the reset target is the
+      remote ref, which does not know about it.
+
+    Returns the refusal text (FR-004: branch, paths or commits at risk, and
+    the operator act that clears it) or `None` when the reset is safe. The
+    refusal is a *finding*, so it never raises: a git error does, and the
+    caller's contract keeps the two arms apart.
+    """
+    # Deferred, for the same reason the refresh's own imports are (trap 5):
+    # `factory.workgraph.worktree` pulls in the workgraph package, and this
+    # module is imported by the worker's activity registration path.
+    from factory.workgraph.worktree import _git
+
+    dirty = [
+        line[3:]
+        for line in _git(repo, "status", "--porcelain").splitlines()
+        if line[:2].strip()
+        # Porcelain is `XY path`: X the index status, Y the worktree's. A
+        # change to a tracked path can sit in either column — staged work
+        # shows in X (`M `), an unstaged edit in Y (` M`) — so either column
+        # naming a tracked change counts. `??` names no tracked change in
+        # either column and stays out.
+        and (line[0] in _TRACKED_CHANGE_CODES or line[1] in _TRACKED_CHANGE_CODES)
+    ]
+    remote_ref = f"origin/{branch}"
+    unpushed = [
+        subject
+        for subject in _git(
+            repo, "log", "--format=%s", f"{remote_ref}..{branch}"
+        ).splitlines()
+        if subject.strip()
+    ]
+    if not dirty and not unpushed:
+        return None
+
+    at_risk: list[str] = []
+    if dirty:
+        at_risk.append(_named("modified", dirty))
+    if unpushed:
+        at_risk.append(_named("unpushed commit", unpushed))
+    return (
+        f"refusing to refresh {branch} to {remote_ref}: the clone carries work "
+        f"the reset would discard ({'; '.join(at_risk)}). Commit or push this "
+        f"work — or move it off {branch} — and the next tick will refresh."
+    )
+
+
+def _named(kind: str, names: list[str]) -> str:
+    """One risk clause: the kind, the names, and "and N more" past the limit."""
+    shown = ", ".join(names[:_RISK_NAMES_LIMIT])
+    more = len(names) - _RISK_NAMES_LIMIT
+    if more > 0:
+        shown = f"{shown} and {more} more"
+    plural = "s" if len(names) != 1 else ""
+    if kind == "modified":
+        return f"modified path{plural}: {shown}"
+    return f"{kind}{plural}: {shown}"
 
 
 def _refresh_to_default(target_repo: str) -> CloneResult:
@@ -133,6 +230,19 @@ def _refresh_to_default(target_repo: str) -> CloneResult:
     though it were the trunk. The fetch / checkout / reset sequence is
     otherwise unchanged (FR-007): a clean clone on the declared branch
     refreshes exactly as it did before.
+
+    090 US2: a refresh that would discard work refuses instead (FR-003), and
+    the refusal rides the result — `clone_target`'s contract keeps refused
+    clones and git errors on different arms, so raising here would park the
+    spec with a stringified exception the contract says cannot arrive. The
+    check asks git two questions before the checkout: whether any *tracked*
+    path is dirty (a reset discards staged and unstaged edits alike), and
+    whether the declared branch carries commits `origin/<branch>` cannot
+    reach — the half a dirty-tree check misses, because the reset target is
+    the remote ref and a commit made *to be safe* is destroyed just as
+    surely. Work on branches the reset does not touch is not at risk and
+    does not refuse: US1 made the refresh leave the operator's own branch
+    alone, and a guard that re-parked those clones would undo that story.
     """
     from pathlib import Path
 
@@ -141,6 +251,15 @@ def _refresh_to_default(target_repo: str) -> CloneResult:
     repo = Path(target_repo)
     base = resolve_landing_base(repo)
     _git(repo, "fetch", "--quiet", "origin")
+    refusal = _work_the_reset_would_discard(repo, base.branch)
+    if refusal is not None:
+        return CloneResult(
+            path=str(repo),
+            default_branch=base.branch,
+            head_ref=_head(repo),
+            default_source=base.source,
+            refused=refusal,
+        )
     _git(repo, "checkout", "--quiet", base.branch)
     _git(repo, "reset", "--quiet", "--hard", f"origin/{base.branch}")
     return CloneResult(

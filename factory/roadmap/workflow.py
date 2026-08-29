@@ -1183,14 +1183,26 @@ class RoadmapWorkflow:
         # `ApplicationError`), so the catch is the `FailureError` base — a clone
         # that cannot be refreshed parks the spec rather than failing the
         # roadmap (FR-006: one bad spec must not stall the line).
+        #
+        # 090 US2 adds the *other* arm of the clone's contract, beside this
+        # one rather than inside it: a clone the activity **refused** returns
+        # normally, carrying the refusal as data, because `clone_target` keeps
+        # refused clones and git errors on different arms — raising from the
+        # activity would park the refusal with a stringified exception and
+        # contradict that contract. The refusal already names the branch, the
+        # work at risk and the act that clears it (FR-004), so it parks
+        # verbatim: it is the one line an operator reads.
         try:
-            await workflow.execute_activity(
+            clone = await workflow.execute_activity(
                 clone_target,
                 CloneInput(target_repo=request.target_repo, spec_dir=spec_dir),
                 **_GIT,
             )
         except FailureError as exc:
             self._park(spec_dir, "clone", str(exc))
+            return
+        if clone.refused:
+            self._park(spec_dir, "clone", clone.refused)
             return
 
         # 2. Derivation — the pure delta deriver behind a thin activity. A spec that

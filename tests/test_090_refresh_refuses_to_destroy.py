@@ -61,8 +61,14 @@ landing_branch: dev
 #: What a refusal must name beyond the paths themselves (FR-004): the operator
 #: act that clears it. The refusal is for a human mid-work; a hazard that says
 #: what is at risk but not what to do about it parks the line as surely as the
-#: silence this spec replaced.
+#: silence this spec replaced. Matched case-insensitively, because the refusal
+#: is a sentence and the sentence capitalises it.
 CLEARING_ACT = "commit or push"
+
+
+def _names_the_clearing_act(refusal: str) -> bool:
+    """Whether the refusal tells the operator how to clear it (FR-004)."""
+    return CLEARING_ACT in refusal.lower()
 
 
 def _reflog(ref: str, repo: Path) -> list[str]:
@@ -105,6 +111,7 @@ def landing_clone(tmp_path: Path) -> Path:
     clone = tmp_path / "clone"
     git(tmp_path, "clone", "--quiet", str(origin), str(clone))
     (clone / "ergane.yaml").write_text(_MANIFEST, encoding="utf-8")
+    (clone / "README.md").write_text("# tracked, so a reset can discard it\n", encoding="utf-8")
     git(clone, "add", "-A")
     git(clone, "commit", "--quiet", "-m", "commit the declared manifest")
     git(clone, "push", "--quiet", "origin", DECLARED)
@@ -163,7 +170,7 @@ def test_an_uncommitted_modification_to_a_tracked_file_parks_and_survives(
         "the refusal must name the dirty path, so the operator learns what "
         "the factory was about to discard"
     )
-    assert CLEARING_ACT in result.refused, (
+    assert _names_the_clearing_act(result.refused), (
         "the refusal must name the operator act that clears it (FR-004)"
     )
     # No reset: the branch is where it was, and the modification survived.
@@ -230,7 +237,7 @@ def test_an_unpushed_commit_parks_and_survives_the_trap_2_case(
         "the refusal must name the unpushed commit by its subject, so an "
         "operator learns which of their commits is at risk (FR-004)"
     )
-    assert CLEARING_ACT in result.refused, (
+    assert _names_the_clearing_act(result.refused), (
         "the refusal must name the operator act that clears it (FR-004)"
     )
     assert _sha(DECLARED, landing_clone) == dev_before, (
@@ -285,11 +292,17 @@ def test_a_clean_clone_on_the_declared_branch_refreshes_exactly_as_before(
     assert _sha("HEAD", landing_clone) == _sha(f"origin/{DECLARED}", landing_clone), (
         "the clean clone must still be reset to its remote ref (FR-007)"
     )
+    # Exactly the acts US1 established for a clean refresh, newest first: the
+    # reset to the remote ref, preceded by the checkout — which git logs even
+    # when the branch it names is the one already checked out, so the pair is
+    # today's behaviour, not a new one. A refusal here would have been the
+    # behaviour change S3 exists to forbid.
     assert _new_entries(head_reflog_before, _reflog("HEAD", landing_clone)) == [
         f"reset: moving to origin/{DECLARED}",
+        f"checkout: moving from {DECLARED} to {DECLARED}",
     ], (
-        "the refresh's acts on a clean clone must be exactly today's: one "
-        "reset to the remote ref and nothing else"
+        "the refresh's acts on a clean clone must be exactly today's: the "
+        "checkout and the reset to the remote ref, nothing else"
     )
     assert result.default_branch == DECLARED
     assert result.head_ref == _sha(f"origin/{DECLARED}", landing_clone)
@@ -467,4 +480,4 @@ def test_the_refusal_names_the_branch_and_both_kinds_of_risk(
         "the refusal must name the unpushed commit alongside the dirty path: "
         "FR-003 requires both checks, and the operator needs both names"
     )
-    assert CLEARING_ACT in result.refused
+    assert _names_the_clearing_act(result.refused)
