@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - init/wiring-non-interactively-rewrites-the-committed-manifest-and-drops-standards-and-ladder
   - init/the-init-verb-cannot-see-the-ladder-block-it-deletes-and-its-own-remedy-recommends-the-deletion

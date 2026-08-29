@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - verify/the-judge-is-asked-to-predict-gate-outcomes-the-factory-already-measured
   - verify/a-judges-speculation-about-a-gate-overrides-that-gates-recorded-result

@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - ci/test-suite-pins-the-operator-dial
 # DRAFTED 2026-08-29 by the operator session, against ergane-buildout at aef5257,

@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - verify/a-re-dispatch-silently-overwrites-the-previous-dispatchs-verification-evidence
   - verify/build-history-is-not-durable-so-nothing-downstream-can-remember-a-build

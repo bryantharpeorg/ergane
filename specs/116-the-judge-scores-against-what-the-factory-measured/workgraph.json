@@ -1,0 +1,49 @@
+{
+  "epic_id": "116-the-judge-scores-against-what-the-factory-measured",
+  "feature": "116-the-judge-scores-against-what-the-factory-measured",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us1",
+      "story_key": "US1",
+      "persona": "implementer",
+      "spec_ref": "116-the-judge-scores-against-what-the-factory-measured:US1",
+      "requirement_keys": [
+        "US1"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "implementer",
+      "spec_ref": "116-the-judge-scores-against-what-the-factory-measured:US2",
+      "requirement_keys": [
+        "US2"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "116-the-judge-scores-against-what-the-factory-measured:US3",
+      "requirement_keys": [
+        "US3"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us2"
+      ],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}

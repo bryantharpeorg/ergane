@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - relaunch/a-killed-epics-pushed-node-branch-survives-on-origin-and-fails-the-relaunch-after-verification
   - landing/kill-and-redispatch-leaves-a-stale-remote-node-branch-that-kills-the-next-landing

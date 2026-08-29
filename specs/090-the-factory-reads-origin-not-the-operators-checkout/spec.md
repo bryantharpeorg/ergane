@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - roadmap/clone-target-hard-resets-the-operators-own-checkout-every-tick-and-destroys-uncommitted-work
   - roadmap/dispatch-is-decided-by-the-operators-working-tree

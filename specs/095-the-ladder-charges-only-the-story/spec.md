@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - agent/an-expired-subscription-oauth-session-burns-every-attempt-and-reports-it-as-an-empty-diff
   - verify/max-attempts-is-shadowed-by-max-judge-retries-and-nothing-on-screen-says-which-one-bound

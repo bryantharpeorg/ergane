@@ -1,0 +1,21 @@
+{
+  "epic_id": "110-the-demo-dispatches-the-story-it-promised",
+  "feature": "110-the-demo-dispatches-the-story-it-promised",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us2",
+      "story_key": "US2",
+      "persona": "opus-closer",
+      "spec_ref": "110-the-demo-dispatches-the-story-it-promised:US2",
+      "requirement_keys": [
+        "US2"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}

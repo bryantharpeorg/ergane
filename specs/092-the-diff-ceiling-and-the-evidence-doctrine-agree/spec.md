@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - verify/the-judges-attention-budget-and-the-refusal-threshold-are-the-same-constant
   - verify/the-diff-size-refusal-counts-generated-lockfiles-and-has-no-manifest-key

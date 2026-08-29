@@ -1,0 +1,21 @@
+{
+  "epic_id": "109-a-stranger-runs-the-factory-in-one-command",
+  "feature": "109-a-stranger-runs-the-factory-in-one-command",
+  "specs_root": "/home/admin/code/ergane/specs",
+  "target_repo": "/home/admin/code/ergane",
+  "nodes": [
+    {
+      "id": "us3",
+      "story_key": "US3",
+      "persona": "implementer",
+      "spec_ref": "109-a-stranger-runs-the-factory-in-one-command:US3",
+      "requirement_keys": [
+        "US3"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [],
+      "timeout_override_s": null
+    }
+  ],
+  "inferred_edges": []
+}

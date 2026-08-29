@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - temporal/managed-mode-is-a-dead-path-and-verification-reports-it-passing
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.

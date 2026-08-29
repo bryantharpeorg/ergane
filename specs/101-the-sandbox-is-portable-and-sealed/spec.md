@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - verify/the-gate-boundary-gives-the-gate-a-tmpfs-home-and-nothing-tells-the-agent
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.

@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - verify/a-stale-worktree-makes-gates-and-judge-score-against-a-base-that-no-longer-merges
   - verify/an-operator-cannot-correct-a-running-epics-context-because-the-worktree-is-pinned-at-dispatch
