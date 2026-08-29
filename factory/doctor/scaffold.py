@@ -319,6 +319,9 @@ def _build_spec_md(
     lines: list[str] = []
     lines.append("---")
     lines.append("state: draft")
+    lines.append("fixes:")
+    for finding in findings:
+        lines.append(f"  - {finding.key}")
     lines.append(f"# specs_root: {specs_root}")
     lines.append(f"# target_repo: {target_repo}")
     lines.append("# Auto-scaffolded by ergane findings promote; review before flipping to ready.")
