@@ -105,6 +105,22 @@ SALVAGE_AUTHOR_EMAIL = "factory@ergane.invalid"
 #: cannot hold a node's terminal path open forever.
 GIT_TIMEOUT_S = 300
 
+#: How far behind the landing branch's current head a recorded pin may sit, in
+#: commits the branch has gained since it, and still be reused (118 US1
+#: FR-001/FR-002). Expressed in commits behind — the unit a landing arrives in,
+#: one squash-commit per story PR — and never in wall-clock time (plan trap 2):
+#: a clock measures how long ago the pin was taken, which says nothing about
+#: how far the branch has moved, and "any commit behind" rebuilds nearly every
+#: worktree on a live roadmap.
+#:
+#: The default is 2 because the defect this catches was measured at three:
+#: a story verified green on a merge-base three landings stale failed the
+#: moment it met the merge queue. At 3 the measured case would sit *at* the
+#: tolerance and be reused; at 2 it is rebuilt, and one or two sibling landings
+#: between an epic's dispatches — the ordinary churn of a live roadmap, which
+#: the between-attempts rule (FR-004) never rechecks — stay inside the rule.
+STALE_BASE_TOLERANCE_COMMITS = 2
+
 #: How much of a worktree's patch may cross an activity boundary. The judge
 #: abridges to its own, much smaller, input limit and says so (002 R6); this is
 #: the bound underneath it, and it exists because the diff travels through
@@ -322,6 +338,7 @@ def ensure(
     *,
     base_ref: str | None = None,
     factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+    stale_base_tolerance_commits: int = STALE_BASE_TOLERANCE_COMMITS,
 ) -> PreparedWorktree:
     """Prepare the node's worktree, or hand back the one already prepared.
 
@@ -331,9 +348,15 @@ def ensure(
 
     `base_ref` pins the branch point when given; otherwise the recorded pin is
     reused, and only a node that has never been prepared captures a fresh one.
-    A recorded pin is reused only when it is still an ancestor of the target's
-    current landing-branch head (US1 FR-001); otherwise the worktree is rebuilt
-    and the old branch is archived, never deleted (FR-004).
+    A recorded pin is reused only when it passes two checks (118 US1): the
+    validity test — it is still an ancestor of the target's current
+    landing-branch head — and the currency test — it is not behind that head by
+    more than `stale_base_tolerance_commits`. An ancestor is not a current base:
+    being three landings behind is exactly what being an ancestor means, which
+    is how the validity check alone passed a merge-base the merge queue then
+    refused. A failed currency test rebuilds exactly as a failed validity test
+    does — the worktree is rebuilt and the old branch is archived, never
+    deleted (FR-004).
 
     Reuse of any kind is conditional on the directory being a worktree of
     `target_repo`: `worktree_path` takes no repository, so two clones dispatched
@@ -363,15 +386,49 @@ def ensure(
             # FR-002: the directory, branch, pin and sidecar are untouched if
             # the recorded base_ref still belongs to the target's history.
             if _is_ancestor(repo, recorded.base_ref):
-                return recorded
-            # FR-003: the pin has diverged; archive and rebuild everything.
-            _archive_node(repo, factory_root, epic_id, node_id, branch, path)
-            recorded = None
+                # 118 US1 — the currency test, beside the validity test above
+                # it. Ancestor is membership; currency is distance. A pin
+                # behind by more than the configured tolerance is valid history
+                # and unmergeable in practice: gates and the judge read the
+                # worktree and find it internally consistent, and the PR then
+                # fails on a merge-base that never saw what siblings landed.
+                # Measured only here, on the preparation path — never between
+                # attempts (118 FR-004, R5): `ensure` is the caller-side seam
+                # the workflow executes once per node, before its attempt loop,
+                # and a retry reuses the recorded `prepared` worktree without
+                # calling it again, so the same tree the last attempt left
+                # always opens, whatever the landing branch has done since.
+                # Rebuilding between attempts would move the goalposts
+                # mid-node, the exact failure 002's criteria snapshot exists to
+                # prevent. Measured in commits behind (plan trap 2): the unit a
+                # landing arrives in — one squash-commit per story PR — rather
+                # than wall-clock time, which measures how long ago the pin was
+                # taken and not how far the branch has moved.
+                if _commits_behind(repo, recorded.base_ref) > stale_base_tolerance_commits:
+                    # Same rebuild path the diverged arm below takes, so there
+                    # is exactly one way for this module to discard a worktree:
+                    # archive the branch, never delete it, clear the record.
+                    _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+                    recorded = None
+                else:
+                    return recorded
+            else:
+                # FR-003: the pin has diverged; archive and rebuild everything.
+                _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+                recorded = None
         else:
             # A worktree from an older run whose record was swept: adopt it rather
             # than rebuild it, pinning to where it stands. Wrong is impossible here —
             # the tree is the node's real state either way — and rebuilding would
             # discard exactly the in-progress work the reuse rule protects.
+            #
+            # 118 US1 (trap 4): this arm deliberately gets NO currency test. There
+            # is no recorded pin to judge — the sidecar that would have carried
+            # one is gone, exactly what defines this arm — so measuring distance
+            # would mean deriving a pin nobody recorded and discarding in-progress
+            # work on the strength of it. The pin the adopt writes down is the
+            # fresh one below, so the *next* dispatch has a real pin the currency
+            # test can read.
             return _record(
                 record_file,
                 PreparedWorktree(
@@ -385,6 +442,13 @@ def ensure(
     elif base_ref is None:
         # Only recorded pins are ancestry-checked; an explicit caller instruction
         # remains the caller's authority. (spec Edge Cases)
+        #
+        # 118 US1 (FR-005): no currency test here either. An explicit
+        # `base_ref` is the caller's instruction — a caller asking for a base
+        # the landing branch left behind is asking for a tree the currency
+        # test would forbid, and refusing it would second-guess the one
+        # authority this module already recognises. The check that stays is
+        # the validity one, kept exactly as it was.
         if not _is_ancestor(repo, pinned):
             _archive_node(repo, factory_root, epic_id, node_id, branch, path)
             pinned = _remote_head(repo)
@@ -1580,6 +1644,33 @@ def _is_ancestor(repo: Path, ancestor: str, descendant: str | None = None) -> bo
     raise WorktreeError(
         f"git merge-base --is-ancestor {ancestor} {descendant} failed in {repo}: {detail}"
     )
+
+
+def _commits_behind(repo: Path, ancestor: str, descendant: str | None = None) -> int:
+    """How many commits `descendant` (or the current landing head) gained since `ancestor`.
+
+    The currency test's measure of distance (118 US1): `rev-list --count
+    ancestor..descendant` — the commits the landing branch holds that the pin
+    does not. Reads the same head `_is_ancestor`'s default read does, so the
+    two checks can never disagree about which head they are measuring against;
+    a zero means the pin *is* the head, and a failure to read it raises like
+    every other read here — a node is never rebuilt on an answer nobody got.
+    """
+    if descendant is None:
+        descendant = _remote_head(repo)
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "rev-list", "--count", f"{ancestor}..{descendant}"],
+        capture_output=True,
+        text=True,
+        env=scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"},
+        timeout=GIT_TIMEOUT_S,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise WorktreeError(
+            f"git rev-list --count {ancestor}..{descendant} failed in {repo}: {detail}"
+        )
+    return int(completed.stdout.strip())
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
