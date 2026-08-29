@@ -76,7 +76,7 @@ read-only to this epic) are the four that decide whether an attempt lands.
 
 - [ ] T017 [US2] Run the reflog demonstration in the plan's § *Verification the
       operator will run* against a live roadmap schedule, and paste the branch,
-      status and reflog output into the attempt report. The reflog is the
+      status and reflog output into `specs/090-the-factory-reads-origin-not-the-operators-checkout/attempt-report-<story>.md` (the attempt report). The reflog is the
       load-bearing evidence: a clean `git status` after a reset is
       indistinguishable from one that was never touched, and only the absence of
       a `reset: moving to` entry proves the tick left the checkout alone.
@@ -100,7 +100,7 @@ read-only to this epic) are the four that decide whether an attempt lands.
       repository it was read from and the arm — the shape `_log_landing_base`
       (`factory/activities/merge_activities.py:385`) uses for the landing path.
 - [ ] T022 [US3] (FR-008) Confirm the two functions FR-008 names are unchanged by
-      this epic, and say so in the attempt report. Do not restate their paths in
+      this epic, and say so in `specs/090-the-factory-reads-origin-not-the-operators-checkout/attempt-report-<story>.md` (the attempt report). Do not restate their paths in
       this task, because a task that names a file joins that file to its story's
       slice and no story here edits that module.
 

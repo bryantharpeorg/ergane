@@ -100,7 +100,7 @@ defect) are the four that decide whether an attempt lands.
       an abridged PASS from a whole-diff PASS.
 - [ ] T023 [US3] (FR-008) Confirm the abridgement algorithm named by FR-008 is
       unchanged and that no path is exempted by name or pattern anywhere in this
-      epic, and say so in the attempt report. Do not restate the module path
+      epic, and say so in `specs/092-the-diff-ceiling-and-the-evidence-doctrine-agree/attempt-report-<story>.md` (the attempt report). Do not restate the module path
       here, because a task that names a file joins that file to its story's
       slice and no story here edits it.
 
@@ -109,7 +109,7 @@ defect) are the four that decide whether an attempt lands.
 - [ ] T024 [US3] Run the demonstration in the plan's § *Verification the operator
       will run*: confirm the default-configuration behaviour is preserved, then
       build one real node whose diff exceeds the old constant and paste its
-      status output into the attempt report. The demonstration succeeds when that
+      status output into `specs/092-the-diff-ceiling-and-the-evidence-doctrine-agree/attempt-report-<story>.md` (the attempt report). The demonstration succeeds when that
       node reaches a judge verdict at all — PASS or FAIL, either is proof — and
       its record says the input was abridged. Before this spec no such node can
       reach a verdict by any route, which is the one fact the gate cannot show.

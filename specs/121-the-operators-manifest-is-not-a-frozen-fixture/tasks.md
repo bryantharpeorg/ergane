@@ -73,7 +73,7 @@ node of every epic that follows.
 - [ ] T011 [US1] Run the sequence in the plan's § *Verification the operator will
       run*, which declares a real `ladder:` block in `ergane.yaml`, proves the
       suite green with it, prints the parsed ladder, and restores the file.
-      Paste **both** the before and after runs into the attempt report — either
+      Paste **both** the before and after runs into `specs/121-the-operators-manifest-is-not-a-frozen-fixture/attempt-report-<story>.md` (the attempt report) — either
       alone proves nothing, because a suite that was already green proves no fix
       and a suite green only afterwards proves no regression was avoided. Before
       this spec the second run fails with `assert 2 == 1` and a `FactoryConfig`

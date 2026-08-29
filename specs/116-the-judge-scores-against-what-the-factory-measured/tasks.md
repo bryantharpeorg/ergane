@@ -101,7 +101,7 @@ the attempt) are the four that decide whether an attempt lands.
       from the prompt onto the verdict.
 - [ ] T026 [US3] (FR-008) Render the contradiction in the attempt view.
 - [ ] T027 [US3] (FR-009) Confirm the three things FR-009 names are unchanged by
-      this epic and say so in the attempt report. Do not restate their paths
+      this epic and say so in `specs/116-the-judge-scores-against-what-the-factory-measured/attempt-report-<story>.md` (the attempt report). Do not restate their paths
       here, because a task that names a file joins that file to its story's
       slice and no story here edits them.
 
@@ -110,6 +110,6 @@ the attempt) are the four that decide whether an attempt lands.
 - [ ] T028 [US3] Run the paired demonstration in the plan's § *Verification the
       operator will run*: score one scenario whose Then-clause names a runtime
       outcome against the live judge twice, once with the gate section and once
-      without, and paste both verdicts into the attempt report. The
+      without, and paste both verdicts into `specs/116-the-judge-scores-against-what-the-factory-measured/attempt-report-<story>.md` (the attempt report). The
       demonstration succeeds when the with-gates run passes and the without-gates
       run fails. No gate can produce this evidence, because it requires a model.

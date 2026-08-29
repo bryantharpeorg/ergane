@@ -99,7 +99,7 @@ fetch may not fail a node).
 
 - [ ] T025 [US3] Run the live-floor demonstration in the plan's § *Verification
       the operator will run* and paste the status line showing the node's base
-      beside the landing branch head into the attempt report. That single line is
+      beside the landing branch head into `specs/118-a-verified-tree-is-the-tree-that-will-merge/attempt-report-<story>.md` (the attempt report). That single line is
       the diagnosis the finding says would have made a stale-base PASS visible in
       seconds, and no gate can produce it because it requires a landing branch
       that moves under a running node.

@@ -95,7 +95,7 @@ whether an attempt lands.
 - [ ] T026 [US3] (FR-009) Render the three dials in the status view beside the
       landing dials.
 - [ ] T027 [US3] (FR-010) Confirm the two things FR-010 names are unchanged by
-      this epic and say so in the attempt report. Do not restate their paths
+      this epic and say so in `specs/095-the-ladder-charges-only-the-story/attempt-report-<story>.md` (the attempt report). Do not restate their paths
       here, because a task that names a file joins that file to its story's slice
       and this story edits neither.
 
@@ -103,7 +103,7 @@ whether an attempt lands.
 
 - [ ] T028 [US3] Run the dead-credential demonstration in the plan's
       § *Verification the operator will run* and paste the status output and any
-      escalation text into the attempt report. The demonstration succeeds when
+      escalation text into `specs/095-the-ladder-charges-only-the-story/attempt-report-<story>.md` (the attempt report). The demonstration succeeds when
       the status names authentication, the attempt count has not run past the new
       bound, and the escalation names the remedy. Before this spec the same run
       shows four attempts, a typecheck failure naming a missing binary, and

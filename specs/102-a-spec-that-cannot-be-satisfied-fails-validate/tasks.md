@@ -88,7 +88,7 @@ must survive while "change this criterion" is withheld).
 - [ ] T023 [US3] (FR-010, trap 7) Preserve and surface an unsatisfiability
       report, which is the signal US1 exists to catch earlier.
 - [ ] T024 [US3] (FR-011) Confirm `criteria_drift`'s hashing is unchanged by this
-      epic and say so in the attempt report. Do not restate its path here,
+      epic and say so in `specs/102-a-spec-that-cannot-be-satisfied-fails-validate/attempt-report-<story>.md` (the attempt report). Do not restate its path here,
       because a task that names a file joins that file to its story's slice.
 
 ### The operator's demonstration for this story
@@ -96,6 +96,6 @@ must survive while "change this criterion" is withheld).
 - [ ] T025 [US3] Run the paired demonstration in the plan's § *Verification the
       operator will run*: validate a spec whose Then-clause names a runtime
       outcome no gate covers, then rephrase it against a declared gate and
-      validate again. Paste both outputs into the attempt report. The pair is the
+      validate again. Paste both outputs into `specs/102-a-spec-that-cannot-be-satisfied-fails-validate/attempt-report-<story>.md` (the attempt report). The pair is the
       whole argument — the check must refuse the unprovable clause **and** admit
       the one a gate can evidence, because refusing both would undo spec 116.

@@ -98,7 +98,7 @@ attempt lands.
 
 - [ ] T024 [US3] Run the checksum demonstration in the plan's § *Verification the
       operator will run* and paste both `sha256sum` outputs and the empty
-      `git diff --stat` into the attempt report. Before this spec the same
+      `git diff --stat` into `specs/120-an-init-that-finds-a-manifest-keeps-it/attempt-report-<story>.md` (the attempt report). Before this spec the same
       sequence silently removes `standards`, the whole `ladder` block and about
       forty lines of comments — and `init --check` calls the result valid, which
       is why no gate catches it.

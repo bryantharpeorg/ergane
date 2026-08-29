@@ -49,7 +49,7 @@ that decide whether an attempt lands.
 
 - [ ] T009 [US1] Run the loop demonstration in the plan's § *Verification the
       operator will run* against a throwaway store and specs root, and paste the
-      `triage` counts output into the attempt report, showing the promoted
+      `triage` counts output into `specs/089-a-spec-that-fixes-a-finding-declares-it/attempt-report-<story>.md` (the attempt report), showing the promoted
       finding classifying as `fixed` rather than `candidate`. The gate cannot
       establish this; only a landed, dated spec can.
 
@@ -112,6 +112,6 @@ that decide whether an attempt lands.
       unreadable, distinguishing the two in the reason.
 - [ ] T022 [US3] (FR-004, FR-007) Confirm a spec with no `fixes:` key takes no
       new code path, and that both modules FR-007 names are unchanged by this
-      story. State it in the attempt report; do not restate their paths here,
+      story. State it in `specs/089-a-spec-that-fixes-a-finding-declares-it/attempt-report-<story>.md` (the attempt report); do not restate their paths here,
       because a task that names a file joins that file to its story's slice and
       this story edits neither.

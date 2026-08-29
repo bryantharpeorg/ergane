@@ -90,7 +90,7 @@ survive a Temporal retry) are the four that decide whether an attempt lands.
 - [ ] T022 [US3] (FR-009, trap 8) Keep the exported readers' single-dispatch
       shape unchanged.
 - [ ] T023 [US3] (FR-010) Confirm the two things FR-010 names are unchanged by
-      this epic and say so in the attempt report. Do not restate their paths
+      this epic and say so in `specs/117-the-record-outlives-the-build/attempt-report-<story>.md` (the attempt report). Do not restate their paths
       here, because a task that names a file joins that file to its story's slice.
 
 ### The operator's demonstration for this story

@@ -87,7 +87,7 @@ swallowing the failure) are the four that decide whether an attempt lands.
       ref, the reason and the clearing command.
 - [ ] T022 [US3] (FR-009, FR-010) Confirm every other push failure keeps today's
       retryable path, and that no force push and no archive-ref deletion was
-      added anywhere in this epic. Say so in the attempt report.
+      added anywhere in this epic. Say so in `specs/100-a-reset-leaves-nothing-behind/attempt-report-<story>.md` (the attempt report).
 
 ### The operator's demonstration for this story
 

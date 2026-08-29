@@ -86,13 +86,13 @@ trap 5 (every existing manifest must keep the uv bind unchanged).
 - [ ] T020 [US3] (FR-009, trap 6) Confirm the annotated detail flows through the
       existing path by which gate results reach the retry prompt.
 - [ ] T021 [US3] (FR-010) Confirm the three things FR-010 names are unchanged by
-      this epic and say so in the attempt report. Do not restate their paths
+      this epic and say so in `specs/101-the-sandbox-is-portable-and-sealed/attempt-report-<story>.md` (the attempt report). Do not restate their paths
       here, because a task that names a file joins that file to its story's slice.
 
 ### The operator's demonstration for this story
 
 - [ ] T022 [US3] Run the warm-cache demonstration in the plan's § *Verification
       the operator will run* and paste the smoke gate's duration with and without
-      the cache declared into the attempt report. The difference between a
+      the cache declared into `specs/101-the-sandbox-is-portable-and-sealed/attempt-report-<story>.md` (the attempt report). The difference between a
       network-bound run and a warm one is the evidence, and it is the same
       evidence `_cache_binds`' own docstring cites for the Python world.
