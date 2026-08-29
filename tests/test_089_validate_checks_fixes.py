@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import warnings
@@ -253,3 +254,96 @@ def test_validate_does_not_create_missing_store(
     assert result.code == 0
     assert "not checked" in result.stderr
     assert str(store_path) in result.stderr
+
+
+# --- T018a (US3-S4): the real corpus of fixes-less specs is unchanged ----------
+
+
+def _omits_fixes(spec_path: Path) -> bool:
+    """True when the spec's frontmatter block does not declare `fixes:`."""
+    text = spec_path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return True
+    end = text.find("---", 3)
+    if end == -1:
+        return True
+    return re.search(r"^fixes:", text[3:end], re.MULTILINE) is None
+
+
+def _validate_without_fixes_layer(
+    run: Callable[..., Run], spec_dir: Path, repo_root: Path, specs_root: Path
+) -> tuple[int, Any]:
+    """Run validate with the new `_check_fixes` layer monkeypatched to a no-op."""
+    import factory.cli.nouns.spec as _spec_module
+
+    original = _spec_module._check_fixes
+    _spec_module._check_fixes = lambda *args, **kwargs: None
+    try:
+        result = run(
+            "spec",
+            "validate",
+            "--json",
+            "--target-repo",
+            str(repo_root),
+            "--specs-root",
+            str(specs_root),
+            str(spec_dir),
+        )
+        return result.code, result.json
+    finally:
+        _spec_module._check_fixes = original
+
+
+def test_validate_fixes_less_specs_in_real_corpus_unchanged(
+    run: Callable[..., Run], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """US3-S4: every fixes-less spec in the real corpus takes no new code path.
+
+    A spec that omits `fixes:` must be indistinguishable from a build before
+    US3: the `fixes` layer must not appear in `checked` or `skipped`, and the
+    full verdict (exit code and findings) must match the run with the layer
+    disabled. The test uses the repository's own specs corpus, pointed at a
+    temp runtime root that holds no findings store.
+    """
+    monkeypatch.setenv("ERGANE_ROOT", str(tmp_path))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+
+    repo_root = Path(__file__).resolve().parent.parent
+    specs_root = repo_root / "specs"
+
+    checked_any = 0
+    for spec_dir in sorted(specs_root.iterdir()):
+        spec_path = spec_dir / "spec.md"
+        if not spec_path.is_file() or not _omits_fixes(spec_path):
+            continue
+
+        with_result = run(
+            "spec",
+            "validate",
+            "--json",
+            "--target-repo",
+            str(repo_root),
+            "--specs-root",
+            str(specs_root),
+            str(spec_dir),
+        )
+        without_code, without_doc = _validate_without_fixes_layer(
+            run, spec_dir, repo_root, specs_root
+        )
+
+        assert with_result.code == without_code, (
+            f"{spec_dir.name}: exit code changed by the fixes layer"
+        )
+        doc = with_result.json
+        assert "fixes" not in doc.get("checked", []), (
+            f"{spec_dir.name}: fixes layer reported in checked"
+        )
+        assert "fixes" not in [s.get("layer") for s in doc.get("skipped", [])], (
+            f"{spec_dir.name}: fixes layer reported in skipped"
+        )
+        assert doc.get("findings") == without_doc.get("findings"), (
+            f"{spec_dir.name}: findings differ with fixes layer disabled"
+        )
+        checked_any += 1
+
+    assert checked_any > 0, "no fixes-less specs were found in the corpus"
