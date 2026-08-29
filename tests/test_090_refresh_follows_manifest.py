@@ -143,7 +143,7 @@ def test_refresh_leaves_the_clone_on_the_declared_branch_and_spares_the_operator
     """S1 / FR-002: HEAD ends on `dev` at `origin/dev`; `spec/x` is untouched."""
     spec_x_before = _sha(OPERATOR_BRANCH, declared_clone)
     spec_x_reflog_before = _reflog(OPERATOR_BRANCH, declared_clone)
-    dev_reflog_before = _reflog(DECLARED, declared_clone)
+    head_reflog_before = _reflog("HEAD", declared_clone)
     dev_on_origin = _sha(f"origin/{DECLARED}", declared_clone)
     assert spec_x_before != dev_on_origin, "fixture must give the two branches distinct tips"
 
@@ -175,10 +175,19 @@ def test_refresh_leaves_the_clone_on_the_declared_branch_and_spares_the_operator
         "is never reset cannot stall the line, and a pushed one can never "
         "become the tree an epic derives from"
     )
-    # And positively: the refresh's own acts all belong to the declared branch.
-    dev_acts = _new_entries(dev_reflog_before, _reflog(DECLARED, declared_clone))
-    assert any("reset: moving to origin/dev" in entry for entry in dev_acts), (
-        "the declared branch must be the one that was reset"
+    # And positively: every act the refresh performed names the declared branch.
+    # HEAD's reflog is where `checkout` and `reset` record themselves — a branch's
+    # own reflog only gains entries when the branch moves, so the reset target
+    # lives here and nowhere else.
+    # Newest first, as `git reflog` writes it: the reset the refresh ends on is
+    # the most recent act.
+    acts = _new_entries(head_reflog_before, _reflog("HEAD", declared_clone))
+    assert acts == [
+        f"reset: moving to origin/{DECLARED}",
+        f"checkout: moving from {OPERATOR_BRANCH} to {DECLARED}",
+    ], (
+        "the refresh must check out and reset the declared branch only; these "
+        f"are the acts it performed instead: {acts}"
     )
 
 

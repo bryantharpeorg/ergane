@@ -12,9 +12,11 @@ The shape mirrors `factory/activities/merge_activities.py`: a pure library
 function does the work, a thin `@activity.defn` wrapper builds the side-effect
 through an injectable seam, and tests script the seam. The seams are:
 
-- `_clone_runner` — production refreshes the target clone to its default
-  branch (FR-006: "fresh clone at the current default branch"); tests hand
-  back a scripted `CloneResult` so the clone never touches a real repo.
+- `_clone_runner` — production refreshes the target clone to its declared
+  landing branch (FR-006: "fresh clone at the current default branch"; 090
+  US1: the branch is read from the manifest via `resolve_landing_base`, not
+  from whatever HEAD has checked out); tests hand back a scripted
+  `CloneResult` so the clone never touches a real repo.
 - `_registry` — production reads `personas.yaml`; tests hand a fixed
   registry so the preflight checks deterministic personas (the same split the
   CLI's preflight draws, one host reading its own file).
@@ -95,31 +97,58 @@ class CloneResult:
     `head_ref` is the commit the clone stood at after the refresh — the
     branch point the epic's nodes will pin against (FR-006: derive from the
     current default branch, not a stale one).
+
+    `default_source` is the arm that named the branch (090 US1, FR-006):
+    `worktree.LANDING_BASE_MANIFEST` when the repo's own manifest declared
+    it, `worktree.LANDING_BASE_HEAD` when no readable manifest did and the
+    clone's checked-out `HEAD` answered instead. The fallback value is
+    shaped exactly like a declared one, so the branch alone cannot tell them
+    apart — the arm is what lets an operator see that the refresh guessed.
+    US3 populates it from the `LandingBase` the refresh already holds;
+    the empty default keeps pre-090 histories replayable.
     """
 
     path: str
     default_branch: str
     head_ref: str
+    default_source: str = ""
 
 
 def _refresh_to_default(target_repo: str) -> CloneResult:
-    """Refresh the target clone to its default branch and report where it stands.
+    """Refresh the target clone to its declared branch and report where it stands.
 
-    A fetch + hard reset to `origin/<default>` so the epic derives from the
+    A fetch + hard reset to `origin/<branch>` so the epic derives from the
     trunk's current head, whatever other landings moved it since the last
     epic. Reuses the workgraph's git helpers (the same `_git` discipline the
     node worktrees already follow) so the clone never sees a factory credential
     (constitution V).
+
+    090 US1: the branch comes from `resolve_landing_base` — the manifest's
+    `landing_branch`, falling back to the checked-out HEAD only when the
+    manifest is absent or malformed — and never from a second read of HEAD
+    (FR-001). Before this, `_default_branch` asked the operator's working copy
+    which branch it had checked out and reset *that* to its remote, so a
+    clone left on an unpushed branch stalled every tick at clone, and a pushed
+    one made the factory derive and land epics against a feature branch as
+    though it were the trunk. The fetch / checkout / reset sequence is
+    otherwise unchanged (FR-007): a clean clone on the declared branch
+    refreshes exactly as it did before.
     """
-    from factory.workgraph.worktree import _default_branch, _git, _head
     from pathlib import Path
 
+    from factory.workgraph.worktree import _git, _head, resolve_landing_base
+
     repo = Path(target_repo)
-    default = _default_branch(repo)
+    base = resolve_landing_base(repo)
     _git(repo, "fetch", "--quiet", "origin")
-    _git(repo, "checkout", "--quiet", default)
-    _git(repo, "reset", "--quiet", "--hard", f"origin/{default}")
-    return CloneResult(path=str(repo), default_branch=default, head_ref=_head(repo))
+    _git(repo, "checkout", "--quiet", base.branch)
+    _git(repo, "reset", "--quiet", "--hard", f"origin/{base.branch}")
+    return CloneResult(
+        path=str(repo),
+        default_branch=base.branch,
+        head_ref=_head(repo),
+        default_source=base.source,
+    )
 
 
 #: The clone seam — production refreshes a real clone; tests hand back a
