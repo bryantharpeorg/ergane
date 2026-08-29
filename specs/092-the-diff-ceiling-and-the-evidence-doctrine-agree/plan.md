@@ -37,9 +37,9 @@ verdict records when it was reached on abridged evidence. No algorithm changes.
   `factory/verify/store.py:717` and `_size_refusal_to_dict` (`:721`), and read
   back at `:735`. `OutputCheck.size_refusal` is `factory/verify/models.py:433`,
   with the three-ways-to-fail argument at `:416`.
-- **The prompt side**: `factory/workgraph/prompt.py:802-804` quotes the refusal
+- **The prompt side**: `factory/workgraph/prompt.py:880-882` quotes the refusal
   listing into the next attempt's prompt, which is why
-  `OVERSIZE_FILES_NAMED = 5` (`diffbounds.py:48`) is bounded.
+  `OVERSIZE_FILES_NAMED = 5` (`diffbounds.py:49`) is bounded.
 - **The manifest's numeric-key idiom**: the ladder bounds checks at
   `factory/verify/factory_yaml.py:648-660` are the shape US2's refusals should
   copy — a type refusal naming the value, then a bounds refusal naming the floor.
@@ -87,7 +87,7 @@ Record both outcomes explicitly (abridged, with the amount; or not abridged), so
 a reader can tell "the judge saw it whole" from "nobody recorded".
 
 **Trap 7 — the prompt quotes the refusal, so its shape is load-bearing.**
-`factory/workgraph/prompt.py:802` puts the refusal listing into the next
+`factory/workgraph/prompt.py:880` puts the refusal listing into the next
 attempt's prompt verbatim. Changing the refusal's rendering changes what an agent
 is told; US1's rename must leave that text as it is unless a scenario asks
 otherwise.

@@ -1,6 +1,10 @@
 ---
 state: ready
 fixes:
+# US1 landed dd84c70b (#378) and US3 a1690633 (#379), both first attempt, both
+# gate and judge green. US2 still building. NOT attested yet -- attestation waits
+# until every story is on the branch, and calling it landed early is what makes
+# `ergane status` believe an epic is finished when it is not.
   - verify/a-stale-worktree-makes-gates-and-judge-score-against-a-base-that-no-longer-merges
   - verify/an-operator-cannot-correct-a-running-epics-context-because-the-worktree-is-pinned-at-dispatch
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.
