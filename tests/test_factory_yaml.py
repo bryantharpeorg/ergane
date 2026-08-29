@@ -1654,24 +1654,50 @@ def test_v2_every_rejection_becomes_one_config_error_gate(case: V2Rejection) -> 
     assert str(excinfo.value) in result.output_tail
 
 
-# v1 identity (US1-S2, US1-S6) ------------------------------------------------
+# v1 identity (023 US1-S2/S6; repointed by 121-US1) ---------------------------
 
 
-def test_v1_identity_against_erganes_own_manifest() -> None:
-    """US1-S2/S6: the committed manifest must parse to exactly today's shape.
+#: The committed sample the v1 identity is frozen against (121 T007): the file
+#: whose bytes are the parser regression fixture, named for the one condition it
+#: demonstrates as its neighbours are. The operator's live manifest is *not*
+#: assertable content — spec 121 FR-001/FR-002 — because the manifest is the
+#: operator's file and freezing its parsed value reddens the gate every node
+#: runs whenever the operator turns a dial. A sample nobody has a reason to
+#: change can be frozen honestly.
+V1_IDENTITY_SAMPLE = (
+    REPO_ROOT / "tests" / "fixtures" / "target_repo" / "manifests" / "v1-sample.yaml"
+)
 
-    This is the regression fixture that proves v1 semantics never moved. The
-    repo root `ergane.yaml` must stay byte-identical in every story (FR-011);
-    the parser must continue to produce the same field-for-field result.
+
+def test_v1_identity_against_the_committed_sample() -> None:
+    """The v1 parse-shape regression: the committed sample parses field for
+    field to exactly the frozen shape.
+
+    This was `test_v1_identity_against_erganes_own_manifest` and read this
+    repository's live `ergane.yaml`; 121-US1 moved it onto the sample. The
+    comparison is deliberately unchanged — the whole `FactoryConfig`, field for
+    field (FR-007) — because it is the parser regression fixture spec 023's
+    US1-S2/S6 put there, and a rewrite into spot assertions would let a v1
+    default drift while every spot assert stayed green. What moved is the
+    fixture: v1 semantics are frozen on committed bytes (FR-005) instead of on
+    the operator's file, which no test may pin (FR-001/FR-002) and every node's
+    gate runs against.
+
+    `tests/test_121_manifest_is_not_a_fixture.py` holds the other half: the
+    sample stays v1, and this test never points back at the operator's file.
     """
-    config = load_factory_config(REPO_ROOT / MANIFEST_NAME)
+    config = load_factory_config(V1_IDENTITY_SAMPLE)
 
     assert config == FactoryConfig(
         version=1,
         runtime="bwrap",
-        gates={"test": "uv run pytest -q"},
-        standards=".specify/memory/constitution.md",
-        landing_branch="ergane-buildout",
+        gates={
+            "lint": "bash gates/lint.sh",
+            "test": "bash gates/test.sh",
+            "typecheck": "bash gates/typecheck.sh",
+        },
+        timeouts={"lint": 30},
+        standards="docs/STANDARDS.md",
         ladder=VerificationConfig(),
         verify_order=("gates", "diff_check", "judge"),
     )

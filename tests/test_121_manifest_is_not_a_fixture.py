@@ -331,25 +331,35 @@ def test_the_v1_identity_test_reads_the_sample_not_the_operator() -> None:
     """US1-S4's second half: the moved fixture must actually have moved.
 
     T008's edit is a repoint, and a repoint that leaves the operator's file in
-    one of the two loads would keep the freeze half alive. This reads the
-    sibling module's source and requires the v1-identity test to load the
-    committed sample and to no longer load `REPO_ROOT / MANIFEST_NAME`.
+    the load would keep the freeze half alive. This reads the sibling module's
+    source and requires the v1-identity test to load the committed sample and
+    to no longer load `REPO_ROOT / MANIFEST_NAME`.
+
+    The test is located by its body — the module-level sample constant followed
+    by a load of it — not by its name, first because a name that still says
+    "erganes_own" while reading a sample would be its own small lie, and second
+    because a rename cannot outflank a structural locator.
 
     Mutation: repoint the identity test back at the operator's manifest and
     this fails; US1-S6 fails with it.
     """
     source = TEST_FACTORY_YAML.read_text(encoding="utf-8")
 
-    body = _function_body(source, "test_v1_identity_against_erganes_own_manifest")
-    assert body is not None, (
+    bodies = [
+        body
+        for body in _top_level_function_bodies(source)
+        if "load_factory_config" in body and "FactoryConfig(" in body
+    ]
+    assert len(bodies) >= 1, (
         "the v1 identity test must keep existing (FR-007, trap 3)"
     )
-    assert "REPO_ROOT / MANIFEST_NAME" not in body, (
-        "the v1 identity test must not read the operator's manifest (FR-002)"
-    )
-    assert str(SAMPLE_V1.relative_to(REPO_ROOT)) in body or "SAMPLE" in body, (
-        "the v1 identity test must read the committed sample (FR-005)"
-    )
+    for body in bodies:
+        assert "REPO_ROOT / MANIFEST_NAME" not in body, (
+            "the v1 identity test must not read the operator's manifest (FR-002)"
+        )
+        assert "SAMPLE" in body, (
+            "the v1 identity test must read the committed sample (FR-005)"
+        )
 
 
 def test_the_v1_identity_test_still_compares_field_for_field() -> None:
@@ -362,14 +372,23 @@ def test_the_v1_identity_test_still_compares_field_for_field() -> None:
     refuses everywhere else. The `FactoryConfig(` construction is the
     field-for-field shape; its absence means the comparison was diluted.
 
+    Located structurally (see the guard beside this one), so a rename of the
+    test does not lift the guard.
+
     Mutation: replace the identity comparison with a handful of spot asserts
     and this fails.
     """
     source = TEST_FACTORY_YAML.read_text(encoding="utf-8")
 
-    body = _function_body(source, "test_v1_identity_against_erganes_own_manifest")
-    assert body is not None, "the v1 identity test must keep existing (trap 3)"
-    assert "FactoryConfig(" in body, (
+    bodies = [
+        body
+        for body in _top_level_function_bodies(source)
+        if "load_factory_config" in body and "FactoryConfig(" in body
+    ]
+    assert len(bodies) == 1, (
+        f"expected exactly one whole-config identity test, found {len(bodies)}"
+    )
+    assert "FactoryConfig(" in bodies[0], (
         "the v1 identity test must still compare whole-config, field for field"
     )
 
