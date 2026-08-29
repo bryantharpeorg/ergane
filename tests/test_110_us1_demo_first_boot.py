@@ -459,7 +459,8 @@ def test_probe_refusal_prints_stderr_and_a_remedy_and_dispatches_nothing(
 
     assert status != 0
     assert "bwrap: Can't mount proc on /newroot/proc" in printed
-    assert driver_mod.SANDBOX_REMEDY in printed
+    assert "systempaths=unconfined" in printed
+    assert "apparmor_restrict_unprivileged_userns" not in printed
 
     # No dispatch step was taken: the CLI seam saw install and nothing else.
     verbs = [call[0] for call in cli.calls]

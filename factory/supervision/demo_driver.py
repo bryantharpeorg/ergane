@@ -66,6 +66,7 @@ from factory.controlplane.verify import LLMProbe
 from factory.doctor.scaffold import scaffold_spec
 from factory.mergequeue.models import Finding
 from factory.registry import resolve_state_home
+from factory.verify.sandbox_remedy import sandbox_remedy
 from factory.verify.toolchain import (
     GIT,
     NODE,
@@ -140,18 +141,6 @@ _TERMINAL_EPIC_STATES = frozenset({"COMPLETED", "KILLED"})
 #: what the *stream* says about a failure is `build status`'s render and not a
 #: word more (FR-010).
 _SUCCEEDED_NODE_STATES = frozenset({"PASSED", "MERGED"})
-
-#: The one remedy line a sandbox refusal prints under the probe's own stderr.
-#: Docker masks parts of `/proc`, and the kernel refuses a fresh procfs mount in
-#: a user namespace unless the existing one is fully visible (bubblewrap#284),
-#: which is exactly what the agent sandbox does on every dispatch.
-SANDBOX_REMEDY = (
-    "remedy: the agent sandbox needs an unmasked /proc. Run this project with "
-    "`security_opt: [systempaths=unconfined]` on the engine service — it is "
-    "already set in container/compose.demo.yaml — and make sure unprivileged "
-    "user namespaces are enabled on the host "
-    "(`sysctl kernel.unprivileged_userns_clone=1`)."
-)
 
 #: Name of the one credential the demo requires. It is set on the gateway
 #: service only; the engine container never reads it (FR-016).
@@ -432,7 +421,7 @@ def run_prepare_phase(
         argv = sandbox_probe_argv()
     except (ToolchainError, SystemTreeError) as refusal:
         emit(f"refusing: the agent sandbox cannot be assembled on this host\n{refusal}")
-        emit(SANDBOX_REMEDY)
+        emit(sandbox_remedy(""))
         return 1
 
     outcome = probe(argv)
@@ -440,7 +429,7 @@ def run_prepare_phase(
         emit("refusing: the agent sandbox could not start on this host")
         if outcome.stderr:
             print(outcome.stderr, flush=True)
-        emit(SANDBOX_REMEDY)
+        emit(sandbox_remedy(outcome.stderr))
         return 1
     emit("agent sandbox probe succeeded")
 
