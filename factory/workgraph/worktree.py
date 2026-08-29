@@ -385,7 +385,10 @@ def ensure(
         if recorded is not None:
             # FR-002: the directory, branch, pin and sidecar are untouched if
             # the recorded base_ref still belongs to the target's history.
-            if _is_ancestor(repo, recorded.base_ref):
+            # One fetched head answers both checks, so they can never read
+            # different moments of a branch that moves between two fetches.
+            landing_head = _remote_head(repo)
+            if _is_ancestor(repo, recorded.base_ref, landing_head):
                 # 118 US1 — the currency test, beside the validity test above
                 # it. Ancestor is membership; currency is distance. A pin
                 # behind by more than the configured tolerance is valid history
@@ -404,7 +407,10 @@ def ensure(
                 # landing arrives in — one squash-commit per story PR — rather
                 # than wall-clock time, which measures how long ago the pin was
                 # taken and not how far the branch has moved.
-                if _commits_behind(repo, recorded.base_ref) > stale_base_tolerance_commits:
+                if (
+                    _commits_behind(repo, recorded.base_ref, landing_head)
+                    > stale_base_tolerance_commits
+                ):
                     # Same rebuild path the diverged arm below takes, so there
                     # is exactly one way for this module to discard a worktree:
                     # archive the branch, never delete it, clear the record.
