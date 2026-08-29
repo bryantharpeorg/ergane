@@ -8,8 +8,15 @@ obey about its own remediation menu.
 
 ## What already exists, and where
 
+> Anchors re-verified against `origin/ergane-buildout` on 2026-08-29, after 089
+> landed and moved one of them. `validate_spec_command` was cited at `:250` and is
+> at `:260`; 089/US3 inserted the `fixes` layer above it. Check anchors against the
+> branch, not the operator's checkout — those are different trees whenever the
+> roadmap is paused.
+
+
 - **The validate composition**: `validate_spec_command(args)`
-  (`factory/cli/nouns/spec.py:250`) composes frontmatter, work-graph derivation,
+  (`factory/cli/nouns/spec.py:260`) composes frontmatter, work-graph derivation,
   persona registry, scenario coverage, prompt assembly and slice coverage, each
   with a precise refusal and a `layer '<name>' not checked: <reason>` form for a
   layer it could not run. US1 adds a layer to that composition and follows both
