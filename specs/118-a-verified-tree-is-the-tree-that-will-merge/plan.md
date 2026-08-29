@@ -13,7 +13,9 @@ is "created once, reused across attempts", and "rebuilding or rebasing between
 attempts would move the goalposts mid-node, which is the failure 002's criteria
 snapshot exists to prevent (R5)".
 
-- **`prepare_worktree`** (`:325`). Its docstring (`:326-343`) is the contract:
+- **`ensure`** (`:318`) — the function the `prepare_worktree` activity
+  (`factory/activities/agent_activities.py:394`) calls, and the one this spec
+  changes. Its docstring (`:326-343`) is the contract:
   idempotent by construction, "an existing directory is returned as-is,
   untouched — no fetch, no rebase, no reset". Then the pin rule: "A recorded pin
   is reused only when it is still an ancestor of the target's current
@@ -60,7 +62,7 @@ something — commits behind, or "has the landing branch touched a path this nod
 tree contains" if that proves cheap. Do not express it in wall-clock time.
 
 **Trap 3 — never run the currency test between attempts.** FR-004 and US1-S4.
-`prepare_worktree` is called both to create and to hand back, and the
+`ensure` is called both to create and to hand back, and the
 distinction matters more here than anywhere else in the module. If a retry can
 trigger a rebuild, this spec has caused the exact failure R5 exists to prevent,
 and it will present as a debugger persona losing its context mid-node.
@@ -101,7 +103,7 @@ decision and the between-attempts boundary are where it goes wrong. US2 is a
 field, a rendering and a migration-shaped unknown for old rows. US3 is a
 resolution in the caller plus a fallback.
 
-If an attempt is editing the criteria snapshot, or making `prepare_worktree`
+If an attempt is editing the criteria snapshot, or making `ensure`
 rebuild on a retry, it has gone outside the spec.
 
 ## Verification the operator will run, independent of the gate

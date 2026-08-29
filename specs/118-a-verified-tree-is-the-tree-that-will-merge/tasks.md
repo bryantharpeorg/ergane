@@ -36,7 +36,7 @@ fetch may not fail a node).
 - [ ] T007 [US1] (FR-001, trap 2) Add the tolerance to the configuration with a
       sane default, expressed in commits behind rather than in wall-clock time.
 - [ ] T008 [US1] (FR-001, FR-002, trap 1) Add the currency test in
-      `prepare_worktree` (`factory/workgraph/worktree.py:365-369`) between the
+      `ensure` (`factory/workgraph/worktree.py:365-369`) between the
       validity test and its diverged arm, reusing the existing `_archive_node`
       rebuild path rather than adding a second one.
 - [ ] T009 [US1] (FR-004, trap 3) Confirm the test runs only on the preparation

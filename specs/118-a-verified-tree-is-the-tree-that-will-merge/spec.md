@@ -6,8 +6,16 @@ fixes:
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.
 # A new number: none of the 089-102 slots reserved on 2026-08-23 names this.
 #
+# NAMING, CORRECTED 2026-08-29 BEFORE DISPATCH: the function this spec changes is
+# `ensure` (`factory/workgraph/worktree.py:318`). `prepare_worktree` is the
+# ACTIVITY at `factory/activities/agent_activities.py:394` that calls it. An
+# earlier draft used the activity's name for the function's body, which would send
+# an implementer to open `worktree.py`, fail to find `prepare_worktree`, and either
+# hunt or edit the activity instead. Line numbers below were always correct; only
+# the name was wrong.
+#
 # READ THIS BEFORE DECIDING THE GUARD IS MISSING — IT IS NOT, AND IT CHECKS THE
-# WRONG PROPERTY. `prepare_worktree` (`factory/workgraph/worktree.py:325`)
+# WRONG PROPERTY. `ensure` (`factory/workgraph/worktree.py:318`)
 # already refuses a stale pin: "A recorded pin is reused only when it is still an
 # ancestor of the target's current landing-branch head (US1 FR-001); otherwise
 # the worktree is rebuilt and the old branch is archived, never deleted." The
@@ -32,7 +40,7 @@ fixes:
 # and that "rebuilding or rebasing between attempts would move the goalposts
 # mid-node, which is the failure 002's criteria snapshot exists to prevent (R5)."
 # This spec does not touch that. It adds a currency test at exactly the place the
-# module already rebuilds for a failed validity test — `prepare_worktree`, at
+# module already rebuilds for a failed validity test — `ensure`, at
 # dispatch — so the two checks sit side by side and the between-attempts
 # continuity is untouched.
 #
@@ -194,7 +202,7 @@ rather than on logic. US3 changes the prompt assembly and is independent of both
 
 ## Requirements
 
-- **FR-001**: `prepare_worktree` MUST rebuild a worktree whose recorded pin is
+- **FR-001**: `ensure` (`factory/workgraph/worktree.py:318`) MUST rebuild a worktree whose recorded pin is
   behind the landing-branch head by more than a configured tolerance.
 - **FR-002**: A pin within the tolerance MUST be reused untouched.
 - **FR-003**: The existing validity check MUST keep its current behaviour for a
