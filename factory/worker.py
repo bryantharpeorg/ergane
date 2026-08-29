@@ -111,6 +111,8 @@ ACTIVITIES = [
     agent_activities.resolve_persona,
     agent_activities.prepare_worktree,
     agent_activities.load_prompt_sources,
+    # 118 US3 — the per-attempt half of the standards read (FR-008).
+    agent_activities.resolve_standards,
     agent_activities.run_agent_attempt,
     agent_activities.read_worktree_diff,
     agent_activities.salvage_worktree,

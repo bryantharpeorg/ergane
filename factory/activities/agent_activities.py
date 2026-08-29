@@ -898,14 +898,17 @@ def _declared_standards(target_repo: str) -> str | None:
 
 @dataclass(frozen=True)
 class ResolveStandardsInput:
-    """Which document to resolve for this one attempt, and against which trees.
+    """Which document to resolve for which node's attempt, and against which trees.
 
     `standards` is the declared *path* (R11) exactly as `load_prompt_sources`
     read it; `worktree_path` is the tree the attempt will actually run in, whose
     copy is the pinned tree's fallback — the same path the adapter already
-    holds, never a second way of naming it.
+    holds, never a second way of naming it. `node_id` makes the activity's own
+    log attributable the way every other per-node activity's is.
     """
 
+    epic_id: str
+    node_id: str
     target_repo: str
     worktree_path: str
     standards: str | None = None

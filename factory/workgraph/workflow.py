@@ -127,6 +127,7 @@ with workflow.unsafe.imports_passed_through():
         ReadWorktreeDiffInput,
         RemoveWorktreeInput,
         ResolvePersonaInput,
+        ResolveStandardsInput,
         SalvageWorktreeInput,
         load_prompt_sources,
         prepare_worktree,
@@ -134,6 +135,7 @@ with workflow.unsafe.imports_passed_through():
         remove_worktree,
         resolve_graph,
         resolve_persona,
+        resolve_standards,
         run_agent_attempt,
         salvage_worktree,
     )
@@ -243,6 +245,7 @@ with workflow.unsafe.imports_passed_through():
         NodeState,
         ResolvedNode,
         ResolvedPersona,
+        StandardsResolution,
         WorkGraph,
         WorkNode,
     )
@@ -1715,6 +1718,28 @@ class EpicWorkflow:
             agent = routing.agent
 
             record.attempt += 1
+            # 118 US3 (FR-008): the attempt's standards text is resolved here,
+            # per attempt, from the landing branch — a correction the operator
+            # lands mid-epic reaches the next attempt, which reading the path
+            # once per epic cannot do. The resolved copy travels into the
+            # prompt-builder as already-read data, so the builder stays pure
+            # (trap 6). Patched: histories recorded before this resolution
+            # existed have no such activity call in them, and a replayed
+            # multi-attempt node must keep assembling the prompts it was
+            # originally handed.
+            standards_resolution: StandardsResolution | None = None
+            if workflow.patched("standards-resolved-per-attempt"):
+                standards_resolution = await workflow.execute_activity(
+                    resolve_standards,
+                    ResolveStandardsInput(
+                        epic_id=graph.epic_id,
+                        node_id=node.id,
+                        target_repo=graph.target_repo,
+                        worktree_path=prepared.path,
+                        standards=sources.standards,
+                    ),
+                    **_FAST,
+                )
             # Pure, and built from workflow state alone: the same inputs on a
             # replay produce the same bytes, so a replayed attempt is handed the
             # prompt the first one was (FR-006, R9).
@@ -1725,6 +1750,7 @@ class EpicWorkflow:
                 plan_text=sources.plan_text,
                 tasks_text=sources.tasks_text,
                 standards=sources.standards,
+                standards_resolution=standards_resolution,
                 prior_attempts=evidence,
                 operator_answer=record.operator_answer,
             )
@@ -3443,6 +3469,23 @@ class EpicWorkflow:
         landing = record.landing
 
         record.attempt += 1
+        # 118 US3: a recovery is an attempt too, and its standards are resolved
+        # the same way the ladder's are — per attempt, from the landing branch,
+        # under the same patch. `record.prepared` is this node's prepared
+        # worktree, set at first dispatch and reused by every attempt after.
+        standards_resolution: StandardsResolution | None = None
+        if workflow.patched("standards-resolved-per-attempt"):
+            standards_resolution = await workflow.execute_activity(
+                resolve_standards,
+                ResolveStandardsInput(
+                    epic_id=graph.epic_id,
+                    node_id=node.id,
+                    target_repo=graph.target_repo,
+                    worktree_path=record.prepared.path,
+                    standards=sources.standards,
+                ),
+                **_FAST,
+            )
         prompt = build_attempt_prompt(
             node=node,
             epic_id=graph.epic_id,
@@ -3450,6 +3493,7 @@ class EpicWorkflow:
             plan_text=sources.plan_text,
             tasks_text=sources.tasks_text,
             standards=sources.standards,
+            standards_resolution=standards_resolution,
             prior_attempts=(),
             landing_evidence=LandingEvidence(
                 outcome=landing.outcomes[-1].outcome,

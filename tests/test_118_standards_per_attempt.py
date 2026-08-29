@@ -150,6 +150,8 @@ async def _resolve(env: ActivityEnvironment, repo: Path, worktree: Path):
     return await env.run(
         resolve_standards,
         ResolveStandardsInput(
+            epic_id=EPIC,
+            node_id=NODE,
             target_repo=str(repo),
             worktree_path=str(worktree),
             standards=STANDARDS_PATH,
@@ -290,6 +292,8 @@ async def test_a_repo_declaring_no_standards_behaves_exactly_as_today(
         await env.run(
             resolve_standards,
             ResolveStandardsInput(
+                epic_id=EPIC,
+                node_id=NODE,
                 target_repo=str(repo),
                 worktree_path=str(repo),
                 standards=None,
