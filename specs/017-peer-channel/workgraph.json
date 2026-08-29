@@ -1,7 +1,7 @@
 {
   "epic_id": "017-peer-channel",
   "feature": "017-peer-channel",
-  "specs_root": "specs",
+  "specs_root": "/home/admin/code/ergane/specs",
   "target_repo": "/home/admin/code/ergane",
   "nodes": [
     {
@@ -90,5 +90,6 @@
       ],
       "timeout_override_s": null
     }
-  ]
+  ],
+  "inferred_edges": []
 }
