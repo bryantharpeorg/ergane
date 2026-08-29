@@ -211,7 +211,16 @@ async def test_a_manifest_whose_standards_path_is_absent_still_fails(
 
     repo = build_target_repo(tmp_path / "standards-control", variant="passing")
     declared = "docs/STANDARDS.md"
-    assert not (repo / declared).is_file(), "the control needs the file to be absent"
+    # The skeleton ships `docs/STANDARDS.md` (121's own v1 sample declares it),
+    # so the control removes it and commits the removal: the worktree is
+    # checked out from the repo's HEAD, so a deletion left uncommitted would
+    # still be present in the tree the check inspects, and the stale path would
+    # never go stale.
+    from tests.target_repo import git
+
+    (repo / declared).unlink()
+    git(repo, "add", "-A")
+    git(repo, "commit", "--quiet", "-m", "remove the declared standards document")
 
     with pytest.raises(ApplicationError) as raised:
         await ActivityEnvironment().run(
@@ -306,7 +315,13 @@ def test_v1_parse_shape_change_fails_against_the_committed_sample() -> None:
     assert config == FactoryConfig(
         version=1,
         runtime="bwrap",
-        gates={"lint": "bash gates/lint.sh", "test": "bash gates/test.sh"},
+        gates={
+            "lint": "bash gates/lint.sh",
+            "test": "bash gates/test.sh",
+            "typecheck": "bash gates/typecheck.sh",
+        },
+        standards="docs/STANDARDS.md",
+        timeouts={"lint": 30},
         ladder=VerificationConfig(),
         verify_order=("gates", "diff_check", "judge"),
     )

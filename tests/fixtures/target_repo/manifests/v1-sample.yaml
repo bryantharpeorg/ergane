@@ -1,0 +1,27 @@
+# Variant `v1-sample`: the parser regression fixture — the manifest whose bytes
+# v1 field-for-field identity is frozen against (121 US1, T007).
+#
+# Before this sample existed, that identity was asserted against this
+# repository's *live* `ergane.yaml` — the operator's file — which is the defect
+# spec 121 removes: the manifest is the operator's to turn, and freezing its
+# parsed value reddened the gate every node runs whenever the operator turned a
+# dial. The fixture moves the freeze onto committed bytes no operator edits and
+# nobody has a reason to change, the convention `tests/test_forge_manifest.py`
+# already followed for its parsing assertions.
+#
+# The shape is the fixture repo's own committed manifest, not today's operator
+# file: v1 vocabulary only (`ladder:` and `verify:` would make it a v2
+# document, and `tests/test_121_manifest_is_not_a_fixture.py` asserts their
+# absence), and a `standards:` path so the identity comparison keeps proving
+# that field too. `docs/STANDARDS.md` — the file beside it — is what the path
+# resolves to. Frozen means frozen: editing these bytes to chase a parser
+# change is exactly the recurrence this fixture exists to make fail.
+version: 1
+runtime: bwrap
+gates:
+  lint: "bash gates/lint.sh"
+  test: "bash gates/test.sh"
+  typecheck: "bash gates/typecheck.sh"
+timeouts:
+  lint: 30
+standards: docs/STANDARDS.md
