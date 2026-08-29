@@ -98,6 +98,9 @@ from factory.workgraph.models import (
     AttemptContext,
     ResolvedNode,
     ResolvedPersona,
+    STANDARDS_SOURCE_LANDING,
+    STANDARDS_SOURCE_PINNED,
+    StandardsResolution,
     WorkGraph,
     WorkGraphError,
     WorkNode,
@@ -888,3 +891,114 @@ def _declared_standards(target_repo: str) -> str | None:
         return load_factory_config(manifest_path).standards
     except FactoryConfigError:
         return None
+
+
+# --- resolve_standards (118 US3: FR-008, FR-009) -------------------------------
+
+
+@dataclass(frozen=True)
+class ResolveStandardsInput:
+    """Which document to resolve for this one attempt, and against which trees.
+
+    `standards` is the declared *path* (R11) exactly as `load_prompt_sources`
+    read it; `worktree_path` is the tree the attempt will actually run in, whose
+    copy is the pinned tree's fallback — the same path the adapter already
+    holds, never a second way of naming it.
+    """
+
+    target_repo: str
+    worktree_path: str
+    standards: str | None = None
+
+
+@activity.defn
+async def resolve_standards(request: ResolveStandardsInput) -> StandardsResolution | None:
+    """Resolve one attempt's standards text from the landing branch (118 FR-008).
+
+    `load_prompt_sources` reads the declared *path* once per epic; the tree the
+    prompt points at, though, is the worktree's — pinned at first dispatch — so
+    a correction the operator lands mid-epic reaches no attempt of a running
+    node. This closes that gap per attempt, where it is cheap: the document is
+    by construction not the node's work product, so reading a fresh copy for
+    every attempt moves no goalpost the reuse rule protects.
+
+    The resolution lives in this module — the caller that already reads the
+    repository — because the prompt builder is pure by construction and must
+    stay so (118 trap 6): it takes a path and now an already-resolved text, and
+    reads no repository of its own.
+
+    The fallback is not politeness (trap 7): the landing branch may be
+    unreachable, the path may not exist there yet, and the pinned tree's copy is
+    what every attempt before this spec read. Any read failure — no `origin`,
+    a fetch that fails, a path absent at the landing head, a decode error —
+    falls back and is *reported* in `detail`, so the archived prompt says what
+    the attempt received and why (FR-009, trap 8). Nothing here raises for a
+    document that could not be fetched: a transient network condition must not
+    become a dead node.
+
+    Runs in a worker thread: the landing head is a fetch, and a fetch owns the
+    wall clock for as long as the remote takes.
+    """
+    if not request.standards:
+        return None
+    return await asyncio.to_thread(
+        _resolve_standards_sync,
+        Path(request.target_repo),
+        Path(request.worktree_path),
+        request.standards,
+    )
+
+
+def _resolve_standards_sync(
+    repo: Path, worktree: Path, standards: str
+) -> StandardsResolution:
+    """The blocking half: fetch the landing head, read the document at it.
+
+    Pinned-copy fallback on any failure, with the failure carried in `detail`.
+    The landing head is read the same way `capture_base_ref` reads it — remote
+    first, clone's head when there is no remote — so the document resolved here
+    is the one on the branch the factory actually lands on.
+    """
+    try:
+        head = worktrees.capture_base_ref(repo)
+        document = _git_show(repo, head, standards)
+    except Exception as exc:  # noqa: BLE001 - the fallback *is* the contract
+        # Trap 7: no failure mode here may fail the node. A document the
+        # landing branch cannot produce falls back to the pinned copy, with
+        # the reason carried for the archived prompt to quote.
+        pinned = worktree / standards
+        try:
+            text = pinned.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as fallback_exc:
+            # No standing copy either. Still not a raise: the attempt runs,
+            # and the report says what the agent will not be told.
+            return StandardsResolution(
+                text="",
+                source=STANDARDS_SOURCE_PINNED,
+                detail=(
+                    f"standards '{standards}' could not be read from either "
+                    f"the landing branch ({exc}) or the pinned tree "
+                    f"({fallback_exc}); no standards section can be resolved "
+                    "for this attempt"
+                ),
+            )
+        return StandardsResolution(
+            text=text,
+            source=STANDARDS_SOURCE_PINNED,
+            detail=f"landing branch unreadable ({exc}); using the pinned tree's copy",
+        )
+
+    return StandardsResolution(
+        text=document, source=STANDARDS_SOURCE_LANDING
+    )
+
+
+def _git_show(repo: Path, rev: str, path: str) -> str:
+    """One document's text at `rev`, via `git show`; raises on any failure.
+
+    The worktree module's `_git` is the one git wrapper here — allowlisted
+    environment, bounded timeout, `WorktreeError` on refusal — and `landed.py`
+    already reads documents out of a revision the same way. A failure is
+    exactly what the fallback arm wants to see, so it propagates as-is.
+    """
+    return worktrees._git(repo, "show", f"{rev}:{path}")
