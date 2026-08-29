@@ -4,9 +4,20 @@
 # factory against this checkout, so every node that works here reads this file to
 # learn which commands decide its fate. Declared, never auto-detected (D-009).
 #
-# Schema v1 — specs/002-verification-gating/contracts/factory-yaml.md.
+# Schema v2 — specs/002-verification-gating/contracts/factory-yaml.md, widened by
+# 023-composable-verification. The bump from v1 is purely additive and was made on
+# 2026-08-29 for the `ladder:` block at the bottom of this file: `_reject_unknown_keys`
+# (factory/verify/factory_yaml.py:245) hands v2 the same key set as v1 plus `ladder`
+# and `verify`, so nothing already declared here changes meaning.
+#
+# SAFE ONLY BECAUSE THE WORKER'S PARSER PREDATES THE EDIT. The config gate parses a
+# node's manifest with the WORKER's installed parser, not the worktree's — see the
+# `landing_branch` note below, which cost 020/US1 four deaths. v2 support landed
+# 2026-08-17 (94ce324, spec 023) and this worker started 2026-08-29 04:15 UTC, so it
+# reads v2. A worker older than that would reject this file wholesale at CONFIG_ERROR
+# in 0.0s, before any gate command runs.
 
-version: 1
+version: 2
 
 # Reserved: v1 runs gates as subprocesses in the node worktree (002 research R3).
 # It names a uv image rather than a bare `python:` one because the gate command
@@ -41,3 +52,42 @@ standards: .specify/memory/constitution.md
 # before any gate command runs. 020's US1 died four times proving it. The key is
 # safe here only because US1 landed (438cfd0) and the worker was restarted on it.
 landing_branch: ergane-buildout
+
+# The retry ladder. Declared 2026-08-29 (Bryan): "build 1 and 2 on the implementer
+# persona, then build 3 on the closer (opus) persona."
+#
+# WHAT THE RUNGS ARE NOW, resolved through personas.yaml:
+#   attempt 1-2  implementer  ollama-cloud/glm-5.3   gateway
+#   attempt 3    opus-closer  claude-opus-5          subscription   <- promotion rung
+#   attempt 4    debugger     claude-opus-5          subscription
+#   then         escalate to the operator
+#
+# `max_attempts` IS THE ORDINARY BUDGET, NOT THE TOTAL. `next_action`
+# (factory/verify/ladder.py:177) spends ordinary attempts first, then promotes, then
+# runs the debugger cycle, then escalates — and `_attempts_spent` excludes both the
+# debugger and the promotion persona from the ordinary count. So 2 here means two
+# glm attempts and four attempts in total, not two.
+#
+# THE PROMOTION RUNG IS `opus-closer`, NOT `closer`, AND THE DIFFERENCE IS THE BILL.
+# Both point at Opus 5. `closer` reaches it through the LiteLLM alias
+# `anthropic/claude-opus-5` and bills per token; `opus-closer` runs on the operator's
+# own Claude Code login and costs no metered spend. `closer`'s own registry entry says
+# it is "opt-in... it must cost a decision, not a default", and naming it here would
+# make it exactly the default it warns against. Using the metered route instead is a
+# one-word change on the line below.
+#
+# ORDERING NOTE WORTH KEEPING: rungs 3 and 4 are the same model by design. A closer
+# finishes and a debugger diagnoses — different skills and different prompts, same
+# weights. Putting the metered `closer` at rung 3 would also mean paying per token on
+# the earlier rung and nothing on the later one, which is backwards.
+#
+# `debugger_cycles` and `escalation_timeout_s` are left at their code defaults (1 and
+# 3600 — models.py:710, not the 28800 a QuestionWorkflow's own timer uses; they are
+# different clocks). Declaring a dial here freezes it; neither has needed moving.
+#
+# VERIFIED BY SIMULATION, not by reading: feeding `next_action` a failing history
+# against this parsed block yields RETRY, RETRY, PROMOTE, DEBUGGER, ESCALATE.
+ladder:
+  max_attempts: 2
+  promotion_cycles: 1
+  promotion_persona: opus-closer

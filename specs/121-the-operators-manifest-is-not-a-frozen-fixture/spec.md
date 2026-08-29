@@ -1,7 +1,22 @@
 ---
-state: ready
+state: landed
 fixes:
   - ci/test-suite-pins-the-operator-dial
+# Attested landed 2026-08-29 by the away-mode loop. US1 6659a8e943ae (#377),
+# observed on ergane-buildout, first attempt, gate and judge both passed.
+#
+# THE DEMONSTRATION THE PLAN ASKED FOR, RUN AND RECORDED. Before: the parked
+# ladder patch reddened two tests. After: `ergane.yaml` declares
+# `ladder: {max_attempts: 2, promotion_cycles: 1, promotion_persona: opus-closer}`
+# and `pytest tests/test_factory_yaml.py tests/test_forge_manifest.py
+# tests/test_121_manifest_is_not_a_fixture.py` reports **200 passed**. The parsed
+# ladder reads back exactly what was declared. That pair is the evidence; either
+# half alone proves nothing.
+#
+# BUILT BY glm-5.3-flash IN ~74 MINUTES, first attempt, and it found a hazard the
+# plan had named as trap 5 on its own: the fixture corpus is rglobbed, so the new
+# sample joined a corpus this story never reads, and it moved the sample's
+# standards doc off a path two dispatch tests rely on. The trap mechanism worked.
 # DRAFTED 2026-08-29 by the operator session, against ergane-buildout at aef5257,
 # while trying and failing to apply an ordinary operator instruction.
 #
