@@ -186,6 +186,12 @@ def _add_spec_parser(subparsers: Any) -> None:
         default=None,
         help="human-readable title for the worked story (default: the slug)",
     )
+    new_cmd.add_argument(
+        "--fixes",
+        action="append",
+        default=[],
+        help="finding key the spec fixes (repeatable; default: none)",
+    )
     new_cmd.set_defaults(run=_new_command)
 
     landed_cmd = commands.add_parser(
@@ -378,7 +384,7 @@ def _new_command(args: argparse.Namespace) -> int:
     title = args.title or args.slug
 
     spec_text, plan_text, tasks_text = scaffold_spec(
-        slug=args.slug, title=title, anchor=anchor
+        slug=args.slug, title=title, anchor=anchor, fixes=args.fixes
     )
 
     spec_dir = specs_root / f"{number}-{args.slug}"
