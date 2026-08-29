@@ -130,8 +130,36 @@ implementer:
   # that the judge may not review its own family's output. This rotation puts
   # three distinct vendors on the three rungs — Zhipu builds, Moonshot judges,
   # Anthropic debugs — where before it was two.
+  # MOVED TO THE FLASH VARIANT 2026-08-29 11:25 AM CT by the away-mode loop,
+  # after `ollama-cloud/glm-5.3` was measured unusable as a builder. This still
+  # honours the instruction ("glm 5.3 for coding") — it is the same family and
+  # the same release, and it is the only one of the two that returns code.
+  #
+  # THE MEASUREMENT, because the failure mode looks like a broken gateway and is
+  # not. `ollama-cloud/glm-5.3` is a reasoning model that spends its whole token
+  # budget thinking and returns an EMPTY `content`:
+  #
+  #   trivial prompt, max_tokens 2000   -> 'ready', finish=stop, seconds
+  #   real coding prompt, max_tokens 4000  -> 0 chars, finish=LENGTH,
+  #                                           4000 completion tokens burned, 44s
+  #   real coding prompt, max_tokens 16000 -> no response at all within 120s
+  #   glm-5.3-flash, same prompt, 4000     -> 2461 chars, finish=stop, 18.8s
+  #
+  # The first line is why the alias probe passed at 09:20 and the wiring still
+  # broke: a one-word answer fits inside the reasoning budget, a function does
+  # not. AN ALIAS PROBE IS NOT A CAPABILITY PROBE. Probe with a prompt shaped
+  # like the work, not with "reply with ready".
+  #
+  # What the node saw: `121/us1` attempt 1 died with a 36-byte stdout.log reading
+  # `API Error: The operation timed out.` — no commits, no diff, spend still
+  # climbing. The empty-content case and the timeout case are the same defect at
+  # two budgets.
+  #
+  # Related and previously known for kimi:
+  # `litellm-nil-content` / "a reasoning model with a tight max_tokens returns
+  # empty content that looks like a broken gateway". Same shape, new model.
   agent: claude-code
-  model: ollama-cloud/glm-5.3
+  model: ollama-cloud/glm-5.3-flash
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
