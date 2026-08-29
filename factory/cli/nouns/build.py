@@ -479,7 +479,7 @@ def render_status(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
             f"attempt {node['attempt']}  {node['branch']}"
             f"{_routing_token(node)}{spend_token}{external_token}"
-            f"{_reason_token(node)}"
+            f"{_base_token(node)}{_reason_token(node)}"
         )
     return "\n".join(lines)
 
@@ -593,6 +593,37 @@ def _reason_token(node: Mapping[str, Any]) -> str:
     if not reason:
         return ""
     return "  reason: " + " ".join(str(reason).split())
+
+
+def _base_token(node: Mapping[str, Any]) -> str:
+    """What the verdict was measured against, and where the branch stands (118-US2).
+
+    Both on one line, because the stale-base case is a comparison and a
+    diagnosis spread over two lines is a diagnosis nobody makes: "verified
+    against X, landing branch is at Y" is what the finding said would have
+    made the measured defect visible in seconds. The head is the forge's last
+    report, so a landing nobody has polled yet says nothing rather than
+    inventing a sha — and a worker predating 118 carries neither key, so the
+    whole token is absent and the line reads exactly as it did before.
+    """
+    base = node.get("base_ref")
+    head = node.get("landing_head")
+    if not base and not head:
+        return ""
+    base_sha = str(base) if base else UNKNOWN_BASE
+    head_sha = str(head) if head else UNKNOWN_BASE
+    return (
+        f"  base {base_sha[:12]}"
+        f"  landing head {head_sha[:12]} at {node.get('branch', '')}"
+        if head
+        else f"  base {base_sha[:12]}"
+    )
+
+
+#: What a base or head that was never observed renders as. Braced so it can
+#: never collide with a sha: a rendering that reads as a commit is the defect
+#: this token exists to end.
+UNKNOWN_BASE = "<unknown>"
 
 
 def _routing_token(node: Mapping[str, Any]) -> str:

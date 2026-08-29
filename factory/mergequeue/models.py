@@ -169,12 +169,19 @@ class Landing:
     #: that is the only moment the snapshot exists; the recovery routing reads it
     #: rather than re-deriving it from a world that has moved again since.
     rejection_cause: RejectionCause | None = None
-    #: 069-US1: how many times this landing has been rebased and requeued
+    #: 069-US1: how many times this landing has been requeued
     #: without spending either budget. Bounded by
     #: `LandingConfig.max_free_rebases` (FR-004): a node whose siblings land
     #: forever must still eventually stop, and a free path with no bound turns a
     #: bounded expensive failure into an unbounded cheap one.
     free_rebases: int = 0
+    #: 118-US2 (FR-007): the landing branch's head as the forge last reported
+    #: it (`PrSnapshot.base_sha`), whatever the poll decided. `None` until some
+    #: poll has answered — an unpolled landing says nothing about the branch,
+    #: and a head nobody read must not be invented. Kept at every outcome
+    #: rather than only on rejections, because the status line reads it long
+    #: after the last decision was made.
+    last_observed_base: str | None = None
 
 
 @dataclass(frozen=True)

@@ -117,6 +117,8 @@ EXPECTED_RESULT_COLUMNS: list[tuple[str, str, int, int]] = [
     # 023-US4: loop configuration carried with every verdict; NULL for pre-023 rows.
     ("loop_digest", "TEXT", 0, 0),
     ("loop_summary", "TEXT", 0, 0),
+    # 118-US2: the base the verdict was measured on; NULL for pre-118 rows.
+    ("base_ref", "TEXT", 0, 0),
 ]
 
 EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
@@ -400,10 +402,11 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 7 since 068-US2 widened `escalations.resolution` to admit `KILL_EPIC`. The
+    # 8 since 118-US2 added `verification_results.base_ref` (additive, NULL for
+    # pre-118 rows); 7 widened `escalations.resolution` to admit `KILL_EPIC`. The
     # literal is deliberate: a bump claims every existing store has a migration
     # path, and `tests/test_escalation_record.py` checks that against one.
-    assert SCHEMA_VERSION == 7
+    assert SCHEMA_VERSION == 8
     assert versions == [SCHEMA_VERSION]
 
 

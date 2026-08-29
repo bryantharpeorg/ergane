@@ -493,6 +493,13 @@ class VerificationResult:
     `loop_digest` and `loop_summary` are None for rows written before 023 and
     non-None afterwards; they record the resolved loop configuration so a PASS is
     a claim relative to a named definition of verified (FR-010, SC-006).
+
+    `base_ref` (118-US2, FR-006) is the pin the worktree was prepared against —
+    recorded so a PASS names the base its verdict was measured on, which is what
+    makes it auditable after the fact. Taken from the prepared worktree, never
+    re-derived: a second git read at record-writing time answers a question the
+    attempt did not run against. None for rows written before 118 and never
+    backfilled — an unknown base is reported as unknown, not as a wrong value.
     """
 
     epic_id: str
@@ -512,6 +519,7 @@ class VerificationResult:
     provenance: str | None = None
     loop_digest: str | None = None
     loop_summary: str | None = None
+    base_ref: str | None = None
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:
@@ -578,6 +586,7 @@ def compose_result(
     criteria_drift: bool = False,
     loop_digest: str | None = None,
     loop_summary: str | None = None,
+    base_ref: str | None = None,
 ) -> VerificationResult:
     """Turn one attempt's evidence into the verdict downstream edges read.
 
@@ -600,6 +609,11 @@ def compose_result(
     Callers that know the resolved loop override them; None is intentionally not
     the default here. Pre-023 replay safety is preserved because the row fields
     are additive and read back as None when missing from the store.
+
+    `base_ref` (118-US2) defaults to None and stays None: a base nobody recorded
+    is the unknown of US2-S3, and the composer inventing one would be the
+    re-derivation trap 5 forbids. The caller that knows the pin — the workflow,
+    off `prepared.base_ref` — names it.
     """
     judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
     judge_accepts = (
@@ -624,6 +638,7 @@ def compose_result(
         finished_at=finished_at,
         loop_digest=loop_digest if loop_digest is not None else DEFAULT_LOOP_DIGEST,
         loop_summary=loop_summary if loop_summary is not None else DEFAULT_LOOP_SUMMARY,
+        base_ref=base_ref,
     )
 
 

@@ -242,8 +242,10 @@ def test_the_schema_version_records_the_new_shape(db_path: Path) -> None:
     with closing(store.connect(db_path)) as conn:
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
 
-    # 7 since 068-US2 widened `escalations.resolution` to admit `KILL_EPIC`.
-    assert store.SCHEMA_VERSION == 7
+    # 8 since 118-US2 added `verification_results.base_ref` (an audit field,
+    # NULL for pre-118 rows); 7 widened `escalations.resolution` to admit
+    # `KILL_EPIC`.
+    assert store.SCHEMA_VERSION == 8
     assert versions == [store.SCHEMA_VERSION]
 
 

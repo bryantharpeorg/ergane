@@ -113,11 +113,15 @@ from factory.verify.models import (
 #: 6 (023-US4): `verification_results.loop_digest` and `.loop_summary`. Additive
 #: text columns; pre-023 rows read as NULL, never backfilled.
 #:
+#: 8 (118-US2): `verification_results.base_ref`. Additive text column; pre-118
+#: rows read as NULL, never backfilled — an unknown base is reported as
+#: unknown, not as a wrong value.
+#:
 #: 7 (068-US2): `escalations.resolution` admits `KILL_EPIC`. The only migration
 #: here that is not additive — SQLite cannot alter a CHECK — so `_migrate`
 #: rebuilds the table. It has to run: a store whose constraint predates the
 #: button rejects the settling write and leaves the escalation pending.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -173,6 +177,10 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- NULL for rows written before this feature; additive, never backfilled.
     loop_digest       TEXT,
     loop_summary      TEXT,
+    -- 118-US2: the base the worktree was pinned to when the verdict was
+    -- measured (FR-006). NULL for rows written before this feature; additive,
+    -- never backfilled — an unknown base reads as unknown, not as a guess.
+    base_ref          TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
@@ -432,6 +440,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE verification_results ADD COLUMN loop_summary TEXT"
         )
+    if result_columns and "base_ref" not in result_columns:
+        # 118-US2: base_ref is NULL for pre-118 rows — "nobody recorded a
+        # base", the unknown of US2-S3, and never backfilled with a guess.
+        conn.execute(
+            "ALTER TABLE verification_results ADD COLUMN base_ref TEXT"
+        )
 
     extcomp_tables = {
         row[0] for row in conn.execute(
@@ -505,6 +519,7 @@ _RESULT_COLUMNS = (
     "provenance",
     "loop_digest",
     "loop_summary",
+    "base_ref",
 )
 
 #: A re-run overwrites every column except the four it matched on: the second
@@ -631,6 +646,7 @@ def _result_values(result: VerificationResult) -> dict[str, Any]:
         "provenance": result.provenance,
         "loop_digest": result.loop_digest,
         "loop_summary": result.loop_summary,
+        "base_ref": result.base_ref,
     }
 
 
@@ -659,6 +675,10 @@ def _result_from_row(row: tuple[Any, ...]) -> VerificationResult:
         provenance=values["provenance"],
         loop_digest=values["loop_digest"],
         loop_summary=values["loop_summary"],
+        # Rows written before 118 have no base at all: NULL is "nobody
+        # recorded one", and a default here would be exactly the wrong value
+        # US2-S3 refuses.
+        base_ref=values["base_ref"],
     )
 
 

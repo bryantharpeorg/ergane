@@ -629,6 +629,16 @@ class NodeStatus:
     #: (FR-007). False by default, so a pre-068 worker's answer reads as
     #: "working" and reset refuses — the safe direction.
     awaiting_operator: bool = False
+    #: 118-US2 (FR-006/FR-007): the base the node's attempts were prepared
+    #: against — what its verdicts were measured on — and the landing branch's
+    #: current head as the forge last reported it. Shown together on the
+    #: status line, because "verified against X, landing branch is at Y" is
+    #: the one-line diagnosis the stale-base finding needed. `base_ref` is
+    #: None for a node that has never prepared a worktree (and on a
+    #: pre-118 worker's answer); `landing_head` is None until a landing poll
+    #: has reported one — an unpolled landing is not a head somebody read.
+    base_ref: str | None = None
+    landing_head: str | None = None
 
 
 @dataclass(frozen=True)
@@ -816,6 +826,16 @@ class EpicWorkflow:
                     provenance=record.provenance,
                     persona=record.persona,
                     model_alias=record.model_alias,
+                    # 118-US2 (FR-007): what the verdict was measured on, and
+                    # where the landing branch stands now — one line, both
+                    # SHAs. The head is the forge's last observation rather
+                    # than a git read, which a workflow cannot make
+                    # (constitution IV) and which would also read a branch
+                    # that moved after the last poll.
+                    base_ref=record.base_ref,
+                    landing_head=record.landing.last_observed_base
+                    if record.landing is not None
+                    else None,
                     history=tuple(record.history),
                     free_rebases=record.landing.free_rebases
                     if record.landing is not None
@@ -2466,6 +2486,11 @@ class EpicWorkflow:
             finished_at=_now(),
             loop_digest=resolved_digest,
             loop_summary=resolved_summary,
+            # 118-US2 (FR-006, trap 5): the base the verdict was measured on,
+            # from the prepared worktree — the same value the diff above was
+            # read against. Re-deriving it here with a second git read would
+            # record an answer the attempt did not run against.
+            base_ref=prepared.base_ref,
         )
         if provenance is not None:
             result = replace(result, provenance=provenance)
@@ -3086,6 +3111,18 @@ class EpicWorkflow:
             outcome = classify(
                 snapshot, record.landing, config, now=snapshot.observed_at
             )
+            # 118-US2 (FR-007): remember the base the forge just reported,
+            # whatever the poll decided — the status line reads it after the
+            # poll is gone, and the moment of observation is the only one
+            # that exists. Recorded ahead of every branch (a pending poll
+            # answers "keep polling" and still says where the branch stands),
+            # and kept rather than overwritten on a poll that named no base:
+            # 069's "did not say" is never read as a fact about the branch,
+            # so it cannot erase a head somebody did read.
+            if snapshot.base_sha is not None:
+                record.landing = replace(
+                    record.landing, last_observed_base=snapshot.base_sha
+                )
             if outcome is None:
                 # Keep polling: the queue is still on it.
                 continue
