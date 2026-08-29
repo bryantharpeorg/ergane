@@ -1,5 +1,28 @@
 ---
-state: draft
+state: landed
+# Attested landed 2026-08-29 by the away-mode loop. US1 3c8fef805fed (#368),
+# US2 0190ab010fee (#369), US3 b5bffad16d4d (#370) — all three observed on
+# ergane-buildout, merged 2026-08-27 11:02 PM through 2026-08-28 12:36 AM CT.
+#
+# THE STORIES LANDED. THE LIVE TIER IS NOT GREEN, AND THIS ATTESTATION SAYS SO
+# RATHER THAN IMPLYING OTHERWISE. A gate run on 2026-08-29 from a shell with
+# `scripts/ergane-env.sh` eval'd still produced 12 live-tier failures — 7 setup
+# errors across `tests/test_live_judge.py` and 5 failures in
+# `tests/test_live_epic.py` — reproduced at the parent commit, so they predate
+# anything this morning did. Against the 19 setup errors this spec was written
+# from, that is a real reduction and not a fix.
+#
+# The remainder is tracked, not lost: `ci/live-tier-fails-on-missing-spend-log-rows`
+# (warning, open, 3 occurrences — the judge half, "no spend-log row appeared for
+# the judge's key within 90s") and
+# `live-tier/epic-smoke-cannot-onboard-its-own-fixture` (critical, open). Neither
+# was re-verified by running the tier during this loop, because
+# `tests/test_live_epic.py` dispatches a real epic and epic-089 was landing.
+#
+# Attesting is therefore a claim about the three stories, not about the tier.
+# Anyone reading this to answer "is the live smoke green" should run it, not
+# read this line.
+#
 # DRAFTED 2026-08-27 by the operator session, against ergane-buildout at ba9be75.
 # Every file:line below was read from that commit, and every claim about what
 # onboarding does was reproduced offline before drafting rather than inferred.

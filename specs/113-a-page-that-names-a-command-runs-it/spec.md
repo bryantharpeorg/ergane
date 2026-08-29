@@ -1,5 +1,15 @@
 ---
-state: draft
+state: landed
+# Attested landed 2026-08-29 by the away-mode loop. US1 fb797da5168e (#365),
+# US2 d208e94085d1 (#366), US3 c27fa1a37dac (#367) — all three observed on
+# ergane-buildout by `ergane spec landed --default-branch ergane-buildout`, all
+# three merged the evening of 2026-08-27 (9:10, 10:07, 10:38 PM CT).
+#
+# The stories were landed for two days before this flip, which is the cost the
+# attestation step exists to stop: `ergane status` reads state to decide
+# readiness, so a finished epic left at `draft` silently blocks whatever
+# depended on it while looking like work still to do.
+#
 # DRAFTED 2026-08-27 by the operator session, against ergane-buildout at 3e5c940.
 # Every file:line below was read from that commit and verified before drafting.
 #
