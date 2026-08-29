@@ -105,6 +105,7 @@ def test_apparmor_remedy_names_restriction_profile_and_load_commands() -> None:
     """The uid-map refusal names AppArmor, the right sysctl, and the shipped profile."""
     text = sandbox_remedy("bwrap: setting up uid map: Permission denied")
 
+    assert "AppArmor's unprivileged-userns restriction" in text
     assert "kernel.apparmor_restrict_unprivileged_userns" in text
     assert "apparmor=unconfined" in text
     assert "attaches by executable path on exec" in text
