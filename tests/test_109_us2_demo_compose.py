@@ -184,6 +184,7 @@ def _is_mandatory(value: str) -> bool:
     Examples:
       - "" (empty default) is not mandatory.
       - "${UPSTREAM_MODEL_API_KEY}" is mandatory.
+      - "${UPSTREAM_MODEL_API_KEY:?a required message}" is mandatory.
       - "${ERGANE_LLM_MASTER_KEY:-sk-dummy-master}" is not mandatory.
     """
     if not value:
@@ -833,3 +834,65 @@ def test_documented_install_exports_the_variable_the_compose_file_needs() -> Non
             f"{DEMO_COMPOSE} never reads. The file's mandatory variables are "
             f"{sorted(mandatory)}."
         )
+
+
+def test_is_mandatory_classifies_required_form_as_mandatory() -> None:
+    """FR-012: the required form ${NAME:?message} stays mandatory.
+
+    Four tests below are computed from `_mandatory_compose_vars()`. If that set
+    silently becomes empty because the helper stops recognizing the required
+    form, all four pass while checking nothing. This assertion guards the guard.
+    """
+    assert _is_mandatory("${UPSTREAM_MODEL_API_KEY:?anything}")
+
+
+def test_gateway_service_declares_required_upstream_key_variable() -> None:
+    """FR-011: the gateway service uses Compose's required-variable form.
+
+    The message must name the variable and tell a stranger where to get an
+    Ollama Cloud key. Compose then refuses at interpolation — before any
+    container is created — when the variable is absent.
+    """
+    compose = _load_yaml(_repo_root() / DEMO_COMPOSE)
+    gateway_env = _env_entries(compose["services"]["gateway"])
+    value = gateway_env["UPSTREAM_MODEL_API_KEY"]
+
+    assert value.startswith("${UPSTREAM_MODEL_API_KEY:?"), (
+        f"gateway service UPSTREAM_MODEL_API_KEY must use required form: {value!r}"
+    )
+    assert "UPSTREAM_MODEL_API_KEY" in value
+    assert "ollama" in value.lower()
+    assert "https://ollama.com/settings/keys" in value
+
+
+@pytest.mark.skipif(
+    DOCKER is None, reason="docker daemon is not reachable; integration test skipped"
+)
+def test_compose_config_fails_when_upstream_key_missing() -> None:
+    """Live half of FR-011: `docker compose config` refuses before any container.
+
+    With UPSTREAM_MODEL_API_KEY absent, interpolation must fail and name the
+    variable. This proves the guard fires in about a second, not after Postgres
+    or the gateway healthcheck.
+    """
+    repo_root = _repo_root()
+    compose_path = repo_root / DEMO_COMPOSE
+
+    env = os.environ.copy()
+    env.pop("UPSTREAM_MODEL_API_KEY", None)
+    # Keep the release-substituted variable present so only the target variable
+    # is missing.
+    env.setdefault("ERGANE_VERSION", "local")
+
+    result = subprocess.run(
+        [str(DOCKER), "compose", "-f", str(compose_path), "-p", "ergane-us3-config-test", "config"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0, (
+        "docker compose config unexpectedly succeeded without UPSTREAM_MODEL_API_KEY"
+    )
+    assert "UPSTREAM_MODEL_API_KEY" in result.stderr, result.stderr
