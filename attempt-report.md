@@ -1,154 +1,120 @@
-# Attempt 1 — US1: The live manifest is checked for validity, not for content
+# Attempt 1 — US2: The record says what the verdict was measured against
 
 ## What changed
 
-Three committed files and one edited one:
+Two commits, tests first. Six committed files, one new test module:
 
-- `tests/test_121_manifest_is_not_a_fixture.py` (new) — the story's six
-  scenario tests (T001–T006), written first and committed failing where the
-  pins still stood.
-- `tests/fixtures/target_repo/manifests/v1-sample.yaml` (new, T007) — the v1
-  sample whose committed bytes are now the frozen thing, named for the one
-  condition it demonstrates as its eleven neighbours are.
-- `tests/fixtures/target_repo/docs/v1-sample-standards.md` (new, T007) — the
-  document the sample's `standards:` path resolves to.
-- `tests/test_factory_yaml.py` (edited) — T008 and T009:
-  `test_v1_identity_against_erganes_own_manifest` repointed onto the sample and
-  renamed for what it does (`test_v1_identity_against_the_committed_sample`),
-  its whole-`FactoryConfig` comparison untouched (FR-007); the `assert
-  config.version == 1` removed from `test_erganes_own_manifest_loads`, with the
-  load kept (trap 1) and the `gates` / `standards` / `landing_branch`
-  assertions untouched (trap 6).
+- `tests/test_118_record_names_its_base.py` (new) — the story's eight tests,
+  written first and committed failing (T011–T013). 7 failed red against the
+  unmodified tree (plus a fixture-corrected pass), each for the reason the
+  plan predicted: `compose_result() got an unexpected keyword argument
+  'base_ref'`, and a status document with no base or head in it.
+- `factory/verify/models.py` (T014, T015) — `VerificationResult.base_ref`
+  (the row) and the matching parameter on `compose_result`, both defaulted
+  to `None`. That `None` **is** the unknown representation, decided once:
+  a missing base reads as absent everywhere — never `""`, never a branch
+  name, never a placeholder sha — and the composer cannot invent one, since
+  it has no git to read and no default would be honest.
+- `factory/verify/store.py` + `specs/002-verification-gating/contracts/
+  verification-store.sql` (T014/T013) — schema 8: the additive `base_ref`
+  TEXT column on `verification_results`, nullable, in DDL, contract file,
+  `_RESULT_COLUMNS`, both codecs, and the `ALTER TABLE` migration keyed off
+  `PRAGMA table_info`. NULL for pre-118 rows, never backfilled.
+- `factory/workgraph/workflow.py` (T014/T016) — `_verify` passes
+  `prepared.base_ref` to the composer (trap 5: the pin the attempt actually
+  ran against; no second git read at record-writing time), `NodeStatus`
+  carries `base_ref` and `landing_head`, and the landing poller records
+  what the forge last reported.
+- `factory/mergequeue/models.py` — `Landing.last_observed_base`.
+- `factory/cli/nouns/build.py` (T016) — `_base_token`, appended to every
+  node line.
 
 ## How the scenarios are covered
 
-- **US1-S1** — two tests drive a copy of the operator's manifest with a legal
-  v2 `ladder:` block appended and version 2: it parses, the declared dials come
-  back (`max_attempts: 2`, `promotion_persona: opus-closer`,
-  `promotion_cycles: 1`), and the copy is valid end to end.
-- **US1-S2** — a source-reading guard refuses any `version` comparison in a
-  test that loads `REPO_ROOT / MANIFEST_NAME`, located structurally so a new
-  or renamed live-manifest test is covered by having been written.
-- **US1-S3** — the control, in two halves: the production seam
-  (`prepare_worktree` → `_require_standards`) refuses a dispatch whose declared
-  standards document is absent, naming the file and the manifest, and a
-  source-reading guard requires the live load in
-  `test_erganes_declared_standards_document_exists` to survive (trap 1).
-- **US1-S4** — three guards: the sample is v1 (v2 keys absent from its parsed
-  document, defaults read back as v1's); v1 semantics are frozen field for
-  field against it here as well as in the sibling module; and the sibling
-  module's identity test reads the sample rather than the operator's file,
-  still whole-config (FR-007).
-- **US1-S5** — the FR-011 invariant, held by
-  `_worktree_manifest_is_untouched` in this module: a node worktree whose
-  manifest differs from the landing branch's copy at its branch point is
-  refused, naming `ergane.yaml` — proven dirty and (the D-051-relevant shape)
-  committed, with the untouched worktree as the control and the invariant
-  applied to this repository's own checkout so a node editing `ergane.yaml`
-  here reds its own gate. A linked worktree is compared; the landing branch's
-  own checkout has no node and is vacuously satisfied. FR-011 is not weakened:
-  the operator's file is still not free for a node to edit, and this
-  repository still cannot have its manifest pinned — only the *enforcement
-  shape* moved from frozen literals to a validity property.
-- **US1-S6** — the anti-recurrence guard: every `assert` line in every
-  live-manifest test is classified, and only three shapes survive — documented
-  operator facts (`ergane-buildout`, the standards path, the declared gate
-  command), truthiness/shape checks (including the standards control's
-  `is_file()` on a manifest-derived path), and `is None` / `is not None`.
-  `FactoryConfig(`-shaped and any `*Config(`-constructed comparisons are
-  refused by shape before any literal lookup. Proven by mutation in both
-  directions: reintroducing `assert config.version == 1` fails both S2 and S6
-  naming the line; reintroducing `assert config.ladder is VerificationConfig()`
-  fails S6.
+- **US2-S1 (row carries the prepared base)** — three tests. The composer
+  unit pins the surface; the interpreter run pins the provenance (trap 5):
+  the scripted world's target repo `/srv/factory/targets/library` does not
+  exist on this host, so a recorded `base_ref` of `"9" * 40` could only have
+  come from `PreparedWorktree.base_ref`. A third test proves the column
+  round-trips through the real store.
+- **US2-S2 (status shows base beside landing head)** — the real
+  `epic_status` query, put through the real payload converter
+  (`as_json_document`), then the real `render_status`. The landing head is
+  the forge's last reported base (`PrSnapshot.base_sha`, the only
+  landing-branch observation a workflow can hold without running git,
+  constitution IV), recorded on every poll whatever it decided, ahead of the
+  classify branch — a pending poll also says where the branch stands — and
+  never overwritten by a poll that named no base ("did not say" is not a
+  fact about the branch; same posture 069 set for the classifier). Controls:
+  a node with no landing shows the base alone and renders no head; a node
+  that never dispatched, and a pre-118 worker's document, render neither
+  token, byte-identical to the old line.
+- **US2-S3 (old rows read as unknown)** — a row inserted with only the
+  columns a pre-118 writer knew, into a store the current writer migrated.
+  The migration makes the column NULL, `node_history` reads `None`, and the
+  test asserts `is None` — not a default that looks like a sha.
 
-## The demonstration (T011), both runs
+## The one line this story was for
 
-Before, on this branch, with `ergane.yaml` untouched:
+Rendered by the committed code from a committed test's document shape:
 
 ```
-$ uv run pytest -q tests/test_factory_yaml.py tests/test_forge_manifest.py
-186 passed in 0.91s
+us2  ENQUEUED  attempt 1  factory/118-a-verified-tree-is-the-tree-that-will-merge/us2  base 111111111111  landing head 999999999999 at factory/118-a-verified-tree-is-the-tree-that-will-merge/us2
 ```
 
-After declaring the ladder (the plan's step 2 script: `version: 2` plus
-`ladder: {max_attempts: 2, promotion_cycles: 1, promotion_persona:
-opus-closer}`):
-
-```
-$ uv run pytest -q tests/test_factory_yaml.py tests/test_forge_manifest.py
-186 passed in 0.33s
-```
-
-And the parsed ladder is what was declared (plan step 4):
-
-```
-$ python3 -c "...print(l.max_attempts, l.promotion_persona, l.promotion_cycles)"
-2 opus-closer 1
-```
-
-`ergane.yaml` was restored (`git checkout ergane.yaml`) — the file is as it
-was found, and the diff contains no change to it.
-
-The red run the plan predicted was reproduced on the pre-121 tree (commit
-`aef5257`, the tree the plan's anchors were read at) with the same manifest
-change, so the pair is honest evidence and not a suite that was already
-green:
-
-```
-$ uv run pytest -q tests/test_factory_yaml.py::test_erganes_own_manifest_loads \
-    tests/test_factory_yaml.py::test_v1_identity_against_erganes_own_manifest
-E       AssertionError: assert 2 == 1
-E       AssertionError: assert FactoryConfig(...)... == FactoryConfig(...)
-E       Differing attributes: ['version', 'ladder']
-2 failed in 0.22s
-```
-
-## The one surprise the full gate caught
-
-The scoped runs (my module, the sibling module, the forge suite) were green
-before the sample's standards document had even been placed at
-`docs/STANDARDS.md` — but the full `uv run pytest -q` was not: two
-pre-existing tests (`test_agent_activities`' loud-failure test and the
-workgraph failure sweep) use `docs/STANDARDS.md` as the path the fixture repo
-*does not* commit — the absent half of R11's existence check. Shipping the
-sample's document there silenced both refusals; the failure presented as
-`DID NOT RAISE ApplicationError` in tests this story never touched. The
-sample's document moved to `docs/v1-sample-standards.md`, which resolves for
-the identity comparison and collides with nothing. Bisected to the T007
-commit with scratch worktrees and fixed in d893e91; nothing outside the
-fixture and my own module was edited to fix it.
-
-## Gate result
-
-`uv run pytest -q` — **5169 passed, 58 skipped, 0 failed** (6m).
-
-Scoped runs on the final tree:
-`tests/test_121_manifest_is_not_a_fixture.py` 14 passed;
-`tests/test_factory_yaml.py` + `tests/test_forge_manifest.py` 186 passed with
-the ladder declared and 186 passed with the operator's file untouched
-(evidence pair above).
+Both SHAs on one line, twelve hex characters each: the stale-base PASS
+would have been visible in exactly the seconds the finding said it should
+have been.
 
 ## Traps, accounted
 
-1. Live-manifest load kept — `test_erganes_declared_standards_document_exists`
-   untouched; its survival asserted in source by
-   `test_the_live_manifest_load_survives`.
-2. Both sites moved — the version assertion and the `ladder` pin are each
-   gone, and US1-S1's ladder-parses test is the proof.
-3. Coverage preserved — the identity test exists and still compares the whole
-   `FactoryConfig`, against the sample.
-4. The sample is v1 — `test_the_v1_sample_is_a_v1_manifest` refuses `ladder:`
-   and `verify:` in its parsed document and pins its read-back defaults.
-5. The sample joined both corpus globs (forge: 13 files, sweep: 13) and both
-   suites pass; the sample carries no judge-reaching command (084/FR-009).
-6. Gates/standards/landing_branch assertions untouched — asserted by the S6
-   allow-list rather than deleted.
-7. S6 is written and mutation-proven, not skipped as over-engineering.
+- **Trap 5** — the base travels `prepared.base_ref → compose_result →
+  row`; no code path reads git at record time. The provenance is asserted
+  by the non-existent target repo, not by trusting the caller.
+- **T015 (decide the unknown once)** — `None` throughout: column NULL,
+  dataclass field `str | None`, render sentinel `UNKNOWN_BASE` only for the
+  *head* (a landing a forge never reported), with `"base <unknown>"` the
+  output when a head exists but recorded nothing. The sentinel is braced so
+  it cannot collide with a sha and read as a commit.
+- **FR-010 (untouched things)** — the criteria snapshot, the reuse rule and
+  the between-attempts continuity are untouched by this story: `ensure` and
+  `_is_ancestor` were not edited (only `_verify`, the query, the poller and
+  the render read what US1 already produced), and US1's six tests pass
+  unmodified in the full run.
+
+## Gate result
+
+`uv run pytest -q` — **5188 passed, 58 skipped, 0 failed** (7m04s).
+
+The scoped run is `tests/test_118_record_names_its_base.py`: 8 passed.
+
+The red-first evidence, on the pre-implementation tree at `95ac948`:
+
+```
+FAILED .../test_118_record_names_its_base.py::test_the_composer_put_the_prepared_base_on_the_row - TypeError: compose_result() got an unexpected keyword argument 'base_ref'
+FAILED tests/test_118_record_names_its_base.py::test_a_row_without_a_base_reads_as_unknown_not_as_a_guess - TypeError: ...
+FAILED tests/test_118_record_names_its_base.py::test_a_verified_attempt_s_row_carries_the_prepared_base - TypeError: ...
+FAILED tests/test_118_record_names_its_base.py::test_the_status_line_shows_the_base_beside_the_landing_head - KeyError: 'landing_head'
+FAILED tests/test_118_record_names_its_base.py::test_a_node_with_no_landing_shows_the_base_alone - KeyError: 'base_ref'
+FAILED tests/test_118_record_names_its_base.py::test_a_row_from_before_this_change_reads_as_unknown - OperationalError: no such column: base_ref
+FAILED tests/test_118_record_names_its_base.py::test_the_base_survives_the_store_round_trip - OperationalError: no such column: base_ref
+7 failed, 1 passed in 1.72s
+```
+
+## Migration-shaped decisions
+
+- **Schema 8**, additive column, `ALTER TABLE ADD COLUMN`, no rebuild.
+  `tests/test_verify_store.py` pins schema 8 and the column list; the DDL
+  contract file and the store are compared structure-for-structure by the
+  existing contract test, which forced both to move together.
+- **No backfill.** A row measured before 118 cannot recover its base
+  without re-deriving it, and re-derivation is precisely the trap. NULL is
+  the record's answer, and it is stated in the contract DDL's own comment.
 
 ## Not done, and not in scope
 
-`ergane.yaml` is unchanged; the manifest schema is unchanged; `personas.yaml`
-is untouched (the registry half of the finding is a separate surface). No
-production code was modified — the FR-011 check in US1-S5 lives in the test
-module's helper, called against this repository's own checkout by a committed
-test, which is where the plan put the story.
+US1 and US3 own the currency test and the standards resolution; neither
+file they own beyond `worktree.py`/`prompt.py` was touched here. The live
+floor demonstration named in the plan's verification section is T025's, in
+US3's slice — this story's line is demonstrated above from the committed
+renderer itself.
