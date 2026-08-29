@@ -60,8 +60,10 @@ from factory.cli.install import (
     _git_init,
     _run_cli,
 )
-from factory.controlplane.config import resolve_config_path
+from factory.controlplane.config import load_controlplane_config, resolve_config_path
+from factory.controlplane.verify import LLMProbe
 from factory.doctor.scaffold import scaffold_spec
+from factory.mergequeue.models import Finding
 from factory.registry import resolve_state_home
 from factory.verify.toolchain import (
     GIT,
@@ -149,6 +151,23 @@ SANDBOX_REMEDY = (
     "user namespaces are enabled on the host "
     "(`sysctl kernel.unprivileged_userns_clone=1`)."
 )
+
+#: Name of the one credential the demo requires. It is set on the gateway
+#: service only; the engine container never reads it (FR-016).
+UPSTREAM_MODEL_API_KEY = "UPSTREAM_MODEL_API_KEY"
+
+#: The remedy a failed LLM preflight prints after the gateway's own error.
+#: The variable is read by the *gateway* container, not the engine.
+CREDENTIAL_REMEDY = (
+    f"remedy: {UPSTREAM_MODEL_API_KEY} is the Ollama Cloud key the gateway "
+    "container reads. Export it in your shell, then run "
+    "`docker compose -p <project> down -v` and re-run this command."
+)
+
+#: Checks whose failure stops the demo before the sandbox probe.
+#: Only `llm` is fatal: every other check may fail on a healthy demo host —
+#: an unauthenticated `gh` is the ordinary state of a demo container.
+FATAL_PREPARE_CHECKS = {"llm"}
 
 #: Prefix on every line the driver prints, so its narration is legible in the
 #: interleaved `docker compose up` stream.
@@ -299,6 +318,25 @@ def _write_demo_spec(repo_root: Path) -> Path:
     return spec_dir
 
 
+def _default_llm_preflight(config_path: Path) -> Finding:
+    """Run only the LLM probe against the config install just wrote.
+
+    A raising probe is turned into a failed finding naming the exception, the
+    same way `verify_controlplane_async` does for every probe — so an import
+    error or an unreachable gateway produces the refusal, not `main`'s catch-all.
+    """
+    config = load_controlplane_config(config_path)
+    try:
+        snapshot = asyncio.run(LLMProbe().gather(config))
+    except Exception as exc:
+        return Finding(
+            check="llm",
+            passed=False,
+            detail=f"probe failed unexpectedly: {type(exc).__name__}: {exc}",
+        )
+    return LLMProbe().evaluate(snapshot)
+
+
 def run_prepare_phase(
     *,
     state_home: Path | str,
@@ -307,6 +345,7 @@ def run_prepare_phase(
     run_cli: Callable[[Sequence[str]], int] = _run_cli,
     probe: Callable[[Sequence[str]], ProbeOutcome] = run_sandbox_probe,
     emit: Callable[[str], None] = _emit,
+    preflight: Callable[[], Finding | None] | None = None,
 ) -> int:
     """Install, scaffold, commit, and prove the sandbox — once (FR-002…FR-006).
 
@@ -340,11 +379,36 @@ def run_prepare_phase(
         # Install's exit code is control-plane *verification*, not whether the
         # config was written: an unauthenticated `gh` is a FAIL and is also the
         # normal state of a demo container. The configuration is what the rest
-        # of this phase needs, and it exists.
+        # of this phase needs, and it exists. The LLM check, however, is fatal:
+        # if the gateway cannot complete a token for the aliases the demo will
+        # dispatch, spending the stranger's key would only produce a traceback.
         emit(
             f"control-plane verification reported findings (exit {install_status}); "
             f"the configuration was written, so preparation continues"
         )
+
+    # The LLM preflight: step 1's own verdict, narrowed to the one check that
+    # can stop the demo before any spend. Only the `llm` finding is fatal; other
+    # failures were already printed by install and the demo can continue.
+    if preflight is None:
+        preflight = lambda: _default_llm_preflight(config_path)
+    try:
+        llm_finding = preflight()
+    except Exception as exc:
+        llm_finding = Finding(
+            check="llm",
+            passed=False,
+            detail=f"probe failed unexpectedly: {type(exc).__name__}: {exc}",
+        )
+    if (
+        llm_finding is not None
+        and not llm_finding.passed
+        and llm_finding.check in FATAL_PREPARE_CHECKS
+    ):
+        emit("refusing: the gateway cannot complete a token for this credential")
+        emit(llm_finding.detail)
+        emit(CREDENTIAL_REMEDY)
+        return 1
 
     # 2. The throwaway repository.
     repo_root.mkdir(parents=True, exist_ok=True)
