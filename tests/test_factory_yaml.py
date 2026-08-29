@@ -459,10 +459,18 @@ def test_erganes_own_manifest_loads() -> None:
     only *looked* right would surface as a `CONFIG_ERROR` verdict on the first
     live node, hours in — so the file is loaded here, from disk, exactly as the
     gate runner will load it out of a worktree.
+
+    This test asserts validity and documented operator fact, never the
+    operator's choices (121 FR-001/FR-002): the `version` assertion this test
+    once carried named a schema version, which is a value the operator is
+    entitled to choose, and its presence refused an operator-declared v2
+    manifest on every node's gate (the fourth-and-fifth recurrence of
+    `ci/test-suite-pins-the-operator-dial`). The load itself stays — trap 1:
+    this is the seconds-fast catch of a stale `standards` path before a live
+    dispatch spends hours finding it.
     """
     config = load_factory_config(REPO_ROOT / MANIFEST_NAME)
 
-    assert config.version == 1
     assert config.runtime
     assert config.gates["test"] == "uv run pytest -q"
     assert config.standards == ".specify/memory/constitution.md"

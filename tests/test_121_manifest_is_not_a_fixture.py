@@ -615,9 +615,12 @@ def _classify_live_assertion(line: str) -> str | None:
 
     # The whole-config comparison is refused by shape, before any literal is
     # looked up: it pins every dial at once, which is the defect's strongest
-    # form (023's `ladder=VerificationConfig()` line).
-    if "FactoryConfig(" in stripped:
-        return "asserts the operator's whole config against a frozen value (FR-002)"
+    # form (023's `ladder=VerificationConfig()` line). A construction call of
+    # any other config type on the same line is the same defect with a narrower
+    # reach (`assert config.ladder is VerificationConfig()`), so the scan is
+    # by shape and not by one type's name.
+    if re.search(r"\b\w+Config\(", stripped):
+        return "asserts the operator's config against a constructed frozen value (FR-002)"
 
     ALLOWED_FACTS = (
         ".specify/memory/constitution.md",
@@ -628,11 +631,22 @@ def _classify_live_assertion(line: str) -> str | None:
         if literal in stripped:
             return None
 
-    # Truthiness / shape checks are assertions about validity, not choice.
-    TRUTHY = re.compile(
-        r"^assert ((not )?\w+\.\w+|\w+\.\w+ (is not None|is None|is_file\(\)))$"
-    )
-    if TRUTHY.match(stripped):
+    # Truthiness / shape checks are assertions about validity, not choice. Two
+    # shapes: a bare attribute read (`assert config.runtime`), and an
+    # existence/provenance check on a *path derived from* the manifest
+    # (`assert (REPO_ROOT / config.standards).is_file()` — the standards
+    # control's whole assertion). Both are true because the manifest is valid,
+    # never because it is this one; neither can be made to pin a dial without
+    # introducing a literal, and any literal here falls to the allow-list
+    # above.
+    TRUTHY = re.compile(r"^assert (not )?[A-Za-z0-9_.()\[\]\"'/ ]+$")
+    COMPARISON = re.compile(r"==|!=|>=|<=|>|<| in | not in | is(?! not None| None)")
+    # `is not None` / `is None` survive the comparison scan (a declared value's
+    # presence is validity); every other equality or identity shape —
+    # including `is <constructed value>` — is a pin and does not. The
+    # constructed-value shapes are already refused above, so the scans
+    # overlap deliberately: two nets for one defect class.
+    if TRUTHY.match(stripped) and not COMPARISON.search(stripped):
         return None
 
     return (
