@@ -210,9 +210,10 @@ async def test_a_manifest_whose_standards_path_is_absent_still_fails(
     monkeypatch.setenv("ERGANE_ROOT", str(tmp_path / "runtime"))
 
     repo = build_target_repo(tmp_path / "standards-control", variant="passing")
-    declared = "docs/STANDARDS.md"
-    # The skeleton ships `docs/STANDARDS.md` (121's own v1 sample declares it),
-    # so the control removes it and commits the removal: the worktree is
+    declared = "docs/notes.md"
+    # The skeleton ships `docs/notes.md` (the one standards-declared path the
+    # fixture carries), so the control removes it and commits the removal: the
+    # worktree is
     # checked out from the repo's HEAD, so a deletion left uncommitted would
     # still be present in the tree the check inspects, and the stale path would
     # never go stale.
@@ -320,7 +321,7 @@ def test_v1_parse_shape_change_fails_against_the_committed_sample() -> None:
             "test": "bash gates/test.sh",
             "typecheck": "bash gates/typecheck.sh",
         },
-        standards="docs/STANDARDS.md",
+        standards="docs/v1-sample-standards.md",
         timeouts={"lint": 30},
         ladder=VerificationConfig(),
         verify_order=("gates", "diff_check", "judge"),

@@ -1705,7 +1705,7 @@ def test_v1_identity_against_the_committed_sample() -> None:
             "typecheck": "bash gates/typecheck.sh",
         },
         timeouts={"lint": 30},
-        standards="docs/STANDARDS.md",
+        standards="docs/v1-sample-standards.md",
         ladder=VerificationConfig(),
         verify_order=("gates", "diff_check", "judge"),
     )

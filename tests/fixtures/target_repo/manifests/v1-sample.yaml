@@ -13,8 +13,12 @@
 # file: v1 vocabulary only (`ladder:` and `verify:` would make it a v2
 # document, and `tests/test_121_manifest_is_not_a_fixture.py` asserts their
 # absence), and a `standards:` path so the identity comparison keeps proving
-# that field too. `docs/STANDARDS.md` — the file beside it — is what the path
-# resolves to. Frozen means frozen: editing these bytes to chase a parser
+# that field too. `docs/v1-sample-standards.md` — the file beside it — is what
+# the path resolves to. The path is deliberately not `docs/STANDARDS.md`: two
+# pre-existing dispatch tests (`test_agent_activities`' loud-failure test and
+# the failure sweep in `test_workgraph_sweep`) rely on that exact path being
+# absent from the built "passing" repo, and a sample occupying it would silence
+# both refusals. Frozen means frozen: editing these bytes to chase a parser
 # change is exactly the recurrence this fixture exists to make fail.
 version: 1
 runtime: bwrap
@@ -24,4 +28,4 @@ gates:
   typecheck: "bash gates/typecheck.sh"
 timeouts:
   lint: 30
-standards: docs/STANDARDS.md
+standards: docs/v1-sample-standards.md
