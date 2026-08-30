@@ -4,6 +4,9 @@ Every fixture here builds its own specs corpus and findings store under
 `tmp_path` (trap 7).  `ERGANE_ROOT` is pointed at the store's parent directory
 so `spec validate` resolves the store the same way the findings verbs do without
 touching the operator's real runtime root.
+
+Store resolution has *two* candidates, so isolating it takes two pins — see
+`_own_findings_store` below, which every test in this module gets.
 """
 
 from __future__ import annotations
@@ -19,9 +22,33 @@ from typing import Any, Callable, NamedTuple
 
 import pytest
 
+import factory.doctor.cli as _doctor_cli
 from factory.cli.main import main
 from factory.doctor.models import Finding, Severity, Status
 from factory.doctor.store import connect, report
+
+
+@pytest.fixture(autouse=True)
+def _own_findings_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Put both findings-store candidates under this test's own `tmp_path`.
+
+    `ERGANE_ROOT` names the first candidate and is not enough on its own: when
+    the resolved runtime root holds no ledger, `_resolve_store_path` falls back
+    to the legacy runtime root *relative to the working directory*, which on an
+    operator's host is the operator's real ledger.  A test written to exercise
+    the absent-store path therefore found a populated store instead, and the
+    same three tests were green on a fresh clone and red on the machine that
+    does the building (122-US3, trap 6).
+
+    The legacy pin names a directory that is never created, because the state
+    these tests need from that candidate is absence.  Tests wanting a store put
+    one at `<ergane_root>/doctor.db`, which wins outright.
+    """
+    monkeypatch.setenv("ERGANE_ROOT", str(tmp_path))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+    monkeypatch.setattr(
+        _doctor_cli, "LEGACY_FACTORY_ROOT", tmp_path / "legacy-runtime-root"
+    )
 
 
 class Run(NamedTuple):
