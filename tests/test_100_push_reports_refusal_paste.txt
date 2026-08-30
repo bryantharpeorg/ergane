@@ -1,0 +1,128 @@
+Measured readings behind tests/test_100_push_reports_refusal.py (100-US2).
+
+Pasted rather than described (constitution VIII): the judge is given the diff and
+nothing else, and two of the claims this story turns on are claims about what a
+command actually prints. Captured on 2026-08-30, git 2.x, by running the tests'
+own fixture and printing what reached each surface.
+
+
+1. `--quiet` DOES NOT SUPPRESS A REFUSAL. The spec's drafting note reads "`push_branch`
+   runs `git push --quiet`, so the one word that ends the diagnosis — non-fast-forward
+   — is discarded". Two runs of the same refused push, one with the flag and one
+   without, byte-identical on stderr:
+
+$ git push --quiet origin br   # (stderr)
+To ../remote.git
+ ! [rejected]        br -> br (non-fast-forward)
+error: failed to push some refs to '../remote.git'
+hint: Updates were rejected because a pushed branch tip is behind its remote
+hint: counterpart. If you want to integrate the remote changes, use 'git pull'
+hint: before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+$ git push origin br           # (stderr, no --quiet)
+To ../remote.git
+ ! [rejected]        br -> br (non-fast-forward)
+error: failed to push some refs to '../remote.git'
+hint: Updates were rejected because a pushed branch tip is behind its remote
+hint: counterpart. If you want to integrate the remote changes, use 'git pull'
+hint: before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+   `--quiet` suppresses the ref listing a *successful* push prints, and nothing
+   else. So dropping it would have made every landing that works noisier and
+   bought nothing — FR-006's control (T012) exists for exactly that temptation,
+   and the flag stays.
+
+
+2. WHERE THE REASON WAS ACTUALLY LOST. Same fixture, run against the tree at the
+   commit before this story's implementation (tests committed, production code
+   untouched). `push_branch` already raised git's whole stderr; the workflow
+   recorded none of it:
+
+@@ str(WorktreeError) raised by push_branch — BEFORE
+git push --quiet origin factory/demo-loans/us1 failed in /tmp/.../clone: To /tmp/.../origin.git
+ ! [rejected]        factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward)
+error: failed to push some refs to '/tmp/.../origin.git'
+hint: Updates were rejected because a pushed branch tip is behind its remote
+hint: counterpart. If you want to integrate the remote changes, use 'git pull'
+hint: before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+@@ node.terminal_reason — BEFORE
+Activity task failed
+
+@@ `ergane build status` node line — BEFORE
+us1  KILLED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias  base 999999999999  landing head unavailable  reason: Activity task failed
+
+   That is the whole four hours: git said it, the error carried it, and
+   `_reap_finished` wrote `str(ActivityError)` — the SDK's fixed sentence — over
+   it. FR-005 is a workflow-side defect, not a `--quiet` one.
+
+
+3. AFTER. Same fixture, same refusal, this story's code:
+
+@@ str(WorktreeError) raised by push_branch — AFTER
+push of 'factory/demo-loans/us1' to origin failed (repo /tmp/.../clone): ! [rejected]        factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward)
+git said:
+To /tmp/.../origin.git
+ ! [rejected]        factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward)
+error: failed to push some refs to '/tmp/.../origin.git'
+hint: Updates were rejected because a pushed branch tip is behind its remote
+hint: counterpart. If you want to integrate the remote changes, use 'git pull'
+hint: before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+@@ node.terminal_reason — AFTER
+WorktreeError: push of 'factory/demo-loans/us1' to origin failed (repo /tmp/.../clone): ! [rejected]        factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward)
+git said:
+To /tmp/.../origin.git
+ ! [rejected]        factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward)
+error: failed to push some refs to '/tmp/.../origin.git'
+hint: Updates were rejected because a pushed branch tip is behind its remote
+hint: counterpart. If you want to integrate the remote changes, use 'git pull'
+hint: before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+@@ `ergane build status` node line — AFTER (whitespace flattened by _reason_token)
+us1  KILLED  attempt 1  factory/demo-loans/us1  persona implementer  model implementer-alias  base 999999999999  landing head unavailable  reason: WorktreeError: push of 'factory/demo-loans/us1' to origin failed (repo /tmp/.../clone): ! [rejected] factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward) git said: To /tmp/.../origin.git ! [rejected] factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward) error: failed to push some refs to '/tmp/.../origin.git' hint: Updates were rejected because a pushed branch tip is behind its remote hint: counterpart. If you want to integrate the remote changes, use 'git pull' hint: before pushing again. hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+   The reason is read as one flattened, untruncated line, which is why the
+   refused ref's own verdict leads it and git's full account follows: the first
+   forty characters an operator sees now name the refusal and the branch.
+
+
+4. WHY THE MESSAGE IS BUILT INSIDE `_git` RATHER THAN AROUND IT. The first draft
+   let `_git` raise and had `push_branch` re-raise a better message chained to
+   it. Green tests, worse reading: `_failure_detail` walks to the *innermost*
+   cause, so the wrapper's message is precisely the link the walk goes past.
+   Measured, that draft produced:
+
+@@ node.terminal_reason — first draft, wrapper around _git
+WorktreeError: git push --quiet origin factory/demo-loans/us1 failed in /tmp/.../clone: To /tmp/.../origin.git
+ ! [rejected]        factory/demo-loans/us1 -> factory/demo-loans/us1 (non-fast-forward)
+[...]
+
+   Still a diagnosis — the stderr rides along either way, which is why the tests
+   assert on git's words rather than on the factory's — but it leads with an
+   argv instead of a verdict. `_git`'s `refusal` hook leaves one link in the
+   chain and no choice to get wrong.
+
+
+5. THE HOOK IS PINNED BY ITS OWN TEST. Because the stderr does ride along either
+   way, deleting the `refusal=` argument from `push_branch` left the first three
+   tests green — the ordering was production code that no failing test defended.
+   Measured, that mutation now reads:
+
+$ # refusal= removed from push_branch's _git call
+$ uv run pytest -q tests/test_100_push_reports_refusal.py
+E       AssertionError: the reason does not lead with git's verdict; an operator reading the front of the flattened line learns nothing new.
+E         first line: 'git push --quiet origin factory/demo-loans/us1 failed in /tmp/.../clone: To /tmp/.../origin.git'
+1 failed, 3 passed
+
+   Restored, 4 passed. That is the discriminator in one line: with the hook the
+   first line is the rejected ref and why; without it, the argv and the remote's
+   name — two facts the operator already had.
+
+The paths are pytest tmp dirs; nothing here quotes a token, a key or a real
+remote (plan trap 12's rule, borrowed from 078).

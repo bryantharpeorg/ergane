@@ -74,6 +74,7 @@ import os
 import subprocess
 import tempfile
 import warnings
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -143,7 +144,20 @@ class WorktreeError(RuntimeError):
     The message names the path (worktree or target clone) the operation was
     against: by the time this surfaces the operator is looking at a node id and
     needs to know which directory git refused.
+
+    `stderr` is what git itself wrote, verbatim and unmixed with this module's
+    own words, when the failure was a git command that ran and refused (100
+    FR-004). The message already quotes it, and prose is the wrong surface for
+    the *other* reader: a caller deciding what class of failure this was —
+    "refused non-fast-forward" against "the disk filled up" — would otherwise
+    have to hunt for a substring inside a sentence this module is free to
+    reword. Empty when git never ran (a refusal raised before the subprocess) or
+    when it died without writing anything.
     """
+
+    def __init__(self, message: str, *, stderr: str = "") -> None:
+        super().__init__(message)
+        self.stderr = stderr
 
 
 class WorktreeOwnershipError(WorktreeError):
@@ -559,6 +573,13 @@ def push_branch(
     branch is refused with an error naming it. The node branch is always
     `factory/<epic>/<node>`; a node id that collided with the trunk's name would
     clobber the repo's main line, which is not a node's to push over.
+
+    A push the *remote* refuses raises a `WorktreeError` carrying git's own
+    stderr — in the message and verbatim on `.stderr` (100 FR-004). The remote
+    is the one participant here that knows why, and until 100 its answer reached
+    an operator as "Activity task failed": a killed epic leaves its node branch
+    on origin, the re-dispatch's branch shares no ancestry with it, and the
+    correctly-refused non-fast-forward cost four hours to name.
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
@@ -589,8 +610,55 @@ def push_branch(
             _ownership_refusal(repo, path, ownership, branch=branch)
         )
 
-    _git(repo, "push", "--quiet", remote, branch)
+    # 100 FR-004/FR-006. `--quiet` stays: it suppresses the ref listing a
+    # *successful* push prints and nothing else — git writes a refusal to stderr
+    # with or without it — so dropping it would make every landing that works
+    # noisier and buy nothing here. What was missing is the other side, and it is
+    # `refusal`: the failure is named where it is raised, leading with git's own
+    # verdict and quoting git whole underneath, so the `hint:` lines that name
+    # the fix travel with it.
+    _git(
+        repo,
+        "push",
+        "--quiet",
+        remote,
+        branch,
+        refusal=lambda detail: _push_refusal(repo, remote, branch, detail),
+    )
     return _head(path)
+
+
+def _push_refusal(repo: Path, remote: str, branch: str, detail: str) -> str:
+    """What an operator reads when a push failed (100 FR-005).
+
+    The reason reaches `ergane build status` with its whitespace flattened into
+    one line and no truncation, so the order matters more than the length: the
+    sentence that says which push, then git's verdict on it, then git entire.
+    """
+    lead = f"push of '{branch}' to {remote} failed (repo {repo})"
+    verdict = _push_verdict(detail)
+    if verdict:
+        lead = f"{lead}: {verdict}"
+    if not detail:
+        return f"{lead}; git exited non-zero and wrote nothing"
+    return f"{lead}\ngit said:\n{detail}"
+
+
+def _push_verdict(detail: str) -> str:
+    """Git's own one-line verdict on the ref it would not move, or nothing.
+
+    Presentation, and only presentation: it decides nothing, classifies nothing,
+    and unrecognised output costs the headline rather than the diagnosis,
+    because git's whole account follows either way. `! [` is the prefix git
+    prints each refused ref's status line with (`git push --porcelain` documents
+    the same column), and output without one — an authentication failure, a host
+    that did not resolve — simply has no per-ref verdict to lead with.
+    """
+    for line in detail.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("! ["):
+            return stripped
+    return ""
 
 
 #: Where a salvage records itself. One ref per attempt, immutable, in the target
@@ -1734,13 +1802,29 @@ def _has_commit(repo: Path, sha: str) -> bool:
     return completed.returncode == 0
 
 
-def _git(cwd: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:
+def _git(
+    cwd: Path,
+    *args: str,
+    env_extra: dict[str, str] | None = None,
+    refusal: Callable[[str], str] | None = None,
+) -> str:
     """Run one git command in `cwd`, returning stdout; raise `WorktreeError` on failure.
 
     The environment is 002's gate allowlist (constitution V) plus whatever this
     call needs: git spawned by the factory carries no factory credentials, and
     `GIT_TERMINAL_PROMPT=0` turns a repository that wants a password into an
     error rather than a subprocess waiting on a terminal nobody is watching.
+
+    `refusal` renames the failure a caller already understands: given git's own
+    output it returns the message to raise, in place of this helper's generic
+    "git <argv> failed in <cwd>". A caller could wrap the raised error instead,
+    and that is what the first draft of 100-US2 did — but the reason an operator
+    finally reads is the *innermost* sentence of the failure chain
+    (`_failure_detail`), so a wrapper's better message is the one link the walk
+    goes straight past. Naming the failure where it is raised leaves one link
+    and no choice to get wrong. Only the exit-code path is renamed: a git that
+    could not be run at all did not refuse anything, and a caller's account of a
+    refusal would be a lie about it.
     """
     env = scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"} | (env_extra or {})
     try:
@@ -1755,7 +1839,14 @@ def _git(cwd: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:
         raise WorktreeError(f"git {' '.join(args)} failed in {cwd}: {exc}") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
-        raise WorktreeError(f"git {' '.join(args)} failed in {cwd}: {detail}")
+        # Whichever message is raised, `stderr` carries git verbatim for whoever
+        # has to classify the failure rather than read it (100 FR-004).
+        message = (
+            refusal(detail)
+            if refusal is not None
+            else f"git {' '.join(args)} failed in {cwd}: {detail}"
+        )
+        raise WorktreeError(message, stderr=completed.stderr)
     return completed.stdout
 
 
