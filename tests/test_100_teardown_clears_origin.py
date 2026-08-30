@@ -140,6 +140,13 @@ def test_teardown_removes_the_pushed_branch_and_keeps_its_archive(epic: Epic) ->
     assert git(epic.repo, "rev-parse", archives[0]).strip() == pushed
     assert epic.branch in _report(actions)
 
+    # And off this machine too: 069's `reset_note` promises an operator, on the
+    # pull request it closes, that "the tip is kept under
+    # archive/factory/<epic>/<node>/". Deleting the head without leaving the
+    # archive on the remote would make that promise true only on the worker host.
+    archived = f"{archive_branch_prefix(EPIC_ID, NODE_ID)}/{pushed[:12]}"
+    assert epic.remote_tip(archived) == pushed
+
 
 # --- T002 / US1-S2: the mine, defused, and its control ------------------------
 

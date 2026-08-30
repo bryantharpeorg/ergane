@@ -1456,7 +1456,10 @@ def reset(
       archive a different one. A tip nothing archived is kept and reported.
     - **Never forced, and no archive ref is ever touched** (FR-010). Deleting a
       remote branch whose content is archived is safe; overwriting one is not,
-      and the two are one keystroke apart.
+      and the two are one keystroke apart. The archive is *put on the remote*
+      under its own name before the head is removed, so the bargain 069's forge
+      half already offered — the head goes, its tip stays reachable under
+      `archive/factory/<epic>/<node>/` — holds off this machine too.
     - **Origin is optional** (FR-003, plan trap 2). Teardown also runs where the
       network is not, and a local cleanup that starts failing because a remote
       is unreachable is a worse defect than the ref it was cleaning up. An
@@ -1666,15 +1669,29 @@ def _clear_remote_branch(
         ]
 
     try:
-        # A deletion, never a force push (FR-010): the content is already held by
-        # `archive`, and overwriting divergent history is the one thing this
-        # story may not do.
+        # The archive goes to the remote *before* the head leaves it, under the
+        # name 069's forge half uses, because that is a promise already made to
+        # an operator in `reset_note`: "the tip is kept under
+        # archive/factory/<epic>/<node>/". A local archive alone would leave that
+        # promise true only on the worker host. The ref names its own tip, so the
+        # write is idempotent and can never need a force.
+        _git(repo, "push", "--quiet", remote, f"{archive}:{archive}")
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return [
+            f"kept {remote} branch {branch} at {remote_tip[:12]}: {archive} could "
+            f"not be put on {remote} first: {exc}"
+        ]
+
+    try:
+        # A deletion, never a force push (FR-010): the content is held by
+        # `archive` on both sides now, and overwriting divergent history is the
+        # one thing this story may not do.
         _git(repo, "push", "--quiet", remote, "--delete", ref)
     except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
         return [f"kept {remote} branch {branch} at {remote_tip[:12]}: {exc}"]
     return [
         f"deleted {remote} branch {branch} at {remote_tip[:12]} "
-        f"(archived at {archive})"
+        f"(kept as {archive}, here and on {remote})"
     ]
 
 
