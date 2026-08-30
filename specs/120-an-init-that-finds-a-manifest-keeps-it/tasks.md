@@ -67,7 +67,7 @@ attempt lands.
 ### Implementation for this story
 
 - [ ] T016 [US2] (FR-005, trap 4) In `_init_default`
-      (`factory/cli/init.py:641-654`), consult the computed defaults before
+      (`factory/cli/init.py`), consult the computed defaults before
       returning absent for an optional key, so a declared value wins and "absent"
       applies only when nothing was declared. Replace the comment that justified
       the old order.

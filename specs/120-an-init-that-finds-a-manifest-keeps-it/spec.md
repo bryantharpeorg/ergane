@@ -19,7 +19,7 @@ fixes:
 # with no standards document and the default ladder.
 #
 # THE MECHANISM IS FIVE LINES, AND THE COMMENT ON THEM IS THE DEFECT.
-# `_init_default` (`factory/cli/init.py:641`) reads:
+# `_init_default` (`factory/cli/init.py`) reads:
 #
 #     defaults = _build_defaults(repo_root)
 #     # Optional keys have a safe default of "absent".

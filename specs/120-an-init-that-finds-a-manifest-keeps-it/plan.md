@@ -8,7 +8,7 @@ nothing; and reconcile against the file rather than against the edit.
 ## What already exists, and where
 
 - **The five lines that lose the data**: `_init_default(key, repo_root)`
-  (`factory/cli/init.py:641`). It calls `_build_defaults(repo_root)`, then
+  (`factory/cli/init.py`). It calls `_build_defaults(repo_root)`, then
   returns `None` for anything in `_OPTIONAL_KEYS` **before** consulting that
   result. The comment above the early return — "Optional keys have a safe default
   of 'absent'" — is the defect stated as a justification.

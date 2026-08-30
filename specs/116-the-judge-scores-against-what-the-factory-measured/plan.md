@@ -17,7 +17,7 @@ measure or when the judge runs changes.
   rather than beside it.
 - **The one caller**: `factory/verify/judge.py:616`, inside the module's
   `run_judge`, which is wrapped by the activity at
-  `factory/activities/verify_activities.py:409-423` and invoked from
+  `factory/activities/verify_activities.py` and invoked from
   `factory/workgraph/workflow.py:2679`.
 - **The guard that proves the invariant**: `judge_required(gate_results,
   output_check, criteria)` (`factory/verify/models.py`). Read its docstring
