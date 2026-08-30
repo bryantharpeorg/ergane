@@ -32,6 +32,12 @@ Four rules do the work here:
   agent that reads its own green gates as a pass is reading the prompt wrong, so
   the prompt says so in as many words.
 
+- **The gate boundary's one surprise is stated as a line to run** (101). The
+  gate's `HOME` is a tmpfs the attempt never saw, so what an agent installed
+  under it is gone by gate time — a fact no agent can observe from inside its
+  own attempt, and one whose half-stated version is worse than silence
+  (`_GATE_BOUNDARY`).
+
 The prompt carries no credential, no proxy URL and no worker path: the agent's
 world is its worktree plus the environment the adapter built for it
 (contracts/adapter.md). The branch name appears because the agent is standing on
@@ -192,6 +198,61 @@ final message is read as a result.
 
 Do not weaken tests, skip gates, or narrow acceptance criteria to reach a green
 run. A diff that passes by deleting the check fails the outer loop."""
+
+#: 101 FR-001/FR-002/FR-003: what the gate boundary does not carry across, and
+#: the two lines that make a toolchain dependency survive it.
+#:
+#: **Executable, never explanatory.** The measurement behind that constraint is
+#: not close. An agent given no guidance at all found the complete fix in three
+#: attempts. An agent given the mechanism stated correctly but incompletely put
+#: the variable where the text said, stopped searching, and failed 3/3 with the
+#: browser physically present in its worktree — because the tool re-reads that
+#: variable from the environment on every invocation, and the gate's environment
+#: is not the attempt's. Guidance that names the mechanism and leaves the remedy
+#: to be derived replaces the agent's search with a wrong anchor that looks
+#: authoritative, so a paragraph here is measurably worse than silence. Hence
+#: two commands with both halves shown, and hence the length: this is an
+#: instruction read on the way past, not background.
+#:
+#: **Both halves or neither.** The install alone leaves the dependency in the
+#: worktree and invisible to the tool; the variable alone points at nothing.
+#: That is why the gate command carries the same assignment — and why the
+#: example prefixes the declared command rather than replacing it, which would
+#: be an agent editing its own gate.
+#:
+#: Playwright is one worked instance of the shape, not the shape itself: "put it
+#: under the worktree, name the path in front of the gate command" is what
+#: generalises, and it holds for every package world because the worktree is the
+#: only thing that crosses. It deliberately names no manifest key — a node that
+#: adds a key the worker's installed parser does not know is refused at
+#: `CONFIG_ERROR` in 0.0s before any gate runs (`factory.yaml:38-42`), so advice
+#: to declare one would trade this failure for a worse one.
+#:
+#: A git-ignored directory is what keeps the two invariants apart: an ignored
+#: path is not in the judge's diff and does not read as a gate that dirtied the
+#: worktree (084), while still being there when the gate runs.
+_GATE_BOUNDARY = """## What does not survive to gate time
+
+Your gates are run again after you stop, in a sandbox whose `HOME` is a fresh
+tmpfs — a different `HOME` from the one you are working in now, empty, and
+without the variables you exported. Only the worktree persists across that
+boundary, so a toolchain that installed itself under `HOME` during your attempt
+(a browser, an SDK, a global package store) is not there when the gate runs.
+
+Install it under the worktree instead, and name that path in front of the gate
+command too, because the tool re-reads the variable on every invocation:
+
+```bash
+# 1. into the worktree, git-ignored so it stays out of the diff
+echo '/.cache/' >> .gitignore
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/ms-playwright" npx playwright install chromium
+
+# 2. the same variable in front of the gate command, in factory.yaml:
+#    smoke: "PLAYWRIGHT_BROWSERS_PATH=$PWD/.cache/ms-playwright npx playwright test"
+```
+
+Both steps or neither: the install alone leaves the dependency present in the
+worktree and invisible to the tool."""
 
 _OPERATOR_QUESTION = """## If you are blocked, ask the operator
 
@@ -502,6 +563,11 @@ def build_attempt_prompt(
         ),
         _INNER_LOOP,
         _OUTER_LOOP,
+        # Unconditional (101 FR-003): the tmpfs `HOME` is a property of the gate
+        # boundary, not of what a repository declares, so it sits in the fixed
+        # sections beside the two loops rather than behind any input. There is
+        # no manifest here to make it conditional on, and that is deliberate.
+        _GATE_BOUNDARY,
         _OPERATOR_QUESTION,
     ]
     if standards:

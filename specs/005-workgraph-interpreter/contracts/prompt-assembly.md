@@ -29,12 +29,19 @@ already in workflow state.
 3. **The outer loop (authoritative)** — verification is independent: gates, output
    check, and judge run after you stop; your own assessment of success carries no
    weight (FR-012). Do not weaken tests to pass gates.
-4. **Standards directive** (when declared) — read `<standards path>` before
+4. **What does not survive to gate time** (always, 101 FR-003) — the gate
+   boundary's `HOME` is a fresh tmpfs distinct from the attempt's and only the
+   worktree persists, with the runnable two-step remedy: install under the
+   worktree, git-ignored, and carry the same variable in front of the gate
+   command. Executable rather than explanatory by measurement (101 FR-002), and
+   unconditional, because the tmpfs is a property of the boundary and not of
+   what a repository declares.
+5. **Standards directive** (when declared) — read `<standards path>` before
    writing code and obey it.
-5. **Story** — the story sections, verbatim.
-6. **Plan** — full plan.md.
-7. **Your task slice** — the tasks.md slice, verbatim.
-8. **Prior attempt evidence** (retries only) — per prior attempt: termination
+6. **Story** — the story sections, verbatim.
+7. **Plan** — full plan.md.
+8. **Your task slice** — the tasks.md slice, verbatim.
+9. **Prior attempt evidence** (retries only) — per prior attempt: termination
    class, each failed gate's `output_tail`, judge feedback; all verbatim, newest
    last.
 
