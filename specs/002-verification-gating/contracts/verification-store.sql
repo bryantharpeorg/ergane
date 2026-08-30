@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- NULL for rows written before this feature; additive, never backfilled.
     loop_digest       TEXT,
     loop_summary      TEXT,
+    -- 118-US2: the base the node's worktree was pinned to, so a verdict names
+    -- what it was measured against (FR-006). NULL for rows written before this
+    -- feature, read back as `UNKNOWN_BASE_REF`; additive, never backfilled.
+    base_ref          TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 

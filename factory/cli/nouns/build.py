@@ -101,6 +101,7 @@ from factory.notify.service import (
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
 from factory.verify.models import (
+    UNKNOWN_BASE_REF,
     EscalationChoice,
     EscalationRecord,
     QuestionRecord,
@@ -148,10 +149,12 @@ from factory.mergequeue.reset import reset_node_on_forge, reset_note
 from factory.workgraph.worktree import (
     NodeSalvage,
     branch_name,
+    landing_branch,
     read_node_salvage,
     reset as reset_worktree,
     _has_remote as has_remote,
 )
+from factory.workgraph.landed import _resolve_default_head
 
 #: Compiled artifact naming convention, shared with `spec derive`.
 ARTIFACT_NAME = "workgraph.json"
@@ -451,8 +454,14 @@ def render_status(
     execution_status: str,
     *,
     live_spend: Mapping[str, Mapping[str, Any]] | None = None,
+    landing_head: tuple[str, str] | None = None,
 ) -> str:
-    """The human view: the epic's line, then one line per node, in query order."""
+    """The human view: the epic's line, then one line per node, in query order.
+
+    `landing_head` is `(branch, sha)` read live by the caller, or `None` when it
+    could not be read (118-US2, FR-007). It is a parameter rather than something
+    resolved here because this function is a renderer and reads no git.
+    """
     nodes: Mapping[str, Mapping[str, Any]] = document["nodes"]
     id_width = max((len(node_id) for node_id in nodes), default=0)
     state_width = max(
@@ -478,10 +487,54 @@ def render_status(
         lines.append(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
             f"attempt {node['attempt']}  {node['branch']}"
-            f"{_routing_token(node)}{spend_token}{external_token}"
-            f"{_reason_token(node)}"
+            f"{_routing_token(node)}{_base_token(node, landing_head)}"
+            f"{spend_token}{external_token}{_reason_token(node)}"
         )
     return "\n".join(lines)
+
+
+#: What the landing half of the base token says when no head was read. It names
+#: the *reading* rather than the landing, because "landing unavailable" beside a
+#: node with an open PR would read as a claim about the landing. A degraded
+#: reading, never a guessed number: a head inferred from the base would read as
+#: "current" for every node in the epic.
+_LANDING_HEAD_UNAVAILABLE = "landing head unavailable"
+
+#: How much of a sha the comparison needs. Twelve hex digits is what the rest of
+#: this repository's operator surfaces print, and the full value stays on the
+#: verification row for anyone auditing rather than diagnosing.
+_SHA_WIDTH = 12
+
+
+def _base_token(
+    node: Mapping[str, Any], landing_head: tuple[str, str] | None
+) -> str:
+    """The node's pinned base beside the landing branch's current head (FR-007).
+
+    The whole value of this story's reading is that the two numbers sit on one
+    line for one node, because the question an operator is asking is a
+    comparison: a base three landings behind the landing branch is valid history
+    and unmergeable in practice, and until now that fact was an investigation.
+
+    Absent for a node that has prepared nothing — there is no pin, and printing
+    the sentinel beside a landing head would invite a comparison with nothing on
+    one side of it. Absent, too, for an older worker's answer, which carries no
+    such key: this reading degrades rather than inventing one (052).
+
+    `landing_head` is `None` in two cases that read the same way on purpose: the
+    caller tried and could not resolve a head, and the caller never had a
+    repository to try — `ergane status`'s floor table reuses this renderer for
+    epics whose target repos it does not resolve. Both are "no head was read
+    here", which is what the token says.
+    """
+    base = node.get("base_ref")
+    if not base or base == UNKNOWN_BASE_REF:
+        return ""
+    pinned = f"  base {str(base)[:_SHA_WIDTH]}"
+    if landing_head is None:
+        return f"{pinned}  {_LANDING_HEAD_UNAVAILABLE}"
+    branch, head = landing_head
+    return f"{pinned}  landing head {branch} {head[:_SHA_WIDTH]}"
 
 
 #: What the dial block is headed with, and what a reading that could not be
@@ -893,6 +946,38 @@ def ship_command(args: argparse.Namespace) -> int:
     return start_command(args)
 
 
+def _landing_head(document: Mapping[str, Any]) -> tuple[str, str] | None:
+    """The landing branch and its head *now*, or None if it cannot be read.
+
+    118-US2, FR-007. Read at status time rather than carried from dispatch,
+    because a head captured when the worktree was pinned is precisely the number
+    that cannot show staleness — it is the base.
+
+    The repository comes from the epic's own `target_repo` and the branch from
+    that repository's declared `landing_branch`, never from the directory the
+    operator's shell is in (constitution IX): a status read against whatever
+    clone happened to be nearby would answer with a head that governs nothing.
+    An answer that omits `target_repo` — an older worker's — gets no reading.
+
+    Without a fetch, the same choice `factory/cli/status.py` makes for the same
+    kind of reading: a status command may not hang on a network, and every
+    dispatch fetches, so a clone the factory runs against carries a recent
+    `origin/<branch>`. The broad catch is 052's rule — this reading costs its
+    own token and never the report.
+    """
+    try:
+        target_repo = document.get("target_repo")
+        if not target_repo:
+            return None
+        repo = Path(str(target_repo))
+        if not repo.is_dir():
+            return None
+        branch = landing_branch(repo)
+        return branch, _resolve_default_head(repo, branch, fetch=False)
+    except Exception:
+        return None
+
+
 async def _query_status(epic_id: str, *, as_json: bool) -> int:
     client = await _connect()
     handle = client.get_workflow_handle(workflow_id(epic_id))
@@ -944,6 +1029,7 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
         execution_status = "unavailable"
 
     live_spend = await _live_spend(client, handle, document)
+    landing_head = _landing_head(document)
     cli_revision = _cli_revision()
     worker_revision = document.get("worker_revision")
     skew_notice = _skew_notice(worker_revision, cli_revision)
@@ -952,6 +1038,11 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
         rendered["execution_status"] = execution_status
         if live_spend:
             rendered["live_spend"] = live_spend
+        if landing_head is not None:
+            rendered["landing_head"] = {
+                "branch": landing_head[0],
+                "head": landing_head[1],
+            }
         if refusal is not None:
             rendered["refusal"] = refusal
         if skew_notice is not None:
@@ -963,7 +1054,11 @@ async def _query_status(epic_id: str, *, as_json: bool) -> int:
         else:
             print(
                 render_status(
-                    epic_id, document, execution_status, live_spend=live_spend
+                    epic_id,
+                    document,
+                    execution_status,
+                    live_spend=live_spend,
+                    landing_head=landing_head,
                 )
             )
         if skew_notice is not None:
