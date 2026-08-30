@@ -494,6 +494,7 @@ def render_status(
             f"{_routing_token(node)}{_base_token(node, landing_head)}"
             f"{spend_token}{external_token}{_reason_token(node)}"
         )
+        lines.extend(_attempt_note_lines(node))
     return "\n".join(lines)
 
 
@@ -650,6 +651,25 @@ def _reason_token(node: Mapping[str, Any]) -> str:
     if not reason:
         return ""
     return "  reason: " + " ".join(str(reason).split())
+
+
+def _attempt_note_lines(node: Mapping[str, Any]) -> list[str]:
+    """What the node's latest attempt was, when the line above cannot say it.
+
+    Its own line rather than a token, because it is a sentence and it carries a
+    remedy: 095-US1's whole point is that the operator learns "the session could
+    not authenticate, run `claude login`" from the status screen instead of from
+    a transcript nobody opens (FR-002). Absent for every attempt that reached the
+    agent, and for an older worker's answer, which carries no such key.
+
+    Whitespace is flattened for the same reason `_reason_token` flattens it — the
+    line is the unit an operator reads — and the text is never truncated: the
+    half that names the remedy is the half at the end.
+    """
+    note = node.get("attempt_note")
+    if not note:
+        return []
+    return ["  " + " ".join(str(note).split())]
 
 
 def _routing_token(node: Mapping[str, Any]) -> str:

@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     final_usage_confirmed  INTEGER NOT NULL CHECK (final_usage_confirmed IN (0, 1)),
     termination            TEXT    NOT NULL CHECK (termination IN
                                ('completed', 'agent_error', 'timeout', 'killed',
-                                'question', 'auth_failure')),
+                                'question', 'auth_failure', 'pre_agent_failure')),
     issued_at              TEXT    NOT NULL,                 -- ISO 8601 UTC
     torn_down_at           TEXT    NOT NULL                  -- ISO 8601 UTC
 );
@@ -156,9 +156,9 @@ def _bootstrap_schema(conn: sqlite3.Connection) -> None:
 
 #: The one constraint in `usage_records` that has widened since the table was
 #: first written: 008 added `'question'` on 2026-08-07, 070 added
-#: `'auth_failure'`. Neither reached a ledger that already existed, because every
-#: statement in `_SCHEMA_DDL` is `IF NOT EXISTS` and that is a no-op on a table
-#: which is already there. The consequence is 079-US3's wedge: a node parks on an
+#: `'auth_failure'`, 095 added `'pre_agent_failure'`. None of them reached a
+#: ledger that already existed, because every statement in `_SCHEMA_DDL` is
+#: `IF NOT EXISTS` and that is a no-op on a table which is already there. The consequence is 079-US3's wedge: a node parks on an
 #: operator question, `teardown_attempt` writes the row the park owes with
 #: `termination='question'`, an older ledger's CHECK refuses it, the activity
 #: fails, and the node is left `WAITING_OPERATOR` with the epic paused — a

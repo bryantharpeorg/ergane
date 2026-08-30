@@ -902,7 +902,11 @@ async def test_an_agent_that_wrote_no_transcript_still_archives_its_output(
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
-    assert result.termination == Termination.AGENT_ERROR
+    # The archive is this test's subject and is unchanged. The classification
+    # beside it moved with 095-US1: a non-zero exit with no session transcript
+    # behind it is the pre-agent class now, because no turn ran — which is the
+    # very shape this fixture scripts.
+    assert result.termination == Termination.PRE_AGENT_FAILURE
     assert Path(result.transcript_path) == archive_dir(factory_root)
     assert BANNER in stdout_log(factory_root)
     assert not (archive_dir(factory_root) / f"{SESSION_ID}.jsonl").exists()
@@ -1788,7 +1792,10 @@ async def test_an_attempt_that_wrote_no_transcript_still_archives_stdout_log(
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
-    assert result.termination == Termination.AGENT_ERROR
+    # Since 095-US1 the missing transcript is also the classification: no session
+    # file means no turn ran. What this test is about — the log surviving anyway
+    # — is unchanged, and matters more in this class than in any other.
+    assert result.termination == Termination.PRE_AGENT_FAILURE
     archive = archive_dir(factory_root)
     assert (archive / STDOUT_LOG_NAME).is_file()
     assert not (archive / f"{SESSION_ID}.jsonl").exists()

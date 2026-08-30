@@ -1146,11 +1146,21 @@ def test_the_adapter_returns_a_classification_and_evidence_and_nothing_else() ->
     number the proxy reported, never one the workflow or adapter invented — so
     observation can ride the attempt's heartbeat without a per-interval poll
     (FR-001).
+
+    `detail` is 095-US1's addition and the second exception, narrower than the
+    first: it is one line of the dying process's own output, attached *after* the
+    classification is settled and read by nothing that decides anything. The rule
+    it must obey is held below — the workflow may put it on a status screen and
+    may not branch on it — and the reason it exists at all is that a pre-agent
+    failure's cause is a sentence ("OAuth session expired") that no
+    classification can carry and no operator should have to open a transcript to
+    find (plan trap 1).
     """
     assert {field.name for field in AdapterResult.__dataclass_fields__.values()} == {
         "termination",
         "transcript_path",
         "last_snapshot",
+        "detail",
     }
 
 
@@ -1176,6 +1186,13 @@ def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None
     set is exactly `{termination, transcript_path}`, the `transcript_path` read
     is owned by the QUESTION-detection block in `_run_node`, and a positive
     marker must break out of the loop before `_verify` runs.
+
+    095-US1 adds `detail` to that read set under the same discipline. It is text,
+    not a signal: the workflow may only pass it to `pre_agent_note`, whose whole
+    output is a sentence for a status screen, and the guard below pins both the
+    single reader and the fact that nothing compares it, branches on it, or lets
+    it reach a verdict. The classification it decorates was settled structurally,
+    in the adapter, before the string existed (plan trap 1).
     """
     tree = parse(WORKFLOW_MODULE)
     owner = enclosing_functions(tree)
@@ -1187,11 +1204,42 @@ def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None
         and isinstance(node.value, ast.Name)
         and node.value.id == "adapter_result"
     }
-    assert read == {"termination", "transcript_path"}, (
+    assert read == {"termination", "transcript_path", "detail"}, (
         f"the workflow reads {sorted(read)} off the adapter's result; only the "
-        "process classification may reach node state, and the one amendment hole "
-        "is the marker's read of transcript_path (FR-012, FR-010)"
+        "process classification may reach node state, and the amendment holes are "
+        "the marker's read of transcript_path (FR-010) and the pre-agent note's "
+        "read of detail (095 FR-002)"
     )
+
+    # 095-US1's hole is fenced the same way: `detail` may be handed to
+    # `pre_agent_note` and to nothing else. A read that reached any other call —
+    # or a comparison — would be the workflow branching on what a process said,
+    # which is the thing FR-012 exists to forbid.
+    detail_readers = {
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for argument in node.args
+        if isinstance(argument, ast.Attribute)
+        and isinstance(argument.value, ast.Name)
+        and argument.value.id == "adapter_result"
+        and argument.attr == "detail"
+    }
+    assert detail_readers == {"pre_agent_note"}, (
+        f"adapter_result.detail is passed to {sorted(detail_readers)}; the only "
+        "thing that may consume a dead process's words is the note an operator "
+        "reads (095 FR-002, FR-012)"
+    )
+    assert not [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        for operand in [node.left, *node.comparators]
+        if isinstance(operand, ast.Attribute)
+        and isinstance(operand.value, ast.Name)
+        and operand.value.id == "adapter_result"
+        and operand.attr == "detail"
+    ], "the workflow compares adapter_result.detail; it is text, not a signal"
 
     # The amendment hole is fenced: the `transcript_path` read must be owned by
     # the QUESTION-detection block in `_run_node`, the one place a marker parks.
@@ -1227,11 +1275,19 @@ def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None
 
 
 def test_the_exit_status_is_read_in_one_place_and_becomes_a_termination() -> None:
-    """Classification is exit status and nothing else (contracts/adapter.md).
+    """Classification is exit status and one structural fact (contracts/adapter.md).
 
     The adapter streams the agent's output straight to a file rather than
     collecting it, so there is no buffer to inspect even by accident — and the
     one place a return code is read produces a `Termination` member on the spot.
+
+    095-US1 splits the non-zero exit in two, and the guard that matters is the
+    one directly below rather than the member count: the fourth class is decided
+    by whether a session transcript exists, never by what is in it or in the log,
+    so `communicate`/`readline`/`readlines` stay banned here and the measured
+    "Failed to authenticate" string must not appear in this module at all. A
+    matcher on it would key the whole feature to one agent and one release of it
+    (plan trap 1).
     """
     tree = parse(ADAPTER_MODULE)
     owner = enclosing_functions(tree)
@@ -1261,8 +1317,21 @@ def test_the_exit_status_is_read_in_one_place_and_becomes_a_termination() -> Non
     assert classified == {
         "Termination.COMPLETED",
         "Termination.AGENT_ERROR",
+        "Termination.PRE_AGENT_FAILURE",
         "Termination.TIMEOUT",
     }, f"the adapter classifies {sorted(classified)}"
+
+    # Trap 1, held mechanically: the pre-agent class is a shape, not a phrase.
+    # These are the words the measured refusal was made of; the day one of them
+    # appears in this module, the classification has become a string match and
+    # will stop matching without saying so.
+    source = ADAPTER_MODULE.read_text(encoding="utf-8").lower()
+    for phrase in ("failed to authenticate", "oauth", "session expired"):
+        assert phrase not in source, (
+            f"factory/workgraph/adapter.py matches on {phrase!r}; the pre-agent "
+            "class is detected structurally, and a message belongs to one agent "
+            "and one release of it (095 FR-001, trap 1)"
+        )
 
 
 #: The two modules allowed to read a process's exit status, and what each one is

@@ -41,10 +41,19 @@ Four properties are the reason this file is longer than a `subprocess.run`:
   never inside a worktree, where salvage would commit the agent's own transcript
   to the node branch and the diff check would read it as work.
 
-Classification is exit status and nothing else: zero → `COMPLETED`, non-zero →
-`AGENT_ERROR`, deadline → `TIMEOUT`, cancellation → `KILLED`. `COMPLETED` is a
-statement about a process, never a claim that the work is done — the verdict
-belongs to component 2, later, from the worktree.
+Classification is exit status and one structural fact: zero → `COMPLETED`,
+non-zero → `AGENT_ERROR`, a non-zero exit with no agent turn behind it →
+`PRE_AGENT_FAILURE` (095-US1), deadline → `TIMEOUT`, cancellation → `KILLED`.
+`COMPLETED` is a statement about a process, never a claim that the work is done —
+the verdict belongs to component 2, later, from the worktree.
+
+The one addition to "exit status and nothing else" is still not a reading of
+what the agent *said* (FR-012). The agent CLI writes its session transcript on
+its first turn, so the absence of that file is the structural tell that the
+process produced no token, prepared no worktree, and attempted nothing of the
+story — the fact that separates a credential that expired from a build that
+broke. The dying process's own words are quoted for the operator one layer up,
+in the activity, and decide nothing here.
 """
 
 from __future__ import annotations
@@ -100,6 +109,17 @@ DEFAULT_EXECUTABLE = "claude"
 #: to flush the session transcript that is about to become the only account of
 #: what it was doing, short enough that ignoring TERM buys nothing.
 DEFAULT_GRACE_S = 10.0
+
+#: How long a failing process may have run and still be read as pre-agent
+#: (095-US1). It is not the discriminator — the absence of a session transcript
+#: is — it is the guard on the discriminator. The transcript's location is a
+#: convention of the agent CLI, and the day that convention moves, every failing
+#: attempt would look tokenless; a run that held the worktree for a minute
+#: plainly did more than fail to start, so it stays an `AGENT_ERROR` whatever the
+#: transcript path says. Generous in the other direction on purpose: the failure
+#: this bound exists for ran four attempts in thirteen seconds, and a credential
+#: refusal is a local check, not a round trip.
+PRE_AGENT_WINDOW_S = 60.0
 
 #: How often the adapter beats while waiting (R2) — the interval that makes a
 #: multi-hour attempt cancellable in seconds rather than at its deadline.
@@ -1055,6 +1075,14 @@ class ClaudeCodeAdapter:
                     send_ferry_question=send_ferry_question,
                     read_ferry_answer=read_ferry_answer,
                     ferry_interval_s=ferry_interval_s,
+                    # 095-US1: the structural tell, as a probe rather than as a
+                    # path — the monitor asks "did a turn happen" and the answer
+                    # is read at the moment the process ends, from the one
+                    # definition of where a session transcript lives that the
+                    # archive step also uses.
+                    agent_took_a_turn=lambda: _wrote_session_transcript(
+                        context, worktree, env
+                    ),
                 )
             except BaseException:
                 # Cancellation (the workflow's kill) and any failure of the
@@ -1190,6 +1218,7 @@ class ClaudeCodeAdapter:
         send_ferry_question: Callable[[str], Awaitable[str]] | None,
         read_ferry_answer: Callable[[str], Awaitable[str | None]] | None,
         ferry_interval_s: float,
+        agent_took_a_turn: Callable[[], bool] | None = None,
     ) -> tuple[Termination, UsageSnapshot | None]:
         """Wait for the agent, beating as it goes, and end it at its deadline.
 
@@ -1218,7 +1247,8 @@ class ClaudeCodeAdapter:
         decide when a question is over.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout_s
+        started = loop.time()
+        deadline = started + timeout_s
         exited = asyncio.ensure_future(process.wait())
 
         snapshot: UsageSnapshot | None = None
@@ -1271,7 +1301,10 @@ class ClaudeCodeAdapter:
                     (
                         Termination.COMPLETED
                         if process.returncode == 0
-                        else Termination.AGENT_ERROR
+                        else _failure_class(
+                            elapsed_s=loop.time() - started,
+                            agent_took_a_turn=agent_took_a_turn,
+                        )
                     ),
                     snapshot,
                 )
@@ -1387,23 +1420,80 @@ class ClaudeCodeAdapter:
         step to an unwritable disk would cost a finished attempt its
         classification and buy a re-run of the agent.
         """
-        home = env.get("HOME")
-        if not home:
-            return
-        source = (
-            Path(home)
-            / ".claude"
-            / "projects"
-            / project_dir_name(worktree)
-            / f"{context.session_id}.jsonl"
-        )
-        if not source.is_file():
+        source = session_transcript(context, worktree, env)
+        if source is None or not source.is_file():
             return
         with contextlib.suppress(OSError):
             shutil.copy2(source, archive / source.name)
 
 
 _ADAPTERS: dict[str, type[Any]] = {ClaudeCodeAdapter.name: ClaudeCodeAdapter}
+
+
+# the pre-agent failure, classified structurally (095-US1) ---------------------
+
+
+def session_transcript(
+    context: AttemptContext, worktree: Path, env: Mapping[str, str]
+) -> Path | None:
+    """Where this attempt's session transcript is, or `None` if it can't be.
+
+    One definition, two readers: the archive step copies this file, and the
+    classifier asks whether it exists. A second spelling of the same path is a
+    second thing that can drift, and the drift would be silent in the worst
+    direction — the classifier would call every failing attempt tokenless.
+    """
+    home = env.get("HOME")
+    if not home:
+        return None
+    return (
+        Path(home)
+        / ".claude"
+        / "projects"
+        / project_dir_name(worktree)
+        / f"{context.session_id}.jsonl"
+    )
+
+
+def _wrote_session_transcript(
+    context: AttemptContext, worktree: Path, env: Mapping[str, str]
+) -> bool:
+    """Whether the agent took a turn — the structural fact, read at exit.
+
+    The CLI writes its session file on the first turn, so this is "did a token
+    ever exist", asked without reading a word the agent said. A path that cannot
+    be read answers *yes*: an unreadable disk is not evidence that no agent ran,
+    and `AGENT_ERROR` is the classification that changes nothing.
+    """
+    try:
+        transcript = session_transcript(context, worktree, env)
+        return transcript is None or transcript.is_file()
+    except OSError:
+        return True
+
+
+def _failure_class(
+    *, elapsed_s: float, agent_took_a_turn: Callable[[], bool] | None
+) -> Termination:
+    """Which failure a non-zero exit was: the story's, or the environment's.
+
+    Two structural facts and no message (plan trap 1). A process that ran longer
+    than `PRE_AGENT_WINDOW_S` did more than fail to start, whatever the
+    transcript convention says today; a process that wrote no session transcript
+    produced no token, prepared no worktree, and attempted nothing of the story.
+    Only both together are the pre-agent class.
+
+    `agent_took_a_turn` is optional so a caller that cannot answer the question
+    gets exactly today's behaviour rather than a guess, and a probe that raises
+    is the caller's to isolate — this function is total by construction.
+    """
+    if agent_took_a_turn is None or elapsed_s >= PRE_AGENT_WINDOW_S:
+        return Termination.AGENT_ERROR
+    return (
+        Termination.AGENT_ERROR
+        if agent_took_a_turn()
+        else Termination.PRE_AGENT_FAILURE
+    )
 
 
 # stdin, pids, signals --------------------------------------------------------

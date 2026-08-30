@@ -550,6 +550,13 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         # member (plan R13). The subscription classifier *returns* a reclassified
         # result; this one *raises*.
         _raise_if_launch_refused(context, result)
+        # 095-US1 FR-001: an attempt the adapter classified structurally as
+        # pre-agent gets the dying process's own line attached to it, for the
+        # operator and for nothing else. Enrichment, strictly after
+        # classification: the termination above was decided without reading a
+        # byte of this, so a message no release has printed yet changes what an
+        # operator is told and never what the attempt *is* (plan trap 1).
+        result = _attach_pre_agent_detail(result)
         return result
     except asyncio.CancelledError:
         raise CancelledError(
@@ -643,6 +650,45 @@ def _raise_if_launch_refused(context: AttemptContext, result: AdapterResult) -> 
         type=AGENT_LAUNCH_FAILED,
         non_retryable=True,
     )
+
+
+#: How much of the dead process's own line is carried up to the operator. A
+#: pre-agent failure's whole stdout was 73 bytes on the day this was measured;
+#: the bound is here so that a process which died mid-flood puts a line on a
+#: status screen rather than a screenful.
+PRE_AGENT_DETAIL_LIMIT = 240
+
+
+def _attach_pre_agent_detail(result: AdapterResult) -> AdapterResult:
+    """Quote the dying process's last words on a pre-agent failure (FR-001).
+
+    The adapter has already classified this attempt from its shape, so nothing
+    read here can change what it is — which is exactly why reading it is safe.
+    What the operator gets is the one line that names the cause: on 2026-08-28
+    "Failed to authenticate: OAuth session expired and could not be refreshed",
+    a sentence no classification could have produced and no summary would have
+    preserved.
+
+    The *last* non-empty line, because a CLI's banner comes first and its
+    complaint comes last. An unreadable log is not an error: the note degrades to
+    its context and its general remedy, which is still more than the diffless
+    `agent_error` this replaces.
+    """
+    if result.termination != Termination.PRE_AGENT_FAILURE:
+        return result
+    if not result.transcript_path:
+        return result
+
+    log_path = Path(result.transcript_path) / STDOUT_LOG_NAME
+    try:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return result
+
+    lines = [line.strip() for line in log_text.splitlines() if line.strip()]
+    if not lines:
+        return result
+    return replace(result, detail=lines[-1][:PRE_AGENT_DETAIL_LIMIT])
 
 
 # --- read_worktree_diff (what the judge scores) -------------------------------

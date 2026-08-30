@@ -56,6 +56,16 @@ class Termination(StrEnum):
     #: the CLI (US3-S5/FR-013). The CLI prints the refusal on stdout and exits 1;
     #: without this class the attempt would be a diffless AGENT_ERROR.
     AUTH_FAILURE = "auth_failure"
+    #: An attempt in which no agent turn ever ran (095-US1/FR-001): the process
+    #: exited non-zero without producing a single token, so nothing prepared the
+    #: worktree and nothing was attempted of the story. Sibling of `AUTH_FAILURE`
+    #: and not a replacement for it — that one is the credential refused by a CLI
+    #: that had started, this one is the whole attempt ending before the start.
+    #: Classified structurally by the adapter (never from what the process said),
+    #: because the tell that was measured — a 73-byte "Failed to authenticate:
+    #: OAuth session expired" on stdout — belongs to one agent and one release of
+    #: it, and a matcher on it stops matching without saying so.
+    PRE_AGENT_FAILURE = "pre_agent_failure"
 
 
 @dataclass(frozen=True)
