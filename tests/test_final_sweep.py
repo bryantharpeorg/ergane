@@ -85,7 +85,14 @@ WRONG_SECRET = "sk-canary-000000000000000000-wrong"
 EPIC = "epic-sweep"
 NODE = "node-impl"
 ATTEMPT = 1
-PERSONA = "implementer"
+#: A gateway-routed persona this sweep owns, in the same placeholder register as
+#: `MODELS` below and for the same reason `tests/test_poll_usage.py` and
+#: `tests/test_usage_activities.py` own theirs: the sweep is about the master key
+#: never being rendered, not about who the operator's default builder is. It
+#: named `implementer` until 2026-08-30, and pointing that entry at a
+#: subscription route turned seven of these red — a persona that mints no key
+#: has no key to redact (`ci/test-suite-pins-the-operator-dial`, 123-US1 FR-001).
+PERSONA = "gateway-CHANGEME"
 SPEC_REF = "add-usage-tracking/final-sweep"
 MODELS = ["anthropic/CHANGEME"]
 

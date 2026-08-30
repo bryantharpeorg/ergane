@@ -144,6 +144,13 @@ class LiveConfig:
     master_key: str
     #: The persona registry's alias for `judge` — the only model name in play.
     model_alias: str
+    #: The route that same registry entry declares. Carried rather than left for
+    #: `issue_attempt_key` to re-derive: this smoke names a real persona because
+    #: the judge persona *is* its subject, and the only registry it means is the
+    #: one `_judge_wiring` just read — which is `LIVE_JUDGE_PERSONAS_PATH`'s when
+    #: the operator set it, and not the file the activity would resolve
+    #: (constitution IX, 123-US1 FR-003).
+    agent: str
 
 
 @dataclass(frozen=True)
@@ -176,7 +183,7 @@ def live_config() -> LiveConfig:
         )
 
     base_url = base_url.rstrip("/")
-    alias = _judge_alias()
+    alias, agent = _judge_wiring()
     advertised = asyncio.run(_advertised_models(base_url, master_key))
     if alias not in advertised:
         pytest.skip(
@@ -186,11 +193,21 @@ def live_config() -> LiveConfig:
             f"{', '.join(sorted(advertised)) or 'nothing'}"
         )
 
-    return LiveConfig(base_url=base_url, master_key=master_key, model_alias=alias)
+    return LiveConfig(
+        base_url=base_url, master_key=master_key, model_alias=alias, agent=agent
+    )
 
 
-def _judge_alias() -> str:
-    """Persona `judge`'s model, from the registry and from nowhere else."""
+def _judge_wiring() -> tuple[str, str]:
+    """Persona `judge`'s model and route, from the registry and nowhere else.
+
+    Both, not just the model. `issue_attempt_key` mints a virtual key unless the
+    payload's `agent` says the persona runs off the operator's subscription, and
+    with the field empty it goes back to the registry to find out — the one it
+    resolves by default, which is not necessarily the one read here. Reading
+    both fields from the same entry in one place is what keeps this smoke from
+    asking two files the same question and believing the second.
+    """
     try:
         personas = load_personas(os.environ.get(REGISTRY_ENV) or None)
     except ConfigError as exc:
@@ -202,7 +219,7 @@ def _judge_alias() -> str:
             f"the persona registry declares no model for '{JUDGE_PERSONA}'; set "
             f"{REGISTRY_ENV} to one that does"
         )
-    return persona.model
+    return persona.model, persona.agent
 
 
 @pytest.fixture(scope="module")
@@ -244,6 +261,10 @@ async def _run_judgement(config: LiveConfig, ledger_path: Path) -> LiveJudgement
             # The key may call the judge's alias and nothing else (R8): a judge
             # that can reach the implementer's model is an unattributed budget.
             models=[config.model_alias],
+            # From the same registry entry the alias came from, so this smoke
+            # runs on whichever route the operator wired the judge for rather
+            # than on whichever one a second registry lookup would find.
+            agent=config.agent,
             ttl=SMOKE_TTL,
         ),
     )

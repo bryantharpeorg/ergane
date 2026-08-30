@@ -56,7 +56,16 @@ from tests.conftest import FakeLiteLLM
 EPIC = "epic-7"
 NODE = "node-3"
 ATTEMPT = 1
-PERSONA = "implementer"
+#: A gateway-routed persona these tests own, in the same placeholder register as
+#: `MODELS` below. Deliberately NOT a name the operator's registry defines: this
+#: module is about polling a leased key, and naming a real persona would make
+#: every test here depend on which route the operator picked for it. It named
+#: `implementer` until 2026-08-30, and pointing that entry at a subscription
+#: route turned fifteen of these red — the whole gate with them, since
+#: `factory.yaml` declares the suite as this repo's one gate
+#: (`ci/test-suite-pins-the-operator-dial`, 123-US1 FR-001). A name the registry
+#: does not define takes the gateway path, on every host and every dial setting.
+PERSONA = "gateway-CHANGEME"
 SPEC_REF = "add-usage-tracking/live-visibility"
 MODELS = ["anthropic/CHANGEME"]
 

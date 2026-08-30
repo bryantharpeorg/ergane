@@ -78,7 +78,14 @@ MODEL_ENV = "LITELLM_SMOKE_MODEL"
 
 NODE = "live-smoke"
 ATTEMPT = 1
-PERSONA = "researcher"
+#: A gateway-routed persona this smoke owns. The alias is the only thing the
+#: persona decides here — the model comes from `MODEL_ENV` or from what the
+#: proxy advertises, never from the registry — so naming a real one bought
+#: nothing and cost the whole run: `issue_attempt_key` mints no key for a
+#: subscription-routed persona, and a smoke test whose first step is "issue a
+#: key" then has none to make its completion with. It named `researcher` until
+#: 2026-08-30 (`ci/test-suite-pins-the-operator-dial`, 123-US1 FR-003).
+PERSONA = "gateway-CHANGEME"
 SPEC_REF = "001-usage-tracking/SC-002"
 
 #: Far below R5's 24h default: this key exists for the length of one completion,
