@@ -219,6 +219,7 @@ with workflow.unsafe.imports_passed_through():
         is_unoffered,
         next_action,
         offered_choices,
+        pre_agent_bound_spent,
     )
     from factory.versioning import workflow_versioning_behavior
     from factory.verify.models import (
@@ -2068,6 +2069,10 @@ class EpicWorkflow:
                         # only thing that knows is the routing that dispatched it
                         # (075-US3 FR-011, plan trap 4).
                         model_alias=routing.model_alias,
+                        # 095-US2 (FR-005): a pre-agent failure is not a rung, so
+                        # the ladder's accounting excludes it. The flag is the
+                        # record's own, keyed on the termination US1 classified.
+                        pre_agent=termination == Termination.PRE_AGENT_FAILURE,
                     )
                 )
 
@@ -2094,6 +2099,18 @@ class EpicWorkflow:
                             # raises `allowed` with it (068 FR-003).
                             retry_grants_work=grant_produces_work(
                                 record.history, request.config, record.escalations
+                            ),
+                            # 095-US2 (FR-007): an escalation raised on the
+                            # pre-agent bound is an authentication escalation, and
+                            # its fail-safe default is PAUSE_EPIC rather than
+                            # KILL — a dead credential is fixed by
+                            # re-authenticating, not by killing the node.
+                            default_choice=(
+                                EscalationChoice.PAUSE_EPIC
+                                if pre_agent_bound_spent(
+                                    record.history, request.config, len(record.escalations)
+                                )
+                                else None
                             ),
                         )
                         if escalation is None:
@@ -2829,6 +2846,7 @@ class EpicWorkflow:
         *,
         retry_grants_work: bool,
         history_summary: str | None = None,
+        default_choice: EscalationChoice | None = None,
     ) -> _Escalation | None:
         """Page a human, then wait exactly as long as waiting is worth (FR-008).
 
@@ -2864,6 +2882,7 @@ class EpicWorkflow:
                 history_summary=history_summary or render_history(results),
                 choices=offered_choices(retry_grants_work=retry_grants_work),
                 timeout_s=config.escalation_timeout_s,
+                default_choice=default_choice,
             ),
         )
         if outcome is None:

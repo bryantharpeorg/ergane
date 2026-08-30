@@ -151,6 +151,10 @@ class EscalationRequest:
     )
     timeout_s: int = ESCALATION_TIMEOUT_S
     check_evidence: tuple[CheckFailure, ...] = ()
+    #: 095-US2 (FR-007): the fail-safe default applied on silence, which varies
+    #: with the escalation's cause. `None` means the ordinary default (KILL); an
+    #: authentication escalation carries `PAUSE_EPIC`.
+    default_choice: EscalationChoice | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -318,6 +322,7 @@ class EscalationWorkflow:
                 timeout_s=request.timeout_s,
                 escalation_id=escalation_id,
                 check_evidence=request.check_evidence,
+                default_choice=request.default_choice,
             ),
             **_FAST,
         )
@@ -393,6 +398,12 @@ class EscalationWorkflow:
         `final_state=None` means the store has no record at all — a database
         rebuilt under a running escalation, a row lost with the disk — which is
         not consent. The fail-safe default applies.
+
+        095-US2 (FR-007): the fail-safe default varies with the escalation's
+        cause. An authentication escalation parks rather than kills — a dead
+        credential is fixed by re-authenticating, not by killing the node — so
+        its silence default is `PAUSE_EPIC`, read from the request's
+        `default_choice`. Every other escalation keeps the ordinary `KILL`.
         """
         expired = await workflow.execute_activity(
             expire_escalation,
@@ -400,12 +411,15 @@ class EscalationWorkflow:
             **_FAST,
         )
 
+        default = self._request.default_choice if self._request is not None else None
+
         if expired.final_state is None:
-            self._resolution = EscalationChoice.KILL.value
+            resolution = (default or EscalationChoice.KILL).value
+            self._resolution = resolution
             return EscalationOutcome(
                 escalation_id=escalation_id,
                 outcome=OUTCOME_EXPIRED,
-                resolution=EscalationChoice.KILL.value,
+                resolution=resolution,
                 identity="",
                 delivered=delivered,
             )
@@ -413,10 +427,15 @@ class EscalationWorkflow:
         recorded = expired.final_state
         self._resolution = recorded
         if recorded == OUTCOME_EXPIRED:
+            # Silence: the fail-safe default applies. For an authentication
+            # escalation that default is PAUSE_EPIC, not KILL (095-US2 FR-007);
+            # otherwise the store's EXPIRED is what the epic reads as the
+            # ordinary kill.
+            resolution = default.value if default is not None else recorded
             return EscalationOutcome(
                 escalation_id=escalation_id,
                 outcome=OUTCOME_EXPIRED,
-                resolution=recorded,
+                resolution=resolution,
                 identity="",
                 delivered=delivered,
             )

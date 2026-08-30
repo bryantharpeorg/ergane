@@ -123,7 +123,11 @@ from factory.verify.models import (
 #: 8 (118-US2): `verification_results.base_ref` — the base the verdict was
 #: measured against. Additive; every row written before it reads
 #: `UNKNOWN_BASE_REF`, never a backfilled guess.
-SCHEMA_VERSION = 8
+#:
+#: 9 (095-US2): `escalations.default_choice` — the fail-safe default applied on
+#: silence, which varies with the escalation's cause. Additive; NULL for every
+#: row written before it, which reads as the ordinary default (KILL).
+SCHEMA_VERSION = 9
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -210,6 +214,10 @@ CREATE TABLE IF NOT EXISTS escalations (
     -- tuple. Last in the table because ALTER TABLE ADD COLUMN appends, and a
     -- migrated store must have the same column order as a fresh one.
     check_evidence TEXT NOT NULL DEFAULT '[]',
+    -- 095-US2: the fail-safe default applied on silence, which varies with the
+    -- escalation's cause. NULL means the ordinary default (KILL); an
+    -- authentication escalation records PAUSE_EPIC here.
+    default_choice TEXT,
     CHECK ((resolution IS NULL) = (resolved_at IS NULL))
 );
 
@@ -417,6 +425,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE escalations ADD COLUMN "
             "check_evidence TEXT NOT NULL DEFAULT '[]'"
+        )
+    if escalation_columns and "default_choice" not in escalation_columns:
+        # 095-US2. NULL for every row written before the field existed, which
+        # reads as the ordinary default (KILL) — the only honest reading of a
+        # row from a run where the cause was not recorded.
+        conn.execute(
+            "ALTER TABLE escalations ADD COLUMN default_choice TEXT"
         )
 
     recorded = _escalations_ddl(conn)
@@ -912,6 +927,7 @@ _ESCALATION_COLUMNS = (
     "resolved_at",
     "resolved_via",
     "check_evidence",
+    "default_choice",
 )
 
 _INSERT_ESCALATION_SQL = (
@@ -957,6 +973,7 @@ def insert_escalation(conn: sqlite3.Connection, record: EscalationRecord) -> Non
             "resolved_at": record.resolved_at,
             "resolved_via": _resolved_via(resolution),
             "check_evidence": _check_evidence_json(record.check_evidence),
+            "default_choice": _default_choice_value(record.default_choice),
         },
     )
     conn.commit()
@@ -1062,6 +1079,16 @@ def _resolution_value(resolution: EscalationChoice | str | None) -> str | None:
     return EXPIRED if resolution == EXPIRED else EscalationChoice(resolution).value
 
 
+def _default_choice_value(choice: EscalationChoice | None) -> str | None:
+    """The stored spelling of a fail-safe default, or `None` for the ordinary one."""
+    return None if choice is None else EscalationChoice(choice).value
+
+
+def _default_choice_from_value(value: str | None) -> EscalationChoice | None:
+    """Read a fail-safe default back; `None` is the ordinary default (KILL)."""
+    return None if value is None else EscalationChoice(value)
+
+
 def _resolved_via(resolution: str | None) -> str | None:
     """How a terminal state was reached, derived from the state itself.
 
@@ -1099,6 +1126,7 @@ def _escalation_from_row(row: tuple[Any, ...]) -> EscalationRecord:
         ),
         resolved_at=values["resolved_at"],
         check_evidence=_check_evidence_from_json(values["check_evidence"]),
+        default_choice=_default_choice_from_value(values["default_choice"]),
     )
 
 

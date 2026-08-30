@@ -244,7 +244,14 @@ async def test_the_record_says_no_agent_prepared_this_worktree(
         gates=[missing_binary],
         termination=Termination.PRE_AGENT_FAILURE,
     )
-    script = ScriptedWorld({"us1": [pre_agent] * 8}, client=env.client)
+    # 095-US2: an unbroken run of pre-agent failures escalates on its own bound,
+    # and that escalation's fail-safe default is PAUSE_EPIC rather than KILL
+    # (FR-007) — a dead credential is fixed by re-authenticating, not by killing
+    # the node. The press is KILL explicitly, so the node still ends KILLED and
+    # this test's terminal-state assertion holds under the new default.
+    script = ScriptedWorld(
+        {"us1": [pre_agent] * 8}, client=env.client, press="KILL"
+    )
 
     status = await run_epic(env, script, graph=make_graph([make_node("us1", "US1")]))
 

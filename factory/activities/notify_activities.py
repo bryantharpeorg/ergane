@@ -185,6 +185,9 @@ class SendEscalationInput:
     escalation_id: str | None = None
     #: US2: the failing check evidence to render into the operator-facing message.
     check_evidence: tuple[CheckFailure, ...] = ()
+    #: 095-US2 (FR-007): the fail-safe default applied on silence, which varies
+    #: with the escalation's cause. `None` means the ordinary default (KILL).
+    default_choice: EscalationChoice | None = None
 
 
 @dataclass(frozen=True)
@@ -518,6 +521,7 @@ def _pending_record(request: SendEscalationInput) -> EscalationRecord:
         expires_at=_iso(sent + timedelta(seconds=request.timeout_s)),
         delivered=False,
         check_evidence=request.check_evidence,
+        default_choice=request.default_choice,
     )
 
 
