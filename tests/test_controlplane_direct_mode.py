@@ -58,6 +58,17 @@ SHIPPED_REGISTRY = REPO_ROOT / "personas.yaml"
 DIRECT_CREDENTIAL = "sk-direct-credential-not-for-logs"
 DIRECT_CREDENTIAL_ENV = "ERGANE_DIRECT_LLM_KEY"
 
+#: A gateway-routed persona these tests own, in the same placeholder register as
+#: the `anthropic/CHANGEME` aliases below. These tests are about which
+#: *credential* a mode hands back, so the persona is only an attribution
+#: dimension — but `config_path` above points the resolver at the repository's
+#: own `personas.yaml`, and `issue_attempt_key` returns an empty key for a
+#: subscription-routed persona before it ever reaches the direct-mode branch. So
+#: naming the operator's default builder here meant that re-routing that builder
+#: turned four of these red, and no `ERGANE_PERSONAS_PATH` in the environment
+#: could show it (`ci/test-suite-pins-the-operator-dial`, 123-US1 FR-003).
+PERSONA = "gateway-CHANGEME"
+
 #: A minimal direct-mode config with a base URL and an API key env var.
 DIRECT_CONFIG = f"""\
 version = 1
@@ -160,7 +171,7 @@ async def test_issue_attempt_key_returns_declared_credential_and_writes_row(
         node_id="us2",
         epic_id="055-the-gateway-is-a-choice-with-a-scan",
         attempt=1,
-        persona="implementer",
+        persona=PERSONA,
         spec_ref="specs/055-the-gateway-is-a-choice-with-a-scan/spec.md",
         models=["anthropic/CHANGEME"],
     )
@@ -170,7 +181,10 @@ async def test_issue_attempt_key_returns_declared_credential_and_writes_row(
     lease = await issue_attempt_key(request)
 
     assert lease.key == DIRECT_CREDENTIAL
-    assert lease.key_alias == "055-the-gateway-is-a-choice-with-a-scan:us2:1:implementer"
+    assert (
+        lease.key_alias
+        == f"055-the-gateway-is-a-choice-with-a-scan:us2:1:{PERSONA}"
+    )
 
     # The activity that opens every attempt must still be paired with teardown,
     # which writes the ledger row. Direct mode has no proxy to revoke.
@@ -259,7 +273,7 @@ adapter = "telegram"
         node_id="us2",
         epic_id="055-the-gateway-is-a-choice-with-a-scan",
         attempt=1,
-        persona="implementer",
+        persona=PERSONA,
         spec_ref="specs/055-the-gateway-is-a-choice-with-a-scan/spec.md",
         models=["anthropic/CHANGEME"],
     )
@@ -321,7 +335,7 @@ async def test_ergane_usage_reports_attribution_unavailable_in_direct_mode(
         node_id="us2",
         epic_id="055-the-gateway-is-a-choice-with-a-scan",
         attempt=1,
-        persona="implementer",
+        persona=PERSONA,
         spec_ref="specs/055-the-gateway-is-a-choice-with-a-scan/spec.md",
         models=["anthropic/CHANGEME"],
     )
@@ -355,7 +369,7 @@ async def test_ergane_usage_json_reports_attribution_unavailable_in_direct_mode(
         node_id="us2",
         epic_id="055-the-gateway-is-a-choice-with-a-scan",
         attempt=1,
-        persona="implementer",
+        persona=PERSONA,
         spec_ref="specs/055-the-gateway-is-a-choice-with-a-scan/spec.md",
         models=["anthropic/CHANGEME"],
     )
