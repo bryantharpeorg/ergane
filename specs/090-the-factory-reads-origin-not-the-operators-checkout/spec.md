@@ -1,6 +1,26 @@
 ---
-state: ready
+state: landed
 fixes:
+# Attested landed 2026-08-29 by the away-mode loop. US1 c3a2e4419292 at 18:27,
+# US2 5c98cbfb9ce0 at 19:32, US3 ab165daa0c80 at 20:16 -- all three observed on
+# ergane-buildout, ALL THREE FIRST ATTEMPT.
+#
+# THE SPEC THAT FIXED THE DEFECT THAT KEPT BITING THE OPERATOR WHILE IT WAS
+# BEING BUILT. `_refresh_to_default` hard-resetting the operator's checkout to
+# origin/<whatever branch it happens to be on> cost, on 2026-08-29 alone: the
+# redundant re-dispatch of epic-111 whose three stories had already landed, four
+# wasted attempts on an empty diff, and -- because the loop paused the roadmap to
+# stop the reset destroying commits -- a checkout that then sat three landings
+# stale for four hours and silently invalidated an anchor sweep across eleven
+# specs. The pause and the staleness are the same line of code, which is why
+# `roadmap/pausing-the-scheduler-silently-stops-refreshing-the-operators-checkout`
+# was filed the same afternoon.
+#
+# MODELS, because this epic straddled a change: US1 built on
+# ollama-cloud/glm-5.3 (63 min dispatch-to-merged); US2 and US3 on opus-closer
+# over the operator's subscription (43 and ~34 min). The epic was killed and
+# re-dispatched from its delta between US1 and US2 to move the remainder onto
+# Opus, which cost 11 minutes of a just-started node and nothing else.
   - roadmap/clone-target-hard-resets-the-operators-own-checkout-every-tick-and-destroys-uncommitted-work
   - roadmap/dispatch-is-decided-by-the-operators-working-tree
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.
