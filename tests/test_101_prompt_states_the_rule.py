@@ -154,9 +154,10 @@ def failed_attempt() -> AttemptEvidence:
     return AttemptEvidence(
         termination=Termination.COMPLETED,
         result=VerificationResult(
+            epic_id=EPIC_ID,
             node_id="us1",
             attempt=1,
-            form=VerificationForm.BUILD,
+            form=VerificationForm.PHASE,
             verdict=OverallVerdict.FAIL,
             gate_results=[
                 GateResult(
@@ -168,7 +169,20 @@ def failed_attempt() -> AttemptEvidence:
                     output_tail="Looks like Playwright was just installed",
                 )
             ],
-            output_check=OutputCheck(write_scope="worktree", has_diff=True),
+            output_check=OutputCheck(
+                write_scope="worktree",
+                has_diff=True,
+                expected_artifacts=[],
+                artifacts_present=None,
+                passed=True,
+            ),
+            judge=None,
+            judge_unavailable=False,
+            criteria_drift=False,
+            criteria_sha256="c" * 64,
+            spec_ref="demo-loans/US1",
+            started_at="2026-08-05T10:00:00Z",
+            finished_at="2026-08-05T10:20:00Z",
         ),
     )
 
