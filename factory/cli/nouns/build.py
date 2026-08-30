@@ -1656,6 +1656,12 @@ async def _reset_epic(graph: WorkGraph, *, forge: Any | None = None) -> int:
     Local first because it is the half that must always happen: it needs nothing
     off this machine, and it is what the operator is recovering with.
 
+    Since 100-US1 the local half also retires that head, because teardown must
+    clear it on the paths that never reach this verb at all — a killed epic tears
+    down inside the workflow. The forge half is not redundant: it closes the
+    proposal, which no amount of git can do, and it reports "no head on the
+    forge" for one the local half already removed.
+
     `forge` is the seam tests put a repository behind. Left unset — every
     operator invocation — the forge is the one the target repository declares,
     resolved once for the whole graph rather than per node.
