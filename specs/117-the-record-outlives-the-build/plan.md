@@ -8,7 +8,7 @@ learns to group. The migration is the risk, not the schema.
 ## What already exists, and where
 
 - **The key**: `UNIQUE (epic_id, node_id, attempt, form)` at
-  `factory/verify/store.py:176`, annotated `-- upsert key (record_verification)`.
+  `factory/verify/store.py`, annotated `-- upsert key (record_verification)`.
   It is mirrored in Python as `_RESULT_KEY = ("epic_id", "node_id", "attempt",
   "form")` (`:486`), and the upsert SQL is **generated** from that tuple
   (`_UPSERT_RESULT_SQL`, `:512-521`): the conflict target and the updated-column

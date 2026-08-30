@@ -7,7 +7,7 @@ fixes:
 # A new number: none of the 089-102 slots reserved on 2026-08-23 names this.
 #
 # THE DEFECT IS FOUR WORDS IN A SCHEMA. `verification_results` is keyed
-# `UNIQUE (epic_id, node_id, attempt, form)` (`factory/verify/store.py:176`) and
+# `UNIQUE (epic_id, node_id, attempt, form)` (`factory/verify/store.py`) and
 # written through an upsert that replaces every non-key column
 # (`:512-521`). The key has no dispatch in it. So a re-dispatch starts again at
 # attempt 1 and overwrites the previous run's row for every attempt number it
