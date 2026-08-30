@@ -340,8 +340,17 @@ def test_repo_root_registry_still_resolves_real_wiring_in_checkout(
     # untouchable, which is `ci/test-suite-pins-the-operator-dial` — the same
     # defect 037 un-pinned for `context_window`, recurring on `model` when the
     # implementer was pointed at Opus 5 on 2026-08-19.
+    #
+    # The rule below the comment now matches the rule inside it: an alias-shape
+    # check (`"/" in ...model`) stood here until 122-US1 and was a vendor
+    # decision in a format check's clothing — every gateway alias carries a
+    # slash and no `agent: subscription` model does, so it refused a persona the
+    # registry already ships. What remains catches the defect that is real: an
+    # implementer entry that resolves no model to route work to.
+    # `tests/test_122_registry_is_not_pinned.py` drives this check against a
+    # gateway, a subscription and an unresolvable registry, and fails if any
+    # assertion in this suite starts constraining a vendor or route again.
     assert registry["implementer"].model
-    assert "/" in registry["implementer"].model
 
 
 # ---------------------------------------------------------------------------
