@@ -1435,8 +1435,8 @@ def reset(
     The supported path after `temporal workflow terminate` (which bypasses the
     workflow's kill sequence — see `interpreter/cancel-bypasses-kill-sequence`,
     deliberately not fixed here).  Commits any dirty worktree state, removes the
-    directory, archives the node branch, deletes the sidecar, and then clears the
-    branch off `remote`.  Idempotent: a second call finds nothing to do and
+    directory, archives the node branch, clears that branch off `remote`, and
+    deletes the sidecar.  Idempotent: a second call finds nothing to do and
     returns `["nothing to do"]`.
 
     The branch is renamed, never deleted; every commit reachable from the old
