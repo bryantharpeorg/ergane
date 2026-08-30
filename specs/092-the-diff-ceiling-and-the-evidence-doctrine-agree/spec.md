@@ -1,5 +1,20 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-30. US1 c06a55635c17 (#390), US2 1a9efff7f3e9 (#391),
+# US3 03451a9277cb (#392) — all three observed on ergane-buildout, all three on
+# the first attempt, all three on `implementer` resolving to claude-opus-5 via
+# the operator's subscription.
+#
+# The first epic dispatched after Opus became the DEFAULT implementer rather
+# than a promotion rung, and the first the roadmap dispatched by itself after a
+# 22-hour pause. us1 took 31 minutes dispatch-to-merged, us2 about 64, us3 about
+# 89 including a merge queue wait.
+#
+# WHAT IT COST THE QUEUE, recorded because it is the measurable half of a defect
+# class this spec did not cause. us1 changed factory/verify/models.py and us2
+# changed 21 files; between them they invalidated line anchors in specs 116 and
+# 120 that had been correct when this epic started. See
+# refinement/a-landing-silently-invalidates-every-spec-anchor-below-it.
 fixes:
   - verify/the-judges-attention-budget-and-the-refusal-threshold-are-the-same-constant
   - verify/the-diff-size-refusal-counts-generated-lockfiles-and-has-no-manifest-key
