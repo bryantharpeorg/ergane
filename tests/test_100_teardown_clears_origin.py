@@ -310,7 +310,9 @@ def test_a_target_with_no_origin_tears_down_unchanged(
     """The other half of trap 2: a clone with no `origin` at all has no remote
     work to do or to report, and teardown must not invent either."""
     repo = target_repo("passing", name="no-origin")
-    solo = Epic(repo, repo, tmp_path / ".factory-solo")
+    # No bare clone and no `git remote add`: `origin` here stands for "there is
+    # none", and nothing in this test reads it.
+    solo = Epic(repo, origin=repo, factory_root=tmp_path / ".factory-solo")
     solo.dispatch()
 
     assert solo.teardown() == LOCAL_ACTIONS
