@@ -140,11 +140,13 @@ with workflow.unsafe.imports_passed_through():
         salvage_worktree,
     )
     from factory.activities.merge_activities import (
+        LANDING_REF_CONFLICT,
         CompareTreesInput,
         DisableAutoMergeInput,
         EnqueueLandingInput,
         FetchCheckFailureInput,
         OpenLandingPrInput,
+        OpenLandingPrResult,
         PollLandingInput,
         PrepareLandingPrInput,
         SyncLandingBranchInput,
@@ -2972,6 +2974,173 @@ class EpicWorkflow:
 
     # --- the landing phase (US1) -------------------------------------------
 
+    async def _open_landing(
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        node: WorkNode,
+        record: NodeRecord,
+        title: str,
+        body_file: str,
+    ) -> OpenLandingPrResult | None:
+        """Push the node branch and open its PR, or page a human (100 FR-008).
+
+        The one place either landing path pushes, because both of them do and the
+        two used to say so in their own words. A ref conflict on the requeue is
+        the same defect as one on the first landing — the branch is on origin
+        either way — and 107 has already paid for the lesson that a fix applied
+        to `_land` alone leaves the common case untouched.
+
+        `None` is the escalated outcome: git refused the push non-fast-forward,
+        the operator answered, and their answer ended or parked the node. The
+        caller has nothing left to enqueue. Every other failure is raised, which
+        for the retryable `PUSH_FAILED` means exactly what it meant before —
+        three attempts, then the node dies with git's reason on it (FR-009).
+        """
+        grants = 0
+        while True:
+            try:
+                return await workflow.execute_activity(
+                    open_landing_pr,
+                    OpenLandingPrInput(
+                        epic_id=graph.epic_id,
+                        node_id=node.id,
+                        target_repo=graph.target_repo,
+                        # No base: the activity resolves it from the target
+                        # repository's own declaration (107 FR-006). The workflow
+                        # cannot read a manifest (constitution IV), and the only
+                        # branch fact it holds is `prepared.default_branch` — an
+                        # observation of whatever an operator had checked out
+                        # when the worktree was prepared, which is what killed
+                        # three landings in eight days (D-051).
+                        branch=record.branch,
+                        title=title,
+                        body_file=body_file,
+                    ),
+                    **_GIT,
+                )
+            except ActivityError as exc:
+                if not _is_ref_conflict(exc):
+                    raise
+                granted = await self._escalate_ref_conflict(
+                    graph,
+                    request,
+                    node,
+                    record,
+                    exc,
+                    retry_grants_work=grants < _REF_CONFLICT_GRANTS,
+                )
+                if not granted:
+                    return None
+                grants += 1
+
+    async def _escalate_ref_conflict(
+        self,
+        graph: WorkGraph,
+        request: EpicInput,
+        node: WorkNode,
+        record: NodeRecord,
+        exc: ActivityError,
+        *,
+        retry_grants_work: bool,
+    ) -> bool:
+        """Page a human about a stale ref, then act on the answer (FR-008).
+
+        The whole of what this story changes about a node's fate. Before it, a
+        push git had already decided against was retried three times and then
+        killed the node — a node that had passed its gates and its judge, whose
+        work was committed, and whose PENDING dependents died with it. The state
+        behind all that is one stale ref on origin, and clearing it is one
+        command. So the node stops on a question instead of on a terminal.
+
+        Escalating is not the same as not failing (plan trap 6). The activity
+        really did fail, and `terminal_reason` says so *before* the page goes
+        out: it is what `ergane build status` prints, and it is written here
+        rather than only on the ending paths because a node parked on an open
+        page has to be readable too. The reason is git's own — `_failure_detail`
+        walks past the SDK's "Activity task failed" to the sentence the activity
+        raised, which names the ref, quotes git's verdict, and carries the
+        clearing command (`worktree._push_refusal`). A node that goes on to merge
+        after the operator clears the ref keeps that line, and should: the
+        conflict happened, and the landing that followed was hand-recovered.
+
+        Returns True when the operator granted another push. Every other answer
+        ends this node, and none of them ends the epic's other work: `KILL` is
+        this node alone, `KILL_EPIC` is the epic by the operator's decision, and
+        `PAUSE_EPIC` parks resumably (`_PARKED` is outside `_UNREACHABLE`, so a
+        park locks nobody out — 079-US4 FR-013).
+        """
+        detail = _failure_detail(exc)
+        record.terminal_reason = detail
+        workflow.logger.error(
+            "node %s could not push its branch: a stale ref on origin refused "
+            "the push, so an operator is being asked rather than the node "
+            "retried; %s",
+            record.node_id,
+            detail,
+        )
+
+        while True:
+            outcome = await self._page_the_operator(
+                record,
+                EscalationRequest(
+                    epic_id=graph.epic_id,
+                    node_id=record.node_id,
+                    # The failure *is* the history here: there is no ladder of
+                    # attempts to render, and the one thing the operator needs is
+                    # the refusal with its remedy attached (US3-S3).
+                    history_summary=detail,
+                    choices=offered_choices(retry_grants_work=retry_grants_work),
+                    timeout_s=request.config.escalation_timeout_s,
+                ),
+            )
+            if outcome is None or not outcome.delivered:
+                # Nobody was reached, or the epic stopped with the page open:
+                # the fail-safe every escalation in this factory applies.
+                resolution = EscalationChoice.KILL.value
+                break
+            resolution = outcome.resolution
+            if not self._refuse_unoffered(record, resolution):
+                break
+            if len(record.refused_resolutions) >= _REFUSALS_BEFORE_FAILSAFE:
+                # Asked often enough that asking again is its own failure
+                # (079-US1 FR-004). The fail-safe applies, and the reason names
+                # the refusals rather than claiming the operator killed it.
+                record.terminal_reason = _refusal_reason(record)
+                resolution = EscalationChoice.KILL.value
+                break
+            # A resolution nobody offered is not an answer, so nothing is
+            # applied and the same question is put again.
+
+        if resolution == EscalationChoice.RETRY.value:
+            # Granted: the operator ran the command the page carried, and the
+            # push is worth exactly one more try. `ending_answer` stays unset —
+            # nothing has ended — so a later page on this node is still allowed.
+            return True
+
+        record.ending_answer = resolution
+        if resolution == EscalationChoice.KILL_EPIC.value:
+            self._kill_requested = True
+        if resolution == EscalationChoice.PAUSE_EPIC.value:
+            self._paused = True
+            self._epic_state = EpicState.PAUSED
+            await self._close_out(
+                graph, node, record, Termination.KILLED, state=_PARKED
+            )
+            record.state = _PARKED
+            return False
+
+        # KILL, KILL_EPIC, the hour of silence, and a page nobody received: all
+        # end this node. Salvage already happened — on the first landing in
+        # `_close_out`, on the requeue in `_reenqueue` — so the branch holds the
+        # work whatever the operator decides (constitution VI), and removal takes
+        # the directory and never the branch.
+        await self._remove_worktree(graph, record.node_id)
+        if record.landing is not None:
+            record.landing = replace(record.landing, state=LandingState.KILLED)
+        record.state = NodeState.KILLED
+        return False
+
     async def _land(
         self,
         graph: WorkGraph,
@@ -3007,24 +3176,15 @@ class EpicWorkflow:
             ),
             **_FAST,
         )
-        opened = await workflow.execute_activity(
-            open_landing_pr,
-            OpenLandingPrInput(
-                epic_id=graph.epic_id,
-                node_id=node.id,
-                target_repo=graph.target_repo,
-                # No base: the activity resolves it from the target repository's
-                # own declaration (107 FR-006). The workflow cannot read a
-                # manifest (constitution IV), and the only branch fact it holds
-                # is `prepared.default_branch` — an observation of whatever an
-                # operator had checked out when the worktree was prepared, which
-                # is what killed three landings in eight days (D-051).
-                branch=record.branch,
-                title=rendered.title,
-                body_file=rendered.body_file,
-            ),
-            **_GIT,
+        opened = await self._open_landing(
+            graph, request, node, record, rendered.title, rendered.body_file
         )
+        if opened is None:
+            # 100 FR-008: git refused the push over a stale ref, an operator was
+            # asked, and their answer ended (or parked) the node. There is no PR
+            # to enqueue and no poller to start; the record already says what
+            # happened and why.
+            return
         landing = Landing(
             node_id=node.id,
             branch=record.branch,
@@ -3744,23 +3904,15 @@ class EpicWorkflow:
             ),
             **_FAST,
         )
-        opened = await workflow.execute_activity(
-            open_landing_pr,
-            OpenLandingPrInput(
-                epic_id=graph.epic_id,
-                node_id=record.node_id,
-                target_repo=graph.target_repo,
-                # No base here either, and this is the site that matters most:
-                # every node whose sibling lands ahead of it comes back through
-                # the requeue, so a fix that reached only the first landing would
-                # pass every happy path and leave the common case broken. One
-                # resolution path, in the activity, for both (107 FR-008).
-                branch=record.branch,
-                title=rendered.title,
-                body_file=rendered.body_file,
-            ),
-            **_GIT,
+        opened = await self._open_landing(
+            graph, request, node, record, rendered.title, rendered.body_file
         )
+        if opened is None:
+            # 100 FR-008, at the site that matters most: every node whose sibling
+            # lands ahead of it comes back through the requeue, so a ref-conflict
+            # route that reached only `_land` would pass every happy path and
+            # leave the common case killing nodes exactly as before.
+            return
         enqueued = await workflow.execute_activity(
             enqueue_landing,
             EnqueueLandingInput(
@@ -3921,6 +4073,30 @@ class EpicWorkflow:
         record.landing = replace(record.landing, state=LandingState.KILLED)
         record.state = NodeState.KILLED
 
+
+
+#: How many hand-granted re-pushes one node may spend on a ref conflict (100
+#: FR-008). One, and one is the whole budget: the grant exists because the
+#: operator has just been shown the command that clears the ref, and a press
+#: means "I ran it". A second refusal means they did not, or that something else
+#: is holding the ref — and asking the same question again with the same answer
+#: available is the loop this story removed from the retry policy, not a shape to
+#: rebuild inside the escalation. So the second page offers the ending choices
+#: only, and `offered_choices` stops advertising a button that cannot be honoured
+#: (079-US1 FR-001).
+_REF_CONFLICT_GRANTS = 1
+
+
+def _is_ref_conflict(exc: ActivityError) -> bool:
+    """Whether an activity failure is the deterministic ref conflict (FR-007).
+
+    Reads the cause's *type*, exactly as `_score` reads `JUDGE_UNAVAILABLE`: the
+    activity classified this on git's own stderr, at the boundary that had it,
+    and the workflow's job is routing rather than a second opinion. Pure, so it
+    replays identically.
+    """
+    cause = exc.cause
+    return isinstance(cause, ApplicationError) and cause.type == LANDING_REF_CONFLICT
 
 
 #: How many refused resolutions one node may collect before the escalation is

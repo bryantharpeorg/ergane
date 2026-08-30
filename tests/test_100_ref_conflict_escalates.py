@@ -55,6 +55,7 @@ from factory.activities.merge_activities import (
     OpenLandingPrInput,
     open_landing_pr,
 )
+from factory.activities.notify_activities import SendEscalationInput, SentEscalation
 from factory.verify.models import EscalationChoice
 from factory.workgraph.models import NodeState
 from factory.workgraph.workflow import EpicWorkflow
@@ -169,10 +170,13 @@ class RefConflictWorld(ScriptedWorld):
 
     - `open_landing_pr` raises exactly what the activity now raises for a ref
       conflict — same type, same non-retryable flag, same `from exc` cause chain
-      over a `WorktreeError` a real git really produced — for its first
-      `failures` calls, and succeeds after that. The count is what proves the
-      operator's grant put the node back to work rather than merely ending it
-      more politely.
+      over a `WorktreeError` a real git really produced — for `conflicted`'s
+      first `failures` pushes, and succeeds after that. Scoped to one node
+      because the graph has three and they land concurrently: a global counter
+      would refuse whichever push happened to be first, which is a different
+      scenario on every run. Pushes are counted per node for the same reason,
+      and the count for the conflicted one is what proves the operator's grant
+      put it back to work rather than ended it more politely.
     - `send_escalation` takes a view of the whole epic *while the page is open*.
       That view is US3-S5's evidence: the question is what has happened to the
       siblings at the moment the node escalates, and a status read after the
@@ -185,12 +189,14 @@ class RefConflictWorld(ScriptedWorld):
         *,
         error: WorktreeError,
         failures: int = 1,
+        conflicted: str = NODE,
         **kwargs: Any,
     ) -> None:
         super().__init__(script, **kwargs)
         self.error = error
         self.failures = failures
-        self.open_attempts = 0
+        self.conflicted = conflicted
+        self.pushes: dict[str, int] = {}
         self.escalation_views: list[Any] = []
 
     def activities(self) -> list[Any]:
@@ -201,17 +207,18 @@ class RefConflictWorld(ScriptedWorld):
 
         @activity.defn(name="open_landing_pr")
         async def open_landing_pr_(request: OpenLandingPrInput) -> Any:
-            world.open_attempts += 1
-            if world.open_attempts > world.failures:
+            node = request.node_id
+            world.pushes[node] = world.pushes.get(node, 0) + 1
+            if node != world.conflicted or world.pushes[node] > world.failures:
                 return await real["open_landing_pr"](request)
-            world._log("open_landing_pr", request.node_id)
+            world._log("open_landing_pr", node)
             world.landing_requests.append(request)
             raise ApplicationError(
                 str(world.error), type=LANDING_REF_CONFLICT, non_retryable=True
             ) from world.error
 
         @activity.defn(name="send_escalation")
-        async def send_escalation_(request: Any) -> Any:
+        async def send_escalation_(request: SendEscalationInput) -> SentEscalation:
             world.escalation_views.append(
                 await world.handle.query(EpicWorkflow.epic_status)
             )
@@ -242,7 +249,7 @@ async def test_the_node_escalates_rather_than_terminating(
 
     And it is tried once. Three attempts at a deterministic refusal, interleaved
     with Temporal's retry noise, is the waste FR-007 removes; a routing change
-    that left the error retryable would show `open_attempts == 3` here.
+    that left the error retryable would show three pushes here.
     """
     script = RefConflictWorld(
         {NODE: [passing()]},
@@ -254,7 +261,7 @@ async def test_the_node_escalates_rather_than_terminating(
 
     status = await run_epic(env, script, graph=one_node())
 
-    assert script.open_attempts == 1, (
+    assert script.pushes[NODE] == 1, (
         "the deterministic refusal was retried; the carve-out is not in force"
     )
     assert len(script.escalation_requests) == 1, (
@@ -513,7 +520,7 @@ async def test_no_pending_sibling_is_killed_when_a_node_escalates(
     )
 
     # The grant put the node back to work: one refused push, one that landed.
-    assert script.open_attempts == 2
+    assert script.pushes["us1"] == 2
     assert states(status) == {
         "us1": NodeState.MERGED,
         "us2": NodeState.MERGED,
