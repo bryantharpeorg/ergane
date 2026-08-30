@@ -131,6 +131,7 @@ _LADDER_KEYS = (
     "debugger_cycles",
     "escalation_timeout_s",
     "promotion_cycles",
+    "max_pre_agent_failures",
 )
 
 #: Recognised `ladder:` keys that are not integer dials.
@@ -143,6 +144,7 @@ _LADDER_BOUNDS = {
     "debugger_cycles": (0, 3),
     "escalation_timeout_s": (60, 86400),
     "promotion_cycles": (0, 3),
+    "max_pre_agent_failures": (1, 10),
 }
 
 #: Reserved gate names in schema v2. They collide with step names or the
@@ -741,6 +743,7 @@ def _read_ladder(document: Mapping[Any, Any], source: str) -> "VerificationConfi
         escalation_timeout_s=values["escalation_timeout_s"],
         promotion_persona=promotion_persona,
         promotion_cycles=values["promotion_cycles"],
+        max_pre_agent_failures=values["max_pre_agent_failures"],
     )
 
 

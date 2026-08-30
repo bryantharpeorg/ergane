@@ -395,11 +395,13 @@ def escalation_message(record: EscalationRecord) -> str:
     body = record.history_summary
     if record.check_evidence:
         body += "\n\n" + _render_check_evidence(record.check_evidence)
+    default = record.default_choice or EscalationChoice.KILL
     return _compose(
         _header("⚠️ Verification escalation", record),
         body,
         f"\n\n{render_blast_radius(record.choices)}"
-        f"\n\nNo answer by {record.expires_at} applies the default: KILL the node.",
+        f"\n\nNo answer by {record.expires_at} applies the default: "
+        f"{_value(default)} the node.",
     )
 
 

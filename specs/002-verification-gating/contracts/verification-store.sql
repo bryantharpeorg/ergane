@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS escalations (
     -- written before this version get it via ALTER TABLE ADD COLUMN, which
     -- appends; a migrated store and a fresh one must agree column for column.
     check_evidence TEXT NOT NULL DEFAULT '[]',
+    -- 095-US2 (schema 9): the fail-safe default applied on silence, which varies
+    -- with the escalation's cause. NULL means the ordinary default (KILL); an
+    -- authentication escalation records PAUSE_EPIC here.
+    default_choice TEXT,
     CHECK ((resolution IS NULL) = (resolved_at IS NULL))
 );
 

@@ -140,6 +140,9 @@ EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
     # ALTER TABLE ADD COLUMN and that appends — a migrated store and a fresh
     # one have to agree column for column, order included.
     ("check_evidence", "TEXT", 1, 0),
+    # 095-US2 (schema 9): the fail-safe default applied on silence, which varies
+    # with the escalation's cause. NULL means the ordinary default (KILL).
+    ("default_choice", "TEXT", 0, 0),
 ]
 
 EXPECTED_INDEXES = {
@@ -403,11 +406,11 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 8 since 118-US2 added `verification_results.base_ref`. The literal is
+    # 9 since 095-US2 added `escalations.default_choice`. The literal is
     # deliberate: a bump claims every existing store has a migration path, and
     # `tests/test_escalation_record.py` and
     # `tests/test_118_record_names_its_base.py` each check that against one.
-    assert SCHEMA_VERSION == 8
+    assert SCHEMA_VERSION == 9
     assert versions == [SCHEMA_VERSION]
 
 

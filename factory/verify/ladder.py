@@ -205,6 +205,18 @@ def next_action(
     grants = len(escalations)
     allowed = config.max_attempts + grants
     attempts_left = _attempts_spent(history, config) < allowed
+
+    # 095-US2 (FR-006): a pre-agent failure is not a rung, so it does not spend
+    # the attempt budget — which means `attempts_left` above is True even when a
+    # run of pre-agent failures has gone on forever. An exclusion without a
+    # bound of its own is a starvation bug (plan trap 2), so a run of
+    # consecutive pre-agent failures escalates on its own dial, through the same
+    # escalate path as every other exhausted bound, rather than retrying a dead
+    # credential forever. Checked before the grant because the grant's own
+    # `allowed` never sees pre-agent failures.
+    if pre_agent_bound_spent(history, config, grants):
+        return NextAction.ESCALATE
+
     if attempts_left and not _judge_vetoes_a_retry(history, config, grants):
         return NextAction.RETRY
 
@@ -238,11 +250,52 @@ def _attempts_spent(
     elsewhere still gets its full budget. The debugger's cycle is excluded — it
     is a rung of its own, limited by `debugger_cycles`.  A promoted attempt is
     also excluded when a promotion persona is configured, because it belongs to
-    its own rung (US5-S5).
+    its own rung (US5-S5).  A pre-agent failure is excluded too (095-US2,
+    FR-005): the agent never started, so it is not a rung at all — the same
+    argument as the debugger's, from the other end. The exclusion is a property
+    of the record (`AttemptRecord.pre_agent`), not of the config, so it applies
+    even where `config` is None (plan trap 4).
     """
     promotion_target = config.promotion_persona if config is not None else None
     excluded = {DEBUGGER_PERSONA, promotion_target} if promotion_target else {DEBUGGER_PERSONA}
-    return sum(1 for record in history if record.persona not in excluded)
+    return sum(
+        1
+        for record in history
+        if record.persona not in excluded and not record.pre_agent
+    )
+
+
+def pre_agent_failures_spent(history: Sequence[AttemptRecord]) -> int:
+    """How many *consecutive* pre-agent failures end the history.
+
+    Consecutive, not cumulative: a real attempt breaks the run, because a real
+    attempt is the story being attempted and the credential is no longer the
+    thing standing in the way. The count is the length of the unbroken tail of
+    pre-agent failures, which is what `max_pre_agent_failures` bounds.
+    """
+    count = 0
+    for record in reversed(history):
+        if record.pre_agent:
+            count += 1
+        else:
+            break
+    return count
+
+
+def pre_agent_bound_spent(
+    history: Sequence[AttemptRecord],
+    config: VerificationConfig,
+    grants: int = 0,
+) -> bool:
+    """Whether the consecutive pre-agent bound is spent (095-US2, FR-006).
+
+    A grant lifts the bound by one, the way it lifts `max_attempts`: a press of
+    RETRY buys one more attempt, pre-agent or real, so the operator can keep
+    saying "try again" past the bound exactly as they can past the attempt
+    budget. The bound is the ladder's own ceiling on *unprompted* retries of a
+    dead credential.
+    """
+    return pre_agent_failures_spent(history) >= config.max_pre_agent_failures + grants
 
 
 def _debugger_cycles_spent(history: Sequence[AttemptRecord]) -> int:

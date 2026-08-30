@@ -819,6 +819,16 @@ class VerificationConfig:
     promotion_persona: str | None = None
     promotion_cycles: int = 1
     max_launch_retries: int = 2
+    #: 095-US2 (FR-006): how many *consecutive* pre-agent failures may run before
+    #: the ladder escalates on a bound of its own. A pre-agent failure is not a
+    #: rung, so it does not consume `max_attempts`; without a bound of its own a
+    #: permanently dead credential would retry forever, spending a worker slot at
+    #: cap 1 and starving every other spec (plan trap 2). Defaulted to 4 — the
+    #: measured cost of the incident this spec exists for ("four rungs in
+    #: thirteen seconds") — and above the default `max_attempts` of 3, so the
+    #: exclusion is observable: three pre-agent failures still grant (US2-S1),
+    #: while a longer unbroken run escalates on this dial (US2-S4).
+    max_pre_agent_failures: int = 4
 
 
 #: The digest of the unconfigured default loop: v1, default gate names, default
@@ -870,6 +880,13 @@ class AttemptRecord:
     verdict: OverallVerdict
     judge_outcome: JudgeOutcome | None = None
     model_alias: str = UNRESOLVED_MODEL_ALIAS
+    #: 095-US2 (FR-005): whether this attempt was a pre-agent failure — the agent
+    #: process never produced a token (US1's `Termination.PRE_AGENT_FAILURE`). A
+    #: pre-agent failure is not a rung of the ladder, so `_attempts_spent` excludes
+    #: it; the flag is a property of the record rather than of the config, so the
+    #: exclusion applies at every call site, including one that passes no config
+    #: (plan trap 4).
+    pre_agent: bool = False
 
 
 # Escalation entities --------------------------------------------------------
@@ -900,6 +917,14 @@ class EscalationRecord:
     delivered: bool = False
     resolution: EscalationChoice | str | None = None
     resolved_at: str | None = None
+    #: 095-US2 (FR-007): the fail-safe default applied on silence, which varies
+    #: with the escalation's cause. An authentication escalation defaults to
+    #: `PAUSE_EPIC` rather than `KILL` — a dead credential is fixed by
+    #: re-authenticating, not by killing the node — and the message says so
+    #: rather than leaving the operator to notice the button moved (plan trap 6).
+    #: `None` means the ordinary default (`KILL`), which is what every escalation
+    #: raised before this field existed applies.
+    default_choice: EscalationChoice | None = None
     #: 025-US2: the failing check evidence rendered into the escalation message,
     #: and — since 041-US2 — persisted with the row rather than lost on read.
     #: A workflow that writes this row at every terminal transition (041 FR-013)
