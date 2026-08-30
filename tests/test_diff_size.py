@@ -318,7 +318,7 @@ def test_a_diff_under_the_limit_produces_todays_output_check_exactly(
         artifacts_present=None,
         passed=True,
         abridgement=DiffAbridgement(
-            total_bytes=whole.total_bytes, budget_bytes=DIFF_INPUT_LIMIT
+            total_bytes=whole.total_bytes, limit_bytes=DIFF_INPUT_LIMIT
         ),
     )
     assert result.size_refusal is None

@@ -806,7 +806,7 @@ def _abridgement_to_dict(
     """How much of the diff the judge was shown, or None if nobody measured.
 
     The two measured numbers and nothing else. `abridged` and
-    `over_budget_bytes` are properties derived from them, and a stored copy of a
+    `over_limit_bytes` are properties derived from them, and a stored copy of a
     derived value is a second answer waiting to disagree with the first — the
     same reason `_size_refusal_to_dict` stores the total and the limit rather
     than "how far over".
@@ -815,7 +815,7 @@ def _abridgement_to_dict(
         return None
     return {
         "total_bytes": record.total_bytes,
-        "budget_bytes": record.budget_bytes,
+        "limit_bytes": record.limit_bytes,
     }
 
 
@@ -832,7 +832,7 @@ def _abridgement_from_dict(data: dict[str, Any] | None) -> DiffAbridgement | Non
         return None
     return DiffAbridgement(
         total_bytes=data["total_bytes"],
-        budget_bytes=data["budget_bytes"],
+        limit_bytes=data["limit_bytes"],
     )
 
 

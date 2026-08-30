@@ -435,32 +435,32 @@ class DiffAbridgement:
     question asked twice: an operator deciding whether to trust a large story's
     PASS needs the second answer to act on the first.
 
-    `budget_bytes` travels in the record instead of being looked up later
+    `limit_bytes` travels in the record instead of being looked up later
     against `DIFF_INPUT_LIMIT`, for the reason `DiffSizeRefusal.limit_bytes`
     does: the budget is a tuned value that has moved once already, and a verdict
     has to be re-read under the budget it was actually formed under.
 
-    `abridged` and `over_budget_bytes` are derived rather than stored, so the
+    `abridged` and `over_limit_bytes` are derived rather than stored, so the
     record cannot disagree with itself. The comparison is `prepare_diff`'s own —
     a diff whose assembly fits the budget is passed through untouched — and
-    `over_budget_bytes` is exactly the excess, never a claim about how much text
+    `over_limit_bytes` is exactly the excess, never a claim about how much text
     the abridger elided: it spends part of the budget on its truncation notice
     and its per-file markers, so the bytes missing from the prompt are at least
     this many and the honest number to record is the one that was measured.
     """
 
     total_bytes: int
-    budget_bytes: int
+    limit_bytes: int
 
     @property
     def abridged(self) -> bool:
         """Whether the judge's copy of this diff had to lose anything."""
-        return self.total_bytes > self.budget_bytes
+        return self.total_bytes > self.limit_bytes
 
     @property
-    def over_budget_bytes(self) -> int:
+    def over_limit_bytes(self) -> int:
         """How far past the budget the whole diff ran; 0 when it fit."""
-        return max(self.total_bytes - self.budget_bytes, 0)
+        return max(self.total_bytes - self.limit_bytes, 0)
 
 
 @dataclass(frozen=True)

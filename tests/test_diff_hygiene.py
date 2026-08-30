@@ -412,7 +412,7 @@ def test_an_ordinary_diff_produces_todays_output_check_exactly(
         artifacts_present=None,
         passed=True,
         abridgement=DiffAbridgement(
-            total_bytes=whole.total_bytes, budget_bytes=DIFF_INPUT_LIMIT
+            total_bytes=whole.total_bytes, limit_bytes=DIFF_INPUT_LIMIT
         ),
     )
     assert result.abridgement is not None and not result.abridgement.abridged

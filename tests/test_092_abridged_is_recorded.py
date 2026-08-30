@@ -3,11 +3,9 @@
 US1 and US2 opened a gap between the judge's attention budget and the size at
 which work is refused, and every diff that lands in that gap is judged on an
 abridgement. That is the outcome those stories exist to make reachable, and it
-is also the one Principle VIII spends its whole argument on: the judge sees the
-diff and the criteria and nothing else, so a PASS formed over elided evidence is
-only safe if the record admits it was. Widening the gap without recording the
-abridgement would be the rubber stamp the doctrine exists to prevent, dressed as
-a fix.
+is also what Principle VIII spends its argument on: the judge sees the diff and
+the criteria and nothing else, so a PASS formed over elided evidence is only
+safe if the record admits it was.
 
 Three states, never two, which is the whole of plan trap 6:
 
@@ -24,12 +22,9 @@ The amount is measured through the functions under test rather than recomputed
 here. `measured()` makes the refusal state its own count of the same assembly,
 and `prepare_diff` is asked whether it actually abridged; a test that assembled
 the listing and the sections itself would agree with itself rather than with the
-code, and the pair agreeing at the margin is exactly what plan trap 3 is about.
-
-Sizes come from the two constants, never from 65536 — the same reason
-`tests/test_diff_size.py` and `tests/test_092_two_limits.py` give: both are
-tuned values, one has moved already, and a test pinning the number turns the
-next tuning into a false failure.
+code, and the pair agreeing at the margin is what plan trap 3 is about. Sizes
+come from the two constants and never from 65536, for the reason the two
+sibling files give: both are tuned values and one has moved already.
 """
 
 from __future__ import annotations
@@ -140,9 +135,9 @@ def test_an_abridged_judge_input_is_recorded_with_how_much_it_cost(
     assert check.passed is True, "between the two limits is judged, not refused"
     assert record is not None
     assert record.abridged is True
-    assert record.budget_bytes == DIFF_INPUT_LIMIT, "the name, never a copy"
+    assert record.limit_bytes == DIFF_INPUT_LIMIT, "the name, never a copy"
     assert record.total_bytes == measured(patch)
-    assert record.over_budget_bytes == measured(patch) - DIFF_INPUT_LIMIT > 0
+    assert record.over_limit_bytes == measured(patch) - DIFF_INPUT_LIMIT > 0
     assert prepare_diff(patch).truncated is record.abridged
 
     conn = connect(tmp_path / "verification.db")
@@ -176,9 +171,9 @@ def test_a_diff_the_judge_saw_whole_records_that_it_did(
     assert check.passed is True
     assert record is not None, "a whole diff is a fact, not an omission"
     assert record.abridged is False
-    assert record.budget_bytes == DIFF_INPUT_LIMIT
+    assert record.limit_bytes == DIFF_INPUT_LIMIT
     assert record.total_bytes == measured(patch) < DIFF_INPUT_LIMIT
-    assert record.over_budget_bytes == 0
+    assert record.over_limit_bytes == 0
     assert prepare_diff(patch).truncated is record.abridged
 
     conn = connect(tmp_path / "verification.db")
@@ -206,7 +201,7 @@ def test_a_row_written_before_this_story_is_not_read_as_a_whole_diff(
         expected_artifacts=[],
         artifacts_present=None,
         passed=True,
-        abridgement=DiffAbridgement(total_bytes=4_096, budget_bytes=DIFF_INPUT_LIMIT),
+        abridgement=DiffAbridgement(total_bytes=4_096, limit_bytes=DIFF_INPUT_LIMIT),
     )
     row_id = upsert_result(conn, stored_result(passing))
     conn.execute(
@@ -260,7 +255,7 @@ def test_the_abridgement_round_trips_through_the_evidence_store(
         artifacts_present=None,
         passed=True,
         abridgement=DiffAbridgement(
-            total_bytes=DIFF_INPUT_LIMIT * 2, budget_bytes=DIFF_INPUT_LIMIT
+            total_bytes=DIFF_INPUT_LIMIT * 2, limit_bytes=DIFF_INPUT_LIMIT
         ),
     )
 
@@ -278,7 +273,7 @@ def test_the_abridgement_round_trips_through_the_evidence_store(
 
     assert document["abridgement"] == {
         "total_bytes": DIFF_INPUT_LIMIT * 2,
-        "budget_bytes": DIFF_INPUT_LIMIT,
+        "limit_bytes": DIFF_INPUT_LIMIT,
     }
     assert document["size_refusal"] is None, "the pair it is written beside"
 
@@ -334,7 +329,7 @@ def seeded_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         expected_artifacts=[],
         artifacts_present=None,
         passed=True,
-        abridgement=DiffAbridgement(total_bytes=4_096, budget_bytes=DIFF_INPUT_LIMIT),
+        abridgement=DiffAbridgement(total_bytes=4_096, limit_bytes=DIFF_INPUT_LIMIT),
     )
     abridged = OutputCheck(
         write_scope=WriteScope.WORKTREE.value,
@@ -343,7 +338,7 @@ def seeded_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         artifacts_present=None,
         passed=True,
         abridgement=DiffAbridgement(
-            total_bytes=DIFF_INPUT_LIMIT * 2, budget_bytes=DIFF_INPUT_LIMIT
+            total_bytes=DIFF_INPUT_LIMIT * 2, limit_bytes=DIFF_INPUT_LIMIT
         ),
     )
     legacy = OutputCheck(

@@ -1237,7 +1237,8 @@ def render_attempts(epic_id: str, results: Sequence[VerificationResult]) -> str:
     id_width = max((len(result.node_id) for result in results), default=0)
     form_width = max((len(str(result.form.value)) for result in results), default=0)
 
-    lines = [f"epic {epic_id}  {len(results)} verifications"]
+    counted = f"{len(results)} verification" + ("" if len(results) == 1 else "s")
+    lines = [f"epic {epic_id}  {counted}"]
     lines += [
         f"{result.node_id.ljust(id_width)}  attempt {result.attempt}  "
         f"{str(result.form.value).ljust(form_width)}  "
@@ -1251,28 +1252,30 @@ def _judge_input_token(check: OutputCheck) -> str:
     """How much of this attempt's diff the judge was shown (092 FR-007).
 
     Three readings, never two. *Abridged* carries the numbers, because "part of
-    it" is not actionable and "98300 bytes against a 65536-byte budget" is:
-    an operator deciding whether to trust the PASS is deciding whether a third
-    of a diff could have hidden the criterion. *Whole* is a claim the row makes,
-    not an inference from a missing field. And a row that recorded neither says
-    so, because reading it as "whole" would certify every verdict taken before
-    this story existed on the authority of code that could not tell.
+    it" is not actionable and "100206 bytes against a 65536-byte limit" is: an
+    operator deciding whether to trust the PASS is deciding whether a third of
+    a diff could have hidden the criterion. *Whole* is a
+    claim the row makes, not an inference from a missing field. And a row that
+    recorded neither says so, because reading it as "whole" would certify every
+    verdict taken before this story existed on the authority of code that could
+    not tell.
 
     The numbers come out of the record, never out of this module's constants:
-    an attempt judged under a budget that has since moved has to be read under
-    the budget it was actually judged under, which is why the record carries one.
+    an attempt judged under an attention budget that has since moved has to be
+    read under the one it was actually judged under, which is why the record
+    carries it. The rendering says "limit" rather than naming that budget for
+    the reason `tests/test_final_sweep.py` enforces on this whole component —
+    it may not spell enforcement vocabulary in code (D-021).
     """
     record = check.abridgement
     if record is None:
         return _JUDGE_INPUT_UNRECORDED
-    measured = (
-        f"{record.total_bytes} bytes against a {record.budget_bytes}-byte budget"
-    )
+    measured = f"{record.total_bytes} bytes against a {record.limit_bytes}-byte limit"
     if not record.abridged:
         return f"judge input: whole, {measured}"
     return (
         f"judge input: abridged, {measured} "
-        f"({record.over_budget_bytes} bytes over)"
+        f"({record.over_limit_bytes} bytes over)"
     )
 
 

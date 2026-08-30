@@ -48,7 +48,17 @@ refusal rather than a size, and is untouched here.
 
 Verbatim from the plan's § *Verification the operator will run*.
 
-<!-- T024-PART1 -->
+```
+$ uv run python -c "
+from factory.verify.diffbounds import size_refusal
+print('64KiB+1:', size_refusal('diff --git a/f b/f\n' + 'x'*66000) is not None)
+print('32KiB  :', size_refusal('diff --git a/f b/f\n' + 'x'*32000) is not None)"
+64KiB+1: True
+32KiB  : False
+```
+
+Unchanged by this story, as it must be: US3 records a measurement and moves no
+threshold.
 
 ### Part 2: a node whose diff exceeds the old constant reaches a verdict, and the record says it was abridged
 
@@ -63,7 +73,35 @@ driven through the real output check, the real evidence store and the real CLI.
 It is weaker than a dispatched build in exactly one respect — no judge model was
 called — and the operator's own run is still owed.
 
-<!-- T024-PART2 -->
+Two real git worktrees, one carrying 100,206 bytes of honest committed work and
+one carrying ordinary work, against a manifest-declared refusal threshold of
+256 KiB (`diff_refusal_bytes`, US2's key) — the configuration this epic exists
+to make usable:
+
+```
+$ uv run python /tmp/092_us3_demo.py
+diff as the judge would receive it: 100206 bytes
+attention budget (DIFF_INPUT_LIMIT): 65536 bytes
+refusal threshold declared for this repo: 262144 bytes
+refused at the default threshold: True
+refused at the declared threshold: False
+prepare_diff had to abridge it: True
+output check passed: True
+recorded abridgement: DiffAbridgement(total_bytes=100206, limit_bytes=65536)
+abridged: True, over the judge input limit by 34670 bytes
+ordinary node's abridgement: DiffAbridgement(total_bytes=191, limit_bytes=65536), abridged: False
+```
+
+Then the same two rows, read back out of the evidence store through the CLI —
+which is US3-S3, and the reading that did not exist before this story:
+
+```
+$ ERGANE_VERIFICATION_DB_PATH=/tmp/092-us3-demo-_1htxxns/verification.db \
+    uv run ergane build attempts 092-the-diff-ceiling-and-the-evidence-doctrine-agree
+epic 092-the-diff-ceiling-and-the-evidence-doctrine-agree  2 verifications
+us3-demo   attempt 1  PHASE  PASS  judge input: abridged, 100206 bytes against a 65536-byte limit (34670 bytes over)
+us3-small  attempt 1  PHASE  PASS  judge input: whole, 191 bytes against a 65536-byte limit
+```
 
 The three claims the demonstration makes:
 

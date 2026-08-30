@@ -285,7 +285,7 @@ def test_at_default_configuration_nothing_moved(
         passed=True,
         abridgement=DiffAbridgement(
             total_bytes=measured(worktree_diff(worktree, base_ref=base)),
-            budget_bytes=DIFF_INPUT_LIMIT,
+            limit_bytes=DIFF_INPUT_LIMIT,
         ),
     )
 

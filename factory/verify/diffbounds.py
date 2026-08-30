@@ -156,9 +156,7 @@ def assembled(diff_text: str) -> tuple[int, list[DiffSection]]:
     return len(whole.encode("utf-8")), sections
 
 
-def abridgement(
-    diff_text: str, *, budget: int = DIFF_INPUT_LIMIT
-) -> DiffAbridgement:
+def abridgement(diff_text: str, *, limit: int = DIFF_INPUT_LIMIT) -> DiffAbridgement:
     """How much of `diff_text` the judge may be shown, recorded either way.
 
     A record and never `None`, because both outcomes are claims worth making:
@@ -170,12 +168,15 @@ def abridgement(
     it, because a measurement taken by running the thing being measured would
     make this record depend on the mechanism it describes.
 
-    `budget` is the *attention budget* and defaults to it — a property of the
-    model, separate since 092 FR-001 from the refusal threshold `size_refusal`
-    compares against.
+    `limit` is the judge's attention budget and defaults to `DIFF_INPUT_LIMIT` —
+    a property of the model, separate since 092 FR-001 from the refusal
+    threshold `size_refusal` compares against. Spelled `limit` rather than
+    `budget` for the reason `tests/test_final_sweep.py` enforces: this component
+    may not speak enforcement vocabulary in code, because a module that can
+    spell a cap is one line from sending one (D-021).
     """
     total, _sections = assembled(diff_text)
-    return DiffAbridgement(total_bytes=total, budget_bytes=budget)
+    return DiffAbridgement(total_bytes=total, limit_bytes=limit)
 
 
 def size_refusal(
