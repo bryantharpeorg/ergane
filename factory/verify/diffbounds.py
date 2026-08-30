@@ -16,8 +16,10 @@ judge means you can spend money* — which a pure byte count has no business
 weakening.
 
 So the pure half lives here: both caps, the split of a unified diff into one
-section per file, and the measurement that turns "too big" into a refusal an
-operator can act on. Nothing here talks to a model, reads a credential, or
+section per file, the measurement that turns "too big" into a refusal an
+operator can act on, and — since 092 FR-007 — that same measurement stated as a
+record of how much of the diff the judge was shown, so a PASS taken on an
+abridgement is not read later as one taken on the whole thing. Nothing here talks to a model, reads a credential, or
 knows what a verdict is. `judge.py` keeps the budgeting and the truncation that
 spends the attention budget, unchanged; this module is what both readers of a
 diff's size count with, so they cannot drift into two answers.
@@ -34,7 +36,7 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
-from factory.verify.models import DiffFileSize, DiffSizeRefusal
+from factory.verify.models import DiffAbridgement, DiffFileSize, DiffSizeRefusal
 
 #: Diff bytes the judge may be shown (R6). ~16k tokens: comfortable beside the
 #: criteria and instructions in any cheap-tier model's context. Raised from
@@ -132,6 +134,50 @@ def file_listing(sections: Sequence[DiffSection]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def assembled(diff_text: str) -> tuple[int, list[DiffSection]]:
+    """What this diff would cost the judge's prompt, and what spent it.
+
+    The one measurement both limits are compared against, and the reason it is
+    a function rather than a line inside each of them: the refusal, the
+    abridgement record and `prepare_diff` all weigh the *assembly* — the
+    always-complete file listing, plus the preamble, plus every file's section —
+    and two of them weighing something else would disagree exactly at the margin
+    where one elides and the other calls the diff whole (092 trap 3).
+
+    A diff with no `diff --git` header at all is one unnamed section, which is
+    the reading `prepare_diff` gives it too, so the caps apply to it either way.
+    """
+    preamble, sections = split_sections(diff_text)
+    if not sections:
+        sections = [DiffSection(None, preamble, *count_changes(preamble))]
+        preamble = ""
+
+    whole = file_listing(sections) + preamble + "".join(s.text for s in sections)
+    return len(whole.encode("utf-8")), sections
+
+
+def abridgement(
+    diff_text: str, *, budget: int = DIFF_INPUT_LIMIT
+) -> DiffAbridgement:
+    """How much of `diff_text` the judge may be shown, recorded either way.
+
+    A record and never `None`, because both outcomes are claims worth making:
+    over the budget the judge rules on an abridgement and a PASS has to say so
+    (092 FR-007), and under it the row states that the judge read the diff
+    whole rather than leaving a reader to infer it from a missing field.
+    Whether the abridger will actually cut anything is `total > budget`, the
+    same comparison `prepare_diff` makes on the same bytes; nothing here calls
+    it, because a measurement taken by running the thing being measured would
+    make this record depend on the mechanism it describes.
+
+    `budget` is the *attention budget* and defaults to it — a property of the
+    model, separate since 092 FR-001 from the refusal threshold `size_refusal`
+    compares against.
+    """
+    total, _sections = assembled(diff_text)
+    return DiffAbridgement(total_bytes=total, budget_bytes=budget)
+
+
 def size_refusal(
     diff_text: str, *, limit: int = DIFF_REFUSAL_THRESHOLD
 ) -> DiffSizeRefusal | None:
@@ -158,16 +204,7 @@ def size_refusal(
     refusal name what spent the budget rather than only the total: "your diff is
     2.1 MB" starts a hunt that "`.ergane/homes/chat.json` is 1.4 MB" ends.
     """
-    preamble, sections = split_sections(diff_text)
-    if not sections:
-        # Not git's output (or one raw patch body): the whole thing is a single
-        # unnamed section, the reading `prepare_diff` gives it too, so the cap
-        # applies to it either way.
-        sections = [DiffSection(None, preamble, *count_changes(preamble))]
-        preamble = ""
-
-    whole = file_listing(sections) + preamble + "".join(s.text for s in sections)
-    total = len(whole.encode("utf-8"))
+    total, sections = assembled(diff_text)
     if total <= limit:
         return None
 

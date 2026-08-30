@@ -56,7 +56,7 @@ from factory.verify.diffbounds import (
 )
 from factory.verify.diffcheck import check_output
 from factory.verify.judge import build_prompt, prepare_diff
-from factory.verify.models import OutputCheck
+from factory.verify.models import DiffAbridgement, OutputCheck
 from factory.workgraph.prompt import AttemptEvidence
 from factory.workgraph.worktree import diff as worktree_diff
 from tests.test_diff_size import (
@@ -254,6 +254,14 @@ def test_at_default_configuration_nothing_moved(
     writes: `OutputCheck` is a frozen dataclass, so any field this story added
     or quietly populated on a passing check fails here rather than in a stored
     row someone reads next week.
+
+    US3 is the story that populated one, deliberately and after this one landed:
+    a passing check now also records how much of the diff the judge was shown,
+    because a row that says nothing about it cannot be told from a row written
+    before anybody recorded it (US3-S2). Quiet is exactly what this assertion
+    exists to prevent, so the field is named here rather than dropped from the
+    comparison — and it is named through the refusal's own count of the same
+    assembly, which keeps the parity a measurement rather than a literal.
     """
     assert DIFF_REFUSAL_THRESHOLD == DIFF_INPUT_LIMIT, "the default is today"
 
@@ -275,6 +283,10 @@ def test_at_default_configuration_nothing_moved(
         expected_artifacts=[],
         artifacts_present=None,
         passed=True,
+        abridgement=DiffAbridgement(
+            total_bytes=measured(worktree_diff(worktree, base_ref=base)),
+            budget_bytes=DIFF_INPUT_LIMIT,
+        ),
     )
 
 

@@ -57,6 +57,7 @@ from factory.verify.diffbounds import (
 from factory.verify.judge import build_prompt, prepare_diff
 from factory.verify.models import (
     CriteriaSet,
+    DiffAbridgement,
     DiffFileSize,
     DiffSizeRefusal,
     GateResult,
@@ -289,9 +290,17 @@ def test_a_diff_under_the_limit_produces_todays_output_check_exactly(
     """US2-S2 and FR-004, asserted as byte parity rather than as equivalence.
 
     `OutputCheck` is a frozen dataclass, so equality compares every field: a
-    size record that appeared on a passing check — even a truthful one — would
-    change the stored row and the retry prompt assembled from it, and fail here
-    rather than in a prompt three days later.
+    *size refusal* that appeared on a passing check — even a truthful one —
+    would change the stored row and the retry prompt assembled from it, and
+    fails here rather than in a prompt three days later. `size_refusal` is still
+    `None`, which is the assertion this test was written for.
+
+    092-US3 added the one field that is populated on a passing check on purpose:
+    how much of the diff the judge was shown, stated whichever way it came out,
+    because an unstated "whole" is indistinguishable from a row written before
+    anybody recorded either. It changes no verdict and reaches no prompt —
+    `_output_check_block` renders only a failed check's refusals — so the parity
+    this test guards is intact and now names one more field.
     """
     worktree = node_worktree()
     base = base_of(worktree)
@@ -299,14 +308,20 @@ def test_a_diff_under_the_limit_produces_todays_output_check_exactly(
     commit(worktree, "us2: ordinary work, committed as it goes")
 
     result = check_output(worktree, WriteScope.WORKTREE, base_ref=base)
+    whole = size_refusal(worktree_diff(worktree, base_ref=base), limit=0)
 
+    assert whole is not None, "a limit of zero refuses every non-empty diff"
     assert result == OutputCheck(
         write_scope=WriteScope.WORKTREE.value,
         has_diff=True,
         expected_artifacts=[],
         artifacts_present=None,
         passed=True,
+        abridgement=DiffAbridgement(
+            total_bytes=whole.total_bytes, budget_bytes=DIFF_INPUT_LIMIT
+        ),
     )
+    assert result.size_refusal is None
     # And the judge path is what it was: asked, and asked with the whole diff.
     assert judge_required(green_gates(), result, CRITERIA) is True
     assert build_prompt(CRITERIA, worktree_diff(worktree, base_ref=base)).truncated_input is False

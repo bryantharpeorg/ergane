@@ -324,6 +324,10 @@ def _first_positional(parser: argparse.ArgumentParser) -> str | None:
 #: only handle they have on it is the id Temporal's own output prints.
 LIVE_EPIC_VERBS = (
     "status",
+    # 092-US3: reads the epic's verification rows rather than the workflow, so
+    # it still answers once the execution has aged out — but the handle an
+    # operator holds is the same epic id, which is what this family is about.
+    "attempts",
     "pause",
     "resume",
     "kill",

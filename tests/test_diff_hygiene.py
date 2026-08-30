@@ -53,6 +53,7 @@ from typing import Callable
 import pytest
 
 from factory.config import WriteScope
+from factory.verify.diffbounds import DIFF_INPUT_LIMIT, size_refusal
 from factory.verify.diffcheck import (
     HygieneViolation,
     WorktreeMissingError,
@@ -62,6 +63,7 @@ from factory.verify.diffcheck import (
 )
 from factory.verify.models import (
     CriteriaSet,
+    DiffAbridgement,
     GateResult,
     GateStatus,
     OutputCheck,
@@ -75,7 +77,11 @@ from factory.verify.models import (
     judge_required,
 )
 from factory.verify.store import connect, node_history, upsert_result
-from factory.workgraph.worktree import DEFAULT_RUNTIME_ROOT, LEGACY_FACTORY_ROOT
+from factory.workgraph.worktree import (
+    DEFAULT_RUNTIME_ROOT,
+    LEGACY_FACTORY_ROOT,
+    diff as worktree_diff,
+)
 from tests.target_repo import GATE_ORDER_LOG, add_worktree, git, git_env
 
 #: A tracked source file, for "the agent did ordinary work" cases.
@@ -380,6 +386,14 @@ def test_an_ordinary_diff_produces_todays_output_check_exactly(
     `OutputCheck` is a frozen dataclass, so this compares every field: a
     hygiene field that defaulted to anything but empty, or a `passed` that
     moved, fails here rather than in a prompt three days later.
+
+    092-US3 is the one story that has changed this value on purpose, and the
+    tripwire did its job: an ordinary check now also states how much of the diff
+    the judge was shown, because a row that says nothing cannot be told from one
+    written before anybody asked. The expected record is measured through the
+    refusal's own count of the same assembly rather than restated here — a
+    literal would pin bytes this test has no opinion about, and recomputing the
+    assembly would make the test agree with itself instead of with the code.
     """
     worktree = node_worktree()
     base = base_of(worktree)
@@ -388,14 +402,20 @@ def test_an_ordinary_diff_produces_todays_output_check_exactly(
     write(worktree, "src/new_module.py", "VALUE = 1\n")
 
     result = check_output(worktree, WriteScope.WORKTREE, base_ref=base)
+    whole = size_refusal(worktree_diff(worktree, base_ref=base), limit=0)
 
+    assert whole is not None, "a limit of zero refuses every non-empty diff"
     assert result == OutputCheck(
         write_scope=WriteScope.WORKTREE.value,
         has_diff=True,
         expected_artifacts=[],
         artifacts_present=None,
         passed=True,
+        abridgement=DiffAbridgement(
+            total_bytes=whole.total_bytes, budget_bytes=DIFF_INPUT_LIMIT
+        ),
     )
+    assert result.abridgement is not None and not result.abridgement.abridged
 
 
 def test_an_untouched_worktree_produces_todays_output_check_exactly(

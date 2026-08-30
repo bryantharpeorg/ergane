@@ -105,14 +105,17 @@ from factory.verify.models import (
     UNKNOWN_BASE_REF,
     EscalationChoice,
     EscalationRecord,
+    OutputCheck,
     QuestionRecord,
     VerificationConfig,
+    VerificationResult,
 )
 from factory.verify.store import (
     EXPIRED,
     ExternalCompletionCount,
     connect as verify_connect,
     connect_readonly as verify_connect_readonly,
+    epic_history,
     external_completion_count,
     get_escalation,
     get_question,
@@ -1155,6 +1158,124 @@ def external_completion_count_command(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def attempts_command(args: argparse.Namespace) -> int:
+    """Report what each of an epic's attempts was verified on. Reads, never writes.
+
+    Shaped like `salvage` and for the same reason: no Temporal client. The row
+    outlives the workflow, and the moment an operator asks what a verdict rested
+    on is usually the moment the execution has aged out of Temporal — a reading
+    that dialled the server would be unavailable exactly when it is wanted.
+
+    The reading exists because of 092 (FR-007, US3-S3). Since US1 and US2 the
+    judge may rule on a diff it was shown only part of: between the attention
+    budget and the repository's refusal threshold, `prepare_diff` abridges and
+    the verdict is formed over an abridgement. That is the outcome those stories
+    exist to make reachable, and it is safe under Principle VIII only if a PASS
+    taken that way can be told from one taken on a diff the judge read whole.
+    Nothing else printed anywhere could tell them apart: `ergane build status`
+    reports the workflow's own state and never the evidence row, so the fact was
+    on the record and in nobody's hands.
+
+    Every answer is exit 0. An epic nothing was recorded for, and a store that
+    does not exist yet, are honest answers to "what was verified" rather than
+    errors — the only refusal is a store this process cannot read, which is a
+    transport failure and says so.
+    """
+    path = _verification_store_path()
+    if not path.exists():
+        # Absent is "nothing has been recorded here", the same answer
+        # `external-completion-count` gives — and, as there, a read never
+        # creates the store it is reading.
+        print(_no_attempts_line(args.epic_id, path))
+        return EXIT_OK
+
+    try:
+        conn = verify_connect_readonly(path)
+    except sqlite3.Error as error:
+        raise OperatorError(
+            f"cannot read verification attempts from {path}: {error}",
+            EXIT_TRANSPORT,
+        ) from error
+    try:
+        results = epic_history(conn, args.epic_id)
+    except sqlite3.Error as error:
+        raise OperatorError(
+            f"cannot read verification attempts from {path}: {error}",
+            EXIT_TRANSPORT,
+        ) from error
+    finally:
+        conn.close()
+
+    if not results:
+        print(_no_attempts_line(args.epic_id, path))
+        return EXIT_OK
+
+    print(render_attempts(args.epic_id, results))
+    return EXIT_OK
+
+
+def _no_attempts_line(epic_id: str, path: Path) -> str:
+    """The empty answer, naming what was read so it can be disbelieved."""
+    return f"no verification has been recorded for epic '{epic_id}' (read {path})"
+
+
+#: What the judge-input token says when the row predates 092-US3, or when the
+#: check never weighed a diff at all — a read-scoped node, an empty worktree.
+#: Spelled out rather than left blank, because the one reading this verb must
+#: never offer is silence that looks like "the judge saw it whole".
+_JUDGE_INPUT_UNRECORDED = "judge input: not recorded"
+
+
+def render_attempts(epic_id: str, results: Sequence[VerificationResult]) -> str:
+    """The human view: the epic's line, then one line per recorded attempt.
+
+    A renderer, so it reads no store and no clock: the caller holds the rows.
+    Columns are padded from the widest value present rather than from a fixed
+    width, the way `render_status` does it, so one long node id does not push
+    every other line out of alignment with itself.
+    """
+    id_width = max((len(result.node_id) for result in results), default=0)
+    form_width = max((len(str(result.form.value)) for result in results), default=0)
+
+    lines = [f"epic {epic_id}  {len(results)} verifications"]
+    lines += [
+        f"{result.node_id.ljust(id_width)}  attempt {result.attempt}  "
+        f"{str(result.form.value).ljust(form_width)}  "
+        f"{result.verdict.value}  {_judge_input_token(result.output_check)}"
+        for result in results
+    ]
+    return "\n".join(lines)
+
+
+def _judge_input_token(check: OutputCheck) -> str:
+    """How much of this attempt's diff the judge was shown (092 FR-007).
+
+    Three readings, never two. *Abridged* carries the numbers, because "part of
+    it" is not actionable and "98300 bytes against a 65536-byte budget" is:
+    an operator deciding whether to trust the PASS is deciding whether a third
+    of a diff could have hidden the criterion. *Whole* is a claim the row makes,
+    not an inference from a missing field. And a row that recorded neither says
+    so, because reading it as "whole" would certify every verdict taken before
+    this story existed on the authority of code that could not tell.
+
+    The numbers come out of the record, never out of this module's constants:
+    an attempt judged under a budget that has since moved has to be read under
+    the budget it was actually judged under, which is why the record carries one.
+    """
+    record = check.abridgement
+    if record is None:
+        return _JUDGE_INPUT_UNRECORDED
+    measured = (
+        f"{record.total_bytes} bytes against a {record.budget_bytes}-byte budget"
+    )
+    if not record.abridged:
+        return f"judge input: whole, {measured}"
+    return (
+        f"judge input: abridged, {measured} "
+        f"({record.over_budget_bytes} bytes over)"
+    )
+
+
 def _print_external_completion_count(result: ExternalCompletionCount, as_json: bool) -> None:
     """Render the count, total and per-spec, with the target stated."""
     if as_json:
@@ -1949,6 +2070,22 @@ def add_parser(subparsers: Any) -> None:
     )
     salvage.add_argument("graph", help=f"path to a compiled {ARTIFACT_NAME}")
     salvage.set_defaults(run=salvage_command)
+
+    attempts = commands.add_parser(
+        "attempts",
+        help="what each of an epic's attempts was verified on",
+        description=(
+            "Read-only. One line per recorded verification: the node, the "
+            "attempt, the verdict, and how much of the diff the judge was "
+            "actually shown — abridged with its numbers, whole, or not "
+            "recorded for rows written before the factory measured it. Reads "
+            "the evidence store, so it needs no Temporal server: the row "
+            "outlives the workflow, and the question is usually asked after "
+            "the execution has aged out."
+        ),
+    )
+    attempts.add_argument("epic_id", help="the epic id (the spec directory's name)")
+    attempts.set_defaults(run=attempts_command)
 
     complete_node_externally = commands.add_parser(
         "complete-node-externally",
