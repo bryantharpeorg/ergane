@@ -64,6 +64,7 @@ from factory.activities.usage_activities import (
     key_alias_for,
     teardown_attempt,
 )
+from factory.config import ERGANE_PERSONAS_PATH_ENV, SUBSCRIPTION_AGENT
 from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
 from tests.conftest import FakeLiteLLM
@@ -71,7 +72,19 @@ from tests.conftest import FakeLiteLLM
 EPIC = "epic-7"
 NODE = "node-3"
 ATTEMPT = 2
-PERSONA = "implementer"
+#: A gateway-routed persona these tests own, in the same placeholder register as
+#: `MODELS` below. Deliberately NOT a name the operator's registry defines: this
+#: module is about leasing a virtual key, and naming a real persona would make
+#: every test here depend on which route the operator picked for it. It named
+#: `implementer` until 2026-08-30, and pointing that entry at a subscription
+#: route turned twenty-four of these red — the whole gate with them, since
+#: `factory.yaml` declares the suite as this repo's one gate
+#: (`ci/test-suite-pins-the-operator-dial`, 122-US2 FR-003). A name the registry
+#: does not define takes the gateway path, on every host and every dial setting.
+PERSONA = "gateway-CHANGEME"
+#: Its subscription-routed counterpart, for the one path that must see one
+#: (122-US2 FR-005). Also unshipped, for the same reason.
+SUBSCRIPTION_PERSONA = "subscription-CHANGEME"
 SPEC_REF = "add-usage-tracking/ledger-row"
 ALIAS = f"{EPIC}:{NODE}:{ATTEMPT}:{PERSONA}"
 MODELS = ["anthropic/CHANGEME", "local/CHANGEME"]
@@ -277,6 +290,55 @@ async def test_issue_attempt_key_applies_the_backstop_ttl(
     override_call = proxy.calls_to("/key/generate")[1]
     assert override_call.body is not None
     assert override_call.body["duration"] == "1h"
+
+
+@pytest.mark.parametrize("declared_by", ["dispatch", "registry"])
+async def test_a_subscription_persona_leases_no_virtual_key(
+    env: ActivityEnvironment,
+    proxy: FakeLiteLLM,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declared_by: str,
+) -> None:
+    """US2 FR-006, and 122-US2 FR-005: no key is minted, by either route in.
+
+    A subscription attempt authenticates through the operator's own credential,
+    so a minted key would be a live credential with nothing to use it and a
+    ledger row that reads zero. Both ways the activity can learn this are
+    exercised: the `agent` field the dispatch carries, and — for payloads that
+    predate that field — the registry lookup it falls back to.
+
+    Deliberate coverage, and it was not always. Until 2026-08-30 this path was
+    reachable only by an operator re-routing the persona `PERSONA` happened to
+    name, which is to say it was covered by accident on his host and by nothing
+    at all in CI. The persona below is this module's own, so the path is
+    exercised on every host regardless of the registry.
+    """
+    if declared_by == "dispatch":
+        agent = SUBSCRIPTION_AGENT
+    else:
+        agent = ""
+        registry = tmp_path / "personas.yaml"
+        registry.write_text(
+            f"{SUBSCRIPTION_PERSONA}:\n"
+            f"  agent: {SUBSCRIPTION_AGENT}\n"
+            "  model: CHANGEME\n"
+            "  fallback: null\n"
+            "  write_scope: worktree\n"
+            "  needs_worktree: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(ERGANE_PERSONAS_PATH_ENV, str(registry))
+
+    lease = await issue(env, persona=SUBSCRIPTION_PERSONA, agent=agent)
+
+    assert lease.key == ""
+    assert "POST /key/generate" not in proxy.routes
+    assert proxy.keys == {}
+    # The attempt still has an identity — the alias is the ledger's uniqueness
+    # key, and a subscription attempt still gets a row (US2 FR-007).
+    assert lease.key_alias == key_alias_for(EPIC, NODE, ATTEMPT, SUBSCRIPTION_PERSONA)
+    assert lease.persona == SUBSCRIPTION_PERSONA
 
 
 async def test_a_persistent_proxy_failure_raises_key_issuance_failed(
