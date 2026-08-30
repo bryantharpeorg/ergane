@@ -239,6 +239,21 @@ def _default_ladder() -> "VerificationConfig":
     return VerificationConfig()
 
 
+def _default_diff_refusal_bytes() -> int:
+    """The refusal threshold a manifest that declares none resolves to (092 FR-004).
+
+    Deferred, and imported here rather than restated: `factory.verify.diffbounds`
+    owns the number and imports *this* module for its own record types, so a
+    module-level import would close the cycle. A literal would close nothing and
+    cost more — it would be the second copy of the threshold that 092's trap 2
+    exists to prevent, and tuning `DIFF_REFUSAL_THRESHOLD` would then move every
+    declared manifest while leaving every silent one where it was.
+    """
+    from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
+
+    return DIFF_REFUSAL_THRESHOLD
+
+
 @dataclass(frozen=True)
 class FactoryConfig:
     """The target repo's committed `factory.yaml`, schema v1 or v2.
@@ -290,6 +305,15 @@ class FactoryConfig:
     #: today's order; v1 always gets this default. Includes `judge` because that
     #: is today's default loop.
     verify_order: tuple[str, ...] = ("gates", "diff_check", "judge")
+    #: 092 FR-004. The diff size above which this repository refuses to build a
+    #: story, declared as `diff_refusal_bytes:`. Resolved rather than nullable —
+    #: the way `forge` is, and for a sharper reason: `None` is how the check's
+    #: own seam spells *disabled* (`diffcheck.check_output`), so a config that
+    #: reported "the operator declared nothing" as `None` would be one careless
+    #: hand-off away from a repository with no ceiling at all, and principle VIII
+    #: is non-negotiable. Absent means the default, and every reader downstream
+    #: gets a number.
+    diff_refusal_bytes: int = field(default_factory=_default_diff_refusal_bytes)
 
 
 @dataclass(frozen=True)

@@ -1298,6 +1298,9 @@ class RoadmapWorkflow:
                     proxy_url=request.proxy_url,
                     config=_child_config(loop_config.config, request.config),
                     verify_order=loop_config.verify_order,
+                    # 092 FR-004: the child builds against its target repo's own
+                    # declared diff ceiling, pinned by the same manifest read.
+                    diff_refusal_bytes=loop_config.diff_refusal_bytes,
                     poll_interval_s=request.poll_interval_s,
                     landing_config=request.landing_config,
                     landing_overrides=request.landing_overrides,

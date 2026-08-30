@@ -209,6 +209,7 @@ with workflow.unsafe.imports_passed_through():
     from factory.mergequeue.rejection import rejection_cause
     from factory.notify.messages import render_history, render_landing_history
     from factory.usage.models import KeyLease, Termination, UsageSnapshot
+    from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
     from factory.verify.ladder import (
         DEBUGGER_PERSONA,
         PROMOTION_PERSONA,
@@ -570,6 +571,14 @@ class EpicInput:
     #: and the landing phase never begins. The default is false, preserving today's
     #: behaviour through MERGED (FR-015).
     halt_after_pass: bool = False
+    #: 092 FR-004. The diff size above which this epic's nodes are refused
+    #: unjudged, read from the target repo's manifest at dispatch beside the
+    #: ladder and the step order (`load_loop_config`) and pinned here for the
+    #: same reason they are: it decides a verdict, so a node worktree must not be
+    #: able to move it. The default is `DIFF_REFUSAL_THRESHOLD`, so an epic
+    #: dispatched by hand — and every payload written before this story — runs
+    #: today's ceiling.
+    diff_refusal_bytes: int = DIFF_REFUSAL_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -2491,6 +2500,10 @@ class EpicWorkflow:
                 # commits as it goes, so HEAD has moved with the work.
                 base_ref=prepared.base_ref,
                 expected_artifacts=[],
+                # 092 FR-004: the target repo's own ceiling, pinned at dispatch.
+                # Until this line the seam had no production caller and the
+                # operator's manifest could not reach it at all.
+                diff_size_limit=request.diff_refusal_bytes,
             ),
             **_FAST,
         )

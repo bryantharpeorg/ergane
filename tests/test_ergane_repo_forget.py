@@ -96,7 +96,7 @@ def init(monkeypatch: pytest.MonkeyPatch) -> Init:
 
     def run(repo: Path, *, slug: str = SLUG) -> Any:
         # …, landing_branch, roadmap, forge (049/US5, omitted), slug
-        answers = ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", slug]
+        answers = ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", "", slug]
         monkeypatch.setattr(init_module, "_prompter_factory", lambda: ScriptedPrompter(answers))
         return _invoke(["init", str(repo)])
 

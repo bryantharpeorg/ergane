@@ -817,8 +817,10 @@ async def test_worktree_manifest_ladder_rewrite_has_no_effect(
     target_repo.mkdir(parents=True)
     _v2_manifest(target_repo, max_attempts=2)
 
-    # Pin dispatch-time config from the committed manifest.
-    config, verify_order = load_loop_config(target_repo)
+    # Pin dispatch-time config from the committed manifest. The third value is
+    # 092's diff refusal threshold, pinned by the same read and not this test's
+    # subject.
+    config, verify_order, _ = load_loop_config(target_repo)
     assert config.max_attempts == 2
 
     graph = make_graph([make_node("us1", "US1")])

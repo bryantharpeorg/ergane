@@ -430,11 +430,25 @@ _PROMPTS: dict[str, str] = {
         "gates that write on purpose (YAML mapping of gate name to true, "
         "optional)"
     ),
+    # 092/US2: the size above which this repository refuses to build a story.
+    # Optional, and the floor the parser enforces is the judge's attention
+    # budget, so the question names bytes rather than inviting a round number.
+    "diff_refusal_bytes": (
+        "diff refusal threshold in bytes — the size above which a story is "
+        "refused unjudged (optional)"
+    ),
 }
 
 #: Keys an empty answer omits rather than defaults.  Each is additive: a repo
 #: that declares none of them is a complete manifest.
-_OPTIONAL_KEYS = ("timeouts", "standards", "roadmap", "forge", "writes")
+_OPTIONAL_KEYS = (
+    "timeouts",
+    "standards",
+    "roadmap",
+    "forge",
+    "writes",
+    "diff_refusal_bytes",
+)
 
 #: Spelled as a constant only because `tests/test_ergane_cli.py`'s guard against
 #: a hardcoded list of CLI noun names matches a bracket followed by any quoted

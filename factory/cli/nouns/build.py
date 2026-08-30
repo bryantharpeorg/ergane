@@ -88,6 +88,7 @@ from factory.cli.promotion import (
     with_promotion_persona,
 )
 from factory.config import ConfigError, Persona, WriteScope, load_personas
+from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.factory_yaml import FactoryConfigError, load_loop_config
 from factory.notify.service import (
     DEFAULT_TEMPORAL_ADDRESS,
@@ -717,7 +718,7 @@ def start_command(args: argparse.Namespace) -> int:
     proxy_url = _resolved_proxy_url()
 
     try:
-        config, verify_order = load_loop_config(graph.target_repo)
+        config, verify_order, diff_refusal_bytes = load_loop_config(graph.target_repo)
     except FactoryConfigError as exc:
         raise OperatorError(
             f"preflight: manifest: [{exc.rule}] {exc.problem}"
@@ -736,6 +737,7 @@ def start_command(args: argparse.Namespace) -> int:
             args.max_concurrent_nodes,
             config=config,
             verify_order=verify_order,
+            diff_refusal_bytes=diff_refusal_bytes,
             landing_config=landing_config,
             landing_overrides=landing_overrides,
             halt_after_pass=halt_after_pass,
@@ -780,6 +782,7 @@ async def _start_epic(
     *,
     config: VerificationConfig | None = None,
     verify_order: tuple[str, ...] | None = None,
+    diff_refusal_bytes: int | None = None,
     landing_config: LandingConfig | None = None,
     landing_overrides: tuple[str, ...] = (),
     halt_after_pass: bool = False,
@@ -804,6 +807,12 @@ async def _start_epic(
         config = VerificationConfig()
     if verify_order is None:
         verify_order = ("gates", "diff_check", "judge")
+    if diff_refusal_bytes is None:
+        # 092 FR-004. `None` here is "this caller read no manifest", never "no
+        # ceiling": the seam's own `None` disables the check, and that spelling
+        # must not be reachable by omission. A caller that named nothing gets
+        # today's threshold, which is what it got before the key existed.
+        diff_refusal_bytes = DIFF_REFUSAL_THRESHOLD
     if landing_config is None:
         # A caller that named no dials, not an operator who lowered one to
         # nothing: the model's own defaults decide, spelled in exactly one place
@@ -832,6 +841,9 @@ async def _start_epic(
                 landing_overrides=landing_overrides,
                 # 109-US3: halting mode stops at PASSED and never attempts to land.
                 halt_after_pass=halt_after_pass,
+                # 092-US2 (FR-004): the target repo's declared diff ceiling,
+                # pinned from the manifest this command just read.
+                diff_refusal_bytes=diff_refusal_bytes,
             ),
             id=epic_workflow_id,
             task_queue=TASK_QUEUE,

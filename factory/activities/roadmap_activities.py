@@ -66,6 +66,7 @@ from factory.workgraph.preflight import (
 from factory.workgraph.worktree import resolve_factory_root
 from factory.workgraph.workflow import JUDGE_PERSONA
 from factory.workgraph.worktree import landing_branch
+from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.factory_yaml import load_loop_config
 from factory.verify.models import VerificationConfig
 
@@ -816,10 +817,18 @@ class ReadLoopConfigInput:
 
 @dataclass(frozen=True)
 class ReadLoopConfigResult:
-    """The two loop facts that ride `EpicInput` into the child epic."""
+    """The loop facts that ride `EpicInput` into the child epic.
+
+    `diff_refusal_bytes` joined the two originals in 092 (FR-004): the size at
+    which the target repo refuses to build a story is pinned by the same read,
+    at the same moment, for the same reason — it decides a verdict, so it is the
+    committed manifest's to declare and never a node worktree's. Defaulted so a
+    scripted result written before this story still constructs.
+    """
 
     config: VerificationConfig
     verify_order: tuple[str, ...]
+    diff_refusal_bytes: int = DIFF_REFUSAL_THRESHOLD
 
 
 #: Test seam for `read_loop_config`: production reads the clone's manifest;
@@ -844,9 +853,13 @@ async def read_loop_config(request: ReadLoopConfigInput) -> ReadLoopConfigResult
     from factory.verify.factory_yaml import FactoryConfigError
 
     try:
-        config, verify_order = load_loop_config(request.target_repo)
+        config, verify_order, diff_refusal_bytes = load_loop_config(request.target_repo)
     except FactoryConfigError as exc:
         from temporalio.exceptions import ApplicationError
 
         raise ApplicationError(str(exc), non_retryable=True, type="FactoryConfigError") from None
-    return ReadLoopConfigResult(config=config, verify_order=verify_order)
+    return ReadLoopConfigResult(
+        config=config,
+        verify_order=verify_order,
+        diff_refusal_bytes=diff_refusal_bytes,
+    )
