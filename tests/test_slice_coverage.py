@@ -175,6 +175,11 @@ ORPHAN_TASKS = FIXTURES / "906-orphan-tasks"
 
 TARGET_REPO = "/srv/factory/targets/short-links"
 
+#: This repository, whose committed manifest declares the gates 102-US1's
+#: `evidence` layer reads. The test below asserts nothing was skipped, so it
+#: names a target repo that exists rather than letting the host decide.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 class Run(NamedTuple):
     code: int
@@ -443,7 +448,9 @@ def test_a_well_formed_trio_reports_slice_coverage_checked_and_silent(
     run: Callable[..., Run],
 ) -> None:
     """US3-S4: every id sits in the slice its reference names, so nothing is said."""
-    result = run("spec", "validate", "--json", str(WELL_FORMED))
+    result = run(
+        "spec", "validate", "--json", "--target-repo", str(REPO_ROOT), str(WELL_FORMED)
+    )
 
     assert result.code == 0
     document = result.json

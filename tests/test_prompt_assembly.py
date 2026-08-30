@@ -95,6 +95,12 @@ from factory.workgraph.models import WorkGraph, WorkNode
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "prompt_assembly"
 
+#: This repository, whose committed manifest declares the gates 102-US1's
+#: `evidence` layer reads. Tests that assert on the *whole* `checked` or
+#: `skipped` list name it, so that list is decided by a declaration rather than
+#: by whether the host happens to carry validate's default target repo.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 HEADING_DEFECT = FIXTURES / "901-heading-defect"
 STALE_GRAPH = FIXTURES / "902-stale-graph"
 WELL_FORMED = FIXTURES / "903-well-formed"
@@ -244,7 +250,7 @@ def test_a_node_whose_story_the_spec_does_not_declare_is_named_with_spec_md() ->
 def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
     run: Callable[..., Run],
 ) -> None:
-    result = run("spec", "validate", "--json", str(WELL_FORMED))
+    result = run("spec", "validate", "--json", "--target-repo", str(REPO_ROOT), str(WELL_FORMED))
 
     assert result.code == 0
     document = result.json
@@ -255,12 +261,17 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
     # 106-US3 adds an eighth layer, `sentinels`, that scans the authored
     # documents for ERGANE-TODO markers and reports them on the `information`
     # channel without changing the exit code.
+    # 102-US1 adds a ninth, `evidence`, and with it the `--target-repo` above:
+    # that layer reads the gates the target repository declares, so a run
+    # against validate's default — a path this host need not carry — would skip
+    # it, and whether `skipped` is empty would depend on the machine.
     assert document["checked"] == [
         *EXISTING_LAYERS,
         "prompt_assembly",
         "slice_coverage",
         "slice_contention",
         "sentinels",
+        "evidence",
     ]
     assert document["skipped"] == []
 
@@ -282,7 +293,7 @@ def test_prompt_assembly_is_reported_skipped_when_there_is_no_graph_to_check(
         encoding="utf-8",
     )
 
-    result = run("spec", "validate", "--json", str(spec_dir))
+    result = run("spec", "validate", "--json", "--target-repo", str(REPO_ROOT), str(spec_dir))
 
     assert result.code == 1
     document = result.json
