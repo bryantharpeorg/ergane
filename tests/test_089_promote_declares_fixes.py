@@ -1,6 +1,7 @@
 """US1 of 089: `ergane findings promote` declares the keys it was built from.
 
-Every test builds its own store and specs root under ``tmp_path`` (trap 7).
+Every test builds its own store and specs root under ``tmp_path`` (trap 7),
+and `_own_findings_store` holds the verbs to it.
 """
 
 from __future__ import annotations
@@ -13,10 +14,32 @@ from typing import Any, Callable, NamedTuple
 
 import pytest
 
+import factory.doctor.cli as _doctor_cli
 from factory.cli import main as main_module
 from factory.doctor.models import Finding, Severity, Status
 from factory.doctor.store import connect, report
 from factory.doctor.triage import _declaration
+
+
+@pytest.fixture(autouse=True)
+def _own_findings_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Put both findings-store candidates under this test's own `tmp_path`.
+
+    `findings promote` is told its store with `--db`, but `spec validate` is
+    not: it resolves one, and that resolution has two candidates.  When the
+    runtime root holds no ledger, `_resolve_store_path` falls back to the legacy
+    runtime root *relative to the working directory* — the operator's real
+    ledger on the machine that does the building, which then decided whether a
+    promoted spec's own `fixes:` keys were known (122-US3, trap 6).
+
+    Pointing the root at `tmp_path` is what makes the store this module already
+    seeds there the one the verbs read.
+    """
+    monkeypatch.setenv("ERGANE_ROOT", str(tmp_path))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+    monkeypatch.setattr(
+        _doctor_cli, "LEGACY_FACTORY_ROOT", tmp_path / "legacy-runtime-root"
+    )
 
 
 class Run(NamedTuple):
