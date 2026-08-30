@@ -185,13 +185,46 @@ implementer:
   # Zhipu / Moonshot / Anthropic. No conflict arose, so the deepseek-v4-pro
   # fallback the operator offered is not needed -- and is not currently served by
   # the gateway anyway; only `ollama-cloud/deepseek-v4-flash` has an alias.
-  agent: claude-code
-  model: ollama-cloud/glm-5.3
-  fallback: local/qwen3.6-27b
+  # PRIMARY BUILDER IS NOW OPUS ON THE SUBSCRIPTION, 2026-08-29 11:24 PM CT
+  # (Bryan: "i want the implementer to default to the opus-closer persona,
+  # that's all"). This edit was impossible until spec 122 landed at 11:22 --
+  # applied on its own it failed 25 tests, because two fixtures encoded a guess
+  # about which vendor the operator would pick:
+  #   tests/test_us2_shipped_registry.py  assert "/" in implementer.model
+  #   tests/test_usage_activities.py      PERSONA = "implementer"
+  # A subscription persona's model has no slash and mints no virtual key, so
+  # both refused. 122/US1 and US2 removed them; 122/US3 fixed three tests that
+  # read the operator's real ledger. This repo's gate IS the suite, so until
+  # that landed the swap would have failed every node, not merely a push.
+  #
+  # SAME ROUTE AS `opus-closer`, deliberately, not the `closer` alias: this runs
+  # on the operator's own Claude Code login, so no virtual key is minted, no
+  # ANTHROPIC_BASE_URL or AUTH_TOKEN reaches the child, and there is no metered
+  # per-token spend. `closer` reaches the same model through the gateway and
+  # bills; it stays opt-in for that reason.
+  #
+  # LINEAGE: Anthropic now builds and Moonshot judges (kimi), which keeps ADR
+  # 0016's rule that the judge may not review its own family's output. The
+  # debugger is also Anthropic -- that is a rung above the builder, not a judge,
+  # so the constraint is untouched.
+  #
+  # THE COST OF THIS ROUTE IS THE FALLBACK. A subscription persona holds no
+  # gateway key, so an `ollama-cloud/*` fallback would validate here and then
+  # fail at runtime with nothing to authenticate against. Null is the honest
+  # value: a session that cannot refresh has no second route.
+  #
+  # MEASURED, dispatch-to-merged, five completed stories on 2026-08-29:
+  # 43, ~34, 41, ~42, ~42 minutes, every one a first attempt. Against kimi's
+  # 29-minute median (which needed three attempts on its one hard story),
+  # glm-5.3 full at 63, and glm-5.3-flash at a 123-minute median.
+  agent: subscription
+  model: claude-opus-5
+  fallback: null
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
+  context_window: 1000000
   # 1M, read from Ollama's own model card (`glm5_next.context_length = 1048576`,
   # 321B FP8) and recorded alongside the alias in the homelab litellm config.
   # NOT carried over from kimi's 262144 — that was Moonshot's 256K and declaring

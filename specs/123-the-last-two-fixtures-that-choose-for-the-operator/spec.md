@@ -1,6 +1,21 @@
 ---
-state: draft
+state: landed
 fixes:
+# Attested landed 2026-08-30. US1 8b667afd018f, US2 2d9d256d4221 -- two stories,
+# one round, both first attempt, dispatched 23:38 and complete by 00:33.
+# 33 minutes from dispatch to both nodes ENQUEUED, the fastest epic of the run.
+#
+# THIS SPEC EXISTS BECAUSE 122 WAS SCOPED FROM A FOUR-FILE MEASUREMENT, and the
+# lesson is worth more than the fix: a measurement used to scope a spec must cover
+# the surface the spec claims to fix. 122's own success criterion was "set the
+# implementer to opus-closer, run the suite, see it green" -- and no run of four
+# predicted files could ever establish that. The prediction was right about all
+# four and blind to the fifth, `tests/test_poll_usage.py:59`.
+#
+# NOTHING WAS LOST TO THAT, because the registry flip was held unpushed pending the
+# full suite. This repository's gate IS `uv run pytest -q`, so a red suite is a red
+# gate for every node -- which is exactly why the flip waits on a whole-suite run
+# rather than a targeted one, both times.
   - ci/test-suite-pins-the-operator-dial
   - ci/landed-tests-read-the-operators-real-ledger-and-are-green-only-where-it-is-absent
 # DRAFTED 2026-08-29 11:36 PM by the operator session, immediately after 122 landed and
