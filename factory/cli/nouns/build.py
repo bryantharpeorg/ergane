@@ -1653,14 +1653,23 @@ async def _reset_epic(graph: WorkGraph, *, forge: Any | None = None) -> int:
     Two halves, in this order and never the other one (069-US3). The local half
     archives the survivors; the forge half closes the node's open pull request
     and retires the head it pushed, which is what a rebuilt node collides with.
-    Local first because it is the half that must always happen: it needs nothing
-    off this machine, and it is what the operator is recovering with.
+    Local first because its archive is the part that must always happen: the
+    rename needs nothing off this machine, and it is what the operator is
+    recovering with.
 
-    Since 100-US1 the local half also retires that head, because teardown must
-    clear it on the paths that never reach this verb at all — a killed epic tears
-    down inside the workflow. The forge half is not redundant: it closes the
-    proposal, which no amount of git can do, and it reports "no head on the
-    forge" for one the local half already removed.
+    Since 100-US1 the local half also retires that head, and the reason is that
+    the forge half is the one that can be *absent*. `_reset_forge` answers "no
+    forge" for a manifest it cannot read, a forge name it does not know and a
+    forge that will not build; each of those reports the head as `not done` and
+    leaves it on the remote, which is the mine 100 is about — a rebuilt node
+    refused non-fast-forward after it has already passed verification. The local
+    half reaches that ref over plain git on `origin`, the same channel the push
+    used, so it is available wherever the head got there in the first place, and
+    it degrades to a report when that channel is not (100 FR-003).
+
+    The forge half is not thereby redundant: it closes the proposal, which no
+    amount of git can do, and `retire_head` reports "no head on the forge" for
+    one the local half has already removed.
 
     `forge` is the seam tests put a repository behind. Left unset — every
     operator invocation — the forge is the one the target repository declares,
