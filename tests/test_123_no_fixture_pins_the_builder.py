@@ -268,7 +268,19 @@ def _leases_virtual_keys(tree: ast.Module) -> bool:
 
 
 def _repoints_the_registry(scope: ast.AST) -> bool:
-    """Whether this scope pointed the loader at a registry of its own."""
+    """Whether this scope pointed the loader at a registry of its own.
+
+    Stated as it is implemented: this asks whether the seam was *moved*, not
+    where it was moved to. A body that repoints `ERGANE_PERSONAS_PATH` back at
+    the repository's own `personas.yaml` is exempted while still reading the
+    operator's file — which is not hypothetical, `tests/test_ergane_install_walkthrough.py`'s
+    `config_path` fixture does exactly that, and it is why the four leases in
+    `tests/test_controlplane_direct_mode.py` were invisible to an
+    `ERGANE_PERSONAS_PATH` experiment and visible only to this scan. That
+    fixture is not an enclosing scope of any lease, so nothing is exempted by it
+    today; a future test that did it inline would slip through, and would then
+    be the eighth recurrence rather than the seventh.
+    """
     for node in ast.walk(scope):
         if not isinstance(node, ast.Call):
             continue
@@ -282,9 +294,10 @@ def _repoints_the_registry(scope: ast.AST) -> bool:
 def _module_constants(tree: ast.Module) -> dict[str, str]:
     """The module-level string constants, which is where a fixture persona lives.
 
-    `PERSONA = "implementer"` is the shape all seven recurrences took: one name
-    at the top of the file, referenced by every test below it. Resolving it here
-    is what lets the guard report the constant rather than the call sites.
+    `PERSONA = "implementer"` is the shape three of the five leases this guard
+    found took: one name at the top of the file, referenced by every test below
+    it. Resolving it here is what lets the guard report the constant rather than
+    each call site, so the fix stays one line.
     """
     constants: dict[str, str] = {}
     for node in tree.body:
