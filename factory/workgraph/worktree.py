@@ -295,6 +295,19 @@ def archive_message(epic_id: str, node_id: str, old_tip: str) -> str:
     return f"archive({epic_id}/{node_id}): superseded at {old_tip[:12]}"
 
 
+def archive_branch_prefix(epic_id: str, node_id: str) -> str:
+    """Every archive branch this node has ever been given lives under this prefix.
+
+    `archive/factory/<epic>/<node>/`, with the archived tip's short sha as the
+    last component (`_archive_node`). One named prefix rather than two literals,
+    because `reset` now *reads* the namespace to decide whether a remote ref's
+    content is held anywhere (FR-001) and `_archive_node` writes it: a drift
+    between the two would not fail — it would silently answer "no archive holds
+    this" for every ref, and teardown would go back to leaving the mine behind.
+    """
+    return f"archive/{branch_name(epic_id, node_id)}"
+
+
 # The four operations ---------------------------------------------------------
 
 
@@ -1415,17 +1428,39 @@ def reset(
     node_id: str,
     *,
     factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+    remote: str = "origin",
 ) -> list[str]:
     """Archive a terminated node's survivors and return a human action report.
 
     The supported path after `temporal workflow terminate` (which bypasses the
     workflow's kill sequence — see `interpreter/cancel-bypasses-kill-sequence`,
     deliberately not fixed here).  Commits any dirty worktree state, removes the
-    directory, archives the node branch, and deletes the sidecar.  Idempotent:
-    a second call finds nothing to do and returns `["nothing to do"]`.
+    directory, archives the node branch, deletes the sidecar, and then clears the
+    branch off `remote`.  Idempotent: a second call finds nothing to do and
+    returns `["nothing to do"]`.
 
     The branch is renamed, never deleted; every commit reachable from the old
     node branch remains reachable from an archive ref.
+
+    **The remote half (100-US1).** Teardown used to stop at the edge of the local
+    clone, and the ref it left on the remote is the one that matters: the next
+    dispatch of the same node branches fresh from the landing branch, so its
+    first push shares no ancestor with the survivor of the same name and git
+    refuses it non-fast-forward — *after* the node has passed verification. The
+    remote branch is therefore deleted (FR-001), under three constraints:
+
+    - **Reachability decides, never the fact that teardown ran** (FR-002, plan
+      trap 1). The ref goes only when its tip is reachable from an archive ref of
+      this node, which is what makes the deletion a cleanup rather than a
+      data-loss bug: a salvage can push one tip and a later local operation
+      archive a different one. A tip nothing archived is kept and reported.
+    - **Never forced, and no archive ref is ever touched** (FR-010). Deleting a
+      remote branch whose content is archived is safe; overwriting one is not,
+      and the two are one keystroke apart.
+    - **Origin is optional** (FR-003, plan trap 2). Teardown also runs where the
+      network is not, and a local cleanup that starts failing because a remote
+      is unreachable is a worse defect than the ref it was cleaning up. An
+      unreachable remote is reported and the teardown completes.
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
@@ -1443,6 +1478,11 @@ def reset(
         actions.append("removed worktree")
     if had_branch:
         actions.append("archived branch")
+
+    # After the local archive, never before: the ref that authorises the remote
+    # deletion is the one `_archive_node` has just written.
+    actions.extend(_clear_remote_branch(repo, epic_id, node_id, branch, remote=remote))
+
     sidecar = _record_file(factory_root, epic_id, node_id)
     if sidecar.exists():
         sidecar.unlink()
@@ -1569,7 +1609,7 @@ def _archive_node(
         # Resolve the tip after any dirty-state commit so the archive name embeds
         # the actual archived tip (trap 5).
         branch_tip = _rev_parse(repo, f"refs/heads/{branch}")
-        archive = f"archive/factory/{epic_id}/{node_id}/{branch_tip[:12]}"
+        archive = f"{archive_branch_prefix(epic_id, node_id)}/{branch_tip[:12]}"
         if _branch_exists(repo, archive):
             existing = _rev_parse(repo, f"refs/heads/{archive}")
             if existing != branch_tip:
@@ -1582,6 +1622,99 @@ def _archive_node(
             _git(repo, "branch", "-m", branch, archive)
 
     record_file.unlink(missing_ok=True)
+
+
+def _clear_remote_branch(
+    repo: Path, epic_id: str, node_id: str, branch: str, *, remote: str
+) -> list[str]:
+    """Delete the node's branch from `remote` when an archive ref holds its tip.
+
+    The remote half of teardown (100-US1), as report lines rather than as an
+    exception: every outcome here — no remote, no remote branch, a tip nothing
+    archived, a remote that cannot be reached — is a normal answer that the
+    local teardown must survive, so nothing on this path raises. An empty list
+    means there was no remote work to do, which is how a never-pushed node tears
+    down with the report it has always had (FR-003).
+    """
+    if not _has_remote(repo, remote):
+        return []
+
+    # The full `refs/heads/<branch>`, not the short name: `ls-remote` matches a
+    # pattern against the *tail* of a ref name, so the short form also matches
+    # `refs/heads/anything/<branch>` — the lesson `_off_machine` carries, and
+    # here it would decide a deletion rather than a report.
+    ref = f"refs/heads/{branch}"
+    try:
+        listing = _git(repo, "ls-remote", "--heads", remote, ref)
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return [f"could not reach {remote} to clear {branch}: {exc}"]
+
+    remote_tip = ""
+    for line in listing.splitlines():
+        sha, _, name = line.partition("\t")
+        if name.strip() == ref:
+            remote_tip = sha.strip()
+    if not remote_tip:
+        return []
+
+    archive = _archive_holding(repo, epic_id, node_id, remote_tip)
+    if archive is None:
+        return [
+            f"kept {remote} branch {branch} at {remote_tip[:12]}: no archive ref "
+            "of this node holds that commit, so nothing else carries its "
+            "content (FR-002)"
+        ]
+
+    try:
+        # A deletion, never a force push (FR-010): the content is already held by
+        # `archive`, and overwriting divergent history is the one thing this
+        # story may not do.
+        _git(repo, "push", "--quiet", remote, "--delete", ref)
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return [f"kept {remote} branch {branch} at {remote_tip[:12]}: {exc}"]
+    return [
+        f"deleted {remote} branch {branch} at {remote_tip[:12]} "
+        f"(archived at {archive})"
+    ]
+
+
+def _archive_holding(
+    repo: Path, epic_id: str, node_id: str, tip: str
+) -> str | None:
+    """The node's archive ref `tip` is reachable from, or None if there is none.
+
+    Reachability, not the existence of an archive: "teardown ran, so an archive
+    exists" and "an archive ref holds this commit" are different claims, and only
+    the second one makes deleting the remote ref safe (plan trap 1). A tip whose
+    object is not in this clone at all is answered "none" for the same reason —
+    an unreadable commit is one whose content this machine cannot vouch for.
+
+    Every failure answers None, which keeps the ref: the safe direction for a
+    question nobody could get an answer to.
+    """
+    namespace = f"refs/heads/{archive_branch_prefix(epic_id, node_id)}"
+    try:
+        if not _has_commit(repo, tip):
+            return None
+        listing = _git(repo, "for-each-ref", "--format=%(refname)", namespace)
+        for archive in listing.splitlines():
+            if archive and _is_ancestor(repo, tip, archive):
+                return archive
+    except (WorktreeError, OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
+def _has_commit(repo: Path, sha: str) -> bool:
+    """Whether this clone holds `sha` as a commit — modelled on `_branch_exists`."""
+    completed = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        env=scrubbed_env() | {"GIT_TERMINAL_PROMPT": "0"},
+        timeout=GIT_TIMEOUT_S,
+    )
+    return completed.returncode == 0
 
 
 def _git(cwd: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:
