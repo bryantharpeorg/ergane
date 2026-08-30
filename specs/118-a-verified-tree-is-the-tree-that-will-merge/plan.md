@@ -13,33 +13,39 @@ is "created once, reused across attempts", and "rebuilding or rebasing between
 attempts would move the goalposts mid-node, which is the failure 002's criteria
 snapshot exists to prevent (R5)".
 
-- **`ensure`** (`:318`) — the function the `prepare_worktree` activity
-  (`factory/activities/agent_activities.py:394`) calls, and the one this spec
-  changes. Its docstring (`:326-343`) is the contract:
+Anchors here are file-and-symbol. Every line number this section carried was
+stale by 16 when checked against origin/ergane-buildout on 2026-08-30 --
+moved by this spec's OWN us1 and us2 landing -- and each bullet already
+names its arm and quotes its contract verbatim, so the numbers bought
+nothing a grep does not.
+
+- **`ensure`** — the function the `prepare_worktree` activity
+  (`factory/activities/agent_activities.py`) calls, and the one this spec
+  changes. Its docstring is the contract:
   idempotent by construction, "an existing directory is returned as-is,
   untouched — no fetch, no rebase, no reset". Then the pin rule: "A recorded pin
   is reused only when it is still an ancestor of the target's current
   landing-branch head (US1 FR-001); otherwise the worktree is rebuilt and the old
   branch is archived, never deleted (FR-004)."
-- **The validity test itself**: `if _is_ancestor(repo, recorded.base_ref):` at
-  `:365`, returning the recorded worktree; the diverged arm at `:367-369` calls
+- **The validity test itself**: `if _is_ancestor(repo, recorded.base_ref):`, returning
+  the recorded worktree; the diverged arm immediately below it calls
   `_archive_node` and clears the record. **US1's currency test goes between those
   two**, and its failure arm is the same `_archive_node` call — the rebuild path
   already exists and is already correct.
-- **The adopt arm** (`:371-380`): a worktree from an older run whose record was
+- **The adopt arm**: a worktree from an older run whose record was
   swept is adopted rather than rebuilt, "pinning to where it stands", because
   "rebuilding would discard exactly the in-progress work the reuse rule
   protects". US1 must decide explicitly whether an adopted worktree gets a
   currency test; the safe reading is no — there is no recorded pin to judge, and
   discarding in-progress work is the failure that arm exists to avoid.
-- **The explicit-pin authority** (`:387-393`): "Only recorded pins are
+- **The explicit-pin authority**: "Only recorded pins are
   ancestry-checked; an explicit caller instruction remains the caller's
   authority. (spec Edge Cases)". FR-005 preserves this.
-- **The ownership refusal** (`:357-360`), ahead of both reuse branches, added by
+- **The ownership refusal**, ahead of both reuse branches, added by
   107 FR-002. Untouched by this epic.
-- **The standards path in the prompt**: `factory/workgraph/prompt.py:224` —
+- **The standards path in the prompt**: `factory/workgraph/prompt.py` —
   "Read `{standards}` in this worktree before you write code, and obey it" — and
-  the assembly at `:389-432`, whose docstring (`:396`) is explicit that the
+  the assembly function below it, whose docstring is explicit that the
   function is "Pure: the four texts, the optional standards *path* (not the
   document…)". That purity is why US3's resolution happens in the caller, not
   here.

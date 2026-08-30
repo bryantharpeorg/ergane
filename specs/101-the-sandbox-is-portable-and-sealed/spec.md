@@ -27,7 +27,7 @@ fixes:
 # with Playwright's "Looks like Playwright was just installed… npx playwright
 # install". The agent had already anticipated it with a postinstall hook, which
 # works in the attempt and fails in the gate. The boundary does have egress
-# (`:810`, "deliberately does not unshare the network"), so the download would
+# ("deliberately does not unshare the network"), so the download would
 # succeed — it just never happens. The agent cannot see any of this. It observes:
 # I ran the install, my shell has the browser, the gate says install it. The
 # natural next attempt is to install it again, harder.
@@ -207,7 +207,7 @@ ownership. US1 is independent of both.
   carry the boundary's `HOME` fact in its detail, and that detail MUST reach the
   next attempt's prompt.
 - **FR-010**: Every story MUST leave the tmpfs `HOME` decision
-  (`factory/verify/gates.py:690-691`), the network posture (`:810`) and
+  (`factory/verify/gates.py:690-691`), the network posture ("deliberately does not unshare the network") and
   `_interpreter_binds` (`:880`) unchanged.
 
 ## Success Criteria (summary)

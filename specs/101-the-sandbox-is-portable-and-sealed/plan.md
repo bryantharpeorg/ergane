@@ -11,7 +11,7 @@ gates need, and annotate the one failure signature that teaches the wrong lesson
   `argv.extend(["--tmpfs", str(home)])` then `--setenv HOME`. The mount set is
   described at `:517` as "deliberately minimal: a read-only system tree, a
   tmpfs…". Read-only to this epic (FR-010).
-- **The network posture**: `:810` — the boundary "deliberately does not unshare
+- **The network posture**: the boundary "deliberately does not unshare
   the network", which is why the download US1 tells the agent about *would*
   succeed if it happened at gate time. Read-only to this epic.
 - **The existing bind, and the whole argument for US2**: `_cache_binds`

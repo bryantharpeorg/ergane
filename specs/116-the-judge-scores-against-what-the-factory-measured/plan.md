@@ -23,10 +23,10 @@ measure or when the judge runs changes.
   output_check, criteria)` (`factory/verify/models.py`). Read its docstring
   before writing US1 — it is the argument for why a gate section is never
   misleading on the judged path, because it returns True only when
-  `gates_passed(gate_results)` (`:517`).
+  `gates_passed(gate_results)` returns True. Both live in that file; grep the names.
 - **The composition**: `compose_result` (`factory/verify/models.py`), whose
   verdict line is `passed = gates_passed(gate_results) and output_check.passed
-  and judge_accepts` (`:608`). US2's contradiction check belongs where
+  and judge_accepts`, in the same function. US2's contradiction check belongs where
   `judge_accepts` is derived, not in a fourth place that could disagree.
 - **The retry machinery**: `parse_verdict` returns RETRY or FAIL depending on
   `judge_attempt >= 1 + max_judge_retries` (`factory/verify/judge.py:637-640`).
