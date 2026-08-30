@@ -140,6 +140,19 @@ _UNSATISFIABLE = re.compile(
 #: keeps its bullets and an untouched line is emitted with its bytes intact.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
+#: Clause boundaries inside one sentence, and the reason this module does not
+#: stop at the sentence: the measured feedback offered *two* remediations in one
+#: sentence — "commit the measured advance as an artifact, or reconcile the
+#: scenario text with the implementation" — and withholding the sentence would
+#: withhold the good remedy along with the forbidden one. It is also what keeps
+#: trap 7's welded case honest: "US1-S3 cannot be met as written, so reword the
+#: criterion" carries its report to the agent and withholds only the proposal.
+#: Split before the connective, never after, so a surviving clause keeps the
+#: word that joins it to the one before.
+_CLAUSE_SPLIT = re.compile(
+    r"(?:,|;)\s+(?=(?:or|and|so|then|instead|alternatively|rather)\b)", re.IGNORECASE
+)
+
 #: Collapses the gap a dropped line leaves behind. Nothing else about the
 #: carried text's whitespace is touched.
 _BLANK_RUN = re.compile(r"\n{3,}")
@@ -179,10 +192,15 @@ def screen_feedback(feedback: str) -> ScreenedFeedback:
     """Split judge feedback into what the agent may read and what only the
     operator may (FR-009, FR-010).
 
-    Sentence-granular inside a line, line-granular outside one: a line no
-    sentence of which proposes an edit is emitted byte-for-byte, and only a line
-    that carried one is rebuilt from its surviving sentences. A line left empty
-    by the removal is dropped rather than left as a dangling bullet.
+    Line-granular outside a sentence, sentence-granular inside a line, and
+    clause-granular inside an offending sentence: a line no sentence of which
+    proposes an edit is emitted byte-for-byte, and only what actually carried
+    the proposal is dropped. A line left empty by the removal is dropped rather
+    than left as a dangling bullet.
+
+    `proposals` and `unsatisfiable_reports` record whole sentences even when only
+    a clause was withheld — the operator is reading to decide whether the spec is
+    at fault, and half a sentence is a worse answer than a long one.
     """
     if not feedback.strip():
         return ScreenedFeedback(feedback, (), ())
@@ -193,23 +211,25 @@ def screen_feedback(feedback: str) -> ScreenedFeedback:
 
     for line in feedback.splitlines():
         sentences = _SENTENCE_SPLIT.split(line)
-        offending = [
-            sentence for sentence in sentences if proposes_criteria_change(sentence)
-        ]
         reports += [
             sentence for sentence in sentences if reports_unsatisfiable(sentence)
         ]
-
-        if not offending:
+        if not any(proposes_criteria_change(sentence) for sentence in sentences):
             kept_lines.append(line)
             continue
 
-        proposals += offending
-        survivors = [
-            sentence
-            for sentence in sentences
-            if sentence.strip() and sentence not in offending
-        ]
+        survivors: list[str] = []
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
+            if not proposes_criteria_change(sentence):
+                survivors.append(sentence)
+                continue
+            proposals.append(sentence)
+            kept = _surviving_clauses(sentence)
+            if kept:
+                survivors.append(kept)
+
         if survivors:
             kept_lines.append(" ".join(survivors))
 
@@ -219,3 +239,26 @@ def screen_feedback(feedback: str) -> ScreenedFeedback:
     body = _BLANK_RUN.sub("\n\n", "\n".join(kept_lines)).strip()
     carried = f"{body}\n\n{WITHHELD_NOTICE}" if body else WITHHELD_NOTICE
     return ScreenedFeedback(carried, tuple(proposals), tuple(reports))
+
+
+def _surviving_clauses(sentence: str) -> str:
+    """The clauses of one offending sentence that propose nothing, rejoined.
+
+    Empty when the sentence cannot be split, or when every clause of it offends
+    — the common case, and the one that leaves nothing behind on purpose.
+    """
+    clauses = _CLAUSE_SPLIT.split(sentence)
+    if len(clauses) < 2:
+        return ""
+
+    clean = [
+        clause
+        for clause in clauses
+        if clause.strip() and not proposes_criteria_change(clause)
+    ]
+    if not clean:
+        return ""
+
+    kept = ", ".join(clause.rstrip(" ,;") for clause in clean)
+    # The sentence's own terminator, since the clause carrying it may be gone.
+    return kept if kept.endswith((".", "!", "?")) else f"{kept}."

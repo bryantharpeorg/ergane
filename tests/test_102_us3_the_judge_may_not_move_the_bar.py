@@ -404,18 +404,42 @@ def test_the_proposal_is_recognised_when_it_names_the_scenario_by_id() -> None:
         assert text not in screened.carried
 
 
+def test_a_two_option_remediation_keeps_the_option_that_is_allowed() -> None:
+    """The measured shape: two remediation paths in one sentence, the second the
+    forbidden one. Withholding the sentence would withhold the good remedy with
+    it, and the good remedy is the whole reason a retry is worth spending."""
+    sentence = (
+        "Two ways forward: commit the measured advance as an artifact the diff "
+        "carries, or reconcile the scenario text with the implementation you "
+        "produced."
+    )
+    screened = screen_feedback(sentence)
+
+    assert "reconcile the scenario text" not in screened.carried
+    assert "commit the measured advance as an artifact the diff carries" in (
+        screened.carried
+    ), "the allowed remediation was withheld along with the forbidden one"
+    # Whole sentence to the operator: half a sentence is a worse answer than a
+    # long one when the question is whether the spec is at fault.
+    assert screened.proposals == (sentence,)
+
+
 def test_a_welded_report_and_proposal_is_withheld_and_still_recorded() -> None:
-    """One sentence carrying both: the agent gets neither, the operator gets both."""
+    """One sentence carrying both, which is where trap 7 bites. The agent keeps
+    the report and loses the proposal; the operator gets the sentence whole."""
     screened = screen_feedback(WELDED)
 
-    assert WELDED not in screened.carried, (
-        "a sentence proposing the criterion be reworded reached the agent because "
-        "it also reported the criterion cannot be met"
+    assert "reword the acceptance criterion" not in screened.carried, (
+        "a proposal that the criterion be reworded reached the agent because the "
+        "same sentence also reported the criterion cannot be met"
+    )
+    assert "US1-S3 cannot be met as written" in screened.carried, (
+        "the report half of the sentence was withheld with the proposal half — "
+        "the judge's most useful signal, silenced"
     )
     assert WELDED in screened.proposals
     assert WELDED in screened.unsatisfiable_reports, (
-        "the report half of the sentence was lost; the operator is never told the "
-        "judge thinks the criterion cannot be met"
+        "the operator is never told the judge thinks the criterion cannot be met"
     )
 
 
