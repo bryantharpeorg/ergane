@@ -29,6 +29,13 @@ So the three tests below split along that seam:
   on the stderr US2 captures"), and a substring hunt through a prose message is
   the fragile version of that.
 
+  Beside it, `test_the_refusal_leads_with_the_verdict_not_with_an_argv` pins the
+  half that test cannot: carrying git's stderr is already satisfied by `_git`'s
+  default message, so every assertion above survives deleting the `refusal`
+  hook. What does not survive is the *order* — the reason is read flattened and
+  from the front, and the default opens with an argv. Both tests are needed
+  because they fail for different reasons.
+
 - **T011 (US2-S2)** — `test_the_nodes_terminal_reason_names_the_refusal`. The
   end-to-end reading: a real refusal message, carried by a fake
   `open_landing_pr` that fails exactly the way the real one does
@@ -252,6 +259,41 @@ def test_a_refused_push_carries_gits_own_stderr(refusal: Refusal) -> None:
     # And the message says which push, so a reason read alone is still a reason.
     assert BRANCH in message
     assert "origin" in message
+
+
+def test_the_refusal_leads_with_the_verdict_not_with_an_argv(
+    refusal: Refusal,
+) -> None:
+    """The front of the reason names the refusal (FR-005).
+
+    Separate from the test above because it fails for a different reason, and
+    the difference is the whole of why `_git` grew a `refusal` hook. Carrying
+    git's stderr is satisfied by `_git`'s own default message — delete the hook
+    and every assertion in `test_a_refused_push_carries_gits_own_stderr` still
+    passes, because the stderr rides along either way. What the default cannot
+    do is *lead* with the verdict: its first line is the argv it ran followed
+    by git's `To <remote>`, and the rejection lands on line two.
+
+    That ordering is not cosmetics. `terminal_reason` reaches an operator
+    whitespace-flattened into a single untruncated line (`_reason_token`), so
+    it is read from the front — and a reason whose front is
+    `git push --quiet origin … failed in /tmp/…: To /tmp/…` opens with the two
+    facts the operator already had. This pins the first line to the one fact
+    they did not: which ref was refused, and why.
+
+    Mutation: drop the `refusal=` argument from `push_branch`'s `_git` call and
+    this is the test that goes red.
+    """
+    first = str(refusal.error).splitlines()[0]
+
+    assert refusal.rejection in first, (
+        "the reason does not lead with git's verdict; an operator reading the "
+        f"front of the flattened line learns nothing new.\nfirst line: {first!r}"
+    )
+    assert BRANCH in first, f"the leading sentence does not say which branch: {first!r}"
+    assert not first.startswith("git push"), (
+        f"the reason leads with the argv rather than the refusal: {first!r}"
+    )
 
 
 # --- T011 [US2] (spec US2-S2, FR-005) -----------------------------------------

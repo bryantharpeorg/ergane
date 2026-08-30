@@ -108,5 +108,21 @@ WorktreeError: git push --quiet origin factory/demo-loans/us1 failed in /tmp/...
    argv instead of a verdict. `_git`'s `refusal` hook leaves one link in the
    chain and no choice to get wrong.
 
+
+5. THE HOOK IS PINNED BY ITS OWN TEST. Because the stderr does ride along either
+   way, deleting the `refusal=` argument from `push_branch` left the first three
+   tests green — the ordering was production code that no failing test defended.
+   Measured, that mutation now reads:
+
+$ # refusal= removed from push_branch's _git call
+$ uv run pytest -q tests/test_100_push_reports_refusal.py
+E       AssertionError: the reason does not lead with git's verdict; an operator reading the front of the flattened line learns nothing new.
+E         first line: 'git push --quiet origin factory/demo-loans/us1 failed in /tmp/.../clone: To /tmp/.../origin.git'
+1 failed, 3 passed
+
+   Restored, 4 passed. That is the discriminator in one line: with the hook the
+   first line is the rejected ref and why; without it, the argv and the remote's
+   name — two facts the operator already had.
+
 The paths are pytest tmp dirs; nothing here quotes a token, a key or a real
 remote (plan trap 12's rule, borrowed from 078).
