@@ -294,29 +294,58 @@ def _rebuild_and_push(repo: Path, factory_root: Path) -> None:
     push_branch(repo, EPIC_ID, NODE_ID, factory_root=factory_root)
 
 
-async def test_a_rebuilt_node_is_rejected_when_the_forge_still_holds_the_head(
+async def test_a_rebuilt_node_is_rejected_when_the_head_survives_the_reset(
     tmp_path: Path,
     target_repo: Callable[..., Path],
     monkeypatch: pytest.MonkeyPatch,
     offline_temporal: None,
 ) -> None:
-    """The control for US3-S3, and the reported failure itself: with the local
-    half of reset done and the forge half skipped, the rebuilt node's push is
-    refused. Without this test the one below could pass on a reset that cleared
-    nothing, because a push to a remote that never held the branch also succeeds.
+    """The control for US3-S3, and the reported failure itself: with the head
+    still on the remote, the rebuilt node's push is refused. Without this test
+    the one below could pass on a reset that cleared nothing, because a push to
+    a remote that never held the branch also succeeds.
+
+    **Re-anchored by 100-US1, not weakened.** This used to skip the *forge* half
+    to leave the head in place, because the local half stopped at the edge of the
+    clone — which was the whole defect 100 fixes. The local half now removes the
+    head itself, so skipping the forge half no longer leaves one, and this test
+    would have passed vacuously against a reset that cleared everything. The
+    surviving way for a head to outlive a reset is 100's FR-002: a remote tip no
+    archive ref holds, which teardown declines to remove because nothing else
+    carries its content. That is the state built here, and the claim under test
+    — a head on the remote refuses the rebuild — is the same one as before.
     """
     repo, factory_root, graph = _scratch_epic(
         tmp_path, target_repo, monkeypatch, name="control", with_origin=True
     )
     _push_a_dead_attempt(repo, factory_root)
+    _rewind_the_branch_under_the_pushed_tip(repo, factory_root)
 
-    # The forge half skipped: exactly what reset did before this story.
+    # The forge half skipped, and the local half declining the removal.
     await build_module._reset_epic(graph, forge=_NoForge())
+    assert _ref_exists(
+        Path(git(repo, "remote", "get-url", "origin").strip()),
+        f"refs/heads/{_node_head()}",
+    ), "the head this control needs was removed; there is nothing left to prove"
 
     with pytest.raises(WorktreeError) as refused:
         _rebuild_and_push(repo, factory_root)
 
     assert "rejected" in str(refused.value) or "fast-forward" in str(refused.value)
+
+
+def _rewind_the_branch_under_the_pushed_tip(repo: Path, factory_root: Path) -> None:
+    """Leave the remote holding a tip the node's local branch no longer reaches.
+
+    100-US1 deletes the remote head only when an archive ref of the node holds
+    its tip; rewinding the branch means the archive teardown writes carries the
+    commit *before* the pushed one, so the pushed tip is reachable from nothing
+    local and the removal is declined (100 FR-002, plan trap 1).
+    """
+    worktree = Path(
+        ensure(repo, EPIC_ID, NODE_ID, factory_root=factory_root).path
+    )
+    git(worktree, "reset", "--quiet", "--hard", "HEAD~1")
 
 
 class _NoForge:
