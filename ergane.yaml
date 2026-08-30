@@ -56,17 +56,27 @@ landing_branch: ergane-buildout
 # The retry ladder. Declared 2026-08-29 (Bryan): "build 1 and 2 on the implementer
 # persona, then build 3 on the closer (opus) persona."
 #
-# WHAT THE RUNGS ARE NOW, resolved through personas.yaml:
-#   attempt 1-2  implementer  ollama-cloud/glm-5.3   gateway
+# WHAT THE RUNGS ARE NOW, resolved through personas.yaml (corrected 2026-08-30,
+# when `implementer` became a subscription persona — the table below had said
+# `ollama-cloud/glm-5.3   gateway` since the rung was declared, and stopped being
+# true the moment the registry flipped):
+#   attempt 1-2  implementer  claude-opus-5          subscription
 #   attempt 3    opus-closer  claude-opus-5          subscription   <- promotion rung
 #   attempt 4    debugger     claude-opus-5          subscription
 #   then         escalate to the operator
+#
+# All four rungs are now the same model on the same route, which drains most of
+# the meaning out of the promotion rung: promoting from Opus to Opus buys a
+# different prompt and nothing else. Left in place deliberately — the rung is
+# still where a metered `closer` would go if this repo ever wanted one — but an
+# operator reading a PROMOTE in a node's history should not expect a stronger
+# model behind it.
 #
 # `max_attempts` IS THE ORDINARY BUDGET, NOT THE TOTAL. `next_action`
 # (factory/verify/ladder.py:177) spends ordinary attempts first, then promotes, then
 # runs the debugger cycle, then escalates — and `_attempts_spent` excludes both the
 # debugger and the promotion persona from the ordinary count. So 2 here means two
-# glm attempts and four attempts in total, not two.
+# ordinary attempts and four attempts in total, not two.
 #
 # THE PROMOTION RUNG IS `opus-closer`, NOT `closer`, AND THE DIFFERENCE IS THE BILL.
 # Both point at Opus 5. `closer` reaches it through the LiteLLM alias
@@ -91,3 +101,51 @@ ladder:
   max_attempts: 2
   promotion_cycles: 1
   promotion_persona: opus-closer
+
+# The scheduler's own dials (034 FR-015).
+#
+# READ THIS BEFORE TRUSTING THE BLOCK: on THIS repo it is a declaration of intent
+# and nothing reconciles it automatically. `ergane init` derives a schedule id from
+# the repo slug — `ergane-roadmap-ergane` — and this factory's live schedule is the
+# hand-made `ergane-roadmap` that predates that convention. The two ids do not
+# match, so running `init` here would CREATE A SECOND SCHEDULE beside the live one
+# rather than reconcile it. `RoadmapDials`' own docstring names this repo as the
+# case it was written for: "`max_concurrent_epics` on the one hand-made roadmap was
+# never changed."
+#
+# So the live schedule was updated in place on 2026-08-30, through
+# `factory.roadmap.schedule.update_schedule` against id `ergane-roadmap`, changing
+# only `max_concurrent_nodes`. That path was chosen over `desired_for_repo` because
+# the live schedule's `target_repo` is `/home/admin/code/ergane-roadmap-target` —
+# not this checkout — and its `landing_branch` is empty; a "desired" built from this
+# manifest would have silently rewritten both.
+#
+# AND IT DOES NOT REACH THE RUNNING ROADMAP EITHER. A run compiles its dials at
+# start and carries them verbatim across every continue-as-new boundary, so
+# `ergane roadmap status` will keep reporting the old numbers until the current run
+# ends and the schedule starts a fresh one.
+#
+# RAISED TO 2 ON 2026-08-30 (Bryan, watching). `max_concurrent_nodes` is READY NODES
+# PER CHILD EPIC — two agents in two worktrees on one spec, not two specs at once.
+# It sat at 1 from 2026-08-23, when a cap of 2 killed four of five nodes with
+# "Session ID already in use": every node reused one `--session-id`. That is fixed —
+# the id is a `workflow.uuid4()` per node — and a concurrent pair was run and landed
+# on 2026-08-29 to prove it before this line was written.
+#
+# `max_concurrent_epics` STAYS AT 1 and the reason is the worker, not the agents.
+# A landing that changes any type crossing the workflow boundary wedges every
+# RUNNING workflow, because `workflow.unsafe.imports_passed_through()` resolves
+# those types against the worker's boot-time modules; the fix is a worker restart,
+# and a restart is illegal while an attempt is in flight. One epic at a time means
+# one such blast radius at a time. That defect wedged this roadmap for fifty
+# minutes on 2026-08-30 and is filed as
+# `interpreter/a-fresh-epic-on-a-stale-worker-wedges-in-workflow-task-retry`.
+#
+# NEITHER DIAL REACHES A RUNNING EPIC. Both are compiled into a child's `EpicInput`
+# at its own dispatch (`factory/cli/roadmap.py` says so where the operator is
+# standing when they ask), so this takes effect on the next spec the roadmap picks
+# up, never on the one already building.
+roadmap:
+  cadence_s: 300
+  max_concurrent_epics: 1
+  max_concurrent_nodes: 2
