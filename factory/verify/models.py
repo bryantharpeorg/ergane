@@ -361,12 +361,13 @@ class HygieneViolation:
 
 @dataclass(frozen=True)
 class DiffFileSize:
-    """One file's contribution to a diff, in the unit the judge's cap is in.
+    """One file's contribution to a diff, in the unit both caps are in.
 
-    Bytes rather than lines, because bytes are what `DIFF_INPUT_LIMIT` bounds —
-    a file of 40 very long lines can cost more of the budget than one of 400
-    short ones, and a record in the wrong unit sends the next attempt after the
-    wrong file.
+    Bytes rather than lines, because bytes are what `DIFF_REFUSAL_THRESHOLD`
+    bounds — as `DIFF_INPUT_LIMIT` does, the two being separate settings on the
+    same measurement since 092 — a file of 40 very long lines can cost more of
+    the budget than one of 400 short ones, and a record in the wrong unit sends
+    the next attempt after the wrong file.
     """
 
     path: str

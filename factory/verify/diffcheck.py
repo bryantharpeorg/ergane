@@ -84,6 +84,18 @@ record names the total, the limit and the files that spent the budget: an
 operator whose story is legitimately large has to choose between splitting it
 and raising the ceiling, and "too big" tells them neither. `prepare_diff`'s
 truncation stays exactly where it was, as the defense in depth behind this.
+
+**The ceiling here is not the abridger's, though it was the same number**
+(092 FR-001). Abridgement is bounded by `diffbounds.DIFF_INPUT_LIMIT`, a
+property of the model; the refusal is bounded by
+`diffbounds.DIFF_REFUSAL_THRESHOLD`, a property of the work and of the
+operator's tolerance. One constant answering both meant a story whose honest
+diff ran past the model's attention was refused rather than judged on what
+`prepare_diff` could show — no attempt could pass it, and the only remedy an
+agent had was to delete content, the cheapest of which is prose. Between the
+two limits the diff is now judged abridged, which is the defense the doctrine
+actually asks for; above the threshold it is still refused, because a diff
+abridged past the point where a criterion is provable makes a PASS meaningless.
 """
 
 from __future__ import annotations
@@ -94,7 +106,7 @@ from typing import Sequence
 
 from factory.config import WriteScope
 from factory.env import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, resolve_env_path
-from factory.verify.diffbounds import DIFF_INPUT_LIMIT, size_refusal
+from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD, size_refusal
 from factory.verify.gates import scrubbed_env
 from factory.verify.models import DiffSizeRefusal, HygieneViolation, OutputCheck
 from factory.workgraph import worktree as worktrees
@@ -159,7 +171,7 @@ def check_output(
     expected_artifacts: list[str] | tuple[str, ...] | None = None,
     base_ref: str | None = None,
     *,
-    diff_size_limit: int | None = DIFF_INPUT_LIMIT,
+    diff_size_limit: int | None = DIFF_REFUSAL_THRESHOLD,
 ) -> OutputCheck:
     """Read the worktree and decide whether this node proved it did work.
 
@@ -179,9 +191,17 @@ def check_output(
     than an environment read so that turning it off is something a caller does
     in the open: `None` disables the check, which is the control SC-004 needs to
     show that this refusal changed an outcome rather than the outcome having
-    been impossible. The default is the judge's own cap, read from
+    been impossible — a control for tests, never a value a repository may
+    declare, since a manifest that could switch this off would have no ceiling
+    at all and Principle VIII is non-negotiable.
+
+    The default is `DIFF_REFUSAL_THRESHOLD`, read from
     `factory.verify.diffbounds` rather than restated here — a second copy of
-    that number would let tuning it silently do nothing.
+    that number would let tuning it silently do nothing. It is deliberately not
+    the judge's attention budget any more (092 FR-001): what may be shown to a
+    model and what may be refused unbuilt are two settings, and a caller raising
+    this one is asking for a diff to be judged abridged rather than thrown
+    away.
 
     Raises `WorktreeMissingError` when the worktree is absent, or when git cannot
     read it — the diff, its size, or the ignore rules — and the scope's verdict
@@ -293,7 +313,7 @@ def hygiene_violations(
 def diff_size_refusal(
     worktree: Path | str,
     base_ref: str | None = None,
-    limit: int | None = DIFF_INPUT_LIMIT,
+    limit: int | None = DIFF_REFUSAL_THRESHOLD,
 ) -> DiffSizeRefusal | None:
     """What this attempt's patch would cost the judge, if that is too much.
 
@@ -306,7 +326,9 @@ def diff_size_refusal(
     weighs, from the module both of them read so they cannot answer differently.
 
     `None` for `limit` disables the check and is the seam SC-004's control
-    drives; the default is the judge's own cap.
+    drives; the default is `DIFF_REFUSAL_THRESHOLD`, which is a separate
+    setting from the budget `prepare_diff` abridges to (092 FR-001), so a diff
+    between the two is judged on an abridged prompt rather than refused.
 
     Raises `WorktreeMissingError` when git cannot produce the patch — a base
     that has gone missing, a worktree that has — because a diff whose size
