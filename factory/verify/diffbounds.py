@@ -1,9 +1,12 @@
-"""How big a diff is, and how much of one the judge may be shown.
+"""How big a diff is, how much the judge may be shown, and how much is too much.
 
-Two modules have to agree on that number. `judge.prepare_diff` abridges to it,
-and — since 045 FR-003 — `diffcheck.check_output` refuses before it, so that an
-attempt whose diff cannot be shown whole fails deterministically instead of
-buying a verdict formed partly out of elisions. They cannot both reach it
+The last two are separate settings and used to be one (092 FR-001).
+`judge.prepare_diff` abridges to the attention budget, and — since 045 FR-003 —
+`diffcheck.check_output` refuses above the refusal threshold, so that an attempt
+whose diff cannot carry its own evidence fails deterministically instead of
+buying a verdict formed partly out of elisions. What the two must agree on is
+not a number but a *measurement*: they weigh the same assembly, and the number
+each weighs it against is now its own. They cannot both reach it
 through `factory/verify/judge.py`: that module is the component's only LLM edge
 and its only outbound HTTP call, and exactly one module in the component may
 import it (FR-009, enforced on the import graph by
@@ -12,12 +15,12 @@ convenience of a shared constant, and it says something precise — *importing t
 judge means you can spend money* — which a pure byte count has no business
 weakening.
 
-So the pure half lives here: the cap, the split of a unified diff into one
+So the pure half lives here: both caps, the split of a unified diff into one
 section per file, and the measurement that turns "too big" into a refusal an
 operator can act on. Nothing here talks to a model, reads a credential, or
 knows what a verdict is. `judge.py` keeps the budgeting and the truncation that
-spends this cap, unchanged; this module is what both readers of a diff's size
-count with, so they cannot drift into two answers.
+spends the attention budget, unchanged; this module is what both readers of a
+diff's size count with, so they cannot drift into two answers.
 
 The measurement is deliberately not a call to `prepare_diff`. That function's
 truncation is the defense in depth behind the new check and is left exactly as
@@ -40,6 +43,25 @@ from factory.verify.models import DiffFileSize, DiffSizeRefusal
 #: fully-green story refused four times at 61,725 bytes (035/us1). Still an
 #: attention budget, not a context limit: raise it only deliberately.
 DIFF_INPUT_LIMIT = 64 * 1024
+
+#: Diff bytes above which a story is refused unjudged (092 FR-001) — the second
+#: question the constant above was answering on its own, and the reason that
+#: comment reads as an argument about a model: it is one, and it was never an
+#: argument about this. What the judge may be shown is a property of the model.
+#: What may be refused unbuilt is a property of the work and of the operator's
+#: tolerance, and sharing one name meant tuning either silently moved the other
+#: — measured as a story no attempt could pass at 74,465 bytes, four gates green
+#: and the judge never reached.
+#:
+#: Defined *as* the attention budget rather than as a second `64 * 1024`, and
+#: both halves of that matter. One definition of each value, so tuning the
+#: threshold cannot be undone by a copy somewhere else (092 trap 2). And a
+#: default equal to the budget rather than pinned to today's bytes, because a
+#: threshold below the budget refuses every diff the judge would merely have
+#: abridged — the defect under a new name — so this is the floor of the range a
+#: manifest may declare, and it stays the floor if the budget ever moves. The
+#: dial an operator turns is the manifest key, not this line.
+DIFF_REFUSAL_THRESHOLD = DIFF_INPUT_LIMIT
 
 #: How many of the diff's biggest files an oversize refusal names (045 FR-003).
 #: Bounded because this list is quoted verbatim into the next attempt's prompt:
@@ -111,21 +133,26 @@ def file_listing(sections: Sequence[DiffSection]) -> str:
 
 
 def size_refusal(
-    diff_text: str, *, limit: int = DIFF_INPUT_LIMIT
+    diff_text: str, *, limit: int = DIFF_REFUSAL_THRESHOLD
 ) -> DiffSizeRefusal | None:
-    """What `diff_text` would cost the judge, iff that is more than it may spend.
+    """What `diff_text` would cost the judge, iff that is more than may be spent.
 
-    `None` means the judge can be shown this diff whole, which is the case the
-    output check must leave untouched — an answer, not an omission. Anything
-    else is the refusal `check_output` records instead of buying a completion it
-    would then have to distrust (045 FR-003).
+    `None` means this diff is small enough to be judged, which is the case the
+    output check must leave untouched — an answer, not an omission. It does not
+    mean the judge will see all of it: between the attention budget and this
+    threshold the diff is abridged and the verdict says so, which is the outcome
+    092 exists to make reachable. Anything else is the refusal `check_output`
+    records instead of buying a completion it would then have to distrust
+    (045 FR-003).
 
-    Measured on the bytes the judge's prompt actually carries: the
-    always-complete file listing, plus the preamble, plus every file's section.
-    That assembly is what `prepare_diff` compares against the cap, so measuring
-    the raw patch alone would disagree with it at the margin — the one place a
-    disagreement would matter, because it is where one of the two would elide
-    and the other would call the diff whole.
+    `limit` is the *refusal threshold* and defaults to it; `prepare_diff` reads
+    the attention budget. Two limits, one measurement: the bytes the judge's
+    prompt actually carries — the always-complete file listing, plus the
+    preamble, plus every file's section. That assembly is what `prepare_diff`
+    compares against its own cap, so measuring the raw patch here would
+    disagree with it at the margin — the one place a disagreement would matter,
+    because it is where one of the two would elide and the other would call the
+    diff whole.
 
     The per-file sizes come out of the same sections, which is what lets the
     refusal name what spent the budget rather than only the total: "your diff is
