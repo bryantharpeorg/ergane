@@ -106,12 +106,100 @@ class CloneResult:
     apart — the arm is what lets an operator see that the refresh guessed.
     US3 populates it from the `LandingBase` the refresh already holds;
     the empty default keeps pre-090 histories replayable.
+
+    `refusal` is the other end of 090 US2 (FR-003, FR-004): the refresh's
+    explanation of why it declined to touch the clone, empty when it went
+    ahead. It rides on the result rather than being raised because a refused
+    clone is not a git error — see `clone_target`'s contract — and the
+    workflow parks the spec on it. Empty by default for the same replay
+    reason as `default_source`.
     """
 
     path: str
     default_branch: str
     head_ref: str
     default_source: str = ""
+    refusal: str = ""
+
+
+def _work_at_risk(repo: Path, branch: str) -> str:
+    """Why a reset of `branch` to its remote would destroy work, or "" if it would not.
+
+    Two questions, because `git reset --hard origin/<branch>` destroys two
+    kinds of work and the obvious check only sees one (FR-003, plan trap 2):
+
+    1. **Uncommitted changes to tracked files.** `git status --porcelain` over
+       tracked paths only — `--untracked-files=no`. Untracked files are not at
+       risk at all: a hard reset restores tracked paths and leaves everything
+       else where it is, so an untracked file survives the refresh whether or
+       not the repo ignores it. That is also, exactly, why FR-005 holds without
+       a special case — the `.factory/`, `__pycache__/` and `node_modules/`
+       every built-in clone carries never reach this list, and git's own ignore
+       rules (the *target repo's*, not a list this function carries) are what
+       keep them out of the untracked set in the first place. `EXCLUDED_DIR_NAMES`
+       is the standing reminder of what a hand-written list costs.
+    2. **Commits on the local branch that the remote ref does not have.** The
+       reset target is `origin/<branch>`, so work an operator *committed to be
+       safe* is discarded just as surely as an uncommitted edit — and is
+       invisible to question 1, because committing it left the tree clean. This
+       is the case the round-2 report measured.
+
+    The caller fetches first: `origin/<branch>` must be current or a commit that
+    is already pushed reads as unpushed and parks a clone that was never at
+    risk. A branch that exists only locally has no remote ref to compare
+    against; the reset would fail on it anyway, as a git error, which is the
+    pre-existing path and not this guard's to pre-empt (trap 1).
+    """
+    from factory.workgraph.worktree import _git
+
+    def _ref_exists(ref: str) -> bool:
+        return bool(_git(repo, "for-each-ref", "--format=%(refname)", ref).strip())
+
+    dirty = [
+        line.rstrip()
+        for line in _git(
+            repo, "status", "--porcelain", "--untracked-files=no"
+        ).splitlines()
+        if line.strip()
+    ]
+
+    remote_ref = f"origin/{branch}"
+    unpushed: list[str] = []
+    if _ref_exists(f"refs/heads/{branch}") and _ref_exists(f"refs/remotes/{remote_ref}"):
+        unpushed = [
+            line.strip()
+            for line in _git(
+                repo,
+                "log",
+                "--format=%h %s",
+                f"{remote_ref}..refs/heads/{branch}",
+            ).splitlines()
+            if line.strip()
+        ]
+
+    if not dirty and not unpushed:
+        return ""
+
+    # FR-004: the branch, the work at risk, and the act that clears it. An
+    # operator reading a parked spec should not have to open a terminal to
+    # learn which of their changes stopped the line.
+    lines = [
+        f"refusing to refresh {repo}: branch {branch!r} carries work that is not "
+        f"on {remote_ref}, and `git reset --hard {remote_ref}` would discard it."
+    ]
+    if dirty:
+        lines.append("  uncommitted changes to tracked files:")
+        lines.extend(f"    {entry}" for entry in dirty)
+    if unpushed:
+        lines.append(f"  commits not on {remote_ref}:")
+        lines.extend(f"    {entry}" for entry in unpushed)
+    lines.append(
+        f"To clear this, push the work to {remote_ref}, move it to a branch of "
+        f"your own (`git switch -c <branch>`), or discard it yourself "
+        f"(`git restore .` / `git reset --hard {remote_ref}`). The roadmap "
+        "refreshes on the next tick once the clone carries nothing of its own."
+    )
+    return "\n".join(lines)
 
 
 def _refresh_to_default(target_repo: str) -> CloneResult:
@@ -133,6 +221,16 @@ def _refresh_to_default(target_repo: str) -> CloneResult:
     though it were the trunk. The fetch / checkout / reset sequence is
     otherwise unchanged (FR-007): a clean clone on the declared branch
     refreshes exactly as it did before.
+
+    090 US2: between the fetch and the checkout the refresh asks whether the
+    reset would destroy anything (`_work_at_risk`) and declines if it would
+    (FR-003). US1 spared the operator's *other* branches; this spares the case
+    US1 cannot reach, an operator working directly on the declared branch,
+    which is where the reset is least expected. The refusal travels on the
+    result, not as an exception — see `clone_target` — and the fetch is kept
+    ahead of it because a stale `origin/<branch>` makes the question
+    unanswerable. Fetching destroys nothing, so a refused refresh still leaves
+    the clone exactly as it found it.
     """
     from pathlib import Path
 
@@ -141,6 +239,15 @@ def _refresh_to_default(target_repo: str) -> CloneResult:
     repo = Path(target_repo)
     base = resolve_landing_base(repo)
     _git(repo, "fetch", "--quiet", "origin")
+    refusal = _work_at_risk(repo, base.branch)
+    if refusal:
+        return CloneResult(
+            path=str(repo),
+            default_branch=base.branch,
+            head_ref=_head(repo),
+            default_source=base.source,
+            refusal=refusal,
+        )
     _git(repo, "checkout", "--quiet", base.branch)
     _git(repo, "reset", "--quiet", "--hard", f"origin/{base.branch}")
     return CloneResult(
@@ -165,6 +272,13 @@ async def clone_target(request: CloneInput) -> CloneResult:
     on a refused clone — that is a pre-dispatch refusal the workflow parks —
     but a git error propagates as an activity failure the workflow catches and
     parks verbatim (FR-006).
+
+    090 US2 is the first caller to exercise the first half of that line: a
+    refresh that would destroy uncommitted or unpushed work returns a
+    `CloneResult` carrying `refusal` and raises nothing, so the refusal reaches
+    the workflow as data rather than as a stringified exception in the error
+    arm. The two arms stay distinguishable, which is the point: one means the
+    operator has work here, the other means git failed.
     """
     return _clone_runner(request.target_repo)
 

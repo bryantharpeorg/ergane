@@ -1184,13 +1184,25 @@ class RoadmapWorkflow:
         # that cannot be refreshed parks the spec rather than failing the
         # roadmap (FR-006: one bad spec must not stall the line).
         try:
-            await workflow.execute_activity(
+            clone = await workflow.execute_activity(
                 clone_target,
                 CloneInput(target_repo=request.target_repo, spec_dir=spec_dir),
                 **_GIT,
             )
         except FailureError as exc:
             self._park(spec_dir, "clone", str(exc))
+            return
+        # 090 US2 (FR-003, FR-004): a refresh that would have discarded the
+        # operator's uncommitted or unpushed work declines instead, and says so
+        # on the result. It is not an activity failure — a refused clone never
+        # raises (`clone_target`'s contract), so this arm sits *alongside* the
+        # one above rather than replacing it: a git error and "you have work
+        # here" are different facts and an operator reading a parked spec is
+        # entitled to see which one stopped it. The refusal parks verbatim,
+        # because it is the only place the branch, the paths at risk and the
+        # act that clears them are written.
+        if clone.refusal:
+            self._park(spec_dir, "clone", clone.refusal)
             return
 
         # 2. Derivation — the pure delta deriver behind a thin activity. A spec that

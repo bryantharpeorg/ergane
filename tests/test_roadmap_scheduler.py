@@ -293,6 +293,7 @@ class RoadmapWorld:
         self,
         *,
         clone_ok: bool = True,
+        clone_refusal: str = "",
         preflight: Callable[[str], list] | None = None,
         onboarding_profile: TargetRepoProfile | None = None,
         open_epics: Callable[[], set[str]] | None = None,
@@ -300,6 +301,10 @@ class RoadmapWorld:
         drift_runner: Callable[..., bool] | None = None,
     ) -> None:
         self.clone_ok = clone_ok
+        # 090-US2: what the refresh refused with, if anything. A refusal is not
+        # an exception — `clone_target`'s contract keeps a refused clone off the
+        # error path — so it rides back on the result and the workflow reads it.
+        self.clone_refusal = clone_refusal
         self.preflight = preflight or (lambda epic_id: [])
         self.onboarding_profile = onboarding_profile or _passing_profile()
         self.open_epics = open_epics or (lambda: set())
@@ -408,7 +413,10 @@ class RoadmapWorld:
     def _clone(self, target_repo: str) -> CloneResult:
         self.clone_calls.append(target_repo)
         return CloneResult(
-            path=target_repo, default_branch="main", head_ref="abc123"
+            path=target_repo,
+            default_branch="main",
+            head_ref="abc123",
+            refusal=self.clone_refusal,
         )
 
     async def _onboard(self, target_repo: str) -> TargetRepoProfile:
@@ -801,6 +809,64 @@ async def test_a_predispatch_refusal_parks_the_spec_and_the_roadmap_proceeds(
     # bravo proceeded and landed — one bad spec did not stall the line.
     assert _status_of(status, "002-bravo").landed is True
     assert status.running == []
+
+
+async def test_a_refused_clone_parks_the_spec_without_failing_the_activity(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """090-US2 / FR-003, FR-004: a refusal on the result parks the spec verbatim.
+
+    The other half of US2, at the seam that owns it. The activity's contract
+    (`clone_target`'s docstring) draws a line the refusal must stay on the right
+    side of: "Never raises on a refused clone — that is a pre-dispatch refusal
+    the workflow parks — but a git error propagates as an activity failure."
+    A refresh that declines to destroy an operator's work is a refused clone,
+    not a git error, so it rides back on `CloneResult` and the workflow parks on
+    it explicitly — an arm *alongside* the `FailureError` catch, not in place of
+    it (plan trap 1).
+
+    Scripted through `_clone_runner` rather than a real repository, which is
+    the division `tests/test_090_refusal_parks_the_spec.py` names: reset
+    semantics need real git, and what the workflow does with the result needs
+    no git at all.
+
+    `002-bravo` is here to prove the refusal parks one spec rather than
+    stalling the line — the same property every other pre-dispatch refusal has.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    refusal = (
+        "refusing to refresh /srv/factory/targets/library: branch 'dev' carries "
+        "work that is not on origin/dev (uncommitted: README.md). Push it, move "
+        "it to a branch of your own, or discard it."
+    )
+    world = RoadmapWorld(clone_refusal=refusal)
+
+    async with run_roadmap(env, world, str(specs_root)) as handle:
+        status = await handle.result()
+
+    parked = {p.spec_dir: p for p in status.parked}
+    assert "001-alpha" in parked, (
+        "a refused clone must park the spec: proceeding would derive the epic "
+        "from a tree the factory was not allowed to refresh"
+    )
+    assert parked["001-alpha"].check == "clone"
+    assert parked["001-alpha"].detail == refusal, (
+        "the refusal must reach the operator verbatim — it is the only place "
+        "the branch, the paths and the act that clears them are written"
+    )
+    # 002-bravo is refused for the same reason (one clone, one target repo), so
+    # what this asserts is that a refusal parks *per spec* and the roadmap runs
+    # to completion rather than failing.
+    assert "002-bravo" in parked
+    assert status.running == []
+    # And the refusal never became a child: a parked spec is not dispatched.
+    assert _status_of(status, "001-alpha").landed is False
 
 
 async def test_a_derivation_error_parks_the_spec_with_the_finding(
