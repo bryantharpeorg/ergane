@@ -23,11 +23,13 @@ bound of its own, and render which bound ended a node.
 - **The dials and their bounds**: `factory/verify/factory_yaml.py:127-141` —
   `max_attempts` (1, 10), `max_judge_retries` (0, 10), `debugger_cycles` (0, 3).
   US2's new bound follows this shape, including a bounds refusal.
-- **The terminations**: `factory/workgraph/adapter.py:45` maps a non-zero exit to
-  `AGENT_ERROR`, a deadline to `TIMEOUT`, cancellation to `KILLED`. The
-  `AGENT_ERROR` assignment is at `:1272`. The comments at `:356` and `:392`
-  describe a failure "reaching the operator as a diffless `agent_error`", which is
-  the presentation US1 replaces for the pre-agent case.
+- **The terminations**: `factory/workgraph/adapter.py` maps a non-zero exit to
+  `AGENT_ERROR`, a deadline to `TIMEOUT`, cancellation to `KILLED` — the module
+  docstring states the mapping, and the `AGENT_ERROR` assignment itself is the
+  `else` arm of the conditional that returns `Termination.COMPLETED`. Two
+  comments in the same module describe a failure "reaching the operator as a
+  diffless `agent_error`" — grep that phrase — which is the presentation US1
+  replaces for the pre-agent case.
 - **`loop_summary`** already names the exact ladder that ran, per attempt. US3
   should render what exists rather than recompute it.
 

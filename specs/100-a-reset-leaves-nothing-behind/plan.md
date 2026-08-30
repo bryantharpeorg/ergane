@@ -7,28 +7,40 @@ one deterministic refusal moves out of the retryable class.
 
 ## What already exists, and where
 
-- **Teardown**: `reset` (`factory/workgraph/worktree.py:1412`) — removes the directory,
-  archives the node branch, deletes the sidecar. Documented idempotent at
-  `:1354`, and `:1358` states that "the node branch remains reachable from an
-  archive ref". `_archive_node` is called at `:1369` and at three points in the
-  rebuild path (`:368`, `:389`, `:398`).
-- **The archive contract**: `:336` — "the old branch is archived, never deleted
-  (FR-004)". `archive_message` (`:277`) formats the message as
+Anchors below are file-and-symbol, not file-and-line, deliberately. Every line
+number this section previously carried was wrong by between 16 and 70 lines
+when checked against `origin/ergane-buildout` on 2026-08-30 — `:1369` was a
+bare `"""`, `:368` was a `path =` assignment and `:336` was a function
+parameter. Landings move this file constantly. Grep the symbol.
+
+- **Teardown**: `reset` (`factory/workgraph/worktree.py`) — removes the
+  directory, archives the node branch, deletes the sidecar. Its docstring is
+  where the idempotence contract lives, including "every commit reachable from
+  the old node branch remains reachable from an archive ref". `reset` calls
+  `_archive_node` once; the rebuild path in `ensure` calls it at four more
+  points, not three.
+- **The archive contract**: `_archive_node` (same file) is the only writer, and
+  renames rather than deletes — "the old branch is archived, never deleted
+  (FR-004)". `archive_message` formats the message as
   `archive(<epic>/<node>): superseded at <tip12>`. The archive ref namespace is
-  described in the comment block beginning at `:517`.
-- **The push**: `push_branch` (`factory/workgraph/worktree.py:~495-510`). Note
-  it already carries a *refusal before git runs* — the worktree-ownership check
-  at `:503-508`, added by 107-US2 — and the comment above it explains the R3
-  reasoning. The push itself is `_git(repo, "push", "--quiet", remote, branch)`
-  at `:509`.
+  described in the standalone comment beginning "Naming the ref after what it
+  points at makes the write idempotent".
+- **The push**: `push_branch` (same file). It already carries a *refusal before
+  git runs* — a worktree-ownership check added by 107-US2, with the comment
+  above it explaining the R3 reasoning. The push itself is the lone
+  `_git(repo, "push", "--quiet", remote, branch)` inside that function; note
+  the file contains a second, unrelated `"push", "--quiet"` call that pushes a
+  whole ref namespace, so match on the surrounding function rather than the
+  string.
 - **The failure classes and the precedent for US3**:
-  `factory/activities/merge_activities.py:86` defines `PUSH_FAILED`. The comment
-  at `:90-95` is the argument US3 reuses verbatim in shape: an ownership refusal
-  was carved out of `PUSH_FAILED` because "two repositories ... behind
-  `PUSH_FAILED` would spend its three attempts arriving at the same" answer,
-  explicitly leaving "today's retryable `PUSH_FAILED` path, untouched".
-  `land_node`'s docstring at `:430-434` states which error is retryable and
-  which is not — update it.
+  `factory/activities/merge_activities.py` defines `PUSH_FAILED`. The comment
+  block immediately below it is the argument US3 reuses verbatim in shape: an
+  ownership refusal was carved out of `PUSH_FAILED` because "two repositories
+  ... behind `PUSH_FAILED` would spend its three attempts arriving at the same"
+  answer, explicitly leaving "today's retryable `PUSH_FAILED` path, untouched".
+  The landing activity's docstring states which error is retryable and which is
+  not — it names `LANDING_PUSH_REFUSED` as non-retryable — and is what US3
+  updates.
 
 ## Traps
 
