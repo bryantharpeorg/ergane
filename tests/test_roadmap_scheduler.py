@@ -53,6 +53,7 @@ from factory.roadmap.workflow import (
 )
 from factory.workgraph.workflow import EpicStatus
 
+from tests.target_repo import git
 from tests.roadmap_script import (
     BlockerDoneWorkflow,
     BlockerRunningWorkflow,
@@ -867,6 +868,74 @@ async def test_a_refused_clone_parks_the_spec_without_failing_the_activity(
     assert status.running == []
     # And the refusal never became a child: a parked spec is not dispatched.
     assert _status_of(status, "001-alpha").landed is False
+
+
+async def test_the_park_reason_an_operator_reads_names_branch_paths_and_the_cure(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """090-US3 / FR-004: the *real* refusal, read where the operator reads it.
+
+    The test above proves a refusal parks verbatim, but the string it parks is
+    one this file wrote. That leaves the question US3 is about unanswered: what
+    an operator actually finds in a parked spec is whatever `_work_at_risk`
+    produced, and a message that named only "the clone is dirty" would satisfy
+    every assertion above while leaving them to open a terminal and go looking.
+
+    So the refusal here is generated rather than written — a real clone under
+    `tmp_path` with an uncommitted change to a tracked file and a commit that
+    is not on the remote, refused by the real refresh — and then carried through
+    the workflow's park path to the field the roadmap's status exposes. The two
+    halves meet exactly once, here: real git decides the wording, and the
+    workflow decides where it lands.
+
+    Both kinds of work at risk are present because FR-004 says "paths *or*
+    commits": the operator whose grooming write was committed to keep it safe
+    has to find the sha, and the one who left it uncommitted has to find the
+    path.
+    """
+    branch = "dev"
+    origin = tmp_path / "origin.git"
+    git(origin.parent, "init", "--bare", "-b", branch, str(origin))
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "--quiet", str(origin), str(clone))
+    (clone / "ergane.yaml").write_text(
+        'version: 1\nruntime: bwrap\ngates:\n  test: "uv run pytest -q"\n'
+        f"landing_branch: {branch}\n",
+        encoding="utf-8",
+    )
+    (clone / "README.md").write_text("# the target repo\n", encoding="utf-8")
+    git(clone, "add", "-A")
+    git(clone, "commit", "--quiet", "-m", "the manifest and a readme")
+    git(clone, "push", "--quiet", "origin", branch)
+    # The operator's two kinds of work: one committed, one not.
+    (clone / "GROOMED.md").write_text("a grooming write, committed\n", encoding="utf-8")
+    git(clone, "add", "-A")
+    git(clone, "commit", "--quiet", "-m", "operator's unpushed grooming write")
+    short_sha = git(clone, "rev-parse", "--short", "HEAD").strip()
+    (clone / "README.md").write_text("# the target repo\n\nand a note\n", encoding="utf-8")
+
+    refused = roadmap_activities._refresh_to_default(str(clone))
+    assert refused.refusal, "the fixture must actually be refused, or this proves nothing"
+
+    specs_root = build_corpus(tmp_path, {"001-alpha": dict(state=SpecState.READY)})
+    world = RoadmapWorld(clone_refusal=refused.refusal)
+
+    async with run_roadmap(env, world, str(specs_root)) as handle:
+        status = await handle.result()
+
+    parked = {p.spec_dir: p for p in status.parked}
+    reason = parked["001-alpha"].detail
+    assert branch in reason, "FR-004: the operator must learn which branch stopped the tick"
+    assert "README.md" in reason, (
+        f"FR-004: the uncommitted path at risk must be named; it said {reason!r}"
+    )
+    assert short_sha in reason, (
+        f"FR-004: the unpushed commit at risk must be named; it said {reason!r}"
+    )
+    assert f"origin/{branch}" in reason and "git switch -c" in reason, (
+        "FR-004: the reason must name the act that clears it — push it, move it "
+        f"to a branch of your own, or discard it; it said {reason!r}"
+    )
 
 
 async def test_a_derivation_error_parks_the_spec_with_the_finding(
