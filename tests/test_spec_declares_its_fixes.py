@@ -25,7 +25,9 @@ what US1 adds:
 
 Every corpus here is supplied under `tmp_path` — never this repository's own
 `specs/`, whose states flip weekly and whose findings are the running factory's
-production evidence.
+production evidence. The same goes for the findings store the `fixes` layer
+reads: see `_own_findings_store` below, which takes two pins because store
+resolution has two candidates.
 """
 
 from __future__ import annotations
@@ -36,7 +38,10 @@ from typing import Any, Callable, NamedTuple
 
 import pytest
 
+import factory.doctor.cli as _doctor_cli
 from factory.cli.main import main
+from factory.doctor.models import Finding, Severity, Status
+from factory.doctor.store import connect, report
 from factory.roadmap.models import RoadmapError, SpecState, read_roadmap
 
 #: Two real finding keys from this repository's ledger, spelled as the store
@@ -46,6 +51,69 @@ FINDING_KEYS = [
     "interpreter/ci-failure-never-reaches-an-agent",
     "ci/test-suite-pins-the-operator-dial",
 ]
+
+
+# --- the store, supplied too --------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _own_findings_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Put both findings-store candidates under this test's own `tmp_path`.
+
+    `ERGANE_ROOT` names the first candidate and is not enough on its own: when
+    the resolved runtime root holds no ledger, `_resolve_store_path` falls back
+    to the legacy runtime root *relative to the working directory*, which on an
+    operator's host is the operator's real ledger. So the test below read
+    whatever findings the machine happened to hold — green on a fresh clone, red
+    on the machine that does the building, with `assert 'fixes' in []` (123-US2,
+    trap 4).
+
+    The legacy pin names a directory that is never created, because what that
+    candidate is wanted for is absence. A test wanting a store puts one at
+    `<runtime root>/doctor.db`, which wins outright.
+    """
+    monkeypatch.setenv("ERGANE_ROOT", str(tmp_path))
+    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+    monkeypatch.setattr(
+        _doctor_cli, "LEGACY_FACTORY_ROOT", tmp_path / "legacy-runtime-root"
+    )
+
+
+def _seed_store(tmp_path: Path, *keys: str) -> Path:
+    """A findings ledger under `tmp_path`, holding exactly `keys`.
+
+    Seeded with the keys the fixture spec declares, so the `fixes` layer has
+    something true to verify against and reports the layer *checked* — the
+    outcome an operator's populated host used to reach by accident.
+    """
+    store_path = tmp_path / "doctor.db"
+    conn = connect(store_path)
+    try:
+        for key in keys:
+            category, _, _slug = key.partition("/")
+            report(
+                conn,
+                Finding(
+                    key=key,
+                    category=category,
+                    severity=Severity.INFO,
+                    status=Status.OPEN,
+                    summary=f"supplied row for {key}",
+                    refs=["factory/foo.py:1"],
+                    notes=None,
+                    source="test",
+                    occurrences=1,
+                    first_seen="2026-08-30T00:00:00Z",
+                    last_seen="2026-08-30T00:00:00Z",
+                    promoted_spec=None,
+                    resolved_at=None,
+                    resolution=None,
+                ),
+                seen_at="2026-08-30T00:00:00Z",
+            )
+    finally:
+        conn.close()
+    return store_path
 
 
 # --- supplied corpora ---------------------------------------------------------
@@ -371,7 +439,7 @@ def _sound_trio(specs_root: Path, spec_dir: str, frontmatter: str) -> Path:
 
 
 def test_validate_reports_the_same_result_with_and_without_fixes(
-    run: Callable[..., Run], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    run: Callable[..., Run], tmp_path: Path
 ) -> None:
     """US1-S5 / US3-S4: a spec omitting `fixes:` is unchanged; one declaring it
     now has the fixes layer reported.
@@ -380,12 +448,14 @@ def test_validate_reports_the_same_result_with_and_without_fixes(
     longer produce identical reports. The control that still matters is the
     spec without the key: it must take no new code path and get the same
     layers and verdict it did before US3.
+
+    The ledger is supplied, not found (123-US2, FR-004). Reading whatever store
+    the host happens to carry is what made this test's verdict a fact about the
+    machine: the operator's own ledger holds the key the declaring spec names,
+    so the layer *ran* there and the skip this test used to assert was empty.
+    A store built here decides both directions the same way.
     """
-    # Point the runtime root at an empty temp directory so a previous test in the
-    # same session cannot have created a findings store that changes the fixes
-    # layer's outcome.
-    monkeypatch.setenv("ERGANE_ROOT", str(tmp_path))
-    monkeypatch.delenv("FACTORY_ROOT", raising=False)
+    store_path = _seed_store(tmp_path, FINDING_KEYS[0])
 
     specs_root = tmp_path / "specs"
     _sound_trio(
@@ -407,9 +477,19 @@ def test_validate_reports_the_same_result_with_and_without_fixes(
     assert "fixes" not in omitting.json["checked"]
     assert "fixes" not in [entry["layer"] for entry in omitting.json["skipped"]]
 
-    # The spec that declares `fixes:` now has the layer reported.  With no
-    # ledger supplied, it is skipped rather than refused.
-    assert "fixes" in [entry["layer"] for entry in declaring.json["skipped"]]
+    # The spec that declares `fixes:` has the layer reported, and against the
+    # ledger supplied above: it ran rather than skipping, and neither outcome
+    # was decided by a store this test did not build.
+    assert "fixes" in declaring.json["checked"]
+    assert "fixes" not in [entry["layer"] for entry in declaring.json["skipped"]]
+
+    # US2-S3: the store it resolved is under this test's own temporary
+    # directory. The layer names the path it read, which is what makes that
+    # assertable rather than merely intended.
+    verified = [note for note in declaring.json["information"] if note["layer"] == "fixes"]
+    assert len(verified) == 1
+    assert str(store_path) in verified[0]["message"]
+    assert str(tmp_path) in verified[0]["message"]
 
 
 def test_validate_refuses_a_scalar_fixes_naming_the_frontmatter_layer(
