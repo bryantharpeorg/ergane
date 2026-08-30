@@ -45,6 +45,7 @@ asserts each surface.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
@@ -72,6 +73,8 @@ from factory.activities.merge_activities import (
     ValidateTargetRepoInput,
     validate_target_repo,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # --- clone: refresh the target clone to its current default branch ------------
@@ -107,6 +110,14 @@ class CloneResult:
     US3 populates it from the `LandingBase` the refresh already holds;
     the empty default keeps pre-090 histories replayable.
 
+    `default_detail` is the same `LandingBase`'s `.detail` (090 US3, FR-006):
+    the phrase that says *where* the declaration was read from, or — on the
+    fallback arm — the loader's own complaint about the manifest it could not
+    read. Carried through verbatim rather than rephrased here, because it is
+    the account of a failure only the loader witnessed, and a second wording
+    of it would drift from the first the moment either changed. Empty by
+    default for the same replay reason as `default_source`.
+
     `refusal` is the other end of 090 US2 (FR-003, FR-004): the refresh's
     explanation of why it declined to touch the clone, empty when it went
     ahead. It rides on the result rather than being raised because a refused
@@ -120,6 +131,45 @@ class CloneResult:
     head_ref: str
     default_source: str = ""
     refusal: str = ""
+    default_detail: str = ""
+
+
+def _log_clone_base(result: CloneResult) -> None:
+    """State the branch, the arm that named it, the repository and the head (FR-006).
+
+    The shape `_log_landing_base` (`factory/activities/merge_activities.py`)
+    uses for the landing path, one activity over, and for its reason: the arm
+    is on the line *even when the manifest answered*, because
+    `resolve_landing_base` fails open and a guessed branch is shaped exactly
+    like a declared one. An operator who reads `checked-out-head` here on a
+    clone that was supposed to declare knows the manifest is broken before a
+    tick is spent deriving an epic from the wrong tree.
+
+    A field on a `CloneResult` reaches whoever reads the workflow's history; the
+    log line reaches whoever is looking at the worker while the line is stopped,
+    which is the reader the 6h34m outage actually had. Both paths log — a
+    refused refresh is a thing the tick *did*, and its silence would read as a
+    tick that never ran.
+    """
+    if result.refusal:
+        logger.info(
+            "roadmap clone base: %s (%s: %s), read from %s; refused to refresh, "
+            "the clone still stands at %s",
+            result.default_branch,
+            result.default_source,
+            result.default_detail,
+            result.path,
+            result.head_ref,
+        )
+        return
+    logger.info(
+        "roadmap clone base: %s (%s: %s), read from %s; refreshed to %s",
+        result.default_branch,
+        result.default_source,
+        result.default_detail,
+        result.path,
+        result.head_ref,
+    )
 
 
 def _work_at_risk(repo: Path, branch: str) -> str:
@@ -241,21 +291,27 @@ def _refresh_to_default(target_repo: str) -> CloneResult:
     _git(repo, "fetch", "--quiet", "origin")
     refusal = _work_at_risk(repo, base.branch)
     if refusal:
-        return CloneResult(
+        refused = CloneResult(
             path=str(repo),
             default_branch=base.branch,
             head_ref=_head(repo),
             default_source=base.source,
+            default_detail=base.detail,
             refusal=refusal,
         )
+        _log_clone_base(refused)
+        return refused
     _git(repo, "checkout", "--quiet", base.branch)
     _git(repo, "reset", "--quiet", "--hard", f"origin/{base.branch}")
-    return CloneResult(
+    result = CloneResult(
         path=str(repo),
         default_branch=base.branch,
         head_ref=_head(repo),
         default_source=base.source,
+        default_detail=base.detail,
     )
+    _log_clone_base(result)
+    return result
 
 
 #: The clone seam — production refreshes a real clone; tests hand back a
