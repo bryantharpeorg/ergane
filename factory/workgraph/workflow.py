@@ -250,6 +250,7 @@ with workflow.unsafe.imports_passed_through():
         StandardsResolution,
         WorkGraph,
         WorkNode,
+        pre_agent_note,
     )
     from factory.workgraph.prompt import (
         AttemptEvidence,
@@ -627,6 +628,12 @@ class NodeStatus:
     terminal_reason: str | None = None
     #: US2: external-completion provenance, or None for agent-built work.
     provenance: str | None = None
+    #: 095-US1: what the node's latest attempt was, when its verdict does not say
+    #: — the pre-agent failure's reason, its remedy, and the fact that its gates
+    #: ran against a worktree no agent prepared (FR-002, FR-004). `None` for an
+    #: attempt that reached the agent, and for an older worker's answer, which
+    #: carries no such key.
+    attempt_note: str | None = None
     #: 075-US3: what the node's current attempt is routed to — the persona the
     #: rung selected and the alias it runs under (FR-012). The history below
     #: answers the same question per *finished* attempt; this answers it for the
@@ -846,6 +853,7 @@ class EpicWorkflow:
                     if record.landing is not None
                     else 0,
                     terminal_reason=record.terminal_reason,
+                    attempt_note=record.attempt_note,
                     provenance=record.provenance,
                     persona=record.persona,
                     model_alias=record.model_alias,
@@ -1855,6 +1863,19 @@ class EpicWorkflow:
                 # workflow's own — it is the one that asked.
                 if adapter_result is not None:
                     termination = adapter_result.termination
+                    # 095-US1 (FR-002, FR-004): an attempt in which no agent turn
+                    # ran carries its reason, its remedy and the fact that
+                    # whatever the gates below report was measured on a worktree
+                    # nobody prepared. Written on every attempt, so it is never
+                    # left over from an earlier one: the gates are still run and
+                    # still recorded (trap 3), and this is the sentence that
+                    # stops exit 127 on a missing binary from reading as the
+                    # story's failure.
+                    record.attempt_note = (
+                        pre_agent_note(adapter_result.detail)
+                        if termination == Termination.PRE_AGENT_FAILURE
+                        else None
+                    )
 
                 if self._kill_requested:
                     # The bracket still closes — FR-004 is about every attempt that

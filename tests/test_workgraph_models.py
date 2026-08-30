@@ -623,11 +623,18 @@ def test_the_adapter_result_carries_nothing_but_outcome_and_evidence() -> None:
     the one deliberate exception (plan US1) — a number the proxy reported, never
     one the workflow or adapter invented — so observation can ride the attempt's
     heartbeat without a per-interval poll (FR-001).
+
+    `detail` is the second (095-US1): one line of a dead process's own output,
+    attached after the classification is settled and consumed only by the note an
+    operator reads. `tests/test_workgraph_sweep.py` holds the rule that it stays
+    that way — passed to `pre_agent_note` and to nothing else, never compared,
+    never branched on.
     """
     assert [field.name for field in dataclasses.fields(AdapterResult)] == [
         "termination",
         "transcript_path",
         "last_snapshot",
+        "detail",
     ]
 
 

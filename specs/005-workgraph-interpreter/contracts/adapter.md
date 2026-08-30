@@ -53,8 +53,11 @@ The one place an agent runs. In order:
 4. **Monitor**: heartbeat ~30s while waiting; enforce `timeout_s` in-activity —
    on deadline, TERM the process group, grace (10s), KILL (US2-S3).
 5. **Classify** (US2-S2): exit 0 → `COMPLETED`; non-zero → `AGENT_ERROR`;
+   non-zero with no session transcript written, inside `PRE_AGENT_WINDOW_S` →
+   `PRE_AGENT_FAILURE` (095-US1: no turn ran, so nothing prepared the worktree);
    deadline → `TIMEOUT`; cancellation → `KILLED`. Nothing else is inspected — no
-   stdout parsing, no self-reported success (FR-012).
+   stdout parsing, no self-reported success (FR-012). The pre-agent class is the
+   *existence* of the transcript file, never its contents or the log's.
 6. **Archive** (FR-007), on *every* path including cancellation and crash-retry:
    copy the streamed `stdout.log` and the session transcript
    (`~/.claude/projects/<munged-cwd>/<session_id>.jsonl`) into

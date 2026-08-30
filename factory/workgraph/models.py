@@ -387,6 +387,15 @@ class NodeRecord:
     terminal_reason: str | None = None
     #: US2: provenance for externally-completed work, surfaced in status and PR.
     provenance: str | None = None
+    #: 095-US1: what the node's *latest* attempt was, when what it was is not
+    #: readable from its verdict — today only the pre-agent failure, whose gate
+    #: results are real, damning, and about nothing the story did (FR-004).
+    #: Distinct from `terminal_reason`, which answers why a node *ended*: a
+    #: pre-agent failure is ordinarily not an ending at all, and the operator
+    #: watching a node still on rung two is exactly the one who needs to know
+    #: that no agent has run yet. Rewritten every attempt, and `None` for an
+    #: attempt that reached the agent, so it cannot outlive what it describes.
+    attempt_note: str | None = None
     #: 079-US1: what the escalation this node was last paged on offered, in
     #: offer order. Kept after the page settles, because it is what a resolution
     #: coming back is checked against (FR-004).
@@ -482,6 +491,81 @@ class AdapterResult:
     #: path. Every adapter-produced result carries one.
     transcript_path: str = ""
     last_snapshot: UsageSnapshot | None = None
+    #: 095-US1: the dying process's own last line, quoted for the operator and
+    #: for nothing else. It is filled by the activity that owns interpreting the
+    #: adapter's output, never by the adapter (D-018/FR-012 keeps what the agent
+    #: *says* out of the classification), and it is read by no decision anywhere:
+    #: the termination beside it was already settled, structurally, before this
+    #: string was looked at. Empty on every path but the pre-agent one.
+    detail: str = ""
+
+
+# The pre-agent failure, as an operator reads it (095-US1) --------------------
+
+
+#: Words that, appearing in a dead process's own last line, mean the remedy is a
+#: credential rather than a configuration. Enrichment only, and deliberately not
+#: a classifier (plan trap 1): the attempt is a `PRE_AGENT_FAILURE` before this
+#: tuple is consulted, so the day an agent invents a new way to say "logged out"
+#: the class, the quote and the context all survive and only the remedy line
+#: falls back to the general one.
+CREDENTIAL_WORDS = (
+    "authenticat",
+    "oauth",
+    "credential",
+    "unauthorized",
+    "log in",
+    "login",
+    "401",
+)
+
+#: What every pre-agent note says first, whatever killed the process. Two facts,
+#: because the operator needs both: nothing was attempted of the story, and the
+#: gate results sitting beside this note were measured on a worktree no agent
+#: prepared — a typecheck failing with a missing binary there is correct, and
+#: reading it as the story's failure is what cost an evening (FR-004, trap 3).
+PRE_AGENT_CONTEXT = (
+    "no agent turn ran: the process exited before producing a single token, so "
+    "nothing was attempted of the story and the gates for this attempt ran "
+    "against a worktree no agent prepared — their results describe the "
+    "environment, not the work."
+)
+
+#: The remedy when the dying line names a credential, and when it names nothing
+#: this code recognises. Both are actions on the worker host, because that is
+#: where a pre-agent failure lives; neither asks anyone to open a transcript
+#: (FR-002).
+PRE_AGENT_AUTH_REMEDY = (
+    "authentication: the worker host's agent session was refused. remedy: "
+    "re-authenticate on the worker host (`claude login` for a subscription-routed "
+    "persona, or reissue the node's proxy key), then re-dispatch."
+)
+PRE_AGENT_GENERAL_REMEDY = (
+    "remedy: check the worker host's agent credentials and toolchain before "
+    "re-dispatching — nothing recorded for this attempt is a fact about the story."
+)
+
+
+def pre_agent_note(detail: str = "") -> str:
+    """What an operator is told about an attempt in which no agent turn ran.
+
+    Pure, so the workflow can build it without an activity, and total: an empty
+    `detail` is the ordinary case for a result that crossed a boundary written
+    before this field existed, and it still yields the context and a remedy. The
+    process's own words are quoted rather than paraphrased — the line that named
+    the real cause on 2026-08-28 was 73 bytes long and no summary of it would
+    have carried the word "OAuth".
+    """
+    parts = [PRE_AGENT_CONTEXT]
+    quoted = " ".join(detail.split())
+    if quoted:
+        parts.append(f'the process\'s last words: "{quoted}"')
+    parts.append(
+        PRE_AGENT_AUTH_REMEDY
+        if any(word in quoted.lower() for word in CREDENTIAL_WORDS)
+        else PRE_AGENT_GENERAL_REMEDY
+    )
+    return " ".join(parts)
 
 
 # Validation (FR-002) ---------------------------------------------------------
