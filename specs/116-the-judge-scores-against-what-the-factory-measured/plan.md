@@ -15,10 +15,12 @@ measure or when the judge runs changes.
   last attempt got wrong, and the diff goes last "because it is the only part
   that may have been cut". FR-005 places the new section inside that argument
   rather than beside it.
-- **The one caller**: `factory/verify/judge.py:616`, inside the module's
-  `run_judge`, which is wrapped by the activity at
-  `factory/activities/verify_activities.py` and invoked from
-  `factory/workgraph/workflow.py:2679`.
+- **The one caller**: the `build_prompt` call inside `run_judge`
+  (`factory/verify/judge.py`), which is wrapped by the activity of the same
+  name in `factory/activities/verify_activities.py` and reached from
+  `factory/workgraph/workflow.py` behind the `judge_required` guard. Grep
+  `run_judge`; it appears in the workflow's passthrough imports and at the
+  call, and the guard is the line above it.
 - **The guard that proves the invariant**: `judge_required(gate_results,
   output_check, criteria)` (`factory/verify/models.py`). Read its docstring
   before writing US1 — it is the argument for why a gate section is never
