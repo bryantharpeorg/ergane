@@ -74,9 +74,11 @@ It is weaker than a dispatched build in exactly one respect — no judge model w
 called — and the operator's own run is still owed.
 
 Two real git worktrees, one carrying 100,206 bytes of honest committed work and
-one carrying ordinary work, against a manifest-declared refusal threshold of
-256 KiB (`diff_refusal_bytes`, US2's key) — the configuration this epic exists
-to make usable:
+one carrying ordinary work, checked with a refusal threshold of 256 KiB. The
+threshold is passed at the seam US2 wired the manifest key to
+(`check_output(..., diff_size_limit=...)`), not read from a `factory.yaml` here —
+US2's own tests cover the manifest half, and this demonstration is about what
+happens once the value has arrived:
 
 ```
 $ uv run python /tmp/092_us3_demo.py
