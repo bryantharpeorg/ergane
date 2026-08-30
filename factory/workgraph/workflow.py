@@ -1595,6 +1595,17 @@ class EpicWorkflow:
         through (FR-006). The kill path deliberately never cancels node tasks so each
         closes its own bracket; treating cancellation as a recorded crash would defeat
         that design.
+
+        The reason is the failure's *innermost* sentence, never the outermost
+        (100 FR-005). A node dies most often inside an activity, and an activity
+        that raises reaches this method as an `ActivityError` whose own `str` is
+        the fixed "Activity task failed" — a sentence that is true of every
+        failing activity in the factory and therefore diagnoses none of them.
+        The measured cost of recording it was four hours and three wrong
+        diagnoses over a landing whose push git had refused non-fast-forward and
+        said so. `_failure_detail` walks to the cause that carries the reason,
+        exactly as `_stop_landing` has since 078-US3; a raise from workflow code
+        with no cause chain still reads as itself.
         """
         del in_flight[node_id]
         try:
@@ -1602,7 +1613,7 @@ class EpicWorkflow:
         except Exception as exc:
             record = self._nodes[node_id]
             record.state = NodeState.KILLED
-            record.terminal_reason = str(exc)
+            record.terminal_reason = _failure_detail(exc)
             workflow.logger.exception(
                 "node %s coroutine raised; ended KILLED", node_id
             )

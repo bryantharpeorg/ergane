@@ -227,7 +227,7 @@ def test_a_refused_push_carries_gits_own_stderr(refusal: Refusal) -> None:
     Two halves, and the story needs both. The prose half is what an operator
     reads: the message must contain git's account, not a summary of it, so the
     `hint:` lines that name the fix travel too. The structured half is
-    `WorktreeError.stderr` — git's stderr verbatim, unmixed with the wrapper's
+    `WorktreeError.stderr` — git's stderr verbatim, unmixed with the factory's
     own words — because US3 has to decide "was this a non-fast-forward?" from it,
     and deciding that by hunting for a substring inside a prose message is how a
     guard starts firing on unrelated failures (plan trap 5).
@@ -247,9 +247,7 @@ def test_a_refused_push_carries_gits_own_stderr(refusal: Refusal) -> None:
 
     # The line that ends the diagnosis, present in both halves.
     assert refusal.rejection in message
-    assert refusal.rejection in flat(refusal.error.stderr) or (
-        refusal.rejection in refusal.error.stderr
-    )
+    assert refusal.rejection in refusal.error.stderr
 
     # And the message says which push, so a reason read alone is still a reason.
     assert BRANCH in message
