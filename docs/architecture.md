@@ -452,7 +452,7 @@ The pipeline, cheapest signal first:
 
 ### 6.1 Evidence store (SQLite)
 
-`.ergane/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 6) —
+`.ergane/verification.db` (stdlib `sqlite3`, WAL + busy timeout, `schema_version` 8) —
 the same single-designated-host topology as the 001 ledger, path overridable with
 `ERGANE_VERIFICATION_DB_PATH` or the legacy `FACTORY_VERIFICATION_DB_PATH`. Two tables:
 
@@ -463,7 +463,10 @@ the same single-designated-host topology as the 001 ledger, path overridable wit
   spec ref, timestamps, and (since 023-US4) `loop_digest` / `loop_summary` — the resolved
   loop configuration. `judge_verdict` is NULL when the judge never ran — a different fact
   from a judge that ran and returned FAIL. Pre-023 rows read `loop_digest`/`loop_summary`
-  as NULL; they are never backfilled.
+  as NULL; they are never backfilled. Since 118-US2 the row also carries `base_ref` — the
+  base the node's worktree was pinned to, so a verdict names what it was measured against;
+  it comes from `PreparedWorktree` rather than a second reading of git, and rows written
+  before the column read `UNKNOWN_BASE_REF` rather than a backfilled guess.
 - `escalations` — one row per operator decision, written *before* the message is sent and
   making exactly one terminal transition (a button resolution *xor* the timeout `EXPIRED`)
   under a guarded UPDATE, because the press and the workflow's timer race by design.

@@ -94,6 +94,7 @@ from factory.verify.models import (
     OutputCheck,
     OverallVerdict,
     QuestionRecord,
+    UNKNOWN_BASE_REF,
     VerificationForm,
     VerificationResult,
 )
@@ -117,7 +118,11 @@ from factory.verify.models import (
 #: here that is not additive — SQLite cannot alter a CHECK — so `_migrate`
 #: rebuilds the table. It has to run: a store whose constraint predates the
 #: button rejects the settling write and leaves the escalation pending.
-SCHEMA_VERSION = 7
+#:
+#: 8 (118-US2): `verification_results.base_ref` — the base the verdict was
+#: measured against. Additive; every row written before it reads
+#: `UNKNOWN_BASE_REF`, never a backfilled guess.
+SCHEMA_VERSION = 8
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -173,6 +178,10 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- NULL for rows written before this feature; additive, never backfilled.
     loop_digest       TEXT,
     loop_summary      TEXT,
+    -- 118-US2: the base the node's worktree was pinned to, so a verdict names
+    -- what it was measured against (FR-006). NULL for rows written before this
+    -- feature, read back as `UNKNOWN_BASE_REF`; additive, never backfilled.
+    base_ref          TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
@@ -432,6 +441,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE verification_results ADD COLUMN loop_summary TEXT"
         )
+    if result_columns and "base_ref" not in result_columns:
+        # 118-US2: NULL for every row written before the base was carried, and
+        # left NULL — a backfill would have to invent the one value this column
+        # exists to stop inventing. `_result_from_row` reads it as unknown.
+        conn.execute(
+            "ALTER TABLE verification_results ADD COLUMN base_ref TEXT"
+        )
 
     extcomp_tables = {
         row[0] for row in conn.execute(
@@ -505,6 +521,7 @@ _RESULT_COLUMNS = (
     "provenance",
     "loop_digest",
     "loop_summary",
+    "base_ref",
 )
 
 #: A re-run overwrites every column except the four it matched on: the second
@@ -631,6 +648,12 @@ def _result_values(result: VerificationResult) -> dict[str, Any]:
         "provenance": result.provenance,
         "loop_digest": result.loop_digest,
         "loop_summary": result.loop_summary,
+        # 118-US2: the sentinel is a reading, not a measurement, so it is stored
+        # as the NULL it means. Writing `<unknown>` into the column would make a
+        # row that never had a base indistinguishable in SQL from one that did.
+        "base_ref": (
+            None if result.base_ref == UNKNOWN_BASE_REF else result.base_ref
+        ),
     }
 
 
@@ -659,6 +682,13 @@ def _result_from_row(row: tuple[Any, ...]) -> VerificationResult:
         provenance=values["provenance"],
         loop_digest=values["loop_digest"],
         loop_summary=values["loop_summary"],
+        # 118-US2: NULL is "nobody recorded a base for this attempt", which is
+        # every row written before the column existed. It reads as the sentinel
+        # rather than as a value, because a wrong base is worse than an
+        # admitted gap — the audit this column exists for turns on the number.
+        base_ref=(
+            UNKNOWN_BASE_REF if values["base_ref"] is None else values["base_ref"]
+        ),
     )
 
 

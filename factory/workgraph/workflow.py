@@ -219,6 +219,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from factory.versioning import workflow_versioning_behavior
     from factory.verify.models import (
+        UNKNOWN_BASE_REF,
         UNRESOLVED_MODEL_ALIAS,
         AttemptRecord,
         CriteriaSet,
@@ -626,6 +627,14 @@ class NodeStatus:
     #: resolve, that the persona named beside it never got a model (US3-S3).
     persona: str = ""
     model_alias: str = UNRESOLVED_MODEL_ALIAS
+    #: 118-US2 (FR-007): the base this node's worktree is pinned to, read from
+    #: the prepared worktree and from nowhere else. Beside the landing branch's
+    #: current head — which the CLI reads live, because a head captured at
+    #: preparation is precisely the number that cannot show staleness — it makes
+    #: "verified against `<sha>`, landing branch is at `<sha>`" a line rather
+    #: than an investigation. `UNKNOWN_BASE_REF` for a node that has prepared
+    #: nothing, and for an older worker's answer, which carries no such key.
+    base_ref: str = UNKNOWN_BASE_REF
     #: 068-US2: parked on a human — an open escalation child, or the question
     #: park. `state` cannot answer alone (a paged node reads `VERIFYING`, as one
     #: whose gates run does) and `ergane build reset` must tell them apart
@@ -665,6 +674,12 @@ class EpicStatus:
     #: CLI renders from this document and a worker that predates the field simply
     #: omits it.
     halt_after_pass: bool = False
+    #: 118-US2 (FR-007): the target repository this epic builds against. The CLI
+    #: needs it to read the landing branch's current head, and it must come from
+    #: the epic's own declaration rather than from the reader's working
+    #: directory (constitution IX). `""` for an older worker's answer, which the
+    #: reader degrades on rather than guessing a repository.
+    target_repo: str = ""
 
 
 @dataclass(frozen=True)
@@ -719,6 +734,12 @@ class EpicWorkflow:
         #: 109-US3: whether this epic halts at PASSED. Recorded with the other
         #: dispatch flags so a status query answers it without holding the request.
         self._halt_after_pass: bool = False
+        #: 118-US2 (FR-007): the target repository this epic builds against, so
+        #: the status reader can resolve the landing branch's *current* head
+        #: against the declared repo rather than against whatever directory the
+        #: operator's shell happens to be in (constitution IX). Recorded at the
+        #: top of `run`; `""` until then, and for an older worker's answer.
+        self._target_repo: str = ""
 
         #: The epic's persona snapshot: one resolved entry per persona any
         #: attempt of this epic may be built for — every node's persona, the
@@ -819,6 +840,14 @@ class EpicWorkflow:
                     provenance=record.provenance,
                     persona=record.persona,
                     model_alias=record.model_alias,
+                    # 118-US2: from the prepared worktree, the same place the
+                    # verification row's base comes from, so the status line and
+                    # the record can never disagree about what was measured.
+                    base_ref=(
+                        record.prepared.base_ref
+                        if record.prepared is not None
+                        else UNKNOWN_BASE_REF
+                    ),
                     history=tuple(record.history),
                     free_rebases=record.landing.free_rebases
                     if record.landing is not None
@@ -838,6 +867,7 @@ class EpicWorkflow:
             landing_config=self._landing_config,
             landing_overrides=self._landing_overrides,
             halt_after_pass=self._halt_after_pass,
+            target_repo=self._target_repo,
         )
 
     # --- the main loop (R10) -------------------------------------------------
@@ -866,6 +896,10 @@ class EpicWorkflow:
         # 109-US3 (FR-012): record the halting mode alongside the other dispatch
         # flags so every status/query answer carries it.
         self._halt_after_pass = request.halt_after_pass
+        # 118-US2 (FR-007): the declared target repo, carried so a status reader
+        # resolves the landing head against the repository this epic actually
+        # builds against.
+        self._target_repo = request.graph.target_repo
         # The concurrency cap is validated here as well as in the CLI (FR-002):
         # `EpicInput` can be constructed without the CLI, so CLI-only validation
         # is not validation. A non-positive cap is a wiring error, not a dispatch
@@ -2492,6 +2526,12 @@ class EpicWorkflow:
             finished_at=_now(),
             loop_digest=resolved_digest,
             loop_summary=resolved_summary,
+            # 118 US2 (FR-006, plan trap 5): the pin the prepared worktree
+            # already carries — the same value the gates and the judge above
+            # were handed. Re-deriving it here would answer a *later* moment
+            # than the one this verdict was measured on, which is the class of
+            # defect this spec exists to end.
+            base_ref=prepared.base_ref,
         )
         if provenance is not None:
             result = replace(result, provenance=provenance)

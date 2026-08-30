@@ -471,6 +471,16 @@ class JudgeVerdict:
 # Composition ----------------------------------------------------------------
 
 
+#: What a `base_ref` reads as when nothing measured one for the attempt it
+#: describes: a row written before 118 US2 existed, or a caller that composed a
+#: result without a prepared worktree behind it. Decided once, here, so no
+#: reader has to invent its own word for it (FR-006). Never an empty string and
+#: never a plausible sha — angle brackets are not legal in a git ref, so this
+#: cannot be mistaken for a base a verdict was actually measured against, which
+#: is the whole point: a wrong value is worse than an admitted gap.
+UNKNOWN_BASE_REF = "<unknown>"
+
+
 @dataclass(frozen=True)
 class VerificationResult:
     """One attempt's complete evidence bundle — the evidence-store row.
@@ -493,6 +503,15 @@ class VerificationResult:
     `loop_digest` and `loop_summary` are None for rows written before 023 and
     non-None afterwards; they record the resolved loop configuration so a PASS is
     a claim relative to a named definition of verified (FR-010, SC-006).
+
+    `base_ref` is the base the node's worktree was pinned to — what the verdict
+    was measured against (118 US2, FR-006). Without it a PASS records *that* a
+    node passed and never *what it passed against*, so a verdict that could
+    never have landed reads identically to one that could. It comes from
+    `PreparedWorktree.base_ref` and from nowhere else: re-reading git at
+    record-writing time gives an answer that can differ from the one the attempt
+    ran against, which is the class of defect this whole spec is about.
+    `UNKNOWN_BASE_REF` for rows written before the field existed.
     """
 
     epic_id: str
@@ -512,6 +531,7 @@ class VerificationResult:
     provenance: str | None = None
     loop_digest: str | None = None
     loop_summary: str | None = None
+    base_ref: str = UNKNOWN_BASE_REF
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:
@@ -578,6 +598,7 @@ def compose_result(
     criteria_drift: bool = False,
     loop_digest: str | None = None,
     loop_summary: str | None = None,
+    base_ref: str = UNKNOWN_BASE_REF,
 ) -> VerificationResult:
     """Turn one attempt's evidence into the verdict downstream edges read.
 
@@ -600,6 +621,11 @@ def compose_result(
     Callers that know the resolved loop override them; None is intentionally not
     the default here. Pre-023 replay safety is preserved because the row fields
     are additive and read back as None when missing from the store.
+
+    `base_ref` is passed by the caller that holds the prepared worktree and
+    defaults to `UNKNOWN_BASE_REF` (118 US2, FR-006). It is *not* defaulted to
+    a reading taken here: this function is pure and a base it re-derived would
+    be a different moment from the one the attempt ran against.
     """
     judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
     judge_accepts = (
@@ -624,6 +650,7 @@ def compose_result(
         finished_at=finished_at,
         loop_digest=loop_digest if loop_digest is not None else DEFAULT_LOOP_DIGEST,
         loop_summary=loop_summary if loop_summary is not None else DEFAULT_LOOP_SUMMARY,
+        base_ref=base_ref,
     )
 
 
