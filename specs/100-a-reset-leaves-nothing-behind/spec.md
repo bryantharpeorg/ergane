@@ -1,5 +1,26 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-08-30. US1 bad3e2db26b3 (#394), US2 d1d1fd9c7bd4 (#395),
+# US3 cea2c35ba20a (#396) — all three observed on ergane-buildout by content,
+# not by a merged flag.
+#
+# ELEVEN ATTEMPTS FOR THREE STORIES, AND ONLY THREE OF THEM WERE ABOUT THE CODE.
+# US1 took six: attempts 1-4 died on an expired OAuth session with a 73-byte
+# stdout and zero agent seconds spent, each still paying the full 6.3-minute
+# gate on an unchanged tree; attempt 5 died when the gate could not bind a
+# Temporal test server; attempt 6 passed. US2 took four, of which attempt 3 was
+# not a failure at all — the agent asked a question and parked. US3 passed on
+# its first attempt. The ladder cannot tell "the model failed" from "the model
+# never ran", which is the defect 095 fixes.
+#
+# US2'S QUESTION IS THE ONE WORTH READING. It refused to make its own gate green
+# by relaxing another story's assertion, and was right: `test_121`'s manifest
+# check resolves `merge-base HEAD ergane-buildout` against a LOCAL ref that
+# nothing refreshes after a landing, so the operator's own ergane.yaml commit
+# made the check accuse the node of editing a manifest the operator edited.
+# Filed as `verify/the-manifest-check-resolves-its-base-against-a-local-ref-
+# that-no-one-refreshes`. The remedy was operator-side and the clone has now
+# needed a hand fast-forward after every landing of this epic.
 fixes:
   - relaunch/a-killed-epics-pushed-node-branch-survives-on-origin-and-fails-the-relaunch-after-verification
   - landing/kill-and-redispatch-leaves-a-stale-remote-node-branch-that-kills-the-next-landing
