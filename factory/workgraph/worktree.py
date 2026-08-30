@@ -143,7 +143,20 @@ class WorktreeError(RuntimeError):
     The message names the path (worktree or target clone) the operation was
     against: by the time this surfaces the operator is looking at a node id and
     needs to know which directory git refused.
+
+    `stderr` is what git itself wrote, verbatim and unmixed with this module's
+    own words, when the failure was a git command that ran and refused (100
+    FR-004). The message already quotes it, and prose is the wrong surface for
+    the *other* reader: a caller deciding what class of failure this was —
+    "refused non-fast-forward" against "the disk filled up" — would otherwise
+    have to hunt for a substring inside a sentence this module is free to
+    reword. Empty when git never ran (a refusal raised before the subprocess) or
+    when it died without writing anything.
     """
+
+    def __init__(self, message: str, *, stderr: str = "") -> None:
+        super().__init__(message)
+        self.stderr = stderr
 
 
 class WorktreeOwnershipError(WorktreeError):
@@ -559,6 +572,13 @@ def push_branch(
     branch is refused with an error naming it. The node branch is always
     `factory/<epic>/<node>`; a node id that collided with the trunk's name would
     clobber the repo's main line, which is not a node's to push over.
+
+    A push the *remote* refuses raises a `WorktreeError` carrying git's own
+    stderr — in the message and verbatim on `.stderr` (100 FR-004). The remote
+    is the one participant here that knows why, and until 100 its answer reached
+    an operator as "Activity task failed": a killed epic leaves its node branch
+    on origin, the re-dispatch's branch shares no ancestry with it, and the
+    correctly-refused non-fast-forward cost four hours to name.
     """
     repo = Path(target_repo)
     path = worktree_path(factory_root, epic_id, node_id)
@@ -589,8 +609,52 @@ def push_branch(
             _ownership_refusal(repo, path, ownership, branch=branch)
         )
 
-    _git(repo, "push", "--quiet", remote, branch)
+    try:
+        _git(repo, "push", "--quiet", remote, branch)
+    except WorktreeError as exc:
+        # 100 FR-004/FR-006. `--quiet` stays: it suppresses the ref listing a
+        # *successful* push prints and nothing else — git writes a refusal to
+        # stderr with or without it — so dropping it would make every landing
+        # that works noisier and buy nothing here. What was missing is on this
+        # side: the refusal is re-raised naming the push in the factory's own
+        # terms, leading with git's verdict so a reason read as one flattened
+        # line starts with the reason, and quoting git whole underneath so the
+        # `hint:` lines that name the fix travel with it.
+        raise WorktreeError(
+            _push_refusal(repo, remote, branch, exc), stderr=exc.stderr
+        ) from exc
     return _head(path)
+
+
+def _push_refusal(repo: Path, remote: str, branch: str, exc: WorktreeError) -> str:
+    """What an operator reads when a push was refused (100 FR-005).
+
+    The reason reaches `ergane build status` with its whitespace flattened into
+    one line and no truncation, so the order matters more than the length: the
+    sentence that says which push, then git's verdict on it, then git entire.
+    """
+    lead = f"push of '{branch}' to {remote} was refused by the remote (repo {repo})"
+    verdict = _push_verdict(exc.stderr)
+    if verdict:
+        lead = f"{lead}: {verdict}"
+    return f"{lead}\ngit said:\n{exc.stderr.strip() or str(exc)}"
+
+
+def _push_verdict(stderr: str) -> str:
+    """Git's own one-line verdict on the ref it would not move, or nothing.
+
+    Presentation, and only presentation: it decides nothing, classifies nothing,
+    and an unrecognised stderr costs the headline rather than the diagnosis,
+    because git's whole account follows either way. `! [` is the prefix git
+    prints each refused ref's status line with (`git push --porcelain` documents
+    the same column), and a stderr without one — an authentication failure, a
+    host that did not resolve — simply has no per-ref verdict to lead with.
+    """
+    for line in stderr.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("! ["):
+            return stripped
+    return ""
 
 
 #: Where a salvage records itself. One ref per attempt, immutable, in the target
@@ -1755,7 +1819,12 @@ def _git(cwd: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:
         raise WorktreeError(f"git {' '.join(args)} failed in {cwd}: {exc}") from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
-        raise WorktreeError(f"git {' '.join(args)} failed in {cwd}: {detail}")
+        # The message keeps quoting git for whoever reads it; `stderr` keeps it
+        # verbatim for whoever has to classify it (100 FR-004).
+        raise WorktreeError(
+            f"git {' '.join(args)} failed in {cwd}: {detail}",
+            stderr=completed.stderr,
+        )
     return completed.stdout
 
 
