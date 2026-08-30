@@ -217,62 +217,45 @@ implementer:
   # 43, ~34, 41, ~42, ~42 minutes, every one a first attempt. Against kimi's
   # 29-minute median (which needed three attempts on its one hard story),
   # glm-5.3 full at 63, and glm-5.3-flash at a 123-minute median.
-  # MOVED TO DEEPSEEK V4 PRO 2026-08-30 ~10:45 AM CT (Bryan): "flip all future
-  # scheduled work to deepseek-v4-pro, which has a 1M context window as well."
-  # All three build rungs moved together — see `opus-closer` and `debugger`.
-  # The floor was drained first (roadmap paused at both the schedule and the
-  # run) because `resolve_persona` reads this file LIVE, per attempt, at
-  # `factory/activities/agent_activities.py:353` — it is NOT the epic-start
-  # snapshot, so an edit here reaches the next attempt of an epic already
-  # running. Bryan then authorised exactly that: "im good to change the next
-  # attempt on any node to ds4pro too."
   #
-  # THE ALIAS HAD TO BE CREATED FIRST, again. At 10:30 the gateway served 18
-  # aliases and the only deepseek among them was `-flash`, which reads as
-  # "Ollama has no pro". It does — `deepseek-v4-pro:0813` is in the public
-  # catalogue. `ollama-cloud/deepseek-v4-pro` was added to the homelab config
-  # (`stacks/llm/litellm/config.yaml`) and the proxy restarted, taking it to 19.
-  # LiteLLM could not hot-add it: `STORE_MODEL_IN_DB` is unset here, so
-  # `/model/new` returns 500 and a restart is the only route.
+  # DEEPSEEK V4 PRO WAS TRIED HERE AND REVERTED THE SAME DAY, 2026-08-30, on
+  # speed. Bryan: "if opus is that much faster just move fully to opus again.
+  # lots of good data, but, want speed as well." Keeping the result so nobody
+  # re-runs the experiment by accident:
   #
-  # PROBE-VERIFIED THROUGH THE GATEWAY, not merely listed — and verified with a
-  # prompt shaped like the work, because an alias probe is not a capability
-  # probe and this file has paid for that lesson twice:
+  #   deepseek-v4-pro   095/us2   ~69 min agent time, PASS on attempt 1
+  #   claude-opus-5     five stories on 2026-08-30, 8-25 min agent time each
   #
-  #   direct to ollama.com,  max_tokens 32000 -> 1073 chars, 3 tests, stop, 7.6s
-  #   through the gateway,   max_tokens 32000 ->  432 chars, 2 tests, stop, 2.9s
+  # So roughly 3-8x slower per story on this codebase. It is NOT a quality
+  # problem — it passed its gate first try in 6m30s, indistinguishable from
+  # every Opus gate that day, and wrote 448 insertions across 13 files with a
+  # 267-line test written first. It is purely throughput.
   #
-  # IT IS A REASONING MODEL AND THE REASONING IS BILLED TO THE COMPLETION.
-  # The direct probe spent 4071 characters of reasoning to return 1073 of code,
-  # all inside `completion_tokens`. So a tight `max_tokens` returns an empty
-  # `content` that reads as a broken gateway — the same defect that killed
-  # 121/us1 on glm-5.3 and is filed as
+  # TWO THINGS LEARNED THAT OUTLIVE THE REVERT. First, deepseek committed
+  # nothing itself: its whole contribution arrived as one `salvage(...)` commit,
+  # where Opus commits in labelled stages. That matters because the judge scores
+  # a diff and because history is read by people. Second, it is a reasoning
+  # model whose reasoning is billed to the completion, so a tight `max_tokens`
+  # returns empty content that reads as a broken gateway — the trap that killed
+  # a node on glm-5.3, filed as
   # `agent/a-reasoning-model-passes-the-alias-probe-and-returns-no-code`.
   #
-  # THE FALLBACK COMES BACK, and that is the real gain of leaving the
-  # subscription route. A subscription persona holds no gateway key, so its
-  # `ollama-cloud/*` fallback validates cleanly and then fails at runtime with
-  # nothing to authenticate against — which is why this entry read `null` for a
-  # day, and what spec 095 makes legible. On the gateway a fallback is a real
-  # second route. Kimi is chosen over `local/qwen3.6-27b` deliberately: the
-  # local body competes with the gate for host memory, and this box OOM-killed
-  # the worker at 15:07 UTC today with 13 GiB left.
-  #
-  # LINEAGE HOLDS. The rule since 2026-08-07 is that the judge may not review
-  # its own family's output. DeepSeek builds, Moonshot judges.
-  agent: claude-code
-  model: ollama-cloud/deepseek-v4-pro
-  fallback: ollama-cloud/kimi-k2.7-code
+  # The gateway alias `ollama-cloud/deepseek-v4-pro` is left in place in the
+  # homelab litellm config (branch `llm/deepseek-v4-pro-alias`, commit 0485191).
+  # Reinstating this experiment is a four-line edit here, not an afternoon.
+  agent: subscription
+  model: claude-opus-5
+  fallback: null
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
-  # 1M per Ollama's model card for `deepseek-v4-pro:0813`. Declared, never left
-  # unset: the CLI assumes 200k for an alias it does not recognise, which is the
-  # 037 defect that cost kimi 23.7% of its own window, measured on 032/us1 via
-  # Langfuse. This key was DECLARED TWICE here until 2026-08-30 — 1000000 at the
-  # top of the block and 1048576 below it — and YAML silently kept the last.
-  # One declaration now, so the file says what it means.
+  # Opus 5's published window. DECLARED ONCE — this key was written twice here
+  # (1000000 above the comment block and 1048576 below it) and YAML silently
+  # kept the last; fixed 2026-08-30, and the fix was briefly lost when the
+  # deepseek flip was reverse-applied, so it is restated here deliberately.
+  # Unset is not an option either: the CLI assumes 200k for an alias it does not
+  # recognise, the 037 defect that cost kimi 23.7% of its own window.
   context_window: 1000000
 
 verifier:
@@ -390,32 +373,15 @@ debugger:
   # fail at runtime with nothing to authenticate against. Null is the honest
   # value: a session that cannot refresh has no second route, which is exactly
   # what spec 095 makes legible.
-  # MOVED TO DEEPSEEK V4 PRO 2026-08-30 ~10:45 AM CT (Bryan), with `implementer`
-  # and `opus-closer`. See `implementer` for the probe evidence and the
-  # reasoning-token trap; it is the same alias on the same route.
-  #
-  # THE FALLBACK RETURNS WITH THE ROUTE. Everything the block above said about a
-  # subscription persona's `null` fallback stops applying the moment this entry
-  # holds a gateway key — kimi is now a real second route rather than one that
-  # validates and then fails at runtime.
-  #
-  # WORTH SAYING PLAINLY: this rung no longer changes the model. It never really
-  # did — the ladder relabels the persona for the key alias and the history
-  # record but never re-resolves `model_alias`
-  # (`interpreter/debugger-escalation-does-not-change-the-model`), and all three
-  # rungs pointed at the same Opus anyway. Now all three point at the same
-  # deepseek. An operator reading a DEBUGGER in a node's history should expect a
-  # different prompt and different skills, not stronger weights.
-  agent: claude-code
-  model: ollama-cloud/deepseek-v4-pro
-  fallback: ollama-cloud/kimi-k2.7-code
+  agent: subscription
+  model: claude-opus-5
+  fallback: null
   skills: [diagnosing-bugs]
   write_scope: worktree
   needs_worktree: true
   timeout: 10800
-  # 1M per Ollama's model card for `deepseek-v4-pro:0813`. Unset, the CLI assumes
-  # 200k for an alias it does not recognise — the 037 defect that cost kimi 23.7%
-  # of its window.
+  # Opus 5's published window. Unset, the CLI assumes 200k for an alias it does
+  # not recognise — the 037 defect that cost kimi 23.7% of its window.
   context_window: 1000000
 
 researcher:
@@ -446,34 +412,29 @@ opus-closer:
   #   - `discover_subscription_credential` finds that login. Measured on this
   #     host 2026-08-20: it resolves to ~/.claude/.credentials.json, the third
   #     of its three search paths and the one the code's comment names.
-  # MOVED TO THE GATEWAY 2026-08-30 ~10:45 AM CT (Bryan), with `implementer` and
-  # `debugger`. Everything above about the subscription route is kept as the
-  # record of why this persona EXISTS — it was created to reach Opus without a
-  # bill — but it no longer describes what this entry does. `closer` remains the
-  # metered Anthropic route for anyone who wants Opus at the promotion rung.
-  agent: claude-code
+  agent: subscription
 
-  # A LiteLLM alias now, not a `claude --model` string. The note above about the
-  # full name over the bare "opus" alias applied to the subscription adapter and
-  # is left standing because it is still true of `closer`. Here the alias is
-  # resolved by the proxy, and the dated snapshot is pinned on the gateway side
-  # (`base_model: deepseek-v4-pro:0813`) so this name cannot silently follow a
-  # newer release either.
+  # NOT a LiteLLM alias. This value flows untouched into `claude --model`
+  # (adapter.py), and `claude --help` documents that flag as taking either an
+  # alias for the latest ("opus") or a model's full name. The full name is used
+  # deliberately: the bare alias silently follows the next major, and a builder
+  # that changes under you is a variable nobody chose.
   #
-  # Still unvalidated at config time: nothing checks this string, so a typo
-  # fails at the agent rather than at `ergane spec validate`.
-  model: ollama-cloud/deepseek-v4-pro
+  # Nothing validates this string — FR-014 requires it be a name the CLI
+  # accepts, but config.py adds no check, so a typo fails at the agent rather
+  # than at `ergane spec validate`.
+  model: claude-opus-5
 
-  # No longer null, and the comment below is why the change is safe rather than
-  # merely possible: this persona now HOLDS a gateway key, so the kimi fallback
-  # authenticates instead of validating cleanly and failing at runtime.
-  fallback: ollama-cloud/kimi-k2.7-code
+  # Deliberately null. `closer` falls back to kimi because it HOLDS a gateway
+  # key; this persona does not, so a `ollama-cloud/*` fallback would validate
+  # cleanly here and then fail at runtime with nothing to authenticate against.
+  # Failing honestly on the subscription beats failing confusingly off it.
+  fallback: null
 
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
-  # 1M per Ollama's model card for `deepseek-v4-pro:0813`. Unset, the CLI assumes
-  # 200k for an alias it does not recognise — the 037 defect that cost kimi 23.7%
-  # of its window.
+  # Opus 5's published window. Unset, the CLI assumes 200k for an alias it does
+  # not recognise — the 037 defect that cost kimi 23.7% of its window.
   context_window: 1000000
