@@ -422,6 +422,48 @@ class DiffSizeRefusal:
 
 
 @dataclass(frozen=True)
+class DiffAbridgement:
+    """How much of the diff the judge was shown — said out loud either way.
+
+    The sibling of `DiffSizeRefusal`, and deliberately its shape: two numbers on
+    the same measurement, one taken from the diff and one carried from the
+    setting that bounded it. Between the attention budget and the refusal
+    threshold a diff is now judged rather than thrown away (092 FR-003), and a
+    PASS reached that way is only safe under Principle VIII if the record admits
+    what the judge could not see. This is that admission, and it is a *record*
+    rather than a flag because "was it abridged" and "by how much" are one
+    question asked twice: an operator deciding whether to trust a large story's
+    PASS needs the second answer to act on the first.
+
+    `limit_bytes` travels in the record instead of being looked up later
+    against `DIFF_INPUT_LIMIT`, for the reason `DiffSizeRefusal.limit_bytes`
+    does: the budget is a tuned value that has moved once already, and a verdict
+    has to be re-read under the budget it was actually formed under.
+
+    `abridged` and `over_limit_bytes` are derived rather than stored, so the
+    record cannot disagree with itself. The comparison is `prepare_diff`'s own —
+    a diff whose assembly fits the budget is passed through untouched — and
+    `over_limit_bytes` is exactly the excess, never a claim about how much text
+    the abridger elided: it spends part of the budget on its truncation notice
+    and its per-file markers, so the bytes missing from the prompt are at least
+    this many and the honest number to record is the one that was measured.
+    """
+
+    total_bytes: int
+    limit_bytes: int
+
+    @property
+    def abridged(self) -> bool:
+        """Whether the judge's copy of this diff had to lose anything."""
+        return self.total_bytes > self.limit_bytes
+
+    @property
+    def over_limit_bytes(self) -> int:
+        """How far past the budget the whole diff ran; 0 when it fit."""
+        return max(self.total_bytes - self.limit_bytes, 0)
+
+
+@dataclass(frozen=True)
 class OutputCheck:
     """The anti-rubber-stamp check: did the node actually produce something?
 
@@ -447,6 +489,19 @@ class OutputCheck:
     is the ordinary case, and it is also what keeps a passing row identical to
     the rows written before this story (FR-004): the field is evidence of a
     refusal, not a measurement taken on every attempt.
+
+    `abridgement` is not a fourth way to fail — it decides nothing, and
+    `decide_passed` never reads it. It is the measurement this check already
+    takes, kept instead of discarded (092 FR-007): the same assembly the refusal
+    weighs, weighed against the judge's attention budget as well as against the
+    threshold. Unlike `size_refusal` it is recorded whichever way it came out,
+    because "the judge read this whole" is the claim a PASS on a large story
+    rests on and a claim nobody wrote down is not one. `None` is the third
+    state and it means *nobody measured*: a row written before this story, a
+    read-scoped node whose verdict never consulted git, an attempt with no diff
+    to weigh. It is never "the judge saw it whole" — that reading would certify
+    every historical PASS as whole-diff on the authority of code that could not
+    tell.
     """
 
     write_scope: str
@@ -456,6 +511,7 @@ class OutputCheck:
     passed: bool
     hygiene_violations: list[HygieneViolation] = field(default_factory=list)
     size_refusal: DiffSizeRefusal | None = None
+    abridgement: DiffAbridgement | None = None
 
 
 # Judge entities -------------------------------------------------------------

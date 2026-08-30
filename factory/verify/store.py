@@ -81,6 +81,7 @@ from factory.env import (
 )
 from factory.mergequeue.models import CheckFailure
 from factory.verify.models import (
+    DiffAbridgement,
     DiffFileSize,
     DiffSizeRefusal,
     EscalationChoice,
@@ -578,6 +579,23 @@ def node_history(
     return [_result_from_row(row) for row in rows]
 
 
+def epic_history(conn: sqlite3.Connection, epic_id: str) -> list[VerificationResult]:
+    """Every verification of one epic, node by node and oldest attempt first.
+
+    `node_history` widened by one column of the same key, because the operator
+    reading an epic's verdicts does not hold its node ids — they are in the
+    compiled graph and in Temporal, and this read exists for the moment both are
+    gone. Ordered by `(node_id, attempt, form)` so a re-run of the same query
+    prints the same report.
+    """
+    rows = conn.execute(
+        f"{_SELECT_RESULT_SQL} WHERE epic_id = ? ORDER BY node_id, attempt, form",
+        (epic_id,),
+    ).fetchall()
+
+    return [_result_from_row(row) for row in rows]
+
+
 @dataclass(frozen=True)
 class AttemptTiming:
     """One recorded verification, reduced to what a pace report needs.
@@ -745,6 +763,7 @@ def _output_check_to_dict(check: OutputCheck) -> dict[str, Any]:
             for violation in check.hygiene_violations
         ],
         "size_refusal": _size_refusal_to_dict(check.size_refusal),
+        "abridgement": _abridgement_to_dict(check.abridgement),
     }
 
 
@@ -781,6 +800,42 @@ def _size_refusal_from_dict(data: dict[str, Any] | None) -> DiffSizeRefusal | No
     )
 
 
+def _abridgement_to_dict(
+    record: DiffAbridgement | None,
+) -> dict[str, Any] | None:
+    """How much of the diff the judge was shown, or None if nobody measured.
+
+    The two measured numbers and nothing else. `abridged` and
+    `over_limit_bytes` are properties derived from them, and a stored copy of a
+    derived value is a second answer waiting to disagree with the first — the
+    same reason `_size_refusal_to_dict` stores the total and the limit rather
+    than "how far over".
+    """
+    if record is None:
+        return None
+    return {
+        "total_bytes": record.total_bytes,
+        "limit_bytes": record.limit_bytes,
+    }
+
+
+def _abridgement_from_dict(data: dict[str, Any] | None) -> DiffAbridgement | None:
+    """Read back what the judge was shown, if anyone recorded it (092 FR-007).
+
+    Rows written before this story have no key at all, and `None` is what they
+    read back as: *nobody measured*, which is a different fact from "the judge
+    saw the diff whole" and must never be collapsed into it. Since this story
+    every check that weighed a diff writes one of the two real answers, so the
+    absent key stops appearing rather than being reinterpreted.
+    """
+    if data is None:
+        return None
+    return DiffAbridgement(
+        total_bytes=data["total_bytes"],
+        limit_bytes=data["limit_bytes"],
+    )
+
+
 def _output_check_from_dict(data: dict[str, Any]) -> OutputCheck:
     return OutputCheck(
         write_scope=data["write_scope"],
@@ -798,6 +853,10 @@ def _output_check_from_dict(data: dict[str, Any]) -> OutputCheck:
         # Likewise for 045 FR-003: an absent key is a row from a run where no
         # diff could be refused for its size, not one where a huge diff passed.
         size_refusal=_size_refusal_from_dict(data.get("size_refusal")),
+        # And for 092 FR-007: absent is "nobody measured what the judge was
+        # shown", which every row written before that story means and no row
+        # written since can mean.
+        abridgement=_abridgement_from_dict(data.get("abridgement")),
     )
 
 

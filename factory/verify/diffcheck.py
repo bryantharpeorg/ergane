@@ -106,7 +106,11 @@ from typing import Sequence
 
 from factory.config import WriteScope
 from factory.env import ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, resolve_env_path
-from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD, size_refusal
+from factory.verify.diffbounds import (
+    DIFF_REFUSAL_THRESHOLD,
+    abridgement,
+    size_refusal,
+)
 from factory.verify.gates import scrubbed_env
 from factory.verify.models import DiffSizeRefusal, HygieneViolation, OutputCheck
 from factory.workgraph import worktree as worktrees
@@ -187,13 +191,23 @@ def check_output(
     verdict exactly where they already did — the moment two places can decide a
     FAIL, the stored row and the retry prompt can disagree.
 
+    The abridgement record (092 FR-007) is not a fourth: it decides nothing and
+    `decide_passed` is not shown it. It is the byproduct of the measurement the
+    third one already takes, kept rather than thrown away, because between the
+    attention budget and the refusal threshold the judge now rules on part of a
+    diff and a PASS that does not say so is the rubber stamp Principle VIII
+    exists to prevent.
+
     `diff_size_limit` is the size check's seam, and it is a parameter rather
     than an environment read so that turning it off is something a caller does
     in the open: `None` disables the check, which is the control SC-004 needs to
     show that this refusal changed an outcome rather than the outcome having
     been impossible — a control for tests, never a value a repository may
     declare, since a manifest that could switch this off would have no ceiling
-    at all and Principle VIII is non-negotiable.
+    at all and Principle VIII is non-negotiable. It disables the *refusal* and
+    not the measurement: the abridgement is still recorded, because an attempt
+    that reached the judge with the ceiling off is the one where what the judge
+    was shown matters most.
 
     The default is `DIFF_REFUSAL_THRESHOLD`, read from
     `factory.verify.diffbounds` rather than restated here — a second copy of
@@ -226,12 +240,26 @@ def check_output(
     )
     # Diff scopes only, and only when there is a diff to weigh: an empty diff
     # has already failed on `has_diff`, and a read node's patch is evidence
-    # rather than the criterion, so neither is worth a second read of the tree.
-    refusal = (
-        diff_size_refusal(worktree, base_ref, diff_size_limit)
-        if scope in DIFF_SCOPES and has_diff and diff_size_limit is not None
+    # rather than the criterion, so neither is worth a read of the tree. One
+    # read, two answers (092 FR-007): the refusal and the abridgement record are
+    # the same assembly measured against two settings, and reading the patch
+    # twice would be two chances to measure different bytes.
+    patch = (
+        judge_input(worktree, base_ref)
+        if scope in DIFF_SCOPES and has_diff
         else None
     )
+    refusal = (
+        size_refusal(patch, limit=diff_size_limit)
+        if patch is not None and diff_size_limit is not None
+        else None
+    )
+    # Recorded whichever way it came out, and `None` only when nothing was
+    # measured: an absent record must never be readable as "the judge saw it
+    # whole". The budget is the abridger's own, not `diff_size_limit` — a
+    # repository that raised its refusal threshold did not raise what a model
+    # can attend to.
+    abridged = abridgement(patch) if patch is not None else None
     artifacts_present = (
         all(_is_artifact(worktree, path) for path in artifacts) if artifacts else None
     )
@@ -252,6 +280,7 @@ def check_output(
         ),
         hygiene_violations=violations,
         size_refusal=refusal,
+        abridgement=abridged,
     )
 
 
@@ -341,14 +370,28 @@ def diff_size_refusal(
     if limit is None:
         return None
 
+    return size_refusal(judge_input(worktree, base_ref), limit=limit)
+
+
+def judge_input(worktree: Path | str, base_ref: str | None = None) -> str:
+    """The patch the judge would be handed, read the way `run_judge` reads it.
+
+    `worktree.diff`, against the node's base, through a scratch index so the
+    worktree is left alone (D-027). One function because both questions asked of
+    a diff's size — is it over the threshold, and how much of it fits the
+    attention budget — are questions about *these* bytes, and a second way of
+    assembling them would be a second answer to both.
+
+    Raises `WorktreeMissingError` when git cannot produce the patch, for the
+    reason `diff_size_refusal` records: a diff whose size cannot be known is not
+    a small one.
+    """
     try:
-        patch = worktrees.diff(worktree, base_ref=base_ref or "HEAD")
+        return worktrees.diff(worktree, base_ref=base_ref or "HEAD")
     except worktrees.WorktreeError as exc:
         raise WorktreeMissingError(
             f"git could not read the diff of the node worktree: {worktree}"
         ) from exc
-
-    return size_refusal(patch, limit=limit)
 
 
 def _as_scope(value: WriteScope | str) -> WriteScope | None:

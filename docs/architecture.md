@@ -274,6 +274,15 @@ provenance in `inferred_edges` and is reported by `ergane spec validate` under
   `activity_id` names so a wide epic charges each node alone (FR-011) — and added
   as a sibling `live_spend` key, never merged into the query document.
 
+- `ergane build attempts <epic-id>` — one line per recorded verification, read
+  from the evidence store rather than from Temporal, because the row outlives the
+  workflow and the question is usually asked after the execution has aged out.
+  Beside each verdict it prints how much of the diff the judge was actually shown:
+  since 092 a diff between the attention budget and the repository's refusal
+  threshold is judged abridged rather than refused, and a PASS taken that way has
+  to be distinguishable from one taken on a diff read whole (Principle VIII).
+  Rows written before that measurement existed say so rather than reading as whole.
+
 `TEMPORAL_ADDRESS` / `TEMPORAL_NAMESPACE` are honored throughout. Temporal's Web UI
 remains the dashboard for anything deeper.
 

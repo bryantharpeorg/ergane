@@ -503,6 +503,14 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
         "feature", "spec_ref", "requirements", "source_path", "source_sha256",
         "snapshotted_at"
     ),
+    # 092 US3: kind 3, both of them. This record exists to say how much of the
+    # diff the judge was shown, and a defaulted `total_bytes` or `limit_bytes`
+    # would answer that question with a number nobody measured — the fabricated
+    # measurement constitution V refuses. The honest absence is already
+    # expressed one level up, where `OutputCheck.abridgement` is None and means
+    # "nobody measured"; inside the record there is no such thing as a missing
+    # half, so a payload carrying one is a decode that should fail loudly.
+    "factory.verify.models.DiffAbridgement": ("total_bytes", "limit_bytes",),
     "factory.verify.models.DiffFileSize": ("path", "size_bytes",),
     "factory.verify.models.DiffSizeRefusal": (
         "total_bytes", "limit_bytes", "largest_files"
