@@ -53,6 +53,7 @@ from typing import Any, Mapping
 
 import yaml
 
+from factory.verify.diffbounds import DIFF_INPUT_LIMIT, DIFF_REFUSAL_THRESHOLD
 from factory.verify.models import (
     FactoryConfig,
     GateResult,
@@ -110,6 +111,7 @@ _TOP_LEVEL_KEYS = (
     "roadmap",
     "forge",
     "writes",
+    "diff_refusal_bytes",
 )
 
 #: Keys that only schema v2 recognises; v1 refuses them as unknown (US1-S6).
@@ -201,6 +203,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     forge = _read_forge(document, source)
     ladder = _read_ladder(document, source)
     verify_order = _read_verify(document, source)
+    diff_refusal_bytes = _read_diff_refusal_bytes(document, source)
 
     return FactoryConfig(
         version=version,
@@ -214,6 +217,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         forge=forge,
         ladder=ladder,
         verify_order=verify_order,
+        diff_refusal_bytes=diff_refusal_bytes,
     )
 
 
@@ -606,6 +610,67 @@ def _read_roadmap(document: Mapping[Any, Any], source: str) -> RoadmapDials | No
     )
 
 
+def _read_diff_refusal_bytes(document: Mapping[Any, Any], source: str) -> int:
+    """The size above which this repository refuses to build a story (092 FR-004).
+
+    Until this key existed, that size was `factory/verify/diffbounds.py`'s to
+    choose and nobody else's: `diff_check` is mandatory, the threshold had no
+    manifest key and no flag, and the seam `check_output` already carried had no
+    production caller. An operator whose repository legitimately builds large
+    stories could only edit the tool. The measured cost of that was three
+    fully-green attempts thrown away one rung from escalation, on a diff of
+    74,465 bytes with no generated file in it at all.
+
+    Absent means the default, which is `DIFF_REFUSAL_THRESHOLD` — read from the
+    module that owns it, never restated, because a second copy of the number
+    would let tuning it silently do nothing (092 trap 2). A declared value is
+    refused two ways, both in the shape the ladder's integer dials are refused:
+
+    - **Not a whole number** (FR-006), by type identity, because
+      `isinstance(True, int)` is True and `diff_refusal_bytes: true` would
+      otherwise become a ceiling of one byte. `null` fails here too, and that is
+      load-bearing rather than incidental: `None` is how the seam spells *the
+      check is disabled*, so a manifest that could spell it would be a
+      repository with no ceiling at all, wearing the appearance of one
+      (092 trap 5). A repository may raise its ceiling; it may not remove it,
+      and principle VIII is why.
+    - **Below the judge's attention budget** (FR-005), because a refusal
+      stricter than `prepare_diff`'s own cap refuses every diff the judge would
+      merely have abridged — which is precisely the defect this spec exists to
+      remove, reintroduced under a new name (092 trap 4). Both numbers are named:
+      the operator needs to see the value they typed *and* the floor it hit, or
+      the message sends them hunting for one of the two. A negative value is
+      below every floor, so this rung is what catches it.
+
+    There is deliberately no ceiling. The floor exists because a value under it
+    silently breaks the mechanism; nothing breaks above it, and a repository
+    that wants to judge a megabyte on an abridged prompt is making a legible
+    trade-off — one this factory records, since 092/US3, on the verdict itself.
+    """
+    if "diff_refusal_bytes" not in document:
+        return DIFF_REFUSAL_THRESHOLD
+
+    value = document["diff_refusal_bytes"]
+    # `isinstance(True, int)` is True, so the bool is excluded by identity.
+    if type(value) is not int:
+        raise FactoryConfigError(
+            "diff_refusal_bytes_type",
+            f"gives `diff_refusal_bytes` the value {value!r}; it must be a whole "
+            "number of bytes (booleans are not integers here)",
+            source=source,
+        )
+    if value < DIFF_INPUT_LIMIT:
+        raise FactoryConfigError(
+            "diff_refusal_bytes_min",
+            f"gives `diff_refusal_bytes` the value {value!r}; the floor is "
+            f"{DIFF_INPUT_LIMIT}, the size a diff is abridged to for the judge "
+            "— refusing below it would throw away every diff that would merely "
+            "have been abridged",
+            source=source,
+        )
+    return value
+
+
 def _read_ladder(document: Mapping[Any, Any], source: str) -> "VerificationConfig":
     """The v2 retry-ladder caps, defaulting to today's `VerificationConfig`.
 
@@ -855,7 +920,9 @@ def load_factory_config_with_name(repo_root: str | Path) -> tuple[FactoryConfig,
     return load_factory_config(path), name
 
 
-def load_loop_config(repo_root: str | Path) -> tuple[VerificationConfig, tuple[str, ...]]:
+def load_loop_config(
+    repo_root: str | Path,
+) -> tuple[VerificationConfig, tuple[str, ...], int]:
     """Dispatch-time loop config pinned from the operator clone's manifest.
 
     This is the read that matters for the ladder: it happens before any node
@@ -863,9 +930,15 @@ def load_loop_config(repo_root: str | Path) -> tuple[VerificationConfig, tuple[s
     budget or order (023 FR-002/FR-003). Callers that hold a path use
     `resolve_manifest_path` + `load_factory_config` the same way the onboarding
     gate does; the returned values are what ride `EpicInput`.
+
+    092 FR-004 adds the third: the diff refusal threshold belongs on exactly the
+    same pin, and for a sharper version of the same argument. It decides whether
+    a node's own work is refused unjudged, so a node that could rewrite it in its
+    worktree would be voting on its own verdict — the governing value is read
+    from the declaration that owns it, once, here (constitution IX).
     """
     config, _ = load_factory_config_with_name(repo_root)
-    return config.ladder, config.verify_order
+    return config.ladder, config.verify_order, config.diff_refusal_bytes
 
 
 # Reporting -------------------------------------------------------------------

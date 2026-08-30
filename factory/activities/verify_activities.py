@@ -73,6 +73,7 @@ from temporalio.exceptions import ApplicationError
 
 from factory.verify import diffcheck, gates, judge, store
 from factory.verify.criteria import CriteriaParseError, load_criteria
+from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.judge import DEFAULT_MAX_JUDGE_RETRIES
 from factory.verify.models import (
     CriteriaSet,
@@ -310,6 +311,16 @@ class CheckOutputInput:
     write_scope: str
     base_ref: str = "HEAD"
     expected_artifacts: list[str] = field(default_factory=list)
+    #: 092 FR-004. The size above which this attempt's diff is refused unjudged,
+    #: pinned from the target repo's manifest at dispatch and carried here rather
+    #: than re-read: the value that decides a verdict is read from the
+    #: declaration that owns it, and a node worktree does not own this one.
+    #: Defaulting to `DIFF_REFUSAL_THRESHOLD` — the same default the seam itself
+    #: carries — is what makes every caller written before this story, and every
+    #: payload written before it, behave exactly as it did. `None` still disables
+    #: the check and is still a control for tests (`diffcheck.check_output`); no
+    #: manifest can spell it (`factory/verify/factory_yaml.py`).
+    diff_size_limit: int | None = DIFF_REFUSAL_THRESHOLD
 
 
 @activity.defn
@@ -330,6 +341,7 @@ async def check_output(request: CheckOutputInput) -> OutputCheck:
             request.write_scope,
             request.expected_artifacts,
             request.base_ref,
+            diff_size_limit=request.diff_size_limit,
         )
     except diffcheck.WorktreeMissingError as exc:
         # The path travels with the error: by the time an operator reads this

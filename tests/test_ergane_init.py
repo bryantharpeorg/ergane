@@ -187,6 +187,7 @@ DEFAULT_ANSWERS: list[str] = [
     "",  # roadmap (empty -> omitted)
     "",  # forge (empty -> omitted, and absent means github)
     "",  # writes (empty -> omitted; 084/US3 — absent means nothing declared)
+    "",  # diff_refusal_bytes (empty -> omitted; 092/US2 — absent means the default)
     "myapp",  # slug
 ]
 
@@ -304,6 +305,7 @@ def test_init_proposal_is_confirmed_and_leaves_no_trace(
         "",
         "",
         "main",
+        "",
         "",
         "",
         "",

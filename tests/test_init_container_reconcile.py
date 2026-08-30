@@ -171,7 +171,8 @@ def run_init(
 ) -> Any:
     """A full `ergane init <repo>`, scripting the interview in key order."""
     answers = [
-        "1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", slug
+        "1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", "",
+        slug,
     ]
     monkeypatch.setattr(
         init_module, "_prompter_factory", lambda: ScriptedPrompter(answers)
