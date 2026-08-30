@@ -10,7 +10,7 @@ fixes:
 # runtime half.
 #
 # THE DEFECT, AND THE ONE LINE THAT PROVES IT. `judge_required(gate_results,
-# output_check, criteria)` (`factory/verify/models.py:544`) is the guard the
+# output_check, criteria)` (`factory/verify/models.py`) is the guard the
 # reference flow puts immediately in front of `run_judge`. It takes the gate
 # results as its first argument, uses them to decide whether asking the judge can
 # still change the outcome, and returns a bool. The caller then invokes
@@ -220,7 +220,7 @@ rather than on logic.
 - **FR-008**: The attempt record MUST state whether the judge was shown the gate
   results.
 - **FR-009**: Every story MUST leave `judge_required`
-  (`factory/verify/models.py:544`), `prepare_diff` and the gate implementations
+  (`factory/verify/models.py`), `prepare_diff` and the gate implementations
   unchanged.
 
 ## Success Criteria (summary)

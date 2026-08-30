@@ -20,11 +20,11 @@ measure or when the judge runs changes.
   `factory/activities/verify_activities.py:409-423` and invoked from
   `factory/workgraph/workflow.py:2679`.
 - **The guard that proves the invariant**: `judge_required(gate_results,
-  output_check, criteria)` (`factory/verify/models.py:544`). Read its docstring
+  output_check, criteria)` (`factory/verify/models.py`). Read its docstring
   before writing US1 — it is the argument for why a gate section is never
   misleading on the judged path, because it returns True only when
   `gates_passed(gate_results)` (`:517`).
-- **The composition**: `compose_result` (`factory/verify/models.py:565`), whose
+- **The composition**: `compose_result` (`factory/verify/models.py`), whose
   verdict line is `passed = gates_passed(gate_results) and output_check.passed
   and judge_accepts` (`:608`). US2's contradiction check belongs where
   `judge_accepts` is derived, not in a fourth place that could disagree.

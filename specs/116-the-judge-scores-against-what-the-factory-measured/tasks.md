@@ -76,7 +76,7 @@ the attempt) are the four that decide whether an attempt lands.
 - [ ] T018 [US2] (FR-006) Detect a finding that names a gate recorded PASS on
       this attempt and asserts it would fail. Match on boundaries (trap 5).
 - [ ] T019 [US2] (FR-006, trap 7) Neutralise that finding where `judge_accepts`
-      is derived in `compose_result` (`factory/verify/models.py:565,:608`) and
+      is derived in `compose_result` (`factory/verify/models.py`) and
       recompose, so exactly one place decides.
 - [ ] T020 [US2] (FR-007) Make a contradiction request a judge retry through the
       existing `judge_attempt` / `max_judge_retries` path
