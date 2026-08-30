@@ -95,6 +95,18 @@ PUSH_FAILED = "PUSH_FAILED"
 #: today's retryable `PUSH_FAILED` path, untouched.
 LANDING_PUSH_REFUSED = "LANDING_PUSH_REFUSED"
 
+#: The activity error type for a push git refused non-fast-forward (100 FR-007).
+#: Carved out of `PUSH_FAILED` for the reason `LANDING_PUSH_REFUSED` was, and the
+#: argument transfers word for word: the refusal is deterministic, so the three
+#: attempts behind `PUSH_FAILED` arrive at the same answer three times and then
+#: kill a node whose work was already verified. What makes it worth a type of its
+#: own rather than that one is what happens next — an operator clears a stale ref
+#: in a single command, so the workflow pages them instead of ending the node
+#: (FR-008), and the message this is raised with carries that command. Every
+#: other git failure stays on today's retryable `PUSH_FAILED` path, untouched
+#: (FR-009).
+LANDING_REF_CONFLICT = "LANDING_REF_CONFLICT"
+
 
 @dataclass(frozen=True)
 class PrepareLandingPrInput:
@@ -428,10 +440,15 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
     base. A manifest read inside an activity is legal where the workflow's would
     not be (constitution IV).
 
-    Raises `LANDING_PUSH_REFUSED` (non-retryable) when the node's worktree
-    belongs to a different repository than the one asked to push, `PUSH_FAILED`
-    (retryable) when git itself refused, and lets the forge's own
-    `ForgeError` through when it refused the offer.
+    Two of the push's failures are non-retryable, because both are deterministic
+    and both are an operator's to clear: `LANDING_PUSH_REFUSED` when the node's
+    worktree belongs to a different repository than the one asked to push (107
+    FR-004), and `LANDING_REF_CONFLICT` when git refused the push
+    non-fast-forward (100 FR-007) — a stale node ref on origin, which the
+    workflow routes to an escalation carrying the command that clears it.
+    Everything else git refuses stays `PUSH_FAILED` and stays retryable
+    (FR-009), and the forge's own `ForgeError` is let through when it refused
+    the offer.
     """
     resolved = await asyncio.to_thread(
         worktrees.resolve_landing_base, request.target_repo
@@ -455,6 +472,16 @@ async def open_landing_pr(request: OpenLandingPrInput) -> OpenLandingPrResult:
             str(exc), type=LANDING_PUSH_REFUSED, non_retryable=True
         ) from exc
     except worktrees.WorktreeError as exc:
+        if worktrees.is_non_fast_forward(exc.stderr):
+            # 100 FR-007, following the same carve-out as the branch above and
+            # for the same reason. The classification is on `stderr` — git's own
+            # words, verbatim and unmixed with this factory's, which is what US2
+            # captured them for — rather than on a substring of the message,
+            # because this module is free to reword the message and a guard that
+            # depended on the wording would fail silently when it did (trap 5).
+            raise ApplicationError(
+                str(exc), type=LANDING_REF_CONFLICT, non_retryable=True
+            ) from exc
         raise ApplicationError(str(exc), type=PUSH_FAILED) from exc
 
     forge = _forge(repo_path=request.target_repo)

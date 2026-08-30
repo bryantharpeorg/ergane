@@ -641,7 +641,72 @@ def _push_refusal(repo: Path, remote: str, branch: str, detail: str) -> str:
         lead = f"{lead}: {verdict}"
     if not detail:
         return f"{lead}; git exited non-zero and wrote nothing"
-    return f"{lead}\ngit said:\n{detail}"
+    message = f"{lead}\ngit said:\n{detail}"
+    if is_non_fast_forward(detail):
+        # 100 FR-008. The one push failure an operator clears in a single
+        # command, so the command travels with the diagnosis: this text is what
+        # `_failure_detail` walks to, which is both the node's `terminal_reason`
+        # and the escalation the workflow raises. Only for this cause — advising
+        # a ref deletion for an authentication failure would be wrong, and
+        # advising it for a refusal whose tip is *not* archived is the data-loss
+        # bug FR-010 exists to prevent, which is why the warning is not
+        # separable from the command.
+        message = (
+            f"{message}\nclear the stale ref with: "
+            f"{ref_conflict_remedy(remote, branch)} — confirm first that the "
+            "refused tip is reachable from an archive ref, and never force-push "
+            "over it"
+        )
+    return message
+
+
+def ref_conflict_remedy(remote: str, branch: str) -> str:
+    """The one command that clears a stale node ref (100 FR-008).
+
+    Deleting the remote branch, never overwriting it. The content of a node
+    branch a re-dispatch is refused over is the previous dispatch's salvage,
+    which teardown archives (FR-004) — so the ref is redundant and the delete is
+    a cleanup. Forcing the same ref instead is one keystroke away, and it is the
+    one thing that turns this recoverable state into work nothing else holds.
+    """
+    return f"git push --delete {remote} {branch}"
+
+
+#: Git's own verdict on a ref it would not move, and the whole of what US3
+#: classifies on. Kept as one string because the match is exact: it is the
+#: parenthesised reason git appends to the refused ref's status line, not a
+#: phrase to be found somewhere in a paragraph.
+_NON_FAST_FORWARD = "(non-fast-forward)"
+
+
+def is_non_fast_forward(stderr: str) -> bool:
+    """Whether git refused a push because the ref would not fast-forward.
+
+    The one deterministic push failure the factory produces on purpose: a killed
+    epic leaves its node branch on origin, the re-dispatch branches fresh from
+    the landing branch, and the two share no ancestry — so a plain, correct,
+    unforced push is correctly refused, and is refused again on every retry.
+    100-US3 routes that answer to an operator instead of spending three attempts
+    on it, and this is the decision it routes on.
+
+    Anchored deliberately narrowly (100 plan trap 5). `! [` is the prefix git
+    prints each refused ref's status line with, and the reason is the last thing
+    on that line — so both have to hold, on one line, for this to say yes. The
+    looser spellings are how a guard starts firing on unrelated failures: a
+    substring hunt over the whole of stderr matches the `hint:` paragraph and the
+    `error: failed to push some refs` summary, and a prefix-only match claims
+    every other per-ref rejection, `! [remote rejected] … (pre-receive hook
+    declined)` included.
+
+    Everything it does not recognise is not a ref conflict, and that direction is
+    the safe one (FR-009): an unrecognised failure keeps the retryable path it
+    has always taken, so an ambiguous classification costs one retry rather than
+    a non-retryable refusal for a fault that was going to clear itself.
+    """
+    return any(
+        line.strip().startswith("! [") and line.strip().endswith(_NON_FAST_FORWARD)
+        for line in stderr.splitlines()
+    )
 
 
 def _push_verdict(detail: str) -> str:

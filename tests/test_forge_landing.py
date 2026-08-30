@@ -354,6 +354,12 @@ WORKFLOW_IMPORTS = {
         "compare_trees", "disable_auto_merge", "enqueue_landing",
         "fetch_check_failure", "open_landing_pr", "poll_landing",
         "prepare_landing_pr", "sync_landing_branch", "validate_target_repo",
+        # 100-US3: the deterministic ref conflict's error type, and the landing
+        # result the push helper now returns or does not. Declared growth, and
+        # of the kind this pin allows: an error type is a string the workflow
+        # routes on and the result is a payload dataclass — neither reaches the
+        # forge, which is what `SEAM_MODULES` below actually fences out.
+        "LANDING_REF_CONFLICT", "OpenLandingPrResult",
     },
     "factory.mergequeue.classify": {"classify"},
     "factory.mergequeue.models": {

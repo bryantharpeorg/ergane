@@ -595,17 +595,34 @@ def _open_landing_call_sites() -> dict[str, ast.Call]:
 def test_both_landing_call_sites_leave_the_base_to_the_one_resolution_path() -> None:
     """US3-S3/FR-008: neither call site decides the base — the activity does.
 
-    Two sites, not one (trap 4): `_land` is the first landing and `_reenqueue` is
-    the requeue after a rejection, which is the site a busy epic runs most —
-    every node whose sibling lands ahead of it comes back through it. A fix at
-    the first site alone passes every happy-path test and leaves the common case
-    broken, so the requeue is asserted by name.
+    Two landing paths, not one (trap 4): `_land` is the first landing and
+    `_reenqueue` is the requeue after a rejection, which is the site a busy epic
+    runs most — every node whose sibling lands ahead of it comes back through it.
+    A fix at the first path alone passes every happy-path test and leaves the
+    common case broken, so the requeue is asserted by name.
+
+    100-US3 made the *call* one: both paths push through `_open_landing`, which
+    is where the ref-conflict escalation now sits, for the same reason the base
+    resolution is one path — the two would otherwise drift. So the assertion
+    moved rather than relaxed: the input is built in exactly one place, and both
+    landing paths are held to reaching it.
     """
     sites = _open_landing_call_sites()
 
-    assert set(sites) == {"_land", "_reenqueue"}
-    # The requeue after a rejection, named explicitly.
-    assert "_reenqueue" in sites
+    assert set(sites) == {"_open_landing"}
+    callers = {
+        node.name
+        for node in ast.walk(_workflow_tree())
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "_open_landing"
+    }
+    assert callers == {"_land", "_reenqueue"}, (
+        f"the landing paths that push are {sorted(callers)}; the first landing "
+        "and the requeue after a rejection both have to go through the one path"
+    )
     for name, call in sites.items():
         supplied = {keyword.arg for keyword in call.keywords}
         assert "base" not in supplied, f"{name} still supplies a landing base"
