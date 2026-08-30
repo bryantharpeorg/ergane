@@ -107,6 +107,12 @@ INNOCENT_CORPUS = (
     "assertion out of the fixture and into the test so it actually runs.",
     "The judge could not read your previous response. Answer again with only the "
     "JSON verdict object described above.",
+    # This factory builds itself, so its own judge writes remediations *about*
+    # code named after the criteria. Losing these to the filter would cost a
+    # retry the only guidance it had, on exactly the specs this one belongs to.
+    "The diff does not update the criteria snapshot the judge is given. Change "
+    "the criteria parser so a Then-clause is captured whole, and update the "
+    "criteria set in the fixture to match.",
 )
 
 
@@ -380,6 +386,22 @@ def test_the_proposal_does_not_reach_the_judges_own_next_invocation() -> None:
 
     assert PROPOSAL not in user
     assert ACTIONABLE in user
+
+
+def test_the_proposal_is_recognised_when_it_names_the_scenario_by_id() -> None:
+    """The shortest form of the same sentence. A judge that has been told not to
+    propose a criterion change will not phrase the next one the same way."""
+    for text in (
+        "Consider rewording US1-S2 to name an artefact the diff carries.",
+        "The acceptance criterion should be relaxed to something the diff shows.",
+        "Reword the Then-clause so it names a file.",
+        "Or move the bar to what this implementation actually does.",
+    ):
+        screened = screen_feedback(text)
+        assert screened.proposals == (text,), (
+            f"not recognised as a proposal to change the bar: {text!r}"
+        )
+        assert text not in screened.carried
 
 
 def test_a_welded_report_and_proposal_is_withheld_and_still_recorded() -> None:

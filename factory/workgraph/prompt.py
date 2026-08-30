@@ -61,6 +61,7 @@ from factory.verify.models import (
     OutputCheck,
     VerificationResult,
 )
+from factory.verify.remediation import screen_feedback
 from factory.workgraph.models import (
     STANDARDS_SOURCE_LANDING,
     STANDARDS_SOURCE_PINNED,
@@ -881,7 +882,16 @@ def _attempt_block(position: int, evidence: AttemptEvidence) -> str:
 
     judge = result.judge
     if judge is not None and judge.feedback.strip():
-        parts.append(f"Judge — {judge.outcome.value}:\n\n{_quote(judge.feedback)}")
+        # The one transform this module makes to evidence, and it is narrower
+        # than it looks (102 US3, FR-009): a sentence proposing the acceptance
+        # criteria be changed is withheld and replaced by the notice that says
+        # so, and everything else — including the judge reporting that a
+        # criterion cannot be satisfied at all — arrives byte-for-byte. A
+        # remediation an agent is told to follow is a remediation an agent will
+        # follow, and the criteria are the one thing it may not touch. The
+        # withheld text is on the verdict still, for the operator's surfaces.
+        carried = screen_feedback(judge.feedback).carried
+        parts.append(f"Judge — {judge.outcome.value}:\n\n{_quote(carried)}")
 
     if len(parts) == 1:
         parts.append(_NOTHING_FAILED_LOUDLY)

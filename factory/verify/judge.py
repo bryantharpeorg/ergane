@@ -72,6 +72,7 @@ from factory.verify.models import (
     JudgeVerdict,
     VerificationConfig,
 )
+from factory.verify.remediation import screen_feedback
 
 #: Judge invocations per verification cycle are 1 + this (SC-003). Sourced from
 #: `VerificationConfig` rather than restated — that field is the knob an operator
@@ -138,6 +139,13 @@ scenario individually. A scenario passes only if the diff demonstrably satisfies
 every one of its Given/When/Then steps; if the evidence is not in the diff, the \
 scenario does not pass. Never pass a scenario because the change looks \
 reasonable overall.
+
+The acceptance criteria are the standard, not a draft: never propose changing, \
+rewording or reconciling a criterion or a scenario as a remediation, and never \
+suggest the agent edit them. If a criterion cannot be satisfied by any diff, or \
+cannot be proven from one, say so plainly in your feedback and fail the \
+scenario — that report is for the operator, who is the only one who may change \
+a criterion.
 
 Respond with ONLY this JSON object, and nothing before or after it:
 
@@ -289,13 +297,19 @@ def build_prompt(
             blocks += ["", f"## {scenario.scenario_id}", "", scenario.raw_text]
 
     if prior_feedback:
+        # Screened, not quoted raw (102 US3, FR-009): a proposal to change a
+        # criterion, quoted back to the judge as "what was said then", is a
+        # proposal the judge is being invited to repeat — and this same text
+        # reaches the agent. Nothing else is touched; feedback that proposes no
+        # edit arrives byte-for-byte, which is what "verbatim" below promises.
+        screened = screen_feedback(prior_feedback)
         blocks += [
             "",
             "# Feedback on the previous attempt",
             "",
             "This node has already been rejected once. What was said then, verbatim:",
             "",
-            prior_feedback,
+            screened.carried,
         ]
 
     blocks += ["", "# Diff produced by the node", "", prepared.text]
