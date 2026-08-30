@@ -1,6 +1,22 @@
 ---
-state: draft
+state: landed
 fixes:
+# Attested landed 2026-08-29. US1 2cedd3429e22, US2 9df94e33c4b2,
+# US3 62cc8207e3db -- three stories, one round, ALL THREE FIRST ATTEMPT,
+# dispatched 22:13, landed 22:40 / 22:49 / 23:12 -- 59 minutes for three.
+#
+# THE DEMONSTRATION, RUN AND RECORDED, because the gate could not prove this
+# spec worked -- proving it required a registry change the spec deliberately
+# does not make. Same four files, same swap of `implementer` to
+# `agent: subscription / model: claude-opus-5`:
+#
+#   2026-08-29 20:56, before this spec:   28 failed, 35 passed
+#   2026-08-29 23:24, after it landed:    65 passed
+#
+# That pair is the evidence and either half alone proves nothing: a suite
+# already green proves no fix, and one green only afterwards proves no
+# regression was avoided. The operator's builder was switched to
+# opus-closer immediately after, which is what the spec existed for.
   - ci/test-suite-pins-the-operator-dial
   - ci/landed-tests-read-the-operators-real-ledger-and-are-green-only-where-it-is-absent
 # DRAFTED 2026-08-29 by the operator session, against ergane-buildout at c94b547,
