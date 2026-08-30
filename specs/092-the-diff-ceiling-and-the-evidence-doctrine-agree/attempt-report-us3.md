@@ -119,4 +119,22 @@ The three claims the demonstration makes:
 
 ### The gate
 
-<!-- GATE -->
+`factory.yaml` declares one gate for this repository, and it was run whole:
+
+```
+$ uv run pytest -q
+5267 passed, 58 skipped, 7 warnings in 375.90s (0:06:15)
+```
+
+Two guards outside this story's own tests had to be answered on the way, and
+both are recorded here because each one is a rule this story would otherwise
+have broken quietly:
+
+- `test_the_component_cannot_even_spell_a_cap` (D-021) refuses enforcement
+  vocabulary in this component's *code*, docstrings excluded — so the field
+  could not be called `budget_bytes`. It is `limit_bytes`, which is also the
+  name its sibling `DiffSizeRefusal` already carries.
+- `test_every_boundary_field_has_a_default_or_is_allowlisted` (049 FR-006)
+  required a stated reason for two fields with no default. Both are
+  measurements, and a defaulted byte count would answer "how much did the judge
+  see" with a number nobody took.
