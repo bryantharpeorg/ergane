@@ -670,14 +670,45 @@ class LLMProbe:
         )
 
 
-class TemporalProbe:
-    """Pings Temporal and confirms the configured namespace exists.
+def _whose_temporal_server(mode: str) -> str:
+    """The clause that says whose server did not answer, or nothing (119-US3).
 
-    For `external` mode the probe dials the declared address and checks the
-    namespace.  For `managed` mode the unit generation is the contract; the probe
-    reports that uptime is the operator's responsibility only when the config
-    explicitly chose external — a silent pass would make a remote outage a
-    mystery (FR-010).
+    Wording only — no outcome hangs on it; the dial decides that in both modes.
+    A managed failure is one an operator can act on locally, and the unit name
+    is the first thing they need, so it is read from the module that generates
+    that unit rather than spelled a second time here. Imported inside the
+    function because this module is on the CLI's import path and
+    `factory.supervision.units` is not.
+    """
+    from factory.supervision.units import MANAGED_TEMPORAL_MODE, TEMPORAL_UNIT
+
+    if mode != MANAGED_TEMPORAL_MODE:
+        return ""
+    return (
+        f"; this installation declares managed Temporal, so the server is this "
+        f"engine's own {TEMPORAL_UNIT} — `systemctl --user status "
+        f"{TEMPORAL_UNIT}` says why it is not answering"
+    )
+
+
+class TemporalProbe:
+    """Dials Temporal and confirms the configured namespace exists.
+
+    Both modes, by the same round trip. Managed mode used to return here without
+    asking anything — `namespace_exists=True` hardcoded, and a detail asserting
+    that the engine supervises the server — on the reasoning that unit generation
+    was the contract and dialling would need a live server. The check did not
+    look at unit generation either, and its premise was false besides: 119-US1
+    found that the declared mode never reached the layout, so the unit was never
+    written. `[PASS] temporal` was printed three times over a host with no server
+    on it, which is what let the whole defect survive three patches.
+
+    So the answer is asked for rather than assumed, and needing a live server is
+    the point: on a managed installation the server is one `ergane worker
+    install` started, and "is it up" is the question `--verify` exists to
+    answer. Unreachable is a *failure* (119-US3, FR-009, plan trap 7) — a dial
+    that read "connection refused" as inconclusive and passed anyway would be
+    this same defect with more code in it.
     """
 
     name = "temporal"
@@ -685,23 +716,15 @@ class TemporalProbe:
     async def gather(self, config: ControlPlaneConfig) -> TemporalSnapshot:
         from temporalio.service import RPCError, RPCStatusCode
 
-        if config.temporal.mode == "managed":
-            # Managed mode installs and supervises its own server; the verify
-            # check is whether the unit was generated, which happens at install
-            # time, not here.  Returning a finding would either be misleading or
-            # would require a live server already running.
-            return TemporalSnapshot(
-                address="",
-                namespace="",
-                namespace_exists=True,
-                detail="managed Temporal: the engine installs and supervises the server; uptime is verified by the supervision probe",
-            )
-
         # Resolved once, and the same resolution the connect below is built
         # from, so the address this finding names is the one it dialed (SC-006).
+        # Managed mode declares neither half — the parser returns on the mode
+        # alone — so both come from the resolver's defaults, which are the
+        # address and namespace the generated unit starts the server on.
         target = temporal_target_for(config.temporal, source=_DECLARED_SOURCE)
         address, namespace = target.address, target.namespace
         timeout = config.temporal.timeout_s
+        whose = _whose_temporal_server(config.temporal.mode)
 
         try:
             # The whole round trip is bounded, connect included.  An address that
@@ -717,7 +740,7 @@ class TemporalProbe:
                 address=address,
                 namespace=namespace,
                 namespace_exists=False,
-                detail=f"timed out after {timeout}s waiting for Temporal at {address}",
+                detail=f"timed out after {timeout}s waiting for Temporal at {address}{whose}",
             )
         except RPCError as exc:
             if exc.status is RPCStatusCode.NOT_FOUND:
@@ -735,14 +758,14 @@ class TemporalProbe:
                 address=address,
                 namespace=namespace,
                 namespace_exists=False,
-                detail=f"Temporal at {address} could not confirm namespace `{namespace}`: {type(exc).__name__}: {exc}",
+                detail=f"Temporal at {address} could not confirm namespace `{namespace}`: {type(exc).__name__}: {exc}{whose}",
             )
         except Exception as exc:
             return TemporalSnapshot(
                 address=address,
                 namespace=namespace,
                 namespace_exists=False,
-                detail=f"Temporal at {address} did not answer: {type(exc).__name__}: {exc}",
+                detail=f"Temporal at {address} did not answer: {type(exc).__name__}: {exc}{whose}",
             )
 
         return TemporalSnapshot(

@@ -50,6 +50,7 @@ from factory.supervision.units import (
     WORKER_TEMPLATE_UNIT,
     CommandResult,
     InstallLayout,
+    generated_files,
     install,
     uninstall,
 )
@@ -236,6 +237,76 @@ def test_an_external_install_creates_no_temporal_directory(
     install(external, run=FakeSystemctl())
 
     assert not external.temporal_db_path.parent.exists()
+
+
+def test_the_temporal_units_own_command_line_reaches_the_server(
+    tmp_path: Path,
+) -> None:
+    """US3-S1: the unit as generated starts the server, executed rather than read.
+
+    US2 fixed the wrapper and proved it with a hand-written argument list; this
+    runs the *generated* unit's `ExecStart` through `/bin/sh` against a stub
+    interpreter, which is the only thing that can show the two halves agree. On
+    the tree this story started from they did not:
+
+        $ ergane-run.sh factory.supervision.temporal_server --db-filename … \\
+        >     --namespace ergane --log-level warn
+        ergane-run.sh: 19: cd: Illegal option --
+
+    The wrapper's second and third positionals are the working directory and the
+    interpreter (plan trap 1), so a unit that passes flags straight after the
+    module name hands `--db-filename` to `cd`. The unit has to spell out the two
+    defaults it does not mean to override — and a server that exits 2 before it
+    opens a socket is a server that cannot start, whatever the file says.
+    """
+    import shlex
+    import subprocess
+
+    install_root = tmp_path / "erg"
+    interpreter = install_root / ".venv/bin/python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        "#!/bin/sh\n"
+        'echo "cwd=$(pwd)"\n'
+        'for argument in "$@"; do echo "arg=$argument"; done\n',
+        encoding="utf-8",
+    )
+    interpreter.chmod(0o755)
+    layout = InstallLayout(
+        install_root=install_root,
+        interpreter=interpreter,
+        unit_dir=tmp_path / "units",
+        generated_dir=tmp_path / "state/ergane/supervision",
+        temporal_mode="managed",
+    )
+    for generated in generated_files(layout):
+        generated.directory.mkdir(parents=True, exist_ok=True)
+        generated.path.write_text(generated.text, encoding="utf-8")
+        generated.path.chmod(generated.mode)
+
+    (exec_start,) = [
+        line.partition("=")[2]
+        for line in texts(layout)[TEMPORAL_UNIT].splitlines()
+        if line.startswith("ExecStart=")
+    ]
+    spoken = subprocess.run(  # noqa: S603 - the generated line, run as systemd would
+        ["/bin/sh", *shlex.split(exec_start)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+
+    assert f"cwd={install_root}" in spoken
+    assert [line.removeprefix("arg=") for line in spoken if line.startswith("arg=")] == [
+        "-m",
+        "factory.supervision.temporal_server",
+        "--db-filename",
+        str(layout.temporal_db_path),
+        "--namespace",
+        MANAGED_NAMESPACE,
+        "--log-level",
+        "warn",
+    ]
 
 
 # --- T014 [US3-S2 / FR-008, plan trap 5] the ordering dependency -------------
