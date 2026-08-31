@@ -825,6 +825,18 @@ def _raising_temporal_factory(config: Cfg.Temporal) -> Any:
     raise verify_module.ServiceNotAnswering("temporal", reason="not configured in this test")
 
 
+async def _answering_temporal_namespace(config: Cfg.Temporal, namespace: str) -> str:
+    """A seam that answers the probe's describe-namespace round trip.
+
+    Needed by any test that asserts `exit_code == 0` while declaring managed
+    Temporal. Until 119-US3 the probe returned a hardcoded pass for that mode, so
+    a run with no server anywhere still exited 0; it dials now, in both modes, and
+    a test whose subject is another check has to say so by standing the server in
+    rather than by inheriting a check that could not fail.
+    """
+    return namespace
+
+
 # ---------------------------------------------------------------------------
 # T014 [US2-S4] timeout: a closed port fails within its bound
 # ---------------------------------------------------------------------------
@@ -1323,6 +1335,14 @@ async def test_escalation_none_does_not_fail_the_run(
     monkeypatch.setattr(verify_module, "_host_seam_factory", _passing_host_seam)
     monkeypatch.setattr(
         verify_module, "_forge_capability_seam_factory", _capable_forge_seam
+    )
+    # This config declares managed Temporal — the template drops the address and
+    # namespace lines that way — and since 119-US3 that mode is dialled like any
+    # other. The subject here is the escalation finding's effect on the exit
+    # code, so the server is stood in rather than the check being one that
+    # cannot fail.
+    monkeypatch.setattr(
+        verify_module, "_describe_temporal_namespace", _answering_temporal_namespace
     )
 
     findings, exit_code = await verify_module.verify_controlplane_async(str(config_path))
