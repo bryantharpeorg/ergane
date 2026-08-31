@@ -607,6 +607,86 @@ def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
     return defaults
 
 
+@dataclasses.dataclass(frozen=True)
+class _ExistingManifest:
+    """The manifest a repository already has, read the way `--check` reads it.
+
+    `text` and `declared` are the file as written — the bytes an operator would
+    lose and the keys they actually typed, including any this module has no
+    vocabulary for. `config` is the loader's resolved answer, which is what the
+    wiring is driven from: a manifest that declares no `landing_branch` still
+    *has* one, and the resolved value is the one the forge must be pointed at.
+    """
+
+    path: Path
+    text: str
+    declared: dict[str, Any]
+    config: FactoryConfig
+
+
+def _existing_manifest(repo_root: Path) -> _ExistingManifest | None:
+    """The committed manifest, `None` when there is none — refusing a broken one.
+
+    120 FR-001, trap 1: "valid" means the schema's answer and nobody else's.
+    This asks `resolve_manifest_path` and `load_factory_config`, the pair
+    `gather_init_facts` already asks for `ergane init --check`, so the two verbs
+    cannot call one file valid and replaced. A second notion of validity inside
+    init is precisely how a manifest gets kept by one door and flattened by the
+    other.
+
+    A file the schema refuses raises rather than being ignored (FR-004, trap 3).
+    The tempting reading of "leave a valid manifest alone" is "so replace an
+    invalid one", and that is worse than the defect this story fixes: it
+    destroys the file of an operator who is halfway through editing it. The
+    loader's own error is quoted rather than paraphrased, for the same reason
+    the loader is the one asked.
+
+    Absent is not a refusal — it is `None`, and the caller writes a manifest
+    exactly as it does today (FR-003).
+    """
+    path, _name = resolve_manifest_path(repo_root)
+    if not path.is_file():
+        return None
+
+    try:
+        config = load_factory_config(path)
+    except FactoryConfigError as refusal:
+        raise OperatorError(
+            "\n".join(
+                [
+                    str(refusal),
+                    "",
+                    f"{path} is unchanged: init does not replace a manifest it "
+                    "cannot read. Fix the file — `ergane init --check` reports "
+                    "the same finding — or move it aside to have a new one "
+                    "written.",
+                ]
+            ),
+            code=EXIT_USER,
+        ) from None
+
+    text = path.read_text(encoding="utf-8")
+    # A mapping, guaranteed: the loader has already refused every document whose
+    # root is not one.
+    declared = dict(yaml.safe_load(text) or {})
+    return _ExistingManifest(path=path, text=text, declared=declared, config=config)
+
+
+def _declared_wiring_values(existing: _ExistingManifest) -> dict[str, Any]:
+    """The manifest values `_wire` acts on, taken from the file init kept.
+
+    FR-002, trap 2: not rewriting the manifest is not declining the job, so the
+    wiring still needs a gate list and a landing branch. They come from the
+    loader's resolved config rather than from the raw document, because a
+    manifest may leave `landing_branch` to the schema's default and the forge
+    still has to be pointed at a real branch.
+    """
+    values = dict(existing.declared)
+    values["gates"] = dict(existing.config.gates)
+    values["landing_branch"] = existing.config.landing_branch
+    return values
+
+
 #: `safe_dump` closes a document whose root is a *scalar* with an explicit
 #: end-of-document marker — `1\n...\n`, `main\n...\n`. Collections do not get
 #: one. Left in, it reached the terminal as part of the offered default and the
@@ -823,28 +903,52 @@ def init_command(args: argparse.Namespace) -> int:
             non_interactive=non_interactive,
         )
 
-        defaults = _build_defaults(repo_root)
+        # FR-001, and the first act of the run that touches this repository's
+        # own declarations: what is already there, judged by the loader rather
+        # than by init. A manifest the schema refuses stops the run here, before
+        # anything is written (FR-004).
+        existing = _existing_manifest(repo_root)
 
-        # Seed the in-progress manifest with placeholders/defaults so the first
-        # question can already be validated against the full parser.
-        manifest_values: dict[str, Any] = {
-            key: defaults[key]
-            for key in _TOP_LEVEL_KEYS
-            if key in defaults
-        }
+        if existing is not None and non_interactive:
+            # FR-001. Nobody was asked anything, so nobody asked for a change:
+            # the documented default for a repository that already declares a
+            # valid manifest is that manifest. The interview is skipped rather
+            # than run-and-discarded, so the run reports what it did rather than
+            # a list of defaults it applied to nothing.
+            manifest_values: dict[str, Any] = _declared_wiring_values(existing)
+            keeps_manifest = True
+        else:
+            defaults = _build_defaults(repo_root)
 
-        for key in _TOP_LEVEL_KEYS:
-            default_value = manifest_values.get(key)
-            value = _ask_for_key(
-                key,
-                default_value=default_value,
-                manifest_values=manifest_values,
-                prompter=prompter,
+            # Seed the in-progress manifest with placeholders/defaults so the
+            # first question can already be validated against the full parser.
+            manifest_values = {
+                key: defaults[key]
+                for key in _TOP_LEVEL_KEYS
+                if key in defaults
+            }
+
+            for key in _TOP_LEVEL_KEYS:
+                default_value = manifest_values.get(key)
+                value = _ask_for_key(
+                    key,
+                    default_value=default_value,
+                    manifest_values=manifest_values,
+                    prompter=prompter,
+                )
+                if value is None:
+                    manifest_values.pop(key, None)
+                else:
+                    manifest_values[key] = value
+
+            # The same rule with an operator in the room: their answers are the
+            # request, so a manifest is rewritten when the answers say something
+            # the file does not already say, and kept — comments and all — when
+            # they do not. An interview that changes nothing is not a licence to
+            # re-emit the file through `safe_dump`.
+            keeps_manifest = (
+                existing is not None and manifest_values == existing.declared
             )
-            if value is None:
-                manifest_values.pop(key, None)
-            else:
-                manifest_values[key] = value
 
         # The slug is declared by the operator and lives in the engine's registry,
         # never in the manifest: it is what the engine calls this repo, not what the
@@ -855,7 +959,11 @@ def init_command(args: argparse.Namespace) -> int:
         # pinned to the last invocation's flag.
         _require_explicit_consent = False
 
-    text = _render_manifest(manifest_values)
+    # FR-002, trap 2: the manifest write is one part of the job, not the job.
+    # Skipping it skips nothing else — the runtime root, the `.gitignore` line,
+    # the registry row, the schedule and the wiring all still happen below.
+    kept_manifest = existing if keeps_manifest else None
+    text = None if kept_manifest is not None else _render_manifest(manifest_values)
     _write_scaffold(repo_root, text)
 
     for line in reports:
@@ -889,8 +997,14 @@ def init_command(args: argparse.Namespace) -> int:
     )
 
     print(f"joined {repo_root.resolve()} as slug '{slug}'")
+    if kept_manifest is not None:
+        # Reported as its own line, above the list of what *was* written: an
+        # operator who has just been told their manifest is untouched does not
+        # then have to notice it missing from a list of writes.
+        print(f"kept: {kept_manifest.path} is valid and was left unchanged")
     print("written:")
-    print(f"  {repo_root / MANIFEST_NAME}")
+    if kept_manifest is None:
+        print(f"  {repo_root / MANIFEST_NAME}")
     print(f"  {repo_root / '.gitignore'}")
     print(f"  {repo_root / RUNTIME_ROOT}")
     print(_registration_line(registration))
@@ -1285,10 +1399,19 @@ def _engine_facts(repo_root: Path) -> dict[str, Any]:
     return {**facts, "engine_repo_mounted": mounted}
 
 
-def _write_scaffold(repo_root: Path, manifest_text: str) -> None:
-    """Write exactly the declared files and nothing else."""
-    manifest_path = repo_root / MANIFEST_NAME
-    manifest_path.write_text(manifest_text, encoding="utf-8")
+def _write_scaffold(repo_root: Path, manifest_text: str | None) -> None:
+    """Write exactly the declared files and nothing else.
+
+    `manifest_text` is `None` when the repository's own manifest stands (120
+    FR-001): the rest of the scaffold is still written, because the manifest is
+    one of init's outputs and not the whole of it (FR-002, trap 2). A caller
+    that means "leave the file alone" passes `None` rather than re-rendering the
+    text it read, since a render that happens to round-trip today still loses
+    every comment the moment a key moves.
+    """
+    if manifest_text is not None:
+        manifest_path = repo_root / MANIFEST_NAME
+        manifest_path.write_text(manifest_text, encoding="utf-8")
 
     gitignore = repo_root / ".gitignore"
     line = f"{RUNTIME_ROOT}/\n"
