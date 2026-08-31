@@ -10,7 +10,7 @@ drift apart only over a failing test. (A copy, not a read: the contract lives
 under `specs/`, which is documentation, not something a worker unpacks at
 runtime.)
 
-Four decisions carry the weight here:
+Five decisions carry the weight here:
 
 - **WAL with a busy timeout (R10, inherited from 001's R6).** Sibling nodes
   finish verifying concurrently on the one host that owns `.factory/`; in
@@ -41,8 +41,9 @@ Four decisions carry the weight here:
   node's builds oldest first and each build's attempts together, because the
   rows US1 stopped destroying were still being handed back interleaved at every
   attempt number two dispatches shared. The order is the dispatch's earliest
-  `finished_at` and never the row id: ids are minted at insert, and the rows a
-  pre-US1 re-dispatch overwrote kept the ids of the build it replaced. Inside
+  `finished_at`, and a row id is consulted only where that clock ties — ids are
+  minted at insert, and the rows a pre-US1 re-dispatch overwrote kept the ids of
+  the build it replaced, so leading with them reads a history backwards. Inside
   one dispatch nothing moved — `(attempt, form)`, as since 002 — because a node
   dispatched once must read exactly as it always has (FR-009).
 - **Evidence round-trips.** Gate results, the output check and the judge verdict
@@ -746,9 +747,10 @@ _SELECT_RESULT_SQL = (
 #: ordering a re-dispatched node by it interleaves the two builds at every
 #: attempt number they share (plan trap 7).
 #:
-#: Correlated rather than a window function or a join, because it is read from
-#: the same three columns `idx_vr_node` already covers and the alternative
-#: shapes buy nothing at this table's size.
+#: Correlated rather than a window function, because it reads the rows
+#: `idx_vr_node` already narrows to `(epic_id, node_id)` and the alternative
+#: shape buys nothing at this table's size — a node's whole history is tens of
+#: rows, and every reader here is a report rather than a hot path.
 _DISPATCH_CLOCK_SQL = (
     "(SELECT MIN(d.finished_at) FROM verification_results AS d "
     "WHERE d.epic_id = r.epic_id AND d.node_id = r.node_id "
