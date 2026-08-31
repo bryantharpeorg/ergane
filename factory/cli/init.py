@@ -79,6 +79,17 @@ valid, because every key that vanished is optional. A manifest that the loader
 accepts is now *kept* (`_existing_manifest`, `_write_scaffold`'s `None`), the
 rest of init runs exactly as before, and a manifest the loader refuses stops the
 run with its error quoted rather than being replaced by a fresh one.
+
+120's US2 covers the rewrite that is left. It carries what the file declared
+instead of re-deriving it: `_init_default` consults the computed defaults
+*before* returning "absent" for an optional key, so the committed value wins and
+absent means the repository declared nothing; `_load_existing_defaults` reads
+those keys from the document as written, because for an optional key the
+question is what the operator declared and not what the schema resolved; and
+`_carried_forward` brings `ladder` and `verify` through without the interview
+growing a question, refusing rather than dropping a key it cannot write back.
+What no rewrite can carry is comments, so one that will lose them says so before
+it writes (`_comment_warning`) — the whole reason US1 comes first.
 """
 
 from __future__ import annotations
@@ -100,10 +111,10 @@ from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
 from factory.roadmap import schedule as roadmap_schedule
 from factory.verify.factory_yaml import (
-    DEFAULT_FORGE_NAME,
     MANIFEST_NAME,
     _SUPPORTED_VERSION,
     _TOP_LEVEL_KEYS,
+    _V2_TOP_LEVEL_KEYS,
     FactoryConfigError,
     load_factory_config,
     parse_factory_config,
@@ -469,11 +480,24 @@ _OPTIONAL_KEYS = (
     "diff_refusal_bytes",
 )
 
-#: Spelled as a constant only because `tests/test_ergane_cli.py`'s guard against
-#: a hardcoded list of CLI noun names matches a bracket followed by any quoted
-#: noun name, and this manifest key shares its word with the `roadmap` noun.  A
-#: subscript by literal would trip it; do not inline this back.
-_ROADMAP_KEY = "roadmap"
+#: Every key a manifest this module writes may carry — the parser's own v2
+#: vocabulary, never a second list beside it (120 FR-006).
+#:
+#: `_TOP_LEVEL_KEYS` is what the *interview* asks about, and the two tuples are
+#: deliberately not the same one. `ladder` and `verify` are in this tuple and in
+#: no prompt: they are carried from the file, not asked about, which is why
+#: `tests/test_forge_manifest.py`'s `set(_PROMPTS) == set(_TOP_LEVEL_KEYS)` still
+#: holds. Growing the question set was never what FR-006 asked for (trap 5).
+#:
+#: This is also the tuple `_carried_forward` refuses against: a key outside it is
+#: one no rewrite here can carry, and the only two answers to that are refusing
+#: and dropping it silently. Dropping it silently is what produced this epic.
+#:
+#: Read by name rather than subscripted by literal wherever a key is looked up:
+#: `tests/test_ergane_cli.py`'s guard against a hardcoded list of CLI noun names
+#: matches a bracket followed by any quoted noun name, and `roadmap` is both a
+#: manifest key and a CLI noun.
+_KNOWN_KEYS = _V2_TOP_LEVEL_KEYS
 
 #: Placeholder values that keep a partial manifest valid for full-parser checks.
 #: `landing_branch` is the *last* resort rather than the answer: see
@@ -579,12 +603,37 @@ def _default_gates(repo_root: Path) -> dict[str, str]:
 
 
 def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
-    """If a manifest already exists, return its values as interview defaults."""
+    """If a manifest already exists, return its values as interview defaults.
+
+    Two sources, and which one answers which key is the whole of 120 FR-005.
+
+    The keys the schema **resolves** — `version`, `runtime`, `gates`,
+    `landing_branch` — come from the loader, because a manifest that declares no
+    `landing_branch` still has one and the interview has to offer the value the
+    repository actually runs with.
+
+    Every optional key comes from the document **as written**, because for those
+    the question is not "what does this repository run with" but "what did the
+    operator declare", and a rewrite carries the answer to the second. The
+    distinction is not academic — it is where the data went. `forge` resolves to
+    `github` whether it was declared or not, so a carry-forward taken from the
+    typed config cannot tell a manifest that spells the default out from one
+    that says nothing, and this function used to settle that by dropping the
+    operator's line (the cost 034 FR-005 accepted, and no longer has to).
+    `diff_refusal_bytes` resolves to a number nobody typed. `caches` resolves
+    every declared path against *this host's* home, so carrying the typed value
+    would rewrite `~/.npm` into one machine's answer for it.
+
+    An unreadable manifest is no defaults at all, unchanged: `_existing_manifest`
+    is what refuses a broken file (FR-004), and it has already run by the time
+    anything here matters.
+    """
     manifest = repo_root / MANIFEST_NAME
     if not manifest.is_file():
         return {}
     try:
         config = load_factory_config(manifest)
+        document = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
     defaults: dict[str, Any] = {
@@ -593,27 +642,13 @@ def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
         "gates": dict(config.gates),
         "landing_branch": config.landing_branch,
     }
-    if config.timeouts:
-        defaults["timeouts"] = dict(config.timeouts)
-    if config.writes:
-        # Offered back so a re-run reconciles the declaration rather than
-        # dropping it: a repo whose lockfile gate is declared would otherwise
-        # come out of `ergane init` with that gate refused again (084 FR-009).
-        defaults["writes"] = dict(config.writes)
-    if config.standards is not None:
-        defaults["standards"] = config.standards
-    if config.roadmap is not None:
-        defaults[_ROADMAP_KEY] = dataclasses.asdict(config.roadmap)
-    if config.forge != DEFAULT_FORGE_NAME:
-        # Only a forge that is *not* the default is offered back. `forge` is
-        # resolved rather than nullable, so a manifest declaring `github` is
-        # indistinguishable here from one declaring nothing — and offering the
-        # default back to every repo would make an otherwise unchanged re-run
-        # write a key nobody asked for, which is 034 FR-005's complaint exactly.
-        # The cost is narrow and in the safe direction: a manifest that spells
-        # out the default loses that spelling on a re-run; one that names any
-        # other forge keeps it.
-        defaults["forge"] = config.forge
+    # Declared means declared, key by key and by name rather than by literal
+    # (see `_KNOWN_KEYS`). A loop rather than a stanza each: the stanzas are how
+    # `caches` came to have a branch in `_build_defaults` that nothing could
+    # reach, and how `diff_refusal_bytes` never got one at all.
+    for key in _OPTIONAL_KEYS:
+        if key in document:
+            defaults[key] = document[key]
     return defaults
 
 
@@ -626,9 +661,15 @@ class _ExistingManifest:
     loader's resolved answer, which is what the wiring is driven from: a
     manifest that declares no `landing_branch` still *has* one, and the resolved
     value is the one the forge must be pointed at.
+
+    `text` is the bytes as committed, and it is here for the one thing neither
+    of the other two can answer: whether this file carries comments a rewrite
+    would destroy (120 FR-009). Both `declared` and `config` are what survives
+    `yaml.safe_load`, and what a rewrite loses is precisely what does not.
     """
 
     path: Path
+    text: str
     declared: dict[str, Any]
     config: FactoryConfig
 
@@ -674,10 +715,125 @@ def _existing_manifest(repo_root: Path) -> _ExistingManifest | None:
             code=EXIT_USER,
         ) from None
 
+    text = path.read_text(encoding="utf-8")
     # A mapping, guaranteed: the loader has already refused every document whose
     # root is not one, and every byte sequence that does not decode.
-    declared = dict(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
-    return _ExistingManifest(path=path, declared=declared, config=config)
+    declared = dict(yaml.safe_load(text) or {})
+    return _ExistingManifest(path=path, text=text, declared=declared, config=config)
+
+
+def _carried_forward(existing: _ExistingManifest | None) -> dict[str, Any]:
+    """The declarations a rewrite must carry that nobody is asked about.
+
+    120 FR-006 and FR-007, which are one function because they are one question:
+    what does this module do with a key it is not going to ask a question about?
+    There are exactly two answers. Carry it, if it is a key the schema knows and
+    this writer can emit. Refuse, naming it, if it is not. What there is not is a
+    third answer, and the third answer is what shipped: `ladder` and `verify`
+    were dropped on every path, by a writer that emitted `_TOP_LEVEL_KEYS` and
+    had never heard of them, into a file the operator then committed.
+
+    The refusal reads as unreachable and is not. `_reject_unknown_keys` refuses
+    a key *the schema* does not know before `_existing_manifest` returns, so a
+    typo never arrives here — the case that does is a key the schema has learned
+    and this module has not, which is not hypothetical. It is the state this
+    epic found the tree in: `factory/verify/factory_yaml.py` named `ladder`
+    twenty-nine times and `factory/cli/init.py` named it zero. A refusal costs
+    one run and one error message; the alternative cost a repository its
+    configuration and erased the evidence on the way out.
+    """
+    if existing is None:
+        return {}
+
+    unknown = [key for key in existing.declared if key not in _KNOWN_KEYS]
+    if unknown:
+        raise OperatorError(
+            "\n".join(
+                [
+                    f"{existing.path} declares "
+                    + ", ".join(f"`{key}`" for key in unknown)
+                    + ", which `ergane init` cannot write back.",
+                    "",
+                    "The rewrite was refused and the file is unchanged: a key "
+                    "this verb does not recognise is a key it would have "
+                    "dropped, and a manifest that comes back smaller than it "
+                    "went in is how a repository loses its configuration "
+                    "without anyone reading a diff.",
+                    "",
+                    "Either remove the key, or leave the manifest as it is — "
+                    "`ergane init --check` judges it without writing to it.",
+                ]
+            ),
+            code=EXIT_USER,
+        )
+
+    return {
+        key: existing.declared[key]
+        for key in _KNOWN_KEYS
+        if key not in _TOP_LEVEL_KEYS and key in existing.declared
+    }
+
+
+#: What a manifest opens a comment with, and the two characters that may precede
+#: one. YAML starts a comment at a `#` that begins a line or follows whitespace;
+#: a `#` anywhere else belongs to the value it sits in — `test: "make x#y"` is a
+#: gate command, not prose, and a warning that counted it would fire about a
+#: loss that cannot happen.
+_COMMENT = "#"
+
+
+def _comment_lines(text: str) -> list[str]:
+    """Every line of a manifest carrying a comment no emitter here can reproduce.
+
+    120 FR-009's mechanism, and the reason it is a scan rather than a parse:
+    comments are not tokens. `yaml.safe_load` discards them before anything in
+    this module could see one, which is the same fact that makes `safe_dump`
+    unable to write them and makes this warning necessary at all.
+
+    Quoting is tracked so a `#` inside a scalar is not counted. Escapes inside a
+    double-quoted scalar are not, which can only over-count — a spurious warning
+    on a rewrite that loses nothing, rather than silence on one that does.
+    """
+    found: list[str] = []
+    for line in text.splitlines():
+        quote: str | None = None
+        for index, char in enumerate(line):
+            if quote is not None:
+                if char == quote:
+                    quote = None
+                continue
+            if char in "\"'":
+                quote = char
+                continue
+            if char == _COMMENT and (index == 0 or line[index - 1] in " \t"):
+                found.append(line)
+                break
+    return found
+
+
+def _comment_warning(existing: _ExistingManifest) -> str | None:
+    """What to tell the operator before a rewrite discards their prose, or None.
+
+    FR-009. Said *before* the write, because after it the file is already gone
+    and the sentence is a report. The count is stated rather than the lines
+    quoted: the operator has the original in git and needs to know how much to
+    go and get, not to read it back off a terminal.
+
+    US1 means this is rare — a valid manifest is kept, comments and all — and
+    rare is what keeps it readable. A caution printed on every run is one
+    operators learn to scroll past, which is how the next silent loss goes
+    unread.
+    """
+    comments = _comment_lines(existing.text)
+    if not comments:
+        return None
+    lines = "line" if len(comments) == 1 else "lines"
+    return (
+        f"warning: {existing.path} carries {len(comments)} comment {lines}, and "
+        "this rewrite cannot keep them — the manifest is emitted through "
+        "`yaml.safe_dump`, which writes no comment. They are still in git; "
+        "`git diff` before you commit, and copy back what you meant to keep."
+    )
 
 
 def _declared_wiring_values(existing: _ExistingManifest) -> dict[str, Any]:
@@ -736,23 +892,16 @@ def _build_defaults(repo_root: Path) -> dict[str, Any]:
         # re-point it at whatever branch happens to be checked out.
         "landing_branch": existing.get("landing_branch", _default_landing_branch(repo_root)),
     }
-    if "timeouts" in existing:
-        defaults["timeouts"] = existing["timeouts"]
-    if "standards" in existing:
-        defaults["standards"] = existing["standards"]
-    if "roadmap" in existing:
-        defaults[_ROADMAP_KEY] = existing[_ROADMAP_KEY]
-    if "forge" in existing:
-        defaults["forge"] = existing["forge"]
-    if "writes" in existing:
-        defaults["writes"] = existing["writes"]
-    if "caches" in existing:
-        # Offered back rather than re-derived, the rule every key above follows:
-        # a re-run reconciles what the repository declared. Deriving instead
-        # would be worse here than elsewhere — these paths are holes in a
-        # verification boundary, and init has no business opening one nobody
-        # typed (101 FR-007).
-        defaults["caches"] = existing["caches"]
+    # Every optional key the repository declared, offered back rather than
+    # re-derived — the rule the four above already follow: a re-run reconciles
+    # what the repository declared. Deriving would be worse for some of them
+    # than for others (`caches` paths are holes in a verification boundary, and
+    # init has no business opening one nobody typed — 101 FR-007), but it is
+    # wrong for all of them, and a loop is what stops the next key being added
+    # to `_OPTIONAL_KEYS` and to nothing else.
+    for key in _OPTIONAL_KEYS:
+        if key in existing:
+            defaults[key] = existing[key]
     return defaults
 
 
@@ -762,13 +911,25 @@ def _init_default(key: str, repo_root: Path) -> Any:
     This is the shared defaults source for the non-interactive path.  The
     interactive path displays the same values through `_build_defaults`; a field
     whose only safe value is operator-supplied has no default here.
+
+    The order of the two branches below is 120 FR-005, and the defect it fixes
+    was five lines and a comment. `_build_defaults` opens by reading the
+    existing manifest, so the operator's committed value is *in hand* here — and
+    an early return for `_OPTIONAL_KEYS` above the consultation threw it away
+    one line before it would have been used, for exactly the keys a repository
+    configures itself with. `standards` is one of them, so a wired repository
+    came back declaring no standards document at all and every node it
+    dispatched afterwards ran with none.
     """
     defaults = _build_defaults(repo_root)
-    # Optional keys have a safe default of "absent".
-    if key in _OPTIONAL_KEYS:
-        return None
     if key in defaults:
         return defaults[key]
+    if key in _OPTIONAL_KEYS:
+        # "Absent" is a safe default for a manifest that does not exist and a
+        # destructive one for a manifest that does. Reached only when the
+        # repository declared nothing for this key, because a declared value is
+        # in `defaults` above (FR-008: a fresh repository still gets nothing).
+        return None
     return _NO_DEFAULT
 
 
@@ -783,6 +944,12 @@ def _ask_for_key(
 
     Empty answers for optional keys (`timeouts`, `standards`) mean "omit".
     Required keys fall back to the default when an empty answer is given.
+
+    That rule is unchanged by 120 US2 and deliberately so: the operator was
+    *shown* the value their manifest declares — `_build_defaults` now offers
+    every optional key back — so an empty answer here is a person reading their
+    own declaration and asking for it to go. The loss this story fixes was the
+    other thing entirely, a key removed from a file nobody was asked about.
     """
     prompt = _PROMPTS[key]
     optional = key in _OPTIONAL_KEYS
@@ -866,12 +1033,64 @@ class _NonInteractivePrompter:
 
 
 def _render_manifest(values: dict[str, Any]) -> str:
-    """Render the in-progress manifest as YAML."""
+    """Render the in-progress manifest as YAML.
+
+    Over `_KNOWN_KEYS` rather than `_TOP_LEVEL_KEYS` (120 FR-006): the schema's
+    whole vocabulary, so a key this module carries without asking about is a key
+    it can also write. A writer whose key list was the *interview's* is what made
+    `ladder` unwritable — and therefore, on every rewrite, gone.
+
+    The order is the parser's own, so a carried key lands where the schema
+    declares it rather than wherever the interview happened to leave it.
+    """
     ordered: dict[str, Any] = {}
-    for key in _TOP_LEVEL_KEYS:
+    for key in _KNOWN_KEYS:
         if key in values and values[key] is not None:
             ordered[key] = values[key]
     return yaml.safe_dump(ordered, sort_keys=False, default_flow_style=False)
+
+
+def _interview(
+    repo_root: Path,
+    existing: _ExistingManifest | None,
+    *,
+    prompter: Any,
+) -> dict[str, Any]:
+    """Ask for every key the interview owns, and return the manifest to write.
+
+    The rewrite path, in one place. Two kinds of value end up in the result and
+    only one of them is asked about:
+
+    - the interview's own keys (`_TOP_LEVEL_KEYS`), seeded from `_build_defaults`
+      so the first question can already be validated against the full parser, and
+      so an existing manifest's values are what the operator is offered;
+    - the keys init carries but has no question for (`_carried_forward`), which
+      is 120 FR-006's whole mechanism — `ladder` and `verify` reach the written
+      file without the question set growing by one (trap 5).
+
+    Seeded *before* the loop rather than merged after it, because `_ask_for_key`
+    validates each answer by rendering the whole in-progress manifest: a carried
+    `ladder` block has to be in that document, or the parser would be asked to
+    accept a manifest this run is not going to write.
+    """
+    defaults = _build_defaults(repo_root)
+    manifest_values: dict[str, Any] = {
+        key: defaults[key] for key in _TOP_LEVEL_KEYS if key in defaults
+    }
+    manifest_values.update(_carried_forward(existing))
+
+    for key in _TOP_LEVEL_KEYS:
+        value = _ask_for_key(
+            key,
+            default_value=manifest_values.get(key),
+            manifest_values=manifest_values,
+            prompter=prompter,
+        )
+        if value is None:
+            manifest_values.pop(key, None)
+        else:
+            manifest_values[key] = value
+    return manifest_values
 
 
 def init_command(args: argparse.Namespace) -> int:
@@ -926,28 +1145,12 @@ def init_command(args: argparse.Namespace) -> int:
             manifest_values: dict[str, Any] = _declared_wiring_values(existing)
             keeps_manifest = True
         else:
-            defaults = _build_defaults(repo_root)
-
-            # Seed the in-progress manifest with placeholders/defaults so the
-            # first question can already be validated against the full parser.
-            manifest_values = {
-                key: defaults[key]
-                for key in _TOP_LEVEL_KEYS
-                if key in defaults
-            }
-
-            for key in _TOP_LEVEL_KEYS:
-                default_value = manifest_values.get(key)
-                value = _ask_for_key(
-                    key,
-                    default_value=default_value,
-                    manifest_values=manifest_values,
-                    prompter=prompter,
-                )
-                if value is None:
-                    manifest_values.pop(key, None)
-                else:
-                    manifest_values[key] = value
+            # A rewrite, and the only path that performs one. What it carries is
+            # `_interview`'s subject: every value the existing manifest declared,
+            # asked about or not (120 FR-005, FR-006), and a refusal rather than
+            # a silent drop for a key it cannot carry (FR-007) — raised here,
+            # before anything has been written.
+            manifest_values = _interview(repo_root, existing, prompter=prompter)
 
             # The same rule with an operator in the room: their answers are the
             # request, so a manifest is rewritten when the answers say something
@@ -972,6 +1175,18 @@ def init_command(args: argparse.Namespace) -> int:
     # the registry row, the schedule and the wiring all still happen below.
     kept_manifest = existing if keeps_manifest else None
     text = None if kept_manifest is not None else _render_manifest(manifest_values)
+
+    # FR-009, and the position on the page is the requirement: the operator is
+    # told *before* the write, while the file they are being told about is still
+    # on disk. Said afterwards this is a report of a loss rather than a warning
+    # about one, and the difference is whether `git diff` is still worth running.
+    comment_loss = (
+        None if existing is None or kept_manifest is not None
+        else _comment_warning(existing)
+    )
+    if comment_loss is not None:
+        print(comment_loss)
+
     _write_scaffold(repo_root, text)
 
     for line in reports:
