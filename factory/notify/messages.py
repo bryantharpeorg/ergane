@@ -59,6 +59,7 @@ from factory.verify.models import (
     QuestionRecord,
     VerificationResult,
 )
+from factory.verify.remediation import screen_feedback
 from factory.verify.store import EXPIRED
 
 #: The Bot API's hard ceiling on `callback_data`, in bytes.
@@ -492,8 +493,37 @@ def _render_attempt(result: VerificationResult) -> str:
         lines.append(f"  judge: {_value(result.judge.outcome)}")
         if result.judge.feedback:
             blocks.append(f"── judge feedback ──\n{_tail(result.judge.feedback)}")
+            blocks += _remediation_blocks(result.judge.feedback)
 
     return "\n".join([*lines, *blocks])
+
+
+def _remediation_blocks(feedback: str) -> list[str]:
+    """The two things in judge feedback that are the operator's business alone
+    (102 US3, FR-009/FR-010).
+
+    Both sentences are already in the feedback quoted above this, and that is
+    exactly why they are repeated under their own headings: an operator asking
+    why an epic struggled is reading a wall of verdicts, and "the judge wanted
+    the bar moved" and "the judge says this criterion cannot be met at all" are
+    the two lines in it that no agent can act on. The first was withheld from the
+    retry prompt and would otherwise leave no trace anywhere the operator looks;
+    the second is the defect this whole spec exists to catch earlier, and it is
+    an authoring defect, so the operator is the only one who can fix it.
+    """
+    screened = screen_feedback(feedback)
+    blocks: list[str] = []
+    if screened.proposals:
+        blocks.append(
+            "── judge proposed changing a criterion (withheld from the retry) ──\n"
+            + _tail("\n".join(screened.proposals))
+        )
+    if screened.unsatisfiable_reports:
+        blocks.append(
+            "── judge reports a criterion cannot be satisfied ──\n"
+            + _tail("\n".join(screened.unsatisfiable_reports))
+        )
+    return blocks
 
 
 def _gate_line(gate: GateResult) -> str:
