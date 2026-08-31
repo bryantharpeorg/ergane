@@ -405,6 +405,14 @@ class RunJudgeInput:
     code never names a model (constitution V, VII). `judge_attempt` is the
     caller's count: it is what turns an unreadable response into a retry now and
     a FAIL once the cap is reached (SC-003).
+
+    `gate_results` is this attempt's deterministic measurements, carried into
+    the prompt so the judge scores a runtime Then-clause against what the
+    factory recorded rather than against a patch that cannot contain it (116
+    FR-001). It is the same list `judge_required` was given one step earlier to
+    decide whether this call happens at all, and it is defaulted because a
+    payload written before 116 carries no such field — absent, the prompt is
+    the pre-116 prompt, byte for byte (FR-003).
     """
 
     criteria: CriteriaSet
@@ -415,6 +423,7 @@ class RunJudgeInput:
     judge_attempt: int = 1
     prior_feedback: str | None = None
     max_judge_retries: int = DEFAULT_MAX_JUDGE_RETRIES
+    gate_results: list[GateResult] = field(default_factory=list)
 
 
 @activity.defn
@@ -439,6 +448,7 @@ async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
             virtual_key=request.virtual_key,
             model_alias=request.model_alias,
             prior_feedback=request.prior_feedback,
+            gate_results=request.gate_results,
             judge_attempt=request.judge_attempt,
             max_judge_retries=request.max_judge_retries,
             transport=judge_transport(),

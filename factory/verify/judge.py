@@ -67,6 +67,8 @@ from factory.verify.diffbounds import (
 )
 from factory.verify.models import (
     CriteriaSet,
+    GateResult,
+    GateStatus,
     JudgeOutcome,
     JudgeScenarioFinding,
     JudgeVerdict,
@@ -134,11 +136,24 @@ _STRICTNESS: dict[JudgeOutcome, int] = {
 SYSTEM_PROMPT = """You are a verification judge in an automated software factory.
 
 You are given a requirement, its acceptance scenarios, and the diff a coding \
-agent produced for one node of work. Score the diff against each acceptance \
-scenario individually. A scenario passes only if the diff demonstrably satisfies \
-every one of its Given/When/Then steps; if the evidence is not in the diff, the \
-scenario does not pass. Never pass a scenario because the change looks \
-reasonable overall.
+agent produced for one node of work. You may also be given this factory's gate \
+results: the deterministic commands it ran over that node's work for this \
+attempt, and the outcome it recorded for each. Score the work against each \
+acceptance scenario individually. A scenario passes only if the evidence \
+demonstrably satisfies every one of its Given/When/Then steps; if the evidence \
+is in neither the diff nor the gate results, the scenario does not pass. Never \
+pass a scenario because the change looks reasonable overall.
+
+The gate results are evidence, not background. They are this factory's own \
+measurement of this same attempt, taken by running the commands after the diff \
+was produced, and they are what a scenario naming a runtime outcome is scored \
+against: when a scenario's Then-clause names a gate outcome — that the suite \
+passes, that the types check, that the lint is clean — score it against the \
+result recorded for that gate, and never against what you predict that gate \
+would do. A diff cannot contain a test run, so demanding one inside the patch \
+fails work that is correct and asks the agent to pad its diff to satisfy you. \
+This widens the evidence to the named measurements you were given and to \
+nothing else.
 
 The acceptance criteria are the standard, not a draft: never propose changing, \
 rewording or reconciling a criterion or a scenario as a remediation, and never \
@@ -154,7 +169,7 @@ Respond with ONLY this JSON object, and nothing before or after it:
   "scenarios": [
     {"scenario": "<the exact scenario id you were given>",
      "pass": true,
-     "reasoning": "<what in the diff satisfies or fails the steps>"}
+     "reasoning": "<what in the diff or the gate results satisfies or fails the steps>"}
   ],
   "feedback": "<actionable text that names every failing scenario>"
 }
@@ -171,6 +186,39 @@ Rules:
   so in your reasoning rather than failing a scenario for evidence inside an
   elision.
 """
+
+#: Heading of the section that carries what the factory already measured
+#: (116 FR-001). Named rather than inlined because two other things have to find
+#: it: the accounting below, which charges the section to the same allowance the
+#: diff is fitted into, and the tests that assert it sits between the scenarios
+#: and the diff.
+GATE_SECTION_HEADING = "# Gate results measured by this factory"
+
+#: What the section says the gate results *are*, before it lists them. Without
+#: this sentence a model reading `SYSTEM_PROMPT`'s rule about the diff has no
+#: reason to treat a gate row as evidence rather than as trivia about the run.
+GATE_SECTION_PREAMBLE = (
+    "These are this factory's own deterministic measurements of the attempt "
+    "you are scoring: the commands it ran over the node's work after the diff "
+    "below was produced, and the result it recorded for each. A scenario whose "
+    "Then-clause names one of these outcomes is scored against the result "
+    "recorded here, not against what you predict the command would do."
+)
+
+#: Characters of a non-PASS gate's recorded output the section carries
+#: (116 FR-002). `GateResult.output_tail` is already the last ≤32 KiB of
+#: stdout+stderr, which is far more than a verdict needs and enough to spend on
+#: one gate what the diff is fitted into. 2 KiB is a pytest failure summary and
+#: its traceback with room over — and it is the *tail* of the tail, because a
+#: failure is at the end of the output, which is why the field is a tail in the
+#: first place. Stated in the prompt beside the elision marker, so a judge reads
+#: a cut as a cut rather than as a command that stopped talking.
+GATE_OUTPUT_TAIL_LIMIT = 2 * 1024
+
+#: What a gate carries in place of an exit code when there was no exit to read:
+#: a command that hit its deadline, or one that never ran. Never `0`, which is
+#: the one value a reader takes for success.
+NO_EXIT_CODE = "none"
 
 #: Shown instead of a diff when there is none. The empty-diff verdict belongs to
 #: the output check (FR-004), which has already run by the time the judge is
@@ -250,13 +298,26 @@ def build_prompt(
     diff_text: str,
     *,
     prior_feedback: str | None = None,
+    gate_results: Sequence[GateResult] | None = None,
 ) -> JudgePrompt:
     """Assemble the judge's system + user messages (contracts/judge.md).
 
     Sections arrive in one order and it is not cosmetic: the requirement and its
-    scenarios establish the standard before the diff being measured against it
-    shows up, prior feedback says what the last attempt got wrong (FR-006), and
-    the diff goes last because it is the only part that may have been cut.
+    scenarios establish the standard before the evidence being measured against
+    it shows up, prior feedback says what the last attempt got wrong (FR-006),
+    and the diff goes last because it is the only part that may have been cut.
+    `gate_results` sits between the feedback and the diff (116 FR-005) because it
+    is evidence about *this* attempt, like the diff and unlike the standard —
+    and it precedes the diff so that a section which loses bytes is never the
+    one that says what was measured.
+
+    `gate_results` is the factory's own deterministic measurement of the attempt
+    being scored, and it is optional in the signature because its absence is the
+    behaviour every caller had before 116: given none, this function assembles
+    the prompt it assembled before, byte for byte (FR-003). Given some, the
+    section is charged to the same allowance `prepare_diff` fits the diff into
+    (FR-004) — a section spent from outside that accounting would take the
+    diff's share and truncate evidence nobody disclosed.
 
     Raises `ValueError` when the node has no scenarios: an empty dispatched list
     would parse back as "every scenario passed", handing out a free pass on a
@@ -270,7 +331,14 @@ def build_prompt(
             "gates and output check instead"
         )
 
-    prepared = prepare_diff(diff_text)
+    gate_blocks = _gate_blocks(gate_results)
+    # Every element of `blocks` is joined with one newline, so a block list of
+    # length k costs its own bytes plus k separators — measured, not estimated,
+    # because this is exactly the amount the diff no longer has (FR-004).
+    gate_bytes = sum(len(block.encode("utf-8")) for block in gate_blocks) + len(
+        gate_blocks
+    )
+    prepared = prepare_diff(diff_text, limit=max(DIFF_INPUT_LIMIT - gate_bytes, 0))
 
     blocks: list[str] = [
         "# Requirements under verification",
@@ -312,6 +380,7 @@ def build_prompt(
             screened.carried,
         ]
 
+    blocks += gate_blocks
     blocks += ["", "# Diff produced by the node", "", prepared.text]
 
     return JudgePrompt(
@@ -320,6 +389,67 @@ def build_prompt(
             {"role": "user", "content": "\n".join(blocks)},
         ],
         truncated_input=prepared.truncated,
+    )
+
+
+def _gate_blocks(gate_results: Sequence[GateResult] | None) -> list[str]:
+    """The gate-results section, or nothing at all (116 FR-001, FR-002).
+
+    Nothing at all is the point of the empty return: `None` and an empty
+    sequence are the same fact — no measurement was supplied — and both must
+    leave the assembled prompt exactly as it was before this story, because the
+    judge's whole existing test corpus compares assembled prompts and a heading
+    over an empty list would rewrite all of it (plan trap 3).
+
+    Each gate carries the three facts a Then-clause can name — its name, the
+    status recorded for it and the exit code behind that status — plus the
+    command, without which a gate name says what was checked and never how. A
+    gate that did not pass carries a bounded tail of its recorded output too:
+    that case cannot reach the judge today, since `judge_required` consults one
+    only when every gate passed, but an assembler written as though that
+    guarantee were load-bearing would start lying the day it stopped holding.
+    """
+    if not gate_results:
+        return []
+
+    blocks = ["", GATE_SECTION_HEADING, "", GATE_SECTION_PREAMBLE]
+    for gate in gate_results:
+        exit_code = NO_EXIT_CODE if gate.exit_code is None else str(gate.exit_code)
+        # Statuses are rendered by value, not by identity: a `GateResult` that
+        # crossed a Temporal payload boundary carries the enum's string, and
+        # `str()` on the member gives that same string either way.
+        blocks += [
+            "",
+            f"## {gate.name} — {gate.status} (exit code: {exit_code})",
+            "",
+            f"command: {gate.command}",
+        ]
+        if gate.status != GateStatus.PASS and gate.output_tail.strip():
+            blocks += [
+                "",
+                f"recorded output, last {GATE_OUTPUT_TAIL_LIMIT} characters:",
+                "",
+                _bounded_tail(gate.output_tail),
+            ]
+
+    return blocks
+
+
+def _bounded_tail(output_tail: str) -> str:
+    """The end of a gate's recorded output, cut to a stated length and marked.
+
+    The end rather than the start, for the reason `output_tail` is a tail: what
+    a command failed on is the last thing it said. The marker is what lets the
+    judge read an elision as an elision — the same discipline `_marker` keeps
+    for the diff, and for the same reason.
+    """
+    if len(output_tail) <= GATE_OUTPUT_TAIL_LIMIT:
+        return output_tail
+
+    dropped = len(output_tail) - GATE_OUTPUT_TAIL_LIMIT
+    return (
+        f"[... {dropped} earlier characters elided ...]\n"
+        + output_tail[-GATE_OUTPUT_TAIL_LIMIT:]
     )
 
 
@@ -606,6 +736,7 @@ async def run_judge(
     virtual_key: str,
     model_alias: str,
     prior_feedback: str | None = None,
+    gate_results: Sequence[GateResult] | None = None,
     judge_attempt: int = 1,
     max_judge_retries: int = DEFAULT_MAX_JUDGE_RETRIES,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -619,6 +750,14 @@ async def run_judge(
     this module neither reads credentials from the environment nor knows a model
     name (constitution V, VII).
 
+    `gate_results` is this attempt's deterministic measurements, which the
+    caller is already holding: `judge_required` was handed them one step
+    earlier to decide whether this call happens at all (116 FR-001). They ride
+    into the prompt so a scenario whose Then-clause is a runtime outcome is
+    scored against what the factory measured instead of against a patch that
+    cannot contain it. `None` is the pre-116 behaviour and assembles the
+    pre-116 prompt.
+
     A response this module cannot read is not an error: it comes back as a
     RETRY verdict carrying the parse failure as feedback, or — once
     `judge_attempt` has reached `1 + max_judge_retries` — as FAIL, because
@@ -627,7 +766,12 @@ async def run_judge(
     Raises `JudgeUnavailableError` when the proxy could not be reached, and
     `ValueError` when the node has no scenarios to score.
     """
-    prompt = build_prompt(criteria, diff_text, prior_feedback=prior_feedback)
+    prompt = build_prompt(
+        criteria,
+        diff_text,
+        prior_feedback=prior_feedback,
+        gate_results=gate_results,
+    )
 
     content = await _complete(
         prompt,
