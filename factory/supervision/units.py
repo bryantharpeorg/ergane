@@ -528,6 +528,34 @@ TasksMax={layout.tasks_max}
 """
 
 
+def _temporal_ordering(layout: InstallLayout) -> str:
+    """The ordering dependency a managed installation's services carry (119-US3).
+
+    Empty in external mode, where `ergane-temporal.service` is not written and a
+    unit ordering itself after a name systemd cannot resolve would be a defect on
+    the path this spec does not touch.
+
+    Which pair, and why, is stated in the generated unit itself rather than only
+    here (FR-008, plan trap 5): the operator reading the installed file is the
+    person who needs it, and a comment in the generator reaches only someone who
+    has the checkout.
+    """
+    if not _temporal_managed(layout):
+        return ""
+    return f"""\
+# 119-US3 (FR-008): this installation runs its own Temporal server, and this
+# unit talks to it. Both directives, because each alone leaves the failure they
+# were added for — `After=` orders without pulling the server in, `Wants=` pulls
+# it in without waiting for it, and either way this unit starts against a socket
+# nobody is listening on yet and burns its start limit (StartLimitBurst above)
+# before the server is up. `Requires=` is deliberately not the pair used: it
+# would stop this unit whenever the server stops, and a worker that dies with
+# its dependency is worse than one that reconnects to it.
+Wants={TEMPORAL_UNIT}
+After={TEMPORAL_UNIT}
+"""
+
+
 def _service_text(
     layout: InstallLayout,
     *,
@@ -545,6 +573,11 @@ def _service_text(
     installation's and must tell the worker which build id it is; everything
     else — slice, kill semantics, restart bound — stays identical by
     construction rather than by two texts agreeing.
+
+    119-US3 adds the fourth thing both services share: on a managed
+    installation each is ordered after the Temporal unit
+    (`_temporal_ordering`), because the server they connect to is one this
+    engine starts.
     """
     settings = "".join(f"Environment={value}\n" for value in environment)
     return f"""\
@@ -553,7 +586,7 @@ Description={description}
 # Give up rather than flap: a restart loop during a memory storm deepens it.
 StartLimitIntervalSec={layout.restart_window_s}
 StartLimitBurst={layout.restart_burst}
-
+{_temporal_ordering(layout)}
 [Service]
 Type=simple
 Slice={SLICE_UNIT}
@@ -640,6 +673,15 @@ def _temporal_text(layout: InstallLayout) -> str:
     # The shim starts the local dev server on the bound frontend port and blocks
     # until the process exits; systemd receives the server's stdout and the
     # usual signals.
+    #
+    # 119-US3: this is the one unit that passes arguments, so it is the one that
+    # has to spell out the wrapper's other two positionals — the working
+    # directory and the interpreter — before its own flags. Without them `cd`
+    # receives `--db-filename` and the unit dies with
+    # `ergane-run.sh: cd: Illegal option --` before the server opens a socket.
+    # They are the values the wrapper would have defaulted to; naming them is
+    # the price of the contract that lets a deployment override them
+    # (`_wrapper_text`, 082-US2).
     return f"""\
 [Unit]
 Description=ergane — managed Temporal server (SQLite persistence)
@@ -651,7 +693,7 @@ StartLimitBurst={layout.restart_burst}
 Type=simple
 Slice={SLICE_UNIT}
 WorkingDirectory={layout.install_root}
-ExecStart={layout.wrapper} factory.supervision.temporal_server --db-filename {db_path} --namespace ergane --log-level warn
+ExecStart={layout.wrapper} factory.supervision.temporal_server {layout.install_root} {layout.interpreter} --db-filename {db_path} --namespace ergane --log-level warn
 
 # The point, not a default worth losing: the dev server spawns child processes,
 # and stopping the unit must take the whole tree. A bare kill of the main pid is
@@ -777,10 +819,23 @@ class InstallReport:
     #: still on disk. Named because an operator who is never told the retired
     #: worker is still there never runs the verb that removes it.
     retired: tuple[str, ...] = ()
+    #: 119-US3 (FR-010): every service this install started, paired with the
+    #: state systemd reports for it — `active`, `failed`, `activating`, or
+    #: whatever else the session says. Pairs rather than a set of names, because
+    #: the report this replaced listed only the units that were up: three
+    #: services enabled, died, and were absent from the report entirely, leaving
+    #: an operator reading a green-looking probe timer over a broken stack.
+    states: tuple[tuple[str, str], ...] = ()
 
     def render(self) -> str:
         lines = [f"wrote {len(self.written)} file(s) to the unit directory"]
-        lines += [f"  active+enabled: {name}" for name in sorted(self.active)]
+        # Every started service, whatever its state — a report that named only
+        # what came up is the one this replaced (FR-010, plan trap 8).
+        lines += [
+            f"  {name}: {state or 'unknown'}"
+            f"{'' if name in self.enabled else ', not enabled'}"
+            for name, state in self.states
+        ]
         if not self.linger:
             lines.append("  WARN: linger is off; user units stop at logout")
         lines += [f"  left alone (not written by ergane): {n}" for n in self.kept]
@@ -818,6 +873,12 @@ class UninstallReport:
     kept: tuple[str, ...]
     stopped: tuple[str, ...] = ()
     disabled: tuple[str, ...] = ()
+    #: 119-US3 (FR-011): why the in-flight-epic check could not be made, when it
+    #: could not. Empty on the ordinary path. The removal proceeds either way —
+    #: the verb that removes the units may not depend on the service those units
+    #: run — but an operator told nothing would read an all-clear into a check
+    #: that never happened.
+    epics_unknown: str = ""
 
     @property
     def acted_on(self) -> tuple[str, ...]:
@@ -851,6 +912,12 @@ class UninstallReport:
             if lines
             else "uninstalled nothing: no file this engine wrote is still here",
         )
+        if self.epics_unknown:
+            lines.append(
+                "  WARN: could not ask Temporal which epics are open "
+                f"({self.epics_unknown}); removed the units anyway — an epic in "
+                "flight was not ruled out"
+            )
         lines += [f"  left in place (not written by ergane): {n}" for n in self.kept]
         return "\n".join(lines)
 
@@ -881,14 +948,26 @@ def install(
     *,
     run: Callable[[Sequence[str]], CommandResult] | None = None,
 ) -> InstallReport:
-    """Write the units, enable them, enable linger, and report what came up.
+    """Write the units, enable them, enable linger, and report every service.
 
     A file the engine did not write is never overwritten — that is the half of
     the collision that cannot be undone.
+
+    119-US3: the report names each service it started and the state systemd
+    gives it, and a managed installation gets the directory its server's
+    database lives in before the unit that needs it is enabled.
     """
     runner = _run_command if run is None else run
     layout.unit_dir.mkdir(parents=True, exist_ok=True)
     layout.generated_dir.mkdir(parents=True, exist_ok=True)
+    if _temporal_managed(layout):
+        # FR-007. The dev server stats its database file's *parent* and refuses
+        # to create it — `failed checking dir for database file` — so on a host
+        # whose state directory is fresh the unit dies on its first start. The
+        # server module makes it too, for the path where the file is named
+        # without this verb; making it here means the directory exists before
+        # the enable below starts anything.
+        layout.temporal_db_path.parent.mkdir(parents=True, exist_ok=True)
 
     recorded = _read_manifest(layout)
     written: list[str] = []
@@ -920,6 +999,24 @@ def install(
         enabled=_reading(runner, "is-enabled"),
         linger=linger,
         retired=tuple(carried),
+        states=_states(runner, tuple(n for n in ENABLE_TARGETS if n in written)),
+    )
+
+
+def _states(
+    runner: Callable[[Sequence[str]], CommandResult], names: Sequence[str]
+) -> tuple[tuple[str, str], ...]:
+    """What systemd says each of `names` is, in `names`' order (FR-010).
+
+    The word, not the exit code: `is-active` answers 3 for both `inactive` and
+    `failed`, and those send an operator to two different places. A unit the
+    session has never heard of prints nothing at all, and that name is still
+    reported — a service started and unaccounted for is the defect, not the
+    remedy.
+    """
+    return tuple(
+        (name, runner(("systemctl", "--user", "is-active", name)).out)
+        for name in names
     )
 
 
@@ -950,8 +1047,27 @@ def uninstall(
 
     The epic read comes first and touches nothing: a disable issued before the
     refusal is a half-uninstall, which is worse than either outcome.
+
+    119-US3 (FR-011, plan trap 6): that read no longer decides whether the
+    removal happens. It dialled Temporal, so a host whose Temporal never came up
+    could not be cleaned up — and a host whose Temporal never came up is exactly
+    the state this spec exists to describe, so the one verb an operator needed
+    there was the one that depended on the service its own units run. The check
+    is kept where it can be made, because an open epic is a real thing to strand
+    (082's FR-012); where it cannot, the failure is reported and the units come
+    off. Nothing below this line reaches the network.
     """
-    epics = tuple((_open_epic_ids if open_epics is None else open_epics)())
+    epics: tuple[str, ...] = ()
+    epics_unknown = ""
+    try:
+        epics = tuple((_open_epic_ids if open_epics is None else open_epics)())
+    except OperatorError:
+        # A refusal the read itself decided on — not an unreachable server —
+        # stays a refusal: it is an answer, and this branch is for the absence
+        # of one.
+        raise
+    except Exception as unreachable:
+        epics_unknown = f"{type(unreachable).__name__}: {unreachable}"
     if epics:
         raise OperatorError(
             f"refusing to uninstall while {', '.join(epics)} is in flight: "
@@ -1021,6 +1137,7 @@ def uninstall(
         kept=tuple(kept),
         stopped=tuple(stopped),
         disabled=tuple(disabled),
+        epics_unknown=epics_unknown,
     )
 
 
