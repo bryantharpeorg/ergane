@@ -1314,6 +1314,16 @@ class EscalationRecord:
     #: A workflow that writes this row at every terminal transition (041 FR-013)
     #: must not be writing rows that lose fields (FR-014).
     check_evidence: tuple[CheckFailure, ...] = ()
+    #: 095-US3 (FR-008): which of the ladder's bounds ended this node, already
+    #: written out as the sentence the operator reads — `ExhaustedBound.describe`
+    #: in `factory/verify/ladder.py`, composed beside the decision that produced
+    #: it. A string rather than the record, because this field is a *reading*:
+    #: the renderer prints what the ladder said and derives nothing of its own
+    #: (095 plan trap 5). `None` for every escalation with no exhausted ladder
+    #: behind it — a landing escalation, a launch failure, a row written before
+    #: this field existed — and the message then names no bound at all, which is
+    #: the honest reading of "nobody said".
+    exhausted_bound: str | None = None
 
 
 @dataclass(frozen=True)

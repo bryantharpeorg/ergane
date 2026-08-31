@@ -392,14 +392,27 @@ def escalation_message(record: EscalationRecord) -> str:
     few hundred characters of the 4096, which is the trade this story makes
     knowingly: the evidence is kept whole in the store, and the effect of a press
     is not recorded anywhere the operator's thumb can reach.
+
+    095-US3 (FR-008): the ladder's bound rides in the footer for the same
+    reason, and for one more. `_compose` lets the history absorb the clip from
+    the front, so a line placed above 32 KiB of gate output is the first thing
+    to disappear — and "which of the three bounds ended this node" is exactly
+    the sentence a long history makes harder to work out, not easier. It is
+    printed verbatim: the ladder composed it beside the decision that produced
+    it, and a renderer that reformatted `dial` and `value` here would be a
+    second derivation to keep in step (095 plan trap 5). Absent for every
+    escalation with no exhausted ladder behind it, and then nothing is printed
+    — this function never works one out for itself.
     """
     body = record.history_summary
     if record.check_evidence:
         body += "\n\n" + _render_check_evidence(record.check_evidence)
     default = record.default_choice or EscalationChoice.KILL
+    bound = f"\n\n{record.exhausted_bound}" if record.exhausted_bound else ""
     return _compose(
         _header("⚠️ Verification escalation", record),
         body,
+        f"{bound}"
         f"\n\n{render_blast_radius(record.choices)}"
         f"\n\nNo answer by {record.expires_at} applies the default: "
         f"{_value(default)} the node.",

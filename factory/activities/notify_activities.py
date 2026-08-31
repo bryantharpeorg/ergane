@@ -188,6 +188,10 @@ class SendEscalationInput:
     #: 095-US2 (FR-007): the fail-safe default applied on silence, which varies
     #: with the escalation's cause. `None` means the ordinary default (KILL).
     default_choice: EscalationChoice | None = None
+    #: 095-US3 (FR-008): the ladder's own sentence naming which bound ended the
+    #: node, carried rather than composed — the renderer prints it and derives
+    #: nothing. `None` for an escalation with no exhausted ladder behind it.
+    exhausted_bound: str | None = None
 
 
 @dataclass(frozen=True)
@@ -522,6 +526,7 @@ def _pending_record(request: SendEscalationInput) -> EscalationRecord:
         delivered=False,
         check_evidence=request.check_evidence,
         default_choice=request.default_choice,
+        exhausted_bound=request.exhausted_bound,
     )
 
 

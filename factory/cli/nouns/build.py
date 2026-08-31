@@ -480,6 +480,7 @@ def render_status(
         f"epic {epic_id}  {document['epic_state']}  "
         f"execution {execution_status}"
     ]
+    lines.extend(_ladder_dial_lines(document))
     lines.extend(_landing_dial_lines(document))
     lines.extend(_halt_after_pass_lines(document))
     for node_id, node in nodes.items():
@@ -612,6 +613,78 @@ def _landing_dial_lines(document: Mapping[str, Any]) -> list[str]:
     return [_DIALS_HEADER] + [
         f"  {flag.ljust(flag_width)}  {value.rjust(value_width)}  {provenance}"
         for flag, value, provenance in dials
+    ]
+
+
+#: What the ladder's dial block is headed with, and what a reading that could
+#: not be taken prints instead — the landing block's two constants, one rung
+#: earlier in the epic's life.
+_LADDER_HEADER = "ladder dials"
+_LADDER_UNAVAILABLE = f"{_LADDER_HEADER}  unavailable"
+
+#: The three bounds the ladder can stop on, named as they are *declared*: the
+#: keys of a target repo's `factory.yaml` `ladder:` block, which are also the
+#: fields of `VerificationConfig` and the words an escalation uses when one of
+#: them runs out (095-US3, FR-008). One vocabulary, so an operator who reads
+#: "ladder exhausted: max_judge_retries = 2" on Telegram can find that number on
+#: this page without translating.
+#:
+#: Flags would be the landing block's spelling and would be wrong here: nobody
+#: types these on `ergane build start`. They are declared per target repo, which
+#: is why the block carries no set-or-defaulted column — the CLI never sees the
+#: manifest and would have to guess the provenance, and 081-US3's whole argument
+#: is that a guessed provenance answers the wrong question.
+#:
+#: `max_pre_agent_failures` is deliberately not here. It bounds the refusals
+#: that never reach a rung (095-US2), so it is not one of the three the story is
+#: about, and the escalation names it in full when it is the bound that fired.
+_LADDER_DIALS = ("max_attempts", "max_judge_retries", "debugger_cycles")
+
+
+def _ladder_dial_lines(document: Mapping[str, Any]) -> list[str]:
+    """The ladder's bounds in force, one per line (095-US3, FR-009).
+
+    The reading 081-US3 gave the landing half, for the half that decides how
+    many chances a story gets. The dials were settable and unobservable: an epic
+    dispatched with `ladder: {max_attempts: 6, debugger_cycles: 3}` printed
+    neither number anywhere, so the six attempts it spent under a rewrite cap of
+    two could only be explained by reading `factory/verify/ladder.py`. That is
+    the same defect class 081 was written for, one rung earlier.
+
+    Printed beside the landing dials because they are the same kind of fact — a
+    property of the epic rather than of any node — and because the two together
+    are what an operator diagnosing a stuck build compares.
+
+    Degraded rather than guessed, and 052's rule again: a worker that predates
+    this story sends no ladder config at all, and one queried before `run`
+    recorded it sends `null`. Neither may cost the operator the epic and node
+    lines they came for, and neither may be answered with the code defaults —
+    printing `max_attempts 3` for an epic nobody can read the dials of invents
+    the exact answer this block exists to stop inventing.
+    """
+    try:
+        config = document.get("ladder_config")
+        if not isinstance(config, Mapping):
+            return [_LADDER_UNAVAILABLE]
+
+        dials: list[tuple[str, str]] = []
+        for dial in _LADDER_DIALS:
+            if dial not in config:
+                # A bound the worker did not report is a bound this CLI cannot
+                # read. Half a block would read as a complete one.
+                return [_LADDER_UNAVAILABLE]
+            dials.append((dial, str(config[dial])))
+    except Exception:
+        # The landing block's last resort, for the landing block's reason: this
+        # reads a decoded payload built by a worker the CLI does not control,
+        # and a malformed dial costs its own line and nothing else.
+        return [_LADDER_UNAVAILABLE]
+
+    name_width = max(len(name) for name, _ in dials)
+    value_width = max(len(value) for _, value in dials)
+    return [_LADDER_HEADER] + [
+        f"  {name.ljust(name_width)}  {value.rjust(value_width)}"
+        for name, value in dials
     ]
 
 
