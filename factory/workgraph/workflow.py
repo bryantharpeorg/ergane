@@ -228,6 +228,7 @@ with workflow.unsafe.imports_passed_through():
         AttemptRecord,
         CriteriaSet,
         EscalationChoice,
+        GateResult,
         JudgeOutcome,
         JudgeVerdict,
         NextAction,
@@ -2569,7 +2570,19 @@ class EpicWorkflow:
                 **_GIT,
             )
             verdict = await self._judge(
-                request, node, criteria, diff_text, attempt, judge, prior_feedback
+                request,
+                node,
+                criteria,
+                diff_text,
+                attempt,
+                judge,
+                prior_feedback,
+                # 116 FR-001: the measurements this guard was just handed. They
+                # were in scope on the line above and thrown away, which is how
+                # a scenario whose Then-clause is a runtime outcome became
+                # unscoreable — the judge was asked to guess an answer the
+                # factory had already written down.
+                gate_results,
             )
 
         gate_names = tuple(r.name for r in gate_results)
@@ -2621,6 +2634,7 @@ class EpicWorkflow:
         attempt: int,
         judge: ResolvedPersona,
         prior_feedback: str | None,
+        gate_results: Sequence[GateResult],
     ) -> JudgeVerdict:
         """Score the diff, on one key minted and revoked for this scoring alone.
 
@@ -2671,7 +2685,14 @@ class EpicWorkflow:
         try:
             for judge_attempt in range(1, request.config.max_judge_retries + 2):
                 verdict = await self._score(
-                    request, criteria, diff_text, lease, judge, judge_attempt, prior_feedback
+                    request,
+                    criteria,
+                    diff_text,
+                    lease,
+                    judge,
+                    judge_attempt,
+                    prior_feedback,
+                    gate_results,
                 )
                 if verdict.outcome != JudgeOutcome.RETRY or verdict.findings:
                     break
@@ -2802,8 +2823,16 @@ class EpicWorkflow:
         judge: ResolvedPersona,
         judge_attempt: int,
         prior_feedback: str | None,
+        gate_results: Sequence[GateResult],
     ) -> JudgeVerdict:
-        """One judge completion, with an outage answered rather than raised."""
+        """One judge completion, with an outage answered rather than raised.
+
+        `gate_results` is what this attempt's gates measured, carried into the
+        prompt (116 FR-001). It travels down from `_verify` rather than being
+        re-read here: the row being composed and the prompt being assembled must
+        describe the same measurement, and a second reading would be a second
+        moment.
+        """
         try:
             return await workflow.execute_activity(
                 run_judge,
@@ -2816,6 +2845,7 @@ class EpicWorkflow:
                     judge_attempt=judge_attempt,
                     prior_feedback=prior_feedback,
                     max_judge_retries=request.config.max_judge_retries,
+                    gate_results=list(gate_results),
                 ),
                 **_JUDGE,
             )

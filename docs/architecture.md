@@ -440,7 +440,10 @@ The pipeline, cheapest signal first:
 4. **Anti-rubber-stamp** — a write-scope node with an empty worktree diff fails regardless
    of gates; a read-scope node must instead produce every declared artifact, non-empty.
 5. **LLM judge** — `judge` persona (cheap tier, own attribution key, read-only), scoring the
-   diff strictly per scenario against the parsed acceptance criteria. Bounded: diff
+   diff strictly per scenario against the parsed acceptance criteria, with this attempt's
+   own gate results carried into the prompt between the scenarios and the diff (116-US1):
+   a scenario whose Then-clause names a runtime outcome is scored against what the factory
+   measured, not against a patch that cannot contain a test run. Bounded: diff
    truncated to 60 KiB with explicit markers (criteria never truncated), response capped at
    2000 tokens, **max 2 judge retries**; on `retry` verdict the judge's feedback is
    handed **verbatim** to the retry attempt (Bernstein's highest-value pattern). Skipped
