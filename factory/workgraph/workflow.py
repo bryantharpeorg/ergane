@@ -215,6 +215,8 @@ with workflow.unsafe.imports_passed_through():
     from factory.verify.ladder import (
         DEBUGGER_PERSONA,
         PROMOTION_PERSONA,
+        ExhaustedBound,
+        exhausted_bound,
         grant_produces_work,
         is_unoffered,
         next_action,
@@ -691,6 +693,14 @@ class EpicStatus:
     #: config above cannot say — 60 is 60 whoever chose it — and telling "set to
     #: 60" from "defaulted to 60" is the whole value of the reading.
     landing_overrides: tuple[str, ...] = ()
+    #: 095-US3 (FR-009): the ladder's dials this epic is actually running on —
+    #: the caps `next_action` is deciding by, not the code defaults a reader
+    #: would otherwise have to assume. The landing dials have been readable since
+    #: 081-US3 and these have not, which is how a node spent six attempts under a
+    #: rewrite cap of two with nothing on screen naming either number. `None`
+    #: until `run` records them, and for an older worker's answer; a reader that
+    #: cannot get them degrades rather than guessing.
+    ladder_config: VerificationConfig | None = None
     #: 109-US3 (FR-014): whether the epic was dispatched in halting mode, so a
     #: reader can tell "landing was not attempted" from "landing failed". Carried
     #: on the result/status even though the workflow already knows it, because the
@@ -754,6 +764,12 @@ class EpicWorkflow:
         #: saying so is honester than answering with the code defaults.
         self._landing_config: LandingConfig | None = None
         self._landing_overrides: tuple[str, ...] = ()
+        #: 095-US3: the ladder's caps this epic is deciding by, recorded at the
+        #: top of `run` beside the landing dials and for the same reason — the
+        #: query answers what the epic is *using*, and a status that re-read the
+        #: defaults would report a configuration nobody is running on. `None`
+        #: until then.
+        self._ladder_config: VerificationConfig | None = None
         #: 109-US3: whether this epic halts at PASSED. Recorded with the other
         #: dispatch flags so a status query answers it without holding the request.
         self._halt_after_pass: bool = False
@@ -890,6 +906,7 @@ class EpicWorkflow:
             worker_revision=self._worker_revision,
             landing_config=self._landing_config,
             landing_overrides=self._landing_overrides,
+            ladder_config=self._ladder_config,
             halt_after_pass=self._halt_after_pass,
             target_repo=self._target_repo,
         )
@@ -917,6 +934,11 @@ class EpicWorkflow:
         # cannot drift from it.
         self._landing_config = request.landing_config
         self._landing_overrides = tuple(request.landing_overrides)
+        # 095-US3 (FR-009): the same move for the ladder's caps. This is the
+        # object every `next_action` in this epic is decided by, so the dials an
+        # operator reads are the dials the ladder is running on and cannot drift
+        # from them.
+        self._ladder_config = request.config
         # 109-US3 (FR-012): record the halting mode alongside the other dispatch
         # flags so every status/query answer carries it.
         self._halt_after_pass = request.halt_after_pass
@@ -2120,6 +2142,20 @@ class EpicWorkflow:
                                 )
                                 else None
                             ),
+                            # 095-US3 (FR-008): which bound ended the node, asked
+                            # of the ladder that just ended it rather than worked
+                            # out again beside the message. The ladder returned
+                            # ESCALATE on this exact history a moment ago, so the
+                            # answer is never `None` here — the parameter is
+                            # optional because the launch-failure page below has
+                            # no exhausted ladder behind it at all (plan trap 5).
+                            exhausted_bound=_bound_sentence(
+                                exhausted_bound(
+                                    record.history,
+                                    request.config,
+                                    escalations=record.escalations,
+                                )
+                            ),
                         )
                         if escalation is None:
                             # 068-US2: stopped with the page open. No resolution
@@ -2917,6 +2953,7 @@ class EpicWorkflow:
         retry_grants_work: bool,
         history_summary: str | None = None,
         default_choice: EscalationChoice | None = None,
+        exhausted_bound: str | None = None,
     ) -> _Escalation | None:
         """Page a human, then wait exactly as long as waiting is worth (FR-008).
 
@@ -2940,6 +2977,13 @@ class EpicWorkflow:
         back to work?" — the exhaustion path asks `grant_produces_work`, the
         launch-failure path answers False. Every offer keeps its ending choices
         (FR-003).
+
+        095-US3 (FR-008): `exhausted_bound` is the ladder's own sentence naming
+        which of its bounds ended the node, passed through untouched. A
+        parameter for the same reason `retry_grants_work` is one — only the
+        caller has the history and the config the answer is read from — and
+        `None` on the launch-failure path, which has no exhausted ladder behind
+        it and must not advertise one.
         """
         outcome = await self._page_the_operator(
             self._nodes[node.id],
@@ -2953,6 +2997,7 @@ class EpicWorkflow:
                 choices=offered_choices(retry_grants_work=retry_grants_work),
                 timeout_s=config.escalation_timeout_s,
                 default_choice=default_choice,
+                exhausted_bound=exhausted_bound,
             ),
         )
         if outcome is None:
@@ -4238,6 +4283,17 @@ def _refusal_reason(record: NodeRecord) -> str:
         f"escalation answered with {len(record.refused_resolutions)} resolution(s) "
         f"it never offered: {refused} (offered: {offered})"
     )
+
+
+def _bound_sentence(bound: "ExhaustedBound | None") -> str | None:
+    """The ladder's line about which bound ended a node, or nothing (095-US3).
+
+    The whole of this function is `describe`: the sentence is composed where the
+    decision is, so the page and the ladder cannot disagree about which bound ran
+    out or what it was set to (FR-008, plan trap 5). `None` passes straight
+    through — an escalation the ladder did not exhaust names no bound.
+    """
+    return None if bound is None else bound.describe()
 
 
 def _now() -> str:

@@ -155,6 +155,11 @@ class EscalationRequest:
     #: with the escalation's cause. `None` means the ordinary default (KILL); an
     #: authentication escalation carries `PAUSE_EPIC`.
     default_choice: EscalationChoice | None = None
+    #: 095-US3 (FR-008): the ladder's own sentence naming which bound ended the
+    #: node. Carried from the caller because only the ladder that made the
+    #: decision can say which of its bounds produced it; `None` for a page with
+    #: no exhausted ladder behind it, and the message then names none.
+    exhausted_bound: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -323,6 +328,7 @@ class EscalationWorkflow:
                 escalation_id=escalation_id,
                 check_evidence=request.check_evidence,
                 default_choice=request.default_choice,
+                exhausted_bound=request.exhausted_bound,
             ),
             **_FAST,
         )

@@ -53,10 +53,21 @@ to come from one place or the offer starts advertising decisions this module
 will not make. `offered_choices` is that computation, pure like everything else
 here: a node's remaining budget in, a keyboard out. The vocabulary stays 068's
 four, and the ending choices are the floor every offer stands on (FR-003).
+
+095-US3 adds the third answer of the same kind. This module has always known
+*which* of its bounds ran out — it is the branch that produced `ESCALATE` — and
+has always thrown that away, so an exhausted node reached the operator as one
+word for three very different endings. `exhausted_bound` reports it, beside the
+decision rather than beneath a reader: a bound worked out a second time in a
+renderer is a copy of the precedence below, living where nothing keeps it
+honest, and it starts lying the day a bound moves (095 plan trap 5). What it
+reports is a reading, never a decision — `next_action` is untouched, and the
+function refuses to name anything for a history the ladder has not escalated.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 from factory.verify.models import (
@@ -227,6 +238,120 @@ def next_action(
         return NextAction.DEBUGGER
 
     return NextAction.ESCALATE
+
+
+@dataclass(frozen=True)
+class ExhaustedBound:
+    """Which of the ladder's bounds ended a node, and what it was set to.
+
+    `dial` is the name the bound is *declared* under — the key in a target
+    repo's `factory.yaml` `ladder:` block and the field on `VerificationConfig`
+    — so the sentence an operator reads in an escalation names the thing they
+    would edit. `value` is that declaration's value, not the effective ceiling a
+    grant may have raised; `note` carries the difference when there is one,
+    because "max_attempts = 3" beside a node that ran five attempts is a reading
+    an operator would rightly distrust.
+
+    `describe` is the whole of the rendering. It lives here rather than in the
+    message renderer because a renderer that formatted `dial` and `value` for
+    itself would be a second place that has to change when a bound changes, and
+    the two would disagree in silence (095 plan trap 5).
+    """
+
+    dial: str
+    value: int
+    note: str
+
+    def describe(self) -> str:
+        """The one line the operator reads: which bound ran out, and its value."""
+        return f"ladder exhausted: {self.dial} = {self.value} — {self.note}"
+
+
+def exhausted_bound(
+    history: Sequence[AttemptRecord],
+    config: VerificationConfig,
+    *,
+    escalations: Sequence[EscalationChoice | str] = (),
+) -> ExhaustedBound | None:
+    """Which bound produced this node's `ESCALATE`, or `None` if it has not (FR-008).
+
+    Asked of the ladder for the reason `grant_produces_work` is: the answer has
+    to be the one `next_action` actually gave, and two readings of one budget is
+    how an operator-facing line starts lying. It opens by *asking the decision*
+    rather than by inspecting the history, so a history with somewhere left to go
+    can never be described as exhausted, whatever the counts say.
+
+    Below that, the branches read in the order `next_action` reaches them, and
+    they name the rung the node **stopped on** — which is the one an operator's
+    next move turns on:
+
+    - **The pre-agent bound** short-circuits first and means no rung ran at all:
+      a dead credential, and more attempts buy nothing until it is fixed.
+    - **The debugger's cycles**, when that rung is configured and spent. It is
+      the last rung the ladder has, so it is the ending even though the ordinary
+      attempts were spent before it — granting more attempts does not buy
+      another cycle.
+    - **`max_judge_retries`**, when attempts remain and were not granted. This is
+      the shadowing the spec was written for: the node stopped with budget in
+      hand, and raising `max_attempts` — the dial with the obvious name — buys
+      nothing.
+    - **`max_attempts`** otherwise: the ordinary budget, genuinely spent.
+
+    The promotion rung is deliberately not one of the names. It runs only after
+    the ordinary attempts are gone, so a node that exhausts it also reports
+    `max_attempts` truthfully, and the spec asks for the three bounds an
+    operator's dials actually move.
+    """
+    if next_action(history, config, escalations=escalations) != NextAction.ESCALATE:
+        return None
+
+    grants = len(escalations)
+    granted = f", plus {grants} granted by escalation" if grants else ""
+
+    if pre_agent_bound_spent(history, config, grants):
+        return ExhaustedBound(
+            dial="max_pre_agent_failures",
+            value=config.max_pre_agent_failures,
+            note=(
+                f"{pre_agent_failures_spent(history)} consecutive attempts ended "
+                "before the agent produced a token, so no rung of the ladder ever "
+                f"ran{granted}. Re-authenticate on the worker host; another "
+                "attempt buys nothing until that is done"
+            ),
+        )
+
+    if config.debugger_cycles and _debugger_cycles_spent(history) >= config.debugger_cycles:
+        return ExhaustedBound(
+            dial="debugger_cycles",
+            value=config.debugger_cycles,
+            note=(
+                "the debugger rung is the last one the ladder has, and its cycles "
+                "are spent. It is bounded on its own dial, so granting more "
+                "attempts does not buy another cycle"
+            ),
+        )
+
+    if _attempts_spent(history, config) < config.max_attempts + grants:
+        return ExhaustedBound(
+            dial="max_judge_retries",
+            value=config.max_judge_retries,
+            note=(
+                "the judge has asked for more rewrites than this dial allows, and "
+                f"{config.max_attempts + grants - _attempts_spent(history, config)} "
+                f"of max_attempts = {config.max_attempts}{granted} are unspent. "
+                "Raising max_attempts alone will not lengthen this fight"
+            ),
+        )
+
+    return ExhaustedBound(
+        dial="max_attempts",
+        value=config.max_attempts,
+        note=(
+            "every ordinary attempt is spent: "
+            f"{_attempts_spent(history, config)} of them were charged to this "
+            f"story{granted}"
+        ),
+    )
 
 
 def _ends_the_node(resolution: EscalationChoice | str) -> bool:
