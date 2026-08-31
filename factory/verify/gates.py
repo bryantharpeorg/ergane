@@ -64,6 +64,7 @@ from factory.verify.factory_yaml import (
     config_error_result,
     load_factory_config,
 )
+from factory.verify.gate_annotation import annotate_install_advice
 from factory.verify.models import (
     CacheDeclaration,
     GateResult,
@@ -1634,6 +1635,21 @@ def _to_result(
     if snapshot_error:
         note = f"[worktree snapshot failed: {snapshot_error}]"
         tail = tail_output(f"{tail}\n{note}" if tail else note)
+
+    # 101 FR-009. A gate that failed while a tool told the agent to install a
+    # toolchain is the one failure whose own advice sends the next attempt
+    # backwards: the install already ran, in a `HOME` the boundary replaced with
+    # a tmpfs. The correction is appended here rather than in an executor
+    # because this is the single line every backend's outcome passes through —
+    # `SubprocessGateExecutor`, `BwrapGateExecutor` and the activity's
+    # `_HeartbeatingExecutor` alike — and it is re-tailed rather than appended
+    # blind so the cap stays a property of a `GateResult`. Re-tailing keeps the
+    # note: it is at the end, so the cut lands on the noise ahead of it. Only a
+    # command that failed is annotated — a green suite whose output happens to
+    # quote the advice is not a toolchain failure, and a `HOME` lecture on a
+    # PASS row is the noise this signature set is kept small to avoid.
+    if status in (GateStatus.FAIL, GateStatus.TIMEOUT):
+        tail = tail_output(annotate_install_advice(tail))
 
     return GateResult(
         name=invocation.name,
