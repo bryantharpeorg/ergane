@@ -2610,6 +2610,13 @@ class EpicWorkflow:
             # than the one this verdict was measured on, which is the class of
             # defect this spec exists to end.
             base_ref=prepared.base_ref,
+            # 117 US1 (FR-001, plan trap 4): this dispatch's own identity, read
+            # from the run that is executing rather than minted here. A retried
+            # `record_verification` replays into the same run id and lands on
+            # the row it already wrote; a re-dispatch is a different run and
+            # adds rows instead of overwriting the last build's evidence. A
+            # timestamp or a fresh uuid would satisfy neither half.
+            dispatch=workflow.info().run_id,
         )
         if provenance is not None:
             result = replace(result, provenance=provenance)

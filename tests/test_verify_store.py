@@ -13,11 +13,13 @@ Four properties carry the weight:
   concurrently on the one host that owns `.factory/`; rollback-journal mode would
   serialize them into `database is locked` on the path that records evidence.
   Same R6 pattern as the ledger, deliberately.
-- **The upsert key is `(epic_id, node_id, attempt, form)`.** Temporal runs
-  `record_verification` at least once, so a re-run must land on the first run's
-  row — "one row per attempt per form" is a property of the schema, not of the
-  caller's care. `form` is in the key because one attempt can be verified both as
-  a node's built-in phase and by an explicit verifier node (FR-002).
+- **The upsert key is `(epic_id, node_id, attempt, form, dispatch)`.** Temporal
+  runs `record_verification` at least once, so a re-run must land on the first
+  run's row — "one row per attempt per form per dispatch" is a property of the
+  schema, not of the caller's care. `form` is in the key because one attempt can
+  be verified both as a node's built-in phase and by an explicit verifier node
+  (FR-002); `dispatch` since 117-US1, because a key without it read a
+  re-dispatch as a redelivery and overwrote the previous build's evidence.
 - **An escalation makes exactly one terminal transition.** `resolved` xor
   `expired`: a button press that arrives after the hour is up finds a row it
   cannot move, and the timeout path cannot overwrite an operator's decision.
@@ -123,6 +125,13 @@ EXPECTED_RESULT_COLUMNS: list[tuple[str, str, int, int]] = [
     # 116-US3: the findings this attempt did not charge the node for; NULL for
     # rows written before the check existed, read back as the empty tuple.
     ("gate_contradictions", "TEXT", 0, 0),
+    # 117-US1: the interpreter run that produced the attempt, and the fifth
+    # column of the upsert key. Last, for the same reason `check_evidence` is
+    # last on `escalations`: a migrated store and a fresh one have to agree
+    # column for column, order included. NOT NULL because a NULL is distinct
+    # from every other NULL in a UNIQUE index, which would give each unnamed
+    # row a key of its own.
+    ("dispatch", "TEXT", 1, 0),
 ]
 
 EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
@@ -402,20 +411,23 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
         unique_on.add(columns)
 
     # Idempotency is structural: record_verification running twice cannot make a
-    # second row for one attempt.
-    assert ("epic_id", "node_id", "attempt", "form") in unique_on
+    # second row for one attempt of one dispatch. `dispatch` joined the key in
+    # 117-US1 — without it the schema could not tell a Temporal redelivery from
+    # a re-dispatch, and treated the second as the first (see
+    # tests/test_117_dispatch_scoped_rows.py for both halves).
+    assert ("epic_id", "node_id", "attempt", "form", "dispatch") in unique_on
 
 
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 10 since 116-US3 added `verification_results.gate_contradictions`. The
-    # literal is deliberate: a bump claims every existing store has a migration
-    # path, and `tests/test_escalation_record.py`,
-    # `tests/test_118_record_names_its_base.py` and
-    # `tests/test_116_the_record_says_what_the_judge_saw.py` each check that
-    # against one.
-    assert SCHEMA_VERSION == 10
+    # 11 since 117-US1 added `verification_results.dispatch`. The literal is
+    # deliberate: a bump claims every existing store has a migration path, and
+    # `tests/test_escalation_record.py`,
+    # `tests/test_118_record_names_its_base.py`,
+    # `tests/test_116_the_record_says_what_the_judge_saw.py` and
+    # `tests/test_117_dispatch_scoped_rows.py` each check that against one.
+    assert SCHEMA_VERSION == 11
     assert versions == [SCHEMA_VERSION]
 
 

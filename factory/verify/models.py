@@ -757,6 +757,20 @@ def judge_should_be_reasked(
 #: is the whole point: a wrong value is worse than an admitted gap.
 UNKNOWN_BASE_REF = "<unknown>"
 
+#: The one dispatch that has no name (117 US1, FR-004). Two kinds of row read as
+#: this: every row written before dispatches were distinguished, which the
+#: migration stamps with it, and any result composed without a dispatch behind
+#: it. Both mean "nobody recorded which run produced this", which is a different
+#: fact from every named run and must not merge with one.
+#:
+#: Unlike `UNKNOWN_BASE_REF` this is stored literally rather than as NULL, and
+#: that is the point (plan trap 3): SQLite treats NULLs as *distinct* in a UNIQUE
+#: index, so a NULL dispatch would give every unnamed row a key of its own and
+#: silently disable the at-least-once idempotence the upsert exists for. Angle
+#: brackets keep it outside the space of workflow run ids, so no dispatch can
+#: ever collide with it.
+UNKNOWN_DISPATCH = "<unknown>"
+
 
 @dataclass(frozen=True)
 class VerificationResult:
@@ -799,6 +813,16 @@ class VerificationResult:
     persisted with the row and rendered by `ergane build attempts`, so the
     asymmetry is legible from the record an operator actually reads rather than
     only from the object the composer returned.
+
+    `dispatch` names the run of the interpreter that produced this attempt (117
+    US1, FR-001), and it joins the upsert key. Without it a node dispatched a
+    second time started again at attempt 1 and overwrote the first dispatch's
+    row for every attempt number it reached, so a post-mortem of a killed build
+    became impossible at the moment it mattered most. It is the workflow run
+    id and nothing else: a Temporal retry carries the same one — which is what
+    keeps a redelivered recording landing on the row it already wrote — and a
+    re-dispatch carries a different one. `UNKNOWN_DISPATCH` for rows written
+    before the column existed.
     """
 
     epic_id: str
@@ -820,6 +844,7 @@ class VerificationResult:
     loop_summary: str | None = None
     base_ref: str = UNKNOWN_BASE_REF
     gate_contradictions: tuple[GateContradiction, ...] = ()
+    dispatch: str = UNKNOWN_DISPATCH
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:
@@ -887,6 +912,7 @@ def compose_result(
     loop_digest: str | None = None,
     loop_summary: str | None = None,
     base_ref: str = UNKNOWN_BASE_REF,
+    dispatch: str = UNKNOWN_DISPATCH,
 ) -> VerificationResult:
     """Turn one attempt's evidence into the verdict downstream edges read.
 
@@ -922,6 +948,13 @@ def compose_result(
     defaults to `UNKNOWN_BASE_REF` (118 US2, FR-006). It is *not* defaulted to
     a reading taken here: this function is pure and a base it re-derived would
     be a different moment from the one the attempt ran against.
+
+    `dispatch` is passed by the caller that holds the run (117 US1, FR-001) and
+    for the same reason: the identity of a dispatch is declared by the workflow
+    that is running, never inferred here from a clock or a fresh uuid — either
+    of which would change under a Temporal retry and turn one attempt into a row
+    per delivery. It defaults to `UNKNOWN_DISPATCH`, which is the one dispatch
+    that has no name rather than a guess at a real one.
     """
     judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
 
@@ -968,6 +1001,7 @@ def compose_result(
         loop_summary=loop_summary if loop_summary is not None else DEFAULT_LOOP_SUMMARY,
         base_ref=base_ref,
         gate_contradictions=contradictions,
+        dispatch=dispatch,
     )
 
 
