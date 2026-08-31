@@ -283,9 +283,13 @@ def test_a_pre_dispatch_store_migrates_to_a_fresh_stores_column_order(
     with closing(connect(db_path)) as migrated:
         with closing(connect(tmp_path / "fresh" / "verification.db")) as fresh:
             assert columns_of(migrated) == columns_of(fresh)
-        # And the last column is the new one, which is the only order an
-        # `ALTER TABLE ADD COLUMN` on a fresh store could have produced.
-        name, _type, notnull, default, _pk = columns_of(migrated)[-1]
+        # And `dispatch` sits where an `ALTER TABLE ADD COLUMN` on the store of
+        # its day would have put it: after every column that predates it, and
+        # before every column added since. 117-US2 appended three more behind
+        # it, which is why this is a position rather than the tail.
+        order = [column[0] for column in columns_of(migrated)]
+        assert order[-4:] == ["dispatch", "persona", "model_alias", "route"]
+        name, _type, notnull, default, _pk = columns_of(migrated)[-4]
         assert name == "dispatch"
         # The DDL is a verbatim copy of the published contract, so its reserved
         # value is a literal; this is what stops it drifting from the constant
@@ -309,7 +313,7 @@ def test_a_pre_dispatch_store_migrates_to_a_fresh_stores_column_order(
     # store that already has it is not rebuilt a second time.
     with closing(connect(db_path)) as reopened:
         assert row_count(reopened) == 1
-        assert columns_of(reopened)[-1][0] == "dispatch"
+        assert [column[0] for column in columns_of(reopened)][-4] == "dispatch"
 
 
 # --- T004 [US1] (spec US1-S4, trap 3) ----------------------------------------

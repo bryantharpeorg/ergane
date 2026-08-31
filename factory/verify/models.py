@@ -55,6 +55,7 @@ from typing import Sequence
 # FR-014, `verify/escalation-record-annotation-cannot-resolve`). The import is
 # safe in both directions — `factory.mergequeue.models` imports nothing from
 # `factory` — and an annotation that resolves is the only kind worth writing.
+from factory.config import DETERMINISTIC_AGENT, SUBSCRIPTION_AGENT
 from factory.mergequeue.models import CheckFailure
 
 
@@ -771,6 +772,50 @@ UNKNOWN_BASE_REF = "<unknown>"
 #: ever collide with it.
 UNKNOWN_DISPATCH = "<unknown>"
 
+#: What the persona, the model alias and the route read as when nobody recorded
+#: them for the attempt they describe (117 US2, FR-007): a row written before the
+#: columns existed, or a result composed with no routing behind it. One constant
+#: for all three, decided here and nowhere else (plan trap 6), because the thing
+#: being ruled out is a reader inventing its own spelling.
+#:
+#: Unknown is a **value**, not a silence. NULL renders as nothing and `""`
+#: renders like a persona whose name is empty, and both are read by a human as a
+#: fact about the build rather than as an admitted gap. Angle brackets are legal
+#: in no persona name, no registry alias and no route, so this cannot collide
+#: with a real one.
+UNKNOWN_BUILDER = "<unknown>"
+
+#: The routes an attempt can run through — how it was authenticated, which is
+#: the fact that survives when the registry has moved on. `gateway` is the
+#: LiteLLM proxy under a model-constrained virtual key; `subscription` is the
+#: operator's own Claude Code login, which mints no key and spends no metered
+#: tokens; `deterministic` is a persona that runs no LLM at all.
+ROUTE_GATEWAY = "gateway"
+ROUTE_SUBSCRIPTION = "subscription"
+ROUTE_DETERMINISTIC = "deterministic"
+
+
+def route_of(agent: str) -> str:
+    """Which route a persona's `agent` value runs an attempt through.
+
+    Pure, and stated against the sentinels `factory.config` declares rather than
+    against string literals repeated here (constitution IX): the registry owns
+    what an agent name means, and a second copy of that meaning is a fork
+    waiting to disagree.
+
+    An empty agent is an entry the registry could not resolve, and it reads as
+    `UNKNOWN_BUILDER` rather than as the gateway — guessing the common route for
+    an attempt nobody could route is exactly the plausible-wrong-answer this
+    column exists to end.
+    """
+    if not agent:
+        return UNKNOWN_BUILDER
+    if agent == SUBSCRIPTION_AGENT:
+        return ROUTE_SUBSCRIPTION
+    if agent == DETERMINISTIC_AGENT:
+        return ROUTE_DETERMINISTIC
+    return ROUTE_GATEWAY
+
 
 @dataclass(frozen=True)
 class VerificationResult:
@@ -823,6 +868,19 @@ class VerificationResult:
     keeps a redelivered recording landing on the row it already wrote — and a
     re-dispatch carries a different one. `UNKNOWN_DISPATCH` for rows written
     before the column existed.
+
+    `persona`, `model_alias` and `route` say who built this attempt (117 US2,
+    FR-005): the persona the rung selected, the alias it was dispatched under,
+    and the credential path it ran through. They are here because the only other
+    authority expires — the epic's Temporal start payload dies with the workflow,
+    and `workgraph.json` lies for anything the roadmap dispatched — so thirty
+    days later the row is the last thing that can answer "which model built this
+    story". All three are carried in from the resolution that dispatched the
+    attempt and never re-derived at write time: the debugger rung relabels the
+    persona without re-resolving the alias, so a row that looked the persona up
+    here would record the implementer's model for the one attempt the
+    implementer did not run (FR-006). `UNKNOWN_BUILDER` for a row written before
+    the columns existed, and for a result composed with no routing behind it.
     """
 
     epic_id: str
@@ -845,6 +903,9 @@ class VerificationResult:
     base_ref: str = UNKNOWN_BASE_REF
     gate_contradictions: tuple[GateContradiction, ...] = ()
     dispatch: str = UNKNOWN_DISPATCH
+    persona: str = UNKNOWN_BUILDER
+    model_alias: str = UNKNOWN_BUILDER
+    route: str = UNKNOWN_BUILDER
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:
@@ -913,6 +974,9 @@ def compose_result(
     loop_summary: str | None = None,
     base_ref: str = UNKNOWN_BASE_REF,
     dispatch: str = UNKNOWN_DISPATCH,
+    persona: str = UNKNOWN_BUILDER,
+    model_alias: str = UNKNOWN_BUILDER,
+    route: str = UNKNOWN_BUILDER,
 ) -> VerificationResult:
     """Turn one attempt's evidence into the verdict downstream edges read.
 
@@ -955,6 +1019,14 @@ def compose_result(
     of which would change under a Temporal retry and turn one attempt into a row
     per delivery. It defaults to `UNKNOWN_DISPATCH`, which is the one dispatch
     that has no name rather than a guess at a real one.
+
+    `persona`, `model_alias` and `route` are passed by the caller that holds the
+    attempt's routing (117 US2, FR-005/FR-006), and for the third time for the
+    same reason: they are facts about what ran, resolved at the moment the rung
+    chose it, and this function is not entitled to re-derive them. Re-reading the
+    persona's registry entry here would record the *node's* model for a debugger
+    rung, which is the defect US2-S3 exists to catch. They default to
+    `UNKNOWN_BUILDER` — an admitted gap rather than a plausible wrong answer.
     """
     judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
 
@@ -1002,6 +1074,9 @@ def compose_result(
         base_ref=base_ref,
         gate_contradictions=contradictions,
         dispatch=dispatch,
+        persona=persona,
+        model_alias=model_alias,
+        route=route,
     )
 
 

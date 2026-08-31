@@ -103,6 +103,7 @@ from factory.verify.models import (
     OverallVerdict,
     QuestionRecord,
     UNKNOWN_BASE_REF,
+    UNKNOWN_BUILDER,
     UNKNOWN_DISPATCH,
     VerificationForm,
     VerificationResult,
@@ -148,7 +149,14 @@ from factory.verify.models import (
 #: UNIQUE constraint any more than it can widen a CHECK — so `_migrate` rebuilds
 #: the table. It has to run: without it a re-dispatched node keeps overwriting
 #: its own history. Rows copied across carry `UNKNOWN_DISPATCH`, never NULL.
-SCHEMA_VERSION = 11
+#:
+#: 12 (117-US2): `verification_results.persona`, `.model_alias` and `.route` —
+#: who built the attempt. Additive, and applied *after* the rebuild above, which
+#: is the only order that leaves a migrated store column-for-column identical to
+#: a fresh one. Every row written before them reads `UNKNOWN_BUILDER`, never a
+#: backfilled guess: the registry has moved on, so a persona looked up today
+#: would answer for the wrong model.
+SCHEMA_VERSION = 12
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -222,6 +230,17 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- NULL here is distinct from every other NULL in a UNIQUE index, which
     -- would key every unnamed row on itself and disable the idempotence below.
     dispatch          TEXT    NOT NULL DEFAULT '<unknown>' CHECK (dispatch <> ''),
+    -- 117-US2: who built this attempt — the persona the rung selected, the alias
+    -- it was dispatched under and the credential path it ran through (FR-005).
+    -- Filled from the routing that dispatched the attempt, never re-derived from
+    -- the persona at write time: the debugger rung relabels the persona without
+    -- re-resolving the alias (FR-006). NULL for rows written before these
+    -- columns, read back as `UNKNOWN_BUILDER`; additive, never backfilled.
+    -- After `dispatch` because ALTER TABLE ADD COLUMN appends and a migrated
+    -- store must have the same column order as a fresh one.
+    persona           TEXT,
+    model_alias       TEXT,
+    route             TEXT,
     UNIQUE (epic_id, node_id, attempt, form, dispatch)   -- upsert key (record_verification)
 );
 
@@ -587,6 +606,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # run last of the result migrations so the rebuild's copy carries every
         # column the ones above just added.
         _add_dispatch_to_the_upsert_key(conn)
+    if result_columns and "persona" not in result_columns:
+        # 117-US2, and the order is the whole trick (plan trap 2). These run
+        # *after* the rebuild above, never before: `ALTER TABLE ADD COLUMN`
+        # appends, the rebuild puts `dispatch` last, and a store that gained
+        # these three first would come out of the rebuild with `dispatch` behind
+        # them while a fresh store has it in front. `_RESULT_COLUMNS` is read
+        # positionally, so a divergent order does not raise — it hands every
+        # field of every row to the wrong attribute.
+        #
+        # NULL for every row written before them, and left NULL. A backfill
+        # would have to read a persona registry that has since been re-pointed
+        # at other models and write down what the attempt *would* run under
+        # today, which is a different fact from what it ran under.
+        # `_result_from_row` reads NULL as `UNKNOWN_BUILDER`.
+        for column in ("persona", "model_alias", "route"):
+            conn.execute(
+                f"ALTER TABLE verification_results ADD COLUMN {column} TEXT"
+            )
 
     extcomp_tables = {
         row[0] for row in conn.execute(
@@ -665,6 +702,9 @@ _RESULT_COLUMNS = (
     "base_ref",
     "gate_contradictions",
     "dispatch",
+    "persona",
+    "model_alias",
+    "route",
 )
 
 #: A re-run overwrites every column except the five it matched on: the second
@@ -833,6 +873,20 @@ def _result_values(result: VerificationResult) -> dict[str, Any]:
         # from every other NULL — an unnamed dispatch stored as NULL would key
         # each of its rows on itself and lose the idempotence the upsert is for.
         "dispatch": result.dispatch or UNKNOWN_DISPATCH,
+        # 117-US2: the sentinel is a reading rather than a measurement, so it is
+        # stored as the NULL it means — the `base_ref` treatment, and for the
+        # same reason: writing `<unknown>` into the column would make a row
+        # nobody recorded a builder for indistinguishable, in SQL, from one that
+        # recorded a persona literally named that. None of the three is part of
+        # the key, so unlike `dispatch` a NULL here costs no idempotence.
+        **{
+            column: (None if value == UNKNOWN_BUILDER else value)
+            for column, value in (
+                ("persona", result.persona),
+                ("model_alias", result.model_alias),
+                ("route", result.route),
+            )
+        },
     }
 
 
@@ -877,7 +931,20 @@ def _result_from_row(row: tuple[Any, ...]) -> VerificationResult:
         # written — the migration stamped every pre-117 row with the sentinel
         # rather than leaving a NULL for this read to interpret.
         dispatch=values["dispatch"],
+        # 117-US2 (FR-007): NULL is "nobody recorded who built this", which is
+        # every row written before these columns existed. It reads as one
+        # sentinel value rather than as None or `""` — a renderer prints the
+        # first as nothing and the second like a persona whose name is empty,
+        # and a human reads either as a fact about the build.
+        persona=_builder_or_unknown(values["persona"]),
+        model_alias=_builder_or_unknown(values["model_alias"]),
+        route=_builder_or_unknown(values["route"]),
     )
+
+
+def _builder_or_unknown(value: Any) -> str:
+    """One of US2's three builder columns, with NULL read as the admitted gap."""
+    return UNKNOWN_BUILDER if value is None else str(value)
 
 
 # --- evidence codecs --------------------------------------------------------

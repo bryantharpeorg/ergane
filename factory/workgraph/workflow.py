@@ -224,6 +224,7 @@ with workflow.unsafe.imports_passed_through():
     from factory.versioning import workflow_versioning_behavior
     from factory.verify.models import (
         UNKNOWN_BASE_REF,
+        UNKNOWN_BUILDER,
         UNRESOLVED_MODEL_ALIAS,
         AttemptRecord,
         CriteriaSet,
@@ -241,6 +242,7 @@ with workflow.unsafe.imports_passed_through():
         judge_should_be_reasked,
         loop_digest,
         loop_summary,
+        route_of,
     )
     from factory.workgraph.adapter import home_path
     from factory.config import Persona, SUBSCRIPTION_AGENT
@@ -2053,6 +2055,10 @@ class EpicWorkflow:
                     record.attempt,
                     judge,
                     prior_feedback,
+                    # The same object the key was minted from and the adapter
+                    # ran under, so the row cannot name a third resolution
+                    # (117 US2, FR-005).
+                    routing=routing,
                 )
                 if verdict is not None and verdict.feedback:
                     prior_feedback = verdict.feedback
@@ -2517,6 +2523,7 @@ class EpicWorkflow:
         prior_feedback: str | None,
         *,
         provenance: str | None = None,
+        routing: ResolvedPersona | None = None,
     ) -> tuple[VerificationResult, JudgeVerdict | None]:
         """Gates, then output, then — only if it can still matter — the judge.
 
@@ -2531,7 +2538,16 @@ class EpicWorkflow:
         a third kind of answer. The row lands before anything acts on it
         (invariant 3).
 
-        `provenance` is recorded for externally-completed work (035-US1)."""
+        `provenance` is recorded for externally-completed work (035-US1).
+
+        `routing` is the entry this attempt was dispatched by, and the row's
+        answer to "who built it" comes from it and from nothing else (117 US2,
+        FR-005/FR-006, plan trap 5). It is threaded in rather than looked up
+        here because the two disagree on exactly the attempt this matters for: a
+        debugger rung relabels the persona and re-resolving from that name would
+        record the *node's* alias for the rung's work. `None` is the
+        externally-completed path, where the persona is the node's and no model
+        ran at all."""
         node = resolved.node
         config = request.config
         started_at = _now()
@@ -2617,6 +2633,18 @@ class EpicWorkflow:
             # adds rows instead of overwriting the last build's evidence. A
             # timestamp or a fresh uuid would satisfy neither half.
             dispatch=workflow.info().run_id,
+            # 117 US2 (FR-005, FR-006, plan trap 5): read off the entry that
+            # dispatched this attempt, at the point the rung resolved it. The
+            # persona is the *rung's* — an operator's hand-back has no routing
+            # and falls back to the node's, which is the only persona a branch
+            # nobody's model wrote can honestly be filed under — and the alias
+            # and the route are only ever the routing's, because an attempt no
+            # model ran must not borrow one.
+            persona=routing.persona if routing is not None else node.persona,
+            model_alias=(
+                routing.model_alias if routing is not None else UNKNOWN_BUILDER
+            ),
+            route=route_of(routing.agent) if routing is not None else UNKNOWN_BUILDER,
         )
         if provenance is not None:
             result = replace(result, provenance=provenance)
@@ -3870,7 +3898,16 @@ class EpicWorkflow:
 
             termination = adapter_result.termination
             result, _verdict = await self._verify(
-                request, resolved, record.criteria, prepared, record.attempt, judge, None
+                request,
+                resolved,
+                record.criteria,
+                prepared,
+                record.attempt,
+                judge,
+                None,
+                # A conflicted re-sync runs the debugger's model, and the row has
+                # to say so as much as the history does (117 US2, FR-006).
+                routing=routing,
             )
             record.history.append(
                 AttemptRecord(
