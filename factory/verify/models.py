@@ -541,6 +541,23 @@ class JudgeVerdict:
     stricter interpretation always wins (R5). `feedback` travels verbatim into
     the next attempt's prompt, and `model_alias` records the persona registry
     alias that was used — code never names a model (constitution VII).
+
+    `gates_shown` says whether the prompt this verdict answers carried the
+    factory's own gate measurements (116 FR-008). It rides here for the reason
+    `truncated_input` does: the assembler is the only thing that knows what went
+    into the prompt, and it knows at assembly time, so the fact is carried
+    forward rather than re-derived later by a reader who would have to guess.
+    Without it two rows written a fortnight apart — one judged blind, one judged
+    with the measurements in hand — read identically, and a regression that
+    dropped the section would be invisible.
+
+    It is a plain bool written in both directions, never an absent field
+    (plan trap 8): a record that carried it only when the answer was yes would,
+    when the answer was no, be indistinguishable from one written before this
+    spec existed. `False` on a verdict decoded from an older payload is a fact
+    about the writer rather than a guess about the run — no prompt assembled
+    before 116 US1 had a parameter to carry gate results through, so no judge
+    that produced such a payload can have been shown any.
     """
 
     outcome: JudgeOutcome
@@ -549,6 +566,7 @@ class JudgeVerdict:
     judge_attempt: int
     truncated_input: bool
     model_alias: str
+    gates_shown: bool = False
 
 
 # Gate contradictions (116-US2) ----------------------------------------------
@@ -777,10 +795,10 @@ class VerificationResult:
     verdict alone cannot show: a PASS composed over a judge that returned FAIL
     reads, without it, as a composer that ignored the judge. Empty is the
     ordinary case and means the judge contradicted no measurement — never "not
-    checked", because the check runs on every composition. It is on the composed
-    bundle rather than in the store: the column and the attempt view that render
-    it belong to US3 of this spec, so a round trip through `store` reads it back
-    empty until that lands.
+    checked", because the check runs on every composition. Since US3 it is
+    persisted with the row and rendered by `ergane build attempts`, so the
+    asymmetry is legible from the record an operator actually reads rather than
+    only from the object the composer returned.
     """
 
     epic_id: str

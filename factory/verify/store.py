@@ -86,6 +86,7 @@ from factory.verify.models import (
     DiffSizeRefusal,
     EscalationChoice,
     EscalationRecord,
+    GateContradiction,
     GateResult,
     GateStatus,
     HygieneViolation,
@@ -127,7 +128,14 @@ from factory.verify.models import (
 #: 9 (095-US2): `escalations.default_choice` — the fail-safe default applied on
 #: silence, which varies with the escalation's cause. Additive; NULL for every
 #: row written before it, which reads as the ordinary default (KILL).
-SCHEMA_VERSION = 9
+#:
+#: 10 (116-US3): `verification_results.gate_contradictions` — the judge findings
+#: this attempt did not charge the node for, and the measurements they
+#: contradicted. Additive; NULL for every row written before it, which reads as
+#: the empty tuple. The sibling fact, whether the judge was shown the gate
+#: results at all, needs no column: it rides inside the `judge_verdict` JSON,
+#: where it belongs to the verdict rather than to the row.
+SCHEMA_VERSION = 10
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -187,6 +195,13 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- what it was measured against (FR-006). NULL for rows written before this
     -- feature, read back as `UNKNOWN_BASE_REF`; additive, never backfilled.
     base_ref          TEXT,
+    -- 116-US3: the judge findings this attempt did not charge the node for, and
+    -- the recorded gate each one contradicted (JSON: list[GateContradiction]).
+    -- NULL for rows written before this feature, read back as the empty tuple;
+    -- additive, never backfilled. Without it a PASS composed over a judge that
+    -- returned FAIL reads, on the row alone, as a composer that ignored its
+    -- judge.
+    gate_contradictions TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
@@ -464,6 +479,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE verification_results ADD COLUMN base_ref TEXT"
         )
+    if result_columns and "gate_contradictions" not in result_columns:
+        # 116-US3: NULL for every row written before the check existed, and left
+        # NULL. A backfill would have to re-run a matcher over stored reasoning
+        # and write down what a composer *would* have decided, which is a
+        # different fact from what it did decide. `_result_from_row` reads NULL
+        # as the empty tuple.
+        conn.execute(
+            "ALTER TABLE verification_results ADD COLUMN gate_contradictions TEXT"
+        )
 
     extcomp_tables = {
         row[0] for row in conn.execute(
@@ -538,6 +562,7 @@ _RESULT_COLUMNS = (
     "loop_digest",
     "loop_summary",
     "base_ref",
+    "gate_contradictions",
 )
 
 #: A re-run overwrites every column except the four it matched on: the second
@@ -687,6 +712,16 @@ def _result_values(result: VerificationResult) -> dict[str, Any]:
         "base_ref": (
             None if result.base_ref == UNKNOWN_BASE_REF else result.base_ref
         ),
+        # 116-US3: written whichever way it came out. `[]` is "the check ran and
+        # found nothing", which is not the same fact as the NULL a row written
+        # before the check existed carries — the dataclass has one spelling for
+        # both, but SQL does not have to lose the distinction on the way in.
+        "gate_contradictions": json.dumps(
+            [
+                _contradiction_to_dict(contradiction)
+                for contradiction in result.gate_contradictions
+            ]
+        ),
     }
 
 
@@ -722,6 +757,11 @@ def _result_from_row(row: tuple[Any, ...]) -> VerificationResult:
         base_ref=(
             UNKNOWN_BASE_REF if values["base_ref"] is None else values["base_ref"]
         ),
+        # 116-US3: NULL is a row the column predates, and it reads as the empty
+        # tuple because that is the only spelling the record has for "no finding
+        # was neutralised". Reading it as anything else would invent a
+        # contradiction on rows composed before one could be detected.
+        gate_contradictions=_contradictions_from_json(values["gate_contradictions"]),
     )
 
 
@@ -890,6 +930,11 @@ def _judge_to_dict(judge: JudgeVerdict) -> dict[str, Any]:
         "judge_attempt": judge.judge_attempt,
         "truncated_input": judge.truncated_input,
         "model_alias": judge.model_alias,
+        # 116-US3 (FR-008), and written in both directions on purpose (plan
+        # trap 8): a key present only when the answer is yes would, when the
+        # answer is no, make the row byte-identical to one written before this
+        # spec — which is exactly the silence the field exists to break.
+        "gates_shown": judge.gates_shown,
     }
 
 
@@ -908,6 +953,49 @@ def _judge_from_dict(data: dict[str, Any]) -> JudgeVerdict:
         judge_attempt=data["judge_attempt"],
         truncated_input=data["truncated_input"],
         model_alias=data["model_alias"],
+        # Absent is every row in the store today, and it reads as False. Unlike
+        # the other absences in this file that is a fact rather than a reading:
+        # no prompt assembled before 116-US1 had a parameter to carry gate
+        # results through, so no verdict written before this key existed can
+        # have been formed with them in front of it.
+        gates_shown=bool(data.get("gates_shown", False)),
+    )
+
+
+def _contradiction_to_dict(contradiction: GateContradiction) -> dict[str, Any]:
+    """One neutralised finding as stored text — longhand, like the other codecs.
+
+    Written out rather than derived, for the reason `_check_evidence_json` gives:
+    a field added to `GateContradiction` has to be added here too, and the
+    alternative is a record that round-trips *almost* everything, quietly.
+    """
+    return {
+        "scenario": contradiction.scenario,
+        "gate": contradiction.gate,
+        "recorded_status": GateStatus(contradiction.recorded_status).value,
+        "claim": contradiction.claim,
+    }
+
+
+def _contradictions_from_json(stored: str | None) -> tuple[GateContradiction, ...]:
+    """Read the neutralised findings back. `None` is a row the column predates.
+
+    Rows written before 116-US3 have NULL in the column, and rows written since
+    have `'[]'` whenever the judge contradicted nothing. Both arrive here as the
+    empty tuple, because the record has one spelling for "no finding was
+    neutralised" — the distinction the column keeps is for SQL, where a reader
+    asking which attempts the check had even run on can still tell.
+    """
+    if not stored:
+        return ()
+    return tuple(
+        GateContradiction(
+            scenario=item["scenario"],
+            gate=item["gate"],
+            recorded_status=GateStatus(item["recorded_status"]),
+            claim=item["claim"],
+        )
+        for item in json.loads(stored)
     )
 
 
