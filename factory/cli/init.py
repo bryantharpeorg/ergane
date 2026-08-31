@@ -1211,7 +1211,14 @@ def init_command(args: argparse.Namespace) -> int:
     # probe suite is skipped and no network calls are made for a refusal we
     # already know.
     control_plane_reason = _control_plane_reason()
-    schedule_line = _schedule(repo_root, slug, control_plane_reason=control_plane_reason)
+    # 120/FR-010, trap 7: the manifest that was kept is handed down rather than
+    # re-read, so the schedule is reconciled against the operator's file and not
+    # against whatever init has just put on disk. When the manifest *was*
+    # written, `None` says so and the reconciliation reads the file back — there
+    # the write is the declaration.
+    schedule_line = _schedule(
+        repo_root, slug, control_plane_reason=control_plane_reason, kept=kept_manifest
+    )
 
     # Wiring runs last, after the repo-local half is complete and recorded, so a
     # refusal from GitHub's side never costs the operator the scaffold.
@@ -1387,12 +1394,37 @@ def _schedule_target() -> str:
     )
 
 
-def _schedule(repo_root: Path, slug: str, *, control_plane_reason: str | None) -> str:
+def _schedule(
+    repo_root: Path,
+    slug: str,
+    *,
+    control_plane_reason: str | None,
+    kept: _ExistingManifest | None,
+) -> str:
     """Create or reconcile this repo's roadmap schedule, and report one line.
 
-    Never raises (FR-017).  The manifest is re-read from disk rather than taken
-    from the interview's values, so what steers the schedule is exactly what the
-    operator will commit.
+    Never raises (FR-017).  What steers the schedule is the operator's manifest
+    and never the interview's values, so the dials on the schedule are the dials
+    on the file they will commit.
+
+    120 FR-010 and trap 7 are about *which* manifest that is.  `kept` is the
+    manifest `init_command` read before anything was written, and it is passed
+    down rather than re-read whenever the file was left alone: the reconciliation
+    then compares the live schedule against the same object that decided the file
+    was valid, which is what makes "the schedule disagrees with your manifest" a
+    statement about the operator's manifest.  The alternative is the defect this
+    story closes — comparing the world against init's own edit, and reporting the
+    agreement that necessarily follows.
+
+    `kept` is `None` exactly when init wrote a manifest, and then the file it
+    wrote is the declaration: an operator who answered the interview asked for
+    those values, and a repository that had no manifest has one now.  It is read
+    back through `resolve_manifest_path`, the one resolver `_existing_manifest`
+    and `ergane init --check` also ask, because a second opinion about where the
+    manifest lives is a second answer about one file — a repository still
+    committing the legacy `factory.yaml` had its schedule reported `failed: the
+    manifest just written did not load` while the check three lines below named
+    the drift correctly.
 
     This is the only act of `ergane init` whose blast radius reaches past the
     repository being joined, and the only one another person can observe — so it
@@ -1414,20 +1446,53 @@ def _schedule(repo_root: Path, slug: str, *, control_plane_reason: str | None) -
                 f"otherwise have gone to {_schedule_target()}",
             )
         )
-    try:
-        config = load_factory_config(repo_root / MANIFEST_NAME)
-    except FactoryConfigError as problem:
-        return roadmap_schedule.format_step(
-            roadmap_schedule.ScheduleStep(
-                roadmap_schedule.FAILED,
-                roadmap_schedule.schedule_id_for(slug),
-                f"the manifest just written did not load: {problem}",
+    if kept is not None:
+        config, manifest_name = kept.config, kept.path.name
+    else:
+        manifest_path, manifest_name = resolve_manifest_path(repo_root)
+        try:
+            config = load_factory_config(manifest_path)
+        except FactoryConfigError as problem:
+            return roadmap_schedule.format_step(
+                roadmap_schedule.ScheduleStep(
+                    roadmap_schedule.FAILED,
+                    roadmap_schedule.schedule_id_for(slug),
+                    f"the manifest just written did not load: {problem}",
+                )
             )
-        )
     desired = roadmap_schedule.desired_for_repo(
         slug=slug, repo_root=repo_root, config=config
     )
-    return roadmap_schedule.format_step(roadmap_schedule.apply_schedule(desired))
+    step = roadmap_schedule.apply_schedule(desired)
+    return roadmap_schedule.format_step(step) + _undeclared_dials_note(
+        step, config, manifest_name
+    )
+
+
+def _undeclared_dials_note(
+    step: roadmap_schedule.ScheduleStep, config: FactoryConfig, manifest_name: str
+) -> str:
+    """Say when the cadence just reported was nobody's declaration (120 US3-S3).
+
+    `desired_for_repo` substitutes `RoadmapDials()` for a manifest that declares
+    no `roadmap:` block, which is right — a repository must be joinable without
+    steering its own scheduler — and unreadable: every other number on the line
+    above came off the operator's file, and `every 300s` sits among them looking
+    exactly like one more of them.  The same substitution is what lets the check
+    then call the schedule a match for a manifest that says nothing about it.
+
+    Naming the absence is the whole of the fix; the schedule still gets the
+    defaults it always got.  A failed step is left alone, because nothing was
+    compared and a note about the dials of a schedule that was never reached is
+    noise in front of the reason it was not.
+    """
+    if step.action == roadmap_schedule.FAILED or config.roadmap is not None:
+        return ""
+    return (
+        f"\n  {manifest_name} declares no roadmap dials, so the cadence and "
+        f"concurrency above are Ergane's defaults rather than this repository's "
+        f"declaration — add a `roadmap:` block to steer them"
+    )
 
 
 def _ask_for_slug(repo_root: Path, *, prompter: Any) -> str:
