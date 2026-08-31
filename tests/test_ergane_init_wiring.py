@@ -343,7 +343,7 @@ def answers(*, gates: str = TWO_GATES, landing_branch: str = "main", slug: str =
     """version, runtime, gates, timeouts, standards, landing branch, roadmap, forge,
     writes, diff_refusal_bytes, slug."""
     return [
-        str(_SUPPORTED_VERSION), "bwrap", gates, "", "", landing_branch, "", "", "", "",
+        str(_SUPPORTED_VERSION), "bwrap", gates, "", "", landing_branch, "", "", "", "", "",
         slug,
     ]
 

@@ -549,9 +549,12 @@ class BwrapBackend:
             binds.append(("--ro-bind", source, dest))
         for source, dest in gate_boundary._resolver_binds():
             binds.append(("--ro-bind", source, dest))
+        # No declared caches are passed: this boundary is built from an agent
+        # invocation, which carries no manifest, so it gets what it has always
+        # got — the uv cache the gate executor's default composes (101 FR-006).
         cache_binds = gate_boundary._cache_binds()
-        for source, dest in cache_binds:
-            binds.append(("--bind", source, dest))
+        for cache in cache_binds:
+            binds.append(("--bind", cache.source, cache.dest))
 
         # The executable itself, when it is an absolute path not already mounted.
         executable_bind = self._bind_executable(invocation)
@@ -563,8 +566,9 @@ class BwrapBackend:
         argv.extend(ordered_binds(binds))
         argv.extend(["--chdir", str(worktree)])
         argv.extend(["--setenv", "HOME", str(home)])
-        for _, dest in cache_binds:
-            argv.extend(["--setenv", "UV_CACHE_DIR", dest])
+        for cache in cache_binds:
+            if cache.env is not None:
+                argv.extend(["--setenv", cache.env, cache.dest])
 
         # PATH must name the bind points inside the container; inherited PATH
         # points at host paths that may not be mounted. Derived from the same

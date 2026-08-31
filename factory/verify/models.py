@@ -237,6 +237,36 @@ class RoadmapDials:
     max_concurrent_nodes: int = 1
 
 
+@dataclass(frozen=True)
+class CacheDeclaration:
+    """One cache a repository declares its gates need carried (101 FR-004).
+
+    `HOME` inside the gate boundary is a tmpfs, which is the property that makes
+    a gate's writes visible and its environment reproducible — and the property
+    that empties every package manager's cache. The factory has carried one cache
+    across that boundary since `_cache_binds` was written, and carried exactly
+    one: `~/.cache/uv`, a literal path in factory code. A repository with a
+    JavaScript world got a boundary that re-downloads on every gate run, or
+    failed where the host would have passed. This is that literal, made
+    declarable.
+
+    `path` is absolute and already resolved, symlinks included, because the check
+    that bounds it to the operator's home is only meaningful against the path the
+    kernel will actually mount (101 trap 3): a boundary that validated the
+    declared spelling and mounted the resolved one would be validating something
+    it does not mount.
+
+    `env` is the variable the tool reads to find its cache, or `None` when the
+    tool needs no telling. It exists for the reason `UV_CACHE_DIR` exists and is
+    set beside its own bind for the same one — a tool that derives its cache
+    location from `HOME` looks inside the tmpfs no matter what is mounted next to
+    it, so binding without naming buys nothing (FR-008).
+    """
+
+    path: str
+    env: str | None = None
+
+
 def _default_ladder() -> "VerificationConfig":
     """Deferred default so `VerificationConfig` need not move above `FactoryConfig`."""
     return VerificationConfig()
@@ -317,6 +347,15 @@ class FactoryConfig:
     #: is non-negotiable. Absent means the default, and every reader downstream
     #: gets a number.
     diff_refusal_bytes: int = field(default_factory=_default_diff_refusal_bytes)
+    #: 101 FR-004. The caches this repository's gates need carried across the
+    #: gate boundary, in declaration order. Empty is not a shrug and not a
+    #: default to fill in — it is what every manifest that exists says, and it
+    #: means today's behaviour exactly: the uv cache, and nothing else (FR-006).
+    #: Every entry here was refused at parse time unless its path resolves under
+    #: the operator's home, because a declared bind is a hole in a verification
+    #: boundary and the manifest declaring it belongs to whoever controls the
+    #: target repository (FR-007).
+    caches: tuple[CacheDeclaration, ...] = ()
 
 
 @dataclass(frozen=True)
