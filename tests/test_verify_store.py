@@ -132,6 +132,14 @@ EXPECTED_RESULT_COLUMNS: list[tuple[str, str, int, int]] = [
     # from every other NULL in a UNIQUE index, which would give each unnamed
     # row a key of its own.
     ("dispatch", "TEXT", 1, 0),
+    # 117-US2: who built the attempt — the rung's persona, the alias it was
+    # dispatched under, the route it authenticated through. Nullable and after
+    # `dispatch`, because they arrive on an existing store by ALTER TABLE ADD
+    # COLUMN *after* US1's rebuild has already put `dispatch` last; NULL reads
+    # back as `UNKNOWN_BUILDER` rather than as a backfilled guess.
+    ("persona", "TEXT", 0, 0),
+    ("model_alias", "TEXT", 0, 0),
+    ("route", "TEXT", 0, 0),
 ]
 
 EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
@@ -421,13 +429,15 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 11 since 117-US1 added `verification_results.dispatch`. The literal is
+    # 12 since 117-US2 added the three columns naming who built an attempt; 11
+    # was 117-US1 adding `verification_results.dispatch`. The literal is
     # deliberate: a bump claims every existing store has a migration path, and
     # `tests/test_escalation_record.py`,
     # `tests/test_118_record_names_its_base.py`,
-    # `tests/test_116_the_record_says_what_the_judge_saw.py` and
-    # `tests/test_117_dispatch_scoped_rows.py` each check that against one.
-    assert SCHEMA_VERSION == 11
+    # `tests/test_116_the_record_says_what_the_judge_saw.py`,
+    # `tests/test_117_dispatch_scoped_rows.py` and
+    # `tests/test_117_row_names_its_builder.py` each check that against one.
+    assert SCHEMA_VERSION == 12
     assert versions == [SCHEMA_VERSION]
 
 

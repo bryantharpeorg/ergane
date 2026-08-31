@@ -2528,11 +2528,24 @@ async def test_a_verify_raise_in_recovery_still_teardowns_and_propagates(
         attempt: int,
         judge: Any,
         prior_feedback: Any,
+        # The keyword-only half of the real signature — `provenance` and the
+        # attempt's routing — forwarded rather than named, so a stub standing in
+        # for `_verify` does not have to be re-edited every time the real one
+        # gains a fact to record.
+        **carried: Any,
     ) -> Any:
         if attempt == 2:
             raise RuntimeError("forced recovery verify raise")
         return await original_verify(
-            self, request, resolved, criteria, prepared, attempt, judge, prior_feedback
+            self,
+            request,
+            resolved,
+            criteria,
+            prepared,
+            attempt,
+            judge,
+            prior_feedback,
+            **carried,
         )
 
     workflow_module.EpicWorkflow._verify = raising_verify

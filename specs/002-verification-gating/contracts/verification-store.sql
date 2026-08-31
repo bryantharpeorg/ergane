@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- NULL here is distinct from every other NULL in a UNIQUE index, which
     -- would key every unnamed row on itself and disable the idempotence below.
     dispatch          TEXT    NOT NULL DEFAULT '<unknown>' CHECK (dispatch <> ''),
+    -- 117-US2: who built this attempt — the persona the rung selected, the alias
+    -- it was dispatched under and the credential path it ran through (FR-005).
+    -- Filled from the routing that dispatched the attempt, never re-derived from
+    -- the persona at write time: the debugger rung relabels the persona without
+    -- re-resolving the alias (FR-006). NULL for rows written before these
+    -- columns, read back as `UNKNOWN_BUILDER`; additive, never backfilled.
+    -- After `dispatch` because ALTER TABLE ADD COLUMN appends and a migrated
+    -- store must have the same column order as a fresh one.
+    persona           TEXT,
+    model_alias       TEXT,
+    route             TEXT,
     UNIQUE (epic_id, node_id, attempt, form, dispatch)   -- upsert key (record_verification)
 );
 
