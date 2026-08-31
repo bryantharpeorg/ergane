@@ -46,6 +46,7 @@ ten-minute default to prove it is ten minutes.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -63,7 +64,12 @@ from factory.verify.factory_yaml import (
     config_error_result,
     load_factory_config,
 )
-from factory.verify.models import GateResult, GateStatus, VerificationConfig
+from factory.verify.models import (
+    CacheDeclaration,
+    GateResult,
+    GateStatus,
+    VerificationConfig,
+)
 from factory.verify.toolchain import (
     DEFAULT_AGENT_RUNNER,
     GIT,
@@ -131,6 +137,8 @@ FALLBACK_PATH = "/usr/local/bin:/usr/bin:/bin"
 #: its report, short enough that a process ignoring TERM does not become the
 #: verification's deadline.
 DEFAULT_KILL_GRACE_S = 10.0
+
+logger = logging.getLogger(__name__)
 
 #: Absolute path the bwrap backend is pinned to. Ubuntu 24.04's AppArmor profile
 #: permits unprivileged user namespaces only for the system binary at this path
@@ -511,6 +519,26 @@ def _drain(stream: IO[bytes] | None, buffer: _TailBuffer) -> None:
 # Bubblewrap executor --------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class CacheBind:
+    """One cache mount the boundary carries, and the variable that names it.
+
+    A pair of paths was enough while there was exactly one cache: the uv one,
+    with `UV_CACHE_DIR` set for it unconditionally beside the loop that emitted
+    it. It stops being enough the moment a second cache exists, because the
+    variable is a property of the *bind* and not of the boundary — the loop that
+    said `--setenv UV_CACHE_DIR <dest>` for every entry would, with two entries,
+    point uv at the second one. Carrying the name here is what makes that
+    unspellable rather than merely avoided (101 FR-008).
+
+    `env` is `None` for a cache whose tool finds it without being told.
+    """
+
+    source: str
+    dest: str
+    env: str | None = None
+
+
 class BwrapGateExecutor:
     """Runs a gate inside the same bubblewrap boundary as the agent (US5).
 
@@ -530,12 +558,21 @@ class BwrapGateExecutor:
         *,
         grace_s: float = DEFAULT_KILL_GRACE_S,
         system_root: Path | str = Path("/"),
+        caches: Sequence[CacheDeclaration] = (),
     ) -> None:
         self.grace_s = grace_s
         #: The host whose system layout the mount set is read from — the real
         #: root in production, a supplied tree in a test. Same seam, same
         #: default, as the agent boundary's.
         self.system_root = Path(system_root)
+        #: The caches the target repository declared (101 FR-004), already
+        #: bounded to the operator's home by the parser that read them. Empty by
+        #: default, which is what every caller that predates the key passes and
+        #: what every manifest that exists declares: the uv bind, alone, exactly
+        #: as before (FR-006). Read from the manifest by `run_gates` rather than
+        #: from the process environment — which repository's caches these are is
+        #: a governing value, and it comes from the declaration that owns it.
+        self.caches = tuple(caches)
 
     def run(self, invocation: GateInvocation) -> ExecutionOutcome:
         started = time.monotonic()
@@ -677,11 +714,11 @@ class BwrapGateExecutor:
         for source, dest in self._resolver_binds():
             binds.append(("--ro-bind", source, dest))
 
-        # The package cache is writable, and is the one bind outside the
-        # worktree that is: see `_cache_binds`.
+        # The package caches are writable, and are the only binds outside the
+        # worktree that are: see `_cache_binds`.
         cache_binds = self._cache_binds()
-        for source, dest in cache_binds:
-            binds.append(("--bind", source, dest))
+        for cache in cache_binds:
+            binds.append(("--bind", cache.source, cache.dest))
 
         argv.extend(ordered_binds(binds))
         argv.extend(["--chdir", str(worktree)])
@@ -689,8 +726,13 @@ class BwrapGateExecutor:
         # A factory-owned home for the gate, writable but not the operator's.
         argv.extend(["--tmpfs", str(home)])
         argv.extend(["--setenv", "HOME", str(home)])
-        for _, dest in cache_binds:
-            argv.extend(["--setenv", "UV_CACHE_DIR", dest])
+        # Each cache's own variable, beside its own bind and pointing at its own
+        # destination — the same `--setenv` path `HOME` above takes. This loop
+        # used to say `UV_CACHE_DIR` outright, which was correct only while the
+        # list could hold one entry; a second entry would have sent uv to it.
+        for cache in cache_binds:
+            if cache.env is not None:
+                argv.extend(["--setenv", cache.env, cache.dest])
 
         # PATH must name the bind points inside the container — derived from
         # the same resolutions the binds came from, never from a literal.
@@ -858,8 +900,8 @@ class BwrapGateExecutor:
                 binds.append((path, path))
         return binds
 
-    def _cache_binds(self) -> list[tuple[str, str]]:
-        """The package cache, writable, so a gate resolves as it does on the host.
+    def _cache_binds(self) -> list[CacheBind]:
+        """The package caches, writable, so a gate resolves as it does on the host.
 
         `HOME` inside the boundary is a tmpfs, so a package manager finds an
         empty cache and re-downloads everything a sync touches — on a host
@@ -873,9 +915,45 @@ class BwrapGateExecutor:
         Writable on purpose — a read-only cache is worse than none, because
         the manager treats it as a corrupt one. `UV_CACHE_DIR` is set beside
         this bind (the tmpfs HOME would otherwise send uv looking elsewhere).
+
+        **Every word above was true of npm, of a browser download cache, of any
+        package world, and the implementation was one literal path.** 101 FR-004
+        makes the set declarable, and the three properties the paragraphs above
+        argue for are properties of *each* bind rather than of the uv one:
+
+        - **writable**, so `--bind` and never `--ro-bind`, for every entry;
+        - **conditional on existence**, because a host that has never run this
+          gate has no cache to bind and refusing there would turn a cold host
+          into a failing one (FR-005). A declared absence is logged rather than
+          swallowed: the uv path is the factory's own guess, while a declared one
+          is something an operator asked for, and silently not doing it would
+          present later as a gate that is merely slow;
+        - **paired with its variable**, carried on the `CacheBind` itself so the
+          pairing cannot drift to whichever entry the emitting loop ends on.
+
+        The uv default is emitted first and unconditionally, from the same
+        expression it always was — not merged into the declared list, not
+        re-derived from it. A repository that declares nothing gets a list
+        identical to the one it got before this key existed, which is FR-006 and
+        is the regression the whole fleet would otherwise pay for.
         """
+        binds: list[CacheBind] = []
+
         cache = Path.home() / ".cache" / "uv"
-        return [(str(cache), str(cache))] if cache.is_dir() else []
+        if cache.is_dir():
+            binds.append(CacheBind(str(cache), str(cache), "UV_CACHE_DIR"))
+
+        for declared in self.caches:
+            if not Path(declared.path).is_dir():
+                logger.warning(
+                    "declared cache %s is not a directory on this host; the "
+                    "gate runs without it",
+                    declared.path,
+                )
+                continue
+            binds.append(CacheBind(declared.path, declared.path, declared.env))
+
+        return binds
 
     def _interpreter_binds(self, worktree: Path) -> list[tuple[str, str]]:
         """Bind the interpreter the worktree's virtualenv points at, if any.
@@ -1191,7 +1269,7 @@ def run_gates(
     # Resolve the backend early so a broken manifest still produces a CONFIG_ERROR
     # from the same code path, and so an explicit executor wins over runtime.
     backend = _resolve_gate_executor(
-        executor, _read_runtime_from_manifest(manifest)
+        executor, _read_boundary_from_manifest(manifest)
     )
 
     candidate_path = worktree / "factory" / "verify" / "factory_yaml.py"
@@ -1265,7 +1343,7 @@ def run_gates(
 
 
 def _resolve_gate_executor(
-    executor: GateExecutor | None, runtime: str | None
+    executor: GateExecutor | None, boundary: "_BoundaryDeclarations"
 ) -> GateExecutor:
     """Choose the gate backend from the manifest's `runtime:` when not overridden.
 
@@ -1274,20 +1352,42 @@ def _resolve_gate_executor(
     and the system binary is present, the gate runs inside the same boundary as
     the agent (US5, FR-009). Otherwise the host subprocess executor is used,
     which keeps the suite green on hosts where bwrap is not installed (trap 5).
+
+    The declared caches ride with the choice rather than beside it (101 FR-004),
+    because they are only meaningful to the backend that has a mount set: the
+    subprocess executor runs on the host, where the operator's caches are already
+    where the tools expect them, and there is no boundary for anything to cross.
     """
     if executor is not None:
         return executor
-    if runtime == "bwrap" and BWRAP_BACKEND_BINARY.is_file():
-        return BwrapGateExecutor()
+    if boundary.runtime == "bwrap" and BWRAP_BACKEND_BINARY.is_file():
+        return BwrapGateExecutor(caches=boundary.caches)
     return SubprocessGateExecutor()
 
 
-def _read_runtime_from_manifest(manifest: Path) -> str | None:
-    """Return the manifest's `runtime:` value, or None if the manifest is unusable."""
+@dataclass(frozen=True)
+class _BoundaryDeclarations:
+    """The manifest facts the gate boundary is assembled from."""
+
+    runtime: str | None = None
+    caches: tuple[CacheDeclaration, ...] = ()
+
+
+def _read_boundary_from_manifest(manifest: Path) -> _BoundaryDeclarations:
+    """Read `runtime:` and `caches:` — which boundary, and what it carries.
+
+    One parse for both, because they are two halves of one decision and two
+    reads could disagree about a manifest edited between them. An unusable
+    manifest yields no declarations at all rather than invented ones: the caller
+    is about to turn the very same `FactoryConfigError` into the `CONFIG_ERROR`
+    result that fails the node, so nothing here is deciding more than which
+    backend gets to print it.
+    """
     try:
-        return load_factory_config(manifest).runtime
+        config = load_factory_config(manifest)
     except FactoryConfigError:
-        return None
+        return _BoundaryDeclarations()
+    return _BoundaryDeclarations(runtime=config.runtime, caches=config.caches)
 
 
 def resolve_gate_executor(
@@ -1299,14 +1399,16 @@ def resolve_gate_executor(
     """Public helper for callers that need the runtime-selected backend.
 
     The verify activity uses this so its heartbeating wrapper wraps the same
-    backend `run_gates` would have chosen (US5).
+    backend `run_gates` would have chosen (US5) — which now includes the caches
+    that backend carries, so the wrapped boundary and the one `run_gates` builds
+    cannot mount different things.
     """
     worktree = Path(worktree)
     manifest = (
         worktree / MANIFEST_NAME if manifest_path is None else Path(manifest_path)
     )
     return _resolve_gate_executor(
-        executor, _read_runtime_from_manifest(manifest)
+        executor, _read_boundary_from_manifest(manifest)
     )
 
 

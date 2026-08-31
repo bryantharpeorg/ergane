@@ -677,7 +677,7 @@ def test_a_full_init_ends_by_running_the_check(
     prompter = ScriptedPrompter(
         # version, runtime, gates, timeouts, standards, landing_branch, roadmap,
         # forge (049/US5, omitted — absent means github), slug
-        ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", "", "widgets"]
+        ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", "", "", "widgets"]
     )
     monkeypatch.setattr(init_module, "_prompter_factory", lambda: prompter)
 

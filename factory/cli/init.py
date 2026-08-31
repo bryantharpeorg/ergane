@@ -430,6 +430,14 @@ _PROMPTS: dict[str, str] = {
         "gates that write on purpose (YAML mapping of gate name to true, "
         "optional)"
     ),
+    # 101/US2: the caches this repo's gates need carried across the gate
+    # boundary, whose `HOME` is a tmpfs. The prompt names the shape rather than
+    # the reason — an operator who needs this already met the reason as a gate
+    # that re-downloaded the world.
+    "caches": (
+        "caches the gates need inside the boundary (YAML list of "
+        "{path, env}, paths under your home, optional)"
+    ),
     # 092/US2: the size above which this repository refuses to build a story.
     # Optional, and the floor the parser enforces is the judge's attention
     # budget, so the question names bytes rather than inviting a round number.
@@ -447,6 +455,7 @@ _OPTIONAL_KEYS = (
     "roadmap",
     "forge",
     "writes",
+    "caches",
     "diff_refusal_bytes",
 )
 
@@ -649,6 +658,13 @@ def _build_defaults(repo_root: Path) -> dict[str, Any]:
         defaults["forge"] = existing["forge"]
     if "writes" in existing:
         defaults["writes"] = existing["writes"]
+    if "caches" in existing:
+        # Offered back rather than re-derived, the rule every key above follows:
+        # a re-run reconciles what the repository declared. Deriving instead
+        # would be worse here than elsewhere — these paths are holes in a
+        # verification boundary, and init has no business opening one nobody
+        # typed (101 FR-007).
+        defaults["caches"] = existing["caches"]
     return defaults
 
 

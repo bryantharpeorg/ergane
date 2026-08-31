@@ -185,6 +185,7 @@ def answers_for(slug: str) -> list[str]:
         "",  # roadmap dials (omitted; 034/US6)
         "",  # forge (omitted; 049/US5 — absent means github)
         "",  # writes (omitted; 084/US3 — absent means nothing declared)
+        "",  # caches (omitted; 101/US2 — absent means the uv cache alone)
         "",  # diff_refusal_bytes (omitted; 092/US2 — absent means the default)
         slug,
     ]

@@ -12,9 +12,12 @@ could interpret as "no gates ran, so no gates failed".
 
 Three things this module deliberately does not do:
 
-- **Execute anything.** It is a pure function over text; `load_factory_config`
-  is the only line that touches a filesystem, and it exists so callers holding a
-  worktree path get errors that name the file instead of an `OSError`.
+- **Execute anything.** It is a pure function over text, with two named
+  exceptions: `load_factory_config`, which reads the file so callers holding a
+  worktree path get errors that name it instead of an `OSError`, and
+  `_read_caches`, which resolves a declared path against the operator's home
+  because FR-007's bound is a fact about this host's symlinks and no string
+  comparison can decide it. Both say so where they do it.
 - **Fill in defaults.** `timeouts` stays exactly as sparse as it was written, so
   the runner can still tell "declared 600" from "not declared" and the 600s
   default remains one knob (`VerificationConfig.gate_timeout_s`) instead of a
@@ -46,6 +49,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import sys
 import warnings
 from pathlib import Path
@@ -55,6 +59,7 @@ import yaml
 
 from factory.verify.diffbounds import DIFF_INPUT_LIMIT, DIFF_REFUSAL_THRESHOLD
 from factory.verify.models import (
+    CacheDeclaration,
     FactoryConfig,
     GateResult,
     GateStatus,
@@ -111,8 +116,19 @@ _TOP_LEVEL_KEYS = (
     "roadmap",
     "forge",
     "writes",
+    "caches",
     "diff_refusal_bytes",
 )
+
+#: The keys one `caches:` entry may declare (101 FR-004).
+_CACHE_KEYS = ("path", "env")
+
+#: What a declared `env:` name may look like. The declaration becomes a
+#: `--setenv <name> <path>` pair on the boundary's own command line, so a name
+#: outside this shape is a variable the gate's shell cannot read back — which
+#: would leave the cache bound and the tool still unable to find it, the exact
+#: failure FR-008 exists to prevent.
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 #: Keys that only schema v2 recognises; v1 refuses them as unknown (US1-S6).
 _V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify")
@@ -206,6 +222,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     ladder = _read_ladder(document, source)
     verify_order = _read_verify(document, source)
     diff_refusal_bytes = _read_diff_refusal_bytes(document, source)
+    caches = _read_caches(document, source)
 
     return FactoryConfig(
         version=version,
@@ -220,6 +237,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         ladder=ladder,
         verify_order=verify_order,
         diff_refusal_bytes=diff_refusal_bytes,
+        caches=caches,
     )
 
 
@@ -671,6 +689,130 @@ def _read_diff_refusal_bytes(document: Mapping[Any, Any], source: str) -> int:
             source=source,
         )
     return value
+
+
+def _read_caches(
+    document: Mapping[Any, Any], source: str
+) -> tuple[CacheDeclaration, ...]:
+    """The caches this repository's gates need carried into the boundary (FR-004).
+
+    Optional and additive, so the schema does not bump: absent is `()`, which is
+    what every manifest that exists says and which means the uv bind and nothing
+    else, byte-for-byte as before (FR-006).
+
+    **This reader touches the filesystem, and the departure is deliberate.**
+    Everything else in this module is a pure function over text — that is the
+    property the module docstring claims and the reason a broken manifest can be
+    judged without a worktree. FR-007 cannot be decided that way. A path is
+    inside the operator's home or outside it as a fact about *this host's*
+    symlinks, and the bypass the check exists to close is a link spelled inside
+    home that lands outside it, which no amount of string comparison sees. So the
+    path is expanded, resolved, and compared against `Path.home()` — the same
+    home `_cache_binds` composes the uv default from, because a parser that
+    bounded declarations against one home while the boundary mounted from another
+    would be enforcing nothing.
+
+    Refused at *load* time rather than at mount time on purpose. A declared bind
+    is a hole in a verification boundary, opened by a manifest that belongs to
+    whoever controls the target repository; a refusal here costs one clear error
+    message naming the path, while a boundary that discovered the problem while
+    mounting would have already decided which host directories a repo-declared
+    gate command can write to.
+
+    Everything else is the rule every optional key here follows: declared means
+    declared. `caches: []` is an operator who meant to write something, a bare
+    string entry is the shape guess, an unknown key inside an entry is a typo
+    that would silently declare nothing, and an `env:` the boundary cannot spell
+    is a bind whose tool still cannot find it.
+    """
+    if "caches" not in document:
+        return ()
+
+    declared = document["caches"]
+    if not isinstance(declared, list) or not declared:
+        raise FactoryConfigError(
+            "caches",
+            f"declares `caches: {declared!r}`; when declared it must be a "
+            "non-empty list of entries, each naming a `path` and optionally the "
+            "`env` variable that points at it, e.g. "
+            "`caches: [{path: ~/.npm, env: npm_config_cache}]`",
+            source=source,
+        )
+
+    home = Path.home().resolve()
+    entries: list[CacheDeclaration] = []
+    for entry in declared:
+        if not isinstance(entry, Mapping):
+            raise FactoryConfigError(
+                "caches",
+                f"declares the cache entry {entry!r}; each entry must be a "
+                f"mapping drawn from {_names(_CACHE_KEYS)}, e.g. "
+                "`- {path: ~/.npm, env: npm_config_cache}`",
+                source=source,
+            )
+        unknown = [key for key in entry if key not in _CACHE_KEYS]
+        if unknown:
+            raise FactoryConfigError(
+                "caches",
+                f"declares {_names(unknown)} on a cache entry; the keys are "
+                f"{_names(_CACHE_KEYS)}",
+                source=source,
+            )
+
+        raw = entry.get("path")
+        if not isinstance(raw, str) or not raw.strip():
+            raise FactoryConfigError(
+                "caches",
+                f"gives a cache entry the path {raw!r}; every entry needs a "
+                "non-empty `path` naming a directory under the operator's home",
+                source=source,
+            )
+        spelled = raw.strip()
+        expanded = Path(spelled).expanduser()
+        if not expanded.is_absolute():
+            # A relative path resolves against whatever directory the reading
+            # process happens to sit in, which is exactly the ambient state
+            # constitution IX refuses: the same manifest would then declare
+            # different directories to the worker and to a node.
+            raise FactoryConfigError(
+                "caches",
+                f"declares the cache path {spelled!r}, which is relative; a "
+                "cache path is absolute or `~`-relative, never resolved against "
+                "the reading process's working directory",
+                source=source,
+            )
+
+        resolved = expanded.resolve()
+        if resolved == home or not resolved.is_relative_to(home):
+            raise FactoryConfigError(
+                "caches_outside_home",
+                f"declares the cache path {spelled!r}, which resolves to "
+                f"{str(resolved)!r} — not a directory under the operator's home "
+                f"{str(home)!r}. A declared bind is a hole in the verification "
+                "boundary, so its blast radius is bounded to home; home itself "
+                "is not a cache",
+                source=source,
+            )
+
+        env = entry.get("env")
+        if "env" in entry and (
+            not isinstance(env, str) or not _ENV_NAME.match(env)
+        ):
+            raise FactoryConfigError(
+                "caches",
+                f"gives the cache {spelled!r} the variable name {env!r}; when "
+                "declared it must be a usable environment variable name, e.g. "
+                "`env: npm_config_cache`",
+                source=source,
+            )
+
+        entries.append(
+            CacheDeclaration(
+                path=str(resolved), env=env if isinstance(env, str) else None
+            )
+        )
+
+    return tuple(entries)
 
 
 def _read_ladder(document: Mapping[Any, Any], source: str) -> "VerificationConfig":
