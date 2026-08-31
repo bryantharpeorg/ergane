@@ -46,7 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 import httpx
@@ -67,12 +67,14 @@ from factory.verify.diffbounds import (
 )
 from factory.verify.models import (
     CriteriaSet,
+    GateContradiction,
     GateResult,
     GateStatus,
     JudgeOutcome,
     JudgeScenarioFinding,
     JudgeVerdict,
     VerificationConfig,
+    detect_gate_contradictions,
 )
 from factory.verify.remediation import screen_feedback
 
@@ -763,6 +765,14 @@ async def run_judge(
     `judge_attempt` has reached `1 + max_judge_retries` — as FAIL, because
     garbage never becomes a pass and never becomes unbounded spend.
 
+    A verdict this module *can* read but which contradicts one of those gate
+    results comes back as a RETRY too, on the same budget (116 FR-007): the ask
+    that produced it was scored against a prediction the factory had already
+    measured, and re-asking with the measurement quoted back is the cheapest
+    thing that can change the answer. Once the budget is spent the verdict is
+    returned exactly as the judge gave it — whether a node fails on it is
+    `compose_result`'s decision, never this module's.
+
     Raises `JudgeUnavailableError` when the proxy could not be reached, and
     `ValueError` when the node has no scenarios to score.
     """
@@ -784,7 +794,7 @@ async def run_judge(
     )
 
     try:
-        return parse_verdict(
+        verdict = parse_verdict(
             content,
             dispatched_scenario_ids(criteria),
             judge_attempt=judge_attempt,
@@ -801,6 +811,74 @@ async def run_judge(
             truncated_input=prompt.truncated_input,
             model_alias=model_alias,
         )
+
+    return _reask_on_contradiction(
+        verdict,
+        gate_results or (),
+        judge_attempt=judge_attempt,
+        max_judge_retries=max_judge_retries,
+    )
+
+
+def _reask_on_contradiction(
+    verdict: JudgeVerdict,
+    gate_results: Sequence[GateResult],
+    *,
+    judge_attempt: int,
+    max_judge_retries: int,
+) -> JudgeVerdict:
+    """Ask again when the verdict disagrees with a measurement (116 FR-007).
+
+    A judge asserting that a gate would fail, about a gate this attempt recorded
+    PASS, is the one failure a judge retry is actually for: the diff is not the
+    problem, the scoring is, and the next ask carries the measurement back to
+    the model that contradicted it. It rides `judge_attempt` /
+    `max_judge_retries` — the budget the malformed-response path already spends
+    — because a second budget would be a second place deciding how often a model
+    is re-asked, and the two would drift.
+
+    Spent, this returns the judge's verdict untouched. It does *not* escalate to
+    FAIL the way an unreadable response does, and it does not soften to PASS:
+    both would be this module deciding the node's fate, and that decision is
+    `compose_result`'s alone (plan trap 7). What the composer does with a
+    contradiction it can still see is its own business.
+    """
+    contradictions = detect_gate_contradictions(verdict, gate_results)
+    if not contradictions or judge_attempt >= 1 + max_judge_retries:
+        return verdict
+
+    return replace(
+        verdict,
+        outcome=JudgeOutcome.RETRY,
+        feedback=_contradiction_feedback(verdict.feedback, contradictions),
+    )
+
+
+def _contradiction_feedback(
+    feedback: str, contradictions: Sequence[GateContradiction]
+) -> str:
+    """What the re-asked judge is told it contradicted.
+
+    Quoted back with the recorded status beside it, because the correction is
+    not "you were wrong" but "the factory ran that command on this attempt and
+    wrote down what happened". The original feedback is kept ahead of it: the
+    other findings in it may be sound, and this is one note beside them rather
+    than a replacement for them.
+    """
+    quoted = "; ".join(
+        f"{contradiction.scenario} asserted {contradiction.claim!r}, but the "
+        f"{contradiction.gate!r} gate is recorded "
+        f"{GateStatus(contradiction.recorded_status).value} for this attempt"
+        for contradiction in contradictions
+    )
+    return (
+        f"{feedback}\n\nThis verdict contradicts what the factory measured: "
+        f"{quoted}. The gate results you were shown are this factory's own "
+        "deterministic measurement of this same attempt, taken after the diff "
+        "was produced — score a scenario naming a gate outcome against the "
+        "recorded result, never against what you predict the command would do. "
+        "Score every scenario again on that basis."
+    ).strip()
 
 
 def _malformed_feedback(exc: JudgeParseError, *, exhausted: bool) -> str:

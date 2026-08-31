@@ -515,6 +515,14 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.verify.models.DiffSizeRefusal": (
         "total_bytes", "limit_bytes", "largest_files"
     ),
+    # 116 US2: kind 1 (the scenario the finding was neutralised on and the gate
+    # it contradicted — both address something, and a defaulted `gate` would
+    # name the wrong command), kind 3 (`recorded_status` is the measurement the
+    # judge disagreed with) and kind 2 (`claim` is the judge's own words, and
+    # defaulting it to empty would say the judge asserted nothing).
+    "factory.verify.models.GateContradiction": (
+        "scenario", "gate", "recorded_status", "claim"
+    ),
     "factory.verify.models.GateResult": (
         "name", "command", "status", "exit_code", "duration_s", "output_tail"
     ),
