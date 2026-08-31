@@ -33,6 +33,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -116,6 +117,7 @@ from factory.verify.store import (
     ExternalCompletionCount,
     connect as verify_connect,
     connect_readonly as verify_connect_readonly,
+    dispatch_groups,
     epic_history,
     external_completion_count,
     get_escalation,
@@ -1254,19 +1256,42 @@ def render_attempts(epic_id: str, results: Sequence[VerificationResult]) -> str:
     Columns are padded from the widest value present rather than from a fixed
     width, the way `render_status` does it, so one long node id does not push
     every other line out of alignment with itself.
+
+    A node built more than once gets a heading over each of its builds, naming
+    which of how many it is and the dispatch that ran it (117 US3-S2). Without
+    it a re-dispatched node printed as one long run of attempts — five lines
+    that read exactly like a node that took five attempts once, which is the
+    thing the operator most needs to be able to tell apart and the one thing
+    nothing printed. A node dispatched once, which is nearly all of them, gets
+    no heading at all: the count answers a question it does not raise, and a
+    line over every node would push the readings this verb exists for one row
+    further down for every attempt in the store (FR-009).
     """
     id_width = max((len(result.node_id) for result in results), default=0)
     form_width = max((len(str(result.form.value)) for result in results), default=0)
 
     counted = f"{len(results)} verification" + ("" if len(results) == 1 else "s")
     lines = [f"epic {epic_id}  {counted}"]
-    for result in results:
-        lines.append(
-            f"{result.node_id.ljust(id_width)}  attempt {result.attempt}  "
-            f"{str(result.form.value).ljust(form_width)}  "
-            f"{result.verdict.value}  {_judge_input_token(result.output_check)}"
-        )
-        lines += _contradiction_lines(result)
+    groups = dispatch_groups(results)
+    # The grouping is the store's, taken as handed back rather than recomputed:
+    # a renderer that re-sorted would be a second opinion about the order.
+    totals = Counter(group.results[0].node_id for group in groups)
+    seen: Counter[str] = Counter()
+    for group in groups:
+        node_id = group.results[0].node_id
+        seen[node_id] += 1
+        if totals[node_id] > 1:
+            lines.append(
+                f"{node_id.ljust(id_width)}  "
+                f"dispatch {seen[node_id]} of {totals[node_id]}  {group.dispatch}"
+            )
+        for result in group.results:
+            lines.append(
+                f"{result.node_id.ljust(id_width)}  attempt {result.attempt}  "
+                f"{str(result.form.value).ljust(form_width)}  "
+                f"{result.verdict.value}  {_judge_input_token(result.output_check)}"
+            )
+            lines += _contradiction_lines(result)
     return "\n".join(lines)
 
 

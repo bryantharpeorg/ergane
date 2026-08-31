@@ -234,7 +234,10 @@ def test_the_cli_states_how_many_dispatches_a_node_has_had(
     run = invoke("build", "attempts", EPIC)
 
     assert run.code == 0, run.stderr
-    assert "2 dispatches" in run.stdout, run.stdout
+    # How many there were, on each heading, where the operator is already
+    # looking — and which dispatch ran the attempts beneath it.
+    assert "dispatch 1 of 2" in run.stdout, run.stdout
+    assert "dispatch 2 of 2" in run.stdout, run.stdout
     assert FIRST_DISPATCH in run.stdout and SECOND_DISPATCH in run.stdout
     # Both attempt-one rows are printed, each under its own dispatch's heading.
     lines = run.stdout.splitlines()
@@ -392,3 +395,32 @@ def test_rows_are_ordered_by_when_they_were_written_not_by_row_id(
         FIRST_DISPATCH,
         SECOND_DISPATCH,
     ]
+
+
+def test_two_dispatches_the_clock_cannot_separate_still_read_in_order(
+    store: sqlite3.Connection,
+) -> None:
+    """US3-S4, the tie. `finished_at` is stamped to the second.
+
+    Found by running the story's own demonstration: under a time-skipping
+    workflow environment both dispatches record inside one second, every group
+    ties on the clock, and whatever the ordering falls back to decides which
+    build the operator is shown first. Falling back to the dispatch itself
+    would decide it by comparing two uuids — the second dispatch read first
+    here, for no reason but its leading digit. The insertion order of a group's
+    first row is the only evidence left when the clock has none, and it is
+    consulted last rather than first, which is the whole of trap 7.
+    """
+    tied = stamp("10:03")
+    recorded(store, attempt=1, dispatch=SECOND_DISPATCH, at="10:03")
+    recorded(store, attempt=1, dispatch=FIRST_DISPATCH, at="10:03")
+    recorded(store, attempt=2, dispatch=SECOND_DISPATCH, at="10:03")
+
+    history = node_history(store, EPIC, NODE)
+
+    assert {row.finished_at for row in history} == {tied}, "the clock cannot tell"
+    assert [(row.dispatch, row.attempt) for row in history] == [
+        (SECOND_DISPATCH, 1),
+        (SECOND_DISPATCH, 2),
+        (FIRST_DISPATCH, 1),
+    ], "the build whose first row was written first, even though its uuid sorts second"
