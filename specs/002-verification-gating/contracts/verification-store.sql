@@ -47,7 +47,14 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- returned FAIL reads, on the row alone, as a composer that ignored its
     -- judge.
     gate_contradictions TEXT,
-    UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
+    -- 117-US1: the interpreter run that produced this attempt, and part of the
+    -- upsert key. Last in the table because a store written before it gets the
+    -- column appended, and a migrated store must have the same column order as
+    -- a fresh one. NOT NULL with a reserved default rather than nullable: a
+    -- NULL here is distinct from every other NULL in a UNIQUE index, which
+    -- would key every unnamed row on itself and disable the idempotence below.
+    dispatch          TEXT    NOT NULL DEFAULT '<unknown>' CHECK (dispatch <> ''),
+    UNIQUE (epic_id, node_id, attempt, form, dispatch)   -- upsert key (record_verification)
 );
 
 CREATE INDEX IF NOT EXISTS idx_vr_epic    ON verification_results (epic_id);

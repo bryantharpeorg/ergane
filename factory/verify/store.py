@@ -18,12 +18,18 @@ Four decisions carry the weight here:
   one path that records evidence. Each activity invocation opens its own
   connection, and every writer here commits before returning, so evidence is
   durable the moment the caller is told it was written.
-- **`(epic_id, node_id, attempt, form)` is the upsert key.** Temporal runs
-  `record_verification` at least once, so a re-run must land on the first run's
-  row. The uniqueness is structural, which makes "one row per attempt per form"
-  a property of the schema rather than of the caller's care. `form` is in the
-  key because one attempt can be verified both as a node's built-in phase and by
-  an explicit verifier node (FR-002).
+- **`(epic_id, node_id, attempt, form, dispatch)` is the upsert key.** Temporal
+  runs `record_verification` at least once, so a re-run must land on the first
+  run's row. The uniqueness is structural, which makes "one row per attempt per
+  form per dispatch" a property of the schema rather than of the caller's care.
+  `form` is in the key because one attempt can be verified both as a node's
+  built-in phase and by an explicit verifier node (FR-002). `dispatch` is in it
+  since 117-US1, because without it the two things the key could not tell apart
+  were a *retry* and a *re-dispatch*: a node dispatched again started over at
+  attempt 1 and overwrote the first dispatch's evidence, which is exactly the
+  record a post-mortem of a killed build begins from. A retried activity carries
+  the run id of the workflow that scheduled it, so adding the dispatch preserves
+  at-least-once idempotence exactly rather than trading it away.
 - **An escalation makes exactly one terminal transition.** Both
   `resolve_escalation` and `expire_escalation` are a single UPDATE guarded by
   `WHERE resolution IS NULL`, and report what SQLite did rather than checking
@@ -97,6 +103,7 @@ from factory.verify.models import (
     OverallVerdict,
     QuestionRecord,
     UNKNOWN_BASE_REF,
+    UNKNOWN_DISPATCH,
     VerificationForm,
     VerificationResult,
 )
@@ -135,7 +142,13 @@ from factory.verify.models import (
 #: the empty tuple. The sibling fact, whether the judge was shown the gate
 #: results at all, needs no column: it rides inside the `judge_verdict` JSON,
 #: where it belongs to the verdict rather than to the row.
-SCHEMA_VERSION = 10
+#:
+#: 11 (117-US1): `verification_results.dispatch`, and the UNIQUE constraint it
+#: joins. The second migration here that is not additive — SQLite cannot drop a
+#: UNIQUE constraint any more than it can widen a CHECK — so `_migrate` rebuilds
+#: the table. It has to run: without it a re-dispatched node keeps overwriting
+#: its own history. Rows copied across carry `UNKNOWN_DISPATCH`, never NULL.
+SCHEMA_VERSION = 11
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged
@@ -202,7 +215,14 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- returned FAIL reads, on the row alone, as a composer that ignored its
     -- judge.
     gate_contradictions TEXT,
-    UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
+    -- 117-US1: the interpreter run that produced this attempt, and part of the
+    -- upsert key. Last in the table because a store written before it gets the
+    -- column appended, and a migrated store must have the same column order as
+    -- a fresh one. NOT NULL with a reserved default rather than nullable: a
+    -- NULL here is distinct from every other NULL in a UNIQUE index, which
+    -- would key every unnamed row on itself and disable the idempotence below.
+    dispatch          TEXT    NOT NULL DEFAULT '<unknown>' CHECK (dispatch <> ''),
+    UNIQUE (epic_id, node_id, attempt, form, dispatch)   -- upsert key (record_verification)
 );
 
 CREATE INDEX IF NOT EXISTS idx_vr_epic    ON verification_results (epic_id);
@@ -420,6 +440,80 @@ def _widen_escalation_resolutions(conn: sqlite3.Connection) -> None:
     )
 
 
+#: The `verification_results` upsert key every store written before 117-US1
+#: carries, and what it becomes. `_SCHEMA_DDL` has spelled the old one since 002
+#: and SQLite records the creating text verbatim, so — exactly as with the
+#: escalations rebuild above — the migration rewrites the recorded DDL rather
+#: than restating the table. The replacement carries the new column *and* the
+#: new constraint in one substitution, which puts `dispatch` last in the column
+#: list (where `ALTER TABLE ADD COLUMN` would have put it, and where the fresh
+#: DDL declares it) without any second column list to drift.
+_OLD_RESULT_UNIQUE = "UNIQUE (epic_id, node_id, attempt, form)"
+_NEW_RESULT_UNIQUE = (
+    f"dispatch TEXT NOT NULL DEFAULT '{UNKNOWN_DISPATCH}' CHECK (dispatch <> ''),\n"
+    "    UNIQUE (epic_id, node_id, attempt, form, dispatch)"
+)
+
+
+def _results_ddl(conn: sqlite3.Connection) -> str | None:
+    """The text SQLite recorded when this store's results table was made."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type='table' AND name='verification_results'"
+    ).fetchone()
+    return None if row is None else (row[0] or "")
+
+
+def _add_dispatch_to_the_upsert_key(conn: sqlite3.Connection) -> None:
+    """Rebuild `verification_results` so the dispatch joins its key (117-US1).
+
+    `ALTER TABLE` can add the column but cannot touch the UNIQUE constraint, and
+    a constraint left alone is the failure mode that passes every test written
+    against a fresh store while the defect survives untouched in the field. So:
+    new table, rows copied, old dropped, new renamed, indexes recreated — the
+    shape `_widen_escalation_resolutions` already established here.
+
+    Copied rows are given `UNKNOWN_DISPATCH` explicitly rather than left to the
+    column default, because what they carry is the point (FR-004): they were
+    written before dispatches were distinguished, they belong to one unnamed
+    dispatch, and the next dispatch of the same node must land beside them
+    rather than merge into them. NULL would not do it — SQLite reads NULLs as
+    distinct in a UNIQUE index, so every historical row would key on itself.
+
+    Run after the additive result-column migrations above, so the copy has every
+    column. A store whose DDL does not carry the old constraint verbatim is left
+    alone rather than guessed at: the read that follows names the missing column
+    out loud, which is cheaper than a rebuild that invented a shape.
+    """
+    recorded = _results_ddl(conn)
+    if not recorded or _OLD_RESULT_UNIQUE not in recorded:
+        return
+    rebuilt = recorded.replace(_OLD_RESULT_UNIQUE, _NEW_RESULT_UNIQUE)
+    # One replacement, and the table name is the first occurrence: no column is
+    # named `verification_results`, so nothing else in the DDL can match.
+    rebuilt = rebuilt.replace(
+        "verification_results", "verification_results_v11", 1
+    )
+    columns = ", ".join(
+        row[1] for row in conn.execute("PRAGMA table_info(verification_results)")
+    )
+    conn.executescript(
+        f"{rebuilt};\n"
+        f"INSERT INTO verification_results_v11 ({columns}, dispatch) "
+        f"SELECT {columns}, '{UNKNOWN_DISPATCH}' FROM verification_results;\n"
+        "DROP TABLE verification_results;\n"
+        "ALTER TABLE verification_results_v11 RENAME TO verification_results;\n"
+        "CREATE INDEX IF NOT EXISTS idx_vr_epic"
+        " ON verification_results (epic_id);\n"
+        "CREATE INDEX IF NOT EXISTS idx_vr_node"
+        " ON verification_results (epic_id, node_id);\n"
+        "CREATE INDEX IF NOT EXISTS idx_vr_specref"
+        " ON verification_results (spec_ref);\n"
+        "CREATE INDEX IF NOT EXISTS idx_vr_verdict"
+        " ON verification_results (verdict);"
+    )
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Bring a store written by an older ergane up to `SCHEMA_VERSION`.
 
@@ -488,6 +582,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE verification_results ADD COLUMN gate_contradictions TEXT"
         )
+    if result_columns and "dispatch" not in result_columns:
+        # 117-US1, keyed off the column rather than off the version number, and
+        # run last of the result migrations so the rebuild's copy carries every
+        # column the ones above just added.
+        _add_dispatch_to_the_upsert_key(conn)
 
     extcomp_tables = {
         row[0] for row in conn.execute(
@@ -538,8 +637,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 # --- verification results ---------------------------------------------------
 
 #: The columns identifying one verification — the ON CONFLICT target, and what a
-#: re-run matches on rather than overwrites.
-_RESULT_KEY = ("epic_id", "node_id", "attempt", "form")
+#: re-run matches on rather than overwrites. `dispatch` is the last of them
+#: (117-US1): appended rather than prefixed, so the index still serves the
+#: `(epic_id, node_id, ...)` prefix scans the canonical queries read through.
+_RESULT_KEY = ("epic_id", "node_id", "attempt", "form", "dispatch")
 
 #: Everything `upsert_result` writes, in DDL order. `id` is SQLite's to assign,
 #: and a re-recorded attempt must not renumber the row it lands on.
@@ -563,10 +664,12 @@ _RESULT_COLUMNS = (
     "loop_summary",
     "base_ref",
     "gate_contradictions",
+    "dispatch",
 )
 
-#: A re-run overwrites every column except the four it matched on: the second
-#: recording of an attempt is the current one.
+#: A re-run overwrites every column except the five it matched on: the second
+#: recording of an attempt *of the same dispatch* is the current one, while a
+#: second dispatch of the same attempt is a different row entirely.
 _UPSERT_RESULT_SQL = (
     f"INSERT INTO verification_results ({', '.join(_RESULT_COLUMNS)}) "
     f"VALUES ({', '.join(f':{column}' for column in _RESULT_COLUMNS)}) "
@@ -584,9 +687,12 @@ _SELECT_RESULT_SQL = f"SELECT {', '.join(_RESULT_COLUMNS)} FROM verification_res
 def upsert_result(conn: sqlite3.Connection, result: VerificationResult) -> int:
     """Record one attempt's evidence, returning its stable row id.
 
-    Keyed on `(epic_id, node_id, attempt, form)`: a `record_verification` that
-    runs a second time updates the row the first one wrote instead of adding
-    another, so the returned id is stable across reruns.
+    Keyed on `(epic_id, node_id, attempt, form, dispatch)`: a
+    `record_verification` that runs a second time *within one dispatch* updates
+    the row the first one wrote instead of adding another, so the returned id is
+    stable across Temporal's redeliveries. A second dispatch of the same node is
+    a different key and gets its own rows, which is what keeps a killed build's
+    evidence readable after the next one has run (117-US1).
     """
     values = _result_values(result)
 
@@ -722,6 +828,11 @@ def _result_values(result: VerificationResult) -> dict[str, Any]:
                 for contradiction in result.gate_contradictions
             ]
         ),
+        # 117-US1: written literally, sentinel included. Unlike `base_ref` above
+        # this one is part of the key, and a NULL in a UNIQUE index is distinct
+        # from every other NULL — an unnamed dispatch stored as NULL would key
+        # each of its rows on itself and lose the idempotence the upsert is for.
+        "dispatch": result.dispatch or UNKNOWN_DISPATCH,
     }
 
 
@@ -762,6 +873,10 @@ def _result_from_row(row: tuple[Any, ...]) -> VerificationResult:
         # was neutralised". Reading it as anything else would invent a
         # contradiction on rows composed before one could be detected.
         gate_contradictions=_contradictions_from_json(values["gate_contradictions"]),
+        # 117-US1: NOT NULL in the schema, so what comes back is what was
+        # written — the migration stamped every pre-117 row with the sentinel
+        # rather than leaving a NULL for this read to interpret.
+        dispatch=values["dispatch"],
     )
 
 
