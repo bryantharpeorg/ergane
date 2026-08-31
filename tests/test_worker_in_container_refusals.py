@@ -34,6 +34,8 @@ def layout(tmp_path: Path) -> Iterator[InstallLayout]:
         interpreter=interpreter,
         unit_dir=unit_dir,
         generated_dir=home / ".local/state/ergane/supervision",
+        # 119-US1: the mode is declared, never defaulted.
+        temporal_mode="external",
     )
 
 

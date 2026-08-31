@@ -105,7 +105,7 @@ from factory.supervision.units import (
     CommandResult,
     InstallLayout,
     generated_files,
-    resolve_layout,
+    removal_layout,
     uninstall as uninstall_units,
 )
 from factory.verify.gates import scrubbed_env
@@ -1096,13 +1096,18 @@ def run_teardown(
 def _request_for(args: argparse.Namespace) -> TeardownRequest:
     """How the command builds its request, and the seam the suite replaces.
 
-    `resolve_layout()`'s defaults derive `~/.config/systemd/user` from the real
+    `removal_layout()`'s defaults derive `~/.config/systemd/user` from the real
     HOME, and on this host that systemd session *is* the factory
     (`factory/supervision/units.py`'s `_run_command` says so). Binding this
     instead of the layout keeps every test's teardown inside its own tmp tree.
+
+    `removal_layout` rather than `resolve_layout` (119-US1): teardown offers
+    candidates and removes only what its digest proves this engine wrote, so it
+    names the managed unit when the declaration cannot be read instead of
+    refusing to clean up a broken installation.
     """
     return TeardownRequest(
-        layout=resolve_layout(),
+        layout=removal_layout(),
         check=bool(args.check),
         purge=bool(args.purge),
         scrub_refs=bool(args.scrub_refs),
