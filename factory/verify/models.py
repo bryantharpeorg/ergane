@@ -777,7 +777,10 @@ class VerificationResult:
     verdict alone cannot show: a PASS composed over a judge that returned FAIL
     reads, without it, as a composer that ignored the judge. Empty is the
     ordinary case and means the judge contradicted no measurement — never "not
-    checked", because the check runs on every composition.
+    checked", because the check runs on every composition. It is on the composed
+    bundle rather than in the store: the column and the attempt view that render
+    it belong to US3 of this spec, so a round trip through `store` reads it back
+    empty until that lands.
     """
 
     epic_id: str
