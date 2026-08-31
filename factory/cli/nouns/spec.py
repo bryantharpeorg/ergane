@@ -42,7 +42,7 @@ from factory.verify.factory_yaml import (
     load_factory_config,
     resolve_manifest_path,
 )
-from factory.verify.models import RequirementKind, Scenario
+from factory.verify.models import Requirement, RequirementKind, Scenario
 from factory.workgraph.cli import (
     DEFAULT_SPECS_ROOT,
     SPEC_NAME,
@@ -1308,7 +1308,7 @@ def _borderline_warning(
     )
 
 
-def _story_criteria(requirements: Sequence[Any]) -> list[_StoryCriteria]:
+def _story_criteria(requirements: Sequence[Requirement]) -> list[_StoryCriteria]:
     """The scenarios each story's node will be judged against."""
     return [
         _StoryCriteria(
