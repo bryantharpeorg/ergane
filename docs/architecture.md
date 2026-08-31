@@ -451,7 +451,13 @@ The pipeline, cheapest signal first:
    loop that excludes `judge` mints no judge key at all (SC-005).
 6. **Composed verdict, recorded first** — any failing gate, a failed output check, or a
    judge `retry`/`fail` makes the attempt FAIL; an unreachable judge behind green gates
-   passes with `judge_unavailable` recorded rather than fabricated. The row is written
+   passes with `judge_unavailable` recorded rather than fabricated. One judge finding is
+   not the node's to answer for (116-US2): one asserting that a gate would fail, about a
+   gate this same attempt recorded PASS. It is neutralised where `judge_accepts` is
+   derived and recorded on the row as a `GateContradiction`, so a PASS composed over a
+   FAIL verdict says why — the other findings, the gates and the output check all still
+   stand, and while the judge-retry budget is unspent the contradiction buys a re-ask on
+   that same budget rather than a node failure. The row is written
    before any routing decision, and downstream DAG edges unlock only on `PASSED` (FR-005).
    Every row written after spec 023 carries `loop_digest` and `loop_summary` — a stable
    SHA-256 of the resolved loop configuration and a human-readable one-line summary — so

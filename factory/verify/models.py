@@ -702,9 +702,10 @@ def judge_should_be_reasked(
 ) -> bool:
     """Whether asking the judge again can still change this verdict (FR-007).
 
-    The re-ask rule, stated once so the workflow's loop and the reference flow
-    cannot drift apart on it. Two things are worth re-asking and nothing else
-    is:
+    The re-ask rule, stated here rather than inline in the scoring loop, for the
+    reason every other decision in this module is: a rule spelled out at its
+    call site is a rule the next caller re-derives slightly differently. Two
+    things are worth re-asking and nothing else is:
 
     - **A response the parser could not read.** It comes back as a RETRY with no
       findings, and asking again is the only way to tell a broken model turn

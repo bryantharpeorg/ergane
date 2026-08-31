@@ -238,6 +238,7 @@ with workflow.unsafe.imports_passed_through():
         VerificationResult,
         compose_result,
         judge_required,
+        judge_should_be_reasked,
         loop_digest,
         loop_summary,
     )
@@ -2645,12 +2646,16 @@ class EpicWorkflow:
         which is why the alias carries the persona (001 R1): the proxy refuses
         a duplicate alias while its key lives.
 
-        The loop is for responses the strict parser could not read, and for
-        nothing else: `run_judge` reports those as a RETRY with no findings, and
-        asking again is the only way to tell a broken model turn from a real
-        objection. A RETRY that names scenarios is an answer — re-asking it about
-        an unchanged diff would buy the same verdict at twice the price, so it
-        ends the attempt and the ladder takes over.
+        What is worth re-asking is `judge_should_be_reasked`'s call, and it is
+        made there rather than inline here so the rule reads as a rule: a
+        response the strict parser could not read (a RETRY with no findings,
+        where asking again is the only way to tell a broken model turn from a
+        real objection), and a verdict that contradicts a gate this attempt
+        recorded PASS (116 FR-007 — a judge fault is the one failure a judge
+        retry is actually for). Any other RETRY names scenarios and contradicts
+        nothing, which makes it an answer: re-asking it about an unchanged diff
+        would buy the same verdict at twice the price, so it ends the attempt
+        and the ladder takes over.
 
         An outage is not a verdict and not a failure of the node: once the
         workflow's own retry budget is spent, `JUDGE_UNAVAILABLE` becomes the
@@ -2694,7 +2699,7 @@ class EpicWorkflow:
                     prior_feedback,
                     gate_results,
                 )
-                if verdict.outcome != JudgeOutcome.RETRY or verdict.findings:
+                if not judge_should_be_reasked(verdict, gate_results):
                     break
                 prior_feedback = verdict.feedback
         finally:
