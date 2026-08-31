@@ -637,18 +637,19 @@ def _validate_command(args: argparse.Namespace) -> int:
         )
     checked.append("sentinels")
 
-    # 9. Whether each Then-clause can be evidenced at all (102-US1).
+    # 9. Whether each Then-clause can be evidenced at all (102-US1), and what
+    #    the judge will be shown for this spec (102-US2).
     #
     # The layer that would have saved fifteen attempts: the judge is shown the
     # story's diff and the declared gates' results, so a clause asserting an
     # outcome neither can produce is one no correct implementation can pass.
     # It runs last because it is the only layer that reads the target
     # repository's manifest, and it refuses nothing when it cannot.
-    # 10. What the judge will actually be shown for this spec (102-US2).
     #
-    # Not a check and never a refusal: the answer US1's refusal assumes the
-    # author already has. It is assembled by the layer above rather than
-    # re-derived, so the report and the refusal cannot disagree.
+    # It returns the report as well as raising the refusals, because the report
+    # is the answer the refusal assumes the author already has — and assembling
+    # it here rather than in a second pass is what keeps the two from ever
+    # disagreeing about the same spec.
     evidence = _check_evidence(spec_text, args.target_repo, findings, skipped, checked)
 
     report = {
