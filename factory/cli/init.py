@@ -69,6 +69,16 @@ now named and consented to before the interview asks anything
 the header line the reporter happened to read. The root invocation gains no
 question at all: a prompt in the common case is a prompt operators learn to
 answer without reading.
+
+120's US1 stops the act that made all of the above beside the point on a
+repository that was already configured. `ergane init --wire` treated an existing
+manifest as a thing to regenerate, so a valid committed file came back through
+`safe_dump` without its comments, without `standards`, and without the `ladder`
+block this module has no vocabulary for — and `--check` then called the result
+valid, because every key that vanished is optional. A manifest that the loader
+accepts is now *kept* (`_existing_manifest`, `_write_scaffold`'s `None`), the
+rest of init runs exactly as before, and a manifest the loader refuses stops the
+run with its error quoted rather than being replaced by a fresh one.
 """
 
 from __future__ import annotations
@@ -611,15 +621,14 @@ def _load_existing_defaults(repo_root: Path) -> dict[str, Any]:
 class _ExistingManifest:
     """The manifest a repository already has, read the way `--check` reads it.
 
-    `text` and `declared` are the file as written — the bytes an operator would
-    lose and the keys they actually typed, including any this module has no
-    vocabulary for. `config` is the loader's resolved answer, which is what the
-    wiring is driven from: a manifest that declares no `landing_branch` still
-    *has* one, and the resolved value is the one the forge must be pointed at.
+    `declared` is the document as written — the keys the operator actually
+    typed, including any this module has no vocabulary for. `config` is the
+    loader's resolved answer, which is what the wiring is driven from: a
+    manifest that declares no `landing_branch` still *has* one, and the resolved
+    value is the one the forge must be pointed at.
     """
 
     path: Path
-    text: str
     declared: dict[str, Any]
     config: FactoryConfig
 
@@ -665,11 +674,10 @@ def _existing_manifest(repo_root: Path) -> _ExistingManifest | None:
             code=EXIT_USER,
         ) from None
 
-    text = path.read_text(encoding="utf-8")
     # A mapping, guaranteed: the loader has already refused every document whose
-    # root is not one.
-    declared = dict(yaml.safe_load(text) or {})
-    return _ExistingManifest(path=path, text=text, declared=declared, config=config)
+    # root is not one, and every byte sequence that does not decode.
+    declared = dict(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    return _ExistingManifest(path=path, declared=declared, config=config)
 
 
 def _declared_wiring_values(existing: _ExistingManifest) -> dict[str, Any]:
