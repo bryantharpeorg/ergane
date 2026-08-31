@@ -120,6 +120,9 @@ EXPECTED_RESULT_COLUMNS: list[tuple[str, str, int, int]] = [
     # 118-US2: the base the verdict was measured against; NULL for pre-118 rows,
     # which read back as `UNKNOWN_BASE_REF` rather than as a value.
     ("base_ref", "TEXT", 0, 0),
+    # 116-US3: the findings this attempt did not charge the node for; NULL for
+    # rows written before the check existed, read back as the empty tuple.
+    ("gate_contradictions", "TEXT", 0, 0),
 ]
 
 EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
@@ -406,11 +409,13 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 9 since 095-US2 added `escalations.default_choice`. The literal is
-    # deliberate: a bump claims every existing store has a migration path, and
-    # `tests/test_escalation_record.py` and
-    # `tests/test_118_record_names_its_base.py` each check that against one.
-    assert SCHEMA_VERSION == 9
+    # 10 since 116-US3 added `verification_results.gate_contradictions`. The
+    # literal is deliberate: a bump claims every existing store has a migration
+    # path, and `tests/test_escalation_record.py`,
+    # `tests/test_118_record_names_its_base.py` and
+    # `tests/test_116_the_record_says_what_the_judge_saw.py` each check that
+    # against one.
+    assert SCHEMA_VERSION == 10
     assert versions == [SCHEMA_VERSION]
 
 

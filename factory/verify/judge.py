@@ -272,10 +272,19 @@ class JudgePrompt:
     `truncated_input` rides along to the verdict and into the evidence store, so
     an operator reading a stored row can tell a judgment made on the whole diff
     from one made on an abridgement.
+
+    `gates_shown` takes exactly that route for exactly that reason (116 FR-008):
+    a verdict formed with the factory's own measurements in the prompt and one
+    formed without them are otherwise indistinguishable on the row. It is read
+    off the assembled section rather than off the argument that produced it, so
+    it says what the prompt *contains* — an empty sequence of gate results
+    assembles no section, and claiming one anyway would be the regression this
+    field exists to make visible.
     """
 
     messages: list[dict[str, str]]
     truncated_input: bool
+    gates_shown: bool
 
 
 # --- prompt assembly (pure) ---------------------------------------------------
@@ -391,6 +400,9 @@ def build_prompt(
             {"role": "user", "content": "\n".join(blocks)},
         ],
         truncated_input=prepared.truncated,
+        # What the prompt carries, not what the caller passed: an empty sequence
+        # is a caller who supplied gate results and a prompt that shows none.
+        gates_shown=bool(gate_blocks),
     )
 
 
@@ -583,6 +595,7 @@ def parse_verdict(
     judge_attempt: int,
     model_alias: str,
     truncated_input: bool = False,
+    gates_shown: bool = False,
 ) -> JudgeVerdict:
     """Read the judge's response, or refuse it (R5, contracts/judge.md).
 
@@ -594,6 +607,11 @@ def parse_verdict(
 
     Raises `JudgeParseError` naming what was wrong; the caller turns that into a
     judge retry or, on the last attempt, a FAIL carrying it as feedback.
+
+    `truncated_input` and `gates_shown` are facts about the prompt rather than
+    about the response, and they are arguments for that reason: this function
+    never sees the prompt, and a fact it invented here would be a second answer
+    to a question the assembler has already answered (116 FR-008).
     """
     ids = list(scenario_ids)
     if not ids:
@@ -639,6 +657,7 @@ def parse_verdict(
         judge_attempt=judge_attempt,
         truncated_input=truncated_input,
         model_alias=model_alias,
+        gates_shown=gates_shown,
     )
 
 
@@ -800,6 +819,7 @@ async def run_judge(
             judge_attempt=judge_attempt,
             model_alias=model_alias,
             truncated_input=prompt.truncated_input,
+            gates_shown=prompt.gates_shown,
         )
     except JudgeParseError as exc:
         exhausted = judge_attempt >= 1 + max_judge_retries
@@ -810,6 +830,10 @@ async def run_judge(
             judge_attempt=judge_attempt,
             truncated_input=prompt.truncated_input,
             model_alias=model_alias,
+            # Recorded on the unreadable-response path too: what the judge was
+            # shown is a fact about the ask, and an ask that produced garbage
+            # was still made with — or without — the measurements in it.
+            gates_shown=prompt.gates_shown,
         )
 
     return _reask_on_contradiction(

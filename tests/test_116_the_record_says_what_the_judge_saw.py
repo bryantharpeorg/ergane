@@ -378,20 +378,86 @@ def test_an_attempt_that_contradicted_nothing_round_trips_as_empty(
     assert read_back.gate_contradictions == ()
 
 
-def test_a_row_written_before_the_column_existed_reads_as_no_contradictions(
-    store: sqlite3.Connection,
+#: `verification_results` exactly as every store written before this story has
+#: it: no `gate_contradictions` column. Written out here rather than read from
+#: git, so the migration is tested against a shape rather than against whatever
+#: the DDL file says today — the same argument
+#: `tests/test_118_record_names_its_base.py` makes for its own fixture.
+_PRE_116_RESULTS_DDL = """
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version (version) VALUES (9);
+
+CREATE TABLE verification_results (
+    id                INTEGER PRIMARY KEY,
+    epic_id           TEXT    NOT NULL CHECK (epic_id <> ''),
+    node_id           TEXT    NOT NULL CHECK (node_id <> ''),
+    attempt           INTEGER NOT NULL CHECK (attempt >= 1),
+    form              TEXT    NOT NULL CHECK (form IN ('PHASE', 'NODE')),
+    verdict           TEXT    NOT NULL CHECK (verdict IN ('PASS', 'FAIL')),
+    gate_results      TEXT    NOT NULL,
+    output_check      TEXT    NOT NULL,
+    judge_verdict     TEXT,
+    judge_unavailable INTEGER NOT NULL DEFAULT 0 CHECK (judge_unavailable IN (0, 1)),
+    criteria_drift    INTEGER NOT NULL DEFAULT 0 CHECK (criteria_drift IN (0, 1)),
+    criteria_sha256   TEXT    NOT NULL,
+    spec_ref          TEXT    NOT NULL CHECK (spec_ref <> ''),
+    started_at        TEXT    NOT NULL,
+    finished_at       TEXT    NOT NULL,
+    provenance        TEXT,
+    loop_digest       TEXT,
+    loop_summary      TEXT,
+    base_ref          TEXT,
+    UNIQUE (epic_id, node_id, attempt, form)
+);
+
+INSERT INTO verification_results (
+    epic_id, node_id, attempt, form, verdict, gate_results, output_check,
+    judge_verdict, criteria_sha256, spec_ref, started_at, finished_at
+) VALUES (
+    'pre-116', 'us1', 1, 'PHASE', 'PASS', '[]',
+    '{"write_scope":"worktree","has_diff":true,"expected_artifacts":[],"artifacts_present":null,"passed":true}',
+    '{"outcome":"PASS","findings":[],"feedback":"","judge_attempt":1,"truncated_input":false,"model_alias":"fake-provider/judge-tier"}',
+    'aaaa', 'pre-116/US1', '2026-08-01T10:00:00Z', '2026-08-01T10:03:00Z'
+);
+"""
+
+
+def test_a_store_written_before_this_story_migrates_and_reads_back(
+    tmp_path: Path,
 ) -> None:
-    """Additive, and NULL is what a pre-116 row carries in the new column."""
-    upsert_result(store, composed(_verdict(), node_id="us1"))
-    store.execute(
-        "UPDATE verification_results SET gate_contradictions = NULL WHERE node_id = ?",
-        ("us1",),
-    )
-    store.commit()
+    """The bump claims a migration path, and this is the store it is claimed for.
 
-    (read_back,) = node_history(store, EPIC_ID, "us1")
+    Both new facts are absent from that row in different ways — the column does
+    not exist and the JSON key was never written — and both must read as the
+    honest nothing rather than raising. `judge_verdict` is populated in the
+    fixture on purpose: a decoder that read the key with `[]`-subscript would
+    pass every test above, where the key is always there, and fail only here.
+    """
+    db_path = tmp_path / "verification.db"
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.executescript(_PRE_116_RESULTS_DDL)
+        raw.commit()
+    finally:
+        raw.close()
 
-    assert read_back.gate_contradictions == ()
+    migrated = connect(db_path)
+    try:
+        columns = {
+            row[1]
+            for row in migrated.execute("PRAGMA table_info(verification_results)")
+        }
+        assert "gate_contradictions" in columns
+        (old,) = node_history(migrated, "pre-116", "us1")
+    finally:
+        migrated.close()
+
+    assert old.gate_contradictions == ()
+    assert old.judge is not None
+    assert old.judge.gates_shown is False
+    # Nothing else was lost or invented on the way through.
+    assert old.spec_ref == "pre-116/US1"
+    assert old.judge.model_alias == JUDGE_MODEL_ALIAS
 
 
 # --- T023 / US3-S3: the contradiction is visible through the CLI --------------

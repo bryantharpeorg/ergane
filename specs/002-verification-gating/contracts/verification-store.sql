@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS verification_results (
     -- what it was measured against (FR-006). NULL for rows written before this
     -- feature, read back as `UNKNOWN_BASE_REF`; additive, never backfilled.
     base_ref          TEXT,
+    -- 116-US3: the judge findings this attempt did not charge the node for, and
+    -- the recorded gate each one contradicted (JSON: list[GateContradiction]).
+    -- NULL for rows written before this feature, read back as the empty tuple;
+    -- additive, never backfilled. Without it a PASS composed over a judge that
+    -- returned FAIL reads, on the row alone, as a composer that ignored its
+    -- judge.
+    gate_contradictions TEXT,
     UNIQUE (epic_id, node_id, attempt, form)   -- upsert key (record_verification)
 );
 
