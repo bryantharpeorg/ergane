@@ -41,8 +41,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from functools import lru_cache
 from typing import Sequence
 
 # Imported for real, not named in a string. `EscalationRecord.check_evidence`
@@ -549,6 +551,181 @@ class JudgeVerdict:
     model_alias: str
 
 
+# Gate contradictions (116-US2) ----------------------------------------------
+
+
+@dataclass(frozen=True)
+class GateContradiction:
+    """One finding that asserts a gate would fail, on a gate recorded PASS.
+
+    The evidence behind a neutralisation, and it is a record rather than a flag
+    for the same reason `DiffAbridgement` is: "the judge contradicted a
+    measurement" and "which one, and what did it say" are one question asked
+    twice, and an operator deciding whether the judge persona needs re-routing
+    cannot act on the first answer without the second.
+
+    `claim` quotes the judge's own words — the matched span, whitespace
+    normalised — because a record that only asserted a disagreement would send
+    its reader back to the reasoning to find out what was disagreed with.
+    `recorded_status` is always `PASS` today, since that is the only status a
+    contradiction is defined against, and it is carried rather than implied so
+    the row states what was measured instead of leaving it to be inferred from
+    the fact that a row exists.
+    """
+
+    scenario: str
+    gate: str
+    recorded_status: GateStatus
+    claim: str
+
+
+#: The nouns that mark a word as being used as *this factory's gate* rather than
+#: as an ordinary English word that a gate happens to be named after. Requiring
+#: one is what keeps "the diff adds no test for the new branch" out of a check
+#: that would otherwise read it as a claim about the gate named `test`.
+_GATE_NOUNS = r"gates?|checks?|commands?|suites?|steps?|jobs?|runs?"
+
+#: Words allowed between the gate and the claim about it. Bounded to three, and
+#: to *these* words, because the alternative — any three words — makes the match
+#: "a sentence containing both" rather than "a claim about the gate", and a
+#: false positive here turns a real node FAIL into a PASS.
+_HEDGES = (
+    r"would|will|shall|does|do|did|is|are|was|were|be|been|has|have|had|must|"
+    r"should|can|could|may|might|still|already|therefore|then|thus|also|now|"
+    r"currently|likely|probably|certainly|clearly|actually|obviously"
+)
+
+_FAIL_VERBS = r"fail(?:s|ed|ing|ure)?|break(?:s|ing)?|broke|broken|error(?:s|ed|ing)?"
+
+_PASS_VERBS = r"pass(?:es|ed|ing)?|succeed(?:s|ed|ing)?"
+
+_NEGATIONS = r"not|never|n't|cannot|can't|won't|wouldn't|doesn't|didn't|isn't"
+
+#: The assertion itself, in the two shapes it comes in: the gate fails, or the
+#: gate does not pass. Negation is handled explicitly rather than swallowed by
+#: the hedges, because "the test gate would **not** fail" asserts the opposite
+#: of "the test gate would fail" and a check that read them the same way would
+#: neutralise a finding that agreed with the measurement.
+#:
+#: `fail(s) to <verb>` is excluded: "the diff fails to add the helper" is the
+#: English idiom for "does not", and it is the sentence a judge writes when it
+#: is objecting to the work rather than to a gate.
+_CLAIM = (
+    rf"(?:\s+(?:{_HEDGES})\b){{0,3}}"
+    rf"(?:\s+(?:{_FAIL_VERBS})\b(?!\s+to\b)|\s+(?:{_NEGATIONS})\s+(?:{_PASS_VERBS})\b)"
+)
+
+#: Quote characters a judge wraps a gate name in when it is quoting the section
+#: it was shown. Optional on both sides, so `` `test` gate `` and `test gate`
+#: are the same claim.
+_QUOTE = "[`'\"‘’“”]?"
+
+
+@lru_cache(maxsize=64)
+def _gate_claim_pattern(name: str) -> re.Pattern[str]:
+    """The pattern that reads "this gate would fail" for one gate's name.
+
+    The name is matched on a boundary that excludes `-`, `_`, `.` and `/` as
+    well as word characters (plan trap 5). A bare `\\b` is not enough: it keeps
+    `test` out of `smoketest`, but a hyphen *is* a word boundary, so `\\btest\\b`
+    matches inside `test-fixtures` — and a repository declaring both would have
+    one gate's name silently answering for the other's. This repository has been
+    bitten by an unanchored match once already (`factory/cli/doctor.py:58`).
+
+    The gate must be the *subject* of the claim, and the claim must follow it.
+    Reading the reverse order too ("US2-S1 fails because the test gate output is
+    not shown") would match a finding that objects to the work, which is the one
+    class of finding this check may never touch.
+    """
+    token = rf"(?<![\w./-]){re.escape(name)}(?![\w./-])"
+    subject = (
+        rf"(?:the\s+)?{_QUOTE}{token}{_QUOTE}\s+(?:{_GATE_NOUNS})\b"
+        rf"|\b(?:{_GATE_NOUNS})\s+{_QUOTE}{token}{_QUOTE}"
+    )
+    return re.compile(rf"(?:{subject}){_CLAIM}", re.IGNORECASE)
+
+
+def detect_gate_contradictions(
+    judge: JudgeVerdict | None,
+    gate_results: Sequence[GateResult],
+) -> tuple[GateContradiction, ...]:
+    """Findings that assert a gate would fail which this attempt recorded PASS.
+
+    The unwinnable case (116 FR-006). `judge_required` consults the judge only
+    when every gate passed, so a finding asserting one of them would fail is
+    disagreeing with a measurement the factory took after the diff was produced
+    and wrote into the same row. The only remedy such a finding admits is
+    re-adding or touching files that are already committed — padding the diff to
+    please the grader, the behaviour this factory teaches its agents to refuse.
+
+    Deliberately conservative, in one direction. A missed contradiction leaves
+    today's behaviour, which is the deadlock this spec exists to end; a false
+    one turns a real node FAIL into a PASS, which is worse than the deadlock. So
+    the gate must be named as a gate, must be the subject, and the assertion
+    must be a failure claim about it — a finding that merely mentions a green
+    gate, or says it would *not* fail, is the judge's ordinary business.
+
+    Only failing findings are read: a scenario the judge passed is not being
+    charged to anyone. Statuses are compared by value, the way `gates_passed`
+    compares them, because a `GateResult` that crossed a payload boundary
+    carries the enum's string.
+    """
+    if judge is None:
+        return ()
+
+    measured = [gate for gate in gate_results if gate.status == GateStatus.PASS]
+    if not measured:
+        return ()
+
+    found: list[GateContradiction] = []
+    for finding in judge.findings:
+        if finding.passed:
+            continue
+        for gate in measured:
+            match = _gate_claim_pattern(gate.name).search(finding.reasoning)
+            if match is None:
+                continue
+            found.append(
+                GateContradiction(
+                    scenario=finding.scenario,
+                    gate=gate.name,
+                    recorded_status=GateStatus(gate.status),
+                    claim=" ".join(match.group(0).split()),
+                )
+            )
+
+    return tuple(found)
+
+
+def judge_should_be_reasked(
+    verdict: JudgeVerdict, gate_results: Sequence[GateResult]
+) -> bool:
+    """Whether asking the judge again can still change this verdict (FR-007).
+
+    The re-ask rule, stated once so the workflow's loop and the reference flow
+    cannot drift apart on it. Two things are worth re-asking and nothing else
+    is:
+
+    - **A response the parser could not read.** It comes back as a RETRY with no
+      findings, and asking again is the only way to tell a broken model turn
+      from a real objection.
+    - **A verdict that contradicts a recorded gate** (116 FR-007). A judge fault
+      is the one failure a judge retry is actually for, and the re-ask carries
+      the measurement back to the judge that contradicted it.
+
+    A RETRY that names scenarios and contradicts nothing is an answer: re-asking
+    it about an unchanged diff buys the same verdict at twice the price, so it
+    ends the scoring and the ladder takes over. This function decides re-asks
+    and nothing else — whether the *node* fails is `compose_result`'s, and one
+    decider is the point.
+    """
+    if verdict.outcome != JudgeOutcome.RETRY:
+        return False
+    return not verdict.findings or bool(
+        detect_gate_contradictions(verdict, gate_results)
+    )
+
+
 # Composition ----------------------------------------------------------------
 
 
@@ -593,6 +770,13 @@ class VerificationResult:
     record-writing time gives an answer that can differ from the one the attempt
     ran against, which is the class of defect this whole spec is about.
     `UNKNOWN_BASE_REF` for rows written before the field existed.
+
+    `gate_contradictions` names every finding this attempt did *not* charge the
+    node for, and why (116 FR-006). It is the evidence behind an asymmetry the
+    verdict alone cannot show: a PASS composed over a judge that returned FAIL
+    reads, without it, as a composer that ignored the judge. Empty is the
+    ordinary case and means the judge contradicted no measurement — never "not
+    checked", because the check runs on every composition.
     """
 
     epic_id: str
@@ -613,6 +797,7 @@ class VerificationResult:
     loop_digest: str | None = None
     loop_summary: str | None = None
     base_ref: str = UNKNOWN_BASE_REF
+    gate_contradictions: tuple[GateContradiction, ...] = ()
 
 
 def gates_passed(gate_results: Sequence[GateResult]) -> bool:
@@ -691,7 +876,15 @@ def compose_result(
     RETRY included, since RETRY says what the ladder should do next, not that the
     attempt was acceptable.
 
-    An unreachable judge is the single asymmetry: it does not block a PASS, but
+    One class of judge disagreement is not the node's to answer for (116
+    FR-006): a finding asserting that a gate would fail, about a gate this same
+    attempt recorded PASS. It contradicts a measurement the factory took after
+    the diff was produced, and the only remedy it admits is padding the diff
+    with files that are already committed. Such a finding is neutralised — not
+    the verdict — and recorded on the row as a `GateContradiction`, so a PASS
+    reached over a FAIL verdict says why it was.
+
+    An unreachable judge is the other asymmetry: it does not block a PASS, but
     the PASS is flagged `judge_unavailable` so nobody reads it later as judged
     work. Drift is carried through untouched — it flags a result whose spec moved
     under it (R8) and never moves the verdict, or the flag would silently become
@@ -709,8 +902,28 @@ def compose_result(
     be a different moment from the one the attempt ran against.
     """
     judge_unavailable = judge is not None and judge.outcome == JudgeOutcome.UNAVAILABLE
+
+    # 116 FR-006, plan traps 6 and 7. The neutralisation happens *here*, where
+    # `judge_accepts` is derived, and not in a fourth place that could disagree
+    # with this one — the comment below has always said that the moment two
+    # places can decide a FAIL, the stored row and the retry prompt can differ.
+    # And it neutralises findings, not the attempt: the gates still stand, the
+    # output check still stands, and any failing finding that contradicted
+    # nothing still fails the node. A contradiction buys the node exactly the
+    # one finding it was not responsible for.
+    contradictions = detect_gate_contradictions(judge, gate_results)
+    contradicted = {contradiction.scenario for contradiction in contradictions}
+    standing = [
+        finding
+        for finding in (judge.findings if judge is not None else ())
+        if not finding.passed and finding.scenario not in contradicted
+    ]
+
     judge_accepts = (
-        judge is None or judge.outcome == JudgeOutcome.PASS or judge_unavailable
+        judge is None
+        or judge.outcome == JudgeOutcome.PASS
+        or judge_unavailable
+        or (bool(contradictions) and not standing)
     )
     passed = gates_passed(gate_results) and output_check.passed and judge_accepts
 
@@ -732,6 +945,7 @@ def compose_result(
         loop_digest=loop_digest if loop_digest is not None else DEFAULT_LOOP_DIGEST,
         loop_summary=loop_summary if loop_summary is not None else DEFAULT_LOOP_SUMMARY,
         base_ref=base_ref,
+        gate_contradictions=contradictions,
     )
 
 
