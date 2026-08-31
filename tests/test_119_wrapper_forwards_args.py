@@ -40,6 +40,20 @@ what is broken is broken, and what must not change is already right.
           Right contains 2 more items, first extra item: '--build-id'
     .../tests/test_119_wrapper_forwards_args.py:272: AssertionError
     2 failed, 3 passed in 0.21s
+
+After T012, the same command: `..... [100%]`, 5 passed. And the wrong fix —
+`-m "$@"` in place of the captured-and-consumed positionals — applied to
+`factory/supervision/units.py` and reverted, with every `__pycache__` purged
+first so no mutant runs the previous bytecode:
+
+    F..FF                                                                  [100%]
+    E   AssertionError: assert ('-m', 'facto.../dev.db', ...) == ('-m', 'facto...'ergane', ...)
+          At index 2 diff: '/tmp/.../erg' != '--db-filename'
+    E   AssertionError: assert ('-m', 'facto.../bin/python3') == ('-m', 'factory.worker')
+          Left contains 2 more items, first extra item: '/tmp/.../deployments/c0ffee1/tree'
+
+Three killed it, and the second failure is trap 1 exactly: the deployment root
+arriving as the module's first flag, with the interpreter behind it.
 """
 
 from __future__ import annotations
