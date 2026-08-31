@@ -10,7 +10,7 @@ drift apart only over a failing test. (A copy, not a read: the contract lives
 under `specs/`, which is documentation, not something a worker unpacks at
 runtime.)
 
-Four decisions carry the weight here:
+Five decisions carry the weight here:
 
 - **WAL with a busy timeout (R10, inherited from 001's R6).** Sibling nodes
   finish verifying concurrently on the one host that owns `.factory/`; in
@@ -37,6 +37,15 @@ Four decisions carry the weight here:
   timeout race by design (R12), and a read-then-write would let both win. A
   losing caller gets `False`, not an exception: a double-tapped button and a
   redelivered activity are ordinary, not errors.
+- **The readers group by dispatch.** Since 117-US3 every read here returns a
+  node's builds oldest first and each build's attempts together, because the
+  rows US1 stopped destroying were still being handed back interleaved at every
+  attempt number two dispatches shared. The order is the dispatch's earliest
+  `finished_at`, and a row id is consulted only where that clock ties — ids are
+  minted at insert, and the rows a pre-US1 re-dispatch overwrote kept the ids of
+  the build it replaced, so leading with them reads a history backwards. Inside
+  one dispatch nothing moved — `(attempt, form)`, as since 002 — because a node
+  dispatched once must read exactly as it always has (FR-009).
 - **Evidence round-trips.** Gate results, the output check and the judge verdict
   live in JSON text columns; `node_history` hands them back as the same frozen
   dataclasses, because the retry prompt quotes `output_tail` and judge feedback
@@ -57,6 +66,7 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -721,7 +731,103 @@ _UPSERT_RESULT_SQL = (
     )
 )
 
-_SELECT_RESULT_SQL = f"SELECT {', '.join(_RESULT_COLUMNS)} FROM verification_results"
+_SELECT_RESULT_SQL = (
+    f"SELECT {', '.join('r.' + column for column in _RESULT_COLUMNS)} "
+    "FROM verification_results AS r"
+)
+
+#: When the dispatch a row belongs to first finished recording anything — the
+#: clock a build is placed on, and the first ordering term of every reader below
+#: (117-US3, FR-008).
+#:
+#: A row's id is minted when it is *inserted*, which is not when the attempt it
+#: records ran: a delivery that failed once arrives whenever it succeeds, and in
+#: every store written before 117-US1 the rows a second dispatch overwrote kept
+#: the ids the first had minted. So id order is not chronological order, and
+#: ordering a re-dispatched node by it interleaves the two builds at every
+#: attempt number they share (plan trap 7).
+#:
+#: Correlated rather than a window function, because it reads the rows
+#: `idx_vr_node` already narrows to `(epic_id, node_id)` and the alternative
+#: shape buys nothing at this table's size — a node's whole history is tens of
+#: rows, and every reader here is a report rather than a hot path.
+_DISPATCH_CLOCK_SQL = (
+    "(SELECT MIN(d.finished_at) FROM verification_results AS d "
+    "WHERE d.epic_id = r.epic_id AND d.node_id = r.node_id "
+    "AND d.dispatch = r.dispatch)"
+)
+
+#: Which of two dispatches has the older row, for the one case the clock above
+#: cannot decide: `finished_at` is stamped to the second, so two builds that
+#: recorded their first attempt inside the same second tie on it.
+#:
+#: This is the only place an id is consulted and it is consulted *last* — when
+#: the store's clock has no answer, the order rows were inserted in is the only
+#: evidence left, and a uuid comparison (what any remaining tie-break would come
+#: down to) is not evidence at all. Unique per group, so nothing follows it: two
+#: dispatches of one node hold disjoint rows and cannot share a lowest id.
+_DISPATCH_FIRST_ROW_SQL = (
+    "(SELECT MIN(d.id) FROM verification_results AS d "
+    "WHERE d.epic_id = r.epic_id AND d.node_id = r.node_id "
+    "AND d.dispatch = r.dispatch)"
+)
+
+#: The order every reader returns: the builds oldest first, then the attempts of
+#: each in the order they have read in since 002.
+#:
+#: `(attempt, form)` *within* a dispatch rather than the row's own stamps, and
+#: that is FR-009 rather than an economy. One attempt can be verified twice —
+#: as the node's built-in phase and by an explicit verifier node — and the NODE
+#: form finishes after the PHASE form it re-checks, so a stamps-first ordering
+#: would hand that pair back reversed from every reading since 002. Inside one
+#: dispatch the attempts are sequential anyway, so this *is* write order; what
+#: it refuses is to reorder a single-dispatch node, which is what `node_history`
+#: and `attempt_timings` are read by name for.
+_DISPATCH_ORDER_SQL = (
+    f"{_DISPATCH_CLOCK_SQL}, {_DISPATCH_FIRST_ROW_SQL}, r.attempt, r.form"
+)
+
+
+@dataclass(frozen=True)
+class DispatchGroup:
+    """One dispatch's attempts, in the order the reader returned them.
+
+    `dispatch` is the interpreter run that produced them, or `UNKNOWN_DISPATCH`
+    for the one unnamed dispatch every row written before 117-US1 belongs to.
+    """
+
+    dispatch: str
+    results: tuple[VerificationResult, ...]
+
+
+def dispatch_groups(results: Sequence[VerificationResult]) -> list[DispatchGroup]:
+    """Rows a reader already returned, split into the builds that wrote them.
+
+    A grouping over rows in hand, not a second question for the store: US3 makes
+    the existing readers able to tell two dispatches apart and adds no query
+    surface. It splits at each change of `(node_id, dispatch)` rather than
+    collecting by value, which is what keeps it faithful to the order it was
+    handed — the readers return each build's rows contiguously, and a caller
+    that sorted them again would be deciding the order a second time, by its own
+    rule.
+    """
+    groups: list[DispatchGroup] = []
+    current: list[VerificationResult] = []
+    for result in results:
+        if current and (result.node_id, result.dispatch) != (
+            current[0].node_id,
+            current[0].dispatch,
+        ):
+            groups.append(
+                DispatchGroup(dispatch=current[0].dispatch, results=tuple(current))
+            )
+            current = []
+        current.append(result)
+    if current:
+        groups.append(
+            DispatchGroup(dispatch=current[0].dispatch, results=tuple(current))
+        )
+    return groups
 
 
 def upsert_result(conn: sqlite3.Connection, result: VerificationResult) -> int:
@@ -750,15 +856,23 @@ def upsert_result(conn: sqlite3.Connection, result: VerificationResult) -> int:
 def node_history(
     conn: sqlite3.Connection, epic_id: str, node_id: str
 ) -> list[VerificationResult]:
-    """Every verification of one node, oldest attempt first.
+    """Every verification of one node, dispatch by dispatch and oldest first.
 
     The canonical per-node query from the DDL — what retry prompts quote and
-    what an escalation's failure history is built from (SC-004, SC-005). Ordered
-    by `(attempt, form)` so the sequence reads the way it happened.
+    what an escalation's failure history is built from (SC-004, SC-005). Grouped
+    by dispatch since 117-US3 (FR-008): the builds in the order they ran, then
+    each build's attempts in the order they happened. A node dispatched once —
+    which is nearly all of them — reads exactly as it read before, because its
+    rows are one group and `_DISPATCH_ORDER_SQL` orders inside a group the way
+    this query always did (FR-009).
+
+    Ordering by attempt alone was what made a re-dispatched node illegible: the
+    two builds interleaved at every attempt number they shared, so five rows
+    read as one build of five attempts rather than three and then two.
     """
     rows = conn.execute(
-        f"{_SELECT_RESULT_SQL} WHERE epic_id = ? AND node_id = ? "
-        "ORDER BY attempt, form",
+        f"{_SELECT_RESULT_SQL} WHERE r.epic_id = ? AND r.node_id = ? "
+        f"ORDER BY {_DISPATCH_ORDER_SQL}",
         (epic_id, node_id),
     ).fetchall()
 
@@ -771,11 +885,13 @@ def epic_history(conn: sqlite3.Connection, epic_id: str) -> list[VerificationRes
     `node_history` widened by one column of the same key, because the operator
     reading an epic's verdicts does not hold its node ids — they are in the
     compiled graph and in Temporal, and this read exists for the moment both are
-    gone. Ordered by `(node_id, attempt, form)` so a re-run of the same query
-    prints the same report.
+    gone. Node by node, then dispatch by dispatch within each (117-US3), so a
+    re-run of the same query prints the same report and a node built twice
+    prints as two builds.
     """
     rows = conn.execute(
-        f"{_SELECT_RESULT_SQL} WHERE epic_id = ? ORDER BY node_id, attempt, form",
+        f"{_SELECT_RESULT_SQL} WHERE r.epic_id = ? "
+        f"ORDER BY r.node_id, {_DISPATCH_ORDER_SQL}",
         (epic_id,),
     ).fetchall()
 
@@ -802,9 +918,9 @@ class AttemptTiming:
 
 
 _SELECT_TIMING_SQL = (
-    "SELECT node_id, attempt, form, verdict, started_at, finished_at "
-    "FROM verification_results WHERE epic_id = ? "
-    "ORDER BY node_id, attempt, form"
+    "SELECT r.node_id, r.attempt, r.form, r.verdict, r.started_at, r.finished_at "
+    "FROM verification_results AS r WHERE r.epic_id = ? "
+    f"ORDER BY r.node_id, {_DISPATCH_ORDER_SQL}"
 )
 
 
@@ -815,6 +931,11 @@ def attempt_timings(conn: sqlite3.Connection, epic_id: str) -> list[AttemptTimin
     bundle for a single node because a retry prompt quotes it; this one spans an
     epic and reads six columns, because a status report has no use for a gate's
     output tail and should not pay to decode one.
+
+    It keeps its sibling's order, dispatch grouping included (117-US3): the six
+    columns do not carry the dispatch, so a pace report reading these rows
+    interleaved would put a re-dispatched node's attempts in an order no reading
+    of the same rows through `node_history` agrees with.
     """
     rows = conn.execute(_SELECT_TIMING_SQL, (epic_id,)).fetchall()
     return [
