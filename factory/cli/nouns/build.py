@@ -105,6 +105,7 @@ from factory.verify.models import (
     UNKNOWN_BASE_REF,
     EscalationChoice,
     EscalationRecord,
+    GateStatus,
     OutputCheck,
     QuestionRecord,
     VerificationConfig,
@@ -1259,13 +1260,43 @@ def render_attempts(epic_id: str, results: Sequence[VerificationResult]) -> str:
 
     counted = f"{len(results)} verification" + ("" if len(results) == 1 else "s")
     lines = [f"epic {epic_id}  {counted}"]
-    lines += [
-        f"{result.node_id.ljust(id_width)}  attempt {result.attempt}  "
-        f"{str(result.form.value).ljust(form_width)}  "
-        f"{result.verdict.value}  {_judge_input_token(result.output_check)}"
-        for result in results
-    ]
+    for result in results:
+        lines.append(
+            f"{result.node_id.ljust(id_width)}  attempt {result.attempt}  "
+            f"{str(result.form.value).ljust(form_width)}  "
+            f"{result.verdict.value}  {_judge_input_token(result.output_check)}"
+        )
+        lines += _contradiction_lines(result)
     return "\n".join(lines)
+
+
+def _contradiction_lines(result: VerificationResult) -> list[str]:
+    """What this attempt did not charge the node for, indented under its line.
+
+    116 US3-S3. A PASS composed over a judge that returned FAIL is the shape
+    that needs explaining, and until this reading existed the explanation lived
+    only in a JSON column — so the operator best placed to notice that the judge
+    persona keeps contradicting green gates was the one least likely to look.
+
+    Extra lines rather than another token on the attempt line, because there can
+    be more than one and each carries a quotation. Nothing is printed for the
+    ordinary attempt: silence here is the record saying the judge contradicted
+    no measurement, which is what every row but a handful will say, and a line
+    announcing that on every attempt would bury the ones that matter.
+
+    Each line names the four things the record holds — the scenario the finding
+    was neutralised on, the gate, the status that was actually measured, and the
+    judge's own words. The claim is quoted rather than summarised for the reason
+    `GateContradiction` keeps it: a reading that dropped it would send its
+    reader back to the stored reasoning to find out what was disagreed with,
+    which is the trip this whole verb exists to save.
+    """
+    return [
+        f"    contradicted the {contradiction.gate} gate "
+        f"(recorded {GateStatus(contradiction.recorded_status).value}) "
+        f"on {contradiction.scenario}: {contradiction.claim!r}"
+        for contradiction in result.gate_contradictions
+    ]
 
 
 def _judge_input_token(check: OutputCheck) -> str:
