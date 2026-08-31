@@ -37,7 +37,46 @@ report and nothing else.
 
 Green after, same command::
 
-    PLACEHOLDER-GREEN
+    4 passed in 0.29s
+
+And the whole suite, `uv run pytest -q --no-header -p no:randomly`::
+
+    5326 passed, 58 skipped, 8 warnings in 419.49s (0:06:59)
+
+Run the thing, not the tests about it. A scratch trio whose single Then-clause is
+the borderline one, against a repository declaring one gate named `smoke`,
+verbatim::
+
+    $ uv run ergane spec validate /tmp/102us2/specs/001-fonts \\
+        --target-repo /tmp/102us2/repo --specs-root /tmp/102us2/specs
+    /tmp/102us2/specs/001-fonts/spec.md: frontmatter, work-graph derivation, persona registry, scenario coverage, prompt assembly and slice coverage all pass
+    /tmp/102us2/specs/001-fonts/spec.md: what the judge will be shown for each node
+      the diff — the node's own worktree diff and nothing else: not the tree it changed, not a terminal, not the running system. Abridged for the judge above 65536 bytes, and refused unjudged above 65536 (`diff_refusal_bytes` in /tmp/102us2/repo/ergane.yaml).
+      the criteria — each node is shown its own story's scenarios, snapshotted at dispatch:
+        US1 (The page is drawn) — US1-S1
+      the gates — the results of the gates /tmp/102us2/repo/ergane.yaml declares: smoke
+      a warning, not a refusal: US1-S1: "the font renders correctly in the browser — proven by a committed test." asserts an outcome only a running system shows ("in the browser", "renders correctly"), and no gate this repository declares (smoke) measures it. It is not refused — its scenario names evidence the diff will carry — but the judge will score it on that evidence and on nothing else, so the committed test has to assert what the clause claims.
+    exit=0
+
+Strip ` — proven by a committed test` from that clause and the same command
+refuses it — and still prints the report, because an author being refused is the
+author who most needs to read what the judge will have::
+
+    ergane spec validate — refusal: [evidence] US1-S1: "the font renders correctly in the browser." asserts an outcome only a running system shows ("in the browser", "renders correctly"); the judge is shown the diff and the results of the gates this repository declares (smoke), and the clause names neither — no declared gate, and nothing the diff itself carries. To make it provable: name a declared gate (smoke) whose result will reach the judge with the diff, or restate the clause as something the diff carries — e.g. "… — proven by a committed test"
+    /tmp/102us2/specs/001-fonts/spec.md: what the judge will be shown for each node
+      the diff — the node's own worktree diff and nothing else: not the tree it changed, not a terminal, not the running system. Abridged for the judge above 65536 bytes, and refused unjudged above 65536 (`diff_refusal_bytes` in /tmp/102us2/repo/ergane.yaml).
+      the criteria — each node is shown its own story's scenarios, snapshotted at dispatch:
+        US1 (The page is drawn) — US1-S1
+      the gates — the results of the gates /tmp/102us2/repo/ergane.yaml declares: smoke
+    exit=1
+
+Over this repository's own corpus the warning form is quiet: run across all 115
+specs against this repository as the target, exactly one clause is named
+(114-US2-S3, whose evidence is "a guard that fails when…" rather than a gate or
+a test) and none is refused. That is the intended volume. A clause that names a
+gate the target repository declares is admitted in silence, because the
+declaration is what makes it provable — the same predicate US1 refuses on, so
+the report and the refusal cannot come apart (plan trap 1).
 """
 
 from __future__ import annotations
@@ -324,7 +363,9 @@ def test_a_borderline_clause_is_named_as_a_warning_not_refused(
     assert evidence["all_provable"] is False
     assert len(evidence["warnings"]) == 1
     warning = evidence["warnings"][0]
-    assert warning["scenario"] == "US1-S1"
+    # `scenario_id` is the vocabulary the criteria parser and the judge protocol
+    # already use for this identity; the report does not mint a second word.
+    assert warning["scenario_id"] == "US1-S1"
     assert _BORDERLINE in warning["clause"]
     # It names the phrase that made the clause borderline, so the author can see
     # which words the checker read — not a bare "this one is risky".
