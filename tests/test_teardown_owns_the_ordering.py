@@ -215,6 +215,10 @@ def _host(
     layout = resolve_layout(
         home=tmp_path / "home",
         generated_dir=tmp_path / "state" / "supervision",
+        # 119-US1: a resolved layout carries the mode it was given, and a
+        # layout given none is refused at generation rather than read as
+        # external. These tests are the external installation, so they say so.
+        temporal_mode="external",
     )
     events: list[Any] = []
     install(layout, run=lambda argv: CommandResult(0, ""))
@@ -388,7 +392,9 @@ def test_a_step_with_nothing_to_do_says_so_by_name(
     """
     bind_offline_seams(monkeypatch, schedules=FakeScheduleServer())
     layout = resolve_layout(
-        home=tmp_path / "home", generated_dir=tmp_path / "state" / "supervision"
+        home=tmp_path / "home",
+        generated_dir=tmp_path / "state" / "supervision",
+        temporal_mode="external",
     )
     events: list[Any] = []
 
@@ -553,7 +559,9 @@ def test_uninstall_still_honours_run_and_open_epics(tmp_path: Path) -> None:
     assert list(parameters) == ["layout", "run", "open_epics"]
 
     layout = resolve_layout(
-        home=tmp_path / "home", generated_dir=tmp_path / "state" / "supervision"
+        home=tmp_path / "home",
+        generated_dir=tmp_path / "state" / "supervision",
+        temporal_mode="external",
     )
     install(layout, run=lambda argv: CommandResult(0, ""))
 

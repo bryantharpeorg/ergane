@@ -51,6 +51,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping, Sequence
 
 from factory.cli.errors import OperatorError
+from factory.controlplane.config import (
+    KNOWN_TEMPORAL_MODES,
+    ControlPlaneConfigError,
+    load_controlplane_config,
+    resolve_config_path,
+)
 from factory.registry import resolve_state_home
 
 if TYPE_CHECKING:  # pragma: no cover - `factory.versioning` imports temporalio,
@@ -81,6 +87,21 @@ TEMPORAL_UNIT = "ergane-temporal.service"
 PROBE_UNIT = "ergane-probe.service"
 PROBE_TIMER = "ergane-probe.timer"
 
+#: The mode that installs and supervises a Temporal server of its own; the other
+#: mode, external, connects to one the operator runs. Which spellings are *legal*
+#: is `KNOWN_TEMPORAL_MODES`, taken from the parser that owns the declaration
+#: rather than listed a second time here, so a mode `temporal.mode` admits and a
+#: mode this module acts on cannot drift apart.
+MANAGED_TEMPORAL_MODE = "managed"
+
+#: What a layout carries when nobody told it (119-US1, FR-003). Not a mode: it
+#: is refused wherever the mode decides an outcome. The value it replaced was
+#: `"external"`, and that default is the whole reason this spec exists — an
+#: installation that declared `managed` was read as external, and external mode
+#: fails by not finding a server, which is indistinguishable from the operator's
+#: own Temporal being down. Three patches went past it.
+UNDECLARED_TEMPORAL_MODE = "undeclared"
+
 #: One wrapper, shared by every unit, taking the module to run as its argument.
 WRAPPER_NAME = "ergane-run.sh"
 
@@ -96,9 +117,12 @@ PKILL_PATTERN = "python -"
 #: among them — the slice is pulled in by the `Slice=` lines that reference it
 #: and the probe service by its timer, so enabling either would be declaring a
 #: `WantedBy` that systemd then has to reconcile.
-#: Units enabled for every installation.  TEMPORAL_UNIT is added when the
-#: layout's `temporal_mode` is `managed`; it is deliberately not in this tuple
-#: because external mode must not enable a unit that was not generated.
+#: TEMPORAL_UNIT is in the tuple and is still not enabled on an external
+#: installation, because `install` enables only the names it actually *wrote*
+#: — and generation is what the mode decides (`_temporal_managed`). The comment
+#: that stood here said the opposite, that the name was "deliberately not in
+#: this tuple"; it was, and correcting the prose beside the code it describes is
+#: the same lesson 119 learned one function below (FR-004).
 #:
 #: 082-US4: no worker is among them any more. A template cannot be enabled —
 #: only instances of it can — so the worker leaves this tuple and
@@ -198,7 +222,12 @@ class InstallLayout:
     restart_window_s: int = 300
     restart_burst: int = 5
     probe_interval: str = "2min"
-    temporal_mode: str = "external"
+
+    #: Which Temporal the installation runs against, and therefore whether the
+    #: server unit is generated. It has no usable default — a layout built
+    #: without one carries `UNDECLARED_TEMPORAL_MODE` and is refused at
+    #: generation rather than read as external (FR-003).
+    temporal_mode: str = UNDECLARED_TEMPORAL_MODE
 
     @property
     def roots(self) -> tuple[Path, ...]:
@@ -260,12 +289,21 @@ def resolve_layout(
     unit_dir: Path | str | None = None,
     generated_dir: Path | str | None = None,
     env_command: str | None = None,
+    temporal_mode: str | None = None,
 ) -> InstallLayout:
     """Resolve where this installation actually is.
 
     `install_root` defaults to the directory holding the `factory` package,
     which is the repository root in a checkout and `site-packages` in a wheel —
     either way it is *this* installation and never a literal.
+
+    `temporal_mode` arrives the way every other parameter here does: passed in
+    by the caller that read the declaration (`declared_temporal_mode`). This
+    function resolves from the filesystem and its arguments and reads no
+    configuration, which is what keeps it testable without a config loader and
+    keeps supervision uncoupled from the control plane. Omitting it does not
+    mean external — it means undeclared, and an undeclared layout is refused
+    where the mode decides an outcome (`_temporal_managed`).
     """
     base = Path.home() if home is None else Path(home)
     root = (
@@ -282,7 +320,87 @@ def resolve_layout(
             supervision_home() if generated_dir is None else Path(generated_dir)
         ),
         env_command=env_command,
+        temporal_mode=_checked_temporal_mode(temporal_mode),
     )
+
+
+def _checked_temporal_mode(mode: str | None) -> str:
+    """The mode a layout may carry: one this engine installs, or undeclared.
+
+    A value that is neither is refused here, where it was passed, rather than
+    carried into generation and read as "not managed" — the failure of a
+    mis-spelled mode should name the spelling, not present as a missing server.
+    """
+    if mode is None:
+        return UNDECLARED_TEMPORAL_MODE
+    if mode not in KNOWN_TEMPORAL_MODES:
+        raise OperatorError(
+            f"{mode!r} is not a Temporal mode this engine can install; "
+            f"`temporal.mode` is one of {', '.join(KNOWN_TEMPORAL_MODES)}"
+        )
+    return mode
+
+
+def declared_temporal_mode(config_path: Path | str | None = None) -> str:
+    """The Temporal mode this installation declares, or a refusal naming the file.
+
+    The other half of `resolve_layout`'s `temporal_mode`: the resolver takes the
+    mode, and this is the caller's read of where the mode is declared. Kept out
+    of the resolver deliberately (plan trap 2) — a config read in there would
+    couple supervision to the control-plane parser and make the resolver
+    untestable without one.
+
+    An installation whose declaration cannot be read is refused, naming the file
+    and the key, and never quietly treated as external (FR-003): the operator
+    who mis-declares a mode learns at install time rather than after three
+    patches. Constitution IX — the value that decides whether a server is
+    installed is read from the declaration that owns it, or refused by name.
+    """
+    path = Path(config_path) if config_path is not None else resolve_config_path()
+    try:
+        return load_controlplane_config(path).temporal.mode
+    except ControlPlaneConfigError as error:
+        raise OperatorError(
+            f"the Temporal mode this installation declares could not be read "
+            f"from {path}: {error.problem}. `temporal.mode` decides whether the "
+            "engine installs and supervises a Temporal server of its own, so "
+            "this verb refuses rather than guessing a mode for you"
+        ) from error
+
+
+def declared_layout(
+    *, config_path: Path | str | None = None, **overrides: Path | str | None
+) -> InstallLayout:
+    """The layout of the installation as declared — what every generating verb uses.
+
+    The one composition of the two halves above, so that "read the declaration,
+    then resolve" is spelled once and every verb that writes units gets the same
+    refusal. `overrides` are `resolve_layout`'s own parameters, forwarded.
+    """
+    return resolve_layout(
+        temporal_mode=declared_temporal_mode(config_path), **overrides
+    )
+
+
+def removal_layout(
+    *, config_path: Path | str | None = None, **overrides: Path | str | None
+) -> InstallLayout:
+    """The layout a verb that only *removes* files resolves.
+
+    Removal is the one verb that has to keep working on the installation whose
+    declaration is broken — that installation is the reason this spec exists —
+    so an unreadable declaration widens the candidate list to managed here
+    instead of refusing. Widening is safe where a silent default is not: these
+    verbs only ever *offer* names, and a name leaves only if the file is on disk
+    and its recorded digest is this engine's (`_is_someone_elses`), so naming a
+    unit that was never written removes nothing. Nothing is generated from this
+    layout, and nothing is dialled to build it.
+    """
+    try:
+        mode = declared_temporal_mode(config_path)
+    except OperatorError:
+        mode = MANAGED_TEMPORAL_MODE
+    return resolve_layout(temporal_mode=mode, **overrides)
 
 
 def _python3_spelling(exe: Path) -> Path:
@@ -324,12 +442,32 @@ class GeneratedFile:
 def _temporal_managed(layout: InstallLayout) -> bool:
     """Whether this installation generates the managed Temporal server unit.
 
-    `ergane worker install` is the supervised path and defaults to managed.  The
-    `ergane install` walkthrough sets `temporal_mode="external"` when the
-    operator chose external Temporal, and that layout is what `resolve_layout`
-    will produce for the same host.
+    True exactly when the layout carries `temporal_mode == "managed"`, and a
+    layout carries the mode it was resolved with: `declared_temporal_mode` reads
+    `temporal.mode` out of the operator's control-plane config and the verb
+    hands it to `resolve_layout`, which never reads it itself.
+
+    A layout nobody declared a mode for is refused here rather than read as
+    external. That refusal is the story of 119: the predicate this docstring
+    used to describe did not exist — no caller passed a mode, so every
+    installation took the dataclass default and a declared `managed` produced no
+    server, while external mode's failure looked like the operator's own
+    Temporal being down. Three patches went past it, one of them past this
+    docstring. `tests/test_119_declared_mode.py` asserts each claim above as
+    behaviour, so the two cannot drift again (FR-004).
     """
-    return layout.temporal_mode == "managed"
+    if layout.temporal_mode not in KNOWN_TEMPORAL_MODES:
+        raise OperatorError(
+            "this layout carries no declared Temporal mode "
+            f"({layout.temporal_mode!r}), so whether the managed server unit "
+            "belongs in it has no answer: resolve it with the mode the "
+            "installation declares at `temporal.mode` in its control-plane "
+            "config (`declared_temporal_mode`). Reading an undeclared mode as "
+            "external is the silent default this refusal replaces — it hides a "
+            "missing server behind what looks like the operator's Temporal "
+            "being down"
+        )
+    return layout.temporal_mode == MANAGED_TEMPORAL_MODE
 
 
 def generated_files(layout: InstallLayout) -> tuple[GeneratedFile, ...]:

@@ -20,8 +20,10 @@ from factory.cli.install import _systemd_user_session_available
 from factory.cli.nouns import Noun
 from factory.supervision.deploy import deploy
 from factory.supervision.units import (
+    declared_layout,
     install,
     migrate_off_legacy_unit,
+    removal_layout,
     resolve_layout,
     uninstall,
 )
@@ -40,14 +42,28 @@ def _require_systemd_user_session() -> None:
 
 
 def _install(args: argparse.Namespace) -> int:
+    """119-US1: the verb that writes the units is the caller that knows the mode.
+
+    `declared_layout` reads `temporal.mode` from the control-plane config and
+    hands it to the resolver, so a host that declared managed Temporal gets the
+    server unit — and one whose declaration cannot be read is refused here,
+    before anything is written, naming the file.
+    """
     _require_systemd_user_session()
-    report = install(resolve_layout(env_command=args.env_command))
+    report = install(declared_layout(env_command=args.env_command))
     print(report.render())
     return EXIT_OK
 
 
 def _uninstall(_args: argparse.Namespace) -> int:
-    report = uninstall(resolve_layout())
+    """Removal resolves its layout the way removal may: without a refusal.
+
+    A verb whose job is to remove what install wrote has to work on the
+    installation whose declaration is broken; `removal_layout` says what it
+    offers instead when the mode cannot be read, and removes nothing on the
+    strength of it.
+    """
+    report = uninstall(removal_layout())
     print(report.render())
     return EXIT_OK
 

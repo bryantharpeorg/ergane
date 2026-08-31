@@ -141,6 +141,10 @@ def layout(tmp_path: Path) -> Iterator[InstallLayout]:
         interpreter=interpreter,
         unit_dir=home / ".config/systemd/user",
         generated_dir=home / ".local/state/ergane/supervision",
+        # 119-US1: a layout states its Temporal mode or is refused at
+        # generation. This one is the external installation these tests are
+        # about, declared rather than inherited from a default.
+        temporal_mode="external",
     )
 
 
@@ -303,8 +307,16 @@ def test_two_installations_generate_two_different_texts(tmp_path: Path) -> None:
     host. Two layouts under different roots cannot both be satisfied by a
     literal.
     """
-    first = resolve_layout(home=tmp_path / "one", install_root=tmp_path / "one/erg")
-    second = resolve_layout(home=tmp_path / "two", install_root=tmp_path / "two/erg")
+    first = resolve_layout(
+        home=tmp_path / "one",
+        install_root=tmp_path / "one/erg",
+        temporal_mode="external",
+    )
+    second = resolve_layout(
+        home=tmp_path / "two",
+        install_root=tmp_path / "two/erg",
+        temporal_mode="external",
+    )
 
     one = texts(first)[BRIDGE_UNIT]
     two = texts(second)[BRIDGE_UNIT]
@@ -370,6 +382,7 @@ def test_an_interpreter_spelled_python_is_refused_rather_than_generated(
                 interpreter=bare,
                 unit_dir=layout.unit_dir,
                 generated_dir=layout.generated_dir,
+                temporal_mode=layout.temporal_mode,
             )
         )
 
@@ -777,6 +790,7 @@ def test_the_wrapper_runs_the_deployment_it_is_handed_and_still_evaluates_the_en
         unit_dir=tmp_path / "units",
         generated_dir=tmp_path / "state/ergane/supervision",
         env_command="echo export SOPS_PROBE=from-the-env-command",
+        temporal_mode="external",
     )
     wrapper = tmp_path / WRAPPER_NAME
     wrapper.write_text(texts(layout)[WRAPPER_NAME], encoding="utf-8")
