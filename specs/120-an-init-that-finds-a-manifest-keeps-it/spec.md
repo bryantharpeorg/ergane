@@ -1,6 +1,24 @@
 ---
-state: ready
+state: landed
 fixes:
+# ATTESTED 2026-08-31 4:16 PM CT by the operator session, in away mode.
+# All three stories are on ergane-buildout, each on its first attempt and each on
+# the ordinary implementer rung with no promotion: US1 fdddcf6 (#414), US2
+# 0976127 (#415), US3 30246c7 (#416). Confirmed by `ergane spec landed <this dir>
+# --default-branch ergane-buildout`, which observes all three.
+#
+# RECOVERED WORK, AND THE LAST OF IT. All three stories were KILLED on 2026-08-31
+# by the credential outage — us1 burned four rungs 08:10-08:31Z on 73-byte OAuth
+# failures, and us2 and us3 cascaded to KILLED at attempt 0 without ever reaching
+# a model. `build reset` cleared the armed node ref at 12:25Z; the roadmap
+# re-dispatched the spec at 18:13Z once an operator attestation and a `rescan`
+# unparked the line. Every story then passed first attempt.
+#
+# ATTESTED IMMEDIATELY ON PURPOSE. 120 was the last dispatchable spec in the
+# corpus, so leaving it at `ready` with 3/3 landed would have parked the roadmap
+# with nothing behind it to reveal the stall — see
+# roadmap/a-landed-but-unattested-spec-parks-the-line-and-the-floor-idles-until-an-operator-attests,
+# filed today after that exact pattern cost twenty idle minutes on spec 119.
   - init/wiring-non-interactively-rewrites-the-committed-manifest-and-drops-standards-and-ladder
   - init/the-init-verb-cannot-see-the-ladder-block-it-deletes-and-its-own-remedy-recommends-the-deletion
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.

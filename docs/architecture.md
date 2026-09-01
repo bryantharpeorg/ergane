@@ -283,6 +283,25 @@ provenance in `inferred_edges` and is reported by `ergane spec validate` under
   to be distinguishable from one taken on a diff read whole (Principle VIII).
   Rows written before that measurement existed say so rather than reading as whole.
 
+The roadmap sitting above these commands dispatches a spec **once**. When a child
+`EpicWorkflow` concludes, `RoadmapWorkflow` records the spec in `_landed` —
+`landed=True` only if the epic `COMPLETED` *and* every node's landing reached
+`MERGED`, otherwise `landed=False`, kind `OBSERVED` (`_landed_status_for`). The
+dispatchable set then excludes anything already in that map
+(`factory/roadmap/workflow.py:856-871`), so both outcomes are terminal to the
+scheduler: a landed spec is done, and a finished-but-not-landed one is not retried
+forever (FR-006). The map is repopulated from the carry-over across continue-as-new
+(`:816`), so the exclusion outlives the run boundary rather than being reset by it.
+
+That has a consequence worth stating plainly, because nothing announces it: an epic
+that finishes with a story failed or killed leaves its spec **off the line
+permanently** for the life of that roadmap run, while `ergane spec list` still shows
+the spec `ready` and its unlanded stories still absent from git. The scheduler
+skipping it is not a stall to wait out — it is the design — so the remaining stories
+move only on an explicit operator act, a fresh `ergane build start` against a
+re-derived graph. Its dependents stay blocked throughout, which is the intended
+safety and the reason the skip is tolerable.
+
 `TEMPORAL_ADDRESS` / `TEMPORAL_NAMESPACE` are honored throughout. Temporal's Web UI
 remains the dashboard for anything deeper.
 

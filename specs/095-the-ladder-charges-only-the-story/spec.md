@@ -1,6 +1,22 @@
 ---
-state: ready
+state: landed
 fixes:
+# ATTESTED 2026-08-31 10:30 AM CT by the operator session, in away mode.
+# All three stories are on ergane-buildout: US1 5f2208d (#393), US2 84ffa26
+# (#397), US3 109ac89 (#410). Confirmed by `ergane spec landed <this dir>
+# --default-branch ergane-buildout`, which observes all three.
+#
+# THE DEFECT THIS SPEC FIXES KILLED THIS SPEC. US3 was KILLED on 2026-08-31 after
+# burning all four rungs — 09:49, 09:56, 10:03, 10:10Z — on an expired OAuth
+# session, every stdout exactly 73 bytes, no agent ever starting, each rung still
+# paying its full ~380s gate on an unchanged tree. That is occurrence 4 of the
+# first finding below, which is the finding US1 and US2 were written to fix. The
+# story was recovered by an operator `build reset` plus a re-dispatch once the
+# credential was repaired, and passed on attempt 1.
+#
+# The fix has LANDED but is NOT YET PROVEN. Do not resolve that finding on the
+# strength of this attestation — it needs a demonstration that a credential
+# failure no longer spends a ladder rung.
   - agent/an-expired-subscription-oauth-session-burns-every-attempt-and-reports-it-as-an-empty-diff
   - verify/max-attempts-is-shadowed-by-max-judge-retries-and-nothing-on-screen-says-which-one-bound
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.

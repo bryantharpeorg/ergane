@@ -1,6 +1,18 @@
 ---
-state: ready
+state: landed
 fixes:
+# ATTESTED 2026-08-31 9:00 AM CT by the operator session, in away mode.
+# All three stories are on ergane-buildout: US1 f8f3216 (#398), US2 e22fb61
+# (#408), US3 03774cc (#409). Confirmed by `ergane spec landed <this dir>
+# --default-branch ergane-buildout`, which observes all three.
+#
+# THIS SPEC WAS RECOVERED TWICE. US2 and US3 were KILLED on 2026-08-30 when an
+# escalation lapsed unanswered after its full hour; US2's four rungs had all died
+# on an expired OAuth session, and the credential was in fact repaired three
+# minutes BEFORE that escalation was raised. A fresh roadmap run re-dispatched the
+# spec on 08-31, where US2 burned two more rungs on the same expired credential
+# before an operator /login at 11:31:04Z landed mid-ladder; US2 then passed on
+# attempt 3 at the opus-closer promotion rung, and US3 passed first attempt.
   - verify/the-gate-boundary-gives-the-gate-a-tmpfs-home-and-nothing-tells-the-agent
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.
 # Slot reserved — empty and untracked — by the spec-routing session 2026-08-23.

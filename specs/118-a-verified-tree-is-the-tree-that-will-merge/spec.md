@@ -1,10 +1,14 @@
 ---
-state: ready
+state: landed
 fixes:
-# US1 landed dd84c70b (#378) and US3 a1690633 (#379), both first attempt, both
-# gate and judge green. US2 still building. NOT attested yet -- attestation waits
-# until every story is on the branch, and calling it landed early is what makes
-# `ergane status` believe an epic is finished when it is not.
+# ALL THREE STORIES ARE ON ergane-buildout, each on its first attempt, gate and
+# judge green: US1 dd84c70 (#378), US3 a169063 (#379), and US2 a8ca884 (#384),
+# which landed 2026-08-30 and closed the last gap. Confirmed by `ergane spec
+# landed <this dir> --default-branch ergane-buildout`, which observes all three.
+# ATTESTED 2026-08-30 11:30 PM CT by the operator session, on Bryan's answer.
+# The branch was complete first and the attestation followed it, which is the
+# only correct order -- attesting ahead of the branch is what makes `ergane
+# status` believe an epic is finished when it is not.
   - verify/a-stale-worktree-makes-gates-and-judge-score-against-a-base-that-no-longer-merges
   - verify/an-operator-cannot-correct-a-running-epics-context-because-the-worktree-is-pinned-at-dispatch
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.

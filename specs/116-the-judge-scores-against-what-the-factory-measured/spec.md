@@ -1,6 +1,11 @@
 ---
-state: ready
+state: landed
 fixes:
+# ATTESTED 2026-08-30 11:30 PM CT by the operator session, on Bryan's answer.
+# All three stories are on ergane-buildout, each on its first attempt: US1
+# 6f4f0b1 (#402), US2 f0d2a14 (#403), US3 8f5f633 (#404). epic-116 COMPLETED at
+# 2026-08-31T03:42:14Z with every landing MERGED. Confirmed by `ergane spec
+# landed <this dir> --default-branch ergane-buildout`, which observes all three.
   - verify/the-judge-is-asked-to-predict-gate-outcomes-the-factory-already-measured
   - verify/a-judges-speculation-about-a-gate-overrides-that-gates-recorded-result
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.

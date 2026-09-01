@@ -1,6 +1,15 @@
 ---
-state: ready
+state: landed
 fixes:
+# ATTESTED 2026-08-30 11:52 PM CT by the operator session, in away mode.
+# All three stories are on ergane-buildout, each on its first attempt: US1
+# af13ebd (#399), US3 6f7347e (#400), US2 25820d3 (#401). epic-102 COMPLETED at
+# 2026-08-31T00:53:09Z with every landing MERGED. Confirmed by `ergane spec
+# landed <this dir> --default-branch ergane-buildout`, which observes all three.
+# Caught by an away-tick sweep, not by the epic's own completion — nothing
+# announces that a finished epic is still unattested, and `ergane status` kept
+# listing 102 as `ready dispatchable` for the four hours between its epic
+# completing (00:53:09Z) and this sweep finding it.
   - verify/the-judge-can-invite-a-node-to-rewrite-its-own-acceptance-criterion-without-firing-criteria-drift
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.
 # Slot reserved — empty and untracked — by the spec-routing session 2026-08-23.

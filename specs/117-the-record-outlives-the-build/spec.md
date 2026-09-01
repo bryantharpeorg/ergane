@@ -1,6 +1,11 @@
 ---
-state: ready
+state: landed
 fixes:
+# ATTESTED 2026-08-31 6:35 AM CT by the operator session, in away mode.
+# All three stories are on ergane-buildout, each on its first attempt: US1
+# 27dd5ca (#405), US2 1cae431 (#406), US3 7fd478e (#407). Confirmed by `ergane
+# spec landed <this dir> --default-branch ergane-buildout`, which observes all
+# three. The whole epic ran clean overnight with no operator touch.
   - verify/a-re-dispatch-silently-overwrites-the-previous-dispatchs-verification-evidence
   - verify/build-history-is-not-durable-so-nothing-downstream-can-remember-a-build
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.

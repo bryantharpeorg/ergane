@@ -1,7 +1,50 @@
 ---
-state: ready
+state: landed
 fixes:
   - agent/the-subscription-refresh-token-is-never-used-so-an-eight-hour-access-token-is-the-factorys-real-uptime
+# ATTESTED 2026-09-01 7:10 AM CT by the operator session. All three stories are on
+# ergane-buildout, each on its FIRST attempt on the ordinary implementer rung with
+# no promotion: US1 ed9aa51 (#417), US2 8d71de4 (#418), US3 01bb717 (#419).
+# Confirmed by `ergane spec landed <this dir> --default-branch ergane-buildout`,
+# which observes all three.
+#
+# THE FIRST EPIC BUILT BY KIMI K2.7 CODE, and the throughput question is answered:
+# 46, 58 and 54 minutes per story, dispatch 04:14:58Z to final landing 06:53:29Z,
+# 2h39m end to end. Yesterday's four Opus-built specs ran 42-67 minutes with a
+# median of 54. Indistinguishable on this codebase, unlike the deepseek trial that
+# measured 3-8x slower. The judge was `ollama-cloud/glm-5.3` throughout, so the
+# lineage doctrine held.
+#
+# THE EPIC OUTLIVED THE CREDENTIAL IT WAS WRITTEN TO FIX. The operator's OAuth
+# access token expired at 04:12:34Z, two minutes before dispatch. Every story then
+# built and landed anyway, because the builder rung had moved to a gateway-routed
+# model that authenticates with a virtual key. That is not proof of this spec's fix
+# -- the fix was not running yet -- but it is a clean demonstration of the
+# diagnosis: the same epic dispatched twelve hours earlier would have produced
+# 73-byte authentication failures on every rung.
+#
+# VERIFIED AGAINST ITS OWN TRAPS, by reading the landed diff rather than trusting
+# the verdict. Trap 1 held: the token is constructed inside the subscription branch
+# of `attempt_env` with a comment naming the trap, and `PASSTHROUGH_ENV` is still
+# `("PATH", "LANG", "TERM")`. Trap 2 held: the name appears in BOTH mechanisms --
+# the bwrap `--setenv` list and the environment dict. Trap 3 held: no
+# `ANTHROPIC_API_KEY` was introduced. US3 shipped a new module,
+# `factory/workgraph/credential_status.py`.
+#
+# PROVEN BY RUNNING IT, not only by its tests. With the token wired into the worker
+# environment and the worker rotated onto this code at 2026-09-01T12:07:14Z,
+# `credential_status()` returns
+# `CredentialStatus(source='oauth_token', expires_at=None, remedies=())` -- naming
+# the long-lived token as the source and correctly declining to report the eight-
+# hour expiry sitting in the now-unused credential file. That is US3-S1 observed
+# live.
+#
+# WHAT IS STILL UNPROVEN. No subscription-routed attempt has yet authenticated with
+# the long-lived token, because the builder rung is currently kimi and reaches the
+# gateway instead. The falsifiable test named in `plan.md` -- a subscription attempt
+# running past a credential expiry -- still has not been run. Do not record this
+# spec's finding as resolved on the strength of this attestation.
+#
 # FLIPPED TO READY 2026-08-31 9:58 PM CT at the operator's instruction, in the same
 # breath as the builder rung moved to `ollama-cloud/kimi-k2.7-code` and the judge to
 # `ollama-cloud/glm-5.3`. Both aliases were probe-verified through the gateway

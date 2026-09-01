@@ -1,6 +1,23 @@
 ---
-state: ready
+state: landed
 fixes:
+# ATTESTED 2026-08-31 1:15 PM CT by the operator session, in away mode.
+# All three stories are on ergane-buildout, each on its first attempt and each on
+# the ordinary implementer rung with no promotion: US1 5489b37 (#411), US2
+# c6cd44c (#412), US3 240f7ae (#413). Confirmed by `ergane spec landed <this dir>
+# --default-branch ergane-buildout`, which observes all three.
+#
+# RECOVERED WORK. All three stories were KILLED on 2026-08-31 by the credential
+# outage — us1 burned four rungs 06:38-06:59Z on 73-byte OAuth failures, and us2
+# and us3 cascaded to KILLED at attempt 0 without ever reaching a model. The epic
+# was relaunched by hand at 15:26Z after `build reset` cleared the armed node ref,
+# and every story then passed first attempt.
+#
+# ATTESTING THIS ALSO UNBLOCKS THE LINE. While the frontmatter read `ready` with
+# all three stories landed, the roadmap kept selecting 119 as dispatchable, deriving
+# an empty delta, and parking it with "delta is empty: all stories are satisfied" —
+# and 119 sorts before 120, the only remaining spec. The park is correct behaviour;
+# the stale frontmatter was the defect.
   - temporal/managed-mode-is-a-dead-path-and-verification-reports-it-passing
 # DRAFTED 2026-08-28 by the operator session, against ergane-buildout at 8bb2d4b.
 # A new number: none of the 089-102 slots reserved on 2026-08-23 names this.
