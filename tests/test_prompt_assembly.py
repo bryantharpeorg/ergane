@@ -265,6 +265,10 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
     # that layer reads the gates the target repository declares, so a run
     # against validate's default — a path this host need not carry — would skip
     # it, and whether `skipped` is empty would depend on the machine.
+    # 072-US1 adds a tenth, `anchor_resolution`, which opens every cited
+    # `path:NN` in the target repository, and 072-US2 an eleventh,
+    # `symbol_anchors`, which resolves Python symbol spans against that
+    # repository's AST. Both run before `evidence` and in that order.
     assert document["checked"] == [
         *EXISTING_LAYERS,
         "prompt_assembly",
@@ -272,6 +276,7 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
         "slice_contention",
         "sentinels",
         "anchor_resolution",
+        "symbol_anchors",
         "evidence",
     ]
     assert document["skipped"] == []
