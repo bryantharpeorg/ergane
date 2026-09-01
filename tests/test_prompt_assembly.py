@@ -271,6 +271,7 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
         "slice_coverage",
         "slice_contention",
         "sentinels",
+        "anchor_resolution",
         "evidence",
     ]
     assert document["skipped"] == []

@@ -524,7 +524,7 @@ def test_validate_scenario_coverage_passes_when_all_referenced(
     assert result.code == 0
     assert (
         f"{specs_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
-        "scenario coverage, prompt assembly and slice coverage all pass"
+        "scenario coverage, prompt assembly and slice coverage, anchor resolution all pass"
     ) in result.stdout
     # A deliberate gap must still be reported; otherwise the check could be
     # deleted and this test would pass for the wrong reason.
@@ -759,6 +759,8 @@ def test_validate_over_fresh_scaffold_lists_sentinels_on_information_channel(
     # Human transcript: the all-pass sentence on stdout, sentinel block on stderr.
     human = run("spec", "validate", str(spec_dir))
     assert human.code == 0
+    # Anchor resolution is skipped because the default target repo does not
+    # exist on this host, so the all-pass sentence does not name it.
     assert (
         f"{spec_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
         "scenario coverage, prompt assembly and slice coverage all pass"
@@ -813,13 +815,14 @@ def test_validate_advisory_all_pass_sentence_and_sentinel_checked_bit(
     # This is the advisory variant, asserted here for the first time.
     assert (
         f"{specs_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
-        "scenario coverage, prompt assembly and slice coverage all pass; see advisory above"
+        "scenario coverage, prompt assembly and slice coverage, anchor resolution all pass; "
+        "see advisory above"
     ) in result.stdout
     assert "not ready to derive" in result.stderr
     # The clean sentence must remain byte-identical and not appear here.
     assert (
         f"{specs_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
-        "scenario coverage, prompt assembly and slice coverage all pass\n"
+        "scenario coverage, prompt assembly and slice coverage, anchor resolution all pass\n"
     ) not in result.stdout
 
     # Sentinel checked even when derivation fails.
