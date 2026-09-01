@@ -635,6 +635,7 @@ def test_the_adapter_result_carries_nothing_but_outcome_and_evidence() -> None:
         "transcript_path",
         "last_snapshot",
         "detail",
+        "credential_source",
     ]
 
 

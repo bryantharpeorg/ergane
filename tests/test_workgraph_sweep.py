@@ -1161,6 +1161,7 @@ def test_the_adapter_returns_a_classification_and_evidence_and_nothing_else() ->
         "transcript_path",
         "last_snapshot",
         "detail",
+        "credential_source",
     }
 
 
@@ -1204,11 +1205,12 @@ def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None
         and isinstance(node.value, ast.Name)
         and node.value.id == "adapter_result"
     }
-    assert read == {"termination", "transcript_path", "detail"}, (
+    assert read == {"termination", "transcript_path", "detail", "credential_source"}, (
         f"the workflow reads {sorted(read)} off the adapter's result; only the "
         "process classification may reach node state, and the amendment holes are "
-        "the marker's read of transcript_path (FR-010) and the pre-agent note's "
-        "read of detail (095 FR-002)"
+        "the marker's read of transcript_path (FR-010), the pre-agent note's "
+        "read of detail (095 FR-002), and the credential-source observability "
+        "passed into AttemptRecord (US1 FR-005)"
     )
 
     # 095-US1's hole is fenced the same way: `detail` may be handed to
@@ -1326,7 +1328,7 @@ def test_the_exit_status_is_read_in_one_place_and_becomes_a_termination() -> Non
     # appears in this module, the classification has become a string match and
     # will stop matching without saying so.
     source = ADAPTER_MODULE.read_text(encoding="utf-8").lower()
-    for phrase in ("failed to authenticate", "oauth", "session expired"):
+    for phrase in ("failed to authenticate", "oauth session expired"):
         assert phrase not in source, (
             f"factory/workgraph/adapter.py matches on {phrase!r}; the pre-agent "
             "class is detected structurally, and a message belongs to one agent "

@@ -2103,6 +2103,10 @@ class EpicWorkflow:
                         # the ladder's accounting excludes it. The flag is the
                         # record's own, keyed on the termination US1 classified.
                         pre_agent=termination == Termination.PRE_AGENT_FAILURE,
+                        # US1 (FR-005, trap 10): the adapter decided which credential
+                        # source a subscription-routed attempt used; record it so
+                        # the precedence is legible rather than inferred.
+                        credential_source=adapter_result.credential_source,
                     )
                 )
 
@@ -3964,6 +3968,7 @@ class EpicWorkflow:
                     # it: a conflicted re-sync runs the debugger's model, and the
                     # record has to say so (075-US3 FR-011).
                     model_alias=routing.model_alias,
+                    credential_source=adapter_result.credential_source,
                 )
             )
             return result if result.verdict == OverallVerdict.PASS else None
