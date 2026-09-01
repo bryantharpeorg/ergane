@@ -95,6 +95,18 @@ if [ -f "$tg_enc" ]; then
       note "  !!  $name missing from $tg_enc — escalations will record undeliverable"
     fi
   done
+  # The subscription route's long-lived credential (spec 125). Minted by
+  # `claude setup-token`, valid one year, scope user:inference. Optional by
+  # design: absent, a subscription persona falls back to the copied
+  # ~/.claude/.credentials.json whose access token lives eight hours, which is
+  # the defect 125 exists to close. This is NOT an Anthropic provider key — see
+  # the header note about ANTHROPIC_API_KEY, which stays deliberately unexported.
+  if line=$(grep -E "^CLAUDE_CODE_OAUTH_TOKEN=" <<<"$tg_plain" | tail -n 1); then
+    emit CLAUDE_CODE_OAUTH_TOKEN "${line#*=}"
+  else
+    note "  --  CLAUDE_CODE_OAUTH_TOKEN absent — subscription personas will use the"
+    note "      copied credential and expire with it (spec 125)"
+  fi
 else
   note "  !!  $tg_enc does not exist yet — Telegram bridge disabled"
   note "      (create it per the new-keys notes: BotFather token + chat id)"
