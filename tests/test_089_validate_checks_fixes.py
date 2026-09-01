@@ -255,7 +255,7 @@ def test_validate_unchanged_for_spec_without_fixes(
     assert human_result.code == 0
     assert (
         f"{spec_dir / 'spec.md'}: frontmatter, work-graph derivation, persona registry, "
-        "scenario coverage, prompt assembly and slice coverage all pass"
+        "scenario coverage, prompt assembly and slice coverage, anchor resolution all pass"
     ) in human_result.stdout
 
 
