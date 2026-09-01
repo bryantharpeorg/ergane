@@ -60,12 +60,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import pwd
 import re
 import shutil
 import signal
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
@@ -871,6 +873,26 @@ def discover_subscription_credential(
     return None
 
 
+def _credential_expiry(path: Path) -> datetime | None:
+    """The recorded expiry of a copied credential, or `None` when it cannot be read.
+
+    Reads the local file only (US2-S7 / FR-009). Returns `None` for a missing
+    file, unreadable JSON, an absent `expiresAt` key, or a value that does not
+    parse as an ISO timestamp — an unknown expiry is not evidence of a dead
+    credential (US2-S4 / FR-008, trap 7).
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        expires_at = data.get("expiresAt")
+        if not isinstance(expires_at, str):
+            return None
+        # Accept ISO 8601 timestamps with or without a trailing `Z`.
+        normalized = expires_at.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def _seed_node_home(home: Path, credential_path: Path | None = None) -> None:
     """Write the minimum the CLI needs to start non-interactively on this home.
 
@@ -1054,6 +1076,27 @@ class ClaudeCodeAdapter:
                     "subscription credential not found: no .claude/.credentials.json "
                     f"under {operator_home / '.claude'} or XDG_CONFIG_HOME. "
                     "Run `claude auth login` on the worker host."
+                )
+            # US2 FR-007/FR-009: a copied credential whose recorded expiry has
+            # passed and that is the only credential available is refused before
+            # the sandbox forks. The long-lived token is checked first below
+            # (attempt_env), so if one is configured the file expiry is irrelevant.
+            expires_at = _credential_expiry(credential_path)
+            if (
+                expires_at is not None
+                and expires_at <= datetime.now(timezone.utc)
+                and not os.environ.get(CLAUDE_CODE_OAUTH_TOKEN)
+            ):
+                return AdapterResult(
+                    termination=Termination.PRE_AGENT_FAILURE,
+                    transcript_path=str(archive),
+                    detail=(
+                        f"subscription credential expired at {expires_at.isoformat()}: "
+                        "the copied interactive credential is no longer valid. "
+                        "Remedies: run `claude auth login` on the worker host, or "
+                        f"set {CLAUDE_CODE_OAUTH_TOKEN} to a long-lived token from "
+                        "`claude setup-token`."
+                    ),
                 )
         _seed_node_home(home, credential_path)
         await self._reap(pids)

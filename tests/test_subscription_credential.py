@@ -49,8 +49,8 @@ SUBSCRIPTION_REFUSAL = "Not logged in · Please run /login"
 FAKE_CREDENTIAL = {
     "accessToken": "fake-access-token",
     "refreshToken": "fake-refresh-token",
-    "expiresAt": "2026-08-20T12:00:00.000Z",
-    "refreshTokenExpiresAt": "2026-08-21T12:00:00.000Z",
+    "expiresAt": "2099-08-20T12:00:00.000Z",
+    "refreshTokenExpiresAt": "2099-08-21T12:00:00.000Z",
     "scopes": ["claude_code"],
     "subscriptionType": "pro",
     "rateLimitTier": "default",
