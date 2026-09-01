@@ -35,7 +35,7 @@ from factory.roadmap.cli import (
     render_command,
 )
 from factory.roadmap.models import RoadmapError, SpecState, _split_frontmatter, compute_readiness, read_roadmap
-from factory.verify.criteria import parse_spec
+from factory.verify.criteria import mask_fences, parse_spec
 from factory.verify.diffbounds import DIFF_INPUT_LIMIT
 from factory.verify.factory_yaml import (
     FactoryConfigError,
@@ -62,6 +62,9 @@ from factory.workgraph.worktree import landing_branch, resolve_factory_root
 
 #: The id grammar the criteria parser mints for acceptance scenarios.
 _SCENARIO_ID_RE = re.compile(r"US\d+-S\d+")
+
+#: A citation inside an inline code span: `path:NN` or `path:NN-MM`.
+_ANCHOR_RE = re.compile(r"`([^`]+?:\d+(?:-\d+)?)`")
 
 #: A registry that answers for every persona the graph names, so
 # `validate_workgraph` checks only structural rules, not persona resolution.
@@ -637,8 +640,15 @@ def _validate_command(args: argparse.Namespace) -> int:
         )
     checked.append("sentinels")
 
-    # 9. Whether each Then-clause can be evidenced at all (102-US1), and what
-    #    the judge will be shown for this spec (102-US2).
+    # 9. Anchor resolution: every `path:NN` citation in the authored documents
+    #    opens the file it names in the target repository and reports stale
+    #    anchors before dispatch.
+    _check_anchor_resolution(
+        spec_dir, spec_text, args.target_repo, findings, skipped, checked
+    )
+
+    # 10. Whether each Then-clause can be evidenced at all (102-US1), and what
+    #     the judge will be shown for this spec (102-US2).
     #
     # The layer that would have saved fifteen attempts: the judge is shown the
     # story's diff and the declared gates' results, so a clause asserting an
@@ -732,7 +742,8 @@ def _all_pass_phrases(checked: list[str]) -> list[str]:
     """The ordered phrases in the all-pass sentence.
 
     `fixes` is inserted only when the layer actually ran, so a spec that omits
-    the key prints the same sentence as before this story.
+    the key prints the same sentence as before this story. `anchor_resolution`
+    is appended only when the layer actually ran and did not skip.
     """
     phrases = [
         "frontmatter",
@@ -743,6 +754,8 @@ def _all_pass_phrases(checked: list[str]) -> list[str]:
     ]
     if "fixes" in checked:
         phrases.insert(1, "fixes")
+    if "anchor_resolution" in checked:
+        phrases.append("anchor resolution")
     return phrases
 
 
@@ -770,6 +783,169 @@ def _check_frontmatter(spec_dir: Path, epic_id: str, findings: list[_ValidateFin
                 findings.append(_ValidateFinding("frontmatter", str(finding)))
     except OSError as error:
         findings.append(_ValidateFinding("frontmatter", f"cannot read specs root {specs_root}: {error}"))
+
+
+def _anchor_severity_for_spec(spec_dir: Path) -> str:
+    """Advisory for specs that can no longer dispatch; refusal otherwise (FR-010)."""
+    spec_path = spec_dir / SPEC_NAME
+    try:
+        spec_text = spec_path.read_text(encoding="utf-8")
+    except OSError:
+        return "refusal"
+
+    block_text, _body = _split_frontmatter(spec_text)
+    if block_text is None:
+        return "refusal"
+    state_value = None
+    try:
+        loaded = yaml.safe_load(block_text)
+    except yaml.YAMLError:
+        return "refusal"
+    if isinstance(loaded, dict):
+        state_value = loaded.get("state")
+    if state_value == "landed" or state_value == "deferred":
+        return "advisory"
+    return "refusal"
+
+
+def _read_citation_files(target_repo: Path, paths: set[str]) -> dict[str, list[str] | None]:
+    """Read every cited file once; None means the file could not be read."""
+    contents: dict[str, list[str] | None] = {}
+    for relative in paths:
+        path = target_repo / relative
+        try:
+            contents[relative] = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            contents[relative] = None
+    return contents
+
+
+def _check_anchor_resolution(
+    spec_dir: Path,
+    spec_text: str,
+    target_repo: str,
+    findings: list[_ValidateFinding],
+    skipped: list[dict[str, str]],
+    checked: list[str],
+) -> None:
+    """Report every `path:NN` and `path:NN-MM` citation that does not resolve.
+
+    Citations are read from the body of `spec.md` (frontmatter skipped),
+    `plan.md`, and `tasks.md`. Citations inside fenced code blocks are ignored
+    by reusing the criteria parser's fence mask. Paths are resolved against the
+    target repository the command was given. When that repository cannot be read,
+    the layer reports itself as skipped and produces no findings (FR-011).
+    """
+    target_root = Path(target_repo)
+
+    docs: dict[str, str] = {}
+    for name in ("plan.md", "tasks.md"):
+        path = spec_dir / name
+        try:
+            docs[name] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # An absent authored document has no citations, per trap 9.
+            continue
+
+    # spec.md body, not frontmatter.
+    _, body = _split_frontmatter(spec_text)
+    if body:
+        docs["spec.md"] = body
+
+    if not docs:
+        # Nothing to scan, but the layer still ran.
+        checked.append("anchor_resolution")
+        return
+
+    # Collect citations with their line numbers first, then read each file once.
+    citations: list[tuple[str, int, str, str, int]] = []
+    cited_paths: set[str] = set()
+    for doc_name, text in docs.items():
+        lines = text.splitlines()
+        in_code = mask_fences(lines)
+        for index, line in enumerate(lines, start=1):
+            if in_code[index - 1]:
+                continue
+            for match in _ANCHOR_RE.finditer(line):
+                citation = match.group(1)
+                if ":" not in citation:
+                    continue
+                raw_path, raw_lines = citation.rsplit(":", 1)
+                if "-" in raw_lines:
+                    try:
+                        start_line, end_line = raw_lines.split("-", 1)
+                        start_int = int(start_line)
+                        end_int = int(end_line)
+                    except ValueError:
+                        continue
+                    cited_paths.add(raw_path)
+                    citations.append((doc_name, index, raw_path, citation, start_int))
+                    citations.append((doc_name, index, raw_path, citation, end_int))
+                else:
+                    try:
+                        line_int = int(raw_lines)
+                    except ValueError:
+                        continue
+                    cited_paths.add(raw_path)
+                    citations.append((doc_name, index, raw_path, citation, line_int))
+
+    if not citations:
+        checked.append("anchor_resolution")
+        return
+
+    contents = _read_citation_files(target_root, cited_paths)
+    any_readable = any(lines is not None for lines in contents.values())
+    if not any_readable:
+        # FR-011: when *none* of the cited files can be read, the target repo is
+        # likely missing or unreadable. Skip the whole layer rather than report
+        # every citation as an absent file.
+        skipped.append(
+            {
+                "layer": "anchor_resolution",
+                "reason": f"target repository {target_repo} cannot be read",
+            }
+        )
+        return
+
+    severity = _anchor_severity_for_spec(spec_dir)
+
+    for doc_name, citing_line, raw_path, citation, line_no in citations:
+        file_lines = contents.get(raw_path)
+        if file_lines is None:
+            # A cited file that does not exist is a finding, even when some
+            # other cited files could be read (FR-011 says skip only when the
+            # tree as a whole cannot be read).
+            findings.append(
+                _ValidateFinding(
+                    "anchor_resolution",
+                    f"{doc_name}:{citing_line}: `{citation}` points at absent file `{raw_path}`",
+                    severity=severity,
+                )
+            )
+            continue
+
+        if line_no < 1 or line_no > len(file_lines):
+            findings.append(
+                _ValidateFinding(
+                    "anchor_resolution",
+                    f"{doc_name}:{citing_line}: `{citation}` line {line_no} is past end of file "
+                    f"({len(file_lines)} lines in `{raw_path}`)",
+                    severity=severity,
+                )
+            )
+            continue
+
+        if file_lines[line_no - 1].strip() == "":
+            findings.append(
+                _ValidateFinding(
+                    "anchor_resolution",
+                    f"{doc_name}:{citing_line}: `{citation}` line {line_no} is blank in `{raw_path}`",
+                    severity=severity,
+                )
+            )
+            continue
+
+    checked.append("anchor_resolution")
 
 
 def _check_fixes(
