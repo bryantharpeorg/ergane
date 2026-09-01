@@ -362,6 +362,11 @@ DECLARED_EXCLUSIONS = {
         "until after validate, derive and confirmation; the spec directory is the "
         "only handle the operator has (106-US4)."
     ),
+    "credential-status": (
+        "credential-status reports a worker-host fact (the subscription credential "
+        "runway). It is not keyed by an epic because it answers before any epic "
+        "starts; it needs no Temporal read."
+    ),
 }
 
 
