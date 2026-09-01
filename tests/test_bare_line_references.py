@@ -161,8 +161,10 @@ def test_bare_reference_resolving_to_blank_line_is_reported(run, tmp_path):
     findings = result.json["findings"]
     match = next(f for f in findings if f["layer"] == "anchor_resolution")
     assert "plan.md" in match["message"]
-    assert "`:2`" in match["message"]
-    assert "blank" in match["message"]
+    # The finding names the resolved citation, so the bare ` :2` text may not
+    # appear verbatim; the cited path and line, plus the blank-line failure
+    # kind, are what US1 would report.
+    assert "line 2 is blank" in match["message"]
     assert "src/module.py" in match["message"]
 
 
