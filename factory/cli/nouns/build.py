@@ -145,6 +145,10 @@ from factory.workgraph.preflight import (
     prompt_assembly_preflight,
 )
 from factory.workgraph.cli import DEFAULT_SPECS_ROOT
+from factory.workgraph.credential_status import (
+    credential_status,
+    render_credential_status,
+)
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicWorkflow
 from factory.mergequeue.forge import (
     ForgeError,
@@ -997,6 +1001,27 @@ def _skew_notice(worker_revision: str | None, cli_revision: str | None) -> str |
 def status_command(args: argparse.Namespace) -> int:
     """Read one epic's live state."""
     return asyncio.run(_query_status(args.epic_id, as_json=args.as_json))
+
+
+def credential_status_command(args: argparse.Namespace) -> int:
+    """Show which subscription credential the factory will use."""
+    status = credential_status()
+    if args.as_json:
+        print(
+            json.dumps(
+                {
+                    "source": status.source,
+                    "expires_at": (
+                        status.expires_at.isoformat() if status.expires_at else None
+                    ),
+                    "remedies": list(status.remedies),
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(render_credential_status(status))
+    return EXIT_OK
 
 
 def ship_command(args: argparse.Namespace) -> int:
@@ -2137,6 +2162,18 @@ def add_parser(subparsers: Any) -> None:
         help="print the query result verbatim instead of the human view",
     )
     status.set_defaults(run=status_command)
+
+    credential_status_parser = commands.add_parser(
+        "credential-status",
+        help="show which subscription credential the factory will use",
+    )
+    credential_status_parser.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="emit the status as JSON instead of the human view",
+    )
+    credential_status_parser.set_defaults(run=credential_status_command)
 
     for name, signal_help in (
         ("pause", "pause dispatching; the in-flight node finishes"),
