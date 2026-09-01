@@ -265,12 +265,15 @@ def test_a_well_formed_trio_reports_prompt_assembly_checked_and_no_finding(
     # that layer reads the gates the target repository declares, so a run
     # against validate's default — a path this host need not carry — would skip
     # it, and whether `skipped` is empty would depend on the machine.
+    # 072-US2 adds a tenth, `symbol_anchors`, that resolves Python symbol spans
+    # against the target repository's AST.
     assert document["checked"] == [
         *EXISTING_LAYERS,
         "prompt_assembly",
         "slice_coverage",
         "slice_contention",
         "sentinels",
+        "symbol_anchors",
         "evidence",
     ]
     assert document["skipped"] == []
