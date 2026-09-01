@@ -67,6 +67,9 @@ _SCENARIO_ID_RE = re.compile(r"US\d+-S\d+")
 #: A citation inside an inline code span: `path:NN` or `path:NN-MM`.
 _ANCHOR_RE = re.compile(r"`([^`]+?:\d+(?:-\d+)?)`")
 
+#: A bare line reference inside an inline code span: `:NN` or `:NN-MM`.
+_BARE_LINE_RE = re.compile(r"`:(\d+(?:-\d+)?)`")
+
 #: A registry that answers for every persona the graph names, so
 # `validate_workgraph` checks only structural rules, not persona resolution.
 # Persona resolution is checked separately against the real registry.
@@ -1055,23 +1058,76 @@ def _check_anchor_resolution(
         return
 
     # Collect citations with their line numbers first, then read each file once.
+    #
+    # A bare `:NN` reference carries the most recently cited *path* forward within
+    # the same markdown section. "Section" is bounded by a markdown heading (any
+    # line starting with one or more `#` characters): that is wide enough for a
+    # trap several paragraphs below its path (068's traps 3 and 4) and narrow
+    # enough that a heading change is a deliberate context switch. A bullet alone
+    # is too narrow — a path in one bullet should still resolve a bare reference in
+    # the prose or bullets that follow under the same heading (trap 3).
     citations: list[tuple[str, int, str, str, int]] = []
     # Ranges written backwards. Held apart because they are decidable without
     # opening anything, but they are still this layer's findings and so are
     # withheld with the rest when the layer skips.
     inverted: list[tuple[str, int, str, int, int]] = []
+    # Bare `:NN` or `:NN-MM` references that cannot be resolved in their section.
+    unanchored: list[tuple[str, int, str]] = []
     cited_paths: set[str] = set()
     for doc_name, text in docs.items():
         lines = text.splitlines()
         in_code = mask_fences(lines)
+        current_path: str | None = None
         for index, line in enumerate(lines, start=1):
             if in_code[index - 1]:
                 continue
+            # A heading starts a new section, so any bare reference after it must
+            # find a path *below* that heading, not one carried from above.
+            if line.lstrip().startswith("#"):
+                current_path = None
+                continue
+            # Resolve bare references first, before this line's own path citation
+            # updates the carrier. A bare `:NN` on the same line as a `path:NN` is
+            # governed by the path on that line or an earlier one, not by itself.
+            bare_match = _BARE_LINE_RE.search(line)
+            if bare_match:
+                bare_raw = bare_match.group(1)
+                if "-" in bare_raw:
+                    try:
+                        bare_start = int(bare_raw.split("-", 1)[0])
+                        bare_end = int(bare_raw.split("-", 1)[1])
+                    except ValueError:
+                        pass
+                    else:
+                        if current_path is None:
+                            unanchored.append((doc_name, index, bare_match.group(0)))
+                        else:
+                            citation = f"{current_path}:{bare_raw}"
+                            cited_paths.add(current_path)
+                            if bare_end < bare_start:
+                                inverted.append((doc_name, index, citation, bare_start, bare_end))
+                            citations.append((doc_name, index, current_path, citation, bare_start))
+                            citations.append((doc_name, index, current_path, citation, bare_end))
+                else:
+                    try:
+                        bare_line = int(bare_raw)
+                    except ValueError:
+                        pass
+                    else:
+                        if current_path is None:
+                            unanchored.append((doc_name, index, bare_match.group(0)))
+                        else:
+                            citation = f"{current_path}:{bare_raw}"
+                            cited_paths.add(current_path)
+                            citations.append((doc_name, index, current_path, citation, bare_line))
             for match in _ANCHOR_RE.finditer(line):
                 citation = match.group(1)
                 if ":" not in citation:
                     continue
                 raw_path, raw_lines = citation.rsplit(":", 1)
+                # Update the carrier *after* resolving any bare reference on this
+                # line, so a path cited on line N governs a bare `:NN` on line N.
+                current_path = raw_path
                 if "-" in raw_lines:
                     try:
                         start_line, end_line = raw_lines.split("-", 1)
@@ -1096,25 +1152,8 @@ def _check_anchor_resolution(
                     cited_paths.add(raw_path)
                     citations.append((doc_name, index, raw_path, citation, line_int))
 
-    if not citations:
+    if not citations and not unanchored:
         checked.append("anchor_resolution")
-        return
-
-    contents = _read_citation_files(target_root, cited_paths)
-    any_readable = any(lines is not None for lines in contents.values())
-    if not any_readable:
-        # FR-011: when *none* of the cited files can be read, the tree the
-        # command was given is not the tree the specs cite. Skip the whole layer
-        # rather than report every citation as an absent file — validate's
-        # `--target-repo` default is a path most hosts do not carry, and a layer
-        # that refuses instead of skipping turns every spec into a wall of false
-        # refusals (trap 11).
-        reason = (
-            f"target repository {target_repo} is not a readable directory"
-            if not target_root.is_dir()
-            else f"none of the cited paths exist under target repository {target_repo}"
-        )
-        skipped.append({"layer": "anchor_resolution", "reason": reason})
         return
 
     # FR-010: a refusal only for a spec that can still dispatch. The 998 broken
@@ -1137,6 +1176,35 @@ def _check_anchor_resolution(
             f"{doc_name}:{citing_line}: `{citation}` is a range whose end "
             f"({end_int}) precedes its start ({start_int})"
         )
+
+    # FR-009: unanchored bare references are reported even when no file can be
+    # opened. They name no path, so the target-repo skip does not apply to them.
+    for doc_name, citing_line, bare_text in unanchored:
+        report(
+            f"{doc_name}:{citing_line}: {bare_text} is unanchorable: no path was cited "
+            "before it in the same section"
+        )
+
+    if not citations:
+        checked.append("anchor_resolution")
+        return
+
+    contents = _read_citation_files(target_root, cited_paths)
+    any_readable = any(lines is not None for lines in contents.values())
+    if not any_readable:
+        # FR-011: when *none* of the cited files can be read, the tree the
+        # command was given is not the tree the specs cite. Skip the whole layer
+        # rather than report every citation as an absent file — validate's
+        # `--target-repo` default is a path most hosts do not carry, and a layer
+        # that refuses instead of skipping turns every spec into a wall of false
+        # refusals (trap 11).
+        reason = (
+            f"target repository {target_repo} is not a readable directory"
+            if not target_root.is_dir()
+            else f"none of the cited paths exist under target repository {target_repo}"
+        )
+        skipped.append({"layer": "anchor_resolution", "reason": reason})
+        return
 
     for doc_name, citing_line, raw_path, citation, line_no in citations:
         file_lines = contents.get(raw_path)
