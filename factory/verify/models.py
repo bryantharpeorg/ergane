@@ -1271,6 +1271,11 @@ class AttemptRecord:
     #: exclusion applies at every call site, including one that passes no config
     #: (plan trap 4).
     pre_agent: bool = False
+    #: US1: which credential source a subscription-routed attempt used. Recorded
+    #: on the ladder history so the operator can read the precedence from
+    #: `ergane build status` (FR-005, trap 10). `None` when the attempt was not
+    #: subscription-routed or when the adapter produced no source information.
+    credential_source: str | None = None
 
 
 # Escalation entities --------------------------------------------------------

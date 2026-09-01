@@ -105,6 +105,20 @@ PASSTHROUGH_ENV: tuple[str, ...] = ("PATH", "LANG", "TERM")
 #: binary a persona runs is the registry's `agent` field, which selects a class.
 DEFAULT_EXECUTABLE = "claude"
 
+#: The environment variable that carries the operator's long-lived subscription
+#: bearer token. `claude setup-token` mints it and tells the operator to export it
+#: under this name; the factory carries it into subscription-routed attempts and
+#: nowhere else (US1 FR-001/FR-003/FR-006).
+CLAUDE_CODE_OAUTH_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
+
+#: A subscription-routed attempt used the long-lived token from the worker
+#: environment (US1 FR-005).
+CREDENTIAL_SOURCE_OAUTH_TOKEN = "oauth_token"
+
+#: A subscription-routed attempt fell back to the copied operator credential
+#: seeded into the per-node HOME (US1 FR-004/FR-005).
+CREDENTIAL_SOURCE_COPIED_CREDENTIALS = "copied_credentials"
+
 #: Seconds between SIGTERM and SIGKILL at the deadline. Long enough for an agent
 #: to flush the session transcript that is about to become the only account of
 #: what it was doing, short enough that ignoring TERM buys nothing.
@@ -584,6 +598,7 @@ class BwrapBackend:
         for name in (
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_AUTH_TOKEN",
+            CLAUDE_CODE_OAUTH_TOKEN,
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
             ATTEMPT_ARCHIVE_ENV,
             # Git identity and configuration are intentionally suppressed in the
@@ -936,6 +951,14 @@ def attempt_env(
     if routes_through_gateway:
         env["ANTHROPIC_BASE_URL"] = context.proxy_url
         env["ANTHROPIC_AUTH_TOKEN"] = context.virtual_key
+    else:
+        # US1: subscription-routed personas authenticate with the operator's
+        # longest-lived credential. Carry the token only in the subscription
+        # branch; adding it to PASSTHROUGH_ENV would hand it to gateway personas
+        # too (trap 1).
+        oauth_token = source.get(CLAUDE_CODE_OAUTH_TOKEN)
+        if oauth_token:
+            env[CLAUDE_CODE_OAUTH_TOKEN] = oauth_token
     if context.context_window is not None:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context.context_window)
     env.update({name: source[name] for name in PASSTHROUGH_ENV if source.get(name)})
@@ -1047,6 +1070,17 @@ class ClaudeCodeAdapter:
         env = attempt_env(context, routes_through_gateway=routes_through_gateway)
         env[ATTEMPT_ARCHIVE_ENV] = str(archive)
 
+        # US1: decide which credential source this subscription-routed attempt
+        # will use, so the record can state the precedence rather than leaving it
+        # to be inferred (FR-005, trap 10). Gateway personas have no credential
+        # source to record here.
+        credential_source: str | None = None
+        if not routes_through_gateway:
+            if env.get(CLAUDE_CODE_OAUTH_TOKEN):
+                credential_source = CREDENTIAL_SOURCE_OAUTH_TOKEN
+            else:
+                credential_source = CREDENTIAL_SOURCE_COPIED_CREDENTIALS
+
         # US1: capture the target repository's tracked-file state before the agent runs.
         if target_repo is not None:
             capture_start(Path(factory_root), target_repo, context)
@@ -1110,6 +1144,7 @@ class ClaudeCodeAdapter:
             termination=termination,
             transcript_path=str(archive),
             last_snapshot=last_snapshot,
+            credential_source=credential_source,
         )
 
     # -- launch ---------------------------------------------------------------
