@@ -35,7 +35,7 @@ from factory.roadmap.cli import (
     render_command,
 )
 from factory.roadmap.models import RoadmapError, SpecState, _split_frontmatter, compute_readiness, read_roadmap
-from factory.verify.criteria import mask_fences, parse_spec
+from factory.verify.criteria import HEADER_RE, mask_fences, parse_spec
 from factory.verify.diffbounds import DIFF_INPUT_LIMIT
 from factory.verify.factory_yaml import (
     FactoryConfigError,
@@ -65,6 +65,9 @@ _SCENARIO_ID_RE = re.compile(r"US\d+-S\d+")
 
 #: A citation inside an inline code span: `path:NN` or `path:NN-MM`.
 _ANCHOR_RE = re.compile(r"`([^`]+?:\d+(?:-\d+)?)`")
+
+#: A bare line reference inside an inline code span: `:NN` or `:NN-MM`.
+_BARE_ANCHOR_RE = re.compile(r"`:(\d+(?:-\d+)?)`")
 
 #: A registry that answers for every persona the graph names, so
 # `validate_workgraph` checks only structural rules, not persona resolution.
@@ -808,6 +811,35 @@ def _anchor_severity_for_spec(spec_dir: Path) -> str:
     return "refusal"
 
 
+def _append_line_citations(
+    doc_name: str,
+    index: int,
+    raw_path: str,
+    citation: str,
+    raw_lines: str,
+    citations: list[tuple[str, int, str, str, int]],
+    cited_paths: set[str],
+) -> None:
+    """Append one or two line checks for a citation to `citations`."""
+    if "-" in raw_lines:
+        try:
+            start_line, end_line = raw_lines.split("-", 1)
+            start_int = int(start_line)
+            end_int = int(end_line)
+        except ValueError:
+            return
+        cited_paths.add(raw_path)
+        citations.append((doc_name, index, raw_path, citation, start_int))
+        citations.append((doc_name, index, raw_path, citation, end_int))
+    else:
+        try:
+            line_int = int(raw_lines)
+        except ValueError:
+            return
+        cited_paths.add(raw_path)
+        citations.append((doc_name, index, raw_path, citation, line_int))
+
+
 def _read_citation_files(target_repo: Path, paths: set[str]) -> dict[str, list[str] | None]:
     """Read every cited file once; None means the file could not be read."""
     contents: dict[str, list[str] | None] = {}
@@ -858,38 +890,57 @@ def _check_anchor_resolution(
         return
 
     # Collect citations with their line numbers first, then read each file once.
+    # The scan is stateful within a markdown section: a bare `:NN` inherits the
+    # most recent path cited before it in the same section (FR-009). A section is
+    # bounded by an ATX heading (`# ...`) of any level; that boundary is wide
+    # enough for a paragraph that refers back to a path cited in a preceding
+    # bullet (trap 3). A bullet or a blank line is too narrow — six live bare
+    # references appear paragraphs away from the path they resolve against.
     citations: list[tuple[str, int, str, str, int]] = []
     cited_paths: set[str] = set()
     for doc_name, text in docs.items():
         lines = text.splitlines()
         in_code = mask_fences(lines)
+        current_path: str | None = None
         for index, line in enumerate(lines, start=1):
             if in_code[index - 1]:
                 continue
+            if HEADER_RE.match(line):
+                # A new heading resets the path context for bare references.
+                current_path = None
+                continue
+            # Resolve any bare `:NN` on this line against the carried path.
+            for match in _BARE_ANCHOR_RE.finditer(line):
+                raw_lines = match.group(1)
+                if current_path is None:
+                    severity = _anchor_severity_for_spec(spec_dir)
+                    findings.append(
+                        _ValidateFinding(
+                            "anchor_resolution",
+                            f"{doc_name}:{index}: `:{raw_lines}` is unanchorable: "
+                            "no path was cited before it in this section",
+                            severity=severity,
+                        )
+                    )
+                    continue
+                _append_line_citations(
+                    doc_name, index, current_path, f":{raw_lines}", raw_lines, citations, cited_paths
+                )
             for match in _ANCHOR_RE.finditer(line):
                 citation = match.group(1)
                 if ":" not in citation:
                     continue
                 raw_path, raw_lines = citation.rsplit(":", 1)
-                if "-" in raw_lines:
-                    try:
-                        start_line, end_line = raw_lines.split("-", 1)
-                        start_int = int(start_line)
-                        end_int = int(end_line)
-                    except ValueError:
-                        continue
-                    cited_paths.add(raw_path)
-                    citations.append((doc_name, index, raw_path, citation, start_int))
-                    citations.append((doc_name, index, raw_path, citation, end_int))
-                else:
-                    try:
-                        line_int = int(raw_lines)
-                    except ValueError:
-                        continue
-                    cited_paths.add(raw_path)
-                    citations.append((doc_name, index, raw_path, citation, line_int))
+                # Update the carried path before resolving this citation, so a bare
+                # reference on the same line sees the new path.
+                current_path = raw_path
+                _append_line_citations(
+                    doc_name, index, raw_path, citation, raw_lines, citations, cited_paths
+                )
 
-    if not citations:
+    if not citations and not any(
+        f.layer == "anchor_resolution" for f in findings
+    ):
         checked.append("anchor_resolution")
         return
 
