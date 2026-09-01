@@ -31,9 +31,10 @@ from factory.workgraph.credential_status import (
     render_credential_status,
 )
 
-#: A synthetic long-lived subscription token. Real tokens share the `sk-ant-oat01-`
-#: prefix but this value is generated for tests and never valid anywhere.
-OAUTH_TOKEN = "sk-ant-oat01-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#: A synthetic long-lived subscription token. Real tokens share the live
+#: prefix (name omitted from source per trap 4); this value is generated for
+#: tests and never valid anywhere.
+OAUTH_TOKEN = "synthetic-oauth-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 
 def _fake_operator_home(tmp_path: Path) -> Path:
@@ -174,7 +175,7 @@ def test_rendered_output_contains_no_credential_value(
     rendered = render_credential_status(status)
 
     # No token prefix, no access/refresh token values, no synthetic token.
-    assert "sk-ant-" not in rendered
+    assert "synthetic-oauth-token-" not in rendered
     assert "fake-access-token" not in rendered
     assert "fake-refresh-token" not in rendered
     if credential_expiry is not None:
@@ -220,3 +221,27 @@ def test_runway_helper_ignores_unparseable_expiry(
 
     assert status.source == CREDENTIAL_SOURCE_COPIED_CREDENTIALS
     assert status.expires_at is None
+
+
+# --- T030 [trap 4] no live credential value in source/tests/fixtures ----------
+
+
+def test_no_credential_value_appears_in_us3_source() -> None:
+    """Trap 4: real tokens do not go in git, not even in tests. The only
+    credential-like strings in this story's code are the synthetic test values
+    above, and they must not share the live token prefix or the operator-local
+    path."""
+    repo_root = Path(__file__).resolve().parents[1]
+    story_files = [
+        repo_root / "factory" / "workgraph" / "credential_status.py",
+        repo_root / "tests" / "test_125_us3_credential_runway.py",
+    ]
+    # The literal live-token prefix and operator-local path are constructed at
+    # runtime from fragments so the test file itself does not contain them (trap 4).
+    live_prefix = "sk-" + "ant-" + "oat01-"
+    live_path = "/" + "home/admin" + "/.config/ergane-oauth-token.env"
+    forbidden = [live_prefix, live_path]
+    for path in story_files:
+        text = path.read_text(encoding="utf-8")
+        for needle in forbidden:
+            assert needle not in text, f"{path} contains forbidden credential-like string {needle!r}"
