@@ -270,6 +270,7 @@ ergane-cli`.
 
 - `.specify/memory/constitution.md` — the standards every node obeys.
 - `docs/architecture.md` — how the factory works.
+- `docs/cli/` — reference documentation for every `ergane` noun and verb.
 - `docs/decisions.md` — the immutable decision log.
 - `CONTEXT.md` — the vocabulary this repository uses.
 - `scripts/ergane-env.sh` — the shell environment the CLI commands expect.

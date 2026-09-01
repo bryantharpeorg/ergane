@@ -154,6 +154,49 @@ def test_validate_reports_citation_to_absent_file(run, tmp_path):
     assert match["severity"] == "refusal"
 
 
+# --- FR-005: ranges are checked at both endpoints ------------------------------
+
+
+def test_validate_checks_both_endpoints_of_a_range(run, tmp_path):
+    """A range resolves only if both ends do; a good start does not excuse the end."""
+    target_repo = _target_tree(tmp_path)
+    spec_dir = tmp_path / "001-demo"
+    _write_spec(
+        spec_dir,
+        plan="# Plan\n\n- see `src/module.py:1-9` for context.\n",
+    )
+
+    result = run("spec", "validate", "--json", str(spec_dir), "--target-repo", str(target_repo))
+
+    assert result.code == 1
+    match = next(f for f in result.json["findings"] if f["layer"] == "anchor_resolution")
+    assert "src/module.py:1-9" in match["message"]
+    assert "line 9 is past end of file" in match["message"]
+
+
+def test_validate_reports_a_range_that_runs_backwards(run, tmp_path):
+    """FR-005: `NN-MM` with MM before NN names no lines at all.
+
+    Both endpoints resolve here — 1 and 3 are real, non-blank lines of the
+    supplied file — so nothing but the ordering check can see this.
+    """
+    target_repo = _target_tree(tmp_path)
+    spec_dir = tmp_path / "001-demo"
+    _write_spec(
+        spec_dir,
+        plan="# Plan\n\n- see `src/module.py:3-1` for context.\n",
+    )
+
+    result = run("spec", "validate", "--json", str(spec_dir), "--target-repo", str(target_repo))
+
+    assert result.code == 1
+    match = next(f for f in result.json["findings"] if f["layer"] == "anchor_resolution")
+    assert "plan.md" in match["message"]
+    assert "src/module.py:3-1" in match["message"]
+    assert "precedes its start" in match["message"]
+    assert match["severity"] == "refusal"
+
+
 # --- S4-S5: what must not be reported ----------------------------------------
 
 
@@ -237,6 +280,37 @@ def test_validate_reports_nothing_when_anchors_resolve(run, tmp_path):
     rerun = run("spec", "validate", "--json", str(spec_dir), "--target-repo", str(target_repo))
     assert rerun.code == 1
     assert any(f["layer"] == "anchor_resolution" for f in rerun.json["findings"])
+
+
+# --- FR-010: severity follows whether the spec can still dispatch --------------
+
+
+def test_broken_anchor_in_a_landed_spec_is_an_advisory(run, tmp_path):
+    """FR-010: nothing dispatches from a landed spec again, so it is not refused.
+
+    The same citation is a refusal in the dispatchable fixtures above. Without
+    this, the 998 broken anchors already sitting in landed specs would turn
+    every validate of one into a failure.
+    """
+    target_repo = _target_tree(tmp_path)
+    spec_dir = tmp_path / "001-demo"
+    _write_spec(
+        spec_dir,
+        state="landed",
+        plan="# Plan\n\n- see `src/module.py:10` for context.\n",
+        tasks=(
+            "# Tasks\n\n"
+            "## Phase 1: User Story 1 - Do a thing\n\n"
+            "- [ ] T001 [US1-S1] first\n"
+        ),
+    )
+
+    result = run("spec", "validate", "--json", str(spec_dir), "--target-repo", str(target_repo))
+
+    assert result.code == 0
+    match = next(f for f in result.json["findings"] if f["layer"] == "anchor_resolution")
+    assert match["severity"] == "advisory"
+    assert "src/module.py:10" in match["message"]
 
 
 # --- S7: missing target repo ------------------------------------------------
