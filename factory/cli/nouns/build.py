@@ -359,7 +359,9 @@ async def _run_preflight(graph: WorkGraph) -> list[PreflightFinding]:
     findings += await check_aliases(
         graph, _preflight_registry(), _open_preflight_client()
     )
-    return findings
+    # Informational findings (`passed=True`) are reported by the module but must not
+    # stop dispatch (126 US1 FR-005: an unreachable remote is not a refusal).
+    return [f for f in findings if not isinstance(f, PreflightFinding) or not f.passed]
 
 
 def _preflight_factory_root() -> Path:

@@ -115,8 +115,13 @@ from factory.workgraph.prompt import (
 from factory.workgraph.workflow import JUDGE_PERSONA
 from factory.workgraph.worktree import (
     WorktreeError,
+    _git,
+    _has_commit,
+    _has_remote,
+    _is_ancestor,
     _ownership_refusal,
     _worktree_ownership,
+    branch_name,
     landing_branch,
     worktree_path,
 )
@@ -552,6 +557,7 @@ def check_slice_coverage(
 #: about the epic, stable enough for an operator to grep a park history for.
 WORKTREE_OWNERSHIP_CHECK = "node-worktree-ownership"
 LANDING_BRANCH_CHECK = "landing-branch-declared"
+REMOTE_BRANCH_CHECK = "node-remote-branch-collision"
 
 
 def worktree_ownership_findings(
@@ -699,10 +705,99 @@ def engine_skew_findings() -> list[PreflightFinding]:
     return [PreflightFinding(check="engine", passed=False, detail=sentence, transport=False)]
 
 
+def remote_branch_findings(graph: WorkGraph) -> list[PreflightFinding]:
+    """Every node whose remote branch would refuse the next push (126 US1).
+
+    One `ls-remote` for the whole graph: a pattern over
+    `refs/heads/factory/<epic>/*` is filtered in Python to exact full ref names,
+    because `ls-remote` matches the *tail* of a ref and a decoy like
+    `refs/heads/mirror/factory/<epic>/us1` would otherwise be attributed to the
+    wrong node (plan trap 3).
+
+    The predicate is ancestry against the landing head the node would branch
+    from, not existence: every completed epic leaves its node branches on origin,
+    and refusing on existence would refuse every re-derivation (plan trap 4).
+    A remote tip that is an ancestor of the landing head fast-forwards; any
+    other tip is a collision.
+
+    An unreachable remote is reported, never raised: a preflight that refused
+    dispatch on a network hiccup would be worse than the ref it checks for
+    (FR-005). That finding is informational (`passed=True`) so a caller that
+    treats findings as refusals can drop it without stopping dispatch.
+    """
+    repo = Path(graph.target_repo)
+    remote = "origin"
+    if not _has_remote(repo, remote):
+        return []
+
+    try:
+        landing = landing_branch(repo)
+    except (WorktreeError, OSError, subprocess.SubprocessError, FactoryConfigError):
+        return []
+
+    landing_ref = f"refs/heads/{landing}"
+    node_pattern = f"refs/heads/factory/{graph.epic_id}/*"
+    try:
+        listing = _git(repo, "ls-remote", "--heads", remote, landing_ref, node_pattern)
+    except (WorktreeError, OSError, subprocess.SubprocessError) as exc:
+        return [
+            PreflightFinding(
+                check=REMOTE_BRANCH_CHECK,
+                passed=True,
+                detail=f"could not reach {remote} to check for node branch collisions: {exc}",
+            )
+        ]
+
+    landing_head = ""
+    remote_tips: dict[str, str] = {}
+    node_prefix = f"refs/heads/factory/{graph.epic_id}/"
+    for line in listing.splitlines():
+        if not line.strip():
+            continue
+        sha, _, name = line.partition("\t")
+        name = name.strip()
+        sha = sha.strip()
+        if name == landing_ref:
+            landing_head = sha
+        elif name.startswith(node_prefix):
+            remote_tips[name] = sha
+
+    if not landing_head:
+        return []
+
+    findings: list[PreflightFinding] = []
+    for node in graph.nodes:
+        ref = f"{node_prefix}{node.id}"
+        tip = remote_tips.get(ref)
+        if not tip:
+            continue
+        if not (_has_commit(repo, landing_head) and _has_commit(repo, tip)):
+            continue
+        try:
+            ancestor = _is_ancestor(repo, tip, landing_head)
+        except (WorktreeError, OSError, subprocess.SubprocessError):
+            continue
+        if ancestor:
+            continue
+        findings.append(
+            PreflightFinding(
+                check=REMOTE_BRANCH_CHECK,
+                passed=False,
+                detail=(
+                    f"node {node.id} has remote branch {ref} at {tip[:12]} "
+                    f"which is not an ancestor of landing head {landing} "
+                    f"({landing_head[:12]}); this dispatch would be refused "
+                    f"non-fast-forward. Nothing was dispatched."
+                ),
+            )
+        )
+    return findings
+
+
 def landing_readiness_preflight(
     graph: WorkGraph, factory_root: Path | str
 ) -> list[PreflightFinding]:
-    """Both landing preconditions, collected, for both dispatch surfaces (FR-011).
+    """All landing preconditions, collected, for both dispatch surfaces (FR-011).
 
     One entry point so `ergane build start` and the roadmap's pre-dispatch
     activity cannot drift in *which* checks they run any more than they can drift
@@ -715,8 +810,10 @@ def landing_readiness_preflight(
     this seam than at the others because each round trip is a dispatch that has
     to be started again.
     """
-    return worktree_ownership_findings(graph, factory_root) + landing_branch_findings(
-        graph
+    return (
+        worktree_ownership_findings(graph, factory_root)
+        + landing_branch_findings(graph)
+        + remote_branch_findings(graph)
     )
 
 
