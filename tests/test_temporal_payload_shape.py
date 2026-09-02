@@ -371,6 +371,12 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.activities.notify_activities.ResetRoadmapFailuresInput": (
         "db_path", "roadmap_id"
     ),
+    # 126-US3: kind 1 — `epic_id` and `node_id` address which ref to inspect, and
+    # `target_repo` names the clone that holds the remote-tracking ref. Defaults
+    # would point the activity at the wrong node or the wrong repository.
+    "factory.activities.agent_activities.RefConflictFactsInput": (
+        "epic_id", "node_id", "target_repo",
+    ),
     "factory.activities.notify_activities.SendEscalationInput": (
         "workflow_id", "epic_id", "node_id", "history_summary"
     ),
@@ -531,6 +537,13 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     ),
     "factory.verify.models.HygieneViolation": ("path", "rule",),
     "factory.verify.models.JudgeScenarioFinding": ("scenario", "passed", "reasoning",),
+    # 126-US3: `ref` and `tip` are kind 1 (they name the blocking ref);
+    # `archived` is kind 3 (a measurement of whether an archive ref holds the tip);
+    # `clearing_command` is kind 2 (the exact command the message offers, empty
+    # would mean "no command" which is a different fact from "not offered").
+    "factory.verify.models.RefConflictInfo": (
+        "ref", "tip", "archived", "clearing_command"
+    ),
     "factory.verify.models.JudgeVerdict": (
         "outcome", "findings", "feedback", "judge_attempt", "truncated_input",
         "model_alias"
