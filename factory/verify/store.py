@@ -167,7 +167,12 @@ from factory.verify.models import (
 #: a fresh one. Every row written before them reads `UNKNOWN_BUILDER`, never a
 #: backfilled guess: the registry has moved on, so a persona looked up today
 #: would answer for the wrong model.
-SCHEMA_VERSION = 12
+#:
+#: 13 (126-US3): `escalations.ref_conflict` — the stale ref blocking this node
+#: when the escalation is for a non-fast-forward push refusal (JSON:
+#: RefConflictInfo). Additive; NULL for every row written before it, which
+#: reads as an escalation that is not about a ref conflict.
+SCHEMA_VERSION = 13
 
 #: R10: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent recorder, short enough that a genuinely wedged

@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS escalations (
     -- with the escalation's cause. NULL means the ordinary default (KILL); an
     -- authentication escalation records PAUSE_EPIC here.
     default_choice TEXT,
+    -- 126-US3 (schema 13): the stale ref blocking this node when the escalation
+    -- is for a non-fast-forward push refusal (JSON: RefConflictInfo). NULL for
+    -- every other escalation, which renders exactly as it did before this field.
+    ref_conflict TEXT,
     CHECK ((resolution IS NULL) = (resolved_at IS NULL))
 );
 
