@@ -1,0 +1,24 @@
+=== 126-US1 evidence: ergane build start refuses on a colliding ref ===
+
+target repo: /tmp/tmp.dmG1Q9lDDt/clone
+origin:      /tmp/tmp.dmG1Q9lDDt/origin.git
+remote refs before run 1:
+3288fc71c2fa1db82b72dd5aac2086d6ff3a7d49	refs/heads/ergane-buildout
+e7e71e75cfd87a6108dc29f296b3c47029d391fb	refs/heads/factory/126-evidence/us1
+fa34e102539f5617a4718b59b85ba7b10353ef25	refs/heads/main
+
+$ ergane build start /tmp/tmp.dmG1Q9lDDt/specs/126-evidence/workgraph.json
+ergane: preflight [node-remote-branch-collision]: node us1 has remote branch refs/heads/factory/126-evidence/us1 at e7e71e75cfd8 which is not an ancestor of landing head ergane-buildout (3288fc71c2fa); this dispatch would be refused non-fast-forward. Nothing was dispatched.
+
+exit code: 1 (non-zero = refused dispatch)
+
+=== after clearing the ref, the same command starts the epic ===
+
+remote refs after delete:
+3288fc71c2fa1db82b72dd5aac2086d6ff3a7d49	refs/heads/ergane-buildout
+fa34e102539f5617a4718b59b85ba7b10353ef25	refs/heads/main
+
+$ ergane build start /tmp/tmp.dmG1Q9lDDt/specs/126-evidence/workgraph.json
+epic-126-evidence
+
+exit code: 0 (zero = dispatch started)

@@ -1,9 +1,10 @@
-"""The epic refuses at dispatch, before it spends (107 US4).
+"""The epic refuses at dispatch, before it spends (107 US4, 126 US1).
 
-Two facts decide whether a verified story can land, both knowable offline, and
-until this story neither was asked before an agent was paid: which repository
-owns each node's worktree, and whether the landing branch is declared or merely
-inferred from whatever branch the target clone is sitting on.
+Three facts decide whether a verified story can land, all knowable offline, and
+until these stories neither was asked before an agent was paid: which repository
+owns each node's worktree, whether the landing branch is declared or merely
+inferred from whatever branch the target clone is sitting on, and whether any
+node's remote branch would refuse the next push.
 
 US1 landed the ownership predicate and made `ensure()` refuse on it. That is the
 enforcement and it is per node, at the worker, at the last free moment. This is
@@ -44,17 +45,20 @@ from factory.workgraph import preflight as preflight_module
 from factory.workgraph.models import WorkGraph, WorkNode
 from factory.workgraph.preflight import (
     LANDING_BRANCH_CHECK,
+    REMOTE_BRANCH_CHECK,
     WORKTREE_OWNERSHIP_CHECK,
     landing_branch_findings,
     landing_readiness_preflight,
+    remote_branch_findings,
     worktree_ownership_findings,
 )
 from factory.workgraph.worktree import ensure, worktree_path
 from tests.conftest import FAKE_MASTER_KEY, FakeLiteLLM
-from tests.target_repo import git
+from tests.target_repo import build_target_repo, git
 
 EPIC = "107-a-landing-refuses"
 NODES = ("us1", "us2")
+LANDING_BRANCH = "ergane-buildout"
 
 
 # --- setup -------------------------------------------------------------------
@@ -129,6 +133,38 @@ def register_nodes(repo: Path, factory_root: Path) -> list[Path]:
     ]
 
 
+def make_origin_and_clone(tmp_path: Path, variant: str = "landing-branch") -> tuple[Path, Path]:
+    """A bare origin and a non-bare clone, both carrying `variant`'s manifest."""
+    source = build_target_repo(tmp_path / "origin-source", variant=variant)
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "clone", "--mirror", "--quiet", str(source), str(origin))
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "--quiet", str(origin), str(clone))
+    return origin, clone
+
+
+def push_node_branch(repo: Path, epic_id: str, node_id: str, *, diverge: bool = False) -> str:
+    """Push `factory/<epic>/<node>` to `origin`, optionally with a divergent commit."""
+    branch = f"factory/{epic_id}/{node_id}"
+    git(repo, "checkout", "-q", "-b", branch)
+    if diverge:
+        (repo / f"node-{node_id}").write_text(f"{node_id} diverged\n", encoding="utf-8")
+        git(repo, "add", "-A")
+        git(repo, "commit", "--quiet", "-m", f"node {node_id} diverged")
+    git(repo, "push", "--quiet", "origin", branch)
+    return git(repo, "rev-parse", branch).strip()
+
+
+def push_landing_branch(repo: Path, branch: str = LANDING_BRANCH) -> str:
+    """Create `branch` with one new commit and push it to `origin`."""
+    git(repo, "checkout", "-q", "-b", branch)
+    (repo / "landing-marker").write_text("landed\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "--quiet", "-m", "landing commit")
+    git(repo, "push", "--quiet", "origin", branch)
+    return git(repo, "rev-parse", branch).strip()
+
+
 def counted_ownership(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     """Record every directory the check asks git about, and answer for real.
 
@@ -145,6 +181,19 @@ def counted_ownership(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
         return real(repo, path)
 
     monkeypatch.setattr(preflight_module, "_worktree_ownership", spy)
+    return asked
+
+
+def counted_ls_remote(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
+    """Record every git call the remote-branch check makes."""
+    asked: list[tuple[str, ...]] = []
+    real = preflight_module._git
+
+    def spy(repo: Path, *args: str) -> Any:
+        asked.append(args)
+        return real(repo, *args)
+
+    monkeypatch.setattr(preflight_module, "_git", spy)
     return asked
 
 
@@ -300,6 +349,89 @@ def test_a_target_repo_this_host_cannot_read_is_not_a_fallback_finding(
     assert landing_branch_findings(graph_for(tmp_path / "no-such-clone")) == []
 
 
+# --- T001-T006 / 126 US1: remote branch collision preflight -------------------
+
+
+def test_remote_branch_not_ancestor_is_reported(tmp_path: Path) -> None:
+    """US1-S1, FR-001/FR-002: a diverged node branch is refused before dispatch."""
+    _origin, repo = make_origin_and_clone(tmp_path)
+    landing_head = push_landing_branch(repo)
+    git(repo, "checkout", "-q", "main")
+    node_tip = push_node_branch(repo, EPIC, "us1", diverge=True)
+
+    findings = remote_branch_findings(graph_for(repo))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.check == REMOTE_BRANCH_CHECK
+    assert finding.passed is False
+    assert finding.transport is False
+    assert "node us1" in finding.detail
+    assert f"refs/heads/factory/{EPIC}/us1" in finding.detail
+    assert node_tip[:12] in finding.detail
+    assert landing_head[:12] in finding.detail
+    assert finding.detail.endswith("Nothing was dispatched.")
+
+
+def test_remote_branch_ancestor_reports_nothing(tmp_path: Path) -> None:
+    """US1-S2, FR-003: a fast-forwarding node branch produces no finding."""
+    _origin, repo = make_origin_and_clone(tmp_path)
+    git(repo, "checkout", "-q", "-b", f"factory/{EPIC}/us1")
+    git(repo, "push", "--quiet", "origin", f"factory/{EPIC}/us1")
+    landing_head = push_landing_branch(repo)
+
+    findings = remote_branch_findings(graph_for(repo))
+
+    assert findings == []
+    assert landing_head  # used
+
+
+def test_remote_check_consults_origin_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """US1-S3, FR-004: sixteen nodes, one `ls-remote`, asserted on the count."""
+    _origin, repo = make_origin_and_clone(tmp_path)
+    node_ids = tuple(f"us{i}" for i in range(1, 17))
+    asked = counted_ls_remote(monkeypatch)
+
+    findings = remote_branch_findings(graph_for(repo, node_ids=node_ids))
+
+    assert findings == []
+    ls_remote_calls = [args for args in asked if args and args[0] == "ls-remote"]
+    assert len(ls_remote_calls) == 1
+
+
+def test_unreachable_origin_is_informational(tmp_path: Path) -> None:
+    """US1-S4, FR-005: a missing remote is reported but does not refuse dispatch."""
+    _origin, repo = make_origin_and_clone(tmp_path)
+    git(repo, "remote", "set-url", "origin", str(tmp_path / "no-such-remote"))
+
+    findings = remote_branch_findings(graph_for(repo))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.check == REMOTE_BRANCH_CHECK
+    assert finding.passed is True
+    assert finding.transport is False
+    assert "origin" in finding.detail
+    assert all(f.passed for f in findings)
+
+
+def test_decoy_ref_tail_does_not_match_node(tmp_path: Path) -> None:
+    """US1 trap 3: a ref whose tail matches the node name but full name does not."""
+    _origin, repo = make_origin_and_clone(tmp_path)
+    decoy = f"mirror/factory/{EPIC}/us1"
+    git(repo, "checkout", "-q", "-b", decoy)
+    (repo / "decoy").write_text("decoy\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "--quiet", "-m", "decoy branch")
+    git(repo, "push", "--quiet", "origin", decoy)
+    git(repo, "checkout", "-q", "main")
+    push_landing_branch(repo)
+
+    findings = remote_branch_findings(graph_for(repo))
+
+    assert findings == []
+
+
 # --- T032 / US4-S4, FR-011: one implementation, two surfaces ------------------
 
 
@@ -331,7 +463,7 @@ async def test_both_dispatch_surfaces_return_the_same_findings(
     factory_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """US4-S4: the roadmap's activity and `ergane build start` answer alike.
+    """US1-S5 / FR-006: the roadmap's activity and `ergane build start` answer alike.
 
     Asserted rather than assumed (FR-011). The two surfaces build their own
     client and their own registry and resolve their own factory root — that split
@@ -339,9 +471,10 @@ async def test_both_dispatch_surfaces_return_the_same_findings(
     and equality of the two lists is what makes a second implementation
     impossible to add quietly.
 
-    The fixture is deliberately doubly broken: two node worktrees registered to
-    another clone *and* a dispatched clone with no readable manifest, so both new
-    checks speak on both surfaces in one pass.
+    The fixture is deliberately broken in three places: two node worktrees
+    registered to another clone, and a target origin carrying a diverged node
+    branch, so all three landing preflight checks speak on both surfaces in one
+    pass.
     """
     from factory.activities import roadmap_activities
     from factory.cli.nouns import build as build_noun
@@ -353,8 +486,17 @@ async def test_both_dispatch_surfaces_return_the_same_findings(
     plant_ready(specs_root / "001-short-links")
 
     owner = target_repo("landing-branch", name="clone-a")
-    dispatched = target_repo("missing-manifest", name="clone-b")
     register_nodes(owner, factory_root)
+
+    # Build a target clone whose origin carries a colliding node branch.
+    source = target_repo("landing-branch", name="origin-source")
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "clone", "--mirror", "--quiet", str(source), str(origin))
+    dispatched = tmp_path / "clone-b"
+    git(tmp_path, "clone", "--quiet", str(origin), str(dispatched))
+    landing_head = push_landing_branch(dispatched)
+    git(dispatched, "checkout", "-q", "main")
+    node_tip = push_node_branch(dispatched, EPIC, "us1", diverge=True)
 
     from factory.workgraph.derive import derive_workgraph
 
@@ -400,24 +542,25 @@ async def test_both_dispatch_surfaces_return_the_same_findings(
     assert [finding.check for finding in from_cli] == [
         WORKTREE_OWNERSHIP_CHECK,
         WORKTREE_OWNERSHIP_CHECK,
-        LANDING_BRANCH_CHECK,
+        REMOTE_BRANCH_CHECK,
     ]
     assert str(owner.resolve()) in from_cli[0].detail
     assert str(factory_root.resolve()) in from_cli[1].detail
-    assert str(dispatched.resolve()) in from_cli[2].detail
+    assert node_tip[:12] in from_cli[2].detail
+    assert landing_head[:12] in from_cli[2].detail
 
     # Both surfaces refuse: a finding is a refusal here, and `ergane build start`
     # maps it to a user error (exit 1) rather than a service failure (exit 3).
     assert await build_noun._preflight_exit_code(from_cli) == 1
 
 
-def test_the_shared_entry_point_collects_both_checks_in_order(
+def test_the_shared_entry_point_collects_all_checks_in_order(
     repo_a: Path, factory_root: Path, target_repo: Callable[..., Path]
 ) -> None:
-    """Both checks run and both are collected; neither short-circuits the other.
+    """All checks run and all are collected; none short-circuits another.
 
-    An operator fixing one refusal per dispatch, with the second revealed only
-    after the first is cleared, is the failure mode this module's collected
+    An operator fixing one refusal per dispatch, with the next revealed only
+    after the previous is cleared, is the failure mode this module's collected
     findings already exist to avoid — and it is the more expensive mistake here,
     because each round trip is a dispatch the operator has to start again.
     """
@@ -430,6 +573,7 @@ def test_the_shared_entry_point_collects_both_checks_in_order(
     assert findings == (
         worktree_ownership_findings(graph, factory_root)
         + landing_branch_findings(graph)
+        + remote_branch_findings(graph)
     )
     assert [finding.check for finding in findings] == [
         WORKTREE_OWNERSHIP_CHECK,
