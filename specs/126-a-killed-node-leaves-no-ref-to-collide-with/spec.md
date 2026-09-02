@@ -1,8 +1,74 @@
 ---
-state: ready
+state: landed
 fixes:
   - roadmap/a-killed-nodes-branch-survives-and-loops-every-redispatch
   - relaunch/a-killed-epics-pushed-node-branch-survives-on-origin-and-fails-the-relaunch-after-verification
+# ATTESTED 2026-09-02 7:35 AM CT by the operator session. All three stories are on
+# ergane-buildout: US1 d5119a8 (#424), US2 8d5102e (#425), US3 94c8cd8 (#426).
+# Confirmed by `ergane spec landed <this dir> --default-branch ergane-buildout`,
+# which observes all three. Dispatch 2026-09-02T02:34:46Z to final landing
+# 05:46:48Z — 3h12m, unattended, no escalation, no operator touch.
+#
+# THE SPEC THAT CLOSED ITS OWN LOOP. 072 needed five dispatches over seven hours
+# to land three stories because a killed node's ref kept refusing the next push.
+# 126 landed three stories in one dispatch. The difference is the whole point.
+#
+# ATTEMPTS, HONESTLY. US1 and US2 passed on attempt 1; US3 failed attempt 1 and
+# passed attempt 2 on the same rung — 33% rework, which is the rate the estimate
+# assumed rather than a surprise. Every attempt ran `implementer` on
+# `ollama-cloud/kimi-k2.7-code` through the gateway. No promotion rung was used.
+#
+# US2 LANDED WITH NO JUDGE VERDICT. Its `judge_outcome` is `UNAVAILABLE`: the judge
+# was unreachable and `compose_result` composed a PASS carrying `judge_unavailable`.
+# That is the designed behaviour, and it is also why the defect below reached
+# trunk. The story doing the delicate ref surgery is the one that got no scoring.
+#
+# VERIFIED AGAINST ITS OWN TRAPS, by reading the landed code rather than trusting
+# the verdicts. Trap 1 held, and it was the one most likely to fail: the guard in
+# `_close_out` reads `if state is not _PARKED:` — branching on the terminal STATE,
+# not on `termination`, so the `PAUSE_EPIC` park keeps its ref even though it
+# passes `Termination.KILLED` too. Trap 2 held: the call sits after the
+# `state is None` early return, so a PASSED node about to open a PR is untouched.
+# US1 went in as a third term of `landing_readiness_preflight`'s sum
+# (`REMOTE_BRANCH_CHECK` at `factory/workgraph/preflight.py:560`), so FR-006's
+# single entry point survived. The activity is registered at `factory/worker.py:122`
+# and called at `factory/workgraph/workflow.py:3143`. `ergane --help` and
+# `ergane build start --help` both run.
+#
+# A DEFECT THIS SPEC INTRODUCED, filed rather than hidden:
+# `interpreter/the-ref-clearing-report-overwrites-the-terminal-reason-that-
+# explains-why-a-node-died` (warning). US2's own docstring at
+# `factory/workgraph/workflow.py:3236` states that `terminal_reason` carries git's
+# diagnosis, is what `ergane build status` prints, and that a node which later
+# merges "keeps that line, and should". Its implementation then assigns the
+# archive-and-clear report over that field at `:3152` and again at `:3613`,
+# whenever the report is non-empty — which is precisely when the node has a remote
+# branch, the only case a push refusal can occur. The story contradicts its own
+# docstring. Fix shape: append, or give the cleanup report its own field.
+#
+# WHERE THE PLAN WAS WRONG. US3 was sized as "a branch on the terminal cause plus
+# tests". It landed 16 files, +413/-14, reaching into `factory/verify/store.py`,
+# `factory/verify/models.py`, `factory/escalation/workflow.py`,
+# `factory/notify/messages.py` and a SQL contract, because naming the ref required
+# plumbing ref facts through the verification store. Defensible work, badly sized
+# by the refiner. US2 also edited `factory/worker.py`, which no task named — a new
+# Temporal activity has to be registered, and T018 should have said so.
+#
+# THIS SPEC'S OWN ANCHORS ROTTED IN NINE HOURS, and they rotted because its own
+# stories moved the lines it cited. `ergane spec validate` now reports eight
+# anchor advisories across spec.md, plan.md and tasks.md — `preflight.py:553`,
+# `worktree.py:1558`, `workflow.py:4228` and the rest all resolve to blank lines
+# on the post-landing tree. They are deliberately NOT repaired: this trio is a
+# historical record of the tree at `bc3c464`, and re-pointing it at today's tree
+# would make it lie about what the implementer was told. The advisories are the
+# correct output. That 072's checker caught them at all — on the very spec whose
+# stories broke them — is the cleanest demonstration of 072's thesis available.
+#
+# WHAT IS STILL UNPROVEN. The operator sequence in plan.md § "Verification the
+# operator will run" has NOT been executed end to end. Step 5 — kill a node, then
+# re-dispatch it and watch it push without a non-fast-forward refusal — is the
+# falsifiable test of this whole spec and it is still owed.
+#
 # DRAFTED 2026-09-01 9:15 PM CT by the operator session, against ergane-buildout at
 # bc3c464, hours after the loop below ran for four and a half of them. Every
 # file:line cited in spec.md and plan.md was read from that commit and verified,
