@@ -119,6 +119,7 @@ from temporalio.exceptions import (
 with workflow.unsafe.imports_passed_through():
     from factory.activities.agent_activities import (
         AGENT_LAUNCH_FAILED,
+        ArchiveAndClearRemoteBranchInput,
         GRAPH_INVALID,
         HEARTBEAT_INTERVAL_S,
         LoadPromptSourcesInput,
@@ -129,6 +130,7 @@ with workflow.unsafe.imports_passed_through():
         ResolvePersonaInput,
         ResolveStandardsInput,
         SalvageWorktreeInput,
+        archive_and_clear_remote_branch,
         load_prompt_sources,
         prepare_worktree,
         read_worktree_diff,
@@ -3130,6 +3132,22 @@ class EpicWorkflow:
             **_GIT,
         )
         record.state = state
+        if state is not _PARKED:
+            # Terminal (non-parked) path: archive the branch and clear the live
+            # remote ref, so a later dispatch cannot collide with stale refs
+            # (US2 FR-007). Report lines live on the terminal record so the
+            # operator can see why a ref was kept.
+            report = await workflow.execute_activity(
+                archive_and_clear_remote_branch,
+                ArchiveAndClearRemoteBranchInput(
+                    epic_id=graph.epic_id,
+                    node_id=node.id,
+                    target_repo=graph.target_repo,
+                ),
+                **_GIT,
+            )
+            if report:
+                record.terminal_reason = "; ".join(report)
 
     # --- the landing phase (US1) -------------------------------------------
 
@@ -3293,8 +3311,10 @@ class EpicWorkflow:
         # end this node. Salvage already happened — on the first landing in
         # `_close_out`, on the requeue in `_reenqueue` — so the branch holds the
         # work whatever the operator decides (constitution VI), and removal takes
-        # the directory and never the branch.
+        # the directory and never the branch. US2 then archives the branch and
+        # clears the live remote ref.
         await self._remove_worktree(graph, record.node_id)
+        await self._archive_and_clear_remote_branch(graph, record)
         if record.landing is not None:
             record.landing = replace(record.landing, state=LandingState.KILLED)
         record.state = NodeState.KILLED
@@ -3538,8 +3558,10 @@ class EpicWorkflow:
                 )
                 return
             # DEQUEUED_BY_HUMAN and STALLED: operator/queue rejections that are
-            # terminal. Node ends killed, branch preserved.
+            # terminal. Node ends killed, branch preserved. US2 archives the branch
+            # and clears the live remote ref before marking it killed.
             await self._remove_worktree(graph, node_id)
+            await self._archive_and_clear_remote_branch(graph, record)
             record.landing = replace(record.landing, state=LandingState.KILLED)
             record.state = NodeState.KILLED
             return
@@ -3555,6 +3577,27 @@ class EpicWorkflow:
             ),
             **_GIT,
         )
+
+    async def _archive_and_clear_remote_branch(
+        self, graph: WorkGraph, record: NodeRecord
+    ) -> None:
+        """Archive the node's branch and clear its live remote ref (US2 FR-007).
+
+        Called on terminal (non-parked, non-merged) paths after the worktree is
+        gone. Report lines live on the terminal record so the operator can see why
+        a ref was kept.
+        """
+        report = await workflow.execute_activity(
+            archive_and_clear_remote_branch,
+            ArchiveAndClearRemoteBranchInput(
+                epic_id=graph.epic_id,
+                node_id=record.node_id,
+                target_repo=graph.target_repo,
+            ),
+            **_GIT,
+        )
+        if report:
+            record.terminal_reason = "; ".join(report)
 
     # --- the landing-recovery routing (US2, FR-005/006/007/008) ---------------
 
@@ -4237,8 +4280,10 @@ class EpicWorkflow:
             return
         # KILL, EXPIRED, or a refusal that ran out of re-asks (FR-004): all end
         # the node killed. What no longer reaches this line is a resolution
-        # nobody offered on its first arrival — that is refused above.
+        # nobody offered on its first arrival — that is refused above. US2 then
+        # archives the branch and clears the live remote ref.
         await self._remove_worktree(graph, record.node_id)
+        await self._archive_and_clear_remote_branch(graph, record)
         record.landing = replace(record.landing, state=LandingState.KILLED)
         record.state = NodeState.KILLED
 

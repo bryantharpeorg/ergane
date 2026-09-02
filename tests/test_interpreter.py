@@ -126,6 +126,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Replayer, UnsandboxedWorkflowRunner, Worker
 
 from factory.activities.agent_activities import (
+    ArchiveAndClearRemoteBranchInput,
     GRAPH_INVALID,
     HEARTBEAT_INTERVAL_S,
     LoadPromptSourcesInput,
@@ -1555,6 +1556,13 @@ class ScriptedWorld:
             script._log("remove_worktree", request.node_id)
             script.removals.append(request)
 
+        @activity.defn(name="archive_and_clear_remote_branch")
+        async def archive_and_clear_remote_branch(
+            request: ArchiveAndClearRemoteBranchInput,
+        ) -> list[str]:
+            script._log("archive_and_clear_remote_branch", request.node_id)
+            return []
+
         @activity.defn(name="prepare_landing_pr")
         async def prepare_landing_pr(request: PrepareLandingPrInput) -> Any:
             script._log("prepare_landing_pr", request.node_id)
@@ -1776,6 +1784,7 @@ class ScriptedWorld:
             teardown_attempt,
             salvage_worktree,
             remove_worktree,
+            archive_and_clear_remote_branch,
             prepare_landing_pr,
             open_landing_pr,
             enqueue_landing,
@@ -2291,9 +2300,17 @@ async def test_salvage_precedes_removal_on_every_terminal_path(
         sequence = script.sequence(node_id)
         assert sequence.index("salvage_worktree") < sequence.index("remove_worktree")
         # Salvage comes first; the landing phase rides the queue; removal is
-        # deferred to the landing's terminal, so the sweep is the last thing. A
-        # node that never PASSes (us1 here) has no landing to interleave.
-        assert sequence[-1] == "remove_worktree"
+        # deferred to the landing's terminal, so the sweep is the last thing.
+        # A node that never PASSes (us1 here) has no landing to interleave; the
+        # US2 archive/clear activity follows removal on terminal non-merged
+        # paths. A merged node only removes the worktree.
+        if "archive_and_clear_remote_branch" in sequence:
+            assert sequence[-2:] == [
+                "remove_worktree",
+                "archive_and_clear_remote_branch",
+            ]
+        else:
+            assert sequence[-1] == "remove_worktree"
         if "open_landing_pr" in sequence:
             assert sequence.index("salvage_worktree") < sequence.index("open_landing_pr")
             assert sequence.index("open_landing_pr") < sequence.index("remove_worktree")
@@ -3327,7 +3344,11 @@ async def test_kill_cancels_the_attempt_salvages_and_kills_every_node(
         "issue_attempt_key:implementer",
         "run_agent_attempt",
     ]
-    assert sequence[-2:] == ["salvage_worktree", "remove_worktree"]
+    assert sequence[-3:] == [
+        "salvage_worktree",
+        "remove_worktree",
+        "archive_and_clear_remote_branch",
+    ]
     assert "teardown_attempt:implementer" in sequence
     assert "run_gates" not in sequence
     assert "check_output" not in sequence

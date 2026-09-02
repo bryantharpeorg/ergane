@@ -863,6 +863,36 @@ async def remove_worktree(request: RemoveWorktreeInput) -> None:
         raise ApplicationError(str(exc), type=WORKTREE_FAILED) from exc
 
 
+@dataclass(frozen=True)
+class ArchiveAndClearRemoteBranchInput:
+    """Which node's live remote branch to archive and clear."""
+
+    epic_id: str
+    node_id: str
+    target_repo: str
+
+
+@activity.defn
+async def archive_and_clear_remote_branch(
+    request: ArchiveAndClearRemoteBranchInput,
+) -> list[str]:
+    """Archive the node's branch and remove its live name from origin.
+
+    Runs on terminal (non-parked) paths after salvage: the local branch is
+    renamed into the archive namespace, the archive is pushed to origin, and
+    the live ref is deleted only when an archive ref already holds its tip.
+    Returns report lines and never raises: an unreachable remote or a tip no
+    archive holds is reported and left alone.
+    """
+    return await asyncio.to_thread(
+        worktrees.archive_and_clear_remote_branch,
+        request.target_repo,
+        request.epic_id,
+        request.node_id,
+        factory_root=factory_root(),
+    )
+
+
 # --- load_prompt_sources (contracts/prompt-assembly.md) -----------------------
 
 
