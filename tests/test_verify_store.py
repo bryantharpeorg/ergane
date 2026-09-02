@@ -163,6 +163,9 @@ EXPECTED_ESCALATION_COLUMNS: list[tuple[str, str, int, int]] = [
     # 095-US2 (schema 9): the fail-safe default applied on silence, which varies
     # with the escalation's cause. NULL means the ordinary default (KILL).
     ("default_choice", "TEXT", 0, 0),
+    # 126-US3 (schema 13): the stale ref blocking this node when the escalation
+    # is for a non-fast-forward push refusal. NULL for every other escalation.
+    ("ref_conflict", "TEXT", 0, 0),
 ]
 
 EXPECTED_INDEXES = {
@@ -429,15 +432,16 @@ def test_the_upsert_key_carries_a_unique_index(store: sqlite3.Connection) -> Non
 def test_the_schema_version_is_recorded_once(store: sqlite3.Connection) -> None:
     versions = [row[0] for row in store.execute("SELECT version FROM schema_version")]
 
-    # 12 since 117-US2 added the three columns naming who built an attempt; 11
-    # was 117-US1 adding `verification_results.dispatch`. The literal is
-    # deliberate: a bump claims every existing store has a migration path, and
+    # 13 since 126-US3 added `escalations.ref_conflict`; 12 was 117-US2 adding
+    # the three columns naming who built an attempt; 11 was 117-US1 adding
+    # `verification_results.dispatch`. The literal is deliberate: a bump claims
+    # every existing store has a migration path, and
     # `tests/test_escalation_record.py`,
     # `tests/test_118_record_names_its_base.py`,
     # `tests/test_116_the_record_says_what_the_judge_saw.py`,
     # `tests/test_117_dispatch_scoped_rows.py` and
     # `tests/test_117_row_names_its_builder.py` each check that against one.
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
     assert versions == [SCHEMA_VERSION]
 
 

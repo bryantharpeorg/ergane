@@ -242,14 +242,15 @@ def test_the_schema_version_records_the_new_shape(db_path: Path) -> None:
     with closing(store.connect(db_path)) as conn:
         versions = [row[0] for row in conn.execute("SELECT version FROM schema_version")]
 
-    # 12 since 117-US2 added `verification_results.persona`, `.model_alias` and
-    # `.route`; 11 was 117-US1 adding `verification_results.dispatch` and
-    # rebuilding the table around a wider upsert key; 10 was 116-US3 adding
+    # 13 since 126-US3 added `escalations.ref_conflict`; 12 was 117-US2 adding
+    # `verification_results.persona`, `.model_alias` and `.route`; 11 was 117-US1
+    # adding `verification_results.dispatch` and rebuilding the table around a
+    # wider upsert key; 10 was 116-US3 adding
     # `verification_results.gate_contradictions`; 9 was 095-US2 adding
     # `escalations.default_choice`; 8 was 118-US2 adding
     # `verification_results.base_ref`; 7 was 068-US2 widening
     # `escalations.resolution` to admit `KILL_EPIC`.
-    assert store.SCHEMA_VERSION == 12
+    assert store.SCHEMA_VERSION == 13
     assert versions == [store.SCHEMA_VERSION]
 
 

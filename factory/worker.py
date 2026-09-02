@@ -120,6 +120,9 @@ ACTIVITIES = [
     # 126-US2 — archive a killed node's branch and clear its live remote ref,
     # so a later dispatch cannot collide with stale refs (FR-007).
     agent_activities.archive_and_clear_remote_branch,
+    # 126-US3 — read local git state to name the blocking ref and whether its tip
+    # is archived before composing the escalation message (FR-011).
+    agent_activities.ref_conflict_facts,
     # 001 — the attribution bracket around every attempt.
     usage_activities.issue_attempt_key,
     usage_activities.poll_usage,

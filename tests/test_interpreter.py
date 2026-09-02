@@ -133,6 +133,7 @@ from factory.activities.agent_activities import (
     PrepareWorktreeInput,
     PromptSources,
     ReadWorktreeDiffInput,
+    RefConflictFactsInput,
     RemoveWorktreeInput,
     ResolvePersonaInput,
     ResolveStandardsInput,
@@ -1563,6 +1564,11 @@ class ScriptedWorld:
             script._log("archive_and_clear_remote_branch", request.node_id)
             return []
 
+        @activity.defn(name="ref_conflict_facts")
+        async def ref_conflict_facts(request: RefConflictFactsInput) -> Any:
+            script._log("ref_conflict_facts", request.node_id)
+            return None
+
         @activity.defn(name="prepare_landing_pr")
         async def prepare_landing_pr(request: PrepareLandingPrInput) -> Any:
             script._log("prepare_landing_pr", request.node_id)
@@ -1785,6 +1791,7 @@ class ScriptedWorld:
             salvage_worktree,
             remove_worktree,
             archive_and_clear_remote_branch,
+            ref_conflict_facts,
             prepare_landing_pr,
             open_landing_pr,
             enqueue_landing,
