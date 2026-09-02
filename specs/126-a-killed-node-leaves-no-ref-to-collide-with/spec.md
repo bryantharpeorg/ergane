@@ -3,6 +3,19 @@ state: landed
 fixes:
   - roadmap/a-killed-nodes-branch-survives-and-loops-every-redispatch
   - relaunch/a-killed-epics-pushed-node-branch-survives-on-origin-and-fails-the-relaunch-after-verification
+  - landing/kill-and-redispatch-leaves-a-stale-remote-node-branch-that-kills-the-next-landing
+# THE THIRD KEY IS A CORRECTION TO THE LEDGER, added 2026-09-02 during triage.
+# `100-a-reset-leaves-nothing-behind` declares that key AND the `relaunch/` one in
+# its own `fixes:` (`specs/100-a-reset-leaves-nothing-behind/spec.md:24-26`), and
+# 100 landed 2026-08-30. The defect then fired four times on 2026-09-01. 100 was
+# not wrong to claim a fix — it fixed the RESET path, and `reset()` does clear the
+# remote ref — but the in-workflow kill reaches none of that code, and the kill is
+# where the loop lives. A half-fixed mechanism declared whole is how a critical
+# finding closes while still running, so both keys are declared here as well: this
+# is the story that reaches the kill path. The standing lesson, now dated and
+# concrete: a spec naming a finding is not proof it fixed it, and `fixes:` is a
+# claim the operator is responsible for checking before triage acts on it.
+#
 # ATTESTED 2026-09-02 7:35 AM CT by the operator session. All three stories are on
 # ergane-buildout: US1 d5119a8 (#424), US2 8d5102e (#425), US3 94c8cd8 (#426).
 # Confirmed by `ergane spec landed <this dir> --default-branch ergane-buildout`,
