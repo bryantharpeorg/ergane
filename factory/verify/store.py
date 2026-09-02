@@ -103,6 +103,7 @@ from factory.verify.models import (
     EscalationChoice,
     EscalationRecord,
     GateContradiction,
+    RefConflictInfo,
     GateResult,
     GateStatus,
     HygieneViolation,
@@ -282,6 +283,10 @@ CREATE TABLE IF NOT EXISTS escalations (
     -- escalation's cause. NULL means the ordinary default (KILL); an
     -- authentication escalation records PAUSE_EPIC here.
     default_choice TEXT,
+    -- 126-US3: the stale ref blocking this node when the escalation is for a
+    -- non-fast-forward push refusal (JSON: RefConflictInfo). NULL for every
+    -- other escalation, which renders exactly as it did before this field.
+    ref_conflict TEXT,
     CHECK ((resolution IS NULL) = (resolved_at IS NULL))
 );
 
@@ -570,6 +575,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # row from a run where the cause was not recorded.
         conn.execute(
             "ALTER TABLE escalations ADD COLUMN default_choice TEXT"
+        )
+    if escalation_columns and "ref_conflict" not in escalation_columns:
+        # 126-US3. NULL for every row written before the field existed, which
+        # reads as an escalation that is not about a non-fast-forward push
+        # refusal — the only honest reading of a row that never recorded it.
+        conn.execute(
+            "ALTER TABLE escalations ADD COLUMN ref_conflict TEXT"
         )
 
     recorded = _escalations_ddl(conn)
@@ -1319,6 +1331,7 @@ _ESCALATION_COLUMNS = (
     "resolved_via",
     "check_evidence",
     "default_choice",
+    "ref_conflict",
 )
 
 _INSERT_ESCALATION_SQL = (
@@ -1365,6 +1378,7 @@ def insert_escalation(conn: sqlite3.Connection, record: EscalationRecord) -> Non
             "resolved_via": _resolved_via(resolution),
             "check_evidence": _check_evidence_json(record.check_evidence),
             "default_choice": _default_choice_value(record.default_choice),
+            "ref_conflict": _ref_conflict_json(record.ref_conflict),
         },
     )
     conn.commit()
@@ -1518,6 +1532,7 @@ def _escalation_from_row(row: tuple[Any, ...]) -> EscalationRecord:
         resolved_at=values["resolved_at"],
         check_evidence=_check_evidence_from_json(values["check_evidence"]),
         default_choice=_default_choice_from_value(values["default_choice"]),
+        ref_conflict=_ref_conflict_from_json(values.get("ref_conflict")),
     )
 
 
@@ -1541,6 +1556,20 @@ def _check_evidence_json(evidence: tuple[CheckFailure, ...]) -> str:
     )
 
 
+def _ref_conflict_json(info: RefConflictInfo | None) -> str | None:
+    """The ref-conflict facts as stored text, or None when there are none."""
+    if info is None:
+        return None
+    return json.dumps(
+        {
+            "ref": info.ref,
+            "tip": info.tip,
+            "archived": info.archived,
+            "clearing_command": info.clearing_command,
+        }
+    )
+
+
 def _check_evidence_from_json(stored: str | None) -> tuple[CheckFailure, ...]:
     """Read the failing checks back. `None` is a row the column predates.
 
@@ -1559,6 +1588,19 @@ def _check_evidence_from_json(stored: str | None) -> tuple[CheckFailure, ...]:
             note=item["note"],
         )
         for item in json.loads(stored)
+    )
+
+
+def _ref_conflict_from_json(stored: str | None) -> RefConflictInfo | None:
+    """Read the ref-conflict facts back. `None` is a row the column predates."""
+    if not stored:
+        return None
+    data = json.loads(stored)
+    return RefConflictInfo(
+        ref=data["ref"],
+        tip=data["tip"],
+        archived=data["archived"],
+        clearing_command=data["clearing_command"],
     )
 
 

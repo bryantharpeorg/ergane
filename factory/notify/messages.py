@@ -61,6 +61,7 @@ from factory.verify.models import (
 )
 from factory.verify.remediation import screen_feedback
 from factory.verify.store import EXPIRED
+from factory.workgraph.worktree import _NON_FAST_FORWARD
 
 #: The Bot API's hard ceiling on `callback_data`, in bytes.
 CALLBACK_DATA_LIMIT = 64
@@ -381,6 +382,35 @@ def _effect_line(choice: EscalationChoice | str) -> str:
     return f"{value} ({label}) — {effect}"
 
 
+def _render_ref_conflict(record: EscalationRecord) -> str:
+    """126-US3: the body for a non-fast-forward push refusal escalation.
+
+    Names the ref, its tip, and whether that tip is archived. Carries the
+    clearing command only when the tip is archived; an unarchived tip is a
+    data-loss risk, so the message says so and offers no command (FR-011).
+    """
+    info = record.ref_conflict
+    assert info is not None
+    lines: list[str] = [
+        "The node cannot land because a stale ref blocks the push.",
+        "",
+        f"ref: {info.ref}",
+        f"tip: {info.tip}",
+        f"archived: {'yes' if info.archived else 'no'}",
+    ]
+    if info.archived:
+        lines.extend(["", f"Clear it with: {info.clearing_command}"])
+    else:
+        lines.extend(
+            [
+                "",
+                "This tip is not held by any archive ref of this node. "
+                "The ref is not cleared automatically; removing it would risk losing work.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def escalation_message(record: EscalationRecord) -> str:
     """The message an operator is paged with: what failed, and what each press does.
 
@@ -403,10 +433,19 @@ def escalation_message(record: EscalationRecord) -> str:
     second derivation to keep in step (095 plan trap 5). Absent for every
     escalation with no exhausted ladder behind it, and then nothing is printed
     — this function never works one out for itself.
+
+    126-US3 (FR-011/FR-012): a non-fast-forward push refusal gets a body that
+    names the blocking ref, its tip, and whether that tip is archived, using the
+    `_NON_FAST_FORWARD` marker already in the history_summary. The clearing
+    command travels only when the tip is archived. Escalations for every other
+    cause keep today's body unchanged.
     """
-    body = record.history_summary
-    if record.check_evidence:
-        body += "\n\n" + _render_check_evidence(record.check_evidence)
+    if _NON_FAST_FORWARD in record.history_summary and record.ref_conflict is not None:
+        body = _render_ref_conflict(record)
+    else:
+        body = record.history_summary
+        if record.check_evidence:
+            body += "\n\n" + _render_check_evidence(record.check_evidence)
     default = record.default_choice or EscalationChoice.KILL
     bound = f"\n\n{record.exhausted_bound}" if record.exhausted_bound else ""
     return _compose(

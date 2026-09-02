@@ -118,6 +118,7 @@ from factory.workgraph.worktree import (
     WorktreeError,
     WorktreeOwnershipError,
 )
+from factory.verify.models import RefConflictInfo
 
 #: Where the salvage mirror's outcome goes. A mirror failure is reported rather
 #: than raised (047 FR-002), so this log line is the only place an operator
@@ -890,6 +891,33 @@ async def archive_and_clear_remote_branch(
         request.epic_id,
         request.node_id,
         factory_root=factory_root(),
+    )
+
+
+@dataclass(frozen=True)
+class RefConflictFactsInput:
+    """Which node ref to inspect locally for the escalation message (126-US3)."""
+
+    epic_id: str
+    node_id: str
+    target_repo: str
+
+
+@activity.defn
+async def ref_conflict_facts(
+    request: RefConflictFactsInput,
+) -> RefConflictInfo | None:
+    """Local-only facts about the ref blocking this node.
+
+    The remote tip is read from the local remote-tracking ref, and reachability
+    is checked against local archive refs. No remote read is performed.
+    Returns None when the local clone has never seen the remote ref.
+    """
+    return await asyncio.to_thread(
+        worktrees.ref_conflict_info,
+        request.target_repo,
+        request.epic_id,
+        request.node_id,
     )
 
 

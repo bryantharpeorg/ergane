@@ -91,7 +91,7 @@ with workflow.unsafe.imports_passed_through():
     from factory.notify.service import SIGNAL_NAME
     from factory.versioning import workflow_versioning_behavior
     from factory.verify.ladder import ENDING_CHOICES
-    from factory.verify.models import EscalationChoice
+    from factory.verify.models import EscalationChoice, RefConflictInfo
 
 #: The query an operator surface reads to learn what is waiting on them
 #: (FR-008). Named rather than spelled at the call site, because the name is the
@@ -160,6 +160,11 @@ class EscalationRequest:
     #: decision can say which of its bounds produced it; `None` for a page with
     #: no exhausted ladder behind it, and the message then names none.
     exhausted_bound: str | None = None
+    #: 126-US3 (FR-011): the stale ref blocking this node, when the escalation's
+    #: terminal cause is a non-fast-forward push refusal. `None` for every other
+    #: escalation, which must render exactly as it did before this field existed
+    #: (FR-012, trap 12).
+    ref_conflict: RefConflictInfo | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -329,6 +334,7 @@ class EscalationWorkflow:
                 check_evidence=request.check_evidence,
                 default_choice=request.default_choice,
                 exhausted_bound=request.exhausted_bound,
+                ref_conflict=request.ref_conflict,
             ),
             **_FAST,
         )

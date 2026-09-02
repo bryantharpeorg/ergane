@@ -126,6 +126,7 @@ with workflow.unsafe.imports_passed_through():
         PrepareWorktreeInput,
         PromptSources,
         ReadWorktreeDiffInput,
+        RefConflictFactsInput,
         RemoveWorktreeInput,
         ResolvePersonaInput,
         ResolveStandardsInput,
@@ -134,6 +135,7 @@ with workflow.unsafe.imports_passed_through():
         load_prompt_sources,
         prepare_worktree,
         read_worktree_diff,
+        ref_conflict_facts,
         remove_worktree,
         resolve_graph,
         resolve_persona,
@@ -3257,6 +3259,16 @@ class EpicWorkflow:
             detail,
         )
 
+        ref_facts = await workflow.execute_activity(
+            ref_conflict_facts,
+            RefConflictFactsInput(
+                epic_id=graph.epic_id,
+                node_id=record.node_id,
+                target_repo=graph.target_repo,
+            ),
+            **_GIT,
+        )
+
         while True:
             outcome = await self._page_the_operator(
                 record,
@@ -3269,6 +3281,7 @@ class EpicWorkflow:
                     history_summary=detail,
                     choices=offered_choices(retry_grants_work=retry_grants_work),
                     timeout_s=request.config.escalation_timeout_s,
+                    ref_conflict=ref_facts,
                 ),
             )
             if outcome is None or not outcome.delivered:

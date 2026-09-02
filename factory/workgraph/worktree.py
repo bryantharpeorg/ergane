@@ -80,6 +80,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from factory.usage.models import Termination
+from factory.verify.models import RefConflictInfo
 from factory.env import (
     ERGANE_ROOT_ENV,
     FACTORY_ROOT_ENV,
@@ -1864,6 +1865,37 @@ def _clear_remote_branch(
         f"deleted {remote} branch {branch} at {remote_tip[:12]} "
         f"(kept as {archive}, here and on {remote})"
     ]
+
+
+def ref_conflict_info(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    remote: str = "origin",
+) -> RefConflictInfo | None:
+    """Local-only facts about the ref blocking this node, if it is known locally.
+
+    Reads the remote-tracking ref `refs/remotes/<remote>/<branch>` (the last
+    push left it there) and checks whether that tip is reachable from a local
+    archive ref. Returns None when the local clone has never seen the remote
+    ref, so the escalation message falls back to the history_summary it already
+    had. No remote read is performed (FR-011).
+    """
+    repo = Path(target_repo)
+    branch = branch_name(epic_id, node_id)
+    tracking = f"refs/remotes/{remote}/{branch}"
+    try:
+        tip = _rev_parse(repo, tracking)
+    except WorktreeError:
+        return None
+    archive = _archive_holding(repo, epic_id, node_id, tip)
+    return RefConflictInfo(
+        ref=branch,
+        tip=tip[:12],
+        archived=archive is not None,
+        clearing_command=ref_conflict_remedy(remote, branch),
+    )
 
 
 def _archive_holding(

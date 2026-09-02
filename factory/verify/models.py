@@ -1282,6 +1282,22 @@ class AttemptRecord:
 
 
 @dataclass(frozen=True)
+class RefConflictInfo:
+    """126-US3: the ref that blocks a node, and whether clearing it is safe.
+
+    The facts are computed from the node record and the local clone: the remote
+    tip is read from `refs/remotes/origin/<branch>` (the last push's tracking
+    ref), and reachability is checked against local archive refs. No new remote
+    read is performed on the escalation path (FR-011).
+    """
+
+    ref: str
+    tip: str
+    archived: bool
+    clearing_command: str
+
+
+@dataclass(frozen=True)
 class EscalationRecord:
     """A pending operator decision — a store row before it is ever a message.
 
@@ -1329,6 +1345,11 @@ class EscalationRecord:
     #: this field existed — and the message then names no bound at all, which is
     #: the honest reading of "nobody said".
     exhausted_bound: str | None = None
+    #: 126-US3 (FR-011): the stale ref blocking this node, when the escalation's
+    #: terminal cause is a non-fast-forward push refusal. `None` for every other
+    #: escalation, which must render exactly as it did before this field existed
+    #: (FR-012, trap 12).
+    ref_conflict: RefConflictInfo | None = None
 
 
 @dataclass(frozen=True)

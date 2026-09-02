@@ -82,7 +82,12 @@ from factory.notify.service import open_bot
 from factory.mergequeue.models import CheckFailure
 from factory.verify import store
 from factory.verify.ladder import ENDING_CHOICES
-from factory.verify.models import EscalationChoice, EscalationRecord, QuestionRecord
+from factory.verify.models import (
+    EscalationChoice,
+    EscalationRecord,
+    QuestionRecord,
+    RefConflictInfo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +197,10 @@ class SendEscalationInput:
     #: node, carried rather than composed — the renderer prints it and derives
     #: nothing. `None` for an escalation with no exhausted ladder behind it.
     exhausted_bound: str | None = None
+    #: 126-US3 (FR-011): the stale ref blocking this node, when the escalation's
+    #: terminal cause is a non-fast-forward push refusal. `None` for every other
+    #: escalation.
+    ref_conflict: RefConflictInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -527,6 +536,7 @@ def _pending_record(request: SendEscalationInput) -> EscalationRecord:
         check_evidence=request.check_evidence,
         default_choice=request.default_choice,
         exhausted_bound=request.exhausted_bound,
+        ref_conflict=request.ref_conflict,
     )
 
 
