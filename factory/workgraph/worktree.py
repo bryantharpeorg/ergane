@@ -1606,18 +1606,19 @@ def reset(
     had_directory = path.is_dir()
     had_branch = _branch_exists(repo, branch)
 
-    if had_directory or had_branch:
-        _archive_node(repo, factory_root, epic_id, node_id, branch, path)
-
     if had_directory:
         actions.append("committed dirty state")
         actions.append("removed worktree")
-    if had_branch:
-        actions.append("archived branch")
 
     # After the local archive, never before: the ref that authorises the remote
-    # deletion is the one `_archive_node` has just written.
-    actions.extend(_clear_remote_branch(repo, epic_id, node_id, branch, remote=remote))
+    # deletion is the one `_archive_node` has just written.  Run the remote half
+    # unconditionally: a retry where the local branch is already archived must
+    # still report a remote ref the archive does not hold (FR-002).
+    actions.extend(
+        archive_and_clear_remote_branch(
+            repo, epic_id, node_id, factory_root=factory_root, remote=remote
+        )
+    )
 
     sidecar = _record_file(factory_root, epic_id, node_id)
     if sidecar.exists():
@@ -1626,6 +1627,43 @@ def reset(
 
     if not actions:
         return ["nothing to do"]
+    return actions
+
+
+def archive_and_clear_remote_branch(
+    target_repo: Path | str,
+    epic_id: str,
+    node_id: str,
+    *,
+    factory_root: Path | str = DEFAULT_FACTORY_ROOT,
+    remote: str = "origin",
+) -> list[str]:
+    """Archive the node's branch and clear its live name from `remote`.
+
+    The archive half commits any dirty worktree state, removes the worktree,
+    renames the local branch into `archive/factory/<epic>/<node>/<short-sha>`,
+    and deletes the sidecar.  The clear half pushes the archive ref to `remote`
+    and then deletes the live branch there, but only when an archive ref holds
+    the remote tip.  It returns report lines and never raises: an unreachable
+    remote or a tip no archive holds is reported and left alone.
+
+    Idempotent: a second call where everything is already archived and cleared
+    returns an empty list, so callers that need a human-facing message can add
+    their own.
+    """
+    repo = Path(target_repo)
+    path = worktree_path(factory_root, epic_id, node_id)
+    branch = branch_name(epic_id, node_id)
+
+    actions: list[str] = []
+    if path.is_dir() or _branch_exists(repo, branch):
+        _archive_node(repo, factory_root, epic_id, node_id, branch, path)
+        actions.append("archived branch")
+
+    # Always run the remote half: a retry where the local branch is already
+    # archived must still report a remote ref the archive does not hold.
+    actions.extend(_clear_remote_branch(repo, epic_id, node_id, branch, remote=remote))
+
     return actions
 
 
