@@ -1,0 +1,50 @@
+=== non-fast-forward escalation (archived) ===
+⚠️ Verification escalation
+epic: 126-a-killed-node-leaves-no-ref-to-collide-with
+node: us3
+
+The node cannot land because a stale ref blocks the push.
+
+ref: factory/126-a-killed-node-leaves-no-ref-to-collide-with/us3
+tip: deadbeef1234
+archived: yes
+
+Clear it with: git push --delete origin factory/126-a-killed-node-leaves-no-ref-to-collide-with/us3
+
+What each button does:
+RETRY (🔁 Retry the node) — node: one more attempt, on the tree this one left behind. epic: unchanged — it keeps dispatching.
+KILL (🛑 Kill the node) — node: ends KILLED, its branch preserved. epic: keeps dispatching, but every node waiting on this one is locked out and ends KILLED with it, undispatched.
+
+No answer by 2026-09-02T10:00:00Z applies the default: KILL the node.
+
+=== non-fast-forward escalation (not archived) ===
+⚠️ Verification escalation
+epic: 126-a-killed-node-leaves-no-ref-to-collide-with
+node: us3
+
+The node cannot land because a stale ref blocks the push.
+
+ref: factory/126-a-killed-node-leaves-no-ref-to-collide-with/us3
+tip: deadbeef1234
+archived: no
+
+This tip is not held by any archive ref of this node. The ref is not cleared automatically; removing it would risk losing work.
+
+What each button does:
+RETRY (🔁 Retry the node) — node: one more attempt, on the tree this one left behind. epic: unchanged — it keeps dispatching.
+KILL (🛑 Kill the node) — node: ends KILLED, its branch preserved. epic: keeps dispatching, but every node waiting on this one is locked out and ends KILLED with it, undispatched.
+
+No answer by 2026-09-02T10:00:00Z applies the default: KILL the node.
+
+=== unrelated escalation ===
+⚠️ Verification escalation
+epic: 126-a-killed-node-leaves-no-ref-to-collide-with
+node: us3
+
+attempt 3 FAIL (merge-queue checks)
+
+What each button does:
+RETRY (🔁 Retry the node) — node: one more attempt, on the tree this one left behind. epic: unchanged — it keeps dispatching.
+KILL (🛑 Kill the node) — node: ends KILLED, its branch preserved. epic: keeps dispatching, but every node waiting on this one is locked out and ends KILLED with it, undispatched.
+
+No answer by 2026-09-02T10:00:00Z applies the default: KILL the node.
