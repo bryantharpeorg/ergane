@@ -1,5 +1,37 @@
 ---
-state: ready
+state: landed
+fixes:
+  - verify/spec-validate-never-resolves-a-file-line-anchor-so-the-largest-refinement-defect-class-is-unchecked
+# ATTESTED 2026-09-01 8:55 PM CT by the operator session. All three stories are on
+# ergane-buildout: US2 d56006d (#420), US1 e8a9c94 (#421), US3 93f534a (#423).
+# Confirmed by `ergane spec landed <this dir> --default-branch ergane-buildout`,
+# which observes all three.
+#
+# It took FIVE epic runs across seven hours to land three stories, and four of
+# those runs were spent on one defect that has nothing to do with this spec.
+# The record, because the cost is the lesson:
+#
+#   - Run 1 (12:29Z-14:23Z) landed US2 on kimi attempt 1 and US1 on attempt 2
+#     after promotion to claude-opus-5. US3 also reached verified=true on the
+#     opus rung, then died in the landing path; the operator answered KILL at
+#     14:24Z. The kill left refs/heads/factory/072-.../us3 on origin.
+#   - Runs 2, 3 and 4 (14:34Z, 16:04Z, 17:34Z) each re-dispatched US3, built it
+#     clean on kimi attempt 1, passed the gates, passed the judge, reached
+#     verified=true — and then died at the push, non-fast-forward against that
+#     surviving ref. A fresh attempt is a new lineage off the current landing
+#     head, so it can never fast-forward over the killed attempt's tip. Each
+#     failure opened an escalation whose four buttons could not fix the cause;
+#     each expired unanswered at 3600s; each expiry re-armed the roadmap.
+#   - The loop was stopped by pausing the schedule. Once the stale ref was
+#     cleared, run 5 (19:04Z-19:48Z) landed US3 on kimi attempt 1.
+#
+# Filed as `roadmap/a-killed-nodes-branch-survives-and-loops-every-redispatch`
+# (critical). Its sibling `relaunch/a-killed-epics-pushed-node-branch-survives-
+# on-origin-and-fails-the-relaunch-after-verification` has now recurred twice.
+# Three wasted kimi builds, three consumed escalation windows, and a dead PR
+# (#422) left DIRTY for five hours — all paid at full price, because the
+# precondition that fails is checked at the LAST step rather than the first.
+#
 # Drafted 2026-08-20 6:45 AM CT by an operator session, immediately after a
 # re-review of 067/068/069 corrected 34 broken anchors that `ergane spec
 # validate` had passed clean every single time it was run on them.
