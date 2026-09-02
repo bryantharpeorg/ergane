@@ -313,6 +313,9 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.activities.agent_activities.RemoveWorktreeInput": (
         "epic_id", "node_id", "target_repo"
     ),
+    "factory.activities.agent_activities.ArchiveAndClearRemoteBranchInput": (
+        "epic_id", "node_id", "target_repo"
+    ),
     "factory.activities.agent_activities.ResolvePersonaInput": ("persona",),
     "factory.activities.agent_activities.SalvageWorktreeInput": (
         "epic_id", "node_id", "termination", "attempt"
