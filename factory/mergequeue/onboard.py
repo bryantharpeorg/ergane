@@ -145,6 +145,12 @@ class InitFacts:
     engine_repo_mounted: bool = False
     #: Why the project could not be read — a hand-mangled compose, most likely.
     engine_error: str | None = None
+    #: 057/US1. Path to the declared standards document, or "" when the manifest
+    #: did not load so the check cannot know one. A missing file is a failing
+    #: readiness finding: a repository the factory dispatches against has
+    #: nothing to hold its agents to.
+    standards_path: str = ""
+    standards_exists: bool = False
 
 
 def evaluate_repo(
@@ -422,6 +428,7 @@ def evaluate_init_facts(init_facts: "InitFacts | None") -> tuple[Finding, ...]:
     _runtime_root_findings(findings, init_facts)
     _registry_finding(findings, init_facts)
     _landing_branch_finding(findings, init_facts)
+    _standards_finding(findings, init_facts)
     _control_plane_finding(findings, init_facts)
     _roadmap_schedule_finding(findings, init_facts)
     _engine_container_finding(findings, init_facts)
@@ -733,5 +740,40 @@ def _engine_container_finding(findings: list[Finding], facts: "InitFacts") -> No
             True,
             f"the engine container project at {facts.engine_project_dir} mounts "
             f"{facts.repo_root} at its own path",
+        )
+    )
+
+
+def _standards_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """A repository managed by Ergane must declare and contain a standards document."""
+    if not facts.standards_path:
+        findings.append(
+            Finding(
+                "standards",
+                False,
+                "the manifest does not declare a standards document; run "
+                f"`ergane init {facts.repo_root}` to have one seeded at the "
+                "default path",
+            )
+        )
+        return
+
+    if facts.standards_exists:
+        findings.append(
+            Finding(
+                "standards",
+                True,
+                f"standards document {facts.standards_path} exists",
+            )
+        )
+        return
+
+    findings.append(
+        Finding(
+            "standards",
+            False,
+            f"the manifest declares `standards: {facts.standards_path}` but "
+            f"{facts.repo_root}/{facts.standards_path} does not exist; run "
+            f"`ergane init {facts.repo_root}` to seed it",
         )
     )

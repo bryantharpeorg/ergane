@@ -61,6 +61,12 @@ def _build_wheel(tmp_path: Path, *, version: str | None = None) -> Path:
         copy_root / "factory" / "supervision" / "engine_identity.py",
     )
     shutil.copy2(REPO_ROOT / "personas.example.yaml", copy_root / "personas.example.yaml")
+    # 057/US1: the default floor is package data and must travel in the wheel.
+    shutil.copy2(REPO_ROOT / "default_floor.md", copy_root / "default_floor.md")
+    shutil.copy2(
+        FACTORY_DIR / "constitution.py",
+        copy_root / "factory" / "constitution.py",
+    )
 
     if version is not None:
         pyproject_text = (copy_root / "pyproject.toml").read_text(encoding="utf-8")
