@@ -8,6 +8,7 @@ and against fixture repositories so the judge can verify them from the diff alon
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -467,13 +468,12 @@ def test_adding_a_pack_changes_only_data_files(
 def test_no_shipped_pack_is_named_in_the_code_that_selects_or_writes_packs() -> None:
     """SC-004/FR-010: the selector reads data, not a branch per stack.
 
-    A resolver that loads data files and a writer that then says
-    `if pack.name == "agnostic"` has moved the branch rather than removed it,
-    and the next pack that needs different treatment gets another one. So no
-    shipped pack's name may appear as a literal in the code that selects or
-    writes packs — including the fallback's, which is declared by the pack data
-    itself (constitution IX: the value is read from the declaration that owns
-    it).
+    A resolver that loads data files and a writer that then compares the loaded
+    pack's name against the fallback's has moved the branch rather than removed
+    it, and the next pack needing different treatment earns another one. So the
+    code that selects or writes packs may not branch on a pack's name at all —
+    not even the fallback's, which is why the fallback is declared by the pack
+    data (constitution IX: the value is read from the declaration that owns it).
     """
     packs = stack_packs_module.resolve_stack_packs()
     assert packs, "no stack packs resolved"
@@ -489,14 +489,18 @@ def test_no_shipped_pack_is_named_in_the_code_that_selects_or_writes_packs() -> 
         repo_root / "factory" / "stack_packs.py",
         repo_root / "factory" / "cli" / "init.py",
     ]
+
+    # Match the shape of a per-stack branch rather than the vocabulary of one.
+    # Scanning for each pack's name as a bare literal was the first version of
+    # this check and it is a trap: `"node"` is this codebase's word for a unit
+    # of the work graph, so the check would eventually fail on a line that has
+    # nothing to do with stacks, and the obvious way to quiet it would be to
+    # weaken the check rather than fix the branch.
+    branch = re.compile(r"\.name\s*(?:==|!=)\s*['\"]|\.name\s+(?:not\s+)?in\s*[\(\[{]")
     for source in sources:
-        text = source.read_text(encoding="utf-8")
-        # Strip comments and docstring prose is not worth the machinery; match
-        # the quoted literal instead, which is what a branch would need.
-        for pack in packs:
-            for literal in (f'"{pack.name}"', f"'{pack.name}'"):
-                assert literal not in text, (
-                    f"{source.relative_to(repo_root)} names pack {pack.name!r} as a "
-                    f"literal ({literal}); packs are data, so selecting or writing "
-                    "one must not require the code to know its name"
-                )
+        for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+            assert not branch.search(line), (
+                f"{source.relative_to(repo_root)}:{number} branches on a pack name "
+                f"({line.strip()!r}); packs are data, so selecting or writing one "
+                "must not require the code to know which pack it has"
+            )
