@@ -1,0 +1,12 @@
+name: python
+label: Python
+markers:
+  - pyproject.toml
+  - setup.py
+  - requirements.txt
+toolchain: Python (uv)
+commands:
+  test: uv run pytest -q
+  lint: uv run ruff check .
+  type: uv run mypy .
+dependency_policy: Ask before adding dependencies; new runtime dependencies require operator approval.

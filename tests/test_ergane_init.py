@@ -189,6 +189,7 @@ DEFAULT_ANSWERS: list[str] = [
     "",  # writes (empty -> omitted; 084/US3 — absent means nothing declared)
     "",  # caches (empty -> omitted; 101/US2 — absent means the uv cache alone)
     "",  # diff_refusal_bytes (empty -> omitted; 092/US2 — absent means the default)
+    "",  # detected stack: accept default (057/US2)
     "myapp",  # slug
 ]
 
@@ -315,6 +316,7 @@ def test_init_proposal_is_confirmed_and_leaves_no_trace(
         "",
         "",
         "",
+        "",  # detected stack: accept default (057/US2)
         "myapp",
     ]
     result = scripted("init", answers=answers)

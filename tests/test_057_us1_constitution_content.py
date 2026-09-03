@@ -30,10 +30,13 @@ CONSEQUENCE_PHRASE = re.compile(
 def composed_text(tmp_path: Path) -> str:
     """Return the composed constitution text using the real shipped floor."""
     from factory.constitution import shipped_floor_text
+    from factory.stack_packs import agnostic_layer
 
     floor_text = shipped_floor_text()
     source = "shipped-default"
-    return init_module.compose_constitution(floor_text, source, project_name="app")
+    return init_module.compose_constitution(
+        floor_text, source, project_name="app", stack_layer=agnostic_layer()
+    )
 
 
 def test_composed_output_contains_floor_and_governance(
