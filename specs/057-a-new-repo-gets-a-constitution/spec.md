@@ -1,5 +1,38 @@
 ---
-state: draft
+state: ready
+# FLIPPED READY 2026-09-02 9:20 PM CT, after a pre-dispatch refinement pass
+# against ergane-buildout at `5fa87c2`. The operator approved the flip.
+#
+# THE PASS FOUND MORE THAN ANCHOR ROT, and this is why it ran. Sixteen anchors
+# were re-read; FIFTEEN had moved in the fifteen days since drafting, and
+# `ergane spec validate` refused on exactly ONE of them, because the other
+# fourteen still resolved to real, non-blank, plausible lines. Line 251 of the
+# init module, cited as the standards prompt text, now resolves to a subprocess
+# keyword argument. `_default_gate_command` — the function US2's whole premise
+# generalises — does not exist any more; it is `_default_gates`, and it returns
+# a mapping instead of a rendered YAML line.
+#
+# THE FIND THAT WOULD HAVE COST AN ATTEMPT: spec 120 landed 2026-09-01 on this
+# spec's exact code, and fixed the OTHER half of the same area.
+# `120-an-init-that-finds-a-manifest-keeps-it` stopped `init` discarding a
+# *committed* `standards` value on re-run. This spec gives a repository that
+# never had one a document to point at. 120's own comment states the boundary in
+# its own words — the remaining `None` is "reached only when the repository
+# declared nothing for this key ... (FR-008: a fresh repository still gets
+# nothing)". 120 also records that empty-answer-means-omit is "unchanged by
+# 120 US2 and deliberately so". An implementer reading only the code would have
+# re-implemented 120 or argued with it. It is now plan trap 1, the first thing
+# in the traps list, and the tasks that touch that region point at it.
+#
+# ALSO RESOLVED SINCE DRAFTING: the 056 file-collision warning is stale. Both
+# `056-the-factory-ships-as-a-package` and `104` have landed and both edited the
+# force-include block, which now carries three entries at `pyproject.toml:73-76`.
+# No in-flight competitor for that file. The pattern this spec copies is now
+# proven three times over rather than once.
+#
+# Validate is green with zero refusals and zero advisories, including the
+# anchor-resolution and symbol-anchor layers that 072 landed the day before.
+#
 # RESCOPED 2026-08-18 5:50 PM CT on the operator's ruling: "these should be
 # default but overridable so they're more example templates."
 #

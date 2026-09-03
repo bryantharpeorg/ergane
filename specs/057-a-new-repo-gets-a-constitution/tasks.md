@@ -86,9 +86,12 @@ against a fixture that has one leaves it byte-identical.
       without a repository. Take the floor text and its source as arguments
       rather than reading package data inside it — US4 supplies a different
       source through this same seam.
-- [ ] T011 [US1] (FR-001, FR-002, FR-003) Wire the write into the scaffold path
-      at `factory/cli/init.py:514/801`: give `standards` a default, refuse to
-      overwrite an existing document, create parents only when writing.
+- [ ] T011 [US1] (FR-001, FR-002, FR-003, plan trap 1) Wire the write into the
+      scaffold path — the caller at `factory/cli/init.py:1190` and
+      `_write_scaffold` at `factory/cli/init.py:1690`: give `standards` a
+      default, refuse to overwrite an existing document, create parents only when
+      writing. Read plan trap 1 first: spec 120 landed on this exact region and
+      its decisions are deliberate, not obstacles.
 - [ ] T012 [US1] (FR-013, FR-015) Add the `--check` finding for an absent
       standards document, and the `forget` exemption.
 - [ ] T013 [US1] (SC-001) Run `uv run pytest -q` and confirm passed/skipped match
@@ -127,10 +130,12 @@ language-agnostic layer.
 
 - [ ] T020 [US2] (FR-010) Add the pack format and the packs chosen in T001, as
       package data, force-included and wheel-verified.
-- [ ] T021 [US2] (FR-007, FR-008, FR-009) Generalise `_default_gate_command`
-      (`factory/cli/init.py:329`) into pack-driven detection: propose, state,
+- [ ] T021 [US2] (FR-007, FR-008, FR-009) Generalise `_default_gates`
+      (`factory/cli/init.py:591`) into pack-driven detection: propose, state,
       allow override, return the agnostic pack when nothing matches and a
-      question when several do.
+      question when several do. It was renamed from `_default_gate_command` and
+      now returns a mapping rather than a rendered YAML line — write against the
+      dict.
 - [ ] T022 [US2] (FR-007) Extend the composer to place the selected stack layer.
 - [ ] T023 [US2] (SC-001) Run `uv run pytest -q` and confirm the baseline holds.
 

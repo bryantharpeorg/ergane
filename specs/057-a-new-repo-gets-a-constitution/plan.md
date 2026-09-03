@@ -2,50 +2,99 @@
 
 **Input**: [spec.md](spec.md) in this directory.
 
-## Reuse inventory (verified against the tree 2026-08-18 — every anchor read)
+## Reuse inventory (RE-VERIFIED against the tree 2026-09-02 at `5fa87c2`)
 
-The write path, the interview, the optionality this spec removes, and even a
-one-branch ancestor of stack detection all exist. This feature adds data and a
-default, not a subsystem.
+**The 2026-08-18 inventory below had rotted in every line but one.** Sixteen
+anchors were re-read; fifteen had moved, and only one of those was caught by
+`ergane spec validate`, because the other fourteen still resolved to real,
+non-blank, plausible lines. The worst case: line 251 of the init module was
+cited as the standards prompt text and now resolves to a subprocess keyword
+argument. An implementer sent to that line would have gone hunting, at the
+operator's expense. That is the
+defect class 072 exists to name, and the reason this pass happened at all is
+that 072 landed the day before this refinement.
 
-- **The interview's optional-key machinery** — `factory/cli/init.py:262`
-  (`_OPTIONAL_KEYS = ("timeouts", "standards", "roadmap", "forge")`), the prompt
-  text at `:251` (`"standards": "standards document path (optional)"`), and
-  `_ask_for_key` at `:419` where `optional = key in _OPTIONAL_KEYS` and an empty
-  answer means omit (`:428` documents this). **This is the defect's location.**
+Every anchor below was read from `5fa87c2`. Do not trust one that has moved;
+re-read before editing.
+
+The write path, the interview, the optionality this spec removes, and a
+one-branch ancestor of stack detection all still exist. This feature adds data
+and a default, not a subsystem.
+
+- **The interview's optional-key machinery** — `_OPTIONAL_KEYS`
+  (`factory/cli/init.py:473`), whose members include `standards`
+  (`factory/cli/init.py:475`); the standards prompt string in the `_PROMPTS`
+  table at `factory/cli/init.py:443`, which reads "standards document path
+  (optional)"; and `_ask_for_key` (`factory/cli/init.py:936`), whose docstring
+  states the rule
+  at `factory/cli/init.py:945` ("Empty answers for optional keys ... mean
+  'omit'") and applies it at `factory/cli/init.py:955`. **This is the defect's
+  location, and it is now narrower than it was in August — see trap 1.**
   `standards` stops being omittable-into-nothing: it keeps a default rather than
   becoming mandatory, so no existing caller is forced to answer.
-- **Stack detection already exists, with one branch** —
-  `factory/cli/init.py:329` (`_default_gate_command`): if `pyproject.toml` is a
-  file, propose `test: "uv run pytest -q"`, else `None`. US2 generalises exactly
-  this — same question (what is this repo built with), same shape (propose, let
-  the operator override), driven by pack data instead of an `if`.
-- **The scaffold writer** — `_write_scaffold` at `factory/cli/init.py:801` and
-  its caller at `:514`, which already writes the manifest, the `.gitignore`
-  entry and `.ergane/` (`RUNTIME_ROOT = Path(".ergane")` at `:85`). The
+- **Stack detection already exists, with one branch — under a new name and a new
+  return type.** `_default_gate_command` is gone; it is now `_default_gates`
+  (`factory/cli/init.py:591`), and it returns a **mapping**, not a rendered YAML
+  line — its own docstring records the change at `factory/cli/init.py:596`. The
+  body is unchanged in shape: `if (repo_root / "pyproject.toml").is_file()`
+  (`factory/cli/init.py:600`) returns `{"test": "uv run pytest -q"}`
+  (`factory/cli/init.py:601`), else nothing. US2 generalises exactly this — same
+  question, same propose-and-override shape, driven by pack data instead of an
+  `if`. Write against the dict.
+- **The scaffold writer** — `_write_scaffold` (`factory/cli/init.py:1690`) and
+  its single caller (`factory/cli/init.py:1190`), which already writes the
+  manifest, the `.gitignore` entry and `.ergane/`
+  (`RUNTIME_ROOT = Path(".ergane")` at `factory/cli/init.py:127`). The
   constitution is one more written artifact in a path that already knows how to
-  create directories and report what it wrote (`:539`).
-- **Manifest rendering and re-read defaults** — `_render_manifest` at `:462`,
-  `_build_defaults` at `:394`, `_load_existing_defaults` at `:336` (which loads
-  an existing manifest's values as interview defaults, so a re-run does not
-  re-ask). `standards` already round-trips through `:410-411`.
-- **The readiness path** — `--check` judges through `onboard.evaluate_repo`,
-  extended rather than forked (documented at `factory/cli/init.py:29`), with the
-  fact-gathering at `:951`. FR-012/FR-013 are new findings in that existing
-  vocabulary, not a new report.
-- **Package data shipping** — `pyproject.toml:44-45` force-includes
-  `personas.yaml` into the package. The floor text and the stack packs ship the
-  same way, and that mechanism is exactly what defect #103 (`b63388c`) existed
-  to fix: **an installed Ergane must carry its data files, or a stranger's
-  install seeds nothing.** Verify by inspecting a built wheel, never by reading
-  the config.
+  create directories.
+- **Manifest rendering and re-read defaults** — `_render_manifest`
+  (`factory/cli/init.py:1035`), `_build_defaults`
+  (`factory/cli/init.py:878`), and `_load_existing_defaults`
+  (`factory/cli/init.py:605`), which loads an existing manifest's values as
+  interview defaults so a re-run does not re-ask.
+- **The readiness path** — `--check` judges through
+  `factory/mergequeue/onboard.py:150` — `evaluate_repo`, extended rather than
+  forked; the intent is
+  documented at `factory/cli/init.py:29` (the one anchor in this inventory that
+  did **not** move), and the fact-gathering is at `factory/cli/init.py:1855`.
+  FR-012/FR-013 are new findings in that existing vocabulary, not a new report.
+- **Package data shipping** — the force-include block is now at
+  `pyproject.toml:73`, and it carries **three** entries, not one:
+  `personas.example.yaml` (`pyproject.toml:74`) plus the two container
+  confinement artifacts spec 104 added (`pyproject.toml:75-76`). The floor text
+  and the stack packs ship the same way. That mechanism is what defect #103
+  (`b63388c`) existed to fix: **an installed Ergane must carry its data files, or
+  a stranger's install seeds nothing.** The pattern is now proven three times
+  over, which is a stronger precedent than it was in August. Verify by inspecting
+  a built wheel, never by reading the config.
 - **The registry resolver as the precedent for reading package data** —
-  `factory/config.py:44-65` (`_resolve_default_registry_path`): package data
-  first via `importlib.resources`, development checkout second. Floor and pack
-  data are resolved the same way, for the same reason.
+  `_resolve_default_registry_path` (`factory/config.py:81`): package data first
+  via `importlib.resources`, development checkout second. Floor and pack data are
+  resolved the same way, for the same reason.
 
 ## Traps (named so the implementer does not rediscover them)
 
+- **TRAP 1, AND IT IS NEW: spec 120 landed on this exact code and fixed the
+  OTHER half. Do not re-fix it, and do not overturn it.** `120-an-init-that-finds-
+  a-manifest-keeps-it` landed 2026-09-01. Its FR-005 reordered the two branches in
+  the non-interactive default path (`factory/cli/init.py:923-931`) because an
+  early return for `_OPTIONAL_KEYS` was discarding the operator's *committed*
+  `standards` value one line before it would have been used — "a wired repository
+  came back declaring no standards document at all and every node it dispatched
+  afterwards ran with none" (`factory/cli/init.py:920`).
+  That is a **different defect** from this spec's, and the boundary between them
+  is stated in 120's own comment at `factory/cli/init.py:927-931`: the remaining
+  `None` is "reached only when the repository declared nothing for this key",
+  annotated **"(FR-008: a fresh repository still gets nothing)"**.
+  So: 120 stopped init destroying a declaration that existed. 057 gives a
+  repository that never had one a document to point at. 120 also states, at
+  `factory/cli/init.py:938-943`, that empty-answer-means-omit is "unchanged by
+  120 US2 and deliberately so" — an operator shown their own value and answering
+  empty is asking for it to go, and that must keep working. **Nothing in this
+  spec may make an empty answer stop meaning omit.** What changes is what a
+  repository that was never asked, or that answered empty on a fresh repo, ends
+  up with on disk. An implementer who reads only the code and not this trap will
+  either re-implement 120 or argue with it; both waste the attempt.
 - **The floor is authored, not filtered.** Do not generate it by reading
   `.specify/memory/constitution.md` and dropping principles. Ergane's principle
   I carries the invariant rule ("each component ships as a small vertical slice
@@ -75,21 +124,21 @@ default, not a subsystem.
   Ergane's bookkeeping. Only the second kind is removed.
 - **Detection must not guess through ambiguity.** Two stack markers in one repo
   (`pyproject.toml` beside `package.json`) is a question, not a coin flip. The
-  existing `_default_gate_command` returns `None` rather than guessing when it
-  sees nothing; preserve that instinct when it sees too much.
+  existing `_default_gates` (`factory/cli/init.py:591`) declines rather than
+  guessing when it sees nothing; preserve that instinct when it sees too much.
 - **A pack that names another stack's tool is worse than a missing pack**, because
   it looks authoritative. SC-003 asks for this to be checked mechanically —
   reading the packs is not evidence.
 - **Optional must stay answerable.** Making `standards` mandatory would break
   every existing scripted walkthrough that omits it. It gains a default; it does
   not lose its optionality.
-- **056 edits `pyproject.toml` too.** US1 of this spec force-includes the floor
-  text and the stack packs through the same block at `pyproject.toml:44-45` that
-  carries `personas.yaml`; US1 of 056 owns that whole file for the distribution
-  rename. This is a file collision, not a dependency, so neither work graph will
-  stop it — two in-flight worktrees there is a merge-queue conflict where the
-  second lander rebases blind. Land one before dispatching the other, and if you
-  are the second, re-read the block rather than trusting these line numbers.
+- **The 056 collision is RESOLVED — 056 landed, and so did 104.** The August plan
+  warned that `056-the-factory-ships-as-a-package` owned `pyproject.toml` and
+  would collide here. Both `056` and `104` have since landed and both edited the
+  force-include block, which now sits at `pyproject.toml:73-76` with three
+  entries. There is no in-flight competitor for that file. The standing advice
+  survives the resolution: re-read the block rather than trusting these line
+  numbers, because it has moved twice since this spec was drafted.
 - **This is a default, not a decree, and the wording is the feature.** The
   operator's ruling on 2026-08-18 was that the seeded principles read as example
   templates. A wall of MUSTs in someone else's repository invites deletion of
@@ -104,8 +153,9 @@ default, not a subsystem.
   operator who names a template and silently gets Ergane's instead has been lied
   to about whose standards their agents obey. Refuse at interview time, name the
   path. The nearby instinct — `_ask_for_key`'s empty-answer-means-omit at
-  `factory/cli/init.py:428` — is right for an *absent* answer and wrong for a
-  *wrong* one; keep the two cases apart.
+  `factory/cli/init.py:955` — is right for an *absent* answer and wrong for a
+  *wrong* one; keep the two cases apart. Trap 1 explains why that instinct is
+  load-bearing and may not be weakened to make this case easier.
 
 ## New data and modules
 
@@ -143,8 +193,8 @@ running `init` in the live checkout during a gate.
 US1: the write path in `factory/cli/init.py` (default for `standards`, the
 overwrite refusal, the composer call, the `--check` finding for absence), plus
 the floor data — worded per FR-016/FR-017 — and its resolver. US2: detection
-generalised from `_default_gate_command`, the pack data, and the interview's
-propose-and-override step. US3: the version marker in the composed output and
+generalised from `_default_gates` (`factory/cli/init.py:591`), the pack data, and
+the interview's propose-and-override step. US3: the version marker in the composed output and
 the advisory behind/unknown findings in `--check`. US4: template-source
 resolution and the interview question that supplies it. All three later stories
 merge-depend on US1 and share no file with each other — US2 in detection and
@@ -154,7 +204,7 @@ packs, US3 in the marker and `--check`, US4 in source resolution.
 
 Four stories, none large. The floor and pack text are the bulk and they are
 data, which compresses badly in a diff — if a story does not fit whole under
-`DIFF_INPUT_LIMIT` (`factory/verify/diffbounds.py:42`, import it rather than
+`DIFF_INPUT_LIMIT` (`factory/verify/diffbounds.py:47`, import it rather than
 quoting it), say where you would split it: the natural seam is one pack per
 story, and splitting on that costs nothing. Do not trim checks to fit.
 
