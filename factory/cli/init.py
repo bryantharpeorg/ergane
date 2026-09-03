@@ -469,6 +469,9 @@ _PROMPTS: dict[str, str] = {
     ),
 }
 
+#: Prompt for the optional template source that displaces the shipped default.
+_TEMPLATE_SOURCE_PROMPT = "template source path (optional)"
+
 #: Keys an empty answer omits rather than defaults.  Each is additive: a repo
 #: that declares none of them is a complete manifest.
 _OPTIONAL_KEYS = (
@@ -1014,6 +1017,11 @@ class _NonInteractivePrompter:
                 key = k
                 break
         # The slug question is not in `_PROMPTS`.
+        if key is None and prompt == _TEMPLATE_SOURCE_PROMPT:
+            # 057/US4: non-interactive mode uses the shipped default; an operator
+            # who wants a custom template names it interactively or edits the file.
+            self._reports.append("applied default: template source = shipped default")
+            return ""
         if key is None and prompt == "repo slug":
             # The default is the normalized directory name or existing registry slug.
             try:
@@ -1097,6 +1105,15 @@ def _interview(
             manifest_values.pop(key, None)
         else:
             manifest_values[key] = value
+
+    # 057/US4: ask for an optional template source after the manifest interview.
+    # A supplied source displaces the shipped default; an absent source uses the
+    # shipped default. A bad source is refused here, at interview time, rather
+    # than silently falling back.
+    template_source = _ask_for_template_source(prompter)
+    if template_source is not None:
+        manifest_values["_template_source"] = template_source
+
     return manifest_values
 
 
@@ -1198,7 +1215,10 @@ def init_command(args: argparse.Namespace) -> int:
     # `--check` run that reports an absence can do so without having created
     # directories. The constitution is written as part of the scaffold: a file
     # exists at the path is left untouched, and a missing file is seeded.
-    floor = resolve_default_floor()
+    # 057/US4: template resolution is part of the interview, so the resolved
+    # floor and source are already in `manifest_values` as `_template_source`.
+    template_source = manifest_values.pop("_template_source", None)
+    floor = _resolve_floor(template_source)
     standards_path = _resolve_standards_path(manifest_values)
     manifest_values["standards"] = standards_path
     if kept_manifest is None:
@@ -1212,6 +1232,8 @@ def init_command(args: argparse.Namespace) -> int:
     standards_path, standards_found = _write_constitution(
         repo_root, manifest_values, floor_text=floor.text, source=floor.path
     )
+    if not standards_found:
+        print(f"standards source: {floor.path}")
 
     for line in reports:
         print(line)
@@ -1518,6 +1540,40 @@ def _undeclared_dials_note(
         f"concurrency above are Ergane's defaults rather than this repository's "
         f"declaration — add a `roadmap:` block to steer them"
     )
+
+
+def _ask_for_template_source(prompter: Any) -> str | None:
+    """Ask the operator for a template source that displaces the shipped default.
+
+    Empty answer means "use the shipped default". A non-empty answer is returned
+    as-is and validated later, because the prompt only collects intent; refusing
+    a missing or empty file belongs to the resolver so the error names the path.
+    """
+    answer = prompter.ask(_TEMPLATE_SOURCE_PROMPT, default="")
+    stripped = answer.strip()
+    if not stripped:
+        return None
+    return stripped
+
+
+def _resolve_floor(template_source: str | None) -> "FloorSource":
+    """Resolve the floor to seed from: supplied, then shipped.
+
+    A supplied source that does not exist, is unreadable, or is empty is refused
+    at interview time naming the path (FR-018). The shipped default is never
+    silently substituted for a bad supplied source.
+    """
+    from factory.constitution import resolve_default_floor, resolve_supplied_floor
+
+    if template_source is not None:
+        resolved = resolve_supplied_floor(template_source)
+        if resolved is None:
+            raise OperatorError(
+                f"template source {template_source!r} is missing, unreadable, or empty",
+                code=EXIT_USER,
+            )
+        return resolved
+    return resolve_default_floor()
 
 
 def _ask_for_slug(repo_root: Path, *, prompter: Any) -> str:

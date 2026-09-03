@@ -48,3 +48,22 @@ def resolve_default_floor() -> FloorSource:
         return FloorSource(path=str(packaged), text=packaged.read_text(encoding="utf-8"))
     example_source = Path(__file__).resolve().parents[1] / DEFAULT_FLOOR_FILENAME
     return FloorSource(path=str(example_source), text=example_source.read_text(encoding="utf-8"))
+
+
+def resolve_supplied_floor(source_path: str) -> FloorSource | None:
+    """Resolve an operator-supplied template source.
+
+    Returns `None` when the source is missing, unreadable, or empty (FR-018).
+    The caller is responsible for turning `None` into a refusal that names the
+    path.
+    """
+    path = Path(source_path)
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001 - any read failure is a refusal reason
+        return None
+    if not text.strip():
+        return None
+    return FloorSource(path=str(path.resolve()), text=text)

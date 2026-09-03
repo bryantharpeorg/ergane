@@ -97,6 +97,7 @@ def test_init_noninteractive_with_closed_stdin_completes_and_reports_defaults(
     assert "applied default: runtime" in result.stdout
     assert "applied default: gates" in result.stdout
     assert "applied default: landing_branch" in result.stdout
+    assert "applied default: template source" in result.stdout
 
 
 # ---------------------------------------------------------------------------

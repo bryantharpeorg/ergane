@@ -41,11 +41,11 @@ from factory.verify.factory_yaml import _TOP_LEVEL_KEYS
 from tests.test_ergane_init import Run, ScriptedPrompter, _git, _invoke
 from tests.test_ergane_init_check import bind_offline_seams
 
-#: One blank answer per question: the eight manifest keys, then the slug. This
-#: is "press enter through the interview" — the shortest possible first run, and
-#: the run the spec's Context transcript came from. A *new* list in a *new*
-#: file: SC-004 forbids editing any scripted answer list that already exists.
-PRESS_ENTER: list[str] = [""] * (len(_TOP_LEVEL_KEYS) + 1)
+#: One blank answer per question: the manifest keys, the template source, then
+#: the slug. This is "press enter through the interview" — the shortest possible
+#: first run, and the run the spec's Context transcript came from. A *new* list in
+#: a *new* file: SC-004 forbids editing any scripted answer list that already exists.
+PRESS_ENTER: list[str] = [""] * (len(_TOP_LEVEL_KEYS) + 2)
 
 
 def make_master_repo(tmp_path: Path, *, name: str = "app", commit: bool = True) -> Path:
@@ -318,8 +318,8 @@ def test_the_derived_branch_rides_the_default_slot_every_question_uses(
     branch exists, and this story does not touch it.
 
     SC-004 rides along: the interview asks one question per manifest key plus
-    the slug, and no more. A story that added a key would break the nine
-    scripted interviews already in this suite (FR-010).
+    the template source and the slug, and no more. A story that added a key would
+    break the nine scripted interviews already in this suite (FR-010).
     """
     repo = make_master_repo(tmp_path)
 
@@ -327,7 +327,7 @@ def test_the_derived_branch_rides_the_default_slot_every_question_uses(
 
     assert LANDING_BRANCH_PROMPT == "landing branch"
     assert (LANDING_BRANCH_PROMPT, "master") in prompter.calls
-    assert len(prompter.calls) == len(_TOP_LEVEL_KEYS) + 1
+    assert len(prompter.calls) == len(_TOP_LEVEL_KEYS) + 2
 
 
 # --- Pasted evidence: the red runs, before any implementation existed ---------

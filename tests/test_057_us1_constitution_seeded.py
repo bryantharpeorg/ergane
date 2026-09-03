@@ -28,6 +28,8 @@ from tests.test_ergane_init_check import bind_offline_seams, conforming_gh
 
 #: Minimal answers for a full interactive init that lets init use defaults for
 #: every optional key. Order follows `_TOP_LEVEL_KEYS` plus the trailing slug.
+#: US4 adds the template-source question after the manifest interview, so a
+#: blank answer here means "use the shipped default".
 MINIMAL_ANSWERS: list[str] = [
     "1",  # version
     "bwrap",  # runtime
@@ -40,6 +42,7 @@ MINIMAL_ANSWERS: list[str] = [
     "",  # writes (empty -> omitted)
     "",  # caches (empty -> omitted)
     "",  # diff_refusal_bytes (empty -> omitted)
+    "",  # template source (empty -> shipped default)
     "myapp",  # slug
 ]
 

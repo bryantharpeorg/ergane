@@ -341,9 +341,9 @@ TWO_GATES = 'test: "uv run pytest -q"\nlint: "ruff check ."'
 
 def answers(*, gates: str = TWO_GATES, landing_branch: str = "main", slug: str = "myapp") -> list[str]:
     """version, runtime, gates, timeouts, standards, landing branch, roadmap, forge,
-    writes, diff_refusal_bytes, slug."""
+    writes, caches, diff_refusal_bytes, template source, slug."""
     return [
-        str(_SUPPORTED_VERSION), "bwrap", gates, "", "", landing_branch, "", "", "", "", "",
+        str(_SUPPORTED_VERSION), "bwrap", gates, "", "", landing_branch, "", "", "", "", "", "",
         slug,
     ]
 

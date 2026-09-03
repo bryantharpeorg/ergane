@@ -164,6 +164,11 @@ class ConfirmingPrompter:
         self.asked.append(prompt)
         if prompt == "repo slug":
             return self.slug
+        # 057/US4: the template-source question is not part of the manifest schema,
+        # so it has no entry in `_KEY_BY_PROMPT`. Accepting the default means using
+        # the shipped default.
+        if prompt == init_module._TEMPLATE_SOURCE_PROMPT:
+            return default or ""
         key = _KEY_BY_PROMPT.get(prompt)
         if key is None:
             raise AssertionError(f"unexpected question: {prompt!r}")
