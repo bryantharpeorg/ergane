@@ -98,7 +98,9 @@ def make_repo(
         (repo / ".gitignore").write_text(f"{gitignore_line}\n", encoding="utf-8")
     (repo / runtime_root).mkdir()
     (repo / "docs").mkdir()
-    (repo / "docs" / "STANDARDS.md").write_text("# standards\n", encoding="utf-8")
+    (repo / "docs" / "STANDARDS.md").write_text(
+        "# standards\n\nSeeded from test-fixture (floor version 1.0.0).\n", encoding="utf-8"
+    )
 
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "initial commit")
@@ -321,6 +323,8 @@ def test_a_scaffolded_registered_wired_repo_passes_every_finding(tmp_path: Path,
         "landing_branch",
         # 057/US1: a repository must declare and contain a standards document.
         "standards",
+        # 057/US3: the seeded floor's age is advisory and visible.
+        "standards_floor",
         "control_plane",
         "roadmap_schedule",
     }
@@ -519,6 +523,8 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
         "landing_branch",
         # 057/US1: a repository must declare and contain a standards document.
         "standards",
+        # 057/US3: the seeded floor's age is advisory and visible.
+        "standards_floor",
         "control_plane",
         "roadmap_schedule",
     ]

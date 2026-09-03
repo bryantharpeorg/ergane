@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 #: Basename of the shipped default floor file inside the package.
+DEFAULT_FLOOR_VERSION = "1.0.0"
+
+#: Basename of the shipped default floor file inside the package.
 DEFAULT_FLOOR_FILENAME = "default_floor.md"
 
 
