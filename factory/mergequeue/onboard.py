@@ -86,6 +86,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
+from factory.constitution import DEFAULT_FLOOR_VERSION
 from factory.mergequeue.forge import LandingPolicy, RepositoryDescription
 from factory.mergequeue.models import Finding, Severity, TargetRepoProfile
 
@@ -151,6 +152,11 @@ class InitFacts:
     #: nothing to hold its agents to.
     standards_path: str = ""
     standards_exists: bool = False
+    #: 057/US3. The floor version recorded in the seeded standards document, or
+    #: None when the document does not record one (e.g. a hand-written file).
+    standards_recorded_version: str | None = None
+    #: 057/US3. The installed Ergane floor version to compare against.
+    installed_floor_version: str = DEFAULT_FLOOR_VERSION
 
 
 def evaluate_repo(
@@ -758,22 +764,71 @@ def _standards_finding(findings: list[Finding], facts: "InitFacts") -> None:
         )
         return
 
-    if facts.standards_exists:
+    if not facts.standards_exists:
         findings.append(
             Finding(
                 "standards",
+                False,
+                f"the manifest declares `standards: {facts.standards_path}` but "
+                f"{facts.repo_root}/{facts.standards_path} does not exist; run "
+                f"`ergane init {facts.repo_root}` to seed it",
+            )
+        )
+        return
+
+    # The existence check is the readiness gate; it passes before the advisory
+    # age check is added, so an out-of-date floor never blocks readiness.
+    findings.append(
+        Finding(
+            "standards",
+            True,
+            f"standards document {facts.standards_path} exists",
+        )
+    )
+
+    _standards_floor_finding(findings, facts)
+
+
+def _standards_floor_finding(findings: list[Finding], facts: "InitFacts") -> None:
+    """Report whether the seeded floor is current, behind, or unknown.
+
+    Advisory only (FR-019). A missing recorded version means the document was
+    written by hand and is not behind; an older recorded version is information
+    for the operator, never a blocker.
+    """
+    if facts.standards_recorded_version is None:
+        findings.append(
+            Finding(
+                "standards_floor",
+                False,
+                f"{facts.standards_path} records no floor version, so its age is "
+                "unknown — a hand-written document is not behind; run "
+                f"`ergane init {facts.repo_root}` if you want it seeded from the "
+                f"installed floor ({facts.installed_floor_version})",
+                Severity.WARNING,
+            )
+        )
+        return
+
+    if facts.standards_recorded_version == facts.installed_floor_version:
+        findings.append(
+            Finding(
+                "standards_floor",
                 True,
-                f"standards document {facts.standards_path} exists",
+                f"{facts.standards_path} is at the installed floor version "
+                f"({facts.installed_floor_version})",
             )
         )
         return
 
     findings.append(
         Finding(
-            "standards",
+            "standards_floor",
             False,
-            f"the manifest declares `standards: {facts.standards_path}` but "
-            f"{facts.repo_root}/{facts.standards_path} does not exist; run "
-            f"`ergane init {facts.repo_root}` to seed it",
+            f"{facts.standards_path} was seeded from floor "
+            f"{facts.standards_recorded_version}, and the installed floor is "
+            f"{facts.installed_floor_version} — newer starter material exists; "
+            "this is information, not a defect, and the document is left unchanged",
+            Severity.WARNING,
         )
     )
