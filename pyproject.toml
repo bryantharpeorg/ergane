@@ -74,6 +74,7 @@ exclude = ["**/*.py.base"]
 "personas.example.yaml" = "factory/personas.yaml"
 "container/seccomp-ergane.json" = "factory/container/seccomp-ergane.json"
 "container/ergane-engine.profile" = "factory/container/ergane-engine.profile"
+"default_floor.md" = "factory/default_floor.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

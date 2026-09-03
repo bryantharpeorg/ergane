@@ -104,6 +104,7 @@ import yaml
 
 from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
+from factory.constitution import resolve_default_floor
 from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue import wiring
 from factory.mergequeue.forge import WiringRefused, format_step
@@ -929,6 +930,12 @@ def _init_default(key: str, repo_root: Path) -> Any:
         # destructive one for a manifest that does. Reached only when the
         # repository declared nothing for this key, because a declared value is
         # in `defaults` above (FR-008: a fresh repository still gets nothing).
+        # 057/US1: `standards` gets a documented default rather than becoming
+        # mandatory, so an empty answer still means "omit" for the other optional
+        # keys, but a fresh repository receives the default path rather than no
+        # path at all.
+        if key == "standards":
+            return DEFAULT_STANDARDS_PATH
         return None
     return _NO_DEFAULT
 
@@ -1187,7 +1194,24 @@ def init_command(args: argparse.Namespace) -> int:
     if comment_loss is not None:
         print(comment_loss)
 
+    # 057/US1: resolve the floor and the standards path before any write, so a
+    # `--check` run that reports an absence can do so without having created
+    # directories. The constitution is written as part of the scaffold: a file
+    # exists at the path is left untouched, and a missing file is seeded.
+    floor = resolve_default_floor()
+    standards_path = _resolve_standards_path(manifest_values)
+    manifest_values["standards"] = standards_path
+    if kept_manifest is None:
+        text = _render_manifest(manifest_values)
+
     _write_scaffold(repo_root, text)
+
+    # 057/US1: seed a standards document when none exists. Parents are created
+    # only when writing; the existence guard is on the file, not on its content
+    # (FR-002, plan trap 4).
+    standards_path, standards_found = _write_constitution(
+        repo_root, manifest_values, floor_text=floor.text, source=floor.path
+    )
 
     for line in reports:
         print(line)
@@ -1237,6 +1261,7 @@ def init_command(args: argparse.Namespace) -> int:
         print(f"  {repo_root / MANIFEST_NAME}")
     print(f"  {repo_root / '.gitignore'}")
     print(f"  {repo_root / RUNTIME_ROOT}")
+    print(_constitution_write_line(repo_root, standards_path, standards_found))
     print(_registration_line(registration))
     if engine_line is not None:
         print(engine_line)
@@ -1717,6 +1742,95 @@ def _write_scaffold(repo_root: Path, manifest_text: str | None) -> None:
     specs_root.mkdir(exist_ok=True)
 
 
+#: Default relative path for the seeded standards document (FR-003).
+DEFAULT_STANDARDS_PATH = ".specify/memory/constitution.md"
+
+
+#: Version marker embedded in a seeded constitution so `--check` can report age.
+FLOOR_VERSION = "1.0.0"
+
+
+def _resolve_standards_path(manifest_values: dict[str, Any]) -> str:
+    """Return the path the constitution will be written to.
+
+    The manifest's `standards` key wins when present; otherwise the documented
+    default is used. The returned value is relative to the repo root.
+    """
+    declared = manifest_values.get("standards")
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+    return DEFAULT_STANDARDS_PATH
+
+
+def _standards_document_exists(repo_root: Path, standards_path: str) -> bool:
+    """Whether a standards document already exists at the resolved path.
+
+    Existence is the guard, not content: an empty file is a deliberate choice and
+    must not be overwritten (plan trap 4).
+    """
+    return (repo_root / standards_path).is_file()
+
+
+def compose_constitution(floor_text: str, source: str, *, project_name: str) -> str:
+    """Compose a constitution from floor, project section, and governance.
+
+    Pure function of its inputs so it is testable without a repository. The
+    `source` argument records where the floor came from; US4 will pass a
+    different source through this same seam.
+    """
+    parts: list[str] = []
+    parts.append(floor_text.rstrip())
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+    parts.append(f"# Project principles: {project_name}")
+    parts.append("")
+    parts.append("Add what this repository believes about how its agents should work.")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+    parts.append("# Governance")
+    parts.append("")
+    parts.append("This document belongs to the repository. Edit it directly. Ergane will not rewrite it once it exists, and will not re-impose a principle you have removed.")
+    parts.append("")
+    parts.append(f"Seeded from {source} (floor version {FLOOR_VERSION}).")
+    return "\n".join(parts) + "\n"
+
+
+def _write_constitution(
+    repo_root: Path,
+    manifest_values: dict[str, Any],
+    *,
+    floor_text: str,
+    source: str,
+) -> tuple[str, bool]:
+    """Seed a standards document if none exists, and report what happened.
+
+    Returns the path written and whether an existing file was found. Parents are
+    created only when writing, so a `--check` run that reports an absence leaves
+    no directory behind (plan trap 5).
+    """
+    standards_path = _resolve_standards_path(manifest_values)
+    target = repo_root / standards_path
+    if _standards_document_exists(repo_root, standards_path):
+        return standards_path, True
+
+    project_name = manifest_values.get("landing_branch", "this repository")
+    text = compose_constitution(floor_text, source, project_name=str(project_name))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return standards_path, False
+
+
+def _constitution_write_line(
+    repo_root: Path, standards_path: str, found: bool
+) -> str:
+    """One line reporting what happened to the constitution."""
+    if found:
+        return f"found: {repo_root / standards_path} exists and was left unchanged"
+    return f"  {repo_root / standards_path} (seeded)"
+
+
 # --- US4: readiness is judged, not assumed ------------------------------------
 
 
@@ -1881,6 +1995,10 @@ def gather_init_facts(
         # unjudgeable check is reported rather than skipped.
         config = None
     landing_branch = config.landing_branch if config is not None else None
+    standards_path = config.standards if config is not None else ""
+    standards_exists = (
+        bool(standards_path) and (repo_root / standards_path).is_file()
+    )
 
     if control_plane is None:
         control_plane_findings, control_plane_error = _control_plane_facts()
@@ -1901,6 +2019,8 @@ def gather_init_facts(
         landing_branch_exists=(
             landing_branch is not None and _git_has_branch(repo_root, landing_branch)
         ),
+        standards_path=standards_path,
+        standards_exists=standards_exists,
         control_plane=control_plane_findings,
         control_plane_error=control_plane_error,
         **_schedule_facts(repo_root, slug, config),

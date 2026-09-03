@@ -50,9 +50,9 @@ version: 1
 runtime: bwrap
 gates:
 {gates}
+standards: docs/STANDARDS.md
 landing_branch: {landing_branch}
 """
-
 
 def make_profile(findings: tuple[Finding, ...]) -> TargetRepoProfile:
     """A profile whose only purpose is to drive `render_check`."""
@@ -97,6 +97,8 @@ def make_repo(
     if gitignore_line is not None:
         (repo / ".gitignore").write_text(f"{gitignore_line}\n", encoding="utf-8")
     (repo / runtime_root).mkdir()
+    (repo / "docs").mkdir()
+    (repo / "docs" / "STANDARDS.md").write_text("# standards\n", encoding="utf-8")
 
     _git(repo, "add", "-A")
     _git(repo, "commit", "--quiet", "-m", "initial commit")
@@ -317,6 +319,8 @@ def test_a_scaffolded_registered_wired_repo_passes_every_finding(tmp_path: Path,
         "runtime_root_ignored",
         "registry_entry",
         "landing_branch",
+        # 057/US1: a repository must declare and contain a standards document.
+        "standards",
         "control_plane",
         "roadmap_schedule",
     }
@@ -513,6 +517,8 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
         "runtime_root_ignored",
         "registry_entry",
         "landing_branch",
+        # 057/US1: a repository must declare and contain a standards document.
+        "standards",
         "control_plane",
         "roadmap_schedule",
     ]
@@ -527,6 +533,7 @@ GUARDED_SLUGS = {
     "runtime_root_migration",
     "registry_entry",
     "landing_branch",
+    "standards",
     "control_plane",
     "roadmap_schedule",
 }

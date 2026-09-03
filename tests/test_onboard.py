@@ -290,6 +290,8 @@ def _init_facts(**overrides: object) -> InitFacts:
         registry_error=None,
         landing_branch="main",
         landing_branch_exists=True,
+        standards_path="docs/STANDARDS.md",
+        standards_exists=True,
         control_plane=(Finding("temporal", True, "namespace `factory` exists"),),
         control_plane_error=None,
         schedule_id="ergane-roadmap-widgets",

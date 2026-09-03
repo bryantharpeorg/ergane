@@ -217,11 +217,12 @@ def test_a_repository_with_no_manifest_still_gets_one(
     assert written.runtime == "bwrap"
     assert written.gates == {"test": "uv run pytest -q"}
     assert written.landing_branch == "main"
-    # FR-008 in its US1 form: "absent" is still the right default for a manifest
-    # that does not exist yet, and this is what it looks like on disk.
-    assert written.standards is None
+    # 057/US1: `standards` is no longer omittable into nothing. A fresh repository
+    # gets the default path and a seeded constitution.
+    assert written.standards == ".specify/memory/constitution.md"
     assert written.roadmap is None
-    assert "standards" not in manifest.read_text(encoding="utf-8")
+    assert "standards: .specify/memory/constitution.md" in manifest.read_text(encoding="utf-8")
+    assert (repo / ".specify" / "memory" / "constitution.md").is_file()
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,8 @@ def _build_wheel(tmp_path: Path) -> Path:
     shutil.copy2(PYPROJECT, copy_root / "pyproject.toml")
     # The wheel's force-include now points at the example source file.
     shutil.copy2(REPO_ROOT / "personas.example.yaml", copy_root / "personas.example.yaml")
+    # 057/US1: the default floor ships as package data.
+    shutil.copy2(REPO_ROOT / "default_floor.md", copy_root / "default_floor.md")
 
     env = os.environ.copy()
     env["PYTHONPATH"] = ""

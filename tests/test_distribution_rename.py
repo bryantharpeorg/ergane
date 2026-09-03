@@ -71,6 +71,8 @@ def _build_wheel(tmp_path: Path, *, version: str | None = None) -> Path:
     shutil.copy2(PYPROJECT, copy_root / "pyproject.toml")
     shutil.copy2(FACTORY_DIR / "cli" / "main.py", copy_root / "factory" / "cli" / "main.py")
     shutil.copy2(REPO_ROOT / "personas.example.yaml", copy_root / "personas.example.yaml")
+    # 057/US1: the default floor ships as package data and must be in the copy.
+    shutil.copy2(REPO_ROOT / "default_floor.md", copy_root / "default_floor.md")
 
     env = os.environ.copy()
     env["PYTHONPATH"] = ""

@@ -381,10 +381,22 @@ def test_a_manifest_written_where_none_existed_declares_no_optional_key(
     assert result.code == EXIT_OK, result.stderr
     text = (repo / MANIFEST_NAME).read_text(encoding="utf-8")
     document = yaml.safe_load(text)
-    assert set(document) == {"version", "runtime", "gates", "landing_branch"}
+    # 057/US1: `standards` is no longer omittable into nothing; the other optional
+    # keys stay absent when the repository declared none.
+    assert document["standards"] == ".specify/memory/constitution.md"
+    assert set(document) == {
+        "version",
+        "runtime",
+        "gates",
+        "landing_branch",
+        "standards",
+    }
     for key in init_module._OPTIONAL_KEYS:
+        if key == "standards":
+            continue
         assert key not in document, f"init invented {key!r} for a repo that declared none"
         assert init_module._init_default(key, repo) is None
+    assert init_module._init_default("standards", repo) == ".specify/memory/constitution.md"
 
 
 # ---------------------------------------------------------------------------

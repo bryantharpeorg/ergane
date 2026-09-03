@@ -268,7 +268,7 @@ def test_init_writes_scaffold_and_manifest_parses(
     assert config.runtime == "bwrap"
     assert config.gates == {"test": "uv run pytest -q"}
     assert config.timeouts == {}
-    assert config.standards is None
+    assert config.standards == ".specify/memory/constitution.md"
     assert config.landing_branch == "main"
 
     gitignore = repo / ".gitignore"
@@ -278,6 +278,10 @@ def test_init_writes_scaffold_and_manifest_parses(
     ergane_root = repo / ".ergane"
     assert ergane_root.is_dir()
     assert list(ergane_root.iterdir()) == []
+
+    constitution = repo / ".specify" / "memory" / "constitution.md"
+    assert constitution.exists()
+    assert "Default floor" in constitution.read_text(encoding="utf-8")
 
 
 # -----------------------------------------------------------------------------
@@ -350,9 +354,10 @@ def test_init_leaves_git_history_and_status_unchanged(
     assert status_before == ""
     status_lines = [line for line in status_after.splitlines() if line.strip()]
     paths = {line.split()[-1] for line in status_lines}
-    assert paths == {".gitignore", "ergane.yaml"}
+    assert paths == {".gitignore", "ergane.yaml", ".specify/"}
     assert (repo / ".ergane").is_dir()
     assert list((repo / ".ergane").iterdir()) == []
+    assert (repo / ".specify" / "memory" / "constitution.md").is_file()
 
 
 # -----------------------------------------------------------------------------
@@ -386,7 +391,7 @@ def test_init_rerun_changes_only_one_key(
 
     before_doc = yaml.safe_load(manifest_before)
     after_doc = yaml.safe_load(manifest_after)
-    assert "standards" not in before_doc
+    assert before_doc["standards"] == ".specify/memory/constitution.md"
     assert after_doc["standards"] == "docs/STANDARDS.md"
     before_doc.pop("standards", None)
     after_doc.pop("standards", None)
