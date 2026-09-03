@@ -1,0 +1,26 @@
+# A second real pack, added as a file and nothing else (057 FR-010, US2-S5).
+#
+# It is also what makes SC-003 a live check rather than a formality: with one
+# real pack shipped, "no pack names a tool from another stack" has no other
+# stack to be checked against and passes for want of a counterexample. With two
+# disjoint rosters, a `pytest` line landing in this file fails the suite.
+name: node
+label: Node.js
+markers:
+  - package.json
+toolchain: Node.js (npm)
+rationale: >-
+  an agent needs one runnable command per gate, and these are the ones this
+  repository's toolchain answers to
+commands:
+  test: npm test
+  lint: npx eslint .
+  type: npx tsc --noEmit
+tools:
+  - npm
+  - npx
+  - eslint
+  - tsc
+dependency_policy: >-
+  Ask before adding dependencies; a new runtime dependency enters
+  `package.json` only after the operator approves it.

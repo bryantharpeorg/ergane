@@ -70,6 +70,13 @@ exclude = ["**/*.py.base"]
 # against a checkout the host may not have. Drop a key and a wheel install emits
 # a project with no confinement contract. The `Dockerfile` cannot join them: it
 # is `COPY . /opt/ergane`, so its context is the repo.
+#
+# The stack packs (057/US2) are deliberately *absent* from this table, and that
+# is not an oversight: they live at `factory/stack_packs/*.yaml`, already inside
+# the wheel's import package, so hatchling ships them without being told. Adding
+# them here would install a second copy. What holds the guarantee is not this
+# config but `test_every_shipped_pack_travels_in_the_wheel`, which reads a built
+# wheel — an exclusion added below would show up there and nowhere else.
 [tool.hatch.build.targets.wheel.force-include]
 "personas.example.yaml" = "factory/personas.yaml"
 "container/seccomp-ergane.json" = "factory/container/seccomp-ergane.json"

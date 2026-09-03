@@ -1,6 +1,34 @@
+# The pack that answers when no marker file matched. `fallback: true` is what
+# makes it that pack: no code knows this file's name (057 FR-009, FR-010).
+#
+# It declares no markers, so it never competes with a real stack for a match,
+# and no commands, because it cannot know them — naming a plausible one here
+# would hand a repository a command that does not exist in it. What it names
+# instead is the work the user has to finish, which is the whole of FR-009.
+#
+# The wording below says "no stack was selected" rather than "no stack matched",
+# and the difference is not pedantry: this layer is also what an ambiguous
+# repository gets, where two stacks matched and neither could be chosen. Text
+# that explained itself as a failure to match would be false in exactly the case
+# an operator is most likely to be re-reading it, and the document outlives the
+# line printed at the terminal.
 name: agnostic
 label: Language-agnostic
+fallback: true
 markers: []
-toolchain: language-agnostic
+toolchain: not selected — replace this with the toolchain this repository uses
+rationale: >-
+  every repository needs a concrete command an agent can run, and no stack was
+  selected for this one, so the gates below are left for you to fill in rather
+  than guessed at
 commands: {}
-dependency_policy: Ask before adding dependencies; new runtime dependencies require operator approval.
+tools: []
+completion:
+  - "`test`: the command that runs the test suite"
+  - "`lint`: the command that checks style"
+  - "`type`: the command that performs type checking"
+  - "`build`: the command that produces a release artifact"
+  - "the toolchain line above, which names no toolchain yet"
+dependency_policy: >-
+  State the rule for adding dependencies, and the approval this repository
+  requires before a new one is introduced.

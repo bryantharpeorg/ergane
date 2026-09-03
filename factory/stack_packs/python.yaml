@@ -1,3 +1,6 @@
+# `tools` is the roster the hygiene check in `factory.stack_packs` compares
+# between packs: every command here must run one of these and nothing another
+# pack claims, so a Python pack cannot quietly acquire an `npm` line (SC-003).
 name: python
 label: Python
 markers:
@@ -5,8 +8,18 @@ markers:
   - setup.py
   - requirements.txt
 toolchain: Python (uv)
+rationale: >-
+  an agent needs one runnable command per gate, and these are the ones this
+  repository's toolchain answers to
 commands:
   test: uv run pytest -q
   lint: uv run ruff check .
   type: uv run mypy .
-dependency_policy: Ask before adding dependencies; new runtime dependencies require operator approval.
+tools:
+  - uv
+  - pytest
+  - ruff
+  - mypy
+dependency_policy: >-
+  Ask before adding dependencies; a new runtime dependency enters
+  `pyproject.toml` only after the operator approves it.

@@ -113,10 +113,10 @@ from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
 from factory.roadmap import schedule as roadmap_schedule
 from factory.stack_packs import (
+    StackDetection,
     StackPack,
-    agnostic_layer,
-    detect_stack_or_ask,
-    resolve_stack_packs,
+    detect_stack_packs,
+    fallback_pack,
 )
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
@@ -607,8 +607,8 @@ def _default_gates(repo_root: Path) -> dict[str, str]:
     undeclared-gate sentinel. Returns the mapping the manifest actually carries
     rather than a rendered YAML line (057/US2 FR-007, FR-009).
     """
-    pack = detect_stack_or_default(repo_root)
-    if pack is not None and "test" in pack.commands:
+    pack, _notice = select_stack_without_operator(repo_root)
+    if "test" in pack.commands:
         return {"test": pack.commands["test"]}
     return {"test": _UNDECLARED_GATE_COMMAND}
 
@@ -1038,14 +1038,13 @@ class _NonInteractivePrompter:
             default_slug = known.slug if known is not None else registry.normalize_slug(self._repo_root.name)
             self._reports.append(f"applied default: repo slug = \"{default_slug}\"")
             return default_slug
-        # 057/US2: stack detection is proposed in the interactive path. In the
-        # non-interactive path the default pack (detected, or agnostic fallback) is
-        # used without asking.
-        if key is None and prompt == "detected stack":
-            pack = detect_stack_or_default(self._repo_root)
-            name = pack.name if pack is not None else "agnostic"
-            self._reports.append(f"applied default: detected stack = \"{name}\"")
-            return name
+        # 057/US2: there is deliberately no "detected stack" branch here. Only
+        # `select_stack_with_operator` asks that question, and it is never
+        # reached with this prompter — a non-interactive run calls
+        # `select_stack_without_operator` directly. A branch here would be a
+        # second detection path answering the same question, free to drift from
+        # the first, which is the fault this story had to fix once already: the
+        # interactive path re-implemented marker matching instead of sharing it.
         if key is None:
             raise AssertionError(f"non-interactive prompter does not know prompt: {prompt!r}")
         value = _init_default(key, self._repo_root)
@@ -1217,11 +1216,12 @@ def init_command(args: argparse.Namespace) -> int:
         stack_pack: StackPack | None = None
         if existing is None:
             if non_interactive:
-                stack_pack = detect_stack_or_default(
+                stack_pack, stack_notice = select_stack_without_operator(
                     repo_root, extra_directories=extra_pack_dirs
                 )
+                print(stack_notice)
             else:
-                stack_pack = detect_stack_or_ask(
+                stack_pack = select_stack_with_operator(
                     repo_root, prompter, extra_directories=extra_pack_dirs
                 )
 
@@ -1868,25 +1868,103 @@ def _standards_document_exists(repo_root: Path, standards_path: str) -> bool:
     return (repo_root / standards_path).is_file()
 
 
-def detect_stack_or_default(
+def _stack_notice(
+    detection: StackDetection, pack: StackPack, *, can_ask: bool
+) -> str:
+    """The line the operator reads about how this stack was arrived at.
+
+    Three outcomes, and the difference between them is the point: a detected
+    stack is a claim the operator can contradict, the fallback is an admission
+    that nothing was recognised, and ambiguity is a question. Rendered
+    identically all three would read as a decision, and only one of them is.
+    """
+    if detection.ambiguous:
+        named = ", ".join(f"{p.label} ({p.name})" for p in detection.candidates)
+        if can_ask:
+            return (
+                f"marker files matched more than one stack ({named}); name one, "
+                f"or answer empty to write the {pack.label} layer instead"
+            )
+        return (
+            f"marker files matched more than one stack ({named}); no stack was "
+            f"chosen, and the {pack.label} layer was written instead — re-run "
+            "`ergane init` interactively to name one"
+        )
+    if detection.unmatched:
+        return (
+            "no shipped stack matched this repository's marker files; the "
+            f"{pack.label} layer was written and names what to complete"
+        )
+    return f"detected stack: {pack.label} ({pack.name})"
+
+
+def select_stack_without_operator(
     repo_root: Path,
     *,
     extra_directories: list[Path] | None = None,
-) -> StackPack | None:
-    """Return the detected stack pack, or the agnostic fallback if none matches.
+) -> tuple[StackPack, str]:
+    """Choose a stack with nobody to ask, and say how it was chosen.
 
-    This is the read-only default path. The interactive path uses
-    `detect_stack_or_ask` so the operator can confirm or override.
+    Returns the pack and the notice to print. Ambiguity is *not* resolved here
+    (plan trap 7): with two candidate stacks and no operator, picking either one
+    is a coin flip whose result gets written into the document this repository's
+    agents obey. The fallback layer is written instead and the notice names both
+    candidates, so the question survives as a question.
     """
-    from factory.stack_packs import detect_stack
+    detection = detect_stack_packs(repo_root, extra_directories=extra_directories)
+    pack = detection.pack if not detection.ambiguous else None
+    if pack is None:
+        pack = detection.fallback()
+    return pack, _stack_notice(detection, pack, can_ask=False)
 
-    pack = detect_stack(repo_root, extra_directories=extra_directories)
-    if pack is not None:
-        return pack
-    for p in resolve_stack_packs(extra_directories=extra_directories):
-        if p.name == "agnostic":
-            return p
-    return None
+
+def select_stack_with_operator(
+    repo_root: Path,
+    prompter: Any,
+    *,
+    extra_directories: list[Path] | None = None,
+) -> StackPack:
+    """Detect a stack, state it before it is used, and let the operator override.
+
+    US2-S1 puts the statement before the use, so the operator is told what was
+    detected while they can still contradict it (US2-S2). Ambiguity asks rather
+    than picks; an empty answer there takes the fallback, and the notice says so
+    before the question rather than after it.
+
+    A repository that matched nothing is told so and not asked. There is no
+    detection to disagree with, and a question with no proposal behind it would
+    lengthen the interview for every brownfield repository to no purpose — the
+    fallback layer it gets names what to complete, which is where that decision
+    belongs (US2-S3, FR-009).
+    """
+    detection = detect_stack_packs(repo_root, extra_directories=extra_directories)
+    proposed = detection.pack if not detection.ambiguous else None
+    if proposed is None:
+        proposed = detection.fallback()
+
+    # Stated *before* the question, which is the whole of US2-S1: an operator
+    # asked to confirm a value they have not been shown is being asked nothing.
+    print(_stack_notice(detection, proposed, can_ask=not detection.unmatched))
+    if detection.unmatched:
+        return proposed
+
+    answer = prompter.ask("detected stack", default=proposed.name).strip()
+    if not answer or answer == proposed.name:
+        return proposed
+
+    chosen = detection.by_name(answer)
+    if chosen is None:
+        # Not an omission — a wrong answer, and the two are kept apart
+        # deliberately (plan trap 11). An empty answer takes the proposal; a
+        # name no pack answers to is refused with the names that exist, rather
+        # than silently falling back to the proposal and writing a stack layer
+        # the operator did not ask for.
+        raise OperatorError(
+            f"no shipped stack pack is named {answer!r}; available: "
+            + ", ".join(sorted(p.name for p in detection.available))
+        )
+    print(f"using operator-chosen stack: {chosen.label} ({chosen.name})")
+    return chosen
 
 
 def compose_constitution(
@@ -1945,10 +2023,12 @@ def _write_constitution(
         return standards_path, True
 
     project_name = manifest_values.get("landing_branch", "this repository")
-    if stack_pack is None or stack_pack.name == "agnostic":
-        stack_layer = agnostic_layer()
-    else:
-        stack_layer = stack_pack.render_layer()
+    # One renderer for every pack (FR-010). This used to compare the pack's name
+    # against the fallback's and render that one through a separate hardcoded
+    # function — a branch per stack in the writer, which is what SC-004 forbids,
+    # and which meant a new pack needing anything of the fallback's shape would
+    # have earned itself a second branch.
+    stack_layer = (stack_pack if stack_pack is not None else fallback_pack()).render_layer()
     text = compose_constitution(
         floor_text,
         source,
