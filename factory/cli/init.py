@@ -1203,12 +1203,26 @@ def init_command(args: argparse.Namespace) -> int:
         # Detection runs inside the interview region so the operator can answer the
         # proposal before any file is written. The stack influences only the seeded
         # constitution, not the manifest itself.
+        # 057/US4: a supplied template may carry its own stack packs. Discover them
+        # in a `stacks/` sibling of the supplied floor file so supplied packs of the
+        # same name override shipped packs and shipped packs still fill gaps.
+        template_source = manifest_values.get("_template_source")
+        extra_pack_dirs: list[Path] = []
+        if template_source is not None:
+            supplied_stacks = Path(template_source).parent / "stacks"
+            if supplied_stacks.is_dir():
+                extra_pack_dirs.append(supplied_stacks)
+
         stack_pack: StackPack | None = None
         if existing is None:
             if non_interactive:
-                stack_pack = detect_stack_or_default(repo_root)
+                stack_pack = detect_stack_or_default(
+                    repo_root, extra_directories=extra_pack_dirs
+                )
             else:
-                stack_pack = detect_stack_or_ask(repo_root, prompter)
+                stack_pack = detect_stack_or_ask(
+                    repo_root, prompter, extra_directories=extra_pack_dirs
+                )
 
         # The slug is declared by the operator and lives in the engine's registry,
         # never in the manifest: it is what the engine calls this repo, not what the
@@ -1857,7 +1871,11 @@ def _standards_document_exists(repo_root: Path, standards_path: str) -> bool:
     return (repo_root / standards_path).is_file()
 
 
-def detect_stack_or_default(repo_root: Path) -> StackPack | None:
+def detect_stack_or_default(
+    repo_root: Path,
+    *,
+    extra_directories: list[Path] | None = None,
+) -> StackPack | None:
     """Return the detected stack pack, or the agnostic fallback if none matches.
 
     This is the read-only default path. The interactive path uses
@@ -1865,10 +1883,10 @@ def detect_stack_or_default(repo_root: Path) -> StackPack | None:
     """
     from factory.stack_packs import detect_stack
 
-    pack = detect_stack(repo_root)
+    pack = detect_stack(repo_root, extra_directories=extra_directories)
     if pack is not None:
         return pack
-    for p in resolve_stack_packs():
+    for p in resolve_stack_packs(extra_directories=extra_directories):
         if p.name == "agnostic":
             return p
     return None

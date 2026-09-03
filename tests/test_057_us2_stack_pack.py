@@ -18,7 +18,7 @@ import factory.cli.init as init_module
 import factory.stack_packs as stack_packs_module
 from factory.cli.errors import EXIT_OK
 
-from tests.test_057_us1_constitution_seeded import MINIMAL_ANSWERS, run_init
+from tests.test_057_us1_constitution_seeded import run_init
 from tests.test_ergane_init import ScriptedPrompter, _invoke, make_bare_repo
 from tests.test_ergane_init_check import bind_offline_seams, conforming_gh
 from tests.fake_schedules import FakeScheduleServer
@@ -33,8 +33,8 @@ def offline(monkeypatch: pytest.MonkeyPatch) -> FakeScheduleServer:
 
 
 #: Minimal answers with a Python stack's default gate string.
-#: Order follows `_TOP_LEVEL_KEYS` plus the trailing slug, with the stack
-#: proposal inserted after the manifest interview and before the slug.
+#: Order follows `_TOP_LEVEL_KEYS`, then the US4 template-source question, then
+#: the US2 detected-stack question, then the slug.
 PYTHON_STACK_ANSWERS: list[str] = [
     "1",  # version
     "bwrap",  # runtime
@@ -47,6 +47,7 @@ PYTHON_STACK_ANSWERS: list[str] = [
     "",  # writes (empty -> omitted)
     "",  # caches (empty -> omitted)
     "",  # diff_refusal_bytes (empty -> omitted)
+    "",  # template source (empty -> shipped default)
     "",  # detected stack: accept default
     "myapp",  # slug
 ]
@@ -104,6 +105,7 @@ def test_operator_answer_overrides_detected_stack(
         "",  # writes
         "",  # caches
         "",  # diff_refusal_bytes
+        "",  # template source (empty -> shipped default)
         "agnostic",  # detected stack: override with agnostic fallback
         "myapp",  # slug
     ]
@@ -127,7 +129,13 @@ def test_unmatched_fixture_produces_language_agnostic_layer(
     with a clear list of what the user must complete."""
     repo = make_bare_repo(tmp_path, {"README.md": "# app\n"})
 
-    result = run_init(repo, monkeypatch, answers=list(MINIMAL_ANSWERS), offline_server=offline)
+    # Unmatched repos do not ask the detected-stack question, so use the 13-entry
+    # minimal answer list from the US1 test.
+    from tests.test_057_us1_constitution_seeded import MINIMAL_ANSWERS as UNMATCHED_ANSWERS
+
+    result = run_init(
+        repo, monkeypatch, answers=list(UNMATCHED_ANSWERS), offline_server=offline
+    )
 
     assert result.code == EXIT_OK, result.stderr
     constitution = repo / ".specify" / "memory" / "constitution.md"

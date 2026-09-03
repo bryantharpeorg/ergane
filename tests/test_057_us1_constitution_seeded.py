@@ -26,10 +26,10 @@ from tests.fake_schedules import FakeScheduleServer, desired_for, seed
 from tests.test_ergane_init import ScriptedPrompter, _git, _invoke, make_bare_repo
 from tests.test_ergane_init_check import bind_offline_seams, conforming_gh
 
-#: Minimal answers for a full interactive init that lets init use defaults for
-#: every optional key. Order follows `_TOP_LEVEL_KEYS` plus the trailing slug.
-#: US4 adds the template-source question after the manifest interview, so a
-#: blank answer here means "use the shipped default".
+#: Minimal answers for a full interactive init on a repository with no matching
+#: shipped stack. Order follows `_TOP_LEVEL_KEYS`, then the US4 template-source
+#: question, then the slug. The detected-stack question is only asked when a
+#: marker file matches, so an unmatched repo does not consume that slot.
 MINIMAL_ANSWERS: list[str] = [
     "1",  # version
     "bwrap",  # runtime

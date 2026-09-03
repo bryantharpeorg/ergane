@@ -173,10 +173,11 @@ def make_bare_repo(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
 
 # Default answers for the interview over the schema keys plus slug. Order
 # follows `_TOP_LEVEL_KEYS`: version, runtime, gates, timeouts, standards,
-# landing_branch, roadmap, forge, writes, caches, then slug.  A key added to the
-# parser adds a question here, which is the point of deriving the interview from
-# the parser (034/US6 added `roadmap`; 049/US5 added `forge`; 084/US3 added
-# `writes`; 101/US2 added `caches`).
+# landing_branch, roadmap, forge, writes, caches, diff_refusal_bytes. Then the
+# US4 template-source question, the US2 detected-stack question, and finally
+# the slug.  A key added to the parser adds a question here, which is the point
+# of deriving the interview from the parser (034/US6 added `roadmap`; 049/US5
+# added `forge`; 084/US3 added `writes`; 101/US2 added `caches`).
 DEFAULT_ANSWERS: list[str] = [
     str(_SUPPORTED_VERSION),  # version
     "bwrap",  # runtime
@@ -189,6 +190,7 @@ DEFAULT_ANSWERS: list[str] = [
     "",  # writes (empty -> omitted; 084/US3 — absent means nothing declared)
     "",  # caches (empty -> omitted; 101/US2 — absent means the uv cache alone)
     "",  # diff_refusal_bytes (empty -> omitted; 092/US2 — absent means the default)
+    "",  # template source (empty -> shipped default; 057/US4)
     "",  # detected stack: accept default (057/US2)
     "myapp",  # slug
 ]
@@ -316,6 +318,7 @@ def test_init_proposal_is_confirmed_and_leaves_no_trace(
         "",
         "",
         "",
+        "",  # template source (empty -> shipped default; 057/US4)
         "",  # detected stack: accept default (057/US2)
         "myapp",
     ]

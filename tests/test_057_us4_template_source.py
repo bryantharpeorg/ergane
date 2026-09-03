@@ -23,9 +23,8 @@ from tests.test_ergane_init import ScriptedPrompter, _invoke, make_bare_repo
 from tests.test_ergane_init_check import bind_offline_seams, conforming_gh
 
 #: Minimal answers for a full interactive init that lets init use defaults for
-#: every optional key. Order follows `_TOP_LEVEL_KEYS` plus the trailing slug.
-#: US4 adds the template-source question after the manifest interview, so a
-#: blank answer here means "use the shipped default".
+#: every optional key. Order follows `_TOP_LEVEL_KEYS`, then the US4 template
+#: source question, then the US2 detected-stack question, then the slug.
 MINIMAL_ANSWERS: list[str] = [
     "1",  # version
     "bwrap",  # runtime
@@ -39,6 +38,7 @@ MINIMAL_ANSWERS: list[str] = [
     "",  # caches (empty -> omitted)
     "",  # diff_refusal_bytes (empty -> omitted)
     "",  # template source (empty -> shipped default)
+    "",  # detected stack: accept default
     "myapp",  # slug
 ]
 
@@ -181,11 +181,22 @@ def test_supplied_template_with_stack_packs_prefers_them(
     template_dir.mkdir()
     template = template_dir / "constitution.md"
     template.write_text("# Custom floor\n", encoding="utf-8")
-    # A supplied pack for Python with a distinctive command.
+    # A supplied pack for Python with a distinctive test command. It uses the
+    # same StackPack schema as the shipped packs so the resolver loads it.
     pack_dir = template_dir / "stacks"
     pack_dir.mkdir()
     (pack_dir / "python.yaml").write_text(
-        "marker_files:\n  - pyproject.toml\ntest_command: custom-pytest\n",
+        yaml.safe_dump(
+            {
+                "name": "python",
+                "label": "Custom Python",
+                "markers": ["pyproject.toml"],
+                "toolchain": "Python (custom)",
+                "commands": {"test": "custom-pytest"},
+                "dependency_policy": "Ask before adding dependencies.",
+            },
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
 
@@ -197,3 +208,10 @@ def test_supplied_template_with_stack_packs_prefers_them(
     constitution = repo / ".specify" / "memory" / "constitution.md"
     text = constitution.read_text(encoding="utf-8")
     assert "Custom floor" in text
+    # The supplied Python pack wins over the shipped Python pack.
+    assert "Custom Python" in text, "supplied stack pack label not used"
+    assert "custom-pytest" in text, "supplied stack pack command not used"
+    # The shipped Python pack's command is not present.
+    assert "uv run pytest" not in text, "shipped Python pack leaked into templated document"
+    # Gap packs (e.g. agnostic fallback) are still available; this repo matched
+    # the supplied Python pack, so no fallback layer is rendered.
