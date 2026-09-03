@@ -19,7 +19,8 @@ markers: []
 toolchain: not selected — replace this with the toolchain this repository uses
 rationale: >-
   every repository needs a concrete command an agent can run, and no stack was
-  selected for this one, so the commands below are named rather than guessed
+  selected for this one, so the gates below are left for you to fill in rather
+  than guessed at
 commands: {}
 tools: []
 completion:
