@@ -407,6 +407,7 @@ def test_several_broken_preconditions_all_render_none_masked() -> None:
         "runtime_root_ignored",
         "registry_entry",
         "landing_branch",
+        "standards_floor",
         "control_plane",
         "roadmap_schedule",
     ]

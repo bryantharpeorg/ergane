@@ -96,6 +96,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -104,7 +105,7 @@ import yaml
 
 from factory import registry
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
-from factory.constitution import resolve_default_floor
+from factory.constitution import DEFAULT_FLOOR_VERSION as FLOOR_VERSION, resolve_default_floor
 from factory.locking import LockUnavailable, lock_path_for
 from factory.mergequeue import wiring
 from factory.mergequeue.forge import WiringRefused, format_step
@@ -1776,10 +1777,6 @@ def _write_scaffold(repo_root: Path, manifest_text: str | None) -> None:
 DEFAULT_STANDARDS_PATH = ".specify/memory/constitution.md"
 
 
-#: Version marker embedded in a seeded constitution so `--check` can report age.
-FLOOR_VERSION = "1.0.0"
-
-
 def _resolve_standards_path(manifest_values: dict[str, Any]) -> str:
     """Return the path the constitution will be written to.
 
@@ -1896,6 +1893,25 @@ def _constitution_write_line(
     if found:
         return f"found: {repo_root / standards_path} exists and was left unchanged"
     return f"  {repo_root / standards_path} (seeded)"
+
+
+_FLOOR_VERSION_RE = re.compile(r"\(floor version ([^)]+)\)")
+
+
+def _read_floor_version(path: Path | None) -> str | None:
+    """Return the floor version recorded in a standards document, if any.
+
+    A missing file or a file that does not contain the marker yields None,
+    which is reported as "unknown" rather than "behind" (FR-014).
+    """
+    if path is None or not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001 - an unreadable document is just unversioned
+        return None
+    match = _FLOOR_VERSION_RE.search(text)
+    return match.group(1) if match else None
 
 
 # --- US4: readiness is judged, not assumed ------------------------------------
@@ -2063,9 +2079,8 @@ def gather_init_facts(
         config = None
     landing_branch = config.landing_branch if config is not None else None
     standards_path = config.standards if config is not None else ""
-    standards_exists = (
-        bool(standards_path) and (repo_root / standards_path).is_file()
-    )
+    target = repo_root / standards_path if standards_path else None
+    standards_exists = bool(target) and target.is_file() if target is not None else False
 
     if control_plane is None:
         control_plane_findings, control_plane_error = _control_plane_facts()
@@ -2088,6 +2103,8 @@ def gather_init_facts(
         ),
         standards_path=standards_path,
         standards_exists=standards_exists,
+        standards_recorded_version=_read_floor_version(target),
+        installed_floor_version=FLOOR_VERSION,
         control_plane=control_plane_findings,
         control_plane_error=control_plane_error,
         **_schedule_facts(repo_root, slug, config),
