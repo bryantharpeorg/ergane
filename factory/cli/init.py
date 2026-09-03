@@ -111,6 +111,12 @@ from factory.mergequeue.forge import WiringRefused, format_step
 from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
 from factory.roadmap import schedule as roadmap_schedule
+from factory.stack_packs import (
+    StackPack,
+    agnostic_layer,
+    detect_stack_or_ask,
+    resolve_stack_packs,
+)
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     _SUPPORTED_VERSION,
@@ -595,14 +601,14 @@ def _default_landing_branch(repo_root: Path) -> str:
 def _default_gates(repo_root: Path) -> dict[str, str]:
     """The gates to offer a repository that declares none yet.
 
-    A reading of the tree where there is one to make, and `_UNDECLARED_GATE_COMMAND`
-    where there is not. Returns the mapping the manifest actually carries rather
-    than a rendered YAML line: the caller used to receive `'test: "uv run pytest
-    -q"'` and take the value back apart with `split(":", 1)`, which meant the one
-    place that decided this repository's gate could not state it as data.
+    Pack-driven detection: a shipped stack pack contributes its `test` command
+    when its markers match, and the language-agnostic fallback contributes the
+    undeclared-gate sentinel. Returns the mapping the manifest actually carries
+    rather than a rendered YAML line (057/US2 FR-007, FR-009).
     """
-    if (repo_root / "pyproject.toml").is_file():
-        return {"test": "uv run pytest -q"}
+    pack = detect_stack_or_default(repo_root)
+    if pack is not None and "test" in pack.commands:
+        return {"test": pack.commands["test"]}
     return {"test": _UNDECLARED_GATE_COMMAND}
 
 
@@ -1031,6 +1037,14 @@ class _NonInteractivePrompter:
             default_slug = known.slug if known is not None else registry.normalize_slug(self._repo_root.name)
             self._reports.append(f"applied default: repo slug = \"{default_slug}\"")
             return default_slug
+        # 057/US2: stack detection is proposed in the interactive path. In the
+        # non-interactive path the default pack (detected, or agnostic fallback) is
+        # used without asking.
+        if key is None and prompt == "detected stack":
+            pack = detect_stack_or_default(self._repo_root)
+            name = pack.name if pack is not None else "agnostic"
+            self._reports.append(f"applied default: detected stack = \"{name}\"")
+            return name
         if key is None:
             raise AssertionError(f"non-interactive prompter does not know prompt: {prompt!r}")
         value = _init_default(key, self._repo_root)
@@ -1185,6 +1199,17 @@ def init_command(args: argparse.Namespace) -> int:
                 existing is not None and manifest_values == existing.declared
             )
 
+        # 057/US2: detect the repository stack, propose it, and allow override.
+        # Detection runs inside the interview region so the operator can answer the
+        # proposal before any file is written. The stack influences only the seeded
+        # constitution, not the manifest itself.
+        stack_pack: StackPack | None = None
+        if existing is None:
+            if non_interactive:
+                stack_pack = detect_stack_or_default(repo_root)
+            else:
+                stack_pack = detect_stack_or_ask(repo_root, prompter)
+
         # The slug is declared by the operator and lives in the engine's registry,
         # never in the manifest: it is what the engine calls this repo, not what the
         # repo declares about itself.
@@ -1221,6 +1246,7 @@ def init_command(args: argparse.Namespace) -> int:
     floor = _resolve_floor(template_source)
     standards_path = _resolve_standards_path(manifest_values)
     manifest_values["standards"] = standards_path
+
     if kept_manifest is None:
         text = _render_manifest(manifest_values)
 
@@ -1230,7 +1256,11 @@ def init_command(args: argparse.Namespace) -> int:
     # only when writing; the existence guard is on the file, not on its content
     # (FR-002, plan trap 4).
     standards_path, standards_found = _write_constitution(
-        repo_root, manifest_values, floor_text=floor.text, source=floor.path
+        repo_root,
+        manifest_values,
+        floor_text=floor.text,
+        source=floor.path,
+        stack_pack=stack_pack,
     )
     if not standards_found:
         print(f"standards source: {floor.path}")
@@ -1827,8 +1857,31 @@ def _standards_document_exists(repo_root: Path, standards_path: str) -> bool:
     return (repo_root / standards_path).is_file()
 
 
-def compose_constitution(floor_text: str, source: str, *, project_name: str) -> str:
-    """Compose a constitution from floor, project section, and governance.
+def detect_stack_or_default(repo_root: Path) -> StackPack | None:
+    """Return the detected stack pack, or the agnostic fallback if none matches.
+
+    This is the read-only default path. The interactive path uses
+    `detect_stack_or_ask` so the operator can confirm or override.
+    """
+    from factory.stack_packs import detect_stack
+
+    pack = detect_stack(repo_root)
+    if pack is not None:
+        return pack
+    for p in resolve_stack_packs():
+        if p.name == "agnostic":
+            return p
+    return None
+
+
+def compose_constitution(
+    floor_text: str,
+    source: str,
+    *,
+    project_name: str,
+    stack_layer: str,
+) -> str:
+    """Compose a constitution from floor, stack layer, project section, and governance.
 
     Pure function of its inputs so it is testable without a repository. The
     `source` argument records where the floor came from; US4 will pass a
@@ -1836,6 +1889,10 @@ def compose_constitution(floor_text: str, source: str, *, project_name: str) -> 
     """
     parts: list[str] = []
     parts.append(floor_text.rstrip())
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+    parts.append(stack_layer.rstrip())
     parts.append("")
     parts.append("---")
     parts.append("")
@@ -1859,6 +1916,7 @@ def _write_constitution(
     *,
     floor_text: str,
     source: str,
+    stack_pack: StackPack | None = None,
 ) -> tuple[str, bool]:
     """Seed a standards document if none exists, and report what happened.
 
@@ -1872,7 +1930,16 @@ def _write_constitution(
         return standards_path, True
 
     project_name = manifest_values.get("landing_branch", "this repository")
-    text = compose_constitution(floor_text, source, project_name=str(project_name))
+    if stack_pack is None or stack_pack.name == "agnostic":
+        stack_layer = agnostic_layer()
+    else:
+        stack_layer = stack_pack.render_layer()
+    text = compose_constitution(
+        floor_text,
+        source,
+        project_name=str(project_name),
+        stack_layer=stack_layer,
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return standards_path, False

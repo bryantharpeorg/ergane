@@ -67,6 +67,16 @@ def _build_wheel(tmp_path: Path, *, version: str | None = None) -> Path:
         FACTORY_DIR / "constitution.py",
         copy_root / "factory" / "constitution.py",
     )
+    # 057/US2: stack packs are package data and must travel in the wheel.
+    shutil.copytree(
+        FACTORY_DIR / "stack_packs",
+        copy_root / "factory" / "stack_packs",
+        dirs_exist_ok=True,
+    )
+    shutil.copy2(
+        FACTORY_DIR / "stack_packs.py",
+        copy_root / "factory" / "stack_packs.py",
+    )
 
     if version is not None:
         pyproject_text = (copy_root / "pyproject.toml").read_text(encoding="utf-8")
