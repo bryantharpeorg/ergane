@@ -112,6 +112,12 @@ from factory.mergequeue.forge import WiringRefused, format_step
 from factory.mergequeue.models import Finding, TargetRepoProfile
 from factory.mergequeue.onboard import InitFacts
 from factory.roadmap import schedule as roadmap_schedule
+from factory.stack_packs import (
+    StackPack,
+    agnostic_layer,
+    detect_stack_or_ask,
+    resolve_stack_packs,
+)
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     _SUPPORTED_VERSION,
@@ -470,6 +476,9 @@ _PROMPTS: dict[str, str] = {
     ),
 }
 
+#: Prompt for the optional template source that displaces the shipped default.
+_TEMPLATE_SOURCE_PROMPT = "template source path (optional)"
+
 #: Keys an empty answer omits rather than defaults.  Each is additive: a repo
 #: that declares none of them is a complete manifest.
 _OPTIONAL_KEYS = (
@@ -593,14 +602,14 @@ def _default_landing_branch(repo_root: Path) -> str:
 def _default_gates(repo_root: Path) -> dict[str, str]:
     """The gates to offer a repository that declares none yet.
 
-    A reading of the tree where there is one to make, and `_UNDECLARED_GATE_COMMAND`
-    where there is not. Returns the mapping the manifest actually carries rather
-    than a rendered YAML line: the caller used to receive `'test: "uv run pytest
-    -q"'` and take the value back apart with `split(":", 1)`, which meant the one
-    place that decided this repository's gate could not state it as data.
+    Pack-driven detection: a shipped stack pack contributes its `test` command
+    when its markers match, and the language-agnostic fallback contributes the
+    undeclared-gate sentinel. Returns the mapping the manifest actually carries
+    rather than a rendered YAML line (057/US2 FR-007, FR-009).
     """
-    if (repo_root / "pyproject.toml").is_file():
-        return {"test": "uv run pytest -q"}
+    pack = detect_stack_or_default(repo_root)
+    if pack is not None and "test" in pack.commands:
+        return {"test": pack.commands["test"]}
     return {"test": _UNDECLARED_GATE_COMMAND}
 
 
@@ -1015,6 +1024,11 @@ class _NonInteractivePrompter:
                 key = k
                 break
         # The slug question is not in `_PROMPTS`.
+        if key is None and prompt == _TEMPLATE_SOURCE_PROMPT:
+            # 057/US4: non-interactive mode uses the shipped default; an operator
+            # who wants a custom template names it interactively or edits the file.
+            self._reports.append("applied default: template source = shipped default")
+            return ""
         if key is None and prompt == "repo slug":
             # The default is the normalized directory name or existing registry slug.
             try:
@@ -1024,6 +1038,14 @@ class _NonInteractivePrompter:
             default_slug = known.slug if known is not None else registry.normalize_slug(self._repo_root.name)
             self._reports.append(f"applied default: repo slug = \"{default_slug}\"")
             return default_slug
+        # 057/US2: stack detection is proposed in the interactive path. In the
+        # non-interactive path the default pack (detected, or agnostic fallback) is
+        # used without asking.
+        if key is None and prompt == "detected stack":
+            pack = detect_stack_or_default(self._repo_root)
+            name = pack.name if pack is not None else "agnostic"
+            self._reports.append(f"applied default: detected stack = \"{name}\"")
+            return name
         if key is None:
             raise AssertionError(f"non-interactive prompter does not know prompt: {prompt!r}")
         value = _init_default(key, self._repo_root)
@@ -1098,6 +1120,15 @@ def _interview(
             manifest_values.pop(key, None)
         else:
             manifest_values[key] = value
+
+    # 057/US4: ask for an optional template source after the manifest interview.
+    # A supplied source displaces the shipped default; an absent source uses the
+    # shipped default. A bad source is refused here, at interview time, rather
+    # than silently falling back.
+    template_source = _ask_for_template_source(prompter)
+    if template_source is not None:
+        manifest_values["_template_source"] = template_source
+
     return manifest_values
 
 
@@ -1169,6 +1200,31 @@ def init_command(args: argparse.Namespace) -> int:
                 existing is not None and manifest_values == existing.declared
             )
 
+        # 057/US2: detect the repository stack, propose it, and allow override.
+        # Detection runs inside the interview region so the operator can answer the
+        # proposal before any file is written. The stack influences only the seeded
+        # constitution, not the manifest itself.
+        # 057/US4: a supplied template may carry its own stack packs. Discover them
+        # in a `stacks/` sibling of the supplied floor file so supplied packs of the
+        # same name override shipped packs and shipped packs still fill gaps.
+        template_source = manifest_values.get("_template_source")
+        extra_pack_dirs: list[Path] = []
+        if template_source is not None:
+            supplied_stacks = Path(template_source).parent / "stacks"
+            if supplied_stacks.is_dir():
+                extra_pack_dirs.append(supplied_stacks)
+
+        stack_pack: StackPack | None = None
+        if existing is None:
+            if non_interactive:
+                stack_pack = detect_stack_or_default(
+                    repo_root, extra_directories=extra_pack_dirs
+                )
+            else:
+                stack_pack = detect_stack_or_ask(
+                    repo_root, prompter, extra_directories=extra_pack_dirs
+                )
+
         # The slug is declared by the operator and lives in the engine's registry,
         # never in the manifest: it is what the engine calls this repo, not what the
         # repo declares about itself.
@@ -1199,9 +1255,13 @@ def init_command(args: argparse.Namespace) -> int:
     # `--check` run that reports an absence can do so without having created
     # directories. The constitution is written as part of the scaffold: a file
     # exists at the path is left untouched, and a missing file is seeded.
-    floor = resolve_default_floor()
+    # 057/US4: template resolution is part of the interview, so the resolved
+    # floor and source are already in `manifest_values` as `_template_source`.
+    template_source = manifest_values.pop("_template_source", None)
+    floor = _resolve_floor(template_source)
     standards_path = _resolve_standards_path(manifest_values)
     manifest_values["standards"] = standards_path
+
     if kept_manifest is None:
         text = _render_manifest(manifest_values)
 
@@ -1211,8 +1271,14 @@ def init_command(args: argparse.Namespace) -> int:
     # only when writing; the existence guard is on the file, not on its content
     # (FR-002, plan trap 4).
     standards_path, standards_found = _write_constitution(
-        repo_root, manifest_values, floor_text=floor.text, source=floor.path
+        repo_root,
+        manifest_values,
+        floor_text=floor.text,
+        source=floor.path,
+        stack_pack=stack_pack,
     )
+    if not standards_found:
+        print(f"standards source: {floor.path}")
 
     for line in reports:
         print(line)
@@ -1521,6 +1587,40 @@ def _undeclared_dials_note(
     )
 
 
+def _ask_for_template_source(prompter: Any) -> str | None:
+    """Ask the operator for a template source that displaces the shipped default.
+
+    Empty answer means "use the shipped default". A non-empty answer is returned
+    as-is and validated later, because the prompt only collects intent; refusing
+    a missing or empty file belongs to the resolver so the error names the path.
+    """
+    answer = prompter.ask(_TEMPLATE_SOURCE_PROMPT, default="")
+    stripped = answer.strip()
+    if not stripped:
+        return None
+    return stripped
+
+
+def _resolve_floor(template_source: str | None) -> "FloorSource":
+    """Resolve the floor to seed from: supplied, then shipped.
+
+    A supplied source that does not exist, is unreadable, or is empty is refused
+    at interview time naming the path (FR-018). The shipped default is never
+    silently substituted for a bad supplied source.
+    """
+    from factory.constitution import resolve_default_floor, resolve_supplied_floor
+
+    if template_source is not None:
+        resolved = resolve_supplied_floor(template_source)
+        if resolved is None:
+            raise OperatorError(
+                f"template source {template_source!r} is missing, unreadable, or empty",
+                code=EXIT_USER,
+            )
+        return resolved
+    return resolve_default_floor()
+
+
 def _ask_for_slug(repo_root: Path, *, prompter: Any) -> str:
     """Ask for the repo's slug, re-asking until it is a usable namespace token.
 
@@ -1768,8 +1868,35 @@ def _standards_document_exists(repo_root: Path, standards_path: str) -> bool:
     return (repo_root / standards_path).is_file()
 
 
-def compose_constitution(floor_text: str, source: str, *, project_name: str) -> str:
-    """Compose a constitution from floor, project section, and governance.
+def detect_stack_or_default(
+    repo_root: Path,
+    *,
+    extra_directories: list[Path] | None = None,
+) -> StackPack | None:
+    """Return the detected stack pack, or the agnostic fallback if none matches.
+
+    This is the read-only default path. The interactive path uses
+    `detect_stack_or_ask` so the operator can confirm or override.
+    """
+    from factory.stack_packs import detect_stack
+
+    pack = detect_stack(repo_root, extra_directories=extra_directories)
+    if pack is not None:
+        return pack
+    for p in resolve_stack_packs(extra_directories=extra_directories):
+        if p.name == "agnostic":
+            return p
+    return None
+
+
+def compose_constitution(
+    floor_text: str,
+    source: str,
+    *,
+    project_name: str,
+    stack_layer: str,
+) -> str:
+    """Compose a constitution from floor, stack layer, project section, and governance.
 
     Pure function of its inputs so it is testable without a repository. The
     `source` argument records where the floor came from; US4 will pass a
@@ -1777,6 +1904,10 @@ def compose_constitution(floor_text: str, source: str, *, project_name: str) -> 
     """
     parts: list[str] = []
     parts.append(floor_text.rstrip())
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+    parts.append(stack_layer.rstrip())
     parts.append("")
     parts.append("---")
     parts.append("")
@@ -1800,6 +1931,7 @@ def _write_constitution(
     *,
     floor_text: str,
     source: str,
+    stack_pack: StackPack | None = None,
 ) -> tuple[str, bool]:
     """Seed a standards document if none exists, and report what happened.
 
@@ -1813,7 +1945,16 @@ def _write_constitution(
         return standards_path, True
 
     project_name = manifest_values.get("landing_branch", "this repository")
-    text = compose_constitution(floor_text, source, project_name=str(project_name))
+    if stack_pack is None or stack_pack.name == "agnostic":
+        stack_layer = agnostic_layer()
+    else:
+        stack_layer = stack_pack.render_layer()
+    text = compose_constitution(
+        floor_text,
+        source,
+        project_name=str(project_name),
+        stack_layer=stack_layer,
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return standards_path, False

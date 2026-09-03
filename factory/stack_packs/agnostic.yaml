@@ -1,0 +1,6 @@
+name: agnostic
+label: Language-agnostic
+markers: []
+toolchain: language-agnostic
+commands: {}
+dependency_policy: Ask before adding dependencies; new runtime dependencies require operator approval.

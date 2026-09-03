@@ -174,7 +174,7 @@ def make_repo(parent: Path, name: str) -> Path:
 
 
 def answers_for(slug: str) -> list[str]:
-    """The manifest answers plus the slug, in interview order."""
+    """The manifest answers plus the template source and slug, in interview order."""
     return [
         str(_SUPPORTED_VERSION),  # version
         "bwrap",  # runtime
@@ -187,6 +187,7 @@ def answers_for(slug: str) -> list[str]:
         "",  # writes (omitted; 084/US3 — absent means nothing declared)
         "",  # caches (omitted; 101/US2 — absent means the uv cache alone)
         "",  # diff_refusal_bytes (omitted; 092/US2 — absent means the default)
+        "",  # template source (empty -> shipped default; 057/US4)
         slug,
     ]
 

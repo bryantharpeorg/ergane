@@ -14,6 +14,7 @@ import pytest
 
 import factory.cli.init as init_module
 from factory.constitution import DEFAULT_FLOOR_VERSION as FLOOR_VERSION, shipped_floor_text
+from factory.stack_packs import agnostic_layer
 from factory.mergequeue.forge import LandingPolicy, RepositoryDescription
 from factory.mergequeue.models import Finding, Severity
 from factory.mergequeue.onboard import InitFacts, evaluate_repo
@@ -38,6 +39,8 @@ MINIMAL_ANSWERS: list[str] = [
     "",  # writes (empty -> omitted)
     "",  # caches (empty -> omitted)
     "",  # diff_refusal_bytes (empty -> omitted)
+    "",  # template source (empty -> shipped default)
+    "",  # detected stack: accept default
     "myapp",  # slug
 ]
 
@@ -115,7 +118,10 @@ def _floor_finding(profile: Any) -> Finding:
 def test_composed_output_records_floor_version() -> None:
     """The seeded document records the floor version it came from."""
     text = init_module.compose_constitution(
-        shipped_floor_text(), "shipped-default", project_name="app"
+        shipped_floor_text(),
+        "shipped-default",
+        project_name="app",
+        stack_layer=agnostic_layer(),
     )
     assert f"floor version {FLOOR_VERSION}" in text
 
@@ -123,7 +129,10 @@ def test_composed_output_records_floor_version() -> None:
 def test_floor_version_is_machine_readable_and_human_visible() -> None:
     """The marker is a predictable pattern a parser can read and a human can see."""
     text = init_module.compose_constitution(
-        shipped_floor_text(), "shipped-default", project_name="app"
+        shipped_floor_text(),
+        "shipped-default",
+        project_name="app",
+        stack_layer=agnostic_layer(),
     )
     assert f"(floor version {FLOOR_VERSION})" in text
     assert "Governance" in text

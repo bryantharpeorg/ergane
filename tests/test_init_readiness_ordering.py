@@ -43,7 +43,7 @@ def init(monkeypatch: pytest.MonkeyPatch) -> Init:
     """Run a full `ergane init`, scripting the interview."""
 
     def run(repo: Path, *, slug: str = SLUG) -> Any:
-        answers = ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", "", "", slug]
+        answers = ["1", "bwrap", 'test: "uv run pytest -q"', "", "", "main", "", "", "", "", "", "", slug]
         monkeypatch.setattr(init_module, "_prompter_factory", lambda: ScriptedPrompter(answers))
         return _invoke(["init", str(repo)])
 

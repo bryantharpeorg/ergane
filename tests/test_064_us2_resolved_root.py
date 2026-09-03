@@ -50,12 +50,14 @@ from tests.test_ergane_init import (
 )
 from tests.test_ergane_init_check import bind_offline_seams, make_repo
 
-#: Every question a *root* invocation asks, in the order the parser's own key
-#: order puts them — the manifest keys, then the slug. Derived rather than
-#: spelled, so a key added to the schema does not silently license an extra
-#: prompt here (034/US6 added `roadmap`; 049/US5 added `forge`).
+#: Every question a *root* invocation asks on a repository with no matching
+#: stack markers, in the order the parser's own key order puts them — the
+#: manifest keys, then the US4 template-source question, then the slug.
+#: Derived rather than spelled, so a key added to the schema does not silently
+#: license an extra prompt here (034/US6 added `roadmap`; 049/US5 added `forge`).
 INTERVIEW_PROMPTS: list[str] = [init_module._PROMPTS[key] for key in _TOP_LEVEL_KEYS] + [
-    "repo slug"
+    init_module._TEMPLATE_SOURCE_PROMPT,
+    "repo slug",
 ]
 
 #: "Press enter through every question" — a new list, never an edit of one that
