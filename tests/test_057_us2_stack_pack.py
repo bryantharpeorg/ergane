@@ -17,7 +17,7 @@ import yaml
 
 import factory.cli.init as init_module
 import factory.stack_packs as stack_packs_module
-from factory.cli.errors import EXIT_OK
+from factory.cli.errors import EXIT_OK, OperatorError
 
 from tests.test_057_us1_constitution_seeded import run_init
 from tests.test_ergane_init import ScriptedPrompter, _invoke, make_bare_repo
@@ -121,6 +121,35 @@ def test_operator_answer_overrides_detected_stack(
     assert "using operator-chosen stack" in result.stdout.lower(), (
         "init did not report applying the operator's stack choice"
     )
+
+
+def test_a_stack_name_no_pack_answers_to_is_refused_not_defaulted(
+    tmp_path: Path,
+) -> None:
+    """FR-008, plan trap 11: a wrong answer is not an absent one.
+
+    An empty answer means "take the proposal" and must keep meaning that. A
+    name no pack answers to is a different thing entirely, and quietly treating
+    it as an omission would write the detected stack's layer into a repository
+    whose operator had just said they wanted a different one — the one case
+    where they have stated in as many words that the proposal is wrong.
+    """
+    repo = make_bare_repo(
+        tmp_path, {"pyproject.toml": "[project]\nname = 'app'\nversion = '0.1.0'\n"}
+    )
+
+    with pytest.raises(OperatorError) as refusal:
+        init_module.select_stack_with_operator(repo, ScriptedPrompter(["rust"]))
+
+    message = str(refusal.value)
+    assert "rust" in message, f"the refusal does not name what was asked for: {message!r}"
+    for pack in stack_packs_module.resolve_stack_packs():
+        assert pack.name in message, (
+            f"the refusal does not name {pack.name!r} as an available stack: {message!r}"
+        )
+
+    # And the empty answer still takes the proposal, unchanged.
+    assert init_module.select_stack_with_operator(repo, ScriptedPrompter([""])).name == "python"
 
 
 def test_unmatched_fixture_produces_language_agnostic_layer(
