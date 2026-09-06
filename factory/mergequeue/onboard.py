@@ -166,6 +166,7 @@ def evaluate_repo(
     policy: "LandingPolicy",
     declared_gates: Sequence[str],
     gate_commands: Mapping[str, str] | None = None,
+    boundary_only_gates: Sequence[str] | None = None,
     factory_yaml_error: str | None = None,
     init_facts: "InitFacts | None" = None,
 ) -> TargetRepoProfile:
@@ -186,6 +187,16 @@ def evaluate_repo(
     deliberately not "declared empty" — a caller that gathered no commands
     reports exactly the findings it reported before, rather than calling every
     gate a no-op.
+
+    `boundary_only_gates` is 128-US2's addition, read off the same loaded
+    manifest (FR-010): the gates the operator declared as binding the boundary
+    alone. A declared gate the landing branch does not require is then a
+    *choice* rather than a defect — the gate still runs for every node at the
+    boundary (`_run_gate_list_from_config` iterates every declared gate) — so
+    the parity finding becomes a warning that names the gate and never a
+    refusal. Same rule as `gate_commands`: a caller that says nothing reports
+    exactly what it reported before, because the exemption is the operator's
+    declaration, not this judgment's guess.
     """
 
     findings: list[Finding] = list(reading.findings)
@@ -209,11 +220,21 @@ def evaluate_repo(
 
     # Q4: the gate ↔ check mapping, by name (position is irrelevant), and
     # whether the command behind the matched check can fail at all (061 US3).
+    # 128-US2: the operator's boundary-only declaration rides in beside the
+    # commands, so the parity question for a listed gate is "is this the
+    # declared arrangement?" rather than "is this gate missing?".
     declared = set(declared_gates)
     required = set(policy.required_checks)
     commands: Mapping[str, str] = gate_commands or {}
+    boundary_only = set(boundary_only_gates or ())
     for gate in declared:
-        _gate_check_finding(findings, gate, gate in required, commands.get(gate))
+        _gate_check_finding(
+            findings,
+            gate,
+            gate in required,
+            commands.get(gate),
+            boundary_only,
+        )
     for check in sorted(required - declared):
         _unknown_check_finding(findings, check)
 
@@ -366,6 +387,7 @@ def _gate_check_finding(
     gate: str,
     matched: bool,
     command: str | None = None,
+    boundary_only: set[str] | None = None,
 ) -> None:
     """The gate ↔ check parity finding, and 061-US3's no-op finding beside it.
 
@@ -376,15 +398,55 @@ def _gate_check_finding(
     reassured. An *unmatched* gate keeps its failing parity finding and gets the
     no-op finding as well: those are two independent problems and reporting only
     one of them would be the masking this module forbids.
+
+    128-US2 adds the operator's own answer to the parity question. The gate
+    still runs — `_run_gate_list_from_config` iterates every declared gate
+    before a node opens a pull request — so a listed gate whose landing branch
+    requires no check is the arrangement the manifest describes, and the
+    finding reports the choice as a warning (FR-005) instead of refusing it.
+    A listed gate that *is* required is a manifest that drifted (FR-006): the
+    list describes a gate that now binds the queue too, which is a stale
+    declaration rather than a broken repository, and also only a warning. An
+    unlisted gate keeps today's blocking finding byte-for-byte (FR-007) — the
+    typo case the check exists for — and severity is passed explicitly in both
+    branches, following `_noop_gate_finding`, because widening `blocking`
+    would soften `unknown_check:` too (FR-008).
     """
     if command is not None and _is_noop_gate_command(command):
         _noop_gate_finding(findings, gate, command)
         if matched:
             return
 
-    if matched:
+    if matched and not (boundary_only and gate in boundary_only):
         findings.append(
             Finding(f"gate_check:{gate}", True, f"required check '{gate}' exists")
+        )
+    elif matched:
+        findings.append(
+            Finding(
+                f"gate_check:{gate}",
+                False,
+                f"gate '{gate}' is listed in boundary_only_gates but the landing "
+                f"branch requires a check named '{gate}', so the declaration is "
+                "stale: the list says the gate binds the boundary alone, and the "
+                "branch now demands it too — remove the stale entry, or drop the "
+                "required check, whichever matches what this repository is meant "
+                "to do",
+                Severity.WARNING,
+            )
+        )
+    elif boundary_only and gate in boundary_only:
+        findings.append(
+            Finding(
+                f"gate_check:{gate}",
+                False,
+                f"gate '{gate}' is declared in factory.yaml and listed in "
+                "boundary_only_gates, so the landing branch's requiring no check "
+                f"named '{gate}' is the declared arrangement — the gate still "
+                "runs for every node at the boundary, and this report is where "
+                "the choice stays visible",
+                Severity.WARNING,
+            )
         )
     else:
         findings.append(
