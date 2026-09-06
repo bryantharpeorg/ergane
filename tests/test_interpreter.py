@@ -234,6 +234,9 @@ from factory.workgraph.worktree import PreparedWorktree, branch_name
 from factory.escalation.question import QuestionWorkflow
 from factory.escalation.workflow import EscalationWorkflow
 from factory.workgraph.workflow import EpicInput, EpicWorkflow
+from tests.test_a_boundary_only_declaration_reaches_onboarding import (
+    derive_onboarding_boundary_pair,
+)
 
 EPIC_ID = "demo-loans"
 FEATURE = "007-library-loans"
@@ -2471,6 +2474,61 @@ async def test_a_passing_onboarding_profile_proceeds_to_normal_dispatch(
     assert script.onboard_requests, "validate_target_repo never ran"
     assert script.calls[0] == "validate_target_repo"
     assert script.dispatched == ["us1", "us2", "us3"]
+    assert status.epic_state == EpicState.COMPLETED
+
+
+async def test_a_boundary_only_declaration_clears_the_child_epic_refusal(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """128-US2 / FR-009 / T013: the child epic's re-evaluation clears through
+    the verdict alone.
+
+    A `manual ergane build start` re-evaluates onboarding at the epic's own
+    start and raises GRAPH_INVALID on a failing profile. This is the second of
+    the two refusal sites, and the same prohibition applies: the pair of
+    profiles is *derived* from two manifests differing only in the
+    `boundary_only_gates:` line (via `onboard_target_repo` over a modelled
+    forge whose landing branch leaves the listed gate unrequired), never
+    constructed — a hand-built passing profile is green on today's tree, since
+    `ScriptedWorld`'s default already proceeds on one.
+
+    The unlisted half fails the epic exactly as today, with the blocking
+    finding in the failure message; the listed half dispatches to normal
+    completion. `_onboard_target` learns nothing about the key either way.
+
+    What edit would make this fail: special-casing the gate at
+    `_onboard_target`, or swapping in a constructed profile.
+    """
+    listed, unlisted = derive_onboarding_boundary_pair(tmp_path)
+
+    script = ScriptedWorld({}, client=env.client)
+    script.onboard_profile = unlisted
+
+    with pytest.raises(WorkflowFailureError) as failure:
+        await run_epic(env, script)
+
+    message = str(failure.value.__cause__)
+    # Today's refusal, verbatim — the typo case the check exists for.
+    assert (
+        "gate 'lint' is declared in factory.yaml but the landing branch "
+        "requires no check named 'lint'" in message
+    )
+    assert script.calls == ["validate_target_repo"]
+    assert script.prepare_requests == []
+    assert script.attempts == []
+
+    listed_script = ScriptedWorld(
+        {"us1": [passing()], "us2": [passing()], "us3": [passing()]},
+        client=env.client,
+        scenarios=True,
+    )
+    listed_script.onboard_profile = listed
+
+    status = await run_epic(env, listed_script)
+
+    # The declaration cleared it: the epic proceeds to normal dispatch.
+    assert listed_script.calls[0] == "validate_target_repo"
+    assert listed_script.dispatched == ["us1", "us2", "us3"]
     assert status.epic_state == EpicState.COMPLETED
 
 

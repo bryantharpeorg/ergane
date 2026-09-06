@@ -533,6 +533,81 @@ def test_both_doors_render_identical_parity_findings(tmp_path: Path, wired: Wire
     assert ("unknown_check:typecheck", False) in [(c, p) for c, p, _ in dispatch_findings]
 
 
+def test_both_doors_report_a_listed_gate_as_a_warning_not_a_refusal(
+    tmp_path: Path, wired: Wire
+) -> None:
+    """128-US2 / FR-010: the boundary-only declaration reaches *both* doors.
+
+    `test_both_doors_render_identical_parity_findings` above drives the same
+    repository through the dispatch door (`onboard_target_repo`) and the init
+    door (`check_repo`) and holds the two to byte-identical triples. This case
+    extends that parity into the new behaviour, over a manifest that *declares*
+    the list rather than restating it anywhere: the same wiring requires `test`
+    and `typecheck` over a manifest declaring `test` and `lint`, so `lint` is
+    exactly a declared gate the branch does not require — and the manifest
+    names it boundary-only.
+
+    Asserted on the mark, not on equality alone: the two doors rendered
+    identical triples before this story and after it, so a case that only
+    re-asserted equality would be green on a diff that threaded nothing. Both
+    halves must show `gate_check:lint` as `[WARN]` — non-blocking on *both*
+    doors — or one door is reporting a verdict the other does not.
+
+    What edit would make this fail: an init-side fact gatherer or forge factory
+    that loads the manifest a second time and drops the list.
+    """
+    repo = make_repo(
+        tmp_path,
+        gates={
+            "test": "uv run pytest -q",
+            "lint": "uv run ruff check .",
+            "typecheck": "uv run mypy .",
+        },
+    )
+    registry.register("widgets", repo)
+    wired(conforming_gh(required_checks=("test", "typecheck")))
+    # `make_repo` writes a v1 body; the key is v2-only (128 FR-004), so the
+    # list is declared by rewriting the manifest as a v2 one — on disk, which
+    # `resolve_manifest_path` reads, no commit needed. The branch requires
+    # `test` and `typecheck` over gates declaring all three, so `lint` is
+    # exactly the declared gate the branch does not require, and it is the one
+    # the manifest lists boundary-only.
+    manifest = repo / "ergane.yaml"
+    manifest.write_text(
+        """\
+version: 2
+runtime: bwrap
+gates:
+  test: "uv run pytest -q"
+  lint: "uv run ruff check ."
+  typecheck: "uv run mypy ."
+boundary_only_gates: [lint]
+standards: docs/STANDARDS.md
+landing_branch: main
+""",
+        encoding="utf-8",
+    )
+
+    from factory.activities.merge_activities import onboard_target_repo
+
+    dispatch_door = onboard_target_repo(
+        workgraph_cli._onboard_client_factory(repo_path=str(repo)), str(repo)
+    )
+    init_door = init_module.check_repo(repo)
+
+    for door, profile in (("dispatch", dispatch_door), ("init", init_door)):
+        lint = [f for f in profile.findings if f.check == "gate_check:lint"]
+        assert lint, f"the {door} door rendered no gate_check:lint finding"
+        assert lint[0].mark == "WARN", f"{door} door: {lint[0].mark} — {lint[0].detail}"
+        assert lint[0].blocking is False
+        assert "lint" in lint[0].detail
+        # The verdict each door reports carries the same shape of truth: the
+        # finding is reported without refusing the repository.
+        assert profile.passed is True, [
+            f.check for f in profile.findings if f.blocking
+        ]
+
+
 GUARDED_SLUGS = {
     "resolved_root",
     "runtime_root_ignored",

@@ -679,10 +679,16 @@ def onboard_target_repo(
         # a gate's name matched a required check; it now also asks whether the
         # command behind that check can fail.
         gate_commands = dict(config.gates)
+        # 128-US2: the operator's boundary-only declaration, off the same
+        # loaded config and through the same seam (FR-010) — every door that
+        # reaches onboarding reaches it here, so no door reports a verdict the
+        # others do not.
+        boundary_only_gates = tuple(config.boundary_only_gates)
         manifest_error = None
     except FactoryConfigError as error:
         declared_gates = ()
         gate_commands = {}
+        boundary_only_gates = ()
         manifest_error = str(error)
 
     try:
@@ -711,6 +717,7 @@ def onboard_target_repo(
         policy=policy,
         declared_gates=declared_gates,
         gate_commands=gate_commands,
+        boundary_only_gates=boundary_only_gates,
         factory_yaml_error=manifest_error,
         init_facts=init_facts,
     )

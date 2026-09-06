@@ -280,6 +280,71 @@ def _failing_profile(repo: str = TARGET_REPO) -> TargetRepoProfile:
     )
 
 
+# --- 128 US2: profiles derived from the declaration, not constructed ----------
+#
+# FR-009 forbids a `TargetRepoProfile` a test built with `passed=True`: both
+# refusal sites already proceed on one today, so such a test is green on a diff
+# touching no production file. This helper derives each half of the pair the
+# way `tests/test_forge_readiness.py` derives its own differential — one
+# fixture repository, a v2 manifest rewritten on disk (the fixture's own is v1,
+# and the key is v2-only), one modelled forge built like `_ready_model` with
+# its gate tuple narrowed so the listed gate is declared and *not* required,
+# and `onboard_target_repo(FakeForge(model), str(repo))` once per manifest.
+
+FIXTURE_GATES = ("lint", "test", "typecheck")
+NEUTRAL_TITLE_SOURCE = "proposal-title"
+
+V2_BOUNDARY_MANIFEST = """\
+version: 2
+runtime: bwrap
+gates:
+  lint: "bash gates/lint.sh"
+  test: "bash gates/test.sh"
+  typecheck: "bash gates/typecheck.sh"
+boundary_only_gates: [lint]
+"""
+
+V2_BOUNDARY_MANIFEST_WITHOUT = """\
+version: 2
+runtime: bwrap
+gates:
+  lint: "bash gates/lint.sh"
+  test: "bash gates/test.sh"
+  typecheck: "bash gates/typecheck.sh"
+"""
+
+
+def _boundary_model() -> Any:
+    """`_ready_model` with one edit — the gate tuple narrowed (traps 9 and 12).
+
+    `title_source` stays, or `landing_title` fails both halves and the pair
+    stops differing; the narrowing is the only deliberate difference.
+    """
+    from tests.fake_forge import FakeForge, RepositoryModel
+
+    model = RepositoryModel(address="acme/app", default_branch="main")
+    model.gate_on(
+        "main",
+        tuple(g for g in FIXTURE_GATES if g != "lint"),
+        title_source=NEUTRAL_TITLE_SOURCE,
+    )
+    return FakeForge(model)
+
+
+def _derive_boundary_pair(tmp_path: Path, *, listed: bool) -> TargetRepoProfile:
+    """The profile the real judgment produces for one of the two manifests."""
+    from tests.target_repo import build_target_repo
+
+    repo = build_target_repo(tmp_path / f"boundary-target-{listed}")
+    (repo / "ergane.yaml").write_text(
+        V2_BOUNDARY_MANIFEST if listed else V2_BOUNDARY_MANIFEST_WITHOUT,
+        encoding="utf-8",
+    )
+    from factory.activities.merge_activities import onboard_target_repo
+
+    return onboard_target_repo(_boundary_model(), str(repo))
+
+
 class RoadmapWorld:
     """Script the seams the roadmap's pre-dispatch activities read.
 
@@ -981,6 +1046,51 @@ async def test_an_onboarding_failure_parks_the_spec(
     assert "001-alpha" in parked
     assert parked["001-alpha"].check == "onboarding"
     assert "merge-queue-enabled" in parked["001-alpha"].detail
+
+
+async def test_a_boundary_only_declaration_unparks_the_dispatch_path(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """128-US2 / FR-009 / T013: the declaration clears the park through the
+    verdict alone.
+
+    The pair of profiles is *derived* — two manifests differing only in the
+    `boundary_only_gates:` line, each turned into a profile by
+    `onboard_target_repo` over a modelled forge whose landing branch requires
+    every declared gate except `lint` (so the declaration is what decides the
+    verdict, not a hand-built `TargetRepoProfile(passed=True)`, which both
+    surfaces already proceed on today). The unlisted half parks with today's
+    blocking finding verbatim; the listed half dispatches — its child starts,
+    which is the park site (`_dispatch`, step 4) having been cleared through
+    `profile.passed` alone. Neither refusal site learns anything about the key.
+
+    What edit would make this fail: special-casing the key at the park site,
+    or swapping in a constructed profile — the differential dies with it.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+        },
+    )
+    listed = _derive_boundary_pair(tmp_path, listed=True)
+    unlisted = _derive_boundary_pair(tmp_path, listed=False)
+
+    # The control first: the unlisted manifest is refused today, verbatim.
+    world_refused = RoadmapWorld(onboarding_profile=unlisted)
+    async with run_roadmap(env, world_refused, str(specs_root)) as handle:
+        status = await handle.result()
+    parked = {p.spec_dir: p for p in status.parked}
+    assert "001-alpha" in parked
+    assert parked["001-alpha"].check == "onboarding"
+    assert "gate 'lint' is declared in factory.yaml" in parked["001-alpha"].detail
+
+    # The declaration clears it: the listed half's profile passes, and the
+    # spec dispatches.
+    world_listed = RoadmapWorld(onboarding_profile=listed)
+    status = await run_to_completion(env, world_listed, str(specs_root))
+    assert status.parked == []
+    assert _status_of(status, "001-alpha").landed is True
 
 
 # ============================================================================
