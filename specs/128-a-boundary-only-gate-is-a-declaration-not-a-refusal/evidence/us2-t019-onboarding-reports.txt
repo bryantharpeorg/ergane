@@ -21,3 +21,32 @@ ergane readiness for /tmp/t019work/t019-after (ergane.yaml)
   [WARN] gate_check:lint: gate 'lint' is declared in factory.yaml and listed in boundary_only_gates, so the landing branch's requiring no check named 'lint' is the declared arrangement — the gate still runs for every node at the boundary, and this report is where the choice stays visible
 6 of 7 checks passed, 1 warned; nothing here refuses this repository
 exit code: 0
+--------------------------------------------------------------------------------
+Third door, run by hand (verification step 4): `ergane repo onboard <path>`
+against the same two repositories. It calls the seam with no `init_facts` — the
+argument shape trap 8 names — and shares `onboard_target_repo` with the other
+two doors, so the list arrives the same way. On a scratch repository with no
+GitHub remote its verdict is dominated by the forge read (`repo_read`), which
+is the route the plan documents as never reaching `evaluate_repo`; the
+manifest-derived line in its own report (`declared gates: lint, test, typecheck`)
+is read off the same loaded config the list is.
+
+$ uv run python -m factory.cli.main repo onboard /tmp/t019work/t019-before
+target repo /tmp/t019work/t019-before FAILS onboarding
+declared gates: lint, test, typecheck
+findings:
+  [FAIL] repo_read: could not read the repo via its forge (GH_REFUSED): ...
+exit code: 1
+
+$ uv run python -m factory.cli.main repo onboard /tmp/t019work/t019-after
+target repo /tmp/t019work/t019-after FAILS onboarding
+declared gates: lint, test, typecheck
+findings:
+  [FAIL] repo_read: could not read the repo via its forge (GH_REFUSED): ...
+exit code: 1
+
+The dispatch door and the init door are held to byte-identical parity by the
+committed test `tests/test_ergane_init_check.py::
+test_both_doors_report_a_listed_gate_as_a_warning_not_a_refusal`, which runs
+the listed manifest through both and asserts `gate_check:lint` is `[WARN]` and
+non-blocking on each.
