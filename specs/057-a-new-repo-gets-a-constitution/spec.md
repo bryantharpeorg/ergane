@@ -1,5 +1,9 @@
 ---
-state: ready
+state: landed
+# ATTESTED 2026-09-06 11:24 AM CT by the operator session, after `ergane spec
+# landed <this dir> --default-branch ergane-buildout` observed all four stories
+# on the buildout branch.
+#
 # FLIPPED READY 2026-09-02 9:20 PM CT, after a pre-dispatch refinement pass
 # against ergane-buildout at `5fa87c2`. The operator approved the flip.
 #

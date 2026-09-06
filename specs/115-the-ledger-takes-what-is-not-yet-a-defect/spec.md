@@ -49,8 +49,119 @@ state: draft
 # NOT IN SCOPE. This spec does not invoke an agent, does not put anything on a
 # Temporal schedule, does not migrate the store's schema, does not change what
 # any probe files, and does not alter the recurrence machine at
-# `factory/doctor/store.py:137`. It adds one lane, renames one verb, and adds one
-# read-only verb that assembles a brief.
+# `factory/doctor/store.py:137` — `report`. It adds one lane, renames one verb,
+# and adds one read-only verb that assembles a brief.
+#
+# REFINED 2026-09-04 by the refinement workflow (refinement-2026-09-04); every
+# anchor in spec.md, plan.md and tasks.md re-read from ergane-buildout at
+# 602a92c. No `fixes:` key was declared at drafting and none is added: no open
+# ledger row names the verb's name, the lane or the brief, so there is nothing
+# here to declare whole.
+#
+# TWO ANCHORS POINTED AT THE WRONG CODE, AND SIX RANGES ENDED ON A BLANK LINE.
+# `factory/workgraph/adapter.py:922` now lands inside a gitconfig-writing helper;
+# `ClaudeCodeAdapter` moved to `factory/workgraph/adapter.py:993`. `docs/architecture.md:518` is now a
+# paragraph about the judge and CI; the line naming the verb moved to `docs/architecture.md:558`.
+# Both are re-anchored in the symbol-tier form where a symbol is meant, so the
+# next drift is machine-caught rather than read past.
+#
+# THE PROSE SCOPE OF FR-004 WAS WRONG, AND IT WOULD HAVE FAILED ITS OWN GUARD.
+# The three call sites named at drafting are now nine lines in six tracked files:
+# `docs/cli/findings.md` landed 2026-09-01 (`3e4ab2f`) with the verb in a
+# synopsis twice and a section heading once, and `.claude/skills/findings-ingest/`
+# landed 2026-08-29 (`8edc028`) naming it three more times. An implementer
+# obeying the old list would land a rename whose own sweep test turns red.
+#
+# THE LANE IS NO LONGER HYPOTHETICAL, AND THAT SHARPENS US2. Measured on the live
+# ledger 2026-09-04: 520 rows, 279 open or regressed, of which **23 are already
+# `feedback/`** and 106 are critical. The ingest skill has been filing into the
+# lane since 2026-08-29 and encodes its `info` rule in prose. Two of its own
+# `findings list --json` call sites read every row on purpose, so US2 breaks them
+# unless the same story fixes them — folded into FR-006 and US2-S2.
+#
+# US2-S3 WAS PASSABLE BY A TEST-ONLY DIFF, AND UNPROVABLE OFFLINE BESIDES. "Run
+# every registered probe and assert none files into the lane" is true today with
+# no production change, and running a probe calls `gather()`, which wants
+# Temporal. FR-007 is now a refusal at the one choke point every probe finding
+# passes through, proven non-vacuous by a synthetic probe.
+#
+# FR-011 SENT THE IMPLEMENTER TO A TEMPLATE SET THAT NO LONGER DESCRIBES THE
+# CONTRACT. `.specify/templates/spec-template.md` has not been touched since
+# 2026-08-06: it has no `## Work Graph` at all, puts Functional Requirements at
+# level 3 under `## Requirements`, and still teaches `### Edge Cases` and
+# `## Success Criteria`. A brief built from it would teach a drafter a shape
+# `ergane spec validate` refuses and `derive_workgraph` cannot compile. FR-011
+# now reads the shape from `scaffold_spec`, whose output `findings promote` puts
+# through `derive_workgraph` before it will accept it.
+#
+# STRUCTURE. The twelve requirements moved out of plan.md into a level-2
+# `## Functional Requirements` section here, `implements:` is declared on all
+# three stories, and the two summary sections the house style dropped after 126
+# are gone. Story numbers, titles and the US1 → US2 → US3 chain are unchanged.
+#
+# REPAIRED 2026-09-04 (refinement-2026-09-04): the `findings list --json`
+# consumer sweep was two call sites and the tree holds three — the mandated
+# corpus dump at `.claude/skills/findings-ingest/SKILL.md:77` is added to FR-006,
+# US2-S2, trap 11 and T019, and
+# `.claude/skills/findings-ingest/SKILL.md:136` is re-described as the
+# category-reuse check it actually is; FR-003's help half named no mechanism that can deliver it
+# — measured, every shape the old T006 permitted prints `report` in argparse's
+# usage metavar, so an explicit `metavar` on the findings `add_subparsers` plus a
+# help-less second parser is now named, with the measurement in plan.md § *The
+# alias trap, measured* and trap 13; the noun description at
+# `factory/cli/doctor.py:262` still says "Report" and is now in FR-003's scope;
+# FR-007 says which of refuse-and-abort or skip-and-continue it means and names
+# the unwired twin `factory/doctor/cli.py:257`; FR-011 says which scaffold branch
+# carries the `derive_workgraph` proof; T020's evidence was ~240 KiB against a
+# 64 KiB refusal and is now bounded, with plan.md § *Sizing* carrying the
+# measured bytes (trap 14). Two symbol anchors moved to the machine-checked form.
+# No hold text was changed, no key declared, state stays draft.
+#
+# REPAIRED 2026-09-04, second pass (refinement-2026-09-04), anchors re-read at
+# 602a92c. FR-003's `metavar` was a hardcoded brace list and is now *derived*
+# from the subparsers' own `_name_parser_map` minus the one deprecated-name
+# declaration: measured against argparse, a literal list is exactly what
+# `tests/page_holds_true.py:346` — `verbs_of` reads as the verb set, so it would
+# have made the `CLAUDE.md`, README and on-ramp guards blind to US3's own
+# `draft` — and trap 13 and T006 had disagreed about whether `draft` belonged in
+# the literal at all. The fragmentation half of US2 was a provable no-op:
+# `_fragmented_groups` skips every key with fewer than three segments and all
+# 279 open and regressed rows have exactly two, so gap step 4, FR-008, US2-S4,
+# trap 10 and T015 now carry the harm that is real — a want pooled with the
+# defects and given no heading of its own. 092 (`c06a556`, `03451a9`,
+# 2026-08-30) split the diff constant in two: the refusal is
+# `DIFF_REFUSAL_THRESHOLD` at `factory/verify/diffbounds.py:66`, not
+# `DIFF_INPUT_LIMIT` at `:47`, and trap 14, § *Sizing* and T021 now say so while
+# keeping 64 KiB as the default it still is. US2 gained the
+# `docs/cli/findings.md` edit its own FR-009 discipline demands, held by a
+# synopsis-to-`--help` guard a prose-only diff cannot satisfy; T001 freezes
+# `factory.cli.doctor._utcnow`; T004's `record --help` assertion now excludes
+# `--source`'s `reporter source` help string, which carries the substring and
+# which FR-001 pins. Correcting the REFINED block above rather than editing it:
+# its "no open ledger row names the verb" is too broad —
+# `doctor/the-credential-sweep-on-findings-report-refuses-a-note-that-names-the-repositorys-own-epic`
+# does name it, is touched and not fixed by anything here, and is declared by
+# sibling draft 152, which edits the same write path and is named in plan.md
+# § *Dispatch hazards*. Still no `fixes:` key, state stays draft.
+#
+# REPAIRED 2026-09-04, third pass (refinement-2026-09-04), anchors re-read at
+# 602a92c. One blocking defect, in the one task that held FR-006, FR-007 and
+# FR-008 to a single name: T016 asked for the reserved category to be asserted
+# "by identity rather than by string equality", and that assertion is vacuous.
+# Measured on this box, CPython 3.12.3: two modules each containing only
+# `X = "feedback"` give `m1.X is m2.X` -> `True`, because CPython interns every
+# identifier-shaped literal at compile time — so the guard passed against exactly
+# the shape trap 1 exists to forbid, a private `RESERVED = "feedback"` in each of
+# the three consumers. T016 is now a substitution: monkeypatch one module
+# attribute to a non-identifier sentinel and assert the list's withholding, the
+# probe refusal and the triage heading all move with it. T018 names the module
+# that holds the constant, the call-time attribute read that lets the patch reach
+# every consumer, and the `from ... import` shape that silently defeats it; trap 1
+# carries the measurement and drops the vacuous instruction. § *Sizing* gains
+# US2's measured estimate (45-55 KiB against the 65,536-byte refusal) and the
+# split to make — FR-007 into a new story, never a renumber — if it ever refuses
+# on size; no change is required before the flip. No FR, story, scenario or hold
+# text changed, no key declared, state stays draft.
 ---
 
 # Feature Specification: the ledger takes what is not yet a defect
@@ -58,54 +169,91 @@ state: draft
 **Created**: 2026-08-28
 **Depends on**: nothing outside this spec. US1 → US2 → US3 are sequential, and
 the reason is file contention rather than logic: all three edit
-`add_findings_parser` in `factory/cli/doctor.py:251-350`.
+`factory/cli/doctor.py:251` — `add_findings_parser`.
 
 ## The gap, stated precisely
 
 The factory can record a defect, count how often it recurs, decide what a landed
 spec has closed, and scaffold a spec directory from what remains. It cannot
-record a want.
+record a want. The routing table in `CLAUDE.md:101-106` has three destinations
+and none of them fit: a binding rule needs a defect class that has bitten twice,
+a finding needs a mechanism and a reproduction, and cross-session memory accepts
+anything and dispatches nothing.
 
-That is not a small omission, because the routing table in `CLAUDE.md` has only
-three destinations and none of them fit. A binding rule requires a defect class
-that has bitten twice. A finding requires "mechanism and evidence" — a
-`file:line` and a reproduction. Cross-session memory accepts anything and
-dispatches nothing. So an idea that is merely *good* has nowhere to go, and the
-observed consequence is that it is rediscovered later by an agent, at full price,
-or not at all.
+The causal chain, five steps, each read from the tree:
 
-Three specific things stand between the ledger and that job:
-
-1. **The write verb's name means two things.** `ergane findings report` is read
-   as "file a report" by the person filing and as "run a report" by the person
-   reading. Both readings are natural; that is what makes it a defect rather
-   than a preference.
-2. **There is no lane.** `category` is documented in the schema itself as an
-   *open taxonomy* (`factory/doctor/store.py:52`) and nothing validates it, so a
-   `feedback/` prefix costs nothing to adopt — but `findings list`
-   (`factory/cli/doctor.py:266-273`) filters only on `--severity` and
-   `--status`. Feedback filed today is indistinguishable from a defect in every
-   view, and inflates the open count the operator reads as a health signal.
-3. **There is no way out that saves any work.** `promote`
-   (`factory/cli/doctor.py:514`) produces a spec directory whose text is a
-   scaffold, and everything that makes a spec worth dispatching — the evidence,
-   the anchors, the traps, the acceptance scenarios — still has to be assembled
-   by hand from a store the drafter has to know how to query.
+1. **The write verb answers to a name that means two things.** The subparser is
+   registered as `report` at `factory/cli/doctor.py:276`, and its own help string
+   on that same line is `record a finding`. Read by the person filing it means
+   "file a report"; read by the person reading it means "run a report". Both
+   readings are natural, which is what makes it a defect rather than a taste.
+2. **Nothing stops a want being filed, so wants are already there.** `category`
+   is documented in the schema itself as an open taxonomy
+   (`factory/doctor/store.py:52`) and no `CHECK` constrains it, so a `feedback/`
+   prefix costs nothing to adopt — and it has been adopted:
+   `.claude/skills/findings-ingest/SKILL.md:150-161` routes every want into
+   `feedback/…` at `info`, and has done since 2026-08-29.
+3. **Every view then counts those wants as defects.** `findings list` registers
+   `--severity`, `--status` and `--json` and nothing else
+   (`factory/cli/doctor.py:266-273`), and `factory/cli/doctor.py:368` —
+   `findings_list_command` applies exactly those two filters over the unfiltered
+   read `factory/doctor/store.py:454` — `list_findings`. Measured on the live
+   ledger on 2026-09-04: 279 open or regressed rows, **23 of them already
+   `feedback/`**. The number the operator reads as a health signal is 9% wants.
+4. **Triage pools them with the defects and gives them no heading of their
+   own.** `factory/doctor/triage.py:470` — `classify` builds its pool from every
+   open and regressed row, so a want is counted in `total` and in `classified`
+   beside the defects and then falls down the same ladder — the prose class, the
+   cold rule at `factory/doctor/triage.py:549-551`, and finally the residue —
+   and is then listed under the same class headings the defects are, in both
+   faces (`factory/doctor/triage.py:710` — `render` and
+   `factory/doctor/triage.py:675` — `to_document`), with nothing in either
+   document saying it is not one. The folding class is *not*
+   the harm here and cannot be: `factory/doctor/triage.py:444` —
+   `_fragmented_groups` skips every key with fewer than three segments
+   (`factory/doctor/triage.py:108`; the module's own class list says the same at
+   `factory/doctor/triage.py:33`), and measured on the live ledger on 2026-09-04
+   all 279 open and regressed rows — the 23 `feedback/` rows included — have
+   exactly two.
+5. **And the way out saves no work.** `factory/cli/doctor.py:514` —
+   `findings_promote_command` scaffolds a spec directory, but the text it writes
+   comes from the skeletal findings variant of `factory/doctor/scaffold.py:27` —
+   `scaffold_spec` (`factory/doctor/scaffold.py:50-58`). The evidence, the
+   anchors, the traps and the acceptance scenarios — everything that makes a spec
+   worth dispatching — are still assembled by hand from a store the drafter has
+   to know how to query, including the event trail at
+   `factory/doctor/store.py:493` — `list_events`, which no CLI verb reads today.
 
 ## The rule this spec is asking for
 
-**Something not yet a defect has a durable home that says it is not a defect,
-and getting it out again hands the drafter the evidence instead of the task of
+**Something not yet a defect has a durable home that says it is not a defect, and
+getting it out again hands the drafter the evidence instead of the task of
 finding it.**
+
+What `findings list` shows, for every combination of row and flag:
+
+| row | no flags | `--category feedback` | `--category <other>` | `--all` |
+|---|---|---|---|---|
+| defect, e.g. `verify/…` | listed | withheld | listed iff the category matches | listed |
+| reserved, `feedback/…` | **withheld, and the count named on stderr** | listed | withheld | listed |
+
+`--severity` and `--status` compose with every column of that table rather than
+replacing it, and `--json` keeps emitting the bare array its in-tree consumers
+already parse (`.claude/skills/findings-ingest/SKILL.md:77`,
+`.claude/skills/findings-ingest/SKILL.md:136` and
+`.claude/skills/findings-ingest/SKILL.md:187`); the
+withheld notice goes to stderr on that path for the same reason FR-002's
+deprecation does.
 
 ### What this spec is not
 
 It is not a second dispatcher. `ergane findings draft` assembles a brief and
 stops; the agent that consumes it is invoked by the operator, in a separate
 process, by whatever means the operator already uses. The node adapter
-(`factory/workgraph/adapter.py:922`) is shaped around an `AttemptContext` — a
-worktree, a heartbeat, a pid file, a per-node HOME, a transcript archive — and
-reaching for it here would build a second lifecycle to run one prompt.
+`factory/workgraph/adapter.py:993` — `ClaudeCodeAdapter` is shaped around an
+`AttemptContext` — a worktree, a heartbeat, a pid file, a per-node HOME, a
+transcript archive — and reaching for it here would build a second lifecycle to
+run one prompt.
 
 It is not a schedule. Putting the drafter on a tick beside `ergane-roadmap` is
 the obvious next move and is deliberately deferred: an unattended drafter writes
@@ -115,9 +263,21 @@ the verb, watch the drafts, schedule it when they stop needing a reader.
 
 It is not a schema migration. `severity` is pinned by a `CHECK` constraint
 (`factory/doctor/store.py:53-54`) and `status` by another
-(`:55-56`). Feedback is filed at `info`, which is an accepted compromise rather
-than a good fit, and it is named as one so that no implementer invents a fourth
-severity to make it fit better.
+(`factory/doctor/store.py:55-56`), and `SCHEMA_VERSION` is 1 with no migration
+path (`factory/doctor/store.py:20`). Feedback is filed at `info`, which is an
+accepted compromise rather than a good fit, and it is named as one so that no
+implementer invents a fourth severity to make it fit better.
+
+It is not a rewrite of triage's folding class. `_fragmented_groups` is left
+alone, and the reason is arithmetic rather than taste: it reads only keys of
+three or more segments, and no open or regressed row in this ledger has more
+than two. A clause excluding the lane from it would be a change no row could
+exercise, and a scenario written over it would pass against an empty production
+diff.
+
+It is not a correction of `.specify/templates/`. Those templates are stale
+against the current spec shape and this spec routes around them rather than
+rewriting them; saying so is what keeps FR-011 honest.
 
 ## User Scenarios & Testing
 
@@ -136,27 +296,44 @@ against a scratch store and compare the rows they produce; then read
 
 **Acceptance Scenarios**:
 
-1. **Given** a scratch store, **When** the same finding is filed once through
-   `ergane findings record` and once through `ergane findings report`, **Then**
-   the resulting row is identical in every column and the recurrence machine
-   advanced exactly as it does today — proven against the store, not against the
-   parser, because the point of the alias is that behaviour did not change.
-2. **Given** `ergane findings report`, **When** it runs, **Then** it succeeds
-   with the same exit status and writes a deprecation line **to stderr** naming
-   `record`. On stdout it would corrupt the output of anything parsing the
-   command, and the in-tree callers are documentation and a skill, both of which
-   a human reads.
-3. **Given** `ergane findings --help` and `ergane completion bash`, **When**
-   either is read, **Then** neither offers `report`. A deprecated alias
-   advertised by shell completion is not deprecated; it is a second supported
-   name with a note attached.
-4. **Given** the three places in the tree that name the old verb in prose —
-   `CLAUDE.md:106`, `docs/architecture.md:518`,
-   `.claude/skills/away-mode/SKILL.md:158` — **When** this story lands, **Then**
-   each names `record`, and a test asserts the old verb string appears in no
-   operator-facing document. `tests/test_claude_md.py` already holds `CLAUDE.md`
-   to the rule that every command it names must resolve; this keeps that true
-   rather than relying on it to notice.
+1. **Given** a scratch store and a frozen clock, **When** the same finding is
+   filed once through `ergane findings record` and once through
+   `ergane findings report`, **Then** every column of the resulting row matches
+   and the recurrence machine advanced identically — asserted against the store
+   rather than the parser, because the claim the alias makes is that behaviour
+   did not change and only the row can prove that. The clock is frozen because
+   `factory/cli/doctor.py:61` — `_utcnow` has second resolution and stamps
+   `first_seen`, `last_seen` and the event row, so two invocations either side of
+   a second boundary differ in three columns for no reason the rename caused.
+2. **Given** `ergane findings report`, **When** it runs, **Then** it exits with
+   the status `record` exits with, its stdout is byte-identical to `record`'s,
+   and one deprecation line naming `record` is written to **stderr** — proven by
+   a committed test that reads the two streams separately. On stdout it would
+   corrupt anything parsing the command, and this noun's stdout is parsed.
+3. **Given** `ergane findings --help`, `ergane completion bash` and
+   `ergane completion zsh`, **When** each is read, **Then** none of them offers
+   `report` — not in the usage line, not in the verb listing, and not in the
+   noun's own description string at `factory/cli/doctor.py:262`, which today
+   reads `Report, list, resolve, or promote findings.` — and the brace set the
+   usage metavar renders equals the set of registered verbs minus the deprecated
+   one, asserted against the emitted text rather than against the parser's alias
+   table. A deprecated alias advertised by shell completion is not deprecated; it
+   is a second supported name with a note attached, a help text that still opens
+   with the old word is the rename half-done, and a hand-written metavar
+   is a second copy of the verb list that the next verb added will contradict.
+4. **Given** the nine lines in six tracked files that name the old verb —
+   `CLAUDE.md:106`, `docs/architecture.md:558`, `docs/cli/findings.md:11`,
+   `docs/cli/findings.md:12`, `docs/cli/findings.md:56`, `.claude/skills/away-mode/SKILL.md:158`,
+   `.claude/skills/findings-ingest/SKILL.md:186`,
+   `.claude/skills/findings-ingest/SKILL.md:249`,
+   `.claude/skills/findings-ingest/SKILL.md:250` — and the verb
+   tuple at `tests/test_ergane_env_completion.py:120`, **When** this story lands,
+   **Then** each names `record` and a committed guard asserts the string
+   `findings report` appears in no tracked operator-facing markdown outside
+   `specs/`. The guard cannot be satisfied by a documentation-only diff, because
+   `tests/page_holds_true.py:301` — `extract_commands` already holds `CLAUDE.md`
+   to the rule that every command it names must parse, so a page naming a verb
+   that does not exist turns the suite red.
 
 ### User Story 2 - A want is not a defect, and the ledger can tell (Priority: P1)
 
@@ -175,27 +352,61 @@ then read `findings list` with no flags, with `--category feedback`, and with
 
 **Acceptance Scenarios**:
 
-1. **Given** a store holding both defect rows and `feedback/` rows, **When**
-   `ergane findings list` runs with no filters, **Then** the feedback rows are
-   absent and the output states how many were withheld and the flag that shows
-   them. A view that silently drops rows is worse than one that never had the
-   lane, because it makes the operator confident about a number that is now
-   partial.
+1. **Given** a scratch store holding both defect rows and `feedback/` rows,
+   **When** `ergane findings list` runs with no filters, **Then** the feedback
+   rows are absent from stdout and a line naming how many were withheld and the
+   flag that shows them is written, with the count read from the store rather
+   than written as a literal — proven by a committed test whose fixture row count
+   differs from any number in the source. A view that silently drops rows is
+   worse than one that never had the lane, because it makes the operator
+   confident about a number that is now partial.
 2. **Given** the same store, **When** `--category feedback` is passed, **Then**
    only feedback rows are listed; **and when** `--all` is passed, **Then**
-   everything is listed. The filter composes with `--severity` and `--status`
-   rather than replacing them.
-3. **Given** the probe registry (`factory/doctor/probes.py:628`), **When** every
-   registered probe is run, **Then** none of them files into the reserved
-   category — asserted by a guard over the registry, so a probe added later that
-   reaches for the word turns the suite red instead of quietly polluting the
-   lane that exists to stay clean.
-4. **Given** `ergane findings triage`, **When** it classifies a store containing
-   feedback rows, **Then** those rows are reported under their own heading and
-   are never folded into a defect fragmented class
-   (`factory/doctor/triage.py:444`). A want grouped with three bugs because they
-   share a word produces a fragmented-class recommendation the operator cannot
-   act on.
+   everything is listed and `--json` still emits a bare array; **and** the three
+   `findings list --json` call sites that read every row on purpose —
+   `.claude/skills/findings-ingest/SKILL.md:77`,
+   `.claude/skills/findings-ingest/SKILL.md:136` and
+   `.claude/skills/findings-ingest/SKILL.md:187` — pass `--all` in the
+   same commit, proven by a committed test that reads those three lines out of
+   the skill file and asserts each carries the flag; **and** the reference page
+   comes with them — the synopsis at `docs/cli/findings.md:10` and the
+   `## ergane findings list` section at `docs/cli/findings.md:22` name
+   `--category` and `--all` and state the reserved lane and the withheld notice,
+   held by a committed guard asserting that every flag that synopsis line names
+   is present in `ergane findings list --help`, which a prose-only diff cannot
+   satisfy because it stays red until the flags exist. The first call site is the
+   corpus dump the skill calls mandatory before minting any key
+   (`.claude/skills/findings-ingest/SKILL.md:73`) and it already selects `open`
+   and `regressed`, which is every feedback row in the ledger; hiding the lane
+   from it makes an ingest agent mint a second key for a want that already has
+   one. The second lists the distinct category prefixes, so a hidden lane makes
+   `feedback` look like a category nobody has used. The third is the rehearsal
+   row count over a scratch store the skill fills with feedback rows on purpose.
+3. **Given** a probe whose evaluation returns a `factory/doctor/probes.py:43` —
+   `FindingReport` in the reserved category, **When** it is driven through the
+   one *wired* path every probe finding takes into the store —
+   `factory/cli/doctor.py:194-204`, ending at `factory/cli/doctor.py:240` —
+   `_report_if_new` — **Then** the report is skipped with a message naming the
+   probe and the lane, no row is written, and the probes after it in the registry
+   still file their own findings; **and** a committed test replaces `REGISTRY`
+   (`factory/doctor/probes.py:628`) with exactly such a probe followed by an
+   ordinary one, to prove both halves. Replacing rather than appending is what
+   keeps the test hermetic: the five real entries reach Temporal and the runtime
+   root. An assertion that today's five probes are clean is satisfied by a diff
+   that changes nothing.
+4. **Given** `ergane findings triage` over a store holding one `feedback/` row
+   and three defect rows, **When** it classifies, **Then** the feedback row is
+   listed under its own heading in **both** faces —
+   `factory/doctor/triage.py:710` — `render` and
+   `factory/doctor/triage.py:675` — `to_document` — is listed under no other
+   class's heading in either, and `total` still equals `classified`
+   (`factory/doctor/triage.py:204` — `Triage`), proven by a committed test that
+   reads both documents. The heading is the whole of what this scenario buys: a
+   want classified beside three defects and printed in the same list is a defect
+   as far as the reader is concerned, and the reader is the operator counting the
+   ledger's health. The heading is also the only half that new code can deliver
+   here — the pool arithmetic already balances, which is why the scenario asserts
+   it as a thing not broken rather than a thing built.
 
 ### User Story 3 - Getting it out again hands over the evidence (Priority: P2)
 
@@ -208,79 +419,218 @@ what makes it worth having. It is last because it is the largest, and because a
 brief written against a lane that does not exist yet would have to be revised
 when it does.
 
-**Independent Test**: file a feedback row with notes and refs, report it twice
+**Independent Test**: file a feedback row with notes and refs, record it twice
 more to build a trail, then run `ergane findings draft --key <key>` and read the
 file it names.
 
 **Acceptance Scenarios**:
 
 1. **Given** one or more finding keys, **When** `ergane findings draft` runs,
-   **Then** it writes one brief to a file and prints that path, changes no row
-   and no status, and produces the same brief when run again. A queue-reading
-   verb that mutates the queue cannot be run twice to see what it says.
-2. **Given** a finding reported three times across two days, **When** the brief
-   is written, **Then** it carries every stored column *and* the full event trail
-   from `list_events` (`factory/doctor/store.py:493`) — not the summary alone.
-   Occurrence count and first-seen date are the difference between "somebody
-   thought this once" and "this has come up three times since Tuesday", and that
-   difference is most of what a drafter needs to judge priority.
-3. **Given** the brief, **When** it states what the drafter must produce,
-   **Then** the trio's shape is drawn from the repository's own templates in
-   `.specify/templates/` rather than restated in the command's source, and the
-   brief names `ergane spec validate` as the acceptance test its output must
-   pass. A brief carrying a second copy of the spec format is a copy that drifts
-   from the validator while both stay green.
-4. **Given** the command, **When** it finishes, **Then** it has invoked no agent,
-   written nothing under `specs/`, and opened no network connection — proven by a
-   test that runs it with no credentials and no network. The whole reason this
-   story is affordable is that it assembles text; a version that grew a
-   dispatcher would have acquired the node lifecycle it was written to avoid.
+   **Then** it writes one brief to a file and prints that path, every `findings`
+   and `finding_events` row is unchanged, and a second invocation produces a
+   byte-identical brief — proven by a committed test that snapshots both tables
+   around the call. A queue-reading verb that mutates the queue cannot be run
+   twice to see what it says.
+2. **Given** a finding recorded three times across two distinct `seen_at` values,
+   **When** the brief is written, **Then** it carries every stored column and
+   every event returned by `factory/doctor/store.py:493` — `list_events`,
+   asserted on `occurrences == 3` and on both dates. Occurrence count and
+   first-seen date are the difference between "somebody thought this once" and
+   "this has come up three times since Tuesday", and that difference is most of
+   what a drafter needs to judge priority.
+3. **Given** the brief's statement of what the drafter must produce, **When** the
+   section skeleton it teaches is compared with the one
+   `factory/doctor/scaffold.py:153` — `_build_spec_md_from_slots` emits, **Then**
+   they agree section for section — `## Functional Requirements` at level 2 and a
+   `## Work Graph` fence carrying `implements:` on every node
+   (`factory/doctor/scaffold.py:203-226`) — and the brief names
+   `ergane spec validate` as the acceptance test its output must pass; **and**
+   the same test asserts that `factory/doctor/scaffold.py:321` —
+   `_build_spec_md`, the sibling branch whose output `promote` actually compiles,
+   emits that same skeleton. Proven by a committed test that changes the
+   generator in a fixture and asserts the brief changes with it; a test that only
+   looks for the words passes against a hardcoded copy, which is the drift this
+   scenario exists to prevent, and a brief derived from one branch while the
+   `derive_workgraph` proof runs over the other is that drift with a proof
+   attached to the wrong half.
+4. **Given** the command, **When** it runs with `LITELLM_PROXY_URL`,
+   `LITELLM_MASTER_KEY`, `TEMPORAL_ADDRESS` and `TEMPORAL_NAMESPACE` unset and
+   the socket constructor patched to raise, **Then** it exits 0, no path under
+   `specs/` was created or modified, and no subprocess was spawned — proven by a
+   committed test that asserts on the stripped environment rather than on the
+   absence of an import. The whole reason this story is affordable is that it
+   assembles text; a version that grew a dispatcher would have acquired the node
+   lifecycle it was written to avoid.
+
+## Functional Requirements
+
+- **FR-001**: `ergane findings record` MUST be the write verb, with today's
+  arguments and behaviour exactly — the same required set (`--key`,
+  `--category`, `--severity`, `--summary` unless `--batch`), the same credential
+  refusals (`factory/cli/doctor.py:458-465` and
+  `factory/cli/doctor.py:482-485`), the same `--source` default of `operator`,
+  and the same runner wrapper `factory/cli/doctor.py:353` — `_with_store`. Every
+  argument's `help=` string is part of "exactly", including `--source`'s
+  `reporter source` at `factory/cli/doctor.py:287`, which contains the substring
+  `report` and is the one occurrence FR-003's sweep may not chase.
+- **FR-002**: `ergane findings report` MUST continue to work unchanged, exit with
+  the status `record` exits with, produce byte-identical stdout, and write one
+  deprecation line naming `record` to **stderr**. Not stdout:
+  `findings list --json` and `findings triage --json` establish that this noun's
+  stdout is parsed.
+- **FR-003**: `report` MUST appear in neither `ergane findings --help` nor the
+  output of `ergane completion bash` and `ergane completion zsh`. Two mechanisms
+  are required and neither is optional. First, the findings `add_subparsers` call
+  at `factory/cli/doctor.py:264` MUST carry an explicit `metavar`, because
+  argparse otherwise renders every registered name — alias or not — into the
+  usage line, and the deprecated parser MUST be registered without a `help=` so
+  it takes no line in the verb listing either. That `metavar` MUST be **derived**,
+  after every verb is registered, from the subparsers' own `_name_parser_map`
+  minus the single declaration of which name is deprecated — the same declaration
+  `factory/cli/completion.py:32` — `_noun_and_verb_map` reads — and MUST NOT be a
+  hand-written list of verb names. A hand-written brace list is a second
+  declaration of the verb set with nothing holding it to the parser, and it is
+  read *as* the verb set: `tests/page_holds_true.py:346` — `verbs_of` matches the
+  braces out of the positional section before it falls back to the indented
+  listing, so a literal would make the `CLAUDE.md`, README and on-ramp page
+  guards blind to every verb registered afterwards — starting with US3's own
+  `draft`, which those guards would then reject as a verb that does not exist. A
+  committed test MUST assert that the brace set the metavar renders equals the
+  set of registered verbs minus the deprecated one. Second, the completion
+  generator `factory/cli/completion.py:32` — `_noun_and_verb_map` MUST omit the
+  deprecated name where it reads `_name_parser_map`
+  (`factory/cli/completion.py:53`), from that same single declaration rather than
+  from a second list. The noun's own description string at
+  `factory/cli/doctor.py:262` — today `Report, list, resolve, or promote
+  findings.` — MUST be rewritten to name `record`, because
+  `ergane findings --help` prints it above the verb listing.
+- **FR-004**: Every tracked operator-facing line naming the old verb MUST name
+  `record` — nine lines in six files: `CLAUDE.md:106`,
+  `docs/architecture.md:558`, `docs/cli/findings.md:11`,
+  `docs/cli/findings.md:12`, `docs/cli/findings.md:56`,
+  `.claude/skills/away-mode/SKILL.md:158`,
+  `.claude/skills/findings-ingest/SKILL.md:186`,
+   `.claude/skills/findings-ingest/SKILL.md:249`,
+   `.claude/skills/findings-ingest/SKILL.md:250` — and the verb
+  tuple at `tests/test_ergane_env_completion.py:120` MUST be updated in the same
+  commit. A committed guard MUST assert the string `findings report` appears in
+  no tracked markdown outside `specs/`, and MUST be proven to fail against a
+  fixture carrying it.
+- **FR-005**: `ergane findings list` MUST gain `--category <name>`, filtering on
+  the `category` column and composing with `--severity` and `--status`. The
+  filter MUST be applied in `factory/cli/doctor.py:368` —
+  `findings_list_command`, where the existing two already live, because
+  `factory/doctor/store.py:454` — `list_findings` takes no filter arguments and
+  this story is not the place to change its signature.
+- **FR-006**: `feedback` MUST be a reserved category. With neither `--category`
+  nor `--all`, `findings list` MUST omit those rows and MUST name how many it
+  omitted and the flag that shows them, with the count derived from the store.
+  `--all` MUST list everything. Under `--json` the document MUST stay a bare
+  array and the notice MUST go to stderr, and the three in-tree call sites that
+  read every row on purpose —
+  `.claude/skills/findings-ingest/SKILL.md:77`,
+  `.claude/skills/findings-ingest/SKILL.md:136` and
+  `.claude/skills/findings-ingest/SKILL.md:187` — MUST pass `--all` in the same
+  commit, asserted by a committed test that reads those lines out of the skill
+  file. The reference page MUST move with the interface: the `findings list`
+  synopsis at `docs/cli/findings.md:10` and the `## ergane findings list` section
+  at `docs/cli/findings.md:22` MUST name `--category` and `--all` and state the
+  reserved lane and the withheld notice, and a committed guard MUST assert that
+  every flag that synopsis line names is present in `ergane findings list
+  --help`. That guard is what keeps the page from being prose nobody checks —
+  FR-009 imposes the same discipline on `draft`, and US1 rewrites three other
+  lines of this same file. The enumeration MUST be re-verified with
+  `git grep -n 'findings list' -- '.claude' 'docs' '*.md'` before the story is
+  dispatched, the way FR-004's sweep was: it was two lines at drafting and is
+  three today.
+- **FR-007**: A `factory/doctor/probes.py:43` — `FindingReport` in the reserved
+  category MUST be refused where probe findings enter the store — the loop at
+  `factory/cli/doctor.py:194-204` and `factory/cli/doctor.py:240` —
+  `_report_if_new` — with a message naming the probe and the lane, and no row
+  written. The refusal MUST **skip that one report and continue the loop**, not
+  raise: `factory/cli/doctor.py:230-236` already swallows a probe's unexpected
+  error and carries on, and an `OperatorError` here would mean one
+  mis-categorised probe costs every later probe its findings for that run. The
+  refusal MUST be proven non-vacuous by a test that **replaces** `REGISTRY`
+  (`factory/doctor/probes.py:628`) with a reserved-category probe followed by an
+  ordinary one and asserts the second still files; an assertion over today's five
+  probes alone is satisfied by a diff that changes nothing, and appending to the
+  live registry runs all five against Temporal and the runtime root. The refusal
+  goes in `factory/cli/doctor.py` alone: `factory/doctor/cli.py:257` —
+  `_report_if_new` is an identically-named legacy twin that no parser reaches,
+  and patching it changes nothing at runtime while looking correct in a diff.
+- **FR-008**: `findings triage` MUST report feedback rows under their own heading
+  in both `factory/doctor/triage.py:710` — `render` and
+  `factory/doctor/triage.py:675` — `to_document`, and MUST list no feedback row
+  under any other class's heading in either face. They MUST remain in the
+  classification pool `factory/doctor/triage.py:470` — `classify` builds, so
+  `total` and `classified` (`factory/doctor/triage.py:204` — `Triage`) still
+  balance; the cold rule and the closed-by-a-landed-spec rule still reach them.
+  The folding class at `factory/doctor/triage.py:444` — `_fragmented_groups` is
+  explicitly **out of scope** and MUST NOT be changed by this story. That is a
+  measurement, not a preference: it skips every key with fewer than three
+  segments (`factory/doctor/triage.py:108`), and on the live ledger on 2026-09-04
+  all 279 open and regressed rows — the 23 `feedback/` rows included — have
+  exactly two, so an exclusion there is a change no row in this store can
+  exercise and a scenario written over it would pass against an empty production
+  diff.
+- **FR-009**: `ergane findings draft --key <key> [--key <key> ...]` MUST write one
+  brief to a file and print the path. It MUST change no row, no status and no
+  event trail, and two invocations MUST produce byte-identical briefs. It MUST be
+  wired outside `factory/cli/doctor.py:353` — `_with_store`;
+  `docs/cli/findings.md` MUST gain its synopsis line and section; and the
+  read-only verb list at `docs/cli/README.md:103` MUST name it, because `draft`
+  writes no row and that list is where a reader learns which verbs do not.
+- **FR-010**: The brief MUST carry, for every named finding, every stored column
+  — key, category, severity, status, summary, notes, refs, source, occurrences,
+  first_seen, last_seen — and the complete event trail from
+  `factory/doctor/store.py:493` — `list_events`. Occurrence count and first-seen
+  date are what separate "somebody thought this once" from "this has come up
+  three times since Tuesday", and a drafter that has to query for them will not.
+- **FR-011**: The brief MUST state the contract its output satisfies — the
+  spec/plan/tasks trio, `## Functional Requirements` at level 2, a `## Work
+  Graph` fence with `implements:` on every node, `state: draft` frontmatter, and
+  `ergane spec validate` as the acceptance test — and MUST derive that skeleton
+  from `factory/doctor/scaffold.py:27` — `scaffold_spec` rather than restating it
+  in the command's source or reading `.specify/templates/`. `scaffold_spec` is
+  the only in-tree description of the shape with a live proof, but the proof is
+  on the sibling branch: `promote` calls it with `findings=` and compiles
+  `factory/doctor/scaffold.py:321` — `_build_spec_md` through `derive_workgraph`
+  at `factory/cli/doctor.py:566-577`, while the brief reads the slot branch
+  `factory/doctor/scaffold.py:153` — `_build_spec_md_from_slots`. Both emit the
+  same skeleton today and nothing holds them to it, so the same test that pins
+  the brief to the slot branch MUST also assert the two branches agree on the
+  section skeleton.
+- **FR-012**: The command MUST invoke no agent, write nothing under `specs/`, and
+  open no network connection, proven by a test run with the gateway and Temporal
+  environment variables unset and the socket constructor patched to raise. Its
+  output path MUST resolve through the same runtime root every other findings
+  verb uses (`factory/cli/doctor.py:65` — `_store_path`) and MUST be overridable.
 
 ## Work Graph
 
 ```yaml
 US1:
-  implements: []
   depends_on: []
+  implements: [FR-001, FR-002, FR-003, FR-004]
 US2:
-  implements: []
   depends_on: []
   depends_on_merged: [US1]
+  implements: [FR-005, FR-006, FR-007, FR-008]
 US3:
-  implements: []
   depends_on: []
   depends_on_merged: [US2]
+  implements: [FR-009, FR-010, FR-011, FR-012]
 ```
 
-All three stories add or change verbs inside `add_findings_parser`
-(`factory/cli/doctor.py:251-350`), so they are serialised on file ownership
-rather than on logic. See `plan.md` § *File contention* for why this is stated as
-a dependency instead of left to the merge.
-
-## Requirements (summary — numbered at refinement)
-
-The write verb is `record`; `report` still works, warns on stderr, and appears in
-neither `--help` nor completion; the three prose call sites are updated and
-pinned. `findings list` gains a `--category` filter, hides the reserved
-`feedback` lane by default while stating what it hid, and offers `--all`; no
-probe may file into that lane; triage reports it separately and never folds it
-into a defect class. `findings draft` writes one brief per invocation carrying
-every stored column and the full event trail, states the trio contract from the
-repository's own templates, names `ergane spec validate` as its acceptance test,
-and invokes nothing.
-
-## Success Criteria (summary)
-
-Pasted: the two rows produced by `record` and by `report`, shown identical; the
-deprecation line on stderr with stdout shown clean; the `findings` line of
-`ergane completion bash` before and after; `findings list` output with the lane
-hidden and the withheld count shown, then with `--category feedback`, then with
-`--all`; the probe-registry guard failing against a deliberately mislabelled
-probe; a written brief for a finding reported three times, with its event trail
-visible; and the full-suite before-and-after counts for each story.
-
-**Operator verification, which is the point of the spec**: after US3 lands, file
-a real want that has been sitting in memory, run `ergane findings draft` over it,
-hand the brief to a drafting session, and see whether what comes back needs less
-work than starting from the spec template. If it does not, US4 — the schedule —
-is correctly deferred and should stay that way.
+Two `depends_on_merged` edges, declared rather than left to the merge queue. All
+three stories add or change verbs inside `factory/cli/doctor.py:251` —
+`add_findings_parser`, so they are serialised on file ownership rather than on
+logic; `depends_on_merged` models what a story needs to *exist*, and two
+correctly-independent stories extending one function are exactly the shape that
+lands clean and then fails the next node's gate after a clean rebase. US2 also
+needs US1's prose sweep to have landed before it edits two more lines of
+`.claude/skills/findings-ingest/SKILL.md` and three of `docs/cli/findings.md`,
+and US3 adds a section to that same page and depends on US1's derived metavar to
+carry `draft` without a second edit. See `plan.md` § *Sizing* for the per-story
+file lists.
