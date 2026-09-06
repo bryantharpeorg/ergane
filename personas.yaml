@@ -18,13 +18,15 @@
 #   key and does not model-constrain it, so the binding is advisory rather than
 #   enforceable (055-US2 FR-011).
 #
-# Current wiring (2026-08-06, Bryan): hosted models via the proxy's
-# `ollama-cloud/*` aliases (Ollama Cloud key on the worker host — the planned
-# `anthropic/*` route was dropped in its favor). Coding personas and researcher
-# run `ollama-cloud/deepseek-v4-flash` (the 0731 release); judge runs
-# `ollama-cloud/glm-5.2` (top agent_loop in the operator's evals, and the
-# claude-CLI-against-GLM path is precedented). Every persona keeps
-# `local/qwen3.6-27b` as fallback.
+# Current wiring (2026-09-06, Bryan 2026-09-05 — the four-rung ladder change;
+# the per-persona history blocks below carry the full lineage, and ergane.yaml
+# carries the rung table): every build rung rides the flat-rate Ollama gateway
+# on Zhipu — `glm-5.3-flash` (implementer), `glm-5.3` (closer, debugger) — and
+# every verdict is judged by Moonshot (`kimi-k3`). Architect and researcher
+# stay on `ollama-cloud/deepseek-v4-flash`. Judge's fallback is null
+# deliberately — a judge outage is loud rather than same-family — and every
+# other non-subscription persona keeps `local/qwen3.6-27b`. `opus-closer`
+# remains on the Claude subscription as the opt-in metered seat, untouched.
 #
 # Skill scope (062-US3 FR-010).
 #
@@ -267,19 +269,41 @@ implementer:
   # ROUTE CHANGE, AND IT IS A BILL. `subscription` cost no metered spend;
   # `ollama-cloud/*` bills per token through LiteLLM. It also makes this rung
   # immune to the OAuth expiry that killed seven stories on 2026-08-31.
+  # MOVED TO GLM 5.3 FLASH ON 2026-09-06 (Bryan, 2026-09-05): "attempts 1-2 on
+  # glm-5.3-flash, promotion and debugger on glm-5.3, judge on kimi-k3". The
+  # Claude subscription leaves the build ladder entirely — every rung is now on
+  # the flat-rate Ollama gateway, so an expired OAuth login can no longer kill
+  # a build, and no attempt touches metered Anthropic billing.
+  #
+  # THE LADDER THIS COMPLETES. One author lineage (Zhipu) on all three build
+  # rungs — this persona, `closer`, `debugger` — and one judge lineage
+  # (Moonshot) on the verdict, which is ADR 0016 / U3 satisfied on the cleanest
+  # shape the doctrine allows: the 2026-08-07 arrangement inverted. The plan is
+  # /home/admin/.claude/plans/ladder-change-2026-09-04.md; the recorded
+  # promotion rung finally means something here, because promoting now moves
+  # flash -> full 5.3 — genuinely stronger weights, not just a new prompt.
+  #
+  # BOTH GLM 5.3 ALIASES ARE PROVEN, NOT ASSUMED — this file's own history is
+  # the proof. `ollama-cloud/glm-5.3` was probe-verified through the gateway on
+  # 2026-08-31 (content='ready', finish=stop, usage 19/123/142) and both flash
+  # and full ran as builders on 2026-08-29 with measured wall-times recorded
+  # above. The known failure mode is recorded twice above and does not need a
+  # third paragraph: these are reasoning models, a tight max_tokens returns
+  # empty content that presents as a broken gateway, and an alias probe is not
+  # a capability probe.
   agent: claude-code
-  model: ollama-cloud/kimi-k2.7-code
+  model: ollama-cloud/glm-5.3-flash
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
-  # 256K per the ollama.com model card, operator-confirmed 2026-08-11. NOT
-  # OPTIONAL and not a copy of Opus's number: without it the CLI assumes 200k
-  # for an alias it does not recognise and 62,144 tokens — 23.7% — of every
-  # attempt's window are unreachable, measured on 032/us1 via Langfuse. That is
-  # the 037 defect, and it was measured on this exact model.
-  context_window: 262144
+  # 1M per the ollama.com model card (/api/show: glm5_next -> 1,048,576),
+  # verified 2026-09-05 and declared the day the alias took the rung. NOT
+  # OPTIONAL: without it the CLI assumes 200k for an alias it does not
+  # recognise, and on a 1M model that strands 80% — the 037 defect, measured on
+  # this rung's predecessor at 23.7% of a 256k window on 032/us1.
+  context_window: 1048576
 
 verifier:
   agent: none
@@ -321,8 +345,30 @@ judge:
   # usage 19/123/142. The note under `implementer` records that the plain
   # `ollama-cloud/glm-5.3` alias did not exist on 2026-08-29 and had to be
   # created in the homelab config; it exists now and it answers.
-  model: ollama-cloud/glm-5.3
-  fallback: local/qwen3.6-27b
+  # MOVED TO KIMI K3 ON 2026-09-06 (Bryan, 2026-09-05), completing the
+  # four-rung ladder change recorded under `implementer`: Zhipu builds on all
+  # three build rungs, Moonshot judges. This is the exact mirror of the
+  # 2026-08-31 entry — kimi builds, glm judges — and the same non-separability
+  # holds: reverting one rung without the other silently puts Zhipu on both
+  # ends.
+  #
+  # K3 IS A REASONING MODEL, and this is the one seat where that bites. The
+  # judge is a single bounded completion (`factory/verify/judge.py`): a tight
+  # max_tokens returns empty `content` that presents as a broken gateway, and
+  # `judge-blocked-by-reasoning-models` is a defect this floor has already paid
+  # for. Probe it with a real judge-sized prompt — a diff plus criteria — never
+  # with "reply with ready".
+  #
+  # FALLBACK IS NULL, DELIBERATELY (Bryan, 2026-09-06). Every build rung falls
+  # back to `local/qwen3.6-27b`; if a build rung and the judge failed over in
+  # the same attempt, qwen would review qwen — same-family review, which is
+  # what U3 exists to forbid. A judge outage must be LOUD: `judge_unavailable`
+  # on the record, never a silent verdict from inside the author's own family.
+  # The pre-2026-09-06 value was `local/qwen3.6-27b` and the risk it carried is
+  # pre-existing, not introduced here; the ladder change is simply the moment
+  # it was decided.
+  model: ollama-cloud/kimi-k3
+  fallback: null
   skills: [code-review]
   write_scope: read
   needs_worktree: false
@@ -364,20 +410,46 @@ closer:
   # therefore a spec. Do not hardcode a model name in code to get there —
   # constitution VII routes by persona, and this file is the only place a model
   # alias may appear.
-  model: anthropic/claude-opus-5
-  # Not the house `local/qwen3.6-27b`: this rung exists because the story is
-  # hard, and a 27b local model is not a plausible closer. Falls back to the
-  # implementer's own model so an Anthropic outage degrades to today's builder
-  # rather than to something weaker than the attempts that already failed.
-  fallback: ollama-cloud/kimi-k2.7-code
+  # REPOINTED AT GLM 5.3 ON 2026-09-06 (Bryan) as the ladder's promotion rung —
+  # the separate change the paragraph above said was needed, now made: this
+  # persona is named by `ladder.promotion_persona` in ergane.yaml, so a story
+  # that spends its two ordinary attempts is promoted here automatically, no
+  # hand-edited graph required.
+  #
+  # THE 2026-08-13 TEXT ABOVE DESCRIBES A PERSONA THAT NO LONGER EXISTS. It was
+  # written when `closer` pointed at `anthropic/claude-opus-5` through the
+  # gateway — the only metered seat on the floor, deliberately opt-in. The
+  # 2026-09-05 ladder ruling retired that seat: Opus left the build ladder
+  # entirely, and the promotion rung became flash -> full 5.3. The metered
+  # opt-in survives as `opus-closer` below, untouched, for an operator who
+  # wants it by hand.
+  #
+  # WHAT PROMOTING NOW BUYS: genuinely stronger weights, not a new prompt —
+  # glm-5.3-flash on the ordinary rungs, glm-5.3 here. Both are Zhipu, so the
+  # lineage held by the judge (Moonshot) is untouched — and this rung joins the
+  # single author lineage rather than adding a third vendor.
+  #
+  # SAME-MODEL-AS-THE-DEBUGGER, BY DESIGN AND PRECEDENT: rungs 3 and 4 share
+  # weights because a closer finishes and a debugger diagnoses — different
+  # skills and prompts, same model. ergane.yaml's ladder block made that
+  # argument first; it is kept because the shape recurs.
+  model: ollama-cloud/glm-5.3
+  # The house fallback, restored with the route change: the old
+  # `ollama-cloud/kimi-k2.7-code` fallback is now a LINEAGE LEAK — Moonshot
+  # judges every verdict, and a failed-over Moonshot closer would put its
+  # output in front of its own family. The old text argued against
+  # `local/qwen3.6-27b` on capability grounds; trap 6 of the ladder-change plan
+  # weighs that against the same-family risk and leaves the house value
+  # standing, as it does on every other build rung.
+  fallback: local/qwen3.6-27b
   skills: [implement, tdd]
   write_scope: worktree
   needs_worktree: true
   timeout: 14400
-  # Opus 5's published window is 1M. Unset, the CLI assumes 200k for an alias it
-  # does not recognise — the same 037 defect that cost kimi 23.7% of its window.
-  # Revert to unset if a routed attempt ever reports a smaller ceiling.
-  context_window: 1000000
+  # 1M per the ollama.com model card (/api/show: glm_dsa_moe -> 1,048,576),
+  # declared the day the alias took the rung. Same 037-defect reasoning as
+  # `implementer`: unset, the CLI assumes 200k and strands 80% of the window.
+  context_window: 1048576
 
 debugger:
   # Swapped with `implementer` on 2026-08-29 for the defect sprint (Bryan,
@@ -407,16 +479,36 @@ debugger:
   # fail at runtime with nothing to authenticate against. Null is the honest
   # value: a session that cannot refresh has no second route, which is exactly
   # what spec 095 makes legible.
-  agent: subscription
-  model: claude-opus-5
-  fallback: null
+  # MOVED TO GLM 5.3 ON THE GATEWAY ON 2026-09-06 (Bryan, 2026-09-05): the last
+  # rung of the four-rung ladder change, and the edit that takes Opus off the
+  # ladder entirely. All three build rungs now share one author lineage
+  # (Zhipu); the judge is Moonshot. The subscription reasoning above is kept
+  # verbatim because it is the honest record of why this rung was ever off the
+  # gateway — and because the two paragraphs below it record the exact
+  # considerations a revert would need to re-litigate.
+  #
+  # THE FALLBACK PARAGRAPH ABOVE EXPIRED WITH THE ROUTE, and it is rewritten
+  # here rather than left standing: it argued that null is honest *because* a
+  # subscription persona holds no gateway key. A gateway persona holds one, so
+  # the honest value is now the house fallback shared by every other build
+  # rung. What this route change actually costs and buys is recorded in
+  # ergane.yaml's ladder block: the ledger will start attributing dollars to
+  # rung 4 where it attributed none, which reads as a cost increase that did
+  # not happen — and in exchange an expired Claude login can no longer kill a
+  # build that reaches this rung.
+  agent: claude-code
+  model: ollama-cloud/glm-5.3
+  fallback: local/qwen3.6-27b
   skills: [diagnosing-bugs]
   write_scope: worktree
   needs_worktree: true
   timeout: 10800
-  # Opus 5's published window. Unset, the CLI assumes 200k for an alias it does
-  # not recognise — the 037 defect that cost kimi 23.7% of its window.
-  context_window: 1000000
+  # 1M per the ollama.com model card (/api/show: glm_dsa_moe -> 1,048,576),
+  # declared the day the route changed. This persona is newly CLI-driven as of
+  # the edit above, so the key is newly load-bearing: unset, the CLI assumes
+  # 200k for an alias it does not recognise — the 037 defect that cost kimi
+  # 23.7% of its window, now four fifths on a 1M model.
+  context_window: 1048576
 
 researcher:
   agent: claude-code

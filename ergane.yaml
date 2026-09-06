@@ -56,21 +56,30 @@ landing_branch: ergane-buildout
 # The retry ladder. Declared 2026-08-29 (Bryan): "build 1 and 2 on the implementer
 # persona, then build 3 on the closer (opus) persona."
 #
-# WHAT THE RUNGS ARE NOW, resolved through personas.yaml (corrected 2026-08-30,
-# when `implementer` became a subscription persona — the table below had said
-# `ollama-cloud/glm-5.3   gateway` since the rung was declared, and stopped being
-# true the moment the registry flipped):
-#   attempt 1-2  implementer  claude-opus-5          subscription
-#   attempt 3    opus-closer  claude-opus-5          subscription   <- promotion rung
-#   attempt 4    debugger     claude-opus-5          subscription
+# WHAT THE RUNGS ARE NOW, resolved through personas.yaml (2026-09-06, Bryan
+# 2026-09-05 — the four-rung ladder change, plan at
+# /home/admin/.claude/plans/ladder-change-2026-09-04.md):
+#   attempt 1-2  implementer  ollama-cloud/glm-5.3-flash  gateway   (Zhipu)
+#   attempt 3    closer       ollama-cloud/glm-5.3        gateway   (Zhipu)  <- promotion rung
+#   attempt 4    debugger     ollama-cloud/glm-5.3        gateway   (Zhipu)
+#   every verdict judge       ollama-cloud/kimi-k3        gateway   (Moonshot)
 #   then         escalate to the operator
 #
-# All four rungs are now the same model on the same route, which drains most of
-# the meaning out of the promotion rung: promoting from Opus to Opus buys a
-# different prompt and nothing else. Left in place deliberately — the rung is
-# still where a metered `closer` would go if this repo ever wanted one — but an
-# operator reading a PROMOTE in a node's history should not expect a stronger
-# model behind it.
+# OPUS IS OFF THE LADDER. The 2026-08-30 table this replaces had all four rungs
+# on the operator's Claude subscription, and its own complaint — "all four rungs
+# are the same model on the same route, which drains most of the meaning out of
+# the promotion rung" — is now false in both halves. Promoting buys flash ->
+# full GLM 5.3: genuinely stronger weights, not just a different prompt. And
+# every rung rides the flat-rate Ollama gateway, so no attempt touches the
+# subscription or metered Anthropic billing, and an expired OAuth login can no
+# longer kill a build (the 2026-08-31 failure that killed seven stories).
+#
+# LINEAGE IS THE POINT OF THE SHAPE. One author lineage (Zhipu) on all three
+# build rungs, one judge lineage (Moonshot) on the verdict — ADR 0016 / U3 on
+# the cleanest arrangement the doctrine allows, the 2026-08-07 setup inverted.
+# The judge's fallback is null by the same reasoning: every build rung falls
+# back to `local/qwen3.6-27b`, and a judge that joined them could end up
+# reviewing the author's own family. A judge outage is loud instead.
 #
 # `max_attempts` IS THE ORDINARY BUDGET, NOT THE TOTAL. `next_action`
 # (factory/verify/ladder.py:177) spends ordinary attempts first, then promotes, then
@@ -78,18 +87,14 @@ landing_branch: ergane-buildout
 # debugger and the promotion persona from the ordinary count. So 2 here means two
 # ordinary attempts and four attempts in total, not two.
 #
-# THE PROMOTION RUNG IS `opus-closer`, NOT `closer`, AND THE DIFFERENCE IS THE BILL.
-# Both point at Opus 5. `closer` reaches it through the LiteLLM alias
-# `anthropic/claude-opus-5` and bills per token; `opus-closer` runs on the operator's
-# own Claude Code login and costs no metered spend. `closer`'s own registry entry says
-# it is "opt-in... it must cost a decision, not a default", and naming it here would
-# make it exactly the default it warns against. Using the metered route instead is a
-# one-word change on the line below.
+# RUNGS 3 AND 4 ARE THE SAME MODEL ON PURPOSE, and the precedent for saying so
+# lives in this file's own history: a closer finishes and a debugger diagnoses —
+# different skills and different prompts, same weights.
 #
-# ORDERING NOTE WORTH KEEPING: rungs 3 and 4 are the same model by design. A closer
-# finishes and a debugger diagnoses — different skills and different prompts, same
-# weights. Putting the metered `closer` at rung 3 would also mean paying per token on
-# the earlier rung and nothing on the later one, which is backwards.
+# THE LEDGER READS DIFFERENTLY FROM HERE. The debugger rung moved off the
+# subscription, so `usage --by epic` will start attributing dollars to rung 4
+# where it attributed none — a synthetic-pricing artifact, not a bill. No money
+# moves anywhere on this ladder; Ollama Cloud is flat-rate.
 #
 # `debugger_cycles` and `escalation_timeout_s` are left at their code defaults (1 and
 # 3600 — models.py:710, not the 28800 a QuestionWorkflow's own timer uses; they are
@@ -100,7 +105,7 @@ landing_branch: ergane-buildout
 ladder:
   max_attempts: 2
   promotion_cycles: 1
-  promotion_persona: opus-closer
+  promotion_persona: closer
 
 # The scheduler's own dials (034 FR-015).
 #

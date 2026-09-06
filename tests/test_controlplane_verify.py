@@ -366,6 +366,9 @@ async def _loopback_llm_listener() -> AsyncIterator[str]:
                         b'"key_alias":"verify",'
                         b'"models":['
                         b'"ollama-cloud/kimi-k2.7-code",'
+                        b'"ollama-cloud/kimi-k3",'
+                        b'"ollama-cloud/glm-5.3",'
+                        b'"ollama-cloud/glm-5.3-flash",'
                         b'"ollama-cloud/deepseek-v4-flash",'
                         b'"ollama-cloud/glm-5.2",'
                         b'"anthropic/claude-opus-5",'
@@ -609,7 +612,7 @@ def _fake_memory_client_factory(config: Cfg.Memory) -> httpx.AsyncClient:
 def fake_subsystems(monkeypatch: pytest.MonkeyPatch) -> tuple[_FakeLLMFactory, _FakeTelegramFactory]:
     """Patch the LLM and Telegram seams with fakes; tests needing live doubles
     patch them back or use the module attributes directly."""
-    llm_client = _FakeLiteLLMClient(persona_model="ollama-cloud/kimi-k2.7-code")
+    llm_client = _FakeLiteLLMClient(persona_model="ollama-cloud/glm-5.3-flash")
     llm_factory = _FakeLLMFactory(llm_client)
     telegram_bot = _FakeTelegramBot()
     telegram_factory = _FakeTelegramFactory(telegram_bot)
@@ -1045,7 +1048,7 @@ class _FakeLiteLLMClient:
 
 
 def _fake_llm_factory(config: Cfg.LLM) -> Any:
-    return _FakeLiteLLMClient(persona_model="ollama-cloud/kimi-k2.7-code")
+    return _FakeLiteLLMClient(persona_model="ollama-cloud/glm-5.3-flash")
 
 
 def _passing_host_seam() -> dict[str, Any]:
