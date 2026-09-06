@@ -1,0 +1,23 @@
+=== BEFORE (unlisted) ===
+ergane readiness for /tmp/t019work/t019-before (ergane.yaml)
+  [PASS] gated_landing: main refuses a landing until its named checks pass
+  [PASS] autonomous_landing: main completes a landing without a human
+  [PASS] factory_yaml: manifest is valid
+  [PASS] landing_title: a landing commit takes the proposal's title
+  [PASS] gate_check:test: required check 'test' exists
+  [PASS] gate_check:typecheck: required check 'typecheck' exists
+  [FAIL] gate_check:lint: gate 'lint' is declared in factory.yaml but the landing branch requires no check named 'lint' — add it to the branch's required checks so the forge runs the gate the factory declares
+1 of 7 checks failed
+exit code: 1
+
+=== AFTER (boundary_only_gates: [lint]) ===
+ergane readiness for /tmp/t019work/t019-after (ergane.yaml)
+  [PASS] gated_landing: main refuses a landing until its named checks pass
+  [PASS] autonomous_landing: main completes a landing without a human
+  [PASS] factory_yaml: manifest is valid
+  [PASS] landing_title: a landing commit takes the proposal's title
+  [PASS] gate_check:test: required check 'test' exists
+  [PASS] gate_check:typecheck: required check 'typecheck' exists
+  [WARN] gate_check:lint: gate 'lint' is declared in factory.yaml and listed in boundary_only_gates, so the landing branch's requiring no check named 'lint' is the declared arrangement — the gate still runs for every node at the boundary, and this report is where the choice stays visible
+6 of 7 checks passed, 1 warned; nothing here refuses this repository
+exit code: 0
