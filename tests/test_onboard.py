@@ -36,7 +36,7 @@ from typing import Sequence
 import pytest
 
 from factory.mergequeue.forge import LandingPolicy, RepositoryDescription
-from factory.mergequeue.models import Finding
+from factory.mergequeue.models import Finding, Severity
 from factory.mergequeue.onboard import InitFacts, evaluate_repo
 
 REPO = "acme/widgets"
@@ -267,6 +267,133 @@ def test_a_forge_that_will_not_report_its_title_source_fails_closed() -> None:
     finding = _finding_by_check(profile.findings, "landing_title")
     assert finding.passed is False
     assert "unreadable" in finding.detail.lower()
+
+
+# --- 128 US2: a boundary-only declaration is reported, never refused ----------
+#
+# `boundary_only_gates` (128 FR-001) names the gates an operator deliberately
+# kept off the merge queue; the gate still runs for every node at the boundary
+# — `factory/verify/gates.py`'s `_run_gate_list_from_config` iterates every
+# declared gate — so a listing turns the landing-branch question from a refusal
+# into a report. The three verdict cases below are the spec's table; the
+# no-op/unknown control keeps the story from softening findings it is not
+# about (FR-008).
+
+
+def test_a_listed_gate_not_required_passes_naming_the_gate() -> None:
+    """US2-S1 / FR-005 / T009: listed + unrequired → passes, and still reports.
+
+    The choice must stay visible every run rather than becoming silent, so the
+    finding is a warning that names the gate — not a pass, and not an absence.
+
+    What edit would make this fail: drop the `Severity.WARNING` and the verdict
+    refuses a repository the operator declared fit; or report nothing and the
+    choice goes quiet. `init_facts` is left unset (trap 8): 057 made a
+    hand-built `InitFacts` fail on `standards`, which is not this story's red.
+    """
+    profile = evaluate_repo(
+        repo=REPO,
+        reading=_reading(),
+        policy=_policy(required_checks=("test",)),
+        declared_gates=("test", "lint"),
+        boundary_only_gates=("lint",),
+    )
+    assert profile.passed is True, [f for f in profile.findings if f.blocking]
+    found = [f for f in profile.findings if f.check == "gate_check:lint"]
+    assert len(found) == 1, f"one finding per check, got {found}"
+    finding = found[0]
+    assert finding.passed is False, "the choice is reported, not passed over"
+    assert finding.severity is Severity.WARNING
+    assert finding.blocking is False
+    assert "lint" in finding.detail
+    # The unlisted gate beside it is untouched.
+    assert _finding_by_check(profile.findings, "gate_check:test").passed is True
+
+
+def test_a_listed_gate_that_is_required_reports_a_stale_declaration() -> None:
+    """US2-S2 / FR-006 / T010: listed + required → passes with a stale warning.
+
+    A drifted manifest is not a broken repository: the list now describes a
+    gate that does bind the merge queue, so the declaration is what is wrong,
+    and an operator who later did the right thing with their ruleset is not
+    punished for it (trap 7).
+    """
+    profile = evaluate_repo(
+        repo=REPO,
+        reading=_reading(),
+        policy=_policy(required_checks=("test", "lint")),
+        declared_gates=("test", "lint"),
+        boundary_only_gates=("lint",),
+    )
+    assert profile.passed is True, [f for f in profile.findings if f.blocking]
+    found = [f for f in profile.findings if f.check == "gate_check:lint"]
+    assert len(found) == 1, f"the warning replaces the parity pass, got {found}"
+    finding = found[0]
+    assert finding.passed is False
+    assert finding.severity is Severity.WARNING
+    assert finding.blocking is False
+    assert "stale" in finding.detail
+    assert "lint" in finding.detail
+
+
+def test_an_unlisted_gate_keeps_todays_blocking_finding_byte_for_byte() -> None:
+    """US2-S3 / FR-007 / T011 — the control that matters most.
+
+    The typo case is why the check exists, and operators have this string in
+    their runbooks: a gate that is *not* listed keeps today's blocking finding
+    with its detail byte-identical. `boundary_only_gates` is omitted entirely —
+    the shape a caller that says nothing uses — so this is also the guard on
+    "a caller that says nothing reports exactly what it reports today".
+    """
+    profile = evaluate_repo(
+        repo=REPO,
+        reading=_reading(),
+        policy=_policy(required_checks=("test",)),
+        declared_gates=("test", "lint"),
+    )
+    assert profile.passed is False
+    finding = _finding_by_check(profile.findings, "gate_check:lint")
+    assert finding.passed is False
+    assert finding.severity is Severity.ERROR
+    assert finding.blocking is True
+    # Byte-identical, not "mentions lint" (trap 6): the runbook quotes it.
+    assert finding.detail == (
+        "gate 'lint' is declared in factory.yaml but the landing "
+        "branch requires no check named 'lint' — add it to the "
+        "branch's required checks so the forge runs the gate the "
+        "factory declares"
+    )
+
+
+def test_the_list_softens_no_finding_it_is_not_about() -> None:
+    """US2 / FR-008 / T012 — the control: only `gate_check:` changes severity.
+
+    `unknown_check:` still refuses (deterministic gates only is structural),
+    and `noop_gate:` keeps the exact warning 061 wrote, whether or not the
+    gate is listed. A story that widened `blocking` or the verdict conjunction
+    would soften both silently; this is the red that catches it.
+    """
+    profile = evaluate_repo(
+        repo=REPO,
+        reading=_reading(),
+        policy=_policy(required_checks=("test", "lint", "judge")),
+        declared_gates=("test", "lint"),
+        gate_commands={"test": "uv run pytest -q", "lint": "true"},
+        boundary_only_gates=("lint",),
+    )
+    checks = {f.check: f for f in profile.findings}
+    unknown = checks["unknown_check:judge"]
+    assert unknown.passed is False
+    assert unknown.severity is Severity.ERROR
+    assert unknown.blocking is True
+    noop = checks["noop_gate:lint"]
+    assert noop.passed is False
+    assert noop.severity is Severity.WARNING
+    assert noop.blocking is False
+    # 061's rule intact: the no-op finding stands *instead of* the parity
+    # finding for a matched gate, listed or not.
+    assert "gate_check:lint" not in checks
+    assert profile.passed is False, "unknown_check still refuses the repository"
 
 
 # --- 034 US4: the same judgment, extended with the facts init creates ---------
