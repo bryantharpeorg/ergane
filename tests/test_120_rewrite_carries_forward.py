@@ -307,7 +307,11 @@ def test_the_interview_gains_no_question_for_a_carried_key() -> None:
     """
     carried = [key for key in init_module._KNOWN_KEYS if key not in _TOP_LEVEL_KEYS]
 
-    assert carried == ["ladder", "verify"]
+    # 128 FR-001: `boundary_only_gates` is a v2-only key, registered where
+    # `ladder` and `verify` already were, so init carries it forward rather
+    # than refusing it (trap 4: it must not go in `_TOP_LEVEL_KEYS`, where the
+    # interview's prompt set lives) and gains no question for it (trap 5).
+    assert carried == ["ladder", "verify", "boundary_only_gates"]
     assert not set(carried) & set(init_module._PROMPTS)
 
 

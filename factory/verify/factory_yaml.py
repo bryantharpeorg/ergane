@@ -131,7 +131,16 @@ _CACHE_KEYS = ("path", "env")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 #: Keys that only schema v2 recognises; v1 refuses them as unknown (US1-S6).
-_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify")
+#:
+#: `boundary_only_gates` (128 FR-001) joins this tuple and not `_TOP_LEVEL_KEYS`:
+#: the list names gates that bind the verification boundary but are deliberately
+#: absent from the forge's merge queue, so declaring it must mean the same thing
+#: on every schema that can spell it — and a v1 manifest naming it is refused,
+#: not silently carried, because the v1 reader would otherwise parse a key it
+#: had no reader for. The tuple is also what `ergane init` carries forward
+#: (`factory/cli/init.py`'s `_KNOWN_KEYS` is this same object), so a key here is
+#: carried-not-interviewed by construction and needs no prompt of its own.
+_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify", "boundary_only_gates")
 
 #: The keys a `roadmap:` block may declare, and the dial each one sets.
 _ROADMAP_KEYS = ("cadence_s", "max_concurrent_epics", "max_concurrent_nodes")
@@ -215,6 +224,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     gates = _read_gates(document, source, version)
     timeouts = _read_timeouts(document, gates, source)
     writes = _read_writes(document, gates, source)
+    boundary_only_gates = _read_boundary_only_gates(document, gates, source)
     standards = _read_standards(document, source)
     landing_branch = _read_landing_branch(document, source)
     roadmap = _read_roadmap(document, source)
@@ -230,6 +240,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         gates=gates,
         timeouts=timeouts,
         writes=writes,
+        boundary_only_gates=boundary_only_gates,
         standards=standards,
         landing_branch=landing_branch,
         roadmap=roadmap,
@@ -478,6 +489,61 @@ def _read_writes(
                 source=source,
             )
     return dict(writes)
+
+
+def _read_boundary_only_gates(
+    document: Mapping[Any, Any], gates: Mapping[str, str], source: str
+) -> tuple[str, ...]:
+    """Read the gates this repo declares as binding the boundary alone (128 FR-001).
+
+    The same position and shape `writes:` has, for the same reason: the
+    declaration is about gates, so it is written as a list of gate names beside
+    the `gates:` block that declares them, and absent is "nothing declared" —
+    an empty tuple is what every manifest that exists parses to, because the
+    key is new and v2-only (FR-003).
+
+    Every entry is cross-checked against the declared gates (FR-002), and that
+    check is deliberately strict: an entry naming a gate the manifest does not
+    declare is refused rather than ignored. A declaration that silently applied
+    to nothing would be worse than no declaration — the operator would read a
+    manifest that says the gate is exempt from the merge queue, and the node
+    would refuse it anyway.
+    """
+    if "boundary_only_gates" not in document:
+        return ()
+    declared = document["boundary_only_gates"]
+    if not isinstance(declared, list):
+        # `gates` is non-empty here by construction: `_read_gates` refuses a
+        # missing or empty mapping before this reader runs, so the example can
+        # name a gate this manifest really declares.
+        raise FactoryConfigError(
+            "boundary_only_gates",
+            f"declares `boundary_only_gates: {declared!r}`; it must be a list of "
+            "gate names drawn from the gates this manifest declares, e.g. "
+            f"`boundary_only_gates: [{next(iter(gates))}]`",
+            source=source,
+        )
+
+    for name in declared:
+        if not isinstance(name, str) or not name.strip():
+            raise FactoryConfigError(
+                "boundary_only_gates",
+                f"declares the boundary-only gate {name!r}; each entry must be a "
+                f"non-empty gate name, and declared gates are {_names(gates)}",
+                source=source,
+            )
+        if name not in gates:
+            # A declaration that silently applied to nothing would be worse than
+            # no declaration — the operator would read a manifest that says the
+            # gate is exempt from the merge queue, and the node would refuse it
+            # anyway (FR-002).
+            raise FactoryConfigError(
+                "boundary_only_gates",
+                f"declares boundary-only gate {name!r}, which this manifest does "
+                f"not declare as a gate; declared gates are {_names(gates)}",
+                source=source,
+            )
+    return tuple(declared)
 
 
 def _read_standards(document: Mapping[Any, Any], source: str) -> str | None:

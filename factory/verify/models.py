@@ -356,6 +356,18 @@ class FactoryConfig:
     #: boundary and the manifest declaring it belongs to whoever controls the
     #: target repository (FR-007).
     caches: tuple[CacheDeclaration, ...] = ()
+    #: 128 FR-001. The gates this repo declares as binding the verification
+    #: boundary alone — deliberately absent from the forge's merge queue. Sparse
+    #: the way `writes` is, in declaration order: an empty tuple is not a
+    #: default to fill in, it is what every manifest that exists says, and a
+    #: reader that cannot distinguish "declared empty" from "never declared"
+    #: would invent an exemption the operator never wrote. Entries are refused
+    #: at parse time unless the manifest declares them as gates (FR-002), the
+    #: same cross-check `_read_writes` makes — a declaration that silently
+    #: applied to nothing would be worse than no declaration. Nothing downstream
+    #: reads this field yet; 128 US2 threads it into onboarding, and this field
+    #: is the key that story consults.
+    boundary_only_gates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
