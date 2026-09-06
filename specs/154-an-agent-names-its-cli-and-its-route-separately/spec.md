@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - interpreter/an-unknown-agent-silently-runs-claude-code
 # DRAFTED 2026-09-06 by an operator session from docs/codex-adapter-plan.md,
