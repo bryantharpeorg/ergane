@@ -513,14 +513,14 @@ def _read_boundary_only_gates(
         return ()
     declared = document["boundary_only_gates"]
     if not isinstance(declared, list):
+        # `gates` is non-empty here by construction: `_read_gates` refuses a
+        # missing or empty mapping before this reader runs, so the example can
+        # name a gate this manifest really declares.
         raise FactoryConfigError(
             "boundary_only_gates",
             f"declares `boundary_only_gates: {declared!r}`; it must be a list of "
-            f"gate names, drawn from the gates this manifest declares, e.g. "
-            f"`boundary_only_gates: [{next(iter(gates))}]`"
-            if gates
-            else f"declares `boundary_only_gates: {declared!r}`; it must be a list "
-            "of gate names, drawn from the gates this manifest declares",
+            "gate names drawn from the gates this manifest declares, e.g. "
+            f"`boundary_only_gates: [{next(iter(gates))}]`",
             source=source,
         )
 
