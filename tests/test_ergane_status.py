@@ -1537,6 +1537,16 @@ EXPECTED_GUARDS: dict[str, dict[str, set[tuple[str, ...]]]] = {
         # 068-US2: reset's precondition queries the epic, so it guards both.
         "_reset_epic": {("RPCError",), ("QUERY_REFUSED",)},
         "_resolve": {("RPCError",)},
+        # 156-US1: the worker-advertisement read before dispatch. One query,
+        # guarded by the pair `_query_status` uses (its spelled constants,
+        # `TRANSPORT_FAILED`/`QUERY_REFUSED`) plus `AttributeError` for a
+        # client that cannot be asked at all — every failure degrades to
+        # "unreadable", which refuses nothing.
+        "_worker_advertisement": {
+            ("TRANSPORT_FAILED",),
+            ("QUERY_REFUSED",),
+            ("AttributeError",),
+        },
         "_start_epic": {("ConfigError",), ("WorkflowAlreadyStartedError",)},
     },
     "factory/cli/repo.py": {
@@ -1852,6 +1862,9 @@ def test_no_temporal_call_site_catches_the_transport_failure_alone(
         ("factory/cli/nouns/build.py", "_resolve"),
         ("factory/cli/nouns/build.py", "_send_signal"),
         ("factory/cli/nouns/build.py", "_send_signal_with_args"),
+        # 156-US1: the advertisement read queries `epic_status`, so it names the
+        # refusal alongside the transport failure.
+        ("factory/cli/nouns/build.py", "_worker_advertisement"),
         ("factory/cli/roadmap.py", "_connect"),
         ("factory/cli/roadmap.py", "_locate"),
         ("factory/cli/roadmap.py", "roadmap_status_command"),

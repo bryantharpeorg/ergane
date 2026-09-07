@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, NamedTuple
 import pytest
 from temporalio import activity
 from temporalio.client import Client
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 from temporalio.worker._interceptor import (
@@ -323,7 +324,14 @@ def _malformed_manifest(target_repo: Path) -> None:
 
 @dataclass
 class RecordingClient:
-    """A Temporal client stand-in that records the EpicInput passed to start_workflow."""
+    """A Temporal client stand-in that records the EpicInput passed to start_workflow.
+
+    156-US1 gave `build start` one read before dispatch — the worker's
+    advertisement, queried off the id it is about to take. When no real client
+    is attached there is no epic to read, which on a server is `NOT_FOUND`: the
+    shape the refusal's own read degrades on, so this fake answers it the same
+    way instead of failing the dispatch these tests measure.
+    """
 
     real_client: Client | None = None
     inputs: list[EpicInput] = field(default_factory=list)
@@ -332,7 +340,7 @@ class RecordingClient:
     def get_workflow_handle(self, workflow_id: str):
         if self.real_client is not None:
             return self.real_client.get_workflow_handle(workflow_id)
-        raise AssertionError("no real client attached")
+        raise RPCError("workflow not found", RPCStatusCode.NOT_FOUND, b"")
 
     async def start_workflow(
         self,
