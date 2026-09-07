@@ -2,8 +2,12 @@
 
 The detector captures the state of the *target repository* and the factory's own
 runtime root at attempt start, and compares again at teardown.  Any tracked path
-that changed in the target repo, or any evidence store / ledger / sibling worktree
-that was removed or truncated under the runtime root, becomes a critical finding.
+that changed in the target repo, or any evidence store / ledger that was removed
+or truncated under the runtime root, becomes a critical finding.  Node worktrees
+under the runtime root — own or sibling — are not watched (epic 130 US2): a
+sibling worktree is another node's workplace, and the factory removes sibling
+worktrees as ordinary housekeeping, which is not an escape an attempt should be
+charged for.
 
 Key design points:
 
@@ -12,11 +16,12 @@ Key design points:
 - The start-state snapshot is kept *outside* the runtime root, so deleting the
   runtime root does not destroy the thing we compare against (FR-013).
 - Under the runtime root, only *loss* is a finding: a path created during the
-  attempt, or a store that merely grew, is silent (FR-020, FR-021).  Sibling
-  nodes run concurrently under the same root and the detector writes
-  ``doctor.db`` itself, so any wider rule reports the neighbours and itself.
-  Generated paths (``__pycache__``, ``.pytest_cache``, ``*.pyc``) are left out
-  of the snapshot at capture for the same reason (FR-022).
+  attempt, or a store that merely grew, is silent (FR-020, FR-021).  What is
+  snapshotted is the three named evidence stores at the root and nothing else —
+  the detector writes ``doctor.db`` itself, so a growth rule would report the
+  detector.  Sibling worktrees left the snapshot entirely in epic 130 US2
+  (FR-004, FR-005); generated paths (``__pycache__``, ``.pytest_cache``,
+  ``*.pyc``) left it in 073 (FR-022).
 - The finding key is the *class* — ``hardening/agent-worktree-boundary``, with no
   epic or node suffix (FR-024) — so a boundary that four attempts trip is one row
   with four occurrences rather than four rows with one each.  The attribution the
@@ -95,11 +100,12 @@ class TrackedState:
 
 @dataclass(frozen=True)
 class RuntimeRootState:
-    """A snapshot of critical runtime-root files and directories.
+    """A snapshot of critical runtime-root files.
 
-    Records size and existence for stores, ledgers and every sibling worktree,
-    so removal or truncation is detectable even when the runtime root itself is
-    deleted at teardown.
+    Records size and existence for the evidence stores at the root, so removal
+    or truncation is detectable even when the runtime root itself is deleted at
+    teardown.  Node worktrees are not snapshotted (epic 130 US2): a sibling's
+    contents are not this attempt's escape.
     """
 
     root: Path | None
@@ -309,39 +315,28 @@ def _committed_state(repo: Path) -> TrackedState:
 
 
 def _runtime_root_state(root: Path | None, own_worktree: Path) -> RuntimeRootState:
-    """Snapshot the stores and every sibling worktree under ``root``.
+    """Snapshot the evidence stores at the root of ``root`` — and nothing else.
 
-    ``own_worktree`` is excluded: the agent is allowed to write there.
+    Node worktrees are not snapshotted at all, own or sibling (epic 130 US2,
+    FR-004/FR-005), so ``own_worktree`` is carried in the signature only to keep
+    the two call sites stable for the stories that share this file; it selects
+    nothing.  A sibling worktree is where another node legitimately works, and
+    the factory removes sibling worktrees as ordinary housekeeping —
+    ``factory/workgraph/workflow.py`` ``_remove_worktree`` — so watching one
+    charged that housekeeping to whichever attempt happened to be tearing down,
+    which is the false-positive count this story exists to delete.  What can
+    still be lost here, and what is still reported, is the three named stores
+    below: deleting or truncating those is the 2026-08-14 destruction, and it
+    stays loud.
     """
     entries: dict[str, dict[str, Any]] = {}
     if root is None or not root.exists():
         return RuntimeRootState(root=None, entries=entries)
 
-    own_resolved = own_worktree.resolve()
-
     # Evidence stores and ledgers at the root.
     for name in ("doctor.db", "ledger.db", "verification.db"):
         path = root / name
         entries[name] = _describe_path(path)
-
-    # Every node worktree under root/worktrees/<epic>/<node>.
-    worktrees_root = root / "worktrees"
-    if worktrees_root.is_dir():
-        for epic_dir in worktrees_root.iterdir():
-            if not epic_dir.is_dir():
-                continue
-            for node_dir in epic_dir.iterdir():
-                if not node_dir.is_dir():
-                    continue
-                if node_dir.resolve() == own_resolved:
-                    continue
-                rel = str(node_dir.relative_to(root))
-                entries[rel] = _describe_path(node_dir)
-                # Snapshot the worktree's contents so file changes inside it are
-                # detectable, not just the directory's own metadata.
-                for path in _snapshot_paths(node_dir):
-                    entry_rel = str(path.relative_to(root))
-                    entries[entry_rel] = _describe_path(path)
 
     return RuntimeRootState(root=root, entries=entries)
 
