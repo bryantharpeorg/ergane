@@ -236,7 +236,7 @@ def dag_svg(graph: dict, landed: dict) -> str:
         for i, n in enumerate(nodes):
             pos[n] = (x0 + i * (bw + gx), gy / 2 + (lv - 1) * (bh + gy))
 
-    parts = [f'<svg viewBox="0 0 {width:.0f} {height:.0f}" role="img" '
+    parts = [f'<svg viewBox="0 0 {width:.0f} {height:.0f}" width="{width:.0f}" role="img" '
              f'aria-label="Work graph, {len(graph)} stories">']
     parts.append('<defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
                  'markerHeight="7" orient="auto-start-reverse">'
@@ -267,12 +267,41 @@ def dag_svg(graph: dict, landed: dict) -> str:
 
 
 def md(text: str) -> str:
-    """Just enough markdown for spec prose: headings, lists, code, emphasis, tables."""
-    out, in_code, in_list, in_table = [], False, False, False
+    """Just enough markdown for spec prose: headings, lists, code, emphasis, tables.
+
+    Prose paragraphs are JOINED, one source line per paragraph is the wall the
+    page exists to replace: consecutive non-blank, non-structural lines fold
+    into a single <p> with a soft break, and only a blank line or a structural
+    line (heading, list, table, fence) starts a new one. Ordered lists become
+    <ol>, and h1 renders (the '# Feature Specification:' title line) instead of
+    falling through to a literal '# ...' paragraph.
+    """
+    out = []
+    in_code = in_ul = in_ol = in_table = False
+    para: list[str] = []          # buffered prose lines of the current paragraph
+    in_item = False               # an open <li> may absorb its continuation lines
+
+    def close_para():
+        if para:
+            out.append("<p>" + "\n".join(para) + "</p>")
+            para.clear()
+
+    def close_lists():
+        nonlocal in_ul, in_ol, in_item
+        if in_ul:
+            out.append("</ul>"); in_ul = False
+        if in_ol:
+            out.append("</ol>"); in_ol = False
+        in_item = False
+
+    def slug(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
     for line in text.splitlines():
         if line.startswith("```"):
-            if in_list:
-                out.append("</ul>"); in_list = False
+            close_para(); close_lists()
+            if in_table:
+                out.append("</table></div>"); in_table = False
             in_code = not in_code
             out.append("<pre><code>" if in_code else "</code></pre>")
             continue
@@ -282,35 +311,67 @@ def md(text: str) -> str:
         esc = html.escape(line)
         esc = re.sub(r"`([^`]+)`", r"<code>\1</code>", esc)
         esc = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", esc)
+        # tables
         if line.startswith("|") and "|" in line[1:]:
+            close_para(); close_lists()
             cells = [c.strip() for c in esc.strip().strip("|").split("|")]
             if all(set(c) <= set("-: ") for c in cells):
                 continue
             if not in_table:
                 out.append("<div class='scroll'><table>"); in_table = True
-            tag = "th" if len(out) and "<table>" in out[-1] else "td"
+            tag = "th" if "<table>" in out[-1] else "td"
             out.append("<tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in cells) + "</tr>")
             continue
         if in_table:
             out.append("</table></div>"); in_table = False
-        m = re.match(r"^(#{2,4})\s+(.*)", line)
+        # headings: # through ####, with emphasis marks stripped from the id text.
+        # A '# Feature Specification:' line is the title restated inside the body
+        # (the page header already carries it as h1) — skip it rather than print twice.
+        m = re.match(r"^(#{1,4})\s+(.*)", line)
         if m:
-            if in_list:
-                out.append("</ul>"); in_list = False
+            close_para(); close_lists()
+            if m.group(1) == "#" and m.group(2).strip().startswith("Feature Specification:"):
+                continue
             lv = len(m.group(1))
-            out.append(f"<h{lv} id='{re.sub(r'[^a-z0-9]+', '-', m.group(2).lower()).strip('-')}'>"
-                       f"{html.escape(m.group(2))}</h{lv}>")
+            out.append(f"<h{lv} id='{slug(re.sub(r'[*`]', '', m.group(2)))}'>"
+                       f"{m.group(2)}</h{lv}>")
             continue
+        # unordered list
         if re.match(r"^\s*[-*]\s+", line):
-            if not in_list:
-                out.append("<ul>"); in_list = True
+            close_para()
+            if in_ol:
+                out.append("</ol>"); in_ol = False
+            if not in_ul:
+                out.append("<ul>"); in_ul = True
             out.append("<li>" + re.sub(r"^\s*[-*]\s+", "", esc) + "</li>")
+            in_item = True
             continue
-        if in_list:
-            out.append("</ul>"); in_list = False
-        out.append(f"<p>{esc}</p>" if esc.strip() else "")
-    if in_list:
-        out.append("</ul>")
+        # ordered list — the acceptance scenarios are numbered lines
+        m = re.match(r"^\s*(\d+)\.\s+(.*)", line)
+        if m:
+            close_para()
+            if in_ul:
+                out.append("</ul>"); in_ul = False
+            if not in_ol:
+                out.append("<ol>"); in_ol = True
+            item = re.sub(r"^\s*\d+\.\s+", "", esc)
+            out.append("<li>" + item + "</li>")
+            in_item = True
+            continue
+        # continuation of the current list item — indented prose under a numbered
+        # scenario. Absorb into the open <li> with a joining space rather than
+        # dropping it to a separate <p>.
+        if in_item and re.match(r"^\s+\S", line):
+            if out and out[-1].endswith("</li>"):
+                out[-1] = out[-1][:-5] + " " + esc.strip() + "</li>"
+            continue
+        # blank line ends the paragraph
+        if not line.strip():
+            close_para(); close_lists()
+            continue
+        close_lists()
+        para.append(esc)
+    close_para(); close_lists()
     if in_table:
         out.append("</table></div>")
     return "\n".join(out)
@@ -318,84 +379,112 @@ def md(text: str) -> str:
 
 CSS = """
 :root{
-  --ink:#15181d; --paper:#f6f6f3; --slate:#5b6472; --line:#dedcd6;
-  --steel:#3d5a80; --ok:#3f7d6a; --warn:#b07c2a; --bad:#a4453a;
-  --card:#fff; --shadow:0 1px 2px rgba(21,24,29,.06);
-  --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
-  --serif:ui-serif,Georgia,"Iowan Old Style",Palatino,serif;
-  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --ground:#EDF0F2; --surface:#FFFFFF; --sunken:#E3E8EB;
+  --ink:#14202A; --muted:#566873; --faint:#7D8F9A;
+  --rule:#C7D1D7; --hairline:#D8E0E4;
+  --accent:#0E6F79; --accent-w:#DCEDEF;
+  --olive:#5A6B2F; --olive-w:#EBEFD9;
+  --gold:#8F7D32; --gold-w:#F4F0D9;
+  --fb:#396F9E; --fb-w:#E1EBF5;
+  --alarm:#9E3319; --alarm-w:#F6E3DD;
+  --shadow:0 1px 2px rgba(20,32,42,.05), 0 8px 24px -12px rgba(20,32,42,.14);
+  --serif:ui-serif,"Iowan Old Style",Georgia,"Times New Roman",serif;
+  --sans:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
 }
 @media (prefers-color-scheme:dark){
-  :root{--ink:#e6e6e1; --paper:#14161a; --slate:#98a0ad; --line:#2a2f37;
-        --steel:#7ea3cc; --ok:#6bab95; --warn:#d7a44e; --bad:#d4736a;
-        --card:#191c22; --shadow:0 1px 2px rgba(0,0,0,.4);}
+  :root:not([data-theme="light"]){
+    --ground:#0D1418; --surface:#131E24; --sunken:#0A1013;
+    --ink:#D8E3E8; --muted:#8A9EA9; --faint:#6B7F8A;
+    --rule:#27373F; --hairline:#1E2C33;
+    --accent:#46B7C1; --accent-w:#102D31;
+    --olive:#A9BC62; --olive-w:#20260F;
+    --gold:#DBC878; --gold-w:#262112;
+    --fb:#74A9D6; --fb-w:#10222F;
+    --alarm:#E2795A; --alarm-w:#2E1710;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
 }
-:root[data-theme="dark"]{--ink:#e6e6e1;--paper:#14161a;--slate:#98a0ad;--line:#2a2f37;
-  --steel:#7ea3cc;--ok:#6bab95;--warn:#d7a44e;--bad:#d4736a;--card:#191c22;--shadow:0 1px 2px rgba(0,0,0,.4);}
-:root[data-theme="light"]{--ink:#15181d;--paper:#f6f6f3;--slate:#5b6472;--line:#dedcd6;
-  --steel:#3d5a80;--ok:#3f7d6a;--warn:#b07c2a;--bad:#a4453a;--card:#fff;--shadow:0 1px 2px rgba(21,24,29,.06);}
+:root[data-theme="dark"]{
+  --ground:#0D1418; --surface:#131E24; --sunken:#0A1013;
+  --ink:#D8E3E8; --muted:#8A9EA9; --faint:#6B7F8A;
+  --rule:#27373F; --hairline:#1E2C33;
+  --accent:#46B7C1; --accent-w:#102D31;
+  --olive:#A9BC62; --olive-w:#20260F;
+  --gold:#DBC878; --gold-w:#262112;
+  --fb:#74A9D6; --fb-w:#10222F;
+  --alarm:#E2795A; --alarm-w:#2E1710;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--serif);
-     font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+     font-size:15.5px;line-height:1.6;-webkit-font-smoothing:antialiased}
 .wrap{display:grid;grid-template-columns:250px minmax(0,1fr);gap:48px;
-      max-width:1180px;margin:0 auto;padding:40px 28px 96px}
+      max-width:1180px;margin:0 auto;padding:48px 32px 96px}
 @media(max-width:900px){.wrap{grid-template-columns:1fr;gap:28px}.rail{position:static!important}}
 .rail{position:sticky;top:32px;align-self:start;font-family:var(--sans);font-size:13px}
-.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-         color:var(--slate);margin:0 0 6px}
-h1{font-family:var(--mono);font-size:26px;line-height:1.25;font-weight:600;margin:0 0 6px;
-   text-wrap:balance;letter-spacing:-.01em}
-h2{font-family:var(--mono);font-size:15px;letter-spacing:.04em;text-transform:uppercase;
-   margin:44px 0 14px;padding-bottom:7px;border-bottom:1px solid var(--line);color:var(--slate)}
-h3{font-family:var(--mono);font-size:16px;margin:26px 0 8px;font-weight:600}
-h4{font-family:var(--mono);font-size:14px;margin:18px 0 6px;color:var(--slate)}
+.eyebrow{font-family:var(--mono);font-size:.66rem;font-weight:600;letter-spacing:.09em;
+         text-transform:uppercase;color:var(--accent);margin:0 0 10px}
+h1{font-family:var(--serif);font-weight:600;font-size:clamp(26px,3.6vw,40px);
+   line-height:1.08;margin:0 0 12px;text-wrap:balance}
+h2{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.12em;
+   text-transform:uppercase;margin:44px 0 14px;padding-bottom:8px;
+   border-bottom:1px solid var(--hairline);color:var(--muted)}
+h3{font-family:var(--serif);font-size:17px;margin:26px 0 8px;font-weight:600}
+h4{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.05em;
+   text-transform:uppercase;margin:18px 0 6px;color:var(--muted)}
 p{margin:0 0 14px;max-width:68ch}
 ul{margin:0 0 14px;padding-left:20px;max-width:68ch}
 li{margin:0 0 6px}
-code{font-family:var(--mono);font-size:.86em;background:color-mix(in srgb,var(--slate) 12%,transparent);
-     padding:.1em .34em;border-radius:3px}
-pre{background:var(--card);border:1px solid var(--line);border-radius:5px;padding:14px 16px;
+code{font-family:var(--mono);font-size:.86em;background:var(--sunken);
+     padding:.1em .34em;border-radius:2px}
+pre{background:var(--surface);border:1px solid var(--rule);border-radius:2px;padding:14px 16px;
     overflow-x:auto;margin:0 0 16px;box-shadow:var(--shadow)}
 pre code{background:none;padding:0;font-size:12.5px;line-height:1.6}
-a{color:var(--steel)}
-.scroll{overflow-x:auto;margin:0 0 16px}
+a{color:var(--accent)}
+.scroll{overflow-x:auto;margin:0 0 16px;scrollbar-width:thin;scrollbar-color:var(--rule) transparent}
 table{border-collapse:collapse;width:100%;font-family:var(--sans);font-size:13.5px;
       font-variant-numeric:tabular-nums}
-th,td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--slate)}
-.chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;
-      letter-spacing:.05em;text-transform:uppercase;padding:3px 8px;border-radius:3px;
+th,td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--hairline);vertical-align:top}
+th{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.08em;
+   text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--rule)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:.62rem;
+      font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:.24em .55em;
       border:1px solid currentColor;line-height:1.5}
-.chip.ok{color:var(--ok)} .chip.warn{color:var(--warn)} .chip.bad{color:var(--bad)}
-.chip.neutral{color:var(--slate)}
-.health{display:flex;flex-direction:column;gap:9px;margin:16px 0 22px;padding:14px;
-        background:var(--card);border:1px solid var(--line);border-radius:5px;box-shadow:var(--shadow)}
+.chip.ok{color:var(--olive);background:var(--olive-w)}
+.chip.warn{color:var(--gold);background:var(--gold-w)}
+.chip.bad{color:var(--alarm);background:var(--alarm-w)}
+.chip.neutral{color:var(--muted);background:var(--sunken)}
+.health{display:flex;flex-direction:column;gap:9px;margin:16px 0 22px;padding:14px 16px;
+        background:var(--surface);border:1px solid var(--rule);border-radius:2px;box-shadow:var(--shadow)}
 .health div{display:flex;justify-content:space-between;align-items:center;gap:10px}
-.health span:first-child{color:var(--slate)}
+.health span:first-child{color:var(--muted);font-size:.78rem}
 .rail nav{display:flex;flex-direction:column;gap:3px;margin-top:8px}
-.rail nav a{text-decoration:none;color:var(--slate);padding:3px 0;border-left:2px solid transparent;padding-left:9px}
-.rail nav a:hover{color:var(--ink);border-left-color:var(--steel)}
-.rail nav a:focus-visible{outline:2px solid var(--steel);outline-offset:2px}
-svg{max-width:100%;height:auto;color:var(--slate)}
-.node rect{fill:var(--card);stroke:var(--line);stroke-width:1.5}
-.node.landed rect{stroke:var(--ok);stroke-width:2}
+.rail nav a{text-decoration:none;color:var(--muted);padding:3px 0;border-left:2px solid transparent;padding-left:9px}
+.rail nav a:hover{color:var(--ink);border-left-color:var(--accent)}
+.rail nav a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+svg{max-width:100%;height:auto;color:var(--muted)}
+.node rect{fill:var(--surface);stroke:var(--rule);stroke-width:1;rx:2}
+.node.landed rect{fill:var(--olive-w);stroke:var(--olive);stroke-width:2}
 .nid{font-family:var(--mono);font-size:13px;font-weight:600;fill:var(--ink);text-anchor:middle}
-.nsub{font-family:var(--mono);font-size:10px;fill:var(--slate);text-anchor:middle;letter-spacing:.04em}
-.edge{fill:none;stroke:var(--slate);stroke-width:1.5;opacity:.75}
-.edge.verify{stroke-dasharray:4 3;opacity:.5}
-.legend{font-family:var(--mono);font-size:11px;color:var(--slate);margin:6px 0 0}
+.nsub{font-family:var(--mono);font-size:10px;fill:var(--faint);text-anchor:middle;letter-spacing:.04em}
+.edge{fill:none;stroke:var(--muted);stroke-width:1.5;opacity:.8}
+.edge.verify{stroke-dasharray:5 4;opacity:.55}
+.legend{font-family:var(--sans);font-size:.82rem;color:var(--muted);margin:6px 0 0;line-height:1.55}
 .anchor-row td:first-child{font-family:var(--mono);font-size:12px;white-space:nowrap}
 .anchor-row code{font-size:11.5px}
-details{margin:0 0 14px;border:1px solid var(--line);border-radius:5px;background:var(--card)}
-summary{cursor:pointer;padding:10px 14px;font-family:var(--mono);font-size:12px;
-        letter-spacing:.05em;text-transform:uppercase;color:var(--slate)}
-summary:focus-visible{outline:2px solid var(--steel);outline-offset:-2px}
-details[open] summary{border-bottom:1px solid var(--line)}
+details{margin:0 0 14px;border:1px solid var(--rule);border-radius:2px;background:var(--surface);
+        box-shadow:var(--shadow)}
+summary{cursor:pointer;padding:10px 14px;font-family:var(--mono);font-size:.66rem;font-weight:600;
+        letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+details[open] summary{border-bottom:1px solid var(--hairline)}
 .prov{padding:12px 16px;font-family:var(--mono);font-size:12px;line-height:1.7;
-      white-space:pre-wrap;color:var(--slate);max-height:420px;overflow-y:auto}
-.empty{color:var(--slate);font-style:italic}
-.trap{border-left:3px solid var(--warn);padding-left:14px;margin:0 0 12px}
-.trap b{font-family:var(--mono);font-size:13px}
+      white-space:pre-wrap;color:var(--muted);max-height:420px;overflow-y:auto}
+.empty{color:var(--faint);font-style:italic}
+.trap{background:var(--surface);border:1px solid var(--rule);border-left:3px solid var(--gold);
+      border-radius:2px;box-shadow:var(--shadow);padding:10px 14px;margin:0 0 12px}
+.trap b{font-family:var(--mono);font-size:12.5px;color:var(--gold)}
 @media print{.rail{display:none}.wrap{grid-template-columns:1fr}}
 """
 
@@ -449,7 +538,8 @@ def build(s: Spec, tree_label: str) -> str:
                    ("traps", "Traps"), ("spec", "Specification"), ("plan", "Plan"), ("tasks", "Tasks")])
 
     done = sum(1 for _, _, st in s.tasks if st == "done")
-    return f"""<title>{html.escape(s.slug)}</title>
+    return f"""<meta charset="utf-8">
+<title>{html.escape(s.slug)}</title>
 <style>{CSS}</style>
 <div class="wrap">
 <aside class="rail">
