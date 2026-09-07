@@ -1,7 +1,12 @@
 ---
-state: draft
+state: landed
 fixes:
   - feedback/pr-9-a-boundary-only-gate-is-a-choice-onboarding-cannot-be-told-about
+# Attested landed 2026-09-07. US1 12d878a94f2c (#433), US2 8c235c63cdc8 (#434) —
+# both observed on ergane-buildout by content, both on the first attempt, both
+# PASS with no retry, no judge failure and no escalation. The epic ran twice
+# (2026-09-06 16:45Z and 17:42Z); that was a relaunch between stories, not a
+# rework — each node records attempt 1.
 # DRAFTED 2026-09-03 by the operator session, against ergane-buildout at 238b494.
 # Every `file:line` in spec.md and plan.md was read from that commit and verified
 # to resolve to the symbol named, not recalled.
