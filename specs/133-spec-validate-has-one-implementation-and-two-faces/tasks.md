@@ -37,15 +37,17 @@ Trap 17 is the one that decides whether the module still imports: **the import
 direction is one-way.** `factory/cli/nouns/spec.py` imports from `factory.spec`;
 `factory/spec/` may never import back. A moved body that reads a CLI-module name
 means that name moves too — which is why US1's move of the finding type is
-mandatory, why the symbol grammar travels with US2 and the two file:line regexes
-with US7, why the marker vocabulary travels with US6, and why the scenario-id
-grammar and the vacuous registry travel with US5.
+mandatory, why the symbol grammar AND both file:line regexes travel with US2 —
+US7 is one function and carries no vocabulary at all — why the marker vocabulary
+travels with US6, and why the scenario-id grammar and the vacuous registry travel
+with US5.
 
 Trap 17 also has a second face, and it is the one this spec's split turns on: a
 helper read by two layers **moves with the first story that needs it and is
-imported back for the second**. `_spec_state` and `_severity_for_state` move in
-US2 and are read by US7's checker until US7 runs; the evidence vocabulary moves in
-US6 and is read by US8's checker until US8 runs. Copying instead of importing
+imported back for the second**. `_spec_state`, `_severity_for_state`,
+`_read_citation_files`, `_ANCHOR_RE` and `_BARE_LINE_RE` all move in US2 and are
+read by US7's checker until US7 runs; the evidence vocabulary moves in US6 and is
+read by US8's checker until US8 runs. Copying instead of importing
 leaves two definitions of one rule, and the golden captures do not catch it.
 
 **Trap 24 — the bound is the story boundary.** Five phases here are relocations,
@@ -184,7 +186,7 @@ order they are written.
       clean trio's stdout artifact that carries the all-pass sentence, and the
       refusal and advisory lines of the defective trio's stderr artifact.
 
-## Phase 2: User Story 2 — The symbol-anchor layer leaves the CLI module
+## Phase 2: User Story 2 — The symbol tier and the anchor family's shared vocabulary leave the CLI module
 
 Locate every item below by symbol name. Line numbers here are coordinates in the
 tree at **57bf698**; US1 has already removed the finding type from this file, and
@@ -199,16 +201,19 @@ its gates were green, and it was killed at 72,750 assembled bytes against a
 - [ ] T012 [P] [US2] (spec US2-S1, FR-010, trap 17) Assert
       `factory/cli/nouns/spec.py` no longer defines `_check_symbol_anchors`,
       `_symbol_spans`, `_line_hits_symbol`, `_spec_state`, `_severity_for_state`,
-      `_SYMBOL_ANCHOR_RE` or `_DISPATCHABLE_STATES`, by reading the module source
-      rather than by importing names that would still resolve through the import.
+      `_read_citation_files`, `_SYMBOL_ANCHOR_RE`, `_DISPATCHABLE_STATES`,
+      `_ANCHOR_RE` or `_BARE_LINE_RE`, by reading the module source rather than by
+      importing names that would still resolve through the import.
       `_SYMBOL_ANCHOR_RE` (`factory/cli/nouns/spec.py:789`) is read only at
-      `factory/cli/nouns/spec.py:937`, inside the checker this story moves, and
+      `factory/cli/nouns/spec.py:937`, inside the checker this story moves;
       `_DISPATCHABLE_STATES` (`factory/cli/nouns/spec.py:794`) only from
-      `_severity_for_state`. Leaving either behind makes a moved body reach back
-      into the module it just left, which cannot import.
-      **Do not assert anything about `_check_anchor_resolution`,
-      `_read_citation_files`, `_ANCHOR_RE` or `_BARE_LINE_RE`** — those are
-      Phase 3's and they are still defined here when this story lands.
+      `_severity_for_state`; and `_ANCHOR_RE` (`factory/cli/nouns/spec.py:69`) and
+      `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`) only from inside US7's
+      checker, a thousand lines below where they are bound. Leaving any of them
+      behind makes a moved body reach back into the module it just left, which
+      cannot import.
+      **Do not assert anything about `_check_anchor_resolution`** — that is
+      Phase 3's, and it is still defined here when this story lands.
 - [ ] T013 [P] [US2] (spec US2-S5, FR-010) Assert the symbol checker the CLI
       module calls is the object defined in `factory.spec` — compare
       `__module__` — so a re-declaration cannot pass as a move. Re-declaring the
@@ -241,11 +246,15 @@ its gates were green, and it was killed at 72,750 assembled bytes against a
       `_severity_for_state` (212 B), `factory/cli/nouns/spec.py:819` —
       `_symbol_spans` (1,162 B), `factory/cli/nouns/spec.py:849` —
       `_line_hits_symbol` (1,004 B) and `factory/cli/nouns/spec.py:880` —
-      `_check_symbol_anchors` (4,347 B). **7,322 bytes of source, about a 17.3 KB
-      move and ~46 KB assembled.** Keep the moves mechanical and change no string.
-      Leave `_check_anchor_resolution`, `_read_citation_files`, `_ANCHOR_RE` and
-      `_BARE_LINE_RE` exactly where they are — moving them is what put this story
-      over the bound the first time.
+      `_check_symbol_anchors` (4,347 B), **plus the shared vocabulary US7's
+      checker reads**: `factory/cli/nouns/spec.py:1005` — `_read_citation_files`
+      (478 B) and the two module-level regexes with their `#:` comments,
+      `_ANCHOR_RE` (`factory/cli/nouns/spec.py:69`, 52 B) and `_BARE_LINE_RE`
+      (`factory/cli/nouns/spec.py:72`, 49 B). **7,901 bytes of source, about an
+      18.6 KB move and ~47.6 KB assembled.** Keep the moves mechanical and change
+      no string. Leave `_check_anchor_resolution` exactly where it is — it is
+      9,795 bytes on its own and it is the whole of US7; moving it here is what
+      put this story over the bound the first time.
 - [ ] T016 [US2] (spec US2-S2, FR-010, trap 17) Import the moved names back into
       `factory/cli/nouns/spec.py` under their own names, so `_validate_command`
       calls them exactly as it does today **and** so the surviving
@@ -266,7 +275,7 @@ its gates were green, and it was killed at 72,750 assembled bytes against a
       The standing guard that keeps the comparison empty is the golden test US1
       committed in T006; name that test file by path so a reader can re-run it.
 
-## Phase 3: User Story 7 — The anchor-resolution layer leaves the CLI module
+## Phase 3: User Story 7 — The anchor-resolution checker leaves the CLI module
 
 Locate every item below by symbol name; coordinates are the tree at **57bf698**,
 and US2 has since made the file shorter.
@@ -275,14 +284,11 @@ and US2 has since made the file shorter.
 
 - [ ] T067 [P] [US7] (spec US7-S1, FR-016, trap 17) Assert
       `factory/cli/nouns/spec.py` no longer defines `_check_anchor_resolution`,
-      `_read_citation_files`, `_ANCHOR_RE` or `_BARE_LINE_RE`, by reading the
-      module source rather than by importing names that would still resolve
-      through the import. `_ANCHOR_RE` (`factory/cli/nouns/spec.py:69`) is read
-      only at `factory/cli/nouns/spec.py:1117` and
-      `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`) only at
-      `factory/cli/nouns/spec.py:1086`, both inside the checker this story moves,
-      and both sit a thousand lines above it — which is exactly why a story that
-      moves the span alone strands them.
+      by reading the module source rather than by importing a name that would
+      still resolve through the import. **Assert nothing else has moved in this
+      story**: `_read_citation_files`, `_ANCHOR_RE` and `_BARE_LINE_RE` left with
+      US2, and a test here that re-asserts them is testing US2's landing, not this
+      one.
 - [ ] T068 [P] [US7] (spec US7-S2, FR-016, trap 17) **The circular-import
       control.** Assert the moved `_check_anchor_resolution` reads `_spec_state`
       and `_severity_for_state` from `factory.spec` and not from
@@ -305,15 +311,15 @@ and US2 has since made the file shorter.
 ### Implementation for this story
 
 - [ ] T056 [US7] (spec US7-S1, FR-016, trap 6, trap 7, trap 17) Move into
-      `factory/spec/`, by name: `factory/cli/nouns/spec.py:1005` —
-      `_read_citation_files` (478 B) and `factory/cli/nouns/spec.py:1017` —
-      `_check_anchor_resolution` (9,795 B), together with the two module-level
-      regexes and their `#:` comments, `_ANCHOR_RE`
-      (`factory/cli/nouns/spec.py:69`) and `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`).
-      **10,374 bytes of source, about a 24.5 KB move and ~53 KB assembled — the
-      tightest story in this chain at 82% of the bound.** The checker is 9,795
-      bytes in one function and cannot be halved without redesigning it, which is
-      not what this spec is for. Keep the move mechanical and change no string.
+      `factory/spec/`, by name and by itself: `factory/cli/nouns/spec.py:1017` —
+      `_check_anchor_resolution` (9,795 B). **Nothing else moves in this story.**
+      Everything this checker reads — `_spec_state`, `_severity_for_state`,
+      `_read_citation_files`, `_ANCHOR_RE` and `_BARE_LINE_RE` — went with US2,
+      because a story built around a 9,795-byte function has no room to carry
+      shared vocabulary as well. **9,795 bytes of source, about a 23.1 KB move and
+      ~52.1 KB assembled — the tightest story in this chain at 80% of the bound.**
+      The checker cannot be halved without redesigning it, which is not what this
+      spec is for. Keep the move mechanical and change no string.
 - [ ] T057 [US7] (FR-016) Import the moved names back into
       `factory/cli/nouns/spec.py` so `_validate_command` calls them exactly as it
       does today. The CLI still composes; that is US3's job to end.
@@ -569,7 +575,7 @@ and US6 has since removed the vocabulary from above them.
       escalate rather than ship. Name US1's golden test file by path as the
       standing guard.
 
-## Phase 7: User Story 3 — The verb is a renderer over one composition
+## Phase 7: User Story 3 — One composition exists, and the verb is untouched
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -614,63 +620,14 @@ and US6 has since removed the vocabulary from above them.
       `factory/cli/nouns/spec.py:766` and `factory/cli/nouns/spec.py:774`, and
       never reads its order — so this assertion and T036's JSON golden are the
       only two things that catch it.
-- [ ] T035 [P] [US3] (spec US3-S4, FR-006, trap 19) Assert the verb's stdout
-      **and its stderr** over **each** of US1's two fixture trios each equal that
-      trio's golden artifact for that stream byte for byte, and that its exit code
-      is unchanged. The clean trio's stdout carries the all-pass sentence; the
-      defective trio never prints one. The four rendered prefixes T040 rewrites
-      live only in the stderr artifacts, so the stdout comparison alone would pass
-      over a renderer that changed every one of them.
-- [ ] T036 [P] [US3] (spec US3-S5, FR-007, trap 21) Assert `--json` over each
-      fixture trio equals that trio's golden JSON artifact byte for byte. The dict
-      is assembled inline at `factory/cli/nouns/spec.py:677` and printed at
-      `factory/cli/nouns/spec.py:699` today, and both its key order and the
-      deliberate absence of `judge_evidence`
-      (`factory/cli/nouns/spec.py:693`) are part of what "byte for byte" means.
-      This is also the assertion that catches a tidied `checked` order, which
-      changes nothing on stdout.
-- [ ] T037 [P] [US3] (spec US3-S6, FR-008, trap 2) Assert the CLI module
-      constructs no finding of its own. There are **five** such constructions to
-      account for, not one, and a `def _check_` sweep finds none of them:
-      `factory/cli/nouns/spec.py:535` (layer `workgraph`, the `DerivationError`
-      refusal), `factory/cli/nouns/spec.py:559` (`prompt_assembly`),
-      `factory/cli/nouns/spec.py:590` (`slice_coverage`, and the line that routes
-      on `entry.informational`), `factory/cli/nouns/spec.py:617`
-      (`slice_contention`) and `factory/cli/nouns/spec.py:634` (`sentinel`).
-      Assert on the module source, so a construction that moved into a helper
-      still in the CLI module does not pass.
-- [ ] T038 [P] [US3] (spec US3-S7, FR-013, trap 14) Assert the demonstration's
-      validate stage obtains its verdict through the library form and that the
-      lines it prints are unchanged. `factory/cli/install.py:1071` — `_run_cli`
-      exists to stream labeled output and
-      `tests/test_110_us1_demo_first_boot.py:425` asserts that argv path returns
-      0; update that assertion to the new seam rather than deleting it.
-- [ ] T052 [P] [US3] (spec US3-S8, FR-015, trap 23) **The control on the
-      controls.** Assert that for a spec the layer refuses, the layer-disabled
-      run and the layer-enabled run return **different** findings — once for the
-      `fixes` helper
-      `tests/test_089_validate_checks_fixes.py:300` — `_validate_without_fixes_layer`
-      and once for the evidence helper
-      `tests/test_102_unprovable_criteria.py:425` — `_validate_without_evidence_layer`.
-      Both rebind the layer on
-      `factory.cli.nouns.spec` today
-      (`tests/test_089_validate_checks_fixes.py:307`,
-      `tests/test_102_unprovable_criteria.py:432`) and both keep working through
-      US5 and US6, because `_validate_command` resolves that module global at
-      call time. The moment the verb is a renderer over `factory.spec`, the
-      rebinding lands on a name nothing calls, both runs become the same run and
-      both corpus comparisons pass over a hundred and thirty specs while
-      covering nothing —
-      `tests/test_102_unprovable_criteria.py:458` says out loud that with the
-      layer disabled both runs are the same run. This assertion is what makes
-      that failure red instead of green.
-- [ ] T053 [P] [US3] (spec US3-S9, FR-015, FR-008, trap 22) Assert
-      `factory/cli/nouns/spec.py` no longer imports the relocated layer
-      functions at all — read the module source — and that no file under
-      `tests/` reaches one of them as an attribute of `factory.cli.nouns.spec`.
-      The four files T051 re-pointed and the two helpers T054 re-points are the
-      whole in-tree set at 602a92c; this assertion is what stops the next one
-      being written.
+- [ ] T070 [P] [US3] (spec US3-S4, FR-003, trap 9) **The control that keeps this
+      story additive.** Assert `_validate_command` is byte-for-byte unchanged by
+      this story — read it out of `git show <base>:factory/cli/nouns/spec.py` and
+      compare — and that US1's six golden artifacts still match with this story
+      having done nothing to them. This story puts a second, tested composition
+      beside the one the verb runs; US9 deletes the duplication. A story that
+      starts rewriting the renderer here is rebuilding the diff that made this
+      split necessary.
 
 ### Implementation for this story
 
@@ -697,7 +654,85 @@ and US6 has since removed the vocabulary from above them.
       (`factory/cli/nouns/spec.py:682`) — so folding either pair into one name
       is an output change FR-005 forbids and neither golden trio happens to
       catch.
-- [ ] T040 [US3] (FR-006, FR-007, FR-008, trap 19, trap 21) Reduce
+### Verification for this story
+
+- [ ] T071 [US3] (FR-003, FR-004, FR-005, trap 19) Paste, as committed evidence,
+      the `checked` sequence `validate_spec` returns for one real spec beside the
+      sequence the verb prints for the same spec — they must be identical and in
+      the seeded-then-appended order, not the run order — and the output of
+      `git diff <base>..HEAD | wc -c`. Expect roughly 36 KB; this is the roomiest
+      story in the chain and it should not be near the ceiling.
+
+## Phase 8: User Story 9 — The verb renders that composition, and its output is unchanged
+
+Everything below changes what the operator sees, which is why it is separated
+from Phase 7 and taken last of the code stories. `plan.md` § Sizing puts it at
+~48 KB assembled — the widest estimate in the spec, because it rewrites rather
+than relocates. Measure it before you finish.
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T035 [P] [US9] (spec US9-S1, FR-006, trap 19) Assert the verb's stdout
+      **and its stderr** over **each** of US1's two fixture trios each equal that
+      trio's golden artifact for that stream byte for byte, and that its exit code
+      is unchanged. The clean trio's stdout carries the all-pass sentence; the
+      defective trio never prints one. The four rendered prefixes T040 rewrites
+      live only in the stderr artifacts, so the stdout comparison alone would pass
+      over a renderer that changed every one of them.
+- [ ] T036 [P] [US9] (spec US9-S2, FR-007, trap 21) Assert `--json` over each
+      fixture trio equals that trio's golden JSON artifact byte for byte. The dict
+      is assembled inline at `factory/cli/nouns/spec.py:677` and printed at
+      `factory/cli/nouns/spec.py:699` today, and both its key order and the
+      deliberate absence of `judge_evidence`
+      (`factory/cli/nouns/spec.py:693`) are part of what "byte for byte" means.
+      This is also the assertion that catches a tidied `checked` order, which
+      changes nothing on stdout.
+- [ ] T037 [P] [US9] (spec US9-S3, FR-008, trap 2) Assert the CLI module
+      constructs no finding of its own. There are **five** such constructions to
+      account for, not one, and a `def _check_` sweep finds none of them:
+      `factory/cli/nouns/spec.py:535` (layer `workgraph`, the `DerivationError`
+      refusal), `factory/cli/nouns/spec.py:559` (`prompt_assembly`),
+      `factory/cli/nouns/spec.py:590` (`slice_coverage`, and the line that routes
+      on `entry.informational`), `factory/cli/nouns/spec.py:617`
+      (`slice_contention`) and `factory/cli/nouns/spec.py:634` (`sentinel`).
+      Assert on the module source, so a construction that moved into a helper
+      still in the CLI module does not pass.
+- [ ] T038 [P] [US9] (spec US9-S4, FR-013, trap 14) Assert the demonstration's
+      validate stage obtains its verdict through the library form and that the
+      lines it prints are unchanged. `factory/cli/install.py:1071` — `_run_cli`
+      exists to stream labeled output and
+      `tests/test_110_us1_demo_first_boot.py:425` asserts that argv path returns
+      0; update that assertion to the new seam rather than deleting it.
+- [ ] T052 [P] [US9] (spec US9-S5, FR-015, trap 23) **The control on the
+      controls.** Assert that for a spec the layer refuses, the layer-disabled
+      run and the layer-enabled run return **different** findings — once for the
+      `fixes` helper
+      `tests/test_089_validate_checks_fixes.py:300` — `_validate_without_fixes_layer`
+      and once for the evidence helper
+      `tests/test_102_unprovable_criteria.py:425` — `_validate_without_evidence_layer`.
+      Both rebind the layer on
+      `factory.cli.nouns.spec` today
+      (`tests/test_089_validate_checks_fixes.py:307`,
+      `tests/test_102_unprovable_criteria.py:432`) and both keep working through
+      US5 and US6, because `_validate_command` resolves that module global at
+      call time. The moment the verb is a renderer over `factory.spec`, the
+      rebinding lands on a name nothing calls, both runs become the same run and
+      both corpus comparisons pass over a hundred and thirty specs while
+      covering nothing —
+      `tests/test_102_unprovable_criteria.py:458` says out loud that with the
+      layer disabled both runs are the same run. This assertion is what makes
+      that failure red instead of green.
+- [ ] T053 [P] [US9] (spec US9-S6, FR-015, FR-008, trap 22) Assert
+      `factory/cli/nouns/spec.py` no longer imports the relocated layer
+      functions at all — read the module source — and that no file under
+      `tests/` reaches one of them as an attribute of `factory.cli.nouns.spec`.
+      The four files T051 re-pointed and the two helpers T054 re-points are the
+      whole in-tree set at 602a92c; this assertion is what stops the next one
+      being written.
+
+### Implementation for this story
+
+- [ ] T040 [US9] (FR-006, FR-007, FR-008, trap 19, trap 21) Reduce
       `factory/cli/nouns/spec.py:490-750` — `_validate_command` to a renderer over
       `validate_spec`, and replace the inline dict at
       `factory/cli/nouns/spec.py:677` with a serialisation of the report that
@@ -711,12 +746,12 @@ and US6 has since removed the vocabulary from above them.
       all-pass sentence and the judge-evidence report to stdout
       (`factory/cli/nouns/spec.py:718`, `factory/cli/nouns/spec.py:725`). This is
       the task US1's stderr goldens exist to fail against.
-- [ ] T041 [US3] (FR-013, trap 14) Convert `factory/cli/install.py:1028`, which
+- [ ] T041 [US9] (FR-013, trap 14) Convert `factory/cli/install.py:1028`, which
       runs `factory/cli/install.py:1078` — `_spec_validate_argv` back through the
       CLI entry point from inside the package, to reach the library form through
       the same renderer, so the demonstration still prints the verdict a stranger
       is watching for.
-- [ ] T054 [US3] (FR-015, trap 23) Re-point the two corpus controls at the
+- [ ] T054 [US9] (FR-015, trap 23) Re-point the two corpus controls at the
       module the composition actually reads:
       `tests/test_089_validate_checks_fixes.py:300` — `_validate_without_fixes_layer`
       and
@@ -730,14 +765,14 @@ and US6 has since removed the vocabulary from above them.
 
 ### Verification for this story
 
-- [ ] T042 [US3] Paste, as committed evidence, the diff between the pre-change and
+- [ ] T042 [US9] Paste, as committed evidence, the diff between the pre-change and
       post-change output sweep described in `plan.md` step 4, captured on both
       streams — it must be empty on each — the demonstration's validate stage
       output before and after T041, and the transcript of the two re-pointed
       corpus controls of T054 showing a **differing** verdict on the spec each
       layer refuses, which is what proves they are still disabling something.
 
-## Phase 8: User Story 4 — The two forms agree, provably
+## Phase 9: User Story 4 — The two forms agree, provably
 
 ### Tests for this story (write FIRST, must fail)
 

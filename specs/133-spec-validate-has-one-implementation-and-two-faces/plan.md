@@ -649,30 +649,40 @@ shipping a diff trap 6 will refuse.
 (465 B), `factory/cli/nouns/spec.py:812` — `_severity_for_state` (212 B),
 `factory/cli/nouns/spec.py:819` — `_symbol_spans` (1,162 B),
 `factory/cli/nouns/spec.py:849` — `_line_hits_symbol` (1,004 B) and
-`factory/cli/nouns/spec.py:880` — `_check_symbol_anchors` (4,347 B). Together
-**7,322 bytes**: about a 17.3 KB move, **~46 KB assembled**, 71% of the bound.
+`factory/cli/nouns/spec.py:880` — `_check_symbol_anchors` (4,347 B), **plus the
+whole anchor family's shared vocabulary**: `factory/cli/nouns/spec.py:1005` —
+`_read_citation_files` (478 B) and the two regexes read only from inside the
+resolution checker, `_ANCHOR_RE` (`factory/cli/nouns/spec.py:69`, 52 B) and
+`_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`, 49 B). Together **7,901 bytes**:
+about an 18.6 KB move, **~47.6 KB assembled**, 73% of the bound.
 
-The two shared helpers are the trap. `_spec_state` and `_severity_for_state` are
-read from **two** call sites — `factory/cli/nouns/spec.py:906` inside the symbol
+**Why this story carries US7's vocabulary.** The obvious split gives each tier
+the names it reads, and it does not fit: `_check_anchor_resolution` alone is
+9,795 bytes, so a US7 built that way assembles at ~53.5 KB — past the
+52,400-byte ceiling before anyone writes a line. The seam is therefore taken
+off-centre. The shared and the strandable names ride here, where there is
+headroom, and US7 is the one function. Both stories then sit inside the ceiling,
+which is the whole point of the exercise.
+
+The shared names are the trap. `_spec_state` and `_severity_for_state` are read
+from **two** call sites — `factory/cli/nouns/spec.py:906` inside the symbol
 checker this story moves, and `factory/cli/nouns/spec.py:1155` inside the
-resolution checker that does not move until US7. They travel with this story and
-the CLI module binds them back under their own names, which is exactly what US1
-did for `_ValidateFinding`. Copying them instead leaves two definitions of one
-severity rule, and the golden captures would not catch it.
+resolution checker that does not move until US7 — and `_read_citation_files`,
+`_ANCHOR_RE` and `_BARE_LINE_RE` are read **only** from that surviving checker.
+All five travel with this story, and the CLI module binds every one of them back
+under its own name, which is exactly what US1 did for `_ValidateFinding`. Copying
+them instead leaves two definitions of one severity rule, and the golden captures
+would not catch it.
 
-**US7** — the resolution tier only. Removes `factory/cli/nouns/spec.py:1005` —
-`_read_citation_files` (478 B) and `factory/cli/nouns/spec.py:1017` —
-`_check_anchor_resolution` (9,795 B), plus the two regexes that sit far above the
-span and are read only from inside it: `_ANCHOR_RE`
-      (`factory/cli/nouns/spec.py:69`) (52 B) and `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`) (49 B).
-Together **10,374 bytes**: about a 24.5 KB move, **~53 KB assembled**, 82% of the
-bound and the tightest story in the chain. `_check_anchor_resolution` is 9,795
-bytes in one function and cannot be halved without redesigning the checker, which
-is not what this spec is for — so if the assembled diff measures past 52,400
-bytes, cut the pasted evidence, not the coverage, and escalate before shipping.
-The moved checker reads `_spec_state` and `_severity_for_state` from
-`factory/spec/`, where US2 put them; importing them back out of the CLI module is
-the circular shape trap 17 names.
+**US7** — one function. Removes `factory/cli/nouns/spec.py:1017` —
+`_check_anchor_resolution` (9,795 B) and nothing else: about a 23.1 KB move,
+**~52.1 KB assembled**, 80% of the bound and the tightest story in the chain. It
+is irreducible — the checker cannot be halved without redesigning it, which is not
+what this spec is for — so it is the one story here with no slack at all. If the
+assembled diff measures past 52,400 bytes, cut the pasted evidence, not the
+coverage, and escalate before shipping. The moved checker reads all five names it
+needs from `factory/spec/`, where US2 put them; importing any of them back out of
+the CLI module is the circular shape trap 17 names.
 
 **US5** — removes `factory/cli/nouns/spec.py:463-481` (`_scan_sentinels_in_trio`,
 826 B), `factory/cli/nouns/spec.py:779-790` (`_tasks_text`, 543 B),
@@ -732,30 +742,46 @@ the end: `factory/cli/nouns/spec.py:1641` — `_StoryCriteria` (167 B),
 **9,530 bytes**: about a 22.5 KB move, **~51 KB assembled**, 79% of the bound.
 When it lands, no name of the evidence family remains in the CLI module.
 
-**US3** — rewrites `factory/cli/nouns/spec.py:490-750` (11,337 B) into a
-renderer and adds the composition module under `factory/spec/`. That module has
-to carry more than the drafted estimate assumed: the composition half of the
-rewritten function measures 6,607 B (`factory/cli/nouns/spec.py:504-660`) and
-includes the three inline layer wrappers of trap 2 with their skip-reason
-strings, so allow for roughly the same size again in the new module rather than
-for the one contention block. It also touches `factory/cli/install.py` around
+**US3 and US9** — these were one story until 2026-09-07, estimated at **49 to
+64 KB**. That range is why they are now two. Its top is 98% of the bound, on the
+only story in this spec that cannot be sized from a byte count because it writes
+new code rather than moving old, and a story whose plan already tells it to
+escalate if it lands at the top of its own estimate has been told it is too big.
+The earlier argument for keeping them together — two rewrites of one region would
+collide in the merge group — is false here: every edge in this spec is
+`depends_on_merged`, so no two of its stories are ever in the merge group at
+once. The seam is taken where the risk divides: **US3 adds a composition and
+changes no output; US9 changes what the verb prints and proves it byte for byte.**
+
+**US3** — adds the composition module under `factory/spec/` and touches no
+existing behaviour. The module has to carry more than the drafted estimate
+assumed: the composition half of `_validate_command` measures 6,607 B
+(`factory/cli/nouns/spec.py:504-660`) and includes the three inline layer
+wrappers of trap 2 with their skip-reason strings, so allow for roughly the same
+size again in the new module rather than for the one contention block. Almost all
+of it is authored rather than moved, so it does **not** pay the 2.36x relocation
+cost — one addition, no deletion. With its three scenarios' tests and pasted
+evidence, expect **~36 KB assembled**, 55% of the bound: the roomiest story in the
+chain after US4. `_validate_command` is not touched, and US1's golden captures
+must still match with this story having done nothing to them — that is US3-S4,
+and it is the assertion that keeps this story from quietly becoming US9.
+
+**US9** — rewrites `factory/cli/nouns/spec.py:484-744` (11,313 B) into a renderer
+over the module US3 built. A rewrite deletes the old body and adds a much shorter
+one, so it costs roughly 16 KB rather than the 27 KB a relocation of that size
+would. It also touches `factory/cli/install.py` around
 `factory/cli/install.py:1028`, `tests/test_110_us1_demo_first_boot.py`, and —
 trap 23 — `tests/test_089_validate_checks_fixes.py` and
 `tests/test_102_unprovable_criteria.py`, whose two control helpers must be
-re-pointed at the module the composition reads. Expect **49 to 64 KB** of
-assembled diff including its nine scenarios' tests and pasted evidence — the old
-figure of 40 to 55 KB was written under the model this section has since
-corrected, and did not count the 9 KB of committed evidence every story in this
-spec carries. It is the widest estimate here and the only one that is an estimate
-rather than a measurement, because it writes new code rather than moving old.
-**Measure it: assemble the diff, `wc -c` it, and if it passes 52,400 bytes —
-eighty percent of the bound, the margin US1 did not have when it landed at
-59,490 — stop and say so on the escalation rather than shipping something the
-judge will score in abridged form.** The two ways it grows past
-that are both avoidable — committing the five defective trios US3-S2 needs
-instead of writing them to a `tmp_path` tree at test time (fifteen extra files),
-and pasting whole golden artifacts as evidence rather than the empty diff
-against them. The single behavioural story.
+re-pointed at the module the composition reads. Expect **~48 KB assembled**, 74%
+of the bound, and it remains the widest estimate here. **Measure it: assemble the
+diff, `wc -c` it, and if it passes 52,400 bytes — eighty percent of the bound, the
+margin US1 did not have when it landed at 59,490 — stop and say so on the
+escalation rather than shipping something the judge will score in abridged form.**
+The two ways it grows past that are both avoidable: committing the five defective
+trios its scenarios need instead of writing them to a `tmp_path` tree at test
+time (fifteen extra files), and pasting whole golden artifacts as evidence rather
+than the empty diff against them. The single behavioural story.
 
 **US4** — one new test file. Touches no production file.
 
