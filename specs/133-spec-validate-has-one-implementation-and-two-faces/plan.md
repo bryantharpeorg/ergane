@@ -26,13 +26,13 @@ comments gives eleven. Counting the `checked` list a run emits gives twelve.
 | --- | --- | --- | --- |
 | 1 | `frontmatter` | private | `factory/cli/nouns/spec.py:999` — `_check_frontmatter` |
 | 2 | `fixes` | private | `factory/cli/nouns/spec.py:1231` — `_check_fixes` |
-| 3 | `workgraph_derivation` in `checked`, **`workgraph` on the finding** | exported primitive, wrapper inline in `_validate_command` | `derive_workgraph` inside the `try` at `factory/cli/nouns/spec.py:525-535`, then `factory/cli/nouns/spec.py:1304` — `_check_workgraph` |
-| 4 | `persona_registry` | private | `factory/cli/nouns/spec.py:1311` — `_check_personas` |
+| 3 | `workgraph_derivation` in `checked`, **`workgraph` on the finding** | exported primitive, wrapper inline in `_validate_command` | `derive_workgraph` inside the `try` at `factory/cli/nouns/spec.py:525-535`, then `factory/cli/nouns/spec.py:1298` — `_check_workgraph` |
+| 4 | `persona_registry` | private | `factory/cli/nouns/spec.py:1305` — `_check_personas` |
 | 5 | `scenario_coverage` | private | `factory/cli/nouns/spec.py:1379` — `_check_scenario_coverage` |
 | 6 | `prompt_assembly` | exported primitive, **wrapper inline in `_validate_command`** | `check_prompt_assembly` imported at `factory/cli/nouns/spec.py:60`; name, severity, `checked` append and skip reason at `factory/cli/nouns/spec.py:557-574` |
 | 7 | `slice_coverage` | exported primitive, **wrapper inline in `_validate_command`** | `check_slice_coverage` imported at `factory/cli/nouns/spec.py:60`; name, severity, the `information` routing and skip reason at `factory/cli/nouns/spec.py:582-604` |
 | 8 | `slice_contention` | **no function at all** | inline at `factory/cli/nouns/spec.py:614-631` |
-| 9 | `sentinels` in `checked`, **`sentinel` on the finding** | private scanner, **wrapper inline** | `factory/cli/nouns/spec.py:462` — `_scan_sentinels_in_trio`, wrapped at `factory/cli/nouns/spec.py:638-645` |
+| 9 | `sentinels` in `checked`, **`sentinel` on the finding** | private scanner, **wrapper inline** | `factory/cli/nouns/spec.py:463` — `_scan_sentinels_in_trio`, wrapped at `factory/cli/nouns/spec.py:638-645` |
 | 10 | `anchor_resolution` | private | `factory/cli/nouns/spec.py:1023` — `_check_anchor_resolution` |
 | 11 | `symbol_anchors` | private | `factory/cli/nouns/spec.py:886` — `_check_symbol_anchors` |
 | 12 | `evidence` | private | `factory/cli/nouns/spec.py:1781` — `_check_evidence` |
@@ -60,11 +60,11 @@ module. These five are not.
 
 | Name | Defined at | Read only from | Travels with |
 | --- | --- | --- | --- |
-| `_ValidateFinding` | `factory/cli/nouns/spec.py:483` — `_ValidateFinding` | every relocated family, and `_validate_command` itself | **US1** |
+| `_ValidateFinding` | `_ValidateFinding` (`factory/cli/nouns/spec.py`:483 in the pre-US1 tree; it is `SpecFinding` in `factory/spec/report.py:24` now, bound back under the old name at `factory/cli/nouns/spec.py:39`) | every relocated family, and `_validate_command` itself | **US1** |
 | `_ANCHOR_RE` | `factory/cli/nouns/spec.py:68` | `factory/cli/nouns/spec.py:1123` | US2 |
 | `_BARE_LINE_RE` | `factory/cli/nouns/spec.py:71` | `factory/cli/nouns/spec.py:1092` | US2 |
 | `_SCENARIO_ID_RE` | `factory/cli/nouns/spec.py:65` | `factory/cli/nouns/spec.py:1407` | US5 |
-| `_vacuous_registry` (and `_STRUCTURAL_TIMEOUT_S` at `factory/cli/nouns/spec.py:76`, which only it reads) | `factory/cli/nouns/spec.py:79` — `_vacuous_registry` | `factory/cli/nouns/spec.py:1306` | US5 |
+| `_vacuous_registry` (and `_STRUCTURAL_TIMEOUT_S` at `factory/cli/nouns/spec.py:76`, which only it reads) | `factory/cli/nouns/spec.py:80` — `_vacuous_registry` | `factory/cli/nouns/spec.py:1306` | US5 |
 
 **The report, assembled and consumed in place.** The dict literal opens at
 `factory/cli/nouns/spec.py:677`; the `as_json` branch at
@@ -90,7 +90,7 @@ of them are whole layer wrappers.** `factory/cli/nouns/spec.py:535` (layer
 (`prompt_assembly`), `factory/cli/nouns/spec.py:590` (`slice_coverage`, and it
 is this line that routes on `entry.informational` between the `findings` and
 `information` lists), `factory/cli/nouns/spec.py:617` (`slice_contention`) and
-`factory/cli/nouns/spec.py:640` (`sentinel`). Three of the five sit inside a
+`factory/cli/nouns/spec.py:634` (`sentinel`). Three of the five sit inside a
 complete layer wrapper that no `def _check_` function holds: `prompt_assembly`
 at `factory/cli/nouns/spec.py:557-574`, `slice_coverage` at
 `factory/cli/nouns/spec.py:582-604` and `sentinels` at
@@ -102,17 +102,17 @@ else in the tree.
 and both spellings are rendered.** `checked` is seeded with
 `workgraph_derivation` at `factory/cli/nouns/spec.py:506`, but the derivation
 finding carries `workgraph` (`factory/cli/nouns/spec.py:535`, and again inside
-`factory/cli/nouns/spec.py:1304` — `_check_workgraph` at
+`factory/cli/nouns/spec.py:1298` — `_check_workgraph` at
 `factory/cli/nouns/spec.py:1308`). `checked` gains `sentinels` at
 `factory/cli/nouns/spec.py:645`, but the note carries `sentinel`
-(`factory/cli/nouns/spec.py:640`). Both spellings reach the operator: the
+(`factory/cli/nouns/spec.py:634`). Both spellings reach the operator: the
 finding's through the `[layer]` prefix printed at
 `factory/cli/nouns/spec.py:710` and the `--json` `findings[].layer` key
 (`factory/cli/nouns/spec.py:682`), the `checked` one through the `checked`
 array. Neither pair is a typo to fix here.
 
 **The finding type is private and is not a dataclass.**
-`factory/cli/nouns/spec.py:483` — `_ValidateFinding`, `__init__(self, layer, message, *, severity="refusal")`.
+`_ValidateFinding` (`factory/cli/nouns/spec.py`:483 in the pre-US1 tree; it is `SpecFinding` in `factory/spec/report.py:24` now, bound back under the old name at `factory/cli/nouns/spec.py:39`), `__init__(self, layer, message, *, severity="refusal")`.
 
 **The evidence layer both accumulates and returns.**
 `factory/cli/nouns/spec.py:1781` — `_check_evidence` appends into the caller-owned
@@ -121,10 +121,10 @@ binds it at `factory/cli/nouns/spec.py:675`, prints it at
 `factory/cli/nouns/spec.py:724` and serialises it under the `judge_evidence` key
 at `factory/cli/nouns/spec.py:693`.
 
-**The decoy.** `factory/cli/nouns/spec.py:275` — `validate_spec_command` is a CLI
+**The decoy.** `factory/cli/nouns/spec.py:276` — `validate_spec_command` is a CLI
 wrapper: Namespace in, delegate to `_validate_command`, print, exit code back. It
 exists so `build ship` could stream the same stdout, at
-`factory/cli/nouns/build.py:1039`. `grep -rn "validate_spec\|SpecValidation" factory/`
+`factory/cli/nouns/build.py:1076`. `grep -rn "validate_spec\|SpecValidation" factory/`
 returns exactly three hits — that wrapper and its two call sites. `ls factory/spec`
 errors.
 
@@ -206,7 +206,7 @@ assertion and FR-007's JSON golden**, and they are the only two. FR-005.
 five-phrase list at `factory/cli/nouns/spec.py:763` and then reads `checked` for
 **membership** and nothing else — `if "fixes" in checked` at
 `factory/cli/nouns/spec.py:770`, `if "anchor_resolution" in checked` at
-`factory/cli/nouns/spec.py:772`, `if "symbol_anchors" in checked` at
+`factory/cli/nouns/spec.py:766`, `if "symbol_anchors" in checked` at
 `factory/cli/nouns/spec.py:774` — with a fixed `insert(1, …)` for the first.
 Its own docstring claims the phrases come out "in the order the layers run"; the
 code never reads an order at all. A reordered `checked` changes not one byte of
@@ -224,7 +224,7 @@ one.
 **Trap 4 — `_check_fixes` HAS FOUR EARLY RETURNS AND ONLY ONE PATH APPENDS.**
 `factory/cli/nouns/spec.py:1231` — `_check_fixes`:
 
-1. `factory/cli/nouns/spec.py:1250` — returns **silently**, touching no list at
+1. `factory/cli/nouns/spec.py:1244` — returns **silently**, touching no list at
    all, when `spec.md` cannot be read. The comment beside it says why: "The
    frontmatter layer already reports a missing spec.md; do not double-report."
    This is the return a relocation is most likely to "normalise" into a skipped
@@ -244,7 +244,7 @@ always-append-something changes the output of most of the corpus. FR-011, FR-005
 
 **Trap 5 — `_check_anchor_resolution` APPENDS `checked` AT FOUR SEPARATE
 EXITS.** They are at `factory/cli/nouns/spec.py:1057`,
-`factory/cli/nouns/spec.py:1156`, `factory/cli/nouns/spec.py:1189` and
+`factory/cli/nouns/spec.py:1150`, `factory/cli/nouns/spec.py:1189` and
 `factory/cli/nouns/spec.py:1228`, guarding "no documents", "no citations", "no
 citations after reporting the unanchorable ones" and the normal end. Hoisting
 them into one append at the caller is the obvious tidy-up and it makes the layer
@@ -281,10 +281,10 @@ changed. The typed report is assembled by `validate_spec` from those lists in
 US3, once. FR-010, FR-011, FR-012.
 
 **Trap 8 — `validate_spec_command` IS NOT THE SEAM.**
-`factory/cli/nouns/spec.py:275` — `validate_spec_command` is the one public name
+`factory/cli/nouns/spec.py:276` — `validate_spec_command` is the one public name
 in the area and it has the right shape at a glance. It takes an
 `argparse.Namespace`, prints, and returns an exit code, and it exists only so
-`build ship` (`factory/cli/nouns/build.py:1039`) could stream the same stdout.
+`build ship` (`factory/cli/nouns/build.py:1076`) could stream the same stdout.
 Building the library form on it produces something that still needs a Namespace
 and still prints — the exact thing the consumer in the ledger row cannot use.
 FR-003.
@@ -566,19 +566,71 @@ control. FR-015.
 
 ## Sizing
 
-Byte counts are `sed -n 'A,Bp' factory/cli/nouns/spec.py | wc -c` at 602a92c. A
-move shows in the diff twice — once deleted, once added — so the diff cost of a
-relocation is roughly double the source it moves, before tests and evidence.
-**Every span below is a coordinate in the 602a92c tree. From US5 onward the file
-is hundreds of lines shorter than that, so the ranges are a map of what to move,
-not a place to cut: find each item by its symbol name.**
+### The model, corrected against two measured stories (2026-09-07)
+
+**This section used to be wrong in a way that cost an epic, and the correction is
+the most load-bearing paragraph in this plan.** The old model said: a move shows
+in the diff twice, so a relocation costs roughly double the source it moves,
+"before tests and evidence." Both halves of that failed. The doubling is too low,
+and the phrase "before tests and evidence" was never turned into a number, so
+every per-story estimate below silently omitted the two largest terms.
+
+Measured, from the only two stories of this spec that have been built:
+
+| | US1 (landed, PASS) | US2 (killed, FAIL) |
+| --- | --- | --- |
+| source moved | — (authored) | 18,098 B |
+| `factory/` diff | 4,850 | **42,753** |
+| `tests/` diff | 38,155 | **22,034** |
+| `attempt-report.md` | 15,233 | **7,636** |
+| **assembled diff** | **58,238** | **72,423** |
+| judge input | 59,490 — PASS, 9% spare | 72,750 — **abridged, FAIL** |
+
+Three facts follow, and every estimate below is rebuilt on them:
+
+1. **A relocation costs 2.36x its source, not 2x.** 42,753 / 18,098. The extra is
+   the new module's own docstring, imports and re-indentation, plus the
+   import-back line in the CLI module.
+2. **Tests and committed evidence are 20 to 38 KB, and they are not optional.**
+   They were 51% of US2's diff and 92% of US1's. A story budget that omits them
+   is not conservative, it is wrong. Budget **20 KB of tests and 9 KB of pasted
+   evidence** for a relocation with a focused test file; US1's 38 KB of tests was
+   fixtures and goldens, which no later story repeats.
+3. **The usable ceiling is 52,400 bytes, not 65,536.** US1 passed with nine
+   percent to spare and that was the whole margin. Eighty percent of the bound is
+   the number to build to, and a story that assembles past it should escalate
+   rather than ship — the judge does not fail an oversized diff, it silently
+   scores an abridged one.
+
+So the working formula for a relocation is:
+
+```
+assembled diff  ~=  2.36 x (bytes of source moved)  +  20,000 (tests)  +  9,000 (evidence)
+usable ceiling  =   52,400 bytes          (80% of the 65,536-byte bound)
+implied source  <=  ~10,000 bytes per relocation story
+```
+
+That last line is the whole reason this spec now has five relocations instead of
+three: **10 KB of source per story is the budget, and the old US2 and US6 were
+17.7 KB and 18.4 KB.**
+
+### Byte counts, and the tree they are counted in
+
+Counts below are top-level symbol spans measured in the tree at **57bf698**,
+after US1 landed — not at 602a92c, where this section used to be pinned and where
+the numbers no longer resolve. **They remain a map of what to move, not a place to
+cut: every story after US2 sees a file that is shorter again, so find each item by
+its symbol name.** The anchors in this plan are refreshed to 57bf698 for the same
+reason, and they will drift again with every landing in this chain; that is
+inherent to a refactor spec whose stories all edit one module, and it is why the
+instruction is to locate by symbol rather than to trust a line.
 
 **US1** — mostly new files: `factory/spec/__init__.py` and a report module, six
 tests, two synthetic fixture trios plus the one fixture target repository they
 share, and **six** golden artifacts — each trio's stdout, its stderr and its
 `--json` document (trap 19). The one production deletion is mandatory, not
 optional:
-`factory/cli/nouns/spec.py:483-487` — `_ValidateFinding`, 205 B — moves to
+`factory/cli/nouns/spec.py`:483-487 in the pre-US1 tree — `_ValidateFinding`, 205 B — moves to
 `factory/spec/` and the CLI binds the import under the same local name, so none
 of its twenty-odd construction sites changes. Trap 17 is why this cannot wait:
 every relocated body constructs that type, and a moved body cannot import it back
@@ -591,30 +643,51 @@ captures first and read their size: if the artifacts alone approach 20 KB, shrin
 the trios rather than the coverage, and say so on the escalation rather than
 shipping a diff trap 6 will refuse.
 
-**US2** — removes two contiguous spans, `factory/cli/nouns/spec.py:793-996`
-(the symbol-anchor regex, `_DISPATCHABLE_STATES`, `_spec_state`,
-`_severity_for_state`, `_symbol_spans`, `_line_hits_symbol` and
-`_check_symbol_anchors`, 7,574 B) and `factory/cli/nouns/spec.py:1011-1228`
-(`_read_citation_files` and `_check_anchor_resolution`, of which the checker
-alone is 9,801 B), plus `factory/cli/nouns/spec.py:67-71` — the comment and
-assignment pair for `_ANCHOR_RE` and `_BARE_LINE_RE`, 243 B, which nothing else
-in the module reads. Together **18,098 bytes**, about a 36 KB diff. It leaves
-`factory/cli/nouns/spec.py:999-1008` — `_check_frontmatter` standing between the
-two large spans; that one is US5's.
+**US2** — the symbol tier only. Removes `_SYMBOL_ANCHOR_RE`
+      (`factory/cli/nouns/spec.py:789`) (90 B), `_DISPATCHABLE_STATES`
+      (`factory/cli/nouns/spec.py:794`) (42 B), `factory/cli/nouns/spec.py:797` — `_spec_state`
+(465 B), `factory/cli/nouns/spec.py:812` — `_severity_for_state` (212 B),
+`factory/cli/nouns/spec.py:819` — `_symbol_spans` (1,162 B),
+`factory/cli/nouns/spec.py:849` — `_line_hits_symbol` (1,004 B) and
+`factory/cli/nouns/spec.py:880` — `_check_symbol_anchors` (4,347 B). Together
+**7,322 bytes**: about a 17.3 KB move, **~46 KB assembled**, 71% of the bound.
 
-**US5** — removes `factory/cli/nouns/spec.py:462-480` (`_scan_sentinels_in_trio`,
+The two shared helpers are the trap. `_spec_state` and `_severity_for_state` are
+read from **two** call sites — `factory/cli/nouns/spec.py:906` inside the symbol
+checker this story moves, and `factory/cli/nouns/spec.py:1155` inside the
+resolution checker that does not move until US7. They travel with this story and
+the CLI module binds them back under their own names, which is exactly what US1
+did for `_ValidateFinding`. Copying them instead leaves two definitions of one
+severity rule, and the golden captures would not catch it.
+
+**US7** — the resolution tier only. Removes `factory/cli/nouns/spec.py:1005` —
+`_read_citation_files` (478 B) and `factory/cli/nouns/spec.py:1017` —
+`_check_anchor_resolution` (9,795 B), plus the two regexes that sit far above the
+span and are read only from inside it: `_ANCHOR_RE`
+      (`factory/cli/nouns/spec.py:69`) (52 B) and `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`) (49 B).
+Together **10,374 bytes**: about a 24.5 KB move, **~53 KB assembled**, 82% of the
+bound and the tightest story in the chain. `_check_anchor_resolution` is 9,795
+bytes in one function and cannot be halved without redesigning the checker, which
+is not what this spec is for — so if the assembled diff measures past 52,400
+bytes, cut the pasted evidence, not the coverage, and escalate before shipping.
+The moved checker reads `_spec_state` and `_severity_for_state` from
+`factory/spec/`, where US2 put them; importing them back out of the CLI module is
+the circular shape trap 17 names.
+
+**US5** — removes `factory/cli/nouns/spec.py:463-481` (`_scan_sentinels_in_trio`,
 826 B), `factory/cli/nouns/spec.py:779-790` (`_tasks_text`, 543 B),
 `factory/cli/nouns/spec.py:999-1008` (`_check_frontmatter`, 502 B),
 `factory/cli/nouns/spec.py:1231-1301` (`_check_fixes`, 2,209 B),
-`factory/cli/nouns/spec.py:1304-1376` (`_check_workgraph`, `_check_personas`
+`factory/cli/nouns/spec.py:1298-1370` (`_check_workgraph`, `_check_personas`
 and `_candidate_graph`, 2,486 B) and `factory/cli/nouns/spec.py:1379-1416`
 (`_check_scenario_coverage` alone, 1,308 B — its body ends at 1416 and everything
 below that line belongs to the evidence layer), plus the two module-level names
-those bodies alone read: `factory/cli/nouns/spec.py:64-65` (the scenario-id
-grammar `_SCENARIO_ID_RE`, 114 B) and `factory/cli/nouns/spec.py:73-98`
+those bodies alone read: `factory/cli/nouns/spec.py:65-66` (the scenario-id
+grammar `_SCENARIO_ID_RE`, 114 B) and `factory/cli/nouns/spec.py:74-99`
 (`_STRUCTURAL_TIMEOUT_S` and
-`factory/cli/nouns/spec.py:79` — `_vacuous_registry`, 949 B). Together
-**8,937 bytes**, about an 18 KB diff. It also edits the five in-tree tests that
+`factory/cli/nouns/spec.py:80` — `_vacuous_registry`, 949 B). Together
+**8,649 bytes** measured at 57bf698: about a 20.4 KB move, **~51 KB assembled**,
+78% of the bound. It also edits the five in-tree tests that
 reach these bodies through the CLI module: `tests/test_062_us3_skills.py`
 (trap 18) and `tests/test_slice_coverage.py`, `tests/test_prompt_assembly.py`,
 `tests/test_122_findings_store_isolation.py` and
@@ -622,19 +695,42 @@ reach these bodies through the CLI module: `tests/test_062_us3_skills.py`
 import lines and a call-site rename each — call it 2 KB — and skipping them is a
 red gate, not a tidy-up left for later.
 
-**US6** — removes `factory/cli/nouns/spec.py:1419-1865`, one contiguous span
-holding the whole judge-evidence object graph and nothing else: the banner
-comment that opens it at 1419, the closed marker vocabulary `_RUNTIME_MARKERS`
-assigned at `factory/cli/nouns/spec.py:1440` and read only by
-`factory/cli/nouns/spec.py:1508` — `_runtime_markers`, `_DIFF_EVIDENCE_RE`
-assigned at `factory/cli/nouns/spec.py:1481`, `_PROVABLE_EXAMPLE` at
-`factory/cli/nouns/spec.py:1488`, then
-`factory/cli/nouns/spec.py:1666` — `_JudgeEvidenceReport` and
-`factory/cli/nouns/spec.py:1781` — `_check_evidence` — **18,391 bytes**, about a
-37 KB diff, the largest of the three and still inside the 65,536-byte bound. The
-span starts at 1419 and not at 1476 because `_RUNTIME_MARKERS` is the vocabulary
-`_runtime_markers` reads; splitting them leaves a constant of this layer stranded
-in the CLI module or, worse, carried away a story early by US5.
+**US6 and US8** — the judge-evidence family is `factory/cli/nouns/spec.py:1405`
+through the end of the module, **18,393 bytes across sixteen top-level names**.
+At 2.36x that is a 43 KB move before a single test, so it cannot land as one
+story; under the old model it was called "37 KB, the largest of the three and
+still inside the bound", which is the same arithmetic error that killed US2.
+
+The family has exactly one seam, and it was checked in the tree rather than
+assumed: **no name in the vocabulary half is read by the report half's bodies
+only — the dependency runs one way, report half reads vocabulary half.** So the
+vocabulary moves first and the report follows.
+
+**US6** — the vocabulary and refusal grammar, `factory/cli/nouns/spec.py:1405`
+to 1616: the banner comment, `_RUNTIME_MARKERS`
+      (`factory/cli/nouns/spec.py:1434`) (1,437 B), `_DIFF_EVIDENCE_RE`
+      (`factory/cli/nouns/spec.py:1475`) (204 B), `_PROVABLE_EXAMPLE`
+      (`factory/cli/nouns/spec.py:1482`) (55 B), `factory/cli/nouns/spec.py:1485` — `_then_clauses`
+(637 B), `factory/cli/nouns/spec.py:1502` — `_runtime_markers` (218 B),
+`factory/cli/nouns/spec.py:1507` — `_names_a_declared_gate` (259 B),
+`factory/cli/nouns/spec.py:1514` — `_manifest_declares_no_gates` (742 B),
+`factory/cli/nouns/spec.py:1533` — `_Declarations` (859 B),
+`factory/cli/nouns/spec.py:1553` — `_declared_gates` (1,218 B) and
+`factory/cli/nouns/spec.py:1582` — `_evidence_refusal` (1,466 B). Raw span
+**8,863 bytes**: about a 20.9 KB move, **~50 KB assembled**, 76% of the bound.
+`_RUNTIME_MARKERS` is the vocabulary `_runtime_markers` reads and must travel
+with it; splitting those two strands a constant of this layer in the CLI module
+or, worse, carries it away a story early with US5.
+
+**US8** — the report type and the checker, `factory/cli/nouns/spec.py:1611` to
+the end: `factory/cli/nouns/spec.py:1641` — `_StoryCriteria` (167 B),
+`factory/cli/nouns/spec.py:1650` — `_BorderlineClause` (158 B),
+`factory/cli/nouns/spec.py:1660` — `_JudgeEvidenceReport` (3,261 B),
+`factory/cli/nouns/spec.py:1742` — `_borderline_warning` (852 B),
+`factory/cli/nouns/spec.py:1762` — `_story_criteria` (450 B) and
+`factory/cli/nouns/spec.py:1775` — `_check_evidence` (3,327 B). Raw span
+**9,530 bytes**: about a 22.5 KB move, **~51 KB assembled**, 79% of the bound.
+When it lands, no name of the evidence family remains in the CLI module.
 
 **US3** — rewrites `factory/cli/nouns/spec.py:490-750` (11,337 B) into a
 renderer and adds the composition module under `factory/spec/`. That module has
@@ -646,13 +742,16 @@ for the one contention block. It also touches `factory/cli/install.py` around
 `factory/cli/install.py:1028`, `tests/test_110_us1_demo_first_boot.py`, and —
 trap 23 — `tests/test_089_validate_checks_fixes.py` and
 `tests/test_102_unprovable_criteria.py`, whose two control helpers must be
-re-pointed at the module the composition reads. Expect **40 to 55 KB** of
-assembled diff including its nine scenarios' tests and pasted evidence: inside
-the 65,536-byte bound with less room than the relocations have, and the only
-story in this spec whose figure is an estimate rather than a measurement,
-because it writes new code rather than moving old. **Measure it: if the
-assembled diff passes 55 KB, stop and say so on the escalation rather than
-shipping something trap 6 will refuse unjudged.** The two ways it grows past
+re-pointed at the module the composition reads. Expect **49 to 64 KB** of
+assembled diff including its nine scenarios' tests and pasted evidence — the old
+figure of 40 to 55 KB was written under the model this section has since
+corrected, and did not count the 9 KB of committed evidence every story in this
+spec carries. It is the widest estimate here and the only one that is an estimate
+rather than a measurement, because it writes new code rather than moving old.
+**Measure it: assemble the diff, `wc -c` it, and if it passes 52,400 bytes —
+eighty percent of the bound, the margin US1 did not have when it landed at
+59,490 — stop and say so on the escalation rather than shipping something the
+judge will score in abridged form.** The two ways it grows past
 that are both avoidable — committing the five defective trios US3-S2 needs
 instead of writing them to a `tmp_path` tree at test time (fifteen extra files),
 and pasting whole golden artifacts as evidence rather than the empty diff
@@ -696,7 +795,7 @@ runtime evidence is committed as pasted output. Beyond that:
    spec: `ls specs/133-*/workgraph.json` must find nothing. One derived at
    238b494 from the four-story draft was present at refinement time, and
    `ergane build start` reads a compiled graph off disk
-   (`factory/cli/nouns/build.py:808` — `start_command`). Dispatching it would
+   (`factory/cli/nouns/build.py:845` — `start_command`). Dispatching it would
    build a four-node graph against a six-story spec and judge US2 against the
    composition requirements it no longer implements. `ergane spec validate`
    cannot see this file and will stay green with it there. Delete it —

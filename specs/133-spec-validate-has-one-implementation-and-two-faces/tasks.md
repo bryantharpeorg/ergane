@@ -37,12 +37,31 @@ Trap 17 is the one that decides whether the module still imports: **the import
 direction is one-way.** `factory/cli/nouns/spec.py` imports from `factory.spec`;
 `factory/spec/` may never import back. A moved body that reads a CLI-module name
 means that name moves too — which is why US1's move of the finding type is
-mandatory and why the two anchor grammars travel with US2 and the scenario-id
-grammar and the vacuous registry with US5.
+mandatory, why the symbol grammar travels with US2 and the two file:line regexes
+with US7, why the marker vocabulary travels with US6, and why the scenario-id
+grammar and the vacuous registry travel with US5.
 
-Every line range in `plan.md` is a coordinate in the 602a92c tree. **From US2
-onward the file is hundreds of lines shorter than that: locate what you are
-moving by symbol name, not by line number.**
+Trap 17 also has a second face, and it is the one this spec's split turns on: a
+helper read by two layers **moves with the first story that needs it and is
+imported back for the second**. `_spec_state` and `_severity_for_state` move in
+US2 and are read by US7's checker until US7 runs; the evidence vocabulary moves in
+US6 and is read by US8's checker until US8 runs. Copying instead of importing
+leaves two definitions of one rule, and the golden captures do not catch it.
+
+**Trap 24 — the bound is the story boundary.** Five phases here are relocations,
+and each one is sized against a measured budget in `plan.md` § Sizing rather than
+against taste. A relocation costs **2.36x the bytes it moves**, plus roughly 20 KB
+of tests and 9 KB of committed evidence, and the usable ceiling is **52,400 bytes
+— eighty percent of the 65,536-byte bound**, not the bound itself. This is not
+theory: the story that was Phase 2 and Phase 3 together was built, its gates were
+green, and it was killed at 72,750 assembled bytes because the judge is handed an
+abridged copy rather than a refusal. **Assemble your diff and `wc -c` it before
+you finish.** Over 52,400, cut the pasted evidence before the coverage; still
+over, escalate rather than ship.
+
+Line ranges in `plan.md` are coordinates in the tree at **57bf698**. **Every story
+after US2 sees a shorter file: locate what you are moving by symbol name, not by
+line number.**
 
 Tests are written first and must fail before the implementation that satisfies
 them. Every acceptance scenario is provable from the diff, which is all the judge
@@ -51,10 +70,12 @@ sees; runtime evidence is committed as pasted output.
 `[P]` marks tasks that may be written in parallel within their phase. Tasks
 without it touch a region an earlier task in the same phase is already editing.
 
-Task ids are stable identifiers, not an ordering: T051 to T054 were added by a
-later repair and sit at the end of the sub-section they belong to rather than
-renumbering the ids the traps and the provenance already cite. Do the tasks in
-the order they are written.
+Task ids are stable identifiers, not an ordering: T051 to T054 were added by an
+earlier repair, and **T055 to T068 by the 2026-09-07 split**, each sitting at the
+end of the sub-section it belongs to rather than renumbering the ids the traps and
+the provenance already cite. That is why Phase 2 ends on T066 and Phase 3 opens on
+T067 — the ids are labels, and the written order is the order. Do the tasks in the
+order they are written.
 
 ## Phase 1: User Story 1 — A typed report exists, and today's output is captured
 
@@ -74,7 +95,7 @@ the order they are written.
 - [ ] T004 [P] [US1] (spec US1-S4, FR-001, trap 7) Assert the finding type
       constructed with a layer and a message alone defaults its severity to
       `refusal` and accepts `advisory` — the same constructor shape
-      `factory/cli/nouns/spec.py:483` — `_ValidateFinding` has today, so no
+      `_ValidateFinding` (`factory/cli/nouns/spec.py`:483 in the pre-US1 tree; it is `SpecFinding` in `factory/spec/report.py:24` now, bound back under the old name at `factory/cli/nouns/spec.py:39`) has today, so no
       relocated checker needs a signature edit.
 - [ ] T005 [P] [US1] (spec US1-S6, FR-001, trap 17) Assert
       `factory/cli/nouns/spec.py` no longer defines `_ValidateFinding` — read the
@@ -97,14 +118,14 @@ the order they are written.
 
 - [ ] T007 [US1] (FR-001, FR-002) Create the `factory/spec/` package and the typed
       report, modelling the finding on
-      `factory/cli/nouns/spec.py:483` — `_ValidateFinding` but as a frozen
+      `_ValidateFinding` (`factory/cli/nouns/spec.py`:483 in the pre-US1 tree; it is `SpecFinding` in `factory/spec/report.py:24` now, bound back under the old name at `factory/cli/nouns/spec.py:39`) but as a frozen
       dataclass with the same attribute names
       and the same keyword-only `severity` default. It must express the `advisory`
       severity the slice-contention layer assigns
       (`factory/cli/nouns/spec.py:617`), the information channel and the skipped
       channel with reasons, or the two forms disagree the first time either
       matters.
-- [ ] T008 [US1] (FR-001, trap 17) Delete `factory/cli/nouns/spec.py:483-487` and
+- [ ] T008 [US1] (FR-001, trap 17) Delete `factory/cli/nouns/spec.py`:483-487 (the pre-US1 coordinates) and
       import the new finding type into `factory/cli/nouns/spec.py`, binding it
       under the local name `_ValidateFinding` so no construction site in the
       module changes. This is mandatory and it belongs to US1: every relocated
@@ -163,77 +184,152 @@ the order they are written.
       clean trio's stdout artifact that carries the all-pass sentence, and the
       refusal and advisory lines of the defective trio's stderr artifact.
 
-## Phase 2: User Story 2 — The anchor and symbol layers leave the CLI module
+## Phase 2: User Story 2 — The symbol-anchor layer leaves the CLI module
 
-Locate every item below by symbol name. US1 has already removed the finding type
-from this file, so the line numbers in `plan.md` § Sizing no longer point where
-they did at 602a92c.
+Locate every item below by symbol name. Line numbers here are coordinates in the
+tree at **57bf698**; US1 has already removed the finding type from this file, and
+every story after this one sees it shorter again.
+
+**This phase and Phase 3 were one phase until 2026-09-07.** That story was built,
+its gates were green, and it was killed at 72,750 assembled bytes against a
+65,536-byte bound. Do not re-merge them.
 
 ### Tests for this story (write FIRST, must fail)
 
 - [ ] T012 [P] [US2] (spec US2-S1, FR-010, trap 17) Assert
-      `factory/cli/nouns/spec.py` no longer defines `_check_anchor_resolution`,
-      `_check_symbol_anchors`, `_symbol_spans`, `_line_hits_symbol`,
-      `_read_citation_files`, `_spec_state`, `_severity_for_state`,
-      `_SYMBOL_ANCHOR_RE`, `_DISPATCHABLE_STATES`, `_ANCHOR_RE` or
-      `_BARE_LINE_RE`, by reading the module source rather than by importing
-      names that would still resolve through the import. `_SYMBOL_ANCHOR_RE`
-      (`factory/cli/nouns/spec.py:795`) and `_DISPATCHABLE_STATES`
-      (`factory/cli/nouns/spec.py:800`) sit inside the span this story moves;
-      `_ANCHOR_RE` and `_BARE_LINE_RE` are the module-level regexes read only
-      from inside the moved checker — at `factory/cli/nouns/spec.py:1123` and
-      `factory/cli/nouns/spec.py:1092` — and leaving any of the four behind makes
-      the moved body reach back into the module it just left, which cannot
-      import.
-- [ ] T013 [P] [US2] (spec US2-S4, FR-010) Assert the anchor checkers the CLI
-      module calls are the objects defined in `factory.spec` — compare
+      `factory/cli/nouns/spec.py` no longer defines `_check_symbol_anchors`,
+      `_symbol_spans`, `_line_hits_symbol`, `_spec_state`, `_severity_for_state`,
+      `_SYMBOL_ANCHOR_RE` or `_DISPATCHABLE_STATES`, by reading the module source
+      rather than by importing names that would still resolve through the import.
+      `_SYMBOL_ANCHOR_RE` (`factory/cli/nouns/spec.py:789`) is read only at
+      `factory/cli/nouns/spec.py:937`, inside the checker this story moves, and
+      `_DISPATCHABLE_STATES` (`factory/cli/nouns/spec.py:794`) only from
+      `_severity_for_state`. Leaving either behind makes a moved body reach back
+      into the module it just left, which cannot import.
+      **Do not assert anything about `_check_anchor_resolution`,
+      `_read_citation_files`, `_ANCHOR_RE` or `_BARE_LINE_RE`** — those are
+      Phase 3's and they are still defined here when this story lands.
+- [ ] T013 [P] [US2] (spec US2-S5, FR-010) Assert the symbol checker the CLI
+      module calls is the object defined in `factory.spec` — compare
       `__module__` — so a re-declaration cannot pass as a move. Re-declaring the
-      anchor grammar inside `factory/spec/` is the shortcut this forbids.
-- [ ] T014 [P] [US2] (spec US2-S2, FR-010, trap 5, trap 7) Assert the moved
+      symbol grammar inside `factory/spec/` is the shortcut this forbids.
+- [ ] T014 [P] [US2] (spec US2-S2, FR-010, trap 17) **The shared-helper control.**
+      `factory/cli/nouns/spec.py:797` — `_spec_state` and
+      `factory/cli/nouns/spec.py:812` — `_severity_for_state` are read from two
+      call sites: `factory/cli/nouns/spec.py:906`, inside the symbol checker this
+      story moves, and `factory/cli/nouns/spec.py:1155`, inside
+      `_check_anchor_resolution`, which does not move until Phase 3. Assert both
+      names still resolve as attributes of `factory.cli.nouns.spec` after the
+      move **and** that their `__module__` is under `factory.spec` — that pair is
+      what distinguishes an import-back from a second copy. Then drive the
+      surviving `_check_anchor_resolution` over a spec whose state makes the
+      severity differ, and assert it still grades it correctly, which a stale
+      second copy would not.
+- [ ] T066 [P] [US2] (spec US2-S3, FR-010, trap 5, trap 7) Assert the moved
       functions keep their parameters and still append into caller-owned
-      `findings`, `skipped` and `checked` lists, and that
-      `_check_anchor_resolution` still appends `anchor_resolution` to `checked`
-      at each of its four exits — `factory/cli/nouns/spec.py:1057`,
-      `factory/cli/nouns/spec.py:1156`, `factory/cli/nouns/spec.py:1189` and
-      `factory/cli/nouns/spec.py:1228` today — by driving the four conditions.
+      `findings`, `skipped` and `checked` lists rather than returning a report,
+      by driving each exit of `factory/cli/nouns/spec.py:880` —
+      `_check_symbol_anchors` and reading what the caller's lists hold.
 
 ### Implementation for this story
 
 - [ ] T015 [US2] (spec US2-S1, FR-010, trap 6, trap 7, trap 17) Move into
-      `factory/spec/`, by name: the symbol-anchor regex `_SYMBOL_ANCHOR_RE`
-      (`factory/cli/nouns/spec.py:795`) and `_DISPATCHABLE_STATES`
-      (`factory/cli/nouns/spec.py:800`), both of which sit inside the span below
-      and are read only by the checkers in it,
-      `factory/cli/nouns/spec.py:803` — `_spec_state`,
-      `factory/cli/nouns/spec.py:818` — `_severity_for_state`,
-      `factory/cli/nouns/spec.py:825` — `_symbol_spans`,
-      `factory/cli/nouns/spec.py:855` — `_line_hits_symbol` and
-      `factory/cli/nouns/spec.py:886` — `_check_symbol_anchors` (the span
-      `factory/cli/nouns/spec.py:793-996` at 602a92c);
-      `factory/cli/nouns/spec.py:1011` — `_read_citation_files` and
-      `factory/cli/nouns/spec.py:1023` — `_check_anchor_resolution` (the span
-      `factory/cli/nouns/spec.py:1011-1228`); and the two module-level regexes
-      `_ANCHOR_RE` and `_BARE_LINE_RE` with their `#:` comments
-      (`factory/cli/nouns/spec.py:67-71`). Leave
-      `factory/cli/nouns/spec.py:999` — `_check_frontmatter` where it is; it
-      belongs to US5. 18,098 bytes of source, so about a 36 KB diff — keep the
-      moves mechanical, change no string, and do not merge the four `checked`
-      appends into one.
-- [ ] T016 [US2] (FR-010) Import the moved names back into
+      `factory/spec/`, by name: `_SYMBOL_ANCHOR_RE`
+      (`factory/cli/nouns/spec.py:789`) (90 B), `_DISPATCHABLE_STATES`
+      (`factory/cli/nouns/spec.py:794`) (42 B), `factory/cli/nouns/spec.py:797` —
+      `_spec_state` (465 B), `factory/cli/nouns/spec.py:812` —
+      `_severity_for_state` (212 B), `factory/cli/nouns/spec.py:819` —
+      `_symbol_spans` (1,162 B), `factory/cli/nouns/spec.py:849` —
+      `_line_hits_symbol` (1,004 B) and `factory/cli/nouns/spec.py:880` —
+      `_check_symbol_anchors` (4,347 B). **7,322 bytes of source, about a 17.3 KB
+      move and ~46 KB assembled.** Keep the moves mechanical and change no string.
+      Leave `_check_anchor_resolution`, `_read_citation_files`, `_ANCHOR_RE` and
+      `_BARE_LINE_RE` exactly where they are — moving them is what put this story
+      over the bound the first time.
+- [ ] T016 [US2] (spec US2-S2, FR-010, trap 17) Import the moved names back into
+      `factory/cli/nouns/spec.py` under their own names, so `_validate_command`
+      calls them exactly as it does today **and** so the surviving
+      `_check_anchor_resolution` still reads `_spec_state` and
+      `_severity_for_state` at `factory/cli/nouns/spec.py:1155` without change.
+      This is the pattern US1 established for `_ValidateFinding`. The CLI still
+      composes; that is US3's job to end.
+
+### Verification for this story
+
+- [ ] T017 [US2] (spec US2-S4, FR-006, trap 19) Paste, as committed evidence, the
+      comparison of the verb's stdout, its stderr and its `--json` output over
+      both fixture trios against US1's six golden artifacts — it must be empty on
+      all three streams — and the output of `git diff <base>..HEAD | wc -c` for
+      this story. **That byte count is a required part of the evidence**, because
+      the bound is what this story exists to respect: if it exceeds 52,400, cut
+      the pasted evidence before the coverage and escalate rather than ship.
+      The standing guard that keeps the comparison empty is the golden test US1
+      committed in T006; name that test file by path so a reader can re-run it.
+
+## Phase 3: User Story 7 — The anchor-resolution layer leaves the CLI module
+
+Locate every item below by symbol name; coordinates are the tree at **57bf698**,
+and US2 has since made the file shorter.
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T067 [P] [US7] (spec US7-S1, FR-016, trap 17) Assert
+      `factory/cli/nouns/spec.py` no longer defines `_check_anchor_resolution`,
+      `_read_citation_files`, `_ANCHOR_RE` or `_BARE_LINE_RE`, by reading the
+      module source rather than by importing names that would still resolve
+      through the import. `_ANCHOR_RE` (`factory/cli/nouns/spec.py:69`) is read
+      only at `factory/cli/nouns/spec.py:1117` and
+      `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`) only at
+      `factory/cli/nouns/spec.py:1086`, both inside the checker this story moves,
+      and both sit a thousand lines above it — which is exactly why a story that
+      moves the span alone strands them.
+- [ ] T068 [P] [US7] (spec US7-S2, FR-016, trap 17) **The circular-import
+      control.** Assert the moved `_check_anchor_resolution` reads `_spec_state`
+      and `_severity_for_state` from `factory.spec` and not from
+      `factory.cli.nouns.spec`: read the moved module's source and assert it
+      contains no import naming `factory.cli.nouns.spec`. A moved body importing
+      from the module it just left is the shape trap 17 names, and it can pass
+      every behavioural test while doing it.
+- [ ] T069 [P] [US7] (spec US7-S5, FR-016) Assert the resolution checker the CLI
+      module calls is the object defined in `factory.spec` — compare
+      `__module__` — so a re-declaration cannot pass as a move. This is the same
+      assertion T013 makes for the symbol tier, and it is separate because the two
+      tiers now land in separate stories.
+- [ ] T055 [P] [US7] (spec US7-S3, FR-016, trap 5, trap 7) Assert the moved
+      function keeps its parameters and still appends `anchor_resolution` to the
+      caller-owned `checked` list at each of its four exits —
+      `factory/cli/nouns/spec.py:1051`, `factory/cli/nouns/spec.py:1150`,
+      `factory/cli/nouns/spec.py:1183` and `factory/cli/nouns/spec.py:1222`
+      today — by driving the four conditions. Do not merge them into one.
+
+### Implementation for this story
+
+- [ ] T056 [US7] (spec US7-S1, FR-016, trap 6, trap 7, trap 17) Move into
+      `factory/spec/`, by name: `factory/cli/nouns/spec.py:1005` —
+      `_read_citation_files` (478 B) and `factory/cli/nouns/spec.py:1017` —
+      `_check_anchor_resolution` (9,795 B), together with the two module-level
+      regexes and their `#:` comments, `_ANCHOR_RE`
+      (`factory/cli/nouns/spec.py:69`) and `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`).
+      **10,374 bytes of source, about a 24.5 KB move and ~53 KB assembled — the
+      tightest story in this chain at 82% of the bound.** The checker is 9,795
+      bytes in one function and cannot be halved without redesigning it, which is
+      not what this spec is for. Keep the move mechanical and change no string.
+- [ ] T057 [US7] (FR-016) Import the moved names back into
       `factory/cli/nouns/spec.py` so `_validate_command` calls them exactly as it
       does today. The CLI still composes; that is US3's job to end.
 
 ### Verification for this story
 
-- [ ] T017 [US2] (spec US2-S3, FR-006, trap 19) Paste, as committed evidence, the
+- [ ] T058 [US7] (spec US7-S4, FR-006, trap 19) Paste, as committed evidence, the
       comparison of the verb's stdout, its stderr and its `--json` output over
       both fixture trios against US1's six golden artifacts — it must be empty on
-      all three streams — and the
-      `git diff --stat` line for this story showing the byte size of the move.
-      The standing guard that keeps it empty is the golden test US1 committed in
-      T006; name that test file by path in the evidence so a reader can re-run it.
+      all three streams — and the output of `git diff <base>..HEAD | wc -c`.
+      **This story has the least headroom in the spec**: if that count exceeds
+      52,400, cut the pasted evidence before the coverage, and if it is still over
+      say so on the escalation rather than shipping a diff the judge will score in
+      abridged form. Name US1's golden test file by path so a reader can re-run it.
 
-## Phase 3: User Story 5 — The frontmatter, ledger, graph, persona, scenario and sentinel layers leave the CLI module
+## Phase 4: User Story 5 — The frontmatter, ledger, graph, persona, scenario and sentinel layers leave the CLI module
 
 Locate every item below by symbol name. US1 and US2 have already removed the
 finding type and roughly 420 lines from this file, so the `plan.md` § Sizing line
@@ -253,7 +349,7 @@ numbers are a map of what to move, not a place to cut.
 - [ ] T019 [P] [US5] (spec US5-S2, FR-011, trap 4) **The control.** Drive
       `_check_fixes`'s **four** early returns and assert each is intact: an
       unreadable `spec.md` returns silently, adding to no list at all
-      (`factory/cli/nouns/spec.py:1250`, whose comment says the frontmatter layer
+      (`factory/cli/nouns/spec.py:1244`, whose comment says the frontmatter layer
       already reports it and this must not double-report); a spec with no `fixes:`
       key adds neither a `checked` nor a `skipped` entry
       (`factory/cli/nouns/spec.py:1255`); an absent store adds one `skipped` entry
@@ -280,30 +376,30 @@ numbers are a map of what to move, not a place to cut.
 ### Implementation for this story
 
 - [ ] T022 [US5] (FR-011, trap 6, trap 7, trap 17) Move into `factory/spec/`, by
-      name: `factory/cli/nouns/spec.py:462` — `_scan_sentinels_in_trio` (the span
-      `factory/cli/nouns/spec.py:462-480` at 602a92c),
+      name: `factory/cli/nouns/spec.py:463` — `_scan_sentinels_in_trio` (the span
+      `factory/cli/nouns/spec.py:463-481` at 602a92c),
       `factory/cli/nouns/spec.py:779` — `_tasks_text`
       (`factory/cli/nouns/spec.py:779-790`),
       `factory/cli/nouns/spec.py:999` — `_check_frontmatter`
       (`factory/cli/nouns/spec.py:999-1008`),
       `factory/cli/nouns/spec.py:1231` — `_check_fixes`
       (`factory/cli/nouns/spec.py:1231-1301`),
-      `factory/cli/nouns/spec.py:1304` — `_check_workgraph`,
-      `factory/cli/nouns/spec.py:1311` — `_check_personas` and
+      `factory/cli/nouns/spec.py:1298` — `_check_workgraph`,
+      `factory/cli/nouns/spec.py:1305` — `_check_personas` and
       `factory/cli/nouns/spec.py:1330` — `_candidate_graph`
-      (`factory/cli/nouns/spec.py:1304-1376`), and
+      (`factory/cli/nouns/spec.py:1298-1370`), and
       `factory/cli/nouns/spec.py:1379` — `_check_scenario_coverage` **alone** —
       its body ends at line 1416 and everything below that belongs to the evidence
       layer US6 moves (`factory/cli/nouns/spec.py:1379-1416`). Take with them the
       two module-level names only they read: the scenario-id grammar
       `_SCENARIO_ID_RE` with its `#:` comment
-      (`factory/cli/nouns/spec.py:64-65`) and `_STRUCTURAL_TIMEOUT_S` with
-      `factory/cli/nouns/spec.py:79` — `_vacuous_registry`
-      (`factory/cli/nouns/spec.py:73-98`). 8,937 bytes of source, about an 18 KB
+      (`factory/cli/nouns/spec.py:65-66`) and `_STRUCTURAL_TIMEOUT_S` with
+      `factory/cli/nouns/spec.py:80` — `_vacuous_registry`
+      (`factory/cli/nouns/spec.py:74-99`). 8,937 bytes of source, about an 18 KB
       diff.
 - [ ] T023 [US5] (FR-011) Import the moved names back into
       `factory/cli/nouns/spec.py` so `_validate_command` calls them exactly as it
-      does today — and so `factory/cli/nouns/spec.py:255` — `_derive_command`
+      does today — and so `factory/cli/nouns/spec.py:256` — `_derive_command`
       keeps calling `_scan_sentinels_in_trio` at
       `factory/cli/nouns/spec.py:257` for its sentinel gate. That gate's refusal
       text does not change; only where the helper lives does.
@@ -345,80 +441,135 @@ numbers are a map of what to move, not a place to cut.
       of the four `_check_fixes` early-return cases showing what each appended.
       Name US1's golden test file by path as the standing guard.
 
-## Phase 4: User Story 6 — The judge-evidence layer leaves the CLI module
+## Phase 5: User Story 6 — The judge-evidence vocabulary leaves the CLI module
 
-Locate every item below by symbol name. Three stories have already shortened this
-file; `plan.md`'s span for this family, `factory/cli/nouns/spec.py:1419-1865`, is
-past the end of the file you will actually open.
+Locate every item below by symbol name; coordinates are the tree at **57bf698**
+and four stories will have shortened this file before you open it.
+
+**This phase and Phase 6 were one phase until 2026-09-07.** The family is 18,393
+bytes across sixteen top-level names, which at the measured 2.36x relocation cost
+is a 43 KB move before a single test is written — over the bound on its own. It
+is severed on the one seam it has: **the vocabulary half calls nothing in the
+report half**, so the vocabulary moves first. Do not re-merge them.
 
 ### Tests for this story (write FIRST, must fail)
 
 - [ ] T026 [P] [US6] (spec US6-S1, FR-012) Assert `factory/cli/nouns/spec.py` no
-      longer defines `_check_evidence`, `_JudgeEvidenceReport`, `_StoryCriteria`,
-      `_BorderlineClause`, `_Declarations`, `_then_clauses`, `_runtime_markers`,
-      `_names_a_declared_gate`, `_manifest_declares_no_gates`, `_declared_gates`,
-      `_evidence_refusal`, `_borderline_warning`, `_story_criteria`,
-      `_RUNTIME_MARKERS`, `_DIFF_EVIDENCE_RE` or `_PROVABLE_EXAMPLE`, and that
-      the objects the CLI calls have `__module__` under `factory.spec`.
-      `_RUNTIME_MARKERS` is the closed marker vocabulary
-      `factory/cli/nouns/spec.py:1508` — `_runtime_markers` reads; it is assigned
-      at `factory/cli/nouns/spec.py:1440`, which is above the span the draft of
-      this plan gave, and it must travel with the reader that is its only
-      consumer.
-- [ ] T027 [P] [US6] (spec US6-S2, FR-012, trap 7) Assert the moved report type's
-      `as_dict()` and `lines()` output are unchanged — the verb serialises the
-      first into `--json` at `factory/cli/nouns/spec.py:693` and prints the second
-      at `factory/cli/nouns/spec.py:724`, so both are stdout — and that the moved
-      checker still **returns** that report as well as appending to the
-      caller-owned lists. It is the one checker in the family that does both; a
-      relocation that folds the return into the lists deletes the `judge_evidence`
-      key.
+      longer defines `_RUNTIME_MARKERS`, `_DIFF_EVIDENCE_RE`, `_PROVABLE_EXAMPLE`,
+      `_then_clauses`, `_runtime_markers`, `_names_a_declared_gate`,
+      `_manifest_declares_no_gates`, `_Declarations`, `_declared_gates` or
+      `_evidence_refusal`, and that the objects the CLI calls have `__module__`
+      under `factory.spec`. `_RUNTIME_MARKERS`
+      (`factory/cli/nouns/spec.py:1434`) is the closed marker vocabulary
+      `factory/cli/nouns/spec.py:1502` — `_runtime_markers` reads, and it must
+      travel with the reader that is its only consumer.
+      **Do not assert anything about `_check_evidence`, `_JudgeEvidenceReport`,
+      `_StoryCriteria`, `_BorderlineClause`, `_borderline_warning` or
+      `_story_criteria`** — those are Phase 6's and they are still defined here.
+- [ ] T027 [P] [US6] (spec US6-S2, FR-012, trap 17) **The import-back control.**
+      `factory/cli/nouns/spec.py:1775` — `_check_evidence` has not moved yet and
+      reads most of what this story moves. Assert every moved name still resolves
+      as an attribute of `factory.cli.nouns.spec` **and** that its `__module__` is
+      under `factory.spec`, then drive the surviving checker end to end and assert
+      it still produces its report. A second copy left behind passes the first
+      assertion and fails the pair.
 - [ ] T028 [P] [US6] (spec US6-S4, FR-012, trap 19) Given a spec whose only
-      defect is an unevidenceable Then-clause, assert the refusal the moved
-      checker **appends to the caller-owned `findings` list** —
-      `factory/cli/nouns/spec.py:1849` appends it; nothing raises — is the same
-      string US1's golden capture of the defective trio's **stderr** recorded.
+      defect is an unevidenceable Then-clause, assert the refusal the surviving
+      checker **appends to the caller-owned `findings` list** — it appends;
+      nothing raises — is byte for byte the string US1's golden capture of the
+      defective trio's **stderr** recorded. This story moves
+      `factory/cli/nouns/spec.py:1582` — `_evidence_refusal`, the function that
+      composes that string, so this is the assertion that catches a rewording.
       The refusal line is on stderr and in the `--json` `findings[].message`; it
       is in no stdout artifact.
 
 ### Implementation for this story
 
-- [ ] T029 [US6] (FR-012, trap 6, trap 7) Move the whole judge-evidence family
-      into `factory/spec/` as one contiguous unit — the span
-      `factory/cli/nouns/spec.py:1419-1865` at 602a92c, which begins at the
-      `# --- criterion evidence (102-US1) ---` banner and holds `_RUNTIME_MARKERS`
-      (`factory/cli/nouns/spec.py:1440`), `_DIFF_EVIDENCE_RE`
-      (`factory/cli/nouns/spec.py:1481`), `_PROVABLE_EXAMPLE`
-      (`factory/cli/nouns/spec.py:1488`),
-      `factory/cli/nouns/spec.py:1491` — `_then_clauses`,
-      `factory/cli/nouns/spec.py:1508` — `_runtime_markers`,
-      `factory/cli/nouns/spec.py:1513` — `_names_a_declared_gate`,
-      `factory/cli/nouns/spec.py:1520` — `_manifest_declares_no_gates`,
-      `factory/cli/nouns/spec.py:1539` — `_Declarations`,
-      `factory/cli/nouns/spec.py:1559` — `_declared_gates`,
-      `factory/cli/nouns/spec.py:1588` — `_evidence_refusal`,
-      `factory/cli/nouns/spec.py:1647` — `_StoryCriteria`,
-      `factory/cli/nouns/spec.py:1656` — `_BorderlineClause`,
-      `factory/cli/nouns/spec.py:1666` — `_JudgeEvidenceReport`,
-      `factory/cli/nouns/spec.py:1748` — `_borderline_warning`,
-      `factory/cli/nouns/spec.py:1768` — `_story_criteria` and
-      `factory/cli/nouns/spec.py:1781` — `_check_evidence`. 18,391 bytes of
-      source, about a 37 KB diff — the largest story in this spec and still inside
-      the 65,536-byte bound. Do not start at the `_DIFF_EVIDENCE_RE` comment:
-      `_RUNTIME_MARKERS` sits above it and belongs to this family, not to US5's.
+- [ ] T029 [US6] (FR-012, trap 6, trap 7) Move into `factory/spec/`, by name, the
+      vocabulary and refusal grammar — the region beginning at the
+      `# --- criterion evidence (102-US1) ---` banner and ending before
+      `_StoryCriteria`: `_RUNTIME_MARKERS` (`factory/cli/nouns/spec.py:1434`)
+      (1,437 B), `_DIFF_EVIDENCE_RE` (`factory/cli/nouns/spec.py:1475`) (204 B),
+      `_PROVABLE_EXAMPLE` (`factory/cli/nouns/spec.py:1482`) (55 B),
+      `factory/cli/nouns/spec.py:1485` — `_then_clauses` (637 B),
+      `factory/cli/nouns/spec.py:1502` — `_runtime_markers` (218 B),
+      `factory/cli/nouns/spec.py:1507` — `_names_a_declared_gate` (259 B),
+      `factory/cli/nouns/spec.py:1514` — `_manifest_declares_no_gates` (742 B),
+      `factory/cli/nouns/spec.py:1533` — `_Declarations` (859 B),
+      `factory/cli/nouns/spec.py:1553` — `_declared_gates` (1,218 B) and
+      `factory/cli/nouns/spec.py:1582` — `_evidence_refusal` (1,466 B).
+      **Raw span 8,863 bytes, about a 20.9 KB move and ~50 KB assembled.** Do not
+      start at the `_DIFF_EVIDENCE_RE` comment: `_RUNTIME_MARKERS` sits above it
+      and belongs to this family, not to US5's. Leave the report type and the
+      checker where they are — moving them too is what puts this family over.
 - [ ] T030 [US6] (FR-012) Import the moved names back into
-      `factory/cli/nouns/spec.py` so `_validate_command` calls the checker, binds
-      its returned report and prints it exactly as it does today.
+      `factory/cli/nouns/spec.py` under their own names, so the surviving
+      `_check_evidence` reads them without change and `_validate_command` calls
+      it, binds its returned report and prints it exactly as it does today.
 
 ### Verification for this story
 
 - [ ] T031 [US6] (spec US6-S3, FR-006, trap 19) Paste, as committed evidence, the
       comparison of the verb's stdout, its stderr and its `--json` output over
       both fixture trios against US1's six golden artifacts — it must be empty on
-      all three streams — naming US1's golden
-      test file by path as the standing guard.
+      all three streams — and the output of `git diff <base>..HEAD | wc -c`. If
+      that count exceeds 52,400, cut the pasted evidence before the coverage and
+      escalate rather than ship. Name US1's golden test file by path as the
+      standing guard.
 
-## Phase 5: User Story 3 — The verb is a renderer over one composition
+## Phase 6: User Story 8 — The judge-evidence report and checker leave the CLI module
+
+Locate every item below by symbol name; coordinates are the tree at **57bf698**
+and US6 has since removed the vocabulary from above them.
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T059 [P] [US8] (spec US8-S1, FR-017) Assert `factory/cli/nouns/spec.py` no
+      longer defines `_check_evidence`, `_JudgeEvidenceReport`, `_StoryCriteria`,
+      `_BorderlineClause`, `_borderline_warning` or `_story_criteria`, and that
+      the objects the CLI calls have `__module__` under `factory.spec`.
+- [ ] T060 [P] [US8] (spec US8-S2, FR-017, trap 17) **The circular-import
+      control.** Assert the moved module's source contains no import naming
+      `factory.cli.nouns.spec`: the checker reads the vocabulary US6 moved, and it
+      must read it from `factory.spec`, not back out of the module it just left.
+- [ ] T061 [P] [US8] (spec US8-S3, FR-017, trap 7) Assert the moved report type's
+      `as_dict()` and `lines()` output are unchanged — the verb serialises the
+      first into `--json` and prints the second, so both are stdout — and that the
+      moved checker still **returns** that report as well as appending to the
+      caller-owned lists. It is the one checker in the family that does both; a
+      relocation that folds the return into the lists deletes the
+      `judge_evidence` key.
+- [ ] T062 [P] [US8] (spec US8-S5, FR-017) Assert that **no** name of the
+      judge-evidence family is defined in `factory/cli/nouns/spec.py` any longer,
+      reading the module source: the family entered this spec as one span, leaves
+      it in two stories, and this is the assertion that it arrived whole.
+
+### Implementation for this story
+
+- [ ] T063 [US8] (FR-017, trap 6, trap 7) Move into `factory/spec/`, by name:
+      `factory/cli/nouns/spec.py:1641` — `_StoryCriteria` (167 B),
+      `factory/cli/nouns/spec.py:1650` — `_BorderlineClause` (158 B),
+      `factory/cli/nouns/spec.py:1660` — `_JudgeEvidenceReport` (3,261 B),
+      `factory/cli/nouns/spec.py:1742` — `_borderline_warning` (852 B),
+      `factory/cli/nouns/spec.py:1762` — `_story_criteria` (450 B) and
+      `factory/cli/nouns/spec.py:1775` — `_check_evidence` (3,327 B). **Raw span
+      9,530 bytes, about a 22.5 KB move and ~51 KB assembled.** Keep the move
+      mechanical and change no string.
+- [ ] T064 [US8] (FR-017) Import the moved names back into
+      `factory/cli/nouns/spec.py` so `_validate_command` calls the checker, binds
+      its returned report and prints it exactly as it does today.
+
+### Verification for this story
+
+- [ ] T065 [US8] (spec US8-S4, FR-006, trap 19) Paste, as committed evidence, the
+      comparison of the verb's stdout, its stderr and its `--json` output over
+      both fixture trios against US1's six golden artifacts — it must be empty on
+      all three streams — and the output of `git diff <base>..HEAD | wc -c`. If
+      that count exceeds 52,400, cut the pasted evidence before the coverage and
+      escalate rather than ship. Name US1's golden test file by path as the
+      standing guard.
+
+## Phase 7: User Story 3 — The verb is a renderer over one composition
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -426,9 +577,9 @@ past the end of the file you will actually open.
       `validate_spec(spec_dir, *, target_repo, specs_root)` returns the typed
       report with **no** `argparse.Namespace` constructed and **no** stdout
       captured. Do not build on
-      `factory/cli/nouns/spec.py:275` — `validate_spec_command`: it has the right
+      `factory/cli/nouns/spec.py:276` — `validate_spec_command`: it has the right
       name and the wrong shape, and it
-      exists only so `build ship` (`factory/cli/nouns/build.py:1039`) could stream
+      exists only so `build ship` (`factory/cli/nouns/build.py:1076`) could stream
       the same stdout.
 - [ ] T033 [P] [US3] (spec US3-S2, FR-004, trap 2) Drive the library form over
       specs defective in each of the five ways a re-composing consumer misses
@@ -460,7 +611,7 @@ past the end of the file you will actually open.
       order the layers run in. Tidying it into run order is invisible on stdout —
       `factory/cli/nouns/spec.py:753` — `_all_pass_phrases` tests `checked` for
       membership only, at `factory/cli/nouns/spec.py:770`,
-      `factory/cli/nouns/spec.py:772` and `factory/cli/nouns/spec.py:774`, and
+      `factory/cli/nouns/spec.py:766` and `factory/cli/nouns/spec.py:774`, and
       never reads its order — so this assertion and T036's JSON golden are the
       only two things that catch it.
 - [ ] T035 [P] [US3] (spec US3-S4, FR-006, trap 19) Assert the verb's stdout
@@ -485,7 +636,7 @@ past the end of the file you will actually open.
       refusal), `factory/cli/nouns/spec.py:559` (`prompt_assembly`),
       `factory/cli/nouns/spec.py:590` (`slice_coverage`, and the line that routes
       on `entry.informational`), `factory/cli/nouns/spec.py:617`
-      (`slice_contention`) and `factory/cli/nouns/spec.py:640` (`sentinel`).
+      (`slice_contention`) and `factory/cli/nouns/spec.py:634` (`sentinel`).
       Assert on the module source, so a construction that moved into a helper
       still in the CLI module does not pass.
 - [ ] T038 [P] [US3] (spec US3-S7, FR-013, trap 14) Assert the demonstration's
@@ -586,7 +737,7 @@ past the end of the file you will actually open.
       corpus controls of T054 showing a **differing** verdict on the spec each
       layer refuses, which is what proves they are still disabling something.
 
-## Phase 6: User Story 4 — The two forms agree, provably
+## Phase 8: User Story 4 — The two forms agree, provably
 
 ### Tests for this story (write FIRST, must fail)
 

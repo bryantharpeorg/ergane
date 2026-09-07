@@ -17,16 +17,57 @@ fixes:
 # records the precedent: "a story no attempt could pass at 74,465 bytes, four
 # gates green and the judge never reached." US2 measured 72,750.
 #
-# WHAT REFINEMENT MUST DO BEFORE THIS GOES BACK TO `ready`: split US2 so each
-# story's diff clears the budget — the natural seam is one checker family per
-# story rather than one move of all of them — and check US3-US6 for the same
-# shape, since a refactor spec's later stories are moves too. Raising the budget
-# is the wrong lever; that constant is deliberate.
+# THE SIZING MODEL IN `plan.md` § Sizing IS WRONG, AND US6 IS THE NEXT CASUALTY.
+# It sizes only the moved source and doubles it: US2 was called "18,098 bytes of
+# source, so about a 36 KB diff". Measured from the archived branch against its
+# own base, US2's real diff was 72,423 bytes, and it breaks down as
+#   factory/  42,753   the move itself — 19% over the estimate, not 2x
+#   tests/    22,034   the tests the story must write FIRST, counted nowhere
+#   other      7,636   the committed attempt evidence, counted nowhere
+# So the model omits two whole categories that together were 41% of the diff.
+# Re-sized with tests and evidence included: US5 (8,937 bytes of source) lands
+# near 48 KB — under the bound but not comfortably — and US6, already declared
+# "the largest of the three and still inside the 65,536-byte bound" at an
+# estimated 37 KB, lands near 73 KB and CANNOT PASS AS WRITTEN.
 #
-# The anchor drift is NOT a defect and needs no refresh: tasks.md pins every
-# coordinate to the 602a92c tree and directs the implementer to locate by symbol
-# name. Measured after US1 landed, 106 of 128 anchors had shifted (mostly by -6);
-# that is the plan working as designed, not rot.
+# SPLIT AND RE-ANCHORED 2026-09-07 (operator). The refinement above is done and
+# this spec is structurally ready; it is held at `draft` only for the operator's
+# pre-dispatch read, not for further work.
+#
+#   - US2 severed into US2 (symbol tier, 7,322 B) and US7 (resolution tier,
+#     10,374 B). Both seams were checked in the tree, not assumed: the two tiers
+#     share exactly `_spec_state` and `_severity_for_state`, which move with US2
+#     and are imported back for US7 — the pattern US1 already used for the
+#     finding type.
+#   - US6 severed into US6 (evidence vocabulary, 8,863 B) and US8 (report type
+#     and checker, 9,530 B). The vocabulary half was verified to call nothing in
+#     the report half, which is what makes it safe to move first.
+#   - US5, US3 and US4 are UNCHANGED. They were never measured over the bound,
+#     and splitting on taste rather than on measured bytes is how a chain this
+#     long acquires stories that exist to be administered rather than built.
+#     US3 keeps its own explicit ceiling and an escalation instruction instead.
+#   - Chain is now US1 -> US2 -> US7 -> US5 -> US6 -> US8 -> US3 -> US4.
+#     Projected assembled diffs: 46, 53, 51, 50, 51, 49-64 KB. US7 is the
+#     tightest at 82% of the bound and says so in its own task.
+#
+# ANCHORS ARE REFRESHED TO 57bf698, and my earlier read of this was wrong in a way
+# worth recording. The plan does tell the implementer to locate by symbol name, so
+# the drift never misled an agent — but `ergane spec validate` REFUSES a stale
+# anchor, and after US1 landed this spec carried 92 anchor refusals across two
+# layers. A spec that cannot pass its own validator is not dispatchable under 150.
+# All 92 are now clear and the trio validates with no refusal and no advisory.
+#
+# TRAP FOR THE NEXT PERSON WHO RE-ANCHORS THIS: the symbol tier
+# (`factory/cli/nouns/spec.py:819` — `_symbol_spans`) indexes ONLY FunctionDef,
+# AsyncFunctionDef and ClassDef. A module-level constant cited as
+# `path:NN` — `_CONSTANT` is always refused as "not defined in that file"; write
+# constants as `` `_CONSTANT` (`path:NN`) `` instead, which is why this trio uses
+# that form for every regex and marker table.
+#
+# AND THEY WILL DRIFT AGAIN. Every story here edits one module, so each landing
+# re-rots the anchors of the stories after it. That is inherent to the shape of
+# this spec, not a defect in it, and it is why the instruction to locate by symbol
+# stays in tasks.md alongside the refreshed numbers.
 # DRAFTED 2026-09-03 by the operator session, against ergane-buildout at 238b494.
 # Every `file:line` in spec.md and plan.md was read from that commit and verified
 # to resolve to the symbol named, not recalled.
@@ -239,24 +280,24 @@ fixes:
    it. The verdict itself is computed and discarded at
    `factory/cli/nouns/spec.py:750`.
 4. Findings carry a private, non-dataclass type:
-   `factory/cli/nouns/spec.py:483` — `_ValidateFinding`.
+   `_ValidateFinding` (`factory/cli/nouns/spec.py`:483 in the pre-US1 tree; it is `SpecFinding` in `factory/spec/report.py:24` now, bound back under the old name at `factory/cli/nouns/spec.py:39`).
 5. There is no `factory/spec/` package. `ls factory/spec` errors.
 
 **The one public name is a decoy.**
-`factory/cli/nouns/spec.py:275` — `validate_spec_command` is a CLI wrapper
+`factory/cli/nouns/spec.py:276` — `validate_spec_command` is a CLI wrapper
 whose body delegates to
 `_validate_command`, added so `build ship` could stream the same stdout
-(`factory/cli/nouns/build.py:1039`). Namespace in, print out, exit code back.
+(`factory/cli/nouns/build.py:1076`). Namespace in, print out, exit code back.
 `grep -rn "validate_spec\|SpecValidation" factory/` returns exactly three hits:
 that wrapper and its two call sites.
 
 **Ten of the twelve layers are implemented inside the CLI module.** Nine are
 private functions — `factory/cli/nouns/spec.py:999` — `_check_frontmatter`,
 `factory/cli/nouns/spec.py:1231` — `_check_fixes`,
-`factory/cli/nouns/spec.py:1304` — `_check_workgraph`,
-`factory/cli/nouns/spec.py:1311` — `_check_personas`,
+`factory/cli/nouns/spec.py:1298` — `_check_workgraph`,
+`factory/cli/nouns/spec.py:1305` — `_check_personas`,
 `factory/cli/nouns/spec.py:1379` — `_check_scenario_coverage`,
-`factory/cli/nouns/spec.py:462` — `_scan_sentinels_in_trio`,
+`factory/cli/nouns/spec.py:463` — `_scan_sentinels_in_trio`,
 `factory/cli/nouns/spec.py:1023` — `_check_anchor_resolution`,
 `factory/cli/nouns/spec.py:886` — `_check_symbol_anchors`, and
 `factory/cli/nouns/spec.py:1781` — `_check_evidence`, which returns the private
@@ -280,7 +321,7 @@ checker holds; the `slice_coverage` wrapper at
 `entry.informational`, whether an answer lands in `findings` or in
 `information`; the `slice_contention` block above; and the `sentinels` wrapper
 at `factory/cli/nouns/spec.py:638-645`, whose finding is built at
-`factory/cli/nouns/spec.py:640`. Three complete layers — their names, their
+`factory/cli/nouns/spec.py:634`. Three complete layers — their names, their
 severities, their skip reasons and the `information` routing — exist only as
 lines of the CLI command, which is why a sweep that moves `def _check_`
 functions and the one contention block leaves a quarter of the policy behind.
@@ -288,10 +329,10 @@ functions and the one contention block leaves a quarter of the policy behind.
 **Two of the twelve layer names differ between the finding and the `checked`
 entry, and both spellings are rendered.** A failed derivation builds its
 finding with the layer `workgraph` (`factory/cli/nouns/spec.py:535`, and again
-in `factory/cli/nouns/spec.py:1304` — `_check_workgraph` at
+in `factory/cli/nouns/spec.py:1298` — `_check_workgraph` at
 `factory/cli/nouns/spec.py:1308`) while `checked` is seeded with
 `workgraph_derivation` at `factory/cli/nouns/spec.py:506`; a sentinel note
-carries the layer `sentinel` (`factory/cli/nouns/spec.py:640`) while `checked`
+carries the layer `sentinel` (`factory/cli/nouns/spec.py:634`) while `checked`
 gains `sentinels` at `factory/cli/nouns/spec.py:645`. Both pairs reach the
 operator — the first through the `[layer]` prefix and the `--json`
 `findings[].layer` key, the second through the same two places — so a typed
@@ -321,14 +362,14 @@ consumer.
 
 **Five module-level names sit outside every layer body and are read from inside
 three of them.** The finding type
-`factory/cli/nouns/spec.py:483` — `_ValidateFinding` is constructed by every
+`_ValidateFinding` (`factory/cli/nouns/spec.py`:483 in the pre-US1 tree; it is `SpecFinding` in `factory/spec/report.py:24` now, bound back under the old name at `factory/cli/nouns/spec.py:39`) is constructed by every
 relocated family; the anchor grammars
 `_ANCHOR_RE` at `factory/cli/nouns/spec.py:68` and `_BARE_LINE_RE` at
 `factory/cli/nouns/spec.py:71` are read only from inside `_check_anchor_resolution`
 (at `factory/cli/nouns/spec.py:1123` and `factory/cli/nouns/spec.py:1092`); the
 scenario-id grammar `_SCENARIO_ID_RE` at `factory/cli/nouns/spec.py:65` is read
 only at `factory/cli/nouns/spec.py:1407` inside `_check_scenario_coverage`; and
-`factory/cli/nouns/spec.py:79` — `_vacuous_registry`, with the constant
+`factory/cli/nouns/spec.py:80` — `_vacuous_registry`, with the constant
 `_STRUCTURAL_TIMEOUT_S` at `factory/cli/nouns/spec.py:76` that it reads, is called
 only at `factory/cli/nouns/spec.py:1306` inside `_check_workgraph`. They are the
 reason the relocation is a move of families rather than of functions.
@@ -448,43 +489,101 @@ capture.
    the class statement and asserts the bound object's `__module__` is under
    `factory.spec`.
 
-### User Story 2 - The anchor and symbol layers leave the CLI module (Priority: P2)
+### User Story 2 - The symbol-anchor layer leaves the CLI module (Priority: P2)
 
-As a maintainer, the two layers 072 added stop being private to a CLI module.
+As a maintainer, the symbol tier 072 added stops being private to a CLI module.
 
-**Why this priority**: P2 and it follows US1. It is the first relocation and it
-is the largest — `_check_anchor_resolution` alone is 9.8 KB of source — so it
-sets the pattern the next two follow, and it is sized to land alone.
+**Why this priority**: P2 and it follows US1. It is the first relocation, so it
+sets the pattern the next four follow, and it is sized to land alone.
 
-**Independent Test**: Import the moved checkers from `factory.spec`; run the verb
-over both fixture trios and diff against US1's golden captures.
+**Why this is half of what it used to be.** This story and US7 were one story
+until 2026-09-07, when that story was built, measured and killed. Its
+implementation was complete and its gates were green; it failed because its
+assembled diff was **72,750 bytes against the 65,536-byte bound**, so the judge
+scored an abridged copy. The two tiers are severable — `_check_symbol_anchors`
+and `_check_anchor_resolution` share only two helpers, and the import-back
+pattern US1 established for `_ValidateFinding` carries them across the seam — so
+they are severed here, on measured bytes rather than on taste. The archived
+branch of that attempt is `archive/factory/133-.../us2/d9fbb0f69eac`; it is
+available to read and it was **never judged**, so nothing in it is a warrant.
+
+**Independent Test**: Import the moved symbol checker from `factory.spec`; run
+the verb over both fixture trios and diff against US1's golden captures.
 
 **Acceptance Scenarios**:
 
-1. **Given** the anchor family, **When** the diff is read, **Then**
-   `factory/cli/nouns/spec.py` no longer defines `_check_anchor_resolution`,
-   `_check_symbol_anchors`, `_symbol_spans`, `_line_hits_symbol`,
-   `_read_citation_files`, `_spec_state`, `_severity_for_state`,
-   `_SYMBOL_ANCHOR_RE`, `_DISPATCHABLE_STATES`, `_ANCHOR_RE` or `_BARE_LINE_RE`,
-   and imports them from `factory.spec` instead. `_SYMBOL_ANCHOR_RE`
-   (`factory/cli/nouns/spec.py:795`) and `_DISPATCHABLE_STATES`
-   (`factory/cli/nouns/spec.py:800`) sit inside the span this story moves and
-   are read only by the checkers in it; `_ANCHOR_RE` and `_BARE_LINE_RE` sit
-   above it and are read only from inside the moved checker. Leaving any of the
-   four behind makes the moved body reach back into the CLI module.
-2. **Given** the moved functions, **When** their bodies are read in the diff,
+1. **Given** the symbol family, **When** the diff is read, **Then**
+   `factory/cli/nouns/spec.py` no longer defines `_check_symbol_anchors`,
+   `_symbol_spans`, `_line_hits_symbol`, `_spec_state`, `_severity_for_state`,
+   `_SYMBOL_ANCHOR_RE` or `_DISPATCHABLE_STATES`, and imports them from
+   `factory.spec` instead. `_SYMBOL_ANCHOR_RE`
+      (`factory/cli/nouns/spec.py:789`) and `_DISPATCHABLE_STATES`
+      (`factory/cli/nouns/spec.py:794`) are read only from inside this story's bodies, so
+   leaving either behind makes a moved body reach back into the module it left.
+2. **Given** `factory/cli/nouns/spec.py:797` — `_spec_state` and
+   `factory/cli/nouns/spec.py:812` — `_severity_for_state`, **When** the diff is
+   read, **Then** they have moved with this story **and** the CLI module binds
+   them back under their own names, because
+   `factory/cli/nouns/spec.py:1155` — the surviving call inside
+   `_check_anchor_resolution` — still reads both and does not move until US7.
+   This is trap 17's shape exactly, already solved once for `_ValidateFinding`:
+   a shared helper moves with the first story that needs it and is imported back
+   for the second. A story that instead copies them leaves two definitions of one
+   severity rule.
+3. **Given** the moved functions, **When** their bodies are read in the diff,
    **Then** every refusal string and every parameter is unchanged, and they still
    append into caller-owned `findings`, `skipped` and `checked` lists rather than
    returning a report.
-3. **Given** the fixture trios from US1, **When** the verb is run over each,
+4. **Given** the fixture trios from US1, **When** the verb is run over each,
    **Then** the diff carries, as pasted committed evidence, the comparison of
    this story's stdout, its stderr and its `--json` output against US1's six
    golden artifacts, and it is empty on all three streams; the committed golden
    test US1 added is named by path in the task as the standing guard that keeps
    it empty.
-4. **Given** the CLI module, **When** a committed test inspects it, **Then** the
-   anchor checkers it calls are asserted to be the objects defined in
-   `factory.spec`, not re-declarations.
+5. **Given** the CLI module, **When** a committed test inspects it, **Then** the
+   symbol checker it calls is asserted to be the object defined in
+   `factory.spec`, not a re-declaration.
+
+### User Story 7 - The anchor-resolution layer leaves the CLI module (Priority: P2)
+
+As a maintainer, the file:line tier 072 added stops being private to a CLI module.
+
+**Why this priority**: P2 and it follows US2. It is the other half of the story
+that was killed for size on 2026-09-07, and it is the larger half:
+`factory/cli/nouns/spec.py:1017` — `_check_anchor_resolution` is 9,795 bytes of
+source in a single function, which is irreducible without redesigning the checker
+— and redesigning it is not what this spec is for. It is therefore the tightest
+relocation in the chain, and § Sizing states its measured budget.
+
+**Independent Test**: Import the moved resolution checker from `factory.spec`;
+run the verb over both fixture trios and diff against US1's golden captures.
+
+**Acceptance Scenarios**:
+
+1. **Given** the resolution family, **When** the diff is read, **Then**
+   `factory/cli/nouns/spec.py` no longer defines `_check_anchor_resolution`,
+   `_read_citation_files`, `_ANCHOR_RE` or `_BARE_LINE_RE`, and imports them from
+   `factory.spec` instead. `_ANCHOR_RE` (`factory/cli/nouns/spec.py:69`) and
+   `_BARE_LINE_RE` (`factory/cli/nouns/spec.py:72`) sit far above the checker's
+   own span and are read only from inside it, so a story that moves the span
+   without them strands two regexes of this layer in the CLI module.
+2. **Given** the moved checker, **When** its body is read in the diff, **Then**
+   it reads `_spec_state` and `_severity_for_state` from `factory.spec`, where
+   US2 put them, and **not** back out of `factory.cli.nouns.spec`. A moved body
+   importing from the module it just left is the circular shape trap 17 names.
+3. **Given** the moved function, **When** its body is read in the diff, **Then**
+   every refusal string and every parameter is unchanged, and it still appends
+   into caller-owned `findings`, `skipped` and `checked` lists rather than
+   returning a report.
+4. **Given** the fixture trios from US1, **When** the verb is run over each,
+   **Then** the diff carries, as pasted committed evidence, the comparison of
+   this story's stdout, its stderr and its `--json` output against US1's six
+   golden artifacts, and it is empty on all three streams; the committed golden
+   test US1 added is named by path in the task as the standing guard that keeps
+   it empty.
+5. **Given** the CLI module, **When** a committed test inspects it, **Then** the
+   resolution checker it calls is asserted to be the object defined in
+   `factory.spec`, not a re-declaration.
 
 ### User Story 5 - The frontmatter, ledger, graph, persona, scenario and sentinel layers leave the CLI module (Priority: P2)
 
@@ -534,34 +633,39 @@ over both fixture trios and diff against US1's golden captures.
    `factory.cli.nouns.spec`, and every assertion each of them makes is asserted
    still present rather than deleted or served by a shim.
 
-### User Story 6 - The judge-evidence layer leaves the CLI module (Priority: P2)
+### User Story 6 - The judge-evidence vocabulary leaves the CLI module (Priority: P2)
 
-As a maintainer, the layer 102 added — and the report type it returns — stop being
-private to a CLI module.
+As a maintainer, the closed vocabulary and refusal grammar the layer 102 added
+stop being private to a CLI module.
 
-**Why this priority**: P2 and it follows US5. It is separated because it carries
-its own object graph: a checker, a report dataclass, its helpers and the closed
-marker vocabulary they read, 18.4 KB of source, which is a 37 KB diff on its own.
+**Why this priority**: P2 and it follows US5. The evidence family is the largest
+object graph in the module — 18,393 bytes across sixteen top-level names — and at
+the measured 2.36x relocation cost that is a diff no single story can carry
+inside the 65,536-byte bound. It is severed here from US8 on the one seam the
+family actually has: **the vocabulary half calls nothing in the report half.**
+That direction was checked, not assumed, and it is what makes this half safe to
+move first.
 
-**Independent Test**: Import `_check_evidence`'s successor and its report type
-from `factory.spec`; run the verb over both fixture trios and diff against US1's
+**Independent Test**: Import the moved vocabulary and refusal helpers from
+`factory.spec`; run the verb over both fixture trios and diff against US1's
 golden captures.
 
 **Acceptance Scenarios**:
 
-1. **Given** the evidence family, **When** the diff is read, **Then**
-   `factory/cli/nouns/spec.py` no longer defines `_check_evidence`,
-   `_JudgeEvidenceReport`, `_StoryCriteria`, `_BorderlineClause`,
-   `_Declarations`, `_then_clauses`, `_runtime_markers`, `_names_a_declared_gate`,
-   `_manifest_declares_no_gates`, `_declared_gates`, `_evidence_refusal`,
-   `_borderline_warning`, `_story_criteria`, `_RUNTIME_MARKERS`,
-   `_DIFF_EVIDENCE_RE` or `_PROVABLE_EXAMPLE`, and imports them from
-   `factory.spec` instead. `_RUNTIME_MARKERS` is the marker vocabulary
-   `_runtime_markers` reads and it must travel with it.
-2. **Given** the moved report type, **When** the diff is read, **Then** a
-   committed test asserts its `as_dict()` and its `lines()` output are unchanged,
-   because the verb prints one and serialises the other, and that the moved
-   checker still returns it as well as appending to the caller-owned lists.
+1. **Given** the evidence vocabulary, **When** the diff is read, **Then**
+   `factory/cli/nouns/spec.py` no longer defines `_RUNTIME_MARKERS`,
+   `_DIFF_EVIDENCE_RE`, `_PROVABLE_EXAMPLE`, `_then_clauses`, `_runtime_markers`,
+   `_names_a_declared_gate`, `_manifest_declares_no_gates`, `_Declarations`,
+   `_declared_gates` or `_evidence_refusal`, and imports them from `factory.spec`
+   instead. `_RUNTIME_MARKERS` (`factory/cli/nouns/spec.py:1434`) is the closed
+   marker vocabulary `factory/cli/nouns/spec.py:1502` — `_runtime_markers` reads,
+   and it must travel with it; splitting those two strands a constant of this
+   layer in the CLI module.
+2. **Given** the report half that has not moved yet, **When** the diff is read,
+   **Then** the CLI module binds every name this story moved back under its own
+   name, because `factory/cli/nouns/spec.py:1775` — `_check_evidence` still reads
+   them and does not move until US8. A committed test asserts the surviving
+   checker calls the moved objects rather than re-declarations.
 3. **Given** the fixture trios from US1, **When** the verb is run over each,
    **Then** the diff carries, as pasted committed evidence, the comparison of
    this story's stdout, its stderr and its `--json` output against US1's six
@@ -569,22 +673,83 @@ golden captures.
    test US1 added is named by path in the task as the standing guard that keeps
    it empty.
 4. **Given** a spec whose only defect is an unevidenceable Then-clause,
-   **When** the moved checker is called directly, **Then** a committed test
+   **When** the surviving checker is called directly, **Then** a committed test
    asserts the refusal it **appends to the caller-owned `findings` list** — it
-   appends, it does not raise — is the same string the verb rendered before the
-   move, taken from US1's golden capture of the defective trio's **stderr**,
-   which is the stream every refusal line is printed on.
+   appends, it does not raise — is byte for byte the string the verb rendered
+   before the move, taken from US1's golden capture of the defective trio's
+   **stderr**, which is the stream every refusal line is printed on. This story
+   moves the function that composes that string, so this is the scenario that
+   catches a reworded refusal.
+
+### User Story 8 - The judge-evidence report and checker leave the CLI module (Priority: P2)
+
+As a maintainer, the checker 102 added — and the report type it returns — stop
+being private to a CLI module.
+
+**Why this priority**: P2 and it follows US6. It is the other half of the
+evidence family: the report dataclass the verb prints and serialises, its two
+small companions, and the checker itself. It comes second because it reads the
+vocabulary US6 moved, and a body that moves before what it reads has to import
+back out of the module it is leaving.
+
+**Independent Test**: Import `_check_evidence`'s successor and its report type
+from `factory.spec`; run the verb over both fixture trios and diff against US1's
+golden captures.
+
+**Acceptance Scenarios**:
+
+1. **Given** the evidence report family, **When** the diff is read, **Then**
+   `factory/cli/nouns/spec.py` no longer defines `_check_evidence`,
+   `_JudgeEvidenceReport`, `_StoryCriteria`, `_BorderlineClause`,
+   `_borderline_warning` or `_story_criteria`, and imports them from
+   `factory.spec` instead.
+2. **Given** the moved checker, **When** its body is read in the diff, **Then**
+   it reads the vocabulary and refusal helpers from `factory.spec`, where US6 put
+   them, and **not** back out of `factory.cli.nouns.spec`.
+3. **Given** the moved report type, **When** the diff is read, **Then** a
+   committed test asserts its `as_dict()` and its `lines()` output are unchanged,
+   because the verb prints one and serialises the other, and that the moved
+   checker still returns it as well as appending to the caller-owned lists.
+4. **Given** the fixture trios from US1, **When** the verb is run over each,
+   **Then** the diff carries, as pasted committed evidence, the comparison of
+   this story's stdout, its stderr and its `--json` output against US1's six
+   golden artifacts, and it is empty on all three streams; the committed golden
+   test US1 added is named by path in the task as the standing guard that keeps
+   it empty.
+5. **Given** the CLI module, **When** a committed test inspects it, **Then** no
+   name of the evidence family is defined there any longer — the family that
+   entered this spec as one span leaves it in two stories and arrives whole.
 
 ### User Story 3 - The verb is a renderer over one composition (Priority: P3)
 
 As an operator, the verb prints exactly what it printed before, and every layer
 now reaches it through the library.
 
-**Why this priority**: P3 and it follows US6. Composition and rendering are one
-edit to one function, so they are one story; splitting them would mean two
-rewrites of the same region and the merge-group collision the chain exists to
-avoid. It comes last of the code stories because it is the one with output
-regression risk, and by now every body it composes is already where it belongs.
+**Why this priority**: P3 and it follows US8. Composition and rendering are one
+edit to one function, so they are one story. It comes last of the code stories
+because it is the one with output regression risk, and by now every body it
+composes is already where it belongs.
+
+**Why this one was NOT split when US2 and US6 were.** The original argument for
+keeping it whole — that splitting means "two rewrites of the same region and the
+merge-group collision the chain exists to avoid" — does not survive inspection:
+every edge here is `depends_on_merged`, so no two stories of this spec are ever
+in the merge group together, and two sequential rewrites of one region are
+exactly what a serial chain makes safe. The reason it stays whole is the one this
+spec says out loud everywhere else: **it was never measured to be over.** US2 and
+US6 were severed because the corrected model puts them past the bound before a
+line is written; this one lands between 49 and 64 KB, which is inside the bound
+and inside the margin. Splitting it as well would be splitting on taste.
+
+**The ceiling, and what to do at it.** This is the widest estimate in the spec and
+the only story that cannot be sized from a byte count of what it moves, because it
+rewrites rather than relocates. **Assemble the diff and measure it before
+finishing.** If `git diff <base>..HEAD | wc -c` exceeds **52,400 bytes** — eighty
+percent of the bound, the margin US1 did not have when it landed at 59,490 —
+shrink the pasted evidence first and the scenario prose second, and if it is still
+over, say so on the escalation rather than shipping a diff the judge will be shown
+in abridged form. An abridged judge input is not a smaller review; it is a review
+of a different artifact, and it is what killed this spec's first relocation.
 
 **Independent Test**: From a Python session, call `validate_spec` for one spec
 directory and read the returned report; run the verb over both fixture trios and
@@ -700,12 +865,20 @@ disk.
   by globbing at call time, and assert they agree on the verdict and on the
   per-layer findings and severities; it MUST drive the CLI face in-process rather
   than by spawning a subprocess per spec.
-- **FR-010**: The anchor and symbol layer bodies — `_check_anchor_resolution`,
-  `_check_symbol_anchors`, `_symbol_spans`, `_line_hits_symbol`,
-  `_read_citation_files`, `_spec_state`, `_severity_for_state` — together with the
-  module-level regexes they alone read, `_ANCHOR_RE` and `_BARE_LINE_RE`, MUST be
-  defined in `factory/spec/` and imported by the CLI module, with signatures and
-  refusal strings unchanged.
+- **FR-010**: The symbol-anchor layer bodies — `_check_symbol_anchors`,
+  `_symbol_spans`, `_line_hits_symbol` — together with the two helpers the two
+  anchor tiers share, `_spec_state` and `_severity_for_state`, and the
+  module-level names this layer alone reads, `_SYMBOL_ANCHOR_RE` and
+  `_DISPATCHABLE_STATES`, MUST be defined in `factory/spec/` and imported by the
+  CLI module, with signatures and refusal strings unchanged. The two shared
+  helpers MUST be bound back in the CLI module under their own names, because the
+  resolution checker still reads them there until FR-016 is satisfied.
+- **FR-016**: The anchor-resolution layer bodies — `_check_anchor_resolution` and
+  `_read_citation_files` — together with the module-level regexes they alone
+  read, `_ANCHOR_RE` and `_BARE_LINE_RE`, MUST be defined in `factory/spec/` and
+  imported by the CLI module, with signatures and refusal strings unchanged; and
+  the moved checker MUST read `_spec_state` and `_severity_for_state` from
+  `factory/spec/` rather than from the module it left.
 - **FR-011**: The frontmatter, ledger, work-graph, persona, scenario-coverage,
   sentinel and tasks-text bodies, together with the module-level names they alone
   read — `_SCENARIO_ID_RE`, `_vacuous_registry` and the `_STRUCTURAL_TIMEOUT_S`
@@ -717,11 +890,21 @@ disk.
   `tests/test_122_findings_store_isolation.py` and
   `tests/test_us1_registry_resolution.py` — MUST be updated to the new home
   rather than deleted or served by a shim left in the CLI module.
-- **FR-012**: The judge-evidence checker, its report type, its helpers and the
-  module-level constants they read — `_RUNTIME_MARKERS`, `_DIFF_EVIDENCE_RE` and
-  `_PROVABLE_EXAMPLE` — MUST be defined in `factory/spec/` and imported by the CLI
-  module, with `as_dict()` and `lines()` output unchanged and with the checker
-  still returning its report to the caller.
+- **FR-012**: The judge-evidence vocabulary and refusal grammar —
+  `_then_clauses`, `_runtime_markers`, `_names_a_declared_gate`,
+  `_manifest_declares_no_gates`, `_Declarations`, `_declared_gates`,
+  `_evidence_refusal` — together with the module-level constants they read,
+  `_RUNTIME_MARKERS`, `_DIFF_EVIDENCE_RE` and `_PROVABLE_EXAMPLE`, MUST be defined
+  in `factory/spec/` and imported by the CLI module, with every refusal string
+  byte for byte unchanged.
+- **FR-017**: The judge-evidence checker and its report type — `_check_evidence`,
+  `_JudgeEvidenceReport`, `_StoryCriteria`, `_BorderlineClause`,
+  `_borderline_warning`, `_story_criteria` — MUST be defined in `factory/spec/`
+  and imported by the CLI module, with `as_dict()` and `lines()` output unchanged
+  and with the checker still returning its report to the caller; and the moved
+  checker MUST read the vocabulary of FR-012 from `factory/spec/` rather than from
+  the module it left. Once it is satisfied, no name of the evidence family may
+  remain defined in `factory/cli/nouns/spec.py`.
 - **FR-013**: `factory/cli/install.py`'s demonstration stage MUST obtain its
   validation through the library form rather than by building an argv list, and
   the lines the demonstration prints MUST be unchanged.
@@ -752,17 +935,25 @@ US2:
   depends_on: []
   depends_on_merged: [US1]
   implements: [FR-010]
-US5:
+US7:
   depends_on: []
   depends_on_merged: [US2]
+  implements: [FR-016]
+US5:
+  depends_on: []
+  depends_on_merged: [US7]
   implements: [FR-011]
 US6:
   depends_on: []
   depends_on_merged: [US5]
   implements: [FR-012]
-US3:
+US8:
   depends_on: []
   depends_on_merged: [US6]
+  implements: [FR-017]
+US3:
+  depends_on: []
+  depends_on_merged: [US8]
   implements: [FR-003, FR-004, FR-005, FR-006, FR-007, FR-008, FR-013, FR-015]
 US4:
   depends_on: []
@@ -780,9 +971,25 @@ fails in the merge group. Each edge is declared rather than left inferred
 
 The chain also orders the risk correctly. US1 fixes the shape, moves the finding
 type every later body constructs, and freezes today's output as an artifact, so
-nothing after it has to argue from a tree the judge cannot see. US2, US5 and US6
-are three mechanical relocations, split on measured bytes against the
-65,536-byte diff refusal rather than on taste, each provable by the same golden
+nothing after it has to argue from a tree the judge cannot see. US2, US7, US5,
+US6 and US8 are five mechanical relocations, each provable by the same golden
 captures. US3 is the one behavioural edit, taken last, when every body it
 composes already sits where it belongs. US4 is the standing proof that the two
 faces cannot drift afterwards.
+
+**Why five relocations and not three.** The chain carried three until 2026-09-07,
+when the first of them was built, measured and killed: complete implementation,
+green gates, and an assembled diff of **72,750 bytes against the 65,536-byte
+bound**, so the judge was handed an abridged copy and refused it. The post-mortem
+is in § Sizing and it changed the model, not just one number — the old model
+counted the moved source and doubled it, and the measured cost of a relocation is
+**2.36x the source plus roughly 29 KB of tests and committed evidence that the
+model never counted at all**. Re-sized that way, the old US2 and the old US6 were
+both over the bound before anyone wrote a line, and US1 had already landed at
+59,490 bytes, inside the bound by nine percent. So each of those two was severed
+on the one seam its family actually has, and both seams were checked in the tree
+rather than assumed: US2/US7 share exactly two helpers, which move with the first
+and are imported back for the second, and US6's vocabulary half calls nothing in
+US8's report half. The three stories that were never over — US5, US3, US4 —
+are unchanged, because splitting on taste rather than on measured bytes is how a
+chain this long acquires stories that exist to be administered rather than built.
