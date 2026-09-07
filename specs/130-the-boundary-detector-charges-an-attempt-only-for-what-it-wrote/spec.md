@@ -1,9 +1,28 @@
 ---
-state: ready
+state: landed
 fixes:
   - hardening/the-worktree-boundary-detector-charges-a-node-with-its-siblings-worktree
   - cli/spec-derive-json-rewrites-the-committed-artifact
   - hardening/the-worktree-boundary-detector-cannot-tell-an-operators-commit-from-an-agent-escaping
+# Attested landed 2026-09-07. US1 b82ced5a135f (#441), US2 29362b931757 (#440),
+# US3 fe24a5f39f29 (#442), US4 d6c17c8d14d6 (#443) — all four observed on
+# ergane-buildout by content, all four on the first attempt, all PASS with no
+# retry, no judge failure and no escalation.
+#
+# THREE FINDINGS, FOUR STORIES, AND THAT IS THE BENIGN DIRECTION. US3 (FR-006,
+# the language-shaped list) is a hardening that closes no ledger row, so the
+# `fixes:` list is shorter than the story count rather than longer. The half-fix
+# shape this repository keeps catching is the opposite one.
+#
+# THE FIX IS DISCRIMINATION, NOT SILENCE. The risk in a detector spec is that a
+# false-positive finding gets closed by reporting less. It was not: the target's
+# HEAD is recorded beside the start snapshot, commit-carried paths are compared
+# against the tree that HEAD names, and a path written *on top of* an operator
+# commit stays charged (FR-007, FR-009). US1 was re-proven live rather than read:
+# `spec derive --json` with no output path exits 0, emits a 3-node graph, reports
+# no artifact path and writes nothing, while `--output` still writes. The control
+# is this repository's own pre-130 checkout, which rewrote six committed
+# artifacts on 2026-09-07 at 12:12Z running the same command.
 # DRAFTED 2026-09-03 by the operator session, against ergane-buildout at 238b494.
 # Every `file:line` in spec.md and plan.md was read from that commit and verified
 # to resolve to the symbol named, not recalled.
