@@ -5,7 +5,12 @@ deadline passes, classify how it ended, keep what it produced. That is the whole
 seam: no diff is read here, no usage is counted here, and nothing the agent
 *says* is inspected anywhere (FR-012). A second agent is a second class in this
 module — `adapter_for` resolves the persona registry's `agent` field to one — and
-the orchestration above it does not change.
+the orchestration above it does not change. Since 154-US4 the attempt policy that
+policy's name implies — pid file, orphan reap, archive, monitor loop, deadline,
+operator-question ferry, backend resolution, standards path — is written once, in
+`SharedAttemptPolicy`; an adapter class supplies only the per-CLI surface (argv,
+prompt delivery, provider env, home seeding, credential discovery, the
+turn-happened probe, refusal markers) and delegates.
 
 Four properties are the reason this file is longer than a `subprocess.run`:
 
@@ -725,8 +730,10 @@ class AgentAdapter(Protocol):
     they are steps of *one policy* — the deadline, the process-group termination,
     the reap, the archive — and a protocol that exposed them would make every new
     adapter re-implement that policy, with the FR-007 and US2-S3 guarantees
-    riding on each one getting it right. What genuinely differs between agents is
-    how a prompt becomes a process, so that is what a second class overrides.
+    riding on each one getting it right. Since 154-US4 that policy has one
+    shared implementation (`SharedAttemptPolicy`, below); what genuinely differs
+    between agents is the narrow per-CLI surface it calls into, so that is what
+    a second class supplies. The outer protocol stays one method either way.
     """
 
     #: The persona registry's `agent` value that selects this adapter.

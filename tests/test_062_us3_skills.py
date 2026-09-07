@@ -95,12 +95,17 @@ def test_skills_regression_guard_is_active() -> None:
     source = adapter_source.read_text(encoding="utf-8")
 
     # The adapter must not read `.skills` to construct argv or env. If it does,
-    # this story's "reserved" resolution has silently reverted.
+    # this story's "reserved" resolution has silently reverted. 154-US4: argv
+    # construction is the per-CLI surface (`_argv`, private), so the guard
+    # anchors there and in the shared policy's `run_attempt`.
     assert ".skills" not in source, (
         "adapter.py reads Persona.skills; reserved resolution has reverted"
     )
-    assert "skills" not in source.split("def argv")[1].split("def ")[0], (
+    assert "skills" not in source.split("def _argv")[1].split("def ")[0], (
         "adapter argv construction references skills"
+    )
+    assert "skills" not in source.split("async def run_attempt")[1].split("def ")[0], (
+        "shared-policy attempt assembly references skills"
     )
     assert "skills" not in source.split("def attempt_env")[1].split("def ")[0], (
         "adapter env construction references skills"
