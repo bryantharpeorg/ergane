@@ -41,6 +41,26 @@ depends_on_landed: [043-runtime-root-integrity]
 # `tests/test_us1_detector.py::test_agent_truncating_runtime_root_store_files_finding`;
 # the scenario text, story titles, work-graph block and FR bodies here are
 # fingerprint input and are untouched by the override.
+#
+# --- OVERRIDE, 2026-09-07, by epic 130 US4 (FR-007) ---
+# specs/130-the-boundary-detector-charges-an-attempt-only-for-what-it-wrote
+# deliberately reverses the *reporting* half of US1 scenario 3 (an operator
+# edit in the target repository during an attempt is still reported): a change
+# the attempt did not make is not charged to it. Working-tree content already
+# present when the attempt begins is recorded by the start snapshot and files
+# nothing, and a path carried by a commit that moved the target's HEAD during
+# the attempt is attributed to the commit, not to the attempt. The scenario's
+# *read-only* half — the detector never stashes, checks out, cleans or resets
+# the operator's tree — stands exactly as written, as does the detector's
+# ability to catch a change the attempt actually made. The two committed
+# controls of scenario 3 are edited openly in the same diff:
+# `tests/test_us1_detector.py::test_operator_work_is_reported_and_untouched`
+# (asserts the silence now) and
+# `tests/test_us1_detector.py::test_detector_runs_on_completed_agent_error_timeout_and_killed`
+# (each iteration's tracked write moved to *during* the attempt, since a write
+# before `capture_start` is now the excluded class). The inversion lives in
+# those two docstrings; the scenario text, story titles, work-graph block and
+# FR bodies here are fingerprint input and are untouched by the override.
 ---
 
 # Feature Specification: The worktree is where the agent starts, not where it is kept

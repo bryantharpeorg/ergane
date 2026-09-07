@@ -241,10 +241,11 @@ async def test_write_to_target_repo_working_tree_fails_and_leaves_tree_unchanged
     repo = _build_target_repo(tmp_path)
     target_file = repo / "invasion.txt"
     target_file.write_text("original operator content\n", encoding="utf-8")
-    # Committed, not just written: the detector's start snapshot is the
-    # committed tree, so an uncommitted fixture file would be reported as
-    # pre-existing operator work — correct behavior (US1-S3), but noise for
-    # the "nothing happened" assertion this test makes below.
+    # Committed, not just written: since epic 130 US4 (FR-007) the detector's
+    # start snapshot is the working tree, so an uncommitted fixture file would
+    # be recorded as pre-existing content and excluded from the finding —
+    # correct behavior (US1-S3, as overridden), but noise for the "nothing
+    # happened" assertion this test makes below.
     subprocess.run(["git", "-C", str(repo), "add", "invasion.txt"], check=True)
     subprocess.run(
         ["git", "-C", str(repo), "commit", "--quiet", "-m", "operator file the agent must not touch"],

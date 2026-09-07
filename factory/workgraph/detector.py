@@ -1,18 +1,29 @@
 """US1 detector: an attempt that writes outside its worktree is caught and named.
 
 The detector captures the state of the *target repository* and the factory's own
-runtime root at attempt start, and compares again at teardown.  Any tracked path
-that changed in the target repo, or any evidence store / ledger that was removed
-or truncated under the runtime root, becomes a critical finding.  Node worktrees
-under the runtime root — own or sibling — are not watched (epic 130 US2): a
-sibling worktree is another node's workplace, and the factory removes sibling
-worktrees as ordinary housekeeping, which is not an escape an attempt should be
-charged for.
+runtime root at attempt start, and compares again at teardown.  A tracked path
+that changed in the target repo during the attempt, or an evidence store /
+ledger that was removed or truncated under the runtime root, becomes a critical
+finding.  Two kinds of target-repo change are attributed to no one (epic 130
+US4, FR-007): content already present in the working tree when the attempt
+began — the start snapshot is the working tree, the same kind the teardown
+comparison takes — and the paths an operator commit carried while the target's
+HEAD moved during the attempt.  Node worktrees under the runtime root — own or
+sibling — are not watched (epic 130 US2): a sibling worktree is another node's
+workplace, and the factory removes sibling worktrees as ordinary housekeeping,
+which is not an escape an attempt should be charged for.
 
 Key design points:
 
 - Read-only with respect to the target repository.  We never stash, checkout,
   clean or reset it (FR-002).
+- The start snapshot is the *working tree* state and the teardown snapshot is
+  the same kind, so a change present when the attempt begins is recorded as
+  seen and files nothing (FR-007).  The target's HEAD is recorded beside it, so
+  a commit that moved HEAD during the attempt is distinguishable from a write
+  the attempt made: commit-carried paths are compared against the tree that
+  HEAD names, and only a path that no longer matches it — something written on
+  top of the commit — stays charged.
 - The start-state snapshot is kept *outside* the runtime root, so deleting the
   runtime root does not destroy the thing we compare against (FR-013).
 - Under the runtime root, only *loss* is a finding: a path created during the
@@ -29,7 +40,9 @@ Key design points:
   with four occurrences rather than four rows with one each.  The attribution the
   suffix used to carry moves into the refs, which name the epic and node of the
   attempt that filed the observation (FR-025), and the evidence is bounded so one
-  pathological attempt cannot write a finding of unbounded size (FR-026).
+  pathological attempt cannot write a finding of unbounded size (FR-026).  The
+  refs also name the target repository the finding is about (epic 130 US4,
+  FR-008) — the value the start snapshot already captured.
 - Findings are filed by writing a JSON batch to a path the operator can inspect,
   and by upserting into ``doctor.db`` when that store is still reachable.
 """
@@ -197,10 +210,16 @@ def _tracked_state(repo: Path) -> TrackedState:
     """Read-only snapshot of the repository's working tree (FR-002).
 
     Tracks every committed path, plus any unstaged or staged changes, plus
-    untracked files that are not ignored.  The detector reports what happened
-    during the attempt regardless of whether the change was to a tracked path or
-    a new file the operator (or agent) created; it never tries to attribute
-    intent.
+    untracked files that are not ignored — each recorded as the content it has
+    right now, so two snapshots of this kind taken at different moments differ
+    exactly when the working tree did.  This is the snapshot the teardown
+    comparison takes, and since epic 130 US4 (FR-007) the start snapshot too:
+    content present when the attempt begins is recorded as seen, not queued up
+    to be filed at teardown.  What the detector still reports is a path whose
+    *content changed during the attempt* — it never attributes a change to a
+    particular actor, and it still cannot tell the operator's mid-attempt edit
+    from the agent's; what it stops doing is charging the attempt with work
+    that was already in the tree before it ran.
     """
     try:
         # ``HEAD^{tree}`` is read-only and names the tree we want; we avoid
@@ -225,16 +244,19 @@ def _tracked_state(repo: Path) -> TrackedState:
         if len(parts) >= 3:
             blobs[path] = parts[2]
 
-    # Overlay any unstaged or staged changes so tracked files modified in the
-    # working tree during the attempt show up as changed.  ``diff-index`` is
-    # read-only and compares the index against ``HEAD``; ``git diff HEAD`` covers
-    # both unstaged and staged changes in one read.
+    # Overlay any unstaged or staged changes so the snapshot holds the content
+    # the working tree actually has.  ``diff-index`` is read-only and compares
+    # the index against ``HEAD``; it covers both unstaged and staged changes in
+    # one read.
     try:
         working = _git(repo, "diff-index", "--raw", "--no-abbrev", "-z", "HEAD")
     except DetectorError:
         working = ""
     # Raw diff -z lines look like:
     #   :<oldmode> <newmode> <oldsha> <newsha> <status>\t<path>\0[<newpath>\0]
+    # For an unstaged modification ``<newsha>`` is all zeroes — git has not
+    # hashed the working-tree content into the object store — so the content is
+    # read with ``hash-object`` (read-only; it writes nothing into the repo).
     if working:
         pieces = working.split("\0")
         index = 0
@@ -252,7 +274,7 @@ def _tracked_state(repo: Path) -> TrackedState:
                 if status.startswith("D"):
                     blobs.pop(path_piece, None)
                 else:
-                    blobs[path_piece] = new_sha
+                    blobs[path_piece] = _content_sha(repo, path_piece, new_sha)
                 # Rename pairs carry the new path in the next piece; skip it.
                 if status.startswith("R") and index + 2 < len(pieces):
                     index += 1
@@ -267,25 +289,51 @@ def _tracked_state(repo: Path) -> TrackedState:
     for path in untracked.split("\0"):
         if not path:
             continue
-        try:
-            blobs[path] = _git(repo, "hash-object", path).strip()
-        except DetectorError:
-            blobs[path] = ""
+        blobs[path] = _content_sha(repo, path, None)
 
     return TrackedState(repo=repo, blobs=blobs)
 
 
-def _committed_state(repo: Path) -> TrackedState:
-    """Read-only snapshot of the committed tracked tree (HEAD).
+def _content_sha(repo: Path, path: str, committed_sha: str | None) -> str:
+    """The sha of a path's working-tree content, without writing to the repo.
 
-    Used for the *start* snapshot so that any working-tree changes present when
-    the attempt begins — operator work or lingering agent output — show up as a
-    difference at teardown.  The teardown snapshot is the full working-tree
-    state (``_tracked_state``), so modifications during the attempt are caught
-    too, and the detector never attributes a change to a particular actor.
+    ``git hash-object`` hashes the file as it lies on disk and records nothing
+    in the object store (no ``-w``), so it is read-only with respect to the
+    repository (FR-002).  A read that fails — usually a type change (directory,
+    fifo) that ``hash-object`` refuses — yields ``""``: the module's standing
+    convention for content it cannot read (the untracked loop does the same),
+    so both ends of the comparison agree on what unknown means rather than one
+    end silently standing in committed content for working-tree content.
     """
     try:
+        return _git(repo, "hash-object", path).strip()
+    except DetectorError:
+        return ""
+
+
+def _head_sha(repo: Path) -> str | None:
+    """The repository's current HEAD, or None when there is nothing to read."""
+    try:
         head = _git(repo, "rev-parse", "HEAD").strip()
+        return head or None
+    except DetectorError:
+        return None
+
+
+def _committed_state(repo: Path, head: str | None = None) -> TrackedState:
+    """Read-only snapshot of the tree a given commit names.
+
+    ``head`` selects the commit; default is the repository's current HEAD.  Pass
+    the start snapshot's recorded HEAD to ask what the tree looked like when the
+    attempt began.  This is the baseline the HEAD-moved-during-the-attempt
+    comparison (FR-007) reads: a commit the operator made during the attempt
+    carries its own paths, and those paths are charged only if the working tree
+    no longer matches the content the commit left — which is what "the attempt
+    wrote on top of the commit" means.
+    """
+    try:
+        if head is None:
+            head = _git(repo, "rev-parse", "HEAD").strip()
         if not head:
             return TrackedState(repo=repo, blobs={})
         out = _git(repo, "ls-tree", "-r", "-z", head)
@@ -361,6 +409,7 @@ def _write_snapshot(
     tracked: TrackedState | None,
     runtime: RuntimeRootState,
     context: AttemptContext,
+    target_head: str | None = None,
 ) -> Path:
     """Persist the start snapshot outside the runtime root and return its path."""
     directory = _snapshot_dir(factory_root)
@@ -372,6 +421,7 @@ def _write_snapshot(
         "attempt": context.attempt,
         "target_repo": str(tracked.repo) if tracked else None,
         "tracked": tracked.blobs if tracked else {},
+        "target_head": target_head,
         "runtime_root": str(runtime.root) if runtime.root else None,
         "runtime": runtime.entries,
         "captured_at": _now_iso(),
@@ -410,6 +460,7 @@ def _build_finding(
     tracked_changes: set[str],
     runtime_changes: dict[str, dict[str, Any]],
     seen_at: str,
+    target_repo: Path | None = None,
 ) -> Finding | None:
     """One critical finding naming the changed paths, or None if nothing changed.
 
@@ -418,6 +469,11 @@ def _build_finding(
     stated as a count in the notes and in the summary, so an attempt that changed
     four thousand paths still produces a row an operator can read.  The refs are
     bounded with them, because they are the same evidence in another column.
+
+    ``target_repo`` names the repository the finding is about (epic 130 US4,
+    FR-008) — the value the start snapshot already captured.  Several target
+    repositories share one worker host, and a finding that says only "tracked
+    path X changed" leaves the reader to guess which one.
     """
     if not tracked_changes and not runtime_changes:
         return None
@@ -431,8 +487,11 @@ def _build_finding(
     )
 
     # The attempt that filed this observation.  With the key reduced to the class
-    # (FR-024), these refs are the only thing naming who tripped it (FR-025).
+    # (FR-024), these refs are the only thing naming who tripped it (FR-025) —
+    # and the repository it tripped in (FR-008).
     refs: list[str] = [f"epic:{context.epic_id}", f"node:{context.node_id}"]
+    if target_repo is not None:
+        refs.append(f"repo:{target_repo}")
     notes_parts: list[str] = []
 
     if tracked_changes:
@@ -461,11 +520,12 @@ def _build_finding(
     evidence = ", ".join(listed) if listed else "none"
     if dropped:
         evidence = f"{evidence}, and {dropped} more"
+    about = f" in {target_repo}" if target_repo is not None else ""
     summary = (
         f"attempt {context.attempt} of {context.epic_id}/{context.node_id} "
         f"modified {len(tracked_changes)} tracked path(s) and "
-        f"removed or truncated {len(runtime_changes)} runtime-root path(s): "
-        f"{evidence}"
+        f"removed or truncated {len(runtime_changes)} runtime-root path(s) "
+        f"{about}: {evidence}"
     )
 
     return Finding(
@@ -493,14 +553,19 @@ def capture_start(
 ) -> Path:
     """Capture and persist the start snapshot.
 
-    Called once at attempt start, before the agent runs.  The target-repo
-    snapshot is the *committed* tree only, so any working-tree changes present
-    at the beginning of the attempt are reported alongside changes made during
-    the attempt.
+    Called once at attempt start, before the agent runs.  Since epic 130 US4
+    (FR-007) the target-repo snapshot is the *working tree* — the same kind the
+    teardown comparison takes — so content already present when the attempt
+    begins (the operator's uncommitted work, the documented recovery the
+    operator performs) is recorded as seen and files nothing at teardown.  The
+    target's HEAD is recorded beside it, so a commit that moved HEAD during the
+    attempt is distinguishable from a write the attempt made.
     """
-    tracked = _committed_state(target_repo)
+    tracked = _tracked_state(target_repo)
     runtime = _runtime_root_state(factory_root, Path(context.worktree_path))
-    return _write_snapshot(factory_root, tracked, runtime, context)
+    return _write_snapshot(
+        factory_root, tracked, runtime, context, target_head=_head_sha(target_repo)
+    )
 
 
 def compare_and_report(
@@ -560,10 +625,44 @@ def compare_and_report(
     end_tracked = _tracked_state(target_repo)
     end_runtime = _runtime_root_state(factory_root, Path(context.worktree_path))
 
-    tracked_changes = start_tracked.changed(end_tracked)
+    # Every path the working tree moved, whichever actor moved it (FR-007):
+    # before this story's exclusion, anything already in the tree at start was
+    # in this set too, because the start snapshot was the committed tree and so
+    # saw the operator's uncommitted work as a difference waiting to be filed.
+    changed = start_tracked.changed(end_tracked)
+
+    # FR-007, class 1: the start snapshot is the working tree, so a path whose
+    # content did not move after it was recorded was already there when the
+    # attempt began. Nothing to subtract — `changed` simply never names it.
+    # A path the attempt changed *on top of* such content has moved, and is in
+    # `changed` still: the exclusion is a baseline, not a blind spot.
+
+    # FR-007, class 2: HEAD moved during the attempt because the operator
+    # committed. The paths the commit carried changed in the working tree too,
+    # but they changed *to what the commit left* — the working tree still
+    # matches the tree the new HEAD names. Charge only a path whose content now
+    # differs from that tree: that is a write (or deletion) on top of the
+    # commit, and it stays filed.
+    start_head = start.get("target_head")
+    end_head = _head_sha(target_repo)
+    if start_head and end_head and end_head != start_head:
+        head_tree = _committed_state(target_repo, head=end_head)
+        changed = {
+            path
+            for path in changed
+            if end_tracked.blobs.get(path) != head_tree.blobs.get(path)
+        }
+
+    tracked_changes = changed
     runtime_changes = end_runtime.changes_since(start_runtime)
 
-    finding = _build_finding(context, tracked_changes, runtime_changes, seen_at)
+    finding = _build_finding(
+        context,
+        tracked_changes,
+        runtime_changes,
+        seen_at,
+        target_repo=Path(start["target_repo"]) if start.get("target_repo") else target_repo,
+    )
     if finding is not None:
         _persist_finding(snapshot_dir, finding, factory_root)
     # Clean up the per-attempt snapshot now that comparison is done.
