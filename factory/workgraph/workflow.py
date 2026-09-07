@@ -3826,16 +3826,28 @@ class EpicWorkflow:
 
         # The recovery cycle failed again — exhaustion.
         record.landing = replace(record.landing, check_evidence=failing_checks)
+        # 079-US1 (FR-002): this cycle is already charged, so the question is
+        # whether the *next* can be. When it cannot, the grant below is
+        # unreachable and the page says so rather than offering a button whose
+        # only effect is the kill under it.
+        retry_grants_work = (
+            record.landing.recovery_cycles < config.max_recovery_cycles
+        )
         resolution = await self._escalate_landing(
             graph,
             request,
             record,
-            # 079-US1 (FR-002): this cycle is already charged, so the question
-            # is whether the *next* can be. When it cannot, the grant below is
-            # unreachable and the page says so rather than offering a button
-            # whose only effect is the kill under it.
-            retry_grants_work=(
-                record.landing.recovery_cycles < config.max_recovery_cycles
+            retry_grants_work=retry_grants_work,
+            # 127-US4 (FR-011): the same reading of the budget names the dial —
+            # when no cycle can be granted, `max_recovery_cycles` is the bound
+            # that ended this node, and the page says so beside the offer it
+            # explains.
+            exhausted_bound=_bound_sentence(
+                _landing_exhausted_bound(
+                    retry_grants_work=retry_grants_work,
+                    recovery_cycles=record.landing.recovery_cycles,
+                    max_recovery_cycles=config.max_recovery_cycles,
+                )
             ),
         )
         if resolution == EscalationChoice.RETRY.value:
@@ -3868,6 +3880,11 @@ class EpicWorkflow:
         press *spends* one — the hand-granted cycle `_run_recovery` has always
         described and never gave this path. Without the second half the first is
         a narrower lie: a button that still fell through to the kill.
+
+        127-US4 (FR-011): the same predicate names the bound. `cycles_left`
+        False means the recovery budget is spent, and the page then carries the
+        exhausted dial beside the offer it explains; a cycle remaining (or a
+        landing so early it has none recorded) names none.
         """
         record = self._nodes[resolved.node.id]
         landing = record.landing
@@ -3876,7 +3893,19 @@ class EpicWorkflow:
             and landing.recovery_cycles < request.landing_config.max_recovery_cycles
         )
         resolution = await self._escalate_landing(
-            graph, request, record, retry_grants_work=cycles_left
+            graph,
+            request,
+            record,
+            retry_grants_work=cycles_left,
+            exhausted_bound=_bound_sentence(
+                _landing_exhausted_bound(
+                    retry_grants_work=cycles_left,
+                    recovery_cycles=(
+                        landing.recovery_cycles if landing is not None else 0
+                    ),
+                    max_recovery_cycles=request.landing_config.max_recovery_cycles,
+                )
+            ),
         )
         if resolution == EscalationChoice.RETRY.value:
             # Exactly one more cycle, granted by hand — the same grant the
@@ -4195,6 +4224,7 @@ class EpicWorkflow:
         *,
         retry_grants_work: bool,
         note: str | None = None,
+        exhausted_bound: str | None = None,
     ) -> str:
         """Page a human with the rendered queue history and wait out the hour.
 
@@ -4219,6 +4249,15 @@ class EpicWorkflow:
         `_page_the_operator` too. A stop applies the fail-safe an undelivered
         page does — nobody answered, so the node ends KILLED with its branch
         preserved — and records no press.
+
+        127-US4 (FR-011): `exhausted_bound` is the landing's sentence naming
+        which dial ended the node, passed through untouched — a parameter for
+        the same reason `retry_grants_work` is one (only the caller holds the
+        budget the answer is read from) and rendered by the same
+        `_bound_sentence` the verification escalation hands its bound through.
+        `None` for a page with no exhausted dial behind it — a cycle still
+        grantable, or the futile re-enqueue, which is not an exhaustion — and
+        the message then names none.
         """
         history_summary = render_landing_history(record.landing)
         if note:
@@ -4232,6 +4271,7 @@ class EpicWorkflow:
                 choices=offered_choices(retry_grants_work=retry_grants_work),
                 timeout_s=request.config.escalation_timeout_s,
                 check_evidence=record.landing.check_evidence,
+                exhausted_bound=exhausted_bound,
             ),
         )
         if outcome is None or not outcome.delivered:
@@ -4369,6 +4409,41 @@ def _bound_sentence(bound: "ExhaustedBound | None") -> str | None:
     through — an escalation the ladder did not exhaust names no bound.
     """
     return None if bound is None else bound.describe()
+
+
+def _landing_exhausted_bound(
+    *, retry_grants_work: bool, recovery_cycles: int, max_recovery_cycles: int
+) -> ExhaustedBound | None:
+    """The landing's own exhausted bound, or `None` when no dial was reached.
+
+    The landing escalation's answer to 095's, computed where the exhaustion is
+    decided rather than inside `_escalate_landing` — only the caller holds the
+    history and the budget, which is why `retry_grants_work` is a parameter
+    there too. The dial is `max_recovery_cycles` (`LandingConfig`, not
+    `VerificationConfig`): `exhausted_bound` the function reads a verification
+    config, can only ever name one of four verification dials, and opens by
+    asking `next_action`, which answers `ESCALATE` for nothing that has passed
+    verification — so calling it on this path returns `None` and a page naming
+    no bound, the exact wrong shape this must not ship.
+
+    `None` rides the same rule the verification side does, in the opposite
+    direction: the bound names a dial *spent*, and a caller still holding a
+    cycle — or paging for a reason that is not an exhaustion at all, as the
+    futile re-enqueue does — has not reached the dial and must not report it.
+    The caller's own `retry_grants_work` predicate is that fact already, so the
+    two answers come from one reading of the budget and cannot disagree.
+    """
+    if retry_grants_work:
+        return None
+    return ExhaustedBound(
+        dial="max_recovery_cycles",
+        value=max_recovery_cycles,
+        note=(
+            "the landing's recovery allowance is spent: the recovery cycle ran "
+            "and the queue rejected it again. Another cycle buys another "
+            "rejection of the same tree — grant one only to see it fail again"
+        ),
+    )
 
 
 def _now() -> str:
