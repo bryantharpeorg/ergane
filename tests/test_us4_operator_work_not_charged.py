@@ -32,6 +32,7 @@ import pytest
 from factory.doctor.models import Severity
 from factory.workgraph.detector import capture_start, compare_and_report
 from factory.workgraph.models import AttemptContext
+from tests.target_repo import git
 
 EPIC = "130-the-boundary-detector-charges-an-attempt-only-for-what-it-wrote"
 NODE = "us4"
@@ -199,13 +200,8 @@ def test_operator_commit_is_silent_but_attempt_write_on_top_files(
         # attempt.
         (repo / "operator_notes.md").write_text("committed mid-attempt\n", encoding="utf-8")
         readme.write_text(readme_original + "\n# operator commit\n", encoding="utf-8")
-        import subprocess
-
-        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo), "commit", "--quiet", "-m", "operator commit"],
-            check=True,
-        )
+        git(repo, "add", "-A")
+        git(repo, "commit", "--quiet", "-m", "operator commit")
         # The attempt writes on top of that commit.
         target.write_text(target_original + "\n# agent edit on top\n", encoding="utf-8")
 
@@ -310,12 +306,7 @@ def test_detector_leaves_the_operators_tree_byte_identical(
 
     operator_file = repo / "operator_work.txt"
     operator_file.write_text("operator uncommitted work\n", encoding="utf-8")
-    head_before = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    head_before = git(repo, "rev-parse", "HEAD").strip()
     original_bytes = operator_file.read_bytes()
 
     def escape() -> None:
@@ -333,26 +324,8 @@ def test_detector_leaves_the_operators_tree_byte_identical(
     )
     # Nothing stashed, checked out, cleaned or reset: HEAD is where it was, the
     # stash is empty, and the operator's file is still untracked, not swept.
-    head_after = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    assert head_after == head_before
-    stash = subprocess.run(
-        ["git", "-C", str(repo), "stash", "list"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert stash == ""
-    porcelain = subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "operator_work.txt" in porcelain, (
+    assert git(repo, "rev-parse", "HEAD").strip() == head_before
+    assert git(repo, "stash", "list") == ""
+    assert "operator_work.txt" in git(repo, "status", "--porcelain"), (
         "the operator's untracked file must still be there, untracked"
     )
