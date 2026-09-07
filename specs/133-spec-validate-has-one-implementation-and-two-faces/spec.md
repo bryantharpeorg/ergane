@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - feedback/pr-8-spec-validate-has-no-library-form-and-its-composition-is-the-policy
 # DRAFTED 2026-09-03 by the operator session, against ergane-buildout at 238b494.

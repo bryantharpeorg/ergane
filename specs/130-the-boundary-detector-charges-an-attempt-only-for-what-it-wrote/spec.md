@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - hardening/the-worktree-boundary-detector-charges-a-node-with-its-siblings-worktree
   - cli/spec-derive-json-rewrites-the-committed-artifact

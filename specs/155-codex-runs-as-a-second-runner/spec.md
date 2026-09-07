@@ -1,6 +1,6 @@
 ---
-state: draft
-depends_on:
+state: ready
+depends_on_landed:
   - 154-an-agent-names-its-cli-and-its-route-separately
 # DRAFTED 2026-09-06 by an operator session from docs/codex-adapter-plan.md
 # (§6 Spec B), against ergane-buildout at 8e8b3a1, with the 154 seam spec as

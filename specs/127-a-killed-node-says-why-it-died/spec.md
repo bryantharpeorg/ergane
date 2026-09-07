@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - interpreter/the-ref-clearing-report-overwrites-the-terminal-reason-that-explains-why-a-node-died
   - verify/a-landing-recovery-escalation-names-no-exhausted-bound
