@@ -614,20 +614,23 @@ def test_a_node_missing_from_the_query_document_is_reported(
     assert "us-nine" in run.stderr
 
 
-def test_not_found_refuses_in_the_status_verb_shape(
+def test_not_found_with_store_rows_degrades_even_when_a_node_is_named(
     seeded_store: Path,
     factory_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """US3 stops at the present execution (trap 16): `NOT_FOUND` refuses,
-    in the shape `_query_status` refuses in — one line, no traceback."""
+    """127-US5 replaced US3's unconditional `NOT_FOUND` refusal (FR-010):
+    with store rows, the same status now degrades to the store half — here
+    with a node id named, the aged-out ending named absent in its place."""
     patch_client(monkeypatch, _FakeWhyClient(workflows={}))
 
     run = invoke("build", "why", EPIC_ID, DEAD_NODE)
 
-    assert run.code != 0
-    assert "no epic" in run.stderr
-    assert f"epic-{EPIC_ID}" in run.stderr
+    assert run.code == 0, run.stderr
+    out = run.stdout
+    assert "E   assert 1 == 2" in out, "the store half survives the aged-out"
+    assert "ending: unavailable" in out
+    assert "aged out" in out
     assert "Traceback" not in run.stderr
 
 

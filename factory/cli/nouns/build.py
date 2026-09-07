@@ -1509,10 +1509,11 @@ def why_command(args: argparse.Namespace) -> int:
     The store half is read the way `attempts_command` reads it, with no Temporal
     client — the transcript path is composed, never opened, because the walk is
     the work being removed (127 plan trap 11). The query half is read the way
-    `_query_status` reads it, and on `NOT_FOUND` this verb refuses in exactly
-    the shape that verb refuses in: the epic is not there for this verb either,
-    and the two-way "no such epic vs. the execution aged out" discrimination is
-    127-US5's, not this story's (127 plan trap 16).
+    `_query_status` reads it, but its `NOT_FOUND` is *not* refused on the
+    status code alone (127-US5, FR-010): both "no such epic" and "the execution
+    aged out" arrive as that one status, and the store rows are the only fact
+    that separates them — no rows refuse, rows degrade to the store half of
+    the chain with the ending named absent.
     """
     path = _verification_store_path()
     try:
@@ -1535,26 +1536,65 @@ def why_command(args: argparse.Namespace) -> int:
     finally:
         conn.close()
 
-    document = _query_why_document(args.epic_id)
+    document: Mapping[str, Any] | None = None
+    ending_note: str | None = None
+    try:
+        document = _query_why_document(args.epic_id)
+    except _ExecutionAgedOut:
+        # NOT_FOUND on the query — the same status a never-started epic
+        # produces, so the store rows read above are the only fact that
+        # separates the two absences (127-US5, FR-010).
+        if not history:
+            raise OperatorError(
+                f"no epic '{args.epic_id}' is running here and the "
+                f"verification store at {path} holds no rows for it "
+                f"({looked_for(args.epic_id)})"
+            ) from None
+        # Rows outlived their execution: the store half above is the answer,
+        # the ending is named absent rather than the whole reading refused
+        # (US5-S2).
+        ending_note = (
+            "the execution has aged out of the server; the ending "
+            "(terminal reason, queue outcomes) died with it"
+        )
 
-    print(render_why(args.epic_id, args.node_id, history, document, path))
+    print(
+        render_why(
+            args.epic_id,
+            args.node_id,
+            history,
+            document,
+            path,
+            ending_note=ending_note,
+        )
+    )
     return EXIT_OK
 
 
 def _query_why_document(epic_id: str) -> Mapping[str, Any] | None:
-    """The `epic_status` answer, or None when nothing is running under the id.
+    """The `epic_status` answer, or None when the query is refused.
 
-    NOT_FOUND is refused in the shape `_query_status` refuses in — one
-    `OperatorError` line naming what was looked for, no traceback. A query the
-    workflow will not answer is a degraded reading, not a failed command: the
-    store half of the chain is still real, and the ending is reported as
-    unavailable rather than as absent.
+    A query the workflow will not answer is a degraded reading, not a failed
+    command: the store half of the chain is still real, and the ending is
+    reported as unavailable rather than as absent. `NOT_FOUND` is not decided
+    here — it reaches this verb indistinguishable from "no such epic", and
+    the caller holds the store rows that separate them (127-US5, FR-010), so
+    it surfaces as `_ExecutionAgedOut` for `why_command` to branch on.
     """
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_query_why(epic_id))
     finally:
         loop.close()
+
+
+class _ExecutionAgedOut(Exception):
+    """`epic_status` answered NOT_FOUND while the store held rows (127-US5).
+
+    Raised past the dial because only `why_command` holds the rows already
+    read — the discriminator is the store, not the status code, so the dial
+    cannot decide alone (FR-010).
+    """
 
 
 async def _query_why(epic_id: str) -> Mapping[str, Any] | None:
@@ -1569,10 +1609,7 @@ async def _query_why(epic_id: str) -> Mapping[str, Any] | None:
         return None
     except TRANSPORT_FAILED as error:
         if error.status is RPCStatusCode.NOT_FOUND:
-            raise OperatorError(
-                f"no epic '{epic_id}' is running here "
-                f"({looked_for(epic_id)})"
-            ) from error
+            raise _ExecutionAgedOut from error
         raise OperatorError(
             f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
         ) from error
@@ -1658,6 +1695,8 @@ def render_why(
     history: Sequence[VerificationResult],
     document: Mapping[str, Any] | None,
     store_path: Path,
+    *,
+    ending_note: str | None = None,
 ) -> str:
     """The human view of the chain: per node, latest attempt first.
 
@@ -1732,6 +1771,10 @@ def render_why(
             lines.append(f"  transcript: {transcript}")
         if node_status is not None:
             lines += _why_ending_for_node(node_status)
+        elif ending_note is not None:
+            # 127-US5: the execution aged out — the rows above outlived it,
+            # so the answer is real and only the ending is named absent.
+            lines.append(f"  ending: unavailable — {ending_note}")
         elif document is None:
             # The query was refused (the epic is there but would not answer):
             # the store half above is real, and its absence is said rather
