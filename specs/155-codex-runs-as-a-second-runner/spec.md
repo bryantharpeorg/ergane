@@ -2,7 +2,6 @@
 state: draft
 depends_on:
   - 154-an-agent-names-its-cli-and-its-route-separately
----
 # DRAFTED 2026-09-06 by an operator session from docs/codex-adapter-plan.md
 # (§6 Spec B), against ergane-buildout at 8e8b3a1, with the 154 seam spec as
 # its premise. Anchors re-read from the working tree on 2026-09-06.
@@ -44,6 +43,11 @@ depends_on:
 # shape: Codex, pi.dev and OpenCode are all file-based-credential shaped, which
 # spec 070 already designed for; Copilot's GitHub-token shape is the outlier.
 
+---
+
+# Feature Specification: codex runs as a second runner
+
+
 ## User Stories *(mandatory)*
 
 ### User Story 1 - A Codex node runs on the gateway, driving an ollama-cloud alias (Priority: P1)
@@ -69,14 +73,14 @@ the gateway and read the landed diff and the ledger row.
    generated `config.toml` point at the attempt's virtual key — the same
    per-attempt key the Claude route mints.
 2. **Given** that attempt, **When** it spends, **Then** the spend is read from
-   the proxy on the attempt's virtual key (`agent_activities.py:200-227`
+   the proxy on the attempt's virtual key (`factory/activities/agent_activities.py:200-227`
    region), exactly as a Claude gateway attempt — token accounting is NOT a
    reason to add `--json`.
 3. **Given** the per-node `CODEX_HOME`, **When** the adapter seeds it, **Then**
    it writes a `config.toml` declaring the gateway as a custom provider
    (`model_provider`, `[model_providers.ergane-gateway]` with `base_url`,
    `env_key`, `wire_api`) parameterised by the attempt's proxy URL and virtual
-   key — the analogue of `_seed_node_home` (`adapter.py:896`), not a copy.
+   key — the analogue of `_seed_node_home` (`factory/workgraph/adapter.py:896`), not a copy.
 4. **Given** a Codex gateway attempt on an `ollama-cloud/*` alias backed by a
    reasoning model, **When** the response carries chain-of-thought in cleartext
    (P1 measured this), **Then** the adapter does NOT misclassify the run on the
@@ -101,7 +105,7 @@ text, its stream, and its exit code; then run it through the classifier.
 
 1. **Given** Codex invoked with no valid credential, **When** it refuses,
    **Then** the attempt is classified as a refusal (the Codex analogue of
-   `SUBSCRIPTION_REFUSAL_MARKER`, `adapter.py:193`) naming the auth failure —
+   `SUBSCRIPTION_REFUSAL_MARKER`, `factory/workgraph/adapter.py:193`) naming the auth failure —
    and the marker comes from the MEASURED text (trap 2), never an assumed one.
 2. **Given** the measured refusal string, **When** a committed test replays it
    through the refusal classifier, **Then** the attempt is NOT a silent
@@ -132,12 +136,12 @@ turn, and read the credential source the adapter recorded.
    **When** an attempt runs, **Then** no virtual key is minted and the node
    home is seeded from the discovered `auth.json` (whose location is MEASURED
    in P6, trap 3), the analogue of the three-path discovery at
-   `adapter.py:840`.
+   `factory/workgraph/adapter.py:840`.
 2. **Given** the seeded subscription credential, **When** the attempt records
    its `credential_source`, **Then** it names the file it came from, so a
    subscription run is distinguishable from a gateway run in the evidence.
 3. **Given** a subscription credential that rotates on use (the hazard
-   documented as unmeasured for Claude at `adapter.py:846-850`), **When** it is
+   documented as unmeasured for Claude at `factory/workgraph/adapter.py:840-852`), **When** it is
    inherited here, **Then** the spec names it as an inherited hazard rather
    than pretending it is measured for Codex.
 
@@ -174,7 +178,7 @@ the standing launch path and confirm it starts and writes its worktree.
 ## Functional Requirements *(mandatory)*
 
 - **FR-001**: A `CodexAdapter` MUST be registered in `_ADAPTERS`
-  (`adapter.py:1512`) under the name `codex`, so a persona naming
+  (`factory/workgraph/adapter.py:1512`) under the name `codex`, so a persona naming
   `agent: codex` resolves (154's US2 refusal must NOT fire for it) and the
   dispatch path (154's US3) selects it.
 - **FR-002**: A Codex attempt on `route: gateway` MUST mint and use the
@@ -186,7 +190,7 @@ the standing launch path and confirm it starts and writes its worktree.
   the attempt's proxy URL and key. Provider routing belongs in that file, NOT
   in any `[[llm.persona]]`-style control-plane config (D-048).
 - **FR-004**: Codex MUST be launched with the prompt on stdin (`codex exec -`),
-  matching the existing prompt delivery (`adapter.py:1584`), and the two stdout
+  matching the existing prompt delivery (`factory/workgraph/adapter.py:1584`), and the two stdout
   refusal markers plus the `## OPERATOR QUESTION` scan MUST keep working on
   plain text — v1 does NOT pass `--json`.
 - **FR-005**: A Codex auth failure MUST be classified as a refusal from the
@@ -250,7 +254,7 @@ story editing `adapter.py` must not run beside another editing `adapter.py`.
 - **Trap 3 — `auth.json` location and rotation are UNMEASURED.** P6 was not
   run. Measure where `codex login` writes it and whether it rotates on use; the
   rotation hazard is documented as unmeasured even for Claude
-  (`adapter.py:846-850`) and is inherited, not solved.
+  (`factory/workgraph/adapter.py:840-852`) and is inherited, not solved.
 - **Trap 4 — there is no documented flag to supply a session id up front**
   (unlike Claude's `--session-id`). Capture what `thread.started` reports so
   attempt identity stays recordable; do not assume a `--session-id` analogue

@@ -2,7 +2,6 @@
 state: ready
 fixes:
   - interpreter/an-unknown-agent-silently-runs-claude-code
----
 # DRAFTED 2026-09-06 by an operator session from docs/codex-adapter-plan.md,
 # against ergane-buildout at 8e8b3a1. Every `file:line` in spec.md and plan.md
 # was read from the working tree with `sed -n`/`grep -n` on 2026-09-06 and
@@ -57,6 +56,11 @@ fixes:
 # The ladder change landed 2026-09-06 (8e8b3a1); this spec and that change are
 # in flight in the same window, and the derivation must leave every one of
 # those personas routing exactly as it does today.
+
+---
+
+# Feature Specification: an agent names its CLI and its route separately
+
 
 ## User Stories *(mandatory)*
 
@@ -195,7 +199,7 @@ per-CLI surface, and read which parts of attempt policy it did not write.
    **When** the hoist lands, **Then** orchestration still sees exactly one
    method — the hoist introduces a narrow inner seam the shared policy calls,
    and does NOT resurrect the five-method protocol that
-   specs/005-workgraph-interpreter/contracts/adapter.md:7-14 sketched and the
+   specs/005-workgraph-interpreter/contracts/adapter.md:9-16 sketched and the
    implementation deliberately collapsed. That rejection stands for the outer
    protocol; the spec must say so, so a reviewer does not read the inner seam
    as reversing a decision.

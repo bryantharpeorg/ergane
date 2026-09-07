@@ -31,30 +31,30 @@ Every ladder alias resolves to an OpenAI-shaped upstream
 The gateway route is the default; `wire_api = "responses"` is the assumption.
 
 **The Claude adapter as the reference shape** (read these, do not copy them):
-- `ClaudeCodeAdapter` (`adapter.py:993`), `run_attempt` at :1022, per-CLI
+- `ClaudeCodeAdapter` (`factory/workgraph/adapter.py:993`), `run_attempt` at :1022, per-CLI
   `argv()` at the launch section (:1195 region).
-- Provider env / gateway: `adapter.py:947` (ANTHROPIC_BASE_URL /
-  ANTHROPIC_AUTH_TOKEN), gateway-vs-subscription branch `adapter.py:1112`
+- Provider env / gateway: `factory/workgraph/adapter.py:947` (ANTHROPIC_BASE_URL /
+  ANTHROPIC_AUTH_TOKEN), gateway-vs-subscription branch `factory/workgraph/adapter.py:1112`
   (`context.agent != "subscription"`).
-- Home seeding `_seed_node_home` (`adapter.py:896`): writes the minimum the CLI
+- Home seeding `_seed_node_home` (`factory/workgraph/adapter.py:896`): writes the minimum the CLI
   needs non-interactively; for subscription personas copies the operator
-  credential (`adapter.py:905` region onward).
-- Credential discovery `discover_subscription_credential` (`adapter.py:840`)
+  credential (`factory/workgraph/adapter.py:905` region onward).
+- Credential discovery `discover_subscription_credential` (`factory/workgraph/adapter.py:840`)
   three-path order: `$XDG_CONFIG_HOME/claude/.credentials.json`,
   `~/.config/claude/.credentials.json`, `~/.claude/.credentials.json`
-  (`adapter.py:848-852`).
-- Prompt delivery `_feed_prompt` (`adapter.py:1584`): write prompt, close the
+  (`factory/workgraph/adapter.py:848-852`).
+- Prompt delivery `_feed_prompt` (`factory/workgraph/adapter.py:1584`): write prompt, close the
   pipe — the close ends the agent's read. Codex `codex exec -` fits this
   unchanged.
 - Refusal markers: `SUBSCRIPTION_REFUSAL_MARKER = "Not logged in · Please run
-  /login"` (`adapter.py:193`, measured 2026-08-19 on STDOUT with exit 1) and
-  `SESSION_ID_REFUSAL_MARKER = "is already in use."` (`adapter.py:202`) — two
+  /login"` (`factory/workgraph/adapter.py:193`, measured 2026-08-19 on STDOUT with exit 1) and
+  `SESSION_ID_REFUSAL_MARKER = "is already in use."` (`factory/workgraph/adapter.py:203`) — two
   literals on plain text. The `## OPERATOR QUESTION` scan
   (`factory/verify/question.py:85`) also reads plain text. This is why v1 does
   not pass `--json`.
 - Turn-happened probe: the `$HOME/.claude/projects/<munged>/<id>.jsonl` session
   transcript, used to separate `AGENT_ERROR` from `PRE_AGENT_FAILURE`
-  (`session_transcript`, `adapter.py:1518` region).
+  (`session_transcript`, `factory/workgraph/adapter.py:1518` region).
 
 ## What to build, in order
 
@@ -86,10 +86,10 @@ is P3 and conditional on the operator's sandbox-boundary decision.
    ```
    Put the virtual key in `CODEX_GATEWAY_KEY`. Every new env name goes on the
    standing boundary's env contract — under bwrap today that is the `--setenv`
-   allowlist (`adapter.py:596-618`), which `--clearenv` makes the whole of the
+   allowlist (`factory/workgraph/adapter.py:596-618`), which `--clearenv` makes the whole of the
    env; add only what is needed (trap 6).
 4. Spend (FR-002): read from the proxy on the attempt's virtual key
-   (`agent_activities.py:200-227`), same as Claude. Do NOT add `--json` for
+   (`factory/activities/agent_activities.py:200-227`), same as Claude. Do NOT add `--json` for
    accounting.
 5. Reasoning CoT (FR-007): the turn-happened probe and any output scan must
    not misread cleartext chain-of-thought (P1 finding, trap 1). Match markers
@@ -114,11 +114,11 @@ is P3 and conditional on the operator's sandbox-boundary decision.
 1. For `route: subscription` (FR-006): mint no virtual key; seed the node home
    from the discovered Codex credential (the measured `auth.json` path from
    US2's probe step — the Codex analogue of `discover_subscription_credential`,
-   `adapter.py:840`).
+   `factory/workgraph/adapter.py:840`).
 2. Record `credential_source` naming the file (US3-S2), so a subscription run
    is distinguishable from a gateway run in the evidence.
 3. Name the token-rotation hazard as inherited and unmeasured (US3-S3), the
-   same caveat `adapter.py:846-850` carries for Claude.
+   same caveat `factory/workgraph/adapter.py:840-852` carries for Claude.
 
 ### US4 — toolchain and image presence (CONDITIONAL)
 
