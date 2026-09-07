@@ -187,8 +187,9 @@ def _work_at_risk(repo: Path, branch: str) -> str:
        a special case — the `.factory/`, `__pycache__/` and `node_modules/`
        every built-in clone carries never reach this list, and git's own ignore
        rules (the *target repo's*, not a list this function carries) are what
-       keep them out of the untracked set in the first place. `EXCLUDED_DIR_NAMES`
-       is the standing reminder of what a hand-written list costs.
+       keep them out of the untracked set in the first place. Epic 130's
+       boundary detector carried `EXCLUDED_DIR_NAMES` once and removed it
+       (FR-006) — the standing reminder of what a hand-written list costs.
     2. **Commits on the local branch that the remote ref does not have.** The
        reset target is `origin/<branch>`, so work an operator *committed to be
        safe* is discarded just as surely as an uncommitted edit — and is

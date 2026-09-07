@@ -31,8 +31,9 @@ alone passes this repository's own worst case. The properties defended here:
   not refuse. `reset --hard` does not discard them, so counting them as work at
   risk would park every clone that has ever run a build (`.factory/`,
   `__pycache__/`, `node_modules/`). The rules are git's, read from the target
-  repo — never a hand-written list of directory names, which is the mistake
-  `EXCLUDED_DIR_NAMES` already made once against a Python-shaped repo.
+  repo — never a hand-written list of directory names, which is the mistake the
+  boundary detector's `EXCLUDED_DIR_NAMES` made once against a Python-shaped
+  repo, removed again by epic 130 US3 (FR-006).
 
 Real repositories under `tmp_path` with a local bare `origin`, driving
 `_refresh_to_default` directly, for the reason plan trap 6 gives: a scripted

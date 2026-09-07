@@ -20,8 +20,10 @@ Key design points:
   snapshotted is the three named evidence stores at the root and nothing else —
   the detector writes ``doctor.db`` itself, so a growth rule would report the
   detector.  Sibling worktrees left the snapshot entirely in epic 130 US2
-  (FR-004, FR-005); generated paths (``__pycache__``, ``.pytest_cache``,
-  ``*.pyc``) left it in 073 (FR-022).
+  (FR-004, FR-005).  What to leave out of a snapshot is never decided by a list
+  here: 073's ``EXCLUDED_DIR_NAMES``/``EXCLUDED_SUFFIXES`` pair was a
+  Python-shaped guess about someone else's repository, and epic 130 US3 (FR-006)
+  removed it rather than let it grow back for the next language (trap 8).
 - The finding key is the *class* — ``hardening/agent-worktree-boundary``, with no
   epic or node suffix (FR-024) — so a boundary that four attempts trip is one row
   with four occurrences rather than four rows with one each.  The attribution the
@@ -42,7 +44,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Mapping
 
 from factory.doctor.models import Finding, Severity, Status, parse_findings_batch
 from factory.doctor.store import connect, report
@@ -67,15 +69,6 @@ FINDING_KEY = f"{CATEGORY}/agent-worktree-boundary"
 #: the shape of an escape and read it in a terminal; the finding that motivated a
 #: bound named 3,860 paths, and evidence that large is not evidence anyone reads.
 MAX_EVIDENCE_PATHS = 20
-
-#: Directories whose contents are generated, never authored, and are therefore
-#: left out of the runtime-root snapshot entirely (FR-022).  A sibling node
-#: running its own suite creates and destroys these constantly, and attributing
-#: that to *this* attempt is how one finding came to list 3,859 paths.
-EXCLUDED_DIR_NAMES = frozenset({"__pycache__", ".pytest_cache"})
-
-#: File suffixes excluded for the same reason.
-EXCLUDED_SUFFIXES = (".pyc",)
 
 
 @dataclass(frozen=True)
@@ -339,26 +332,6 @@ def _runtime_root_state(root: Path | None, own_worktree: Path) -> RuntimeRootSta
         entries[name] = _describe_path(path)
 
     return RuntimeRootState(root=root, entries=entries)
-
-
-def _snapshot_paths(node_dir: Path) -> Iterator[Path]:
-    """Every path under ``node_dir`` worth comparing, generated output pruned.
-
-    ``os.walk`` rather than ``rglob`` because the pruning has to happen *before*
-    the descent (FR-022).  A concurrent sibling's test run fills its worktree
-    with ``__pycache__`` trees, and those are the bulk of what the old snapshot
-    held: excluding them at comparison time would still pay to stat, store and
-    re-read thousands of entries the detector has no opinion about.
-    """
-    for dirpath, dirnames, filenames in os.walk(node_dir):
-        dirnames[:] = [name for name in dirnames if name not in EXCLUDED_DIR_NAMES]
-        directory = Path(dirpath)
-        for name in dirnames:
-            yield directory / name
-        for name in filenames:
-            if name.endswith(EXCLUDED_SUFFIXES):
-                continue
-            yield directory / name
 
 
 def _describe_path(path: Path) -> dict[str, Any]:
