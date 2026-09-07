@@ -148,14 +148,21 @@ def test_sibling_worktree_gaining_files_files_no_finding(
     context: AttemptContext,
     attempt: Callable[[Callable[[], None]], object],
 ) -> None:
-    """FR-020/FR-022: creation is not removal, and generated output is not captured."""
+    """FR-020/FR-022: creation is not removal, and generated output is not captured.
+
+    Epic 130 US2 (FR-004/FR-005) stops the runtime-root walk from visiting
+    sibling worktrees at all — the factory removes sibling worktrees as
+    ordinary housekeeping (`_remove_worktree`), so a sibling's contents are not
+    this attempt's business either way.  The snapshot's non-empty entries are
+    now the three evidence stores recorded at the root, not the sibling's
+    files.
+    """
     capture_start(runtime_root, repo, context)
 
-    # FR-022: the snapshot excludes generated paths at capture, so it never grows
-    # to hold a sibling's test output in the first place.
+    # The three evidence stores are what the runtime-root snapshot still holds.
     entries = snapshot_entries(runtime_root)
-    assert entries, "the snapshot should still record the sibling's real content"
-    assert any("sibling.py" in path for path in entries)
+    assert entries, "the snapshot should still record the evidence stores at the root"
+    assert all(name in entries for name in STORE_NAMES)
     assert not [path for path in entries if "__pycache__" in path]
     assert not [path for path in entries if ".pytest_cache" in path]
     assert not [path for path in entries if path.endswith(".pyc")]
@@ -170,23 +177,35 @@ def test_sibling_worktree_gaining_files_files_no_finding(
     assert compare_and_report(runtime_root, repo, context) is None
 
 
-# --- T041 / US4-S2: the control — removal must survive ---
+# --- T041 / US4-S2: overridden by epic 130 US2 (FR-005) — removal is housekeeping ---
 
 
-def test_sibling_worktree_removed_files_a_finding_naming_it(
+def test_sibling_worktree_removed_files_no_finding(
     runtime_root: Path,
     sibling: Path,
     attempt: Callable[[Callable[[], None]], object],
 ) -> None:
-    """FR-020: this is the behaviour scenario 1's silence must not take with it."""
-    relative = str(sibling.relative_to(runtime_root))
+    """FR-020: a removed *sibling worktree* files no finding.
 
+    This test is the committed control of 073-US4 scenario 2
+    (`specs/073-the-ledger-triages-what-it-can-prove/spec.md`, "the behaviour
+    that must survive"), inverted deliberately by epic 130 US2 / FR-005 and
+    recorded as a `#` provenance line inside that spec's frontmatter fence:
+    073 did not know that the factory itself removes sibling worktrees as
+    ordinary housekeeping — `factory/workgraph/workflow.py` `_remove_worktree`
+    is called from four sites in the workflow — so the "control" fired on the
+    factory's own normal operation.  073's scenario text is fingerprint input
+    and is left byte-identical; this docstring and that comment are the record.
+
+    The truncation of an *evidence store* is a different test and still files:
+    `test_truncated_evidence_store_files_a_finding_naming_it` below.
+    """
     finding = attempt(lambda: shutil.rmtree(sibling))
 
-    assert finding is not None, "removing a sibling worktree must still be a finding"
-    assert finding.severity is Severity.CRITICAL
-    assert named(finding, relative)
-    assert named(finding, "sibling.py")
+    assert finding is None, (
+        "removing a sibling worktree is the factory's own housekeeping, "
+        "not this attempt's escape"
+    )
 
 
 # --- T042 / US4-S3: truncating an evidence store must survive ---

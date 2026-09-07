@@ -26,6 +26,21 @@ depends_on_landed: [043-runtime-root-integrity]
 #
 # Numbered 011 because F1 is an audit-triage finding and 011-014 are reserved
 # for those. 010 took the B-series; this takes the first F.
+#
+# --- OVERRIDE, 2026-09-07, by epic 130 US2 (FR-005) ---
+# specs/130-the-boundary-detector-charges-an-attempt-only-for-what-it-wrote
+# deliberately reverses the sibling-worktree half of US1 scenario 5 (a removed
+# or truncated "sibling's worktree" files a critical) and the part of FR-012
+# that requires coverage of "every node worktree other than the attempt's own".
+# The factory itself removes sibling worktrees as ordinary housekeeping —
+# `factory/workgraph/workflow.py` `_remove_worktree`, called from four workflow
+# sites — so a sibling worktree is not evidence of an escape, and watching one
+# charged ordinary housekeeping to whichever attempt happened to be tearing
+# down. The evidence-store and ledger halves of scenario 5 and of FR-012 stand
+# exactly as written. The inversion lives in the docstring of
+# `tests/test_us1_detector.py::test_agent_truncating_runtime_root_store_files_finding`;
+# the scenario text, story titles, work-graph block and FR bodies here are
+# fingerprint input and are untouched by the override.
 ---
 
 # Feature Specification: The worktree is where the agent starts, not where it is kept

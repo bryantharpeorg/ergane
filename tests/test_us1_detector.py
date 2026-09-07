@@ -435,7 +435,18 @@ async def test_agent_truncating_runtime_root_store_files_finding(
     sibling_worktree: Path,
     worker_host: Path,
 ) -> None:
-    """US1-S5 / FR-012: evidence store / ledger / sibling worktree truncation is caught."""
+    """US1-S5 / FR-012, as overridden by epic 130 US2 (FR-005): store truncation is caught.
+
+    This was 011-US1 scenario 5's committed control for the *sibling-worktree*
+    half as well as the store half.  Epic 130 deliberately reverses the
+    sibling-worktree half — the factory removes sibling worktrees as ordinary
+    housekeeping (`_remove_worktree`, called from four workflow sites), and
+    011's FR-012 (`specs/011-agent-sandbox/spec.md`) required the opposite.
+    The reversal is recorded as a `#` provenance line inside that spec's
+    frontmatter fence; the scenario text, story title, work-graph block and FR
+    bodies are fingerprint input and are left byte-identical.  The store half
+    survives unchanged: truncating an evidence store is still a critical.
+    """
     # Pre-populate the evidence stores.
     for name in ("doctor.db", "ledger.db", "verification.db"):
         (runtime_root / name).write_text("initial store content\n", encoding="utf-8")
@@ -446,6 +457,10 @@ async def test_agent_truncating_runtime_root_store_files_finding(
     await wait_until(lambda: stub_is_up(worktree, ATTEMPT), what="the agent to launch")
     (runtime_root / "doctor.db").write_text("", encoding="utf-8")
     (runtime_root / "ledger.db").write_text("", encoding="utf-8")
+    # The sibling worktree is truncated here too, exactly as 011-US1-S5 staged
+    # it — but after epic 130 US2 the detector does not watch sibling worktrees,
+    # so that truncation is charged to no one.  The finding below is the store
+    # half alone.
     (sibling_worktree / "sibling.txt").write_text("", encoding="utf-8")
     await running
 
@@ -457,9 +472,6 @@ async def test_agent_truncating_runtime_root_store_files_finding(
         summary = finding.summary
         assert "doctor.db" in summary
         assert "ledger.db" in summary
-        assert str(sibling_worktree.relative_to(runtime_root)) in summary or any(
-            str(sibling_worktree.relative_to(runtime_root)) in ref for ref in finding.refs
-        )
         # The detector is read-only: it must not undo the truncation of files
         # it merely reports on.  `doctor.db` is where the finding itself is stored,
         # so it legitimately changes at teardown; `ledger.db` and the sibling
