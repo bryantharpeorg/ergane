@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - interpreter/a-fresh-epic-on-a-stale-worker-wedges-in-workflow-task-retry
 ---
