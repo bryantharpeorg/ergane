@@ -92,10 +92,12 @@ def run_async(
 class RecordingClient:
     """Stands in for the Temporal client on the `build start` path.
 
-    It answers `build start`'s two reads — the open-epic listing and the
-    `epic_status` query of each — and records every `start_workflow` call, so
-    US1-S1's proof is an invocation count rather than an absence of output
-    (constitution VIII: provable from what the command actually did).
+    It answers the two reads the refusal makes — the open-epic listing and the
+    `epic_status` query of the first open epic — and records every
+    `start_workflow` call, so US1-S1's proof is an invocation count rather than
+    an absence of output (constitution VIII: provable from what the command
+    actually did). A client that lacks `list_workflows` exercises the read's
+    degradation: it is never a refusal.
     """
 
     def __init__(
@@ -113,16 +115,23 @@ class RecordingClient:
 
     def list_workflows(self, query: str) -> Any:
         if self.list_error is not None:
-            raise self.list_error
+            error = self.list_error
 
-        class _Iterator:
-            def __aiter__(self) -> _Iterator:
-                return self
+            async def _broken() -> Any:
+                raise error
+                yield  # pragma: no cover - unreachable; makes this a generator
 
-            async def __anext__(self) -> Any:
-                raise StopAsyncIteration
+            return _broken()
 
-        return _Iterator()
+        ids = list(self.open_epics)
+
+        async def _open() -> Any:
+            from types import SimpleNamespace
+
+            for workflow_id in ids:
+                yield SimpleNamespace(id=workflow_id)
+
+        return _open()
 
     async def start_workflow(self, *args: Any, **kwargs: Any) -> Any:
         self.started.append((args, kwargs))
@@ -313,14 +322,18 @@ def start_env(
 
     def setup(
         *,
-        worker_revision_seam: str | None | object = WORKER_REVISION_A,
+        worker_revision_seam: str | None | Exception | object = WORKER_REVISION_A,
     ) -> RecordingClient:
         if worker_revision_seam is _UNPATCHED:
             client = RecordingClient()
+        elif isinstance(worker_revision_seam, Exception):
+            # The listing itself raises: a server that will not answer the
+            # capacity-shaped read (the time-skipping server's own refusal).
+            client = RecordingClient(list_error=worker_revision_seam)
         elif worker_revision_seam is None or isinstance(worker_revision_seam, str):
             client = RecordingClient(open_epics=_open_epics(worker_revision_seam))  # type: ignore[arg-type]
         else:
-            client = RecordingClient(list_error=worker_revision_seam)  # type: ignore[arg-type]
+            client = RecordingClient()
         monkeypatch.setenv(PROXY_URL_ENV, TEST_PROXY_URL)
 
         async def _open_client() -> RecordingClient:
@@ -451,7 +464,15 @@ async def test_a_cli_that_cannot_resolve_its_own_revision_does_not_refuse(
     """
     client = start_env(worker_revision_seam=WORKER_REVISION_B)
     graph_path = _write_graph(tmp_path)
+    # Genuine blindness, both halves: the test seam cleared to its no-override
+    # answer (so `_cli_revision` falls through to the real read) and that read
+    # made to fail the way it does off a git checkout.
     monkeypatch.setattr(nouns_package, "_cli_revision_for_tests", lambda: None)
+    monkeypatch.setattr(
+        build_module.subprocess,
+        "check_output",
+        lambda *a: (_ for _ in ()).throw(OSError("not a git repository")),
+    )
 
     result = await run_async("build", "start", str(graph_path))
 
@@ -516,19 +537,21 @@ def test_the_seam_refusal_is_one_line_for_every_case_it_refuses(
 # --- the read degrades; the refusal must not fire on unreadable evidence -------
 
 
-async def test_no_open_epic_advertises_nothing_and_dispatch_proceeds(
+async def test_an_empty_floor_advertises_nothing_and_dispatch_proceeds(
     run_async: Callable[..., Awaitable[Run]],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     start_env: Callable[..., RecordingClient],
 ) -> None:
-    """An empty floor is not skew: with no epic to read, dispatch proceeds.
+    """An empty floor is not skew: with no open epic to read, dispatch proceeds.
 
     `build start` reads the worker's advertisement from an epic that is already
-    open (FR-002's source). A fresh floor advertises nothing, and absence of
-    evidence is not evidence of skew — the same direction US1-S4 gives the
-    CLI's own blindness, and the only one that never locks an operator out of
-    their factory.
+    open (FR-002's source, read where an answer can exist). A fresh floor has
+    none, and absence of evidence is not evidence of skew — the same direction
+    US1-S4 gives the CLI's own blindness, and the only one that never locks an
+    operator out of their factory. This is the first `build start` of every
+    floor, so a refusal here would have refused the day before the first epic
+    ever ran.
     """
     client = start_env(worker_revision_seam=_UNPATCHED)
     graph_path = _write_graph(tmp_path)
@@ -539,7 +562,7 @@ async def test_no_open_epic_advertises_nothing_and_dispatch_proceeds(
     assert len(client.started) == 1
 
 
-async def test_a_listing_the_server_will_not_answer_cannot_refuse(
+async def test_a_server_that_will_not_answer_the_listing_cannot_refuse(
     run_async: Callable[..., Awaitable[Run]],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -547,10 +570,13 @@ async def test_a_listing_the_server_will_not_answer_cannot_refuse(
 ) -> None:
     """An unanswered read degrades to proceed: dispatch is never blocked by it.
 
-    The production query shape is exactly what the time-skipping test server
-    refuses (`UNIMPLEMENTED`, probed 2026-09-07), so the read must treat every
-    failure of the listing as "no advertisement available" — the degradation
-    `engine_skew_findings` already models — rather than a skew or a crash.
+    The listing is the production query shape exactly — and the time-skipping
+    test server refuses it outright (`UNIMPLEMENTED`, probed 2026-09-07), so a
+    read that hardened into a refusal would fail every test-server floor. The
+    failure is a reading this command could not take, not a worker known to be
+    skewed — the degradation `engine_skew_findings` already models, and the
+    shape every Temporal read on this module carries (the guard sweep's own
+    table).
     """
     client = start_env(worker_revision_seam=RPCError(
         "Worker Versioning not yet supported in test server", 12, b""
@@ -572,11 +598,14 @@ async def test_a_refused_epic_status_query_cannot_refuse_the_start(
     """An epic that will not answer degrades the reading, not the dispatch.
 
     The same posture `_query_status` takes (the 053 contract): a refused query
-    is a degraded reading, never a failed command.
+    is a degraded reading, never a failed command. An open epic whose history
+    predates a field the answer now declares refuses exactly this way, and a
+    previous *closed* run rejects a query with `WorkflowQueryRejectedError` —
+    neither may become a refusal of a dispatch that has not happened.
     """
-    client = start_env(
-        worker_revision_seam=_UNPATCHED,
-    )
+    client = start_env(worker_revision_seam=_UNPATCHED)
+    # The first open epic refuses the query the way a pre-053 history does;
+    # the listing itself answers, so the read reaches the query and degrades.
     client.open_epics = {
         WORKFLOW_ID: WorkflowQueryFailedError("provenance field is not present")
     }

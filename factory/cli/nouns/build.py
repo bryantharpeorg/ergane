@@ -195,6 +195,12 @@ KILL_SIGNAL = "kill_epic"
 #: the seam below rather than re-deriving it (046 plan, trap 7).
 EPIC_ID_PREFIX = "epic-"
 
+#: 156 US1: the command that clears a worker running code the tree has moved
+#: past, on this host (systemd user units, `ergane worker install`). Named once:
+#: the refusal at `_start_epic` and every message it composes must spell the
+#: same remedy, so an operator never diagnoses a skew they could have restarted.
+RESTART_REMEDY = "systemctl --user restart ergane-worker"
+
 
 def workflow_id(epic_id: str) -> str:
     """The one id convention: predictable from the spec directory's name.
@@ -961,6 +967,29 @@ async def _start_epic(
         # (`factory/mergequeue/models.py:390-400`).
         landing_config = LandingConfig()
 
+    # 156 US1 (FR-001): the refusal stands between preflight and dispatch. A
+    # worker running code the tree has moved past wedges the epic's first
+    # workflow task in retry, so the epic is not started — the CLI says which
+    # code each side runs and which command clears it, and exits non-zero
+    # before `start_workflow` is reached.
+    #
+    # An advertisement of `None` refuses: an unknown revision cannot be
+    # compared, and the conservative direction is the same refusal an unequal
+    # one earns (US1-S3). An *unreadable* advertisement refuses nothing: no
+    # open epic, an unanswered read — absence of evidence is not skew, and a
+    # refusal there would lock an operator out of their own factory on the day
+    # they most need it (US1-S4's direction, applied to the read itself).
+    cli_revision = _cli_revision()
+    advertisement = await _worker_advertisement(client)
+    refusal = (
+        skew_refusal(advertisement, cli_revision)
+        if advertisement is not _UNREADABLE
+        else None
+    )
+    if refusal is not None:
+        print(f"ergane: {refusal}", file=sys.stderr)
+        return EXIT_USER
+
     epic_workflow_id = workflow_id(graph.epic_id)
     try:
         await client.start_workflow(
@@ -1020,6 +1049,75 @@ def _cli_revision() -> str | None:
         return None
 
 
+#: What `_worker_advertisement` returns when no advertisement can be read: no
+#: open epic, an unanswered listing, a refused query. Deliberately distinct from
+#: `None`, which is an *advertisement* — a worker that answered "I have no
+#: revision" (pre-053, or not a git checkout) and is refused for it (US1-S3).
+#: Unreadable is not unknown; the two `None`s must never meet, or every first
+#: `build start` on an empty floor would refuse and lock the operator out.
+_UNREADABLE = object()
+
+#: The type of `_worker_advertisement`'s answer, spelled out once.
+Advertisement = str | None | object
+
+
+async def _worker_advertisement(client: Client) -> Advertisement:
+    """What the serving worker advertises about its revision, or `_UNREADABLE`.
+
+    156 US1 (FR-002): the comparison must use the values the existing seam
+    already produces — `EpicStatus.worker_revision`, the field 053's interceptor
+    stamps into every `EpicInput` and `epic_status` answers with. The epic this
+    command would start does not exist yet, so the advertisement is read off an
+    epic that is already open: the interceptor re-stamps every activation, so
+    any open epic's answer advertises the revision of the worker serving it
+    *now* — exactly the comparison the refusal needs, whatever the epic is.
+
+    The listing is the roadmap capacity read's own production shape
+    (`factory/activities/roadmap_activities.py`, `ExecutionStatus = "Running"`),
+    narrowed server-side the way `_running_epics` narrows it; the first open
+    epic's query is taken rather than the whole floor's, because one
+    advertisement is the fact and every open epic answers the same worker.
+
+    Everything the read can hit — an empty floor, a server that will not answer
+    the listing, an epic that refuses the query, one that closed between the
+    two, a client that cannot be asked at all — degrades to `_UNREADABLE`, the
+    same posture `engine_skew_findings` takes: the check activates only on
+    evidence.
+    """
+    try:
+        listed: str | None = None
+        async for execution in client.list_workflows('ExecutionStatus = "Running"'):
+            execution_id = str(execution.id)
+            # Epic-shaped without re-reading the prefix constant: `workflow_id`
+            # is idempotent, so it returns an already-prefixed id unchanged and
+            # prefixes anything else (046's seam; the AST pin holds).
+            if workflow_id(execution_id) == execution_id:
+                listed = execution_id
+                break
+    except TRANSPORT_FAILED:
+        return _UNREADABLE
+    except AttributeError:
+        # A client without the listing seam cannot be asked. That is a shape
+        # this module never dials for, not a skew: refuse nothing on it.
+        return _UNREADABLE
+    if listed is None:
+        return _UNREADABLE
+    try:
+        document = await client.get_workflow_handle(listed).query("epic_status")
+    except TRANSPORT_FAILED:
+        return _UNREADABLE
+    except QUERY_REFUSED:
+        return _UNREADABLE
+    except AttributeError:
+        return _UNREADABLE
+    if not isinstance(document, Mapping):
+        return _UNREADABLE
+    revision = document.get("worker_revision")
+    if revision is None or isinstance(revision, str):
+        return revision
+    return _UNREADABLE
+
+
 def _skew_notice(worker_revision: str | None, cli_revision: str | None) -> str | None:
     """A human-readable notice when the worker and CLI disagree, or None."""
     if worker_revision is None:
@@ -1034,6 +1132,41 @@ def _skew_notice(worker_revision: str | None, cli_revision: str | None) -> str |
     return (
         f"worker is running different code: worker revision {worker_revision}, "
         f"CLI revision {cli_revision}"
+    )
+
+
+def skew_refusal(worker_revision: str | None, cli_revision: str | None) -> str | None:
+    """The dispatch refusal for a skewed worker, or None when dispatch may proceed.
+
+    156 US1 (FR-001): at dispatch the notice is not enough — an epic started
+    under skew wedges its first workflow task in retry. Same `None` arms as
+    `_skew_notice`, verbatim: worker-`None` is an unknown revision, which cannot
+    be compared and refuses (the conservative direction, US1-S3); CLI-`None` is
+    this CLI's own blindness, which must not lock the operator out (US1-S4);
+    equality is the aligned case, which composes nothing (FR-006).
+
+    The difference is the third fact: a refusal the operator reads at a terminal
+    carries its remedy in the same line — worker revision, tree revision,
+    restart command (US1-S5). One line, so scrollback is a record (US3).
+
+    A separate function, not a flag on the notice: the notice renders in status
+    output for every epic past and present, and the refusal must fire only where
+    an epic would be created (plan trap 1).
+    """
+    if worker_revision is None:
+        return (
+            f"worker revision is unknown (CLI revision {cli_revision or 'unknown'}); "
+            f"refusing to start an epic the worker would wedge. "
+            f"Remedy: {RESTART_REMEDY}."
+        )
+    if cli_revision is None:
+        return None
+    if worker_revision == cli_revision:
+        return None
+    return (
+        f"worker is running different code: worker revision {worker_revision}, "
+        f"CLI revision {cli_revision} — refusing to start an epic the worker "
+        f"would wedge in workflow-task retry. Remedy: {RESTART_REMEDY}."
     )
 
 
