@@ -1,0 +1,52 @@
+{
+  "spec_dir": "<REPO_ROOT>/tests/fixtures/spec_validate/clean-specs/001-clean-trio",
+  "checked": [
+    "frontmatter",
+    "workgraph_derivation",
+    "persona_registry",
+    "scenario_coverage",
+    "prompt_assembly",
+    "slice_coverage",
+    "slice_contention",
+    "sentinels",
+    "symbol_anchors",
+    "evidence"
+  ],
+  "skipped": [
+    {
+      "layer": "anchor_resolution",
+      "reason": "none of the cited paths exist under target repository <REPO_ROOT>/tests/fixtures/spec_validate/target-repo"
+    }
+  ],
+  "findings": [],
+  "information": [
+    {
+      "layer": "sentinel",
+      "message": "tasks.md:5: - [ ] T001 [US1-S1] Leave this trio byte-stable. ERGANE-TODO: the golden \u2014 not ready to derive"
+    }
+  ],
+  "judge_evidence": {
+    "diff": {
+      "abridged_above_bytes": 65536,
+      "refused_above_bytes": 65536
+    },
+    "criteria": [
+      {
+        "story": "US1",
+        "title": "The fixture is stable",
+        "scenarios": [
+          "US1-S1"
+        ]
+      }
+    ],
+    "gates": {
+      "manifest": "<REPO_ROOT>/tests/fixtures/spec_validate/target-repo/ergane.yaml",
+      "declared": [
+        "smoke"
+      ],
+      "reason": ""
+    },
+    "warnings": [],
+    "all_provable": true
+  }
+}

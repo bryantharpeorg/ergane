@@ -1,0 +1,5 @@
+<REPO_ROOT>/tests/fixtures/spec_validate/defective-specs/002-defective-trio/spec.md: what the judge will be shown for each node
+  the diff — the node's own worktree diff and nothing else: not the tree it changed, not a terminal, not the running system. Abridged for the judge above 65536 bytes, and refused unjudged above 65536 (`diff_refusal_bytes` in <REPO_ROOT>/tests/fixtures/spec_validate/target-repo/ergane.yaml).
+  the criteria — each node is shown its own story's scenarios, snapshotted at dispatch:
+    US1 (The page is drawn) — US1-S1
+  the gates — the results of the gates <REPO_ROOT>/tests/fixtures/spec_validate/target-repo/ergane.yaml declares: smoke

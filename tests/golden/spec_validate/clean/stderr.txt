@@ -1,0 +1,3 @@
+ergane spec validate — layer 'anchor_resolution' not checked: none of the cited paths exist under target repository <REPO_ROOT>/tests/fixtures/spec_validate/target-repo
+ergane spec validate — noted, not a refusal: [sentinel] tasks.md:5: - [ ] T001 [US1-S1] Leave this trio byte-stable. ERGANE-TODO: the golden — not ready to derive
+1 ERGANE-TODO sentinel remain; ergane spec derive will refuse until they are resolved.

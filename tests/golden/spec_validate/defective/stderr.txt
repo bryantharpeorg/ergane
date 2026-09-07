@@ -1,0 +1,5 @@
+ergane spec validate — advisory: [scenario_coverage] acceptance scenarios with no task reference: US1-S1
+ergane spec validate — refusal: [evidence] US1-S1: "the page renders correctly in the browser." asserts an outcome only a running system shows ("in the browser", "renders correctly"); the judge is shown the diff and the results of the gates this repository declares (smoke), and the clause names neither — no declared gate, and nothing the diff itself carries. To make it provable: name a declared gate (smoke) whose result will reach the judge with the diff, or restate the clause as something the diff carries — e.g. "… — proven by a committed test"
+ergane spec validate — layer 'anchor_resolution' not checked: none of the cited paths exist under target repository <REPO_ROOT>/tests/fixtures/spec_validate/target-repo
+ergane spec validate — noted, not a refusal: [sentinel] tasks.md:5: - [ ] T001 draw the page. ERGANE-TODO: this phase names no acceptance — not ready to derive
+1 ERGANE-TODO sentinel remain; ergane spec derive will refuse until they are resolved.
