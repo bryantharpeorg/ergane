@@ -161,10 +161,15 @@ def test_the_cli_module_calls_the_anchor_checkers_defined_in_factory_spec() -> N
             f"factory.spec ({mine!r} vs {theirs!r}) — a re-declaration cannot "
             "pass as a move (US2-S4)"
         )
-        assert mine.__module__ == "factory.spec", (
-            f"{name} reports __module__ {mine.__module__!r}, expected "
-            "'factory.spec'"
-        )
+        # The checkers are functions, so `__module__` names the module that
+        # defined them. The four grammars are `re.Pattern` objects, whose
+        # `__module__` is `re` wherever they were compiled — for those, the
+        # identity check above is the one that bites.
+        if callable(mine) and inspect.isfunction(mine):
+            assert mine.__module__.split(".")[:2] == ["factory", "spec"], (
+                f"{name} reports __module__ {mine.__module__!r}, expected a "
+                "module under factory.spec"
+            )
 
 
 def test_factory_spec_defines_the_moved_names() -> None:
@@ -222,10 +227,11 @@ def test_the_moved_checkers_keep_their_parameters_and_append_into_caller_owned_l
     assert findings == []
     assert skipped == []
 
-    # `_check_anchor_resolution` with no target repo: skip, not refusal.
+    # `_check_anchor_resolution` with no target repo: the citation `x.py:2` in
+    # the body cannot be read anywhere, so the layer skips rather than refusing.
     findings, skipped, checked = [], [], []
     anchors._check_anchor_resolution(
-        Path("no-such-spec-dir"), "---\nstate: draft\n---\n# Spec\n", "no-such-target-repo", findings, skipped, checked
+        Path("no-such-spec-dir"), "---\nstate: draft\n---\n# Spec\n\n`x.py:2`\n", "no-such-target-repo", findings, skipped, checked
     )
     assert checked == []
     assert findings == []
@@ -260,7 +266,7 @@ def _check_signatures_unchanged() -> None:
     for name, params in expected.items():
         function = getattr(anchors, name)
         parameters = list(inspect.signature(function).parameters)
-        assert parameters == params, (
+        assert parameters == list(params), (
             f"{name}: parameters moved from {params} to {parameters} — "
             "the relocation must not redesign a signature (plan trap 7)"
         )
