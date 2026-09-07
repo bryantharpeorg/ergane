@@ -117,9 +117,11 @@ async def test_fake_backend_receives_parity_invocation(
 
     context = _context(worktree_path=str(worktree), target_repo=str(repo))
 
-    # What today's direct launch builds.
+    # What today's direct launch builds. 154-US4: the per-CLI surface is
+    # private (`_argv`), so the expectation is read from the same seam the
+    # shared policy calls — the parity claim is unchanged.
     direct = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH))
-    expected_argv = direct.argv(context)
+    expected_argv = direct._argv(context)
 
     fake = FakeAgentBackend()
     adapter = ClaudeCodeAdapter(executable=str(STUB_AGENT_PATH), backend=fake)

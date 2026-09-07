@@ -79,9 +79,11 @@ from factory.workgraph.adapter import (
     AdapterError,
     AgentAdapter,
     ClaudeCodeAdapter,
+    CredentialStage,
     HostAgentBackend,
     SharedAttemptPolicy,
     _ADAPTERS,
+    _feed_prompt,
     adapter_for,
     attempt_env,
     home_path,
@@ -1890,9 +1892,9 @@ async def test_the_archived_transcript_survives_the_home_directorys_removal(
 class SecondCliAdapter:
     """A second adapter implementing ONLY the per-CLI concerns (US4-S1).
 
-    It holds no monitor, no reap, no pid file, no ferry, no deadline — none of
-    the policy. Its class body is the proof: the assertions below read this
-    source and fail if any shared policy appears in it.
+    Every agent-agnostic piece of attempt policy is absent here — its class
+    body is the proof: the assertions below read this source and fail if any
+    of it appears in the class.
     """
 
     name = "second-cli"
@@ -1918,26 +1920,30 @@ class SecondCliAdapter:
 
     # -- the per-CLI surface, and nothing else --------------------------------
 
-    def argv(self, context: AttemptContext) -> list[str]:
+    def _argv(self, context: AttemptContext) -> list[str]:
         return [self.executable, "--session-id", context.session_id]
 
-    def provider_env(self, env: dict[str, str], context: AttemptContext) -> dict[str, str]:
+    def _provider_env(self, env: dict[str, str], context: AttemptContext) -> dict[str, str]:
         """The CLI's own variables on top of the attempt's, nothing inherited."""
         env["SECOND_CLI_CONTROL"] = "on"
         return env
 
-    async def deliver_prompt(self, process: Any, prompt: str) -> None:
+    async def _deliver_prompt(self, process: Any, prompt: str) -> None:
         await _feed_prompt(process, prompt)
 
-    def credential(self, context: AttemptContext) -> CredentialStage:
+    def _credential(self, context: AttemptContext) -> CredentialStage:
         """Gateway persona: no subscription credential to discover."""
         return CredentialStage(gateway=True)
 
-    def turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
+    def _seed_home(self, home: Path, credential_path: Path | None) -> None:
+        """The second CLI starts from a bare home: nothing to seed."""
+        return None
+
+    def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
         """The structural tell, as this CLI writes it."""
         return _second_cli_wrote_transcript(context, worktree, env)
 
-    def refusal_markers(self) -> tuple[str, ...]:
+    def _refusal_markers(self) -> tuple[str, ...]:
         return ("SECOND-CLI REFUSED",)
 
 
@@ -1989,9 +1995,9 @@ def test_the_outer_protocol_is_one_method_still() -> None:
         for name, value in vars(AgentAdapter).items()
         if not name.startswith("_") and callable(value)
     }
-    assert protocol_methods == set(), (
-        f"the AgentAdapter protocol grew {sorted(protocol_methods)}; the outer "
-        "protocol stays one concrete method (US4-S2)"
+    assert protocol_methods == {"run_attempt"}, (
+        f"the AgentAdapter protocol declares {sorted(protocol_methods)}; the outer "
+        "protocol stays one method (US4-S2)"
     )
     # The hoist's seam is the per-CLI surface, carried by a separate private
     # collaboration — never by the protocol orchestration resolves through.
@@ -2051,7 +2057,9 @@ async def test_the_second_adapter_ends_its_process_tree_at_the_deadline(
     """US4-S1, the deadline half: the second adapter inherits the wall-clock
     deadline and the process-group termination — TERM to the group, KILL past
     the grace — without writing any of it."""
-    write_control(stub_home_dir, ignore_sigterm=True)
+    write_control(
+        stub_home_dir, sleep_s=300.0, ignore_sigterm=True, spawn_child=True, child_sleep_s=300.0
+    )
 
     result = await second_adapter.run_attempt(
         attempt(agent="second-cli", timeout_s=DEADLINE_S),
@@ -2059,9 +2067,17 @@ async def test_the_second_adapter_ends_its_process_tree_at_the_deadline(
     )
 
     assert result.termination == Termination.TIMEOUT
-    signals = last_invocation(worktree).signals
-    assert "TERM" in signals, f"the group was never TERM'd: {signals}"
-    assert "KILL" in signals, "a run that ignored TERM must be ended by KILL"
+    invocation = last_invocation(worktree)
+    assert any(entry.startswith("TERM") for entry in invocation.signals), (
+        f"the group was never TERM'd: {invocation.signals}"
+    )
+    # A run that ignored TERM and still ended can only have ended on KILL —
+    # observed on the grandchild, which only the group signal can reach.
+    grandchild = invocation.child_pid
+    assert grandchild is not None
+    await wait_until(
+        lambda: not pid_alive(grandchild), what="the agent's child to be killed too"
+    )
 
 
 async def test_the_second_adapter_reaps_a_previous_runs_orphan(
@@ -2122,6 +2138,10 @@ async def test_the_second_adapter_ferries_an_operator_question(
         )
     )
     await _wait_for_question(factory_root)
+    # The monitor ships the question up on a beat, not at file-appearance, so
+    # the answer waits until the ship is observed — answering first would end
+    # the stub inside its 1s first beat and the ship would never run.
+    await wait_until(lambda: len(shipped) >= 1, what="the question to ship up")
     _write_answer(factory_root, FERRY_ANSWER)
     result = await run
 
@@ -2146,10 +2166,14 @@ def test_the_second_class_contains_none_of_the_shared_policy() -> None:
         "stdout_log_name",
         "monitor",
         "ferry",
-        "grace",
-        "timeout",
+        "wait_for",
+        "timeout_s",
         "transcript_dir",
         "preserve_previous_stdout",
+        "heartbeat",
+        "read_usage",
+        "send_ferry",
+        "read_ferry",
     ):
         assert spelled not in lowered, (
             f"the second adapter spells {spelled!r}; that is the shared policy, "
@@ -2168,10 +2192,11 @@ def test_the_per_cli_surface_is_all_the_shared_policy_takes() -> None:
     }
     assert surface == {
         "run_attempt",
-        "argv",
-        "provider_env",
-        "deliver_prompt",
-        "credential",
-        "turn_happened",
-        "refusal_markers",
+        "_argv",
+        "_provider_env",
+        "_deliver_prompt",
+        "_credential",
+        "_seed_home",
+        "_turn_happened",
+        "_refusal_markers",
     }, f"the per-CLI seam grew {sorted(surface - {'run_attempt'})} or shrank"
