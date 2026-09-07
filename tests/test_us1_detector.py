@@ -327,28 +327,47 @@ async def test_operator_work_is_reported_and_untouched(
     repo: Path,
     worker_host: Path,
 ) -> None:
-    """US1-S3/S4 / FR-002: intent is not attributed, and the detector is read-only."""
+    """US1-S3/S4 / FR-002, as overridden by epic 130 US4 (FR-007).
+
+    This is 011-US1 scenario 3's committed control
+    (`specs/011-agent-sandbox/spec.md:191`), and epic 130 deliberately reverses
+    its *reporting* half. Scenario 3 held that an operator edit in the target
+    repository during an attempt is still reported — "the detector reports what
+    happened, and does not try to attribute intent". Epic 130 US4 reverses
+    exactly that: a change the attempt did not make is not charged to it, and
+    working-tree content already present when the attempt begins is the first
+    class FR-007 names, so the operator's uncommitted file is recorded as seen
+    by the start snapshot and files nothing at teardown.
+
+    The *read-only* half of scenario 3 survives unchanged and is what this test
+    still proves (US4-S5): the operator's file is byte-identical after the
+    attempt, and nothing was stashed, checked out or cleaned. The reversal is
+    recorded as a `#` provenance line inside that spec's frontmatter fence; its
+    scenario text, story titles, work-graph block and FR bodies are fingerprint
+    input and are byte-identical in this diff.
+    """
     target_file = repo / TRACKED_FILE
     original = target_file.read_text(encoding="utf-8")
     operator_file = repo / "operator_work.txt"
     operator_file.write_text("operator uncommitted work\n", encoding="utf-8")
+    head_before = git(repo, "rev-parse", "HEAD").strip()
 
     write_control(home_path(factory_root, EPIC, NODE), stdout="done")
     await env.run(run_agent_attempt, context())
 
     conn = connect(factory_root / "doctor.db")
     try:
-        finding = get_finding(conn, FINDING_KEY)
-        assert finding is not None
-        assert finding.severity is Severity.CRITICAL
-        assert "operator_work.txt" in finding.summary or any(
-            "operator_work.txt" in ref for ref in finding.refs
+        assert get_finding(conn, FINDING_KEY) is None, (
+            "operator work present before the attempt began must not be filed "
+            "as this attempt's escape (epic 130 US4, FR-007)"
         )
-        # The detector must not have tidied the operator's work.
-        assert operator_file.read_text(encoding="utf-8") == "operator uncommitted work\n"
-        assert target_file.read_text(encoding="utf-8") == original
     finally:
         conn.close()
+    # The half of scenario 3 that survives: the detector only reads.
+    assert operator_file.read_text(encoding="utf-8") == "operator uncommitted work\n"
+    assert target_file.read_text(encoding="utf-8") == original
+    assert git(repo, "stash", "list") == ""
+    assert git(repo, "rev-parse", "HEAD").strip() == head_before
 
 
 # --- T004: the detector runs on all four termination paths ---
@@ -362,14 +381,31 @@ async def test_detector_runs_on_completed_agent_error_timeout_and_killed(
     repo: Path,
     worker_host: Path,
 ) -> None:
-    """US1-S1: the breach is likeliest on the bad paths, so detection must cover them."""
+    """US1-S1, as amended by epic 130 US4 (FR-007): all four paths still detect.
+
+    This is the second committed control of 011-US1 scenario 3
+    (`specs/011-agent-sandbox/spec.md:191`) that epic 130 US4 reverses in its
+    reporting half. It used to write its tracked change *before* each attempt —
+    which under FR-007 is exactly the excluded class: `capture_start` runs
+    inside `run_attempt` before the agent launches, so every iteration recorded
+    the change at start and, correctly, filed nothing. The closing assertions
+    were not weakened; each iteration's write moved to *during* the attempt,
+    after the agent has launched, the shape
+    `test_agent_modifying_tracked_file_in_target_repo_files_finding` already
+    established. The reversal is recorded as a `#` provenance line inside that
+    spec's frontmatter fence; its scenario text and FR bodies are byte-identical
+    in this diff.
+    """
     target_file = repo / TRACKED_FILE
     original = target_file.read_text(encoding="utf-8")
 
     terminations: dict[Termination, int] = {}
     for termination, exit_code, sleep_s in (
-        (Termination.COMPLETED, 0, 0.0),
-        (Termination.AGENT_ERROR, 1, 0.0),
+        # A little life left in the fast paths, so this test can make its change
+        # while the attempt is in flight — the same room the S1 test above grants
+        # itself with its stub sleep.
+        (Termination.COMPLETED, 0, 0.5),
+        (Termination.AGENT_ERROR, 1, 0.5),
         (Termination.TIMEOUT, 0, 300.0),
         (Termination.KILLED, 0, 300.0),
     ):
@@ -382,16 +418,26 @@ async def test_detector_runs_on_completed_agent_error_timeout_and_killed(
             sleep_s=sleep_s,
             stdout="working",
         )
-        # Make a fresh change each iteration.
-        target_file.write_text(
-            original + f"\n# changed for {termination.value}\n", encoding="utf-8"
-        )
+
+        async def run_and_write() -> AdapterResult:
+            # Launch, wait until the agent is up (so `capture_start` has run and
+            # the start snapshot has recorded the file as it stands), then make
+            # the fresh change *during* the attempt — after the start snapshot,
+            # before the teardown comparison.
+            running = asyncio.create_task(env.run(run_agent_attempt, ctx))
+            await wait_until(
+                lambda: stub_is_up(worktree, attempt), what="the agent to launch"
+            )
+            target_file.write_text(
+                original + f"\n# changed for {termination.value}\n", encoding="utf-8"
+            )
+            return await running
 
         if termination is Termination.TIMEOUT:
             monkeypatch = pytest.MonkeyPatch()
             monkeypatch.setattr(agent_activities, "HEARTBEAT_INTERVAL_S", 0.05)
             try:
-                result = await env.run(run_agent_attempt, ctx)
+                result = await run_and_write()
             finally:
                 monkeypatch.undo()
             assert result.termination == Termination.TIMEOUT
@@ -401,13 +447,16 @@ async def test_detector_runs_on_completed_agent_error_timeout_and_killed(
             running = asyncio.create_task(env.run(run_agent_attempt, ctx))
             try:
                 await wait_until(lambda: stub_is_up(worktree, attempt), what="the agent to launch")
+                target_file.write_text(
+                    original + f"\n# changed for {termination.value}\n", encoding="utf-8"
+                )
                 env.cancel()
                 with pytest.raises((CancelledError, asyncio.CancelledError)):
                     await running
             finally:
                 monkeypatch.undo()
         else:
-            await env.run(run_agent_attempt, ctx)
+            await run_and_write()
 
     conn = connect(factory_root / "doctor.db")
     try:
