@@ -2,6 +2,7 @@
 state: ready
 fixes:
   - interpreter/an-unknown-agent-silently-runs-claude-code
+---
 # DRAFTED 2026-09-06 by an operator session from docs/codex-adapter-plan.md,
 # against ergane-buildout at 8e8b3a1. Every `file:line` in spec.md and plan.md
 # was read from the working tree with `sed -n`/`grep -n` on 2026-09-06 and
