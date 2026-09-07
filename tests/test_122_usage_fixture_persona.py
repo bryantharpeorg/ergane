@@ -32,7 +32,12 @@ from typing import Any
 import pytest
 import yaml
 
-from factory.config import ERGANE_PERSONAS_PATH_ENV, SUBSCRIPTION_AGENT, load_personas
+from factory.config import (
+    ERGANE_PERSONAS_PATH_ENV,
+    ROUTE_SUBSCRIPTION,
+    SUBSCRIPTION_AGENT,
+    load_personas,
+)
 from tests import test_usage_activities as usage
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -104,8 +109,12 @@ def test_the_usage_tests_pass_with_a_subscription_implementer(tmp_path: Path) ->
     # The registry really is the shape that broke: subscription-routed, and a
     # model alias with no slash in it. Asserted before the run so a registry
     # that silently failed to mutate cannot pass as a demonstration.
+    # 154-US1 (FR-002): the legacy `agent: subscription` value is refactored
+    # into the pair ("claude-code", "subscription") at load — the route field
+    # is what carries "subscription-routed" now, and it is the pair, not the
+    # raw sentinel, that decides the key issuance under test here.
     implementer = load_personas(registry)["implementer"]
-    assert implementer.agent == SUBSCRIPTION_AGENT
+    assert implementer.route == ROUTE_SUBSCRIPTION
     assert implementer.needs_virtual_key is False
     assert "/" not in (implementer.model or "")
 

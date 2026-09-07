@@ -846,26 +846,22 @@ ROUTE_SUBSCRIPTION = "subscription"
 ROUTE_DETERMINISTIC = "deterministic"
 
 
-def route_of(agent: str) -> str:
-    """Which route a persona's `agent` value runs an attempt through.
+def route_of(route: str | None) -> str:
+    """The route an attempt's evidence row records, from the persona's own.
 
-    Pure, and stated against the sentinels `factory.config` declares rather than
-    against string literals repeated here (constitution IX): the registry owns
-    what an agent name means, and a second copy of that meaning is a fork
-    waiting to disagree.
+    Reads the `route` field (154-US1 FR-006, trap 3) rather than deriving one
+    from the agent name — the field is the one source of truth for how an
+    attempt authenticates, and a second derivation beside it is a fork that
+    will disagree with it.
 
-    An empty agent is an entry the registry could not resolve, and it reads as
-    `UNKNOWN_BUILDER` rather than as the gateway — guessing the common route for
-    an attempt nobody could route is exactly the plausible-wrong-answer this
-    column exists to end.
+    An empty or absent route is an entry the registry could not resolve, and it
+    reads as `UNKNOWN_BUILDER` rather than as the gateway — guessing the common
+    route for an attempt nobody could route is exactly the plausible-wrong-answer
+    this column exists to end.
     """
-    if not agent:
+    if not route:
         return UNKNOWN_BUILDER
-    if agent == SUBSCRIPTION_AGENT:
-        return ROUTE_SUBSCRIPTION
-    if agent == DETERMINISTIC_AGENT:
-        return ROUTE_DETERMINISTIC
-    return ROUTE_GATEWAY
+    return route
 
 
 @dataclass(frozen=True)

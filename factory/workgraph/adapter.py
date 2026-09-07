@@ -71,7 +71,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
-from factory.config import SUBSCRIPTION_AGENT
+from factory.config import ROUTE_SUBSCRIPTION, SUBSCRIPTION_AGENT, effective_route
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import FactoryConfigError, MANIFEST_NAME, load_factory_config, resolve_manifest_path
 from factory.verify.gates import BwrapGateExecutor, ordered_binds
@@ -1066,9 +1066,11 @@ class ClaudeCodeAdapter:
 
         # US3 FR-007/FR-008: subscription-routed personas need the operator's
         # credential in their per-node HOME, and a missing credential must be a
-        # named refusal before the sandbox forks.
+        # named refusal before the sandbox forks. 154-US1 (FR-006): the route
+        # is read from the route axis; a payload that predates the field is
+        # answered from the legacy `agent` sentinel by `effective_route`.
         credential_path: Path | None = None
-        if context.agent == SUBSCRIPTION_AGENT:
+        if effective_route(context.route, context.agent) == ROUTE_SUBSCRIPTION:
             credential_path = discover_subscription_credential()
             if credential_path is None:
                 operator_home = _operator_home()
@@ -1109,7 +1111,9 @@ class ClaudeCodeAdapter:
         # FR-007), so the agent has to know where it is. Built here rather than in
         # `attempt_env` because the archive path is the adapter's knowledge,
         # derived from the same identity the transcript directory is.
-        routes_through_gateway = context.agent != "subscription"
+        routes_through_gateway = (
+            effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION
+        )
         env = attempt_env(context, routes_through_gateway=routes_through_gateway)
         env[ATTEMPT_ARCHIVE_ENV] = str(archive)
 

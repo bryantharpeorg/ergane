@@ -203,12 +203,19 @@ def _assert_only_model_and_fallback_changed(
     import yaml
 
     written = config_module.load_personas(str(written_path))
+    written_raw = yaml.safe_load(written_path.read_text(encoding="utf-8"))
     example_raw = yaml.safe_load(config_module.shipped_registry_text())
     assert isinstance(example_raw, dict)
 
     assert set(written.keys()) == set(example_raw.keys())
     for name, persona in written.items():
         example_fields = example_raw[name]
+        # Compared raw-to-raw: 154-US1 (FR-002) refactors a legacy
+        # `agent: subscription` into the pair ("claude-code", "subscription")
+        # at load, so a loaded persona's `agent` no longer restates the file's
+        # raw spelling. What this helper proves is that the *write* preserved
+        # the fields it does not touch — a property of the file, not the load.
+        written_fields = written_raw[name]
         comparisons = (
             ("agent", "agent", lambda v: v),
             ("skills", "skills", lambda v: tuple(v) if isinstance(v, list) else v),
@@ -218,9 +225,11 @@ def _assert_only_model_and_fallback_changed(
             ("context_window", "context_window", lambda v: v),
         )
         for field, yaml_key, normalize in comparisons:
-            written_val = getattr(persona, field)
+            written_val = written_fields.get(yaml_key)
             raw_val = example_fields.get(yaml_key)
             example_val = normalize(raw_val) if raw_val is not None else None
+            if isinstance(written_val, list):
+                written_val = tuple(written_val)
             assert written_val == example_val, (
                 f"persona '{name}' field '{yaml_key}' changed: "
                 f"{written_val!r} != {example_val!r}"
@@ -622,7 +631,10 @@ def test_subscription_persona_is_confirmed_not_probed(
     personas = config_module.load_personas(str(personas_path))
     subscription = personas.get("opus-closer")
     assert subscription is not None
-    assert subscription.agent == "subscription"
+    # 154-US1 (FR-002): the manifest keeps the operator's legacy
+    # `agent: subscription` spelling; the load derives the pair, and the
+    # route field is what "subscription-routed" reads as now.
+    assert subscription.route == config_module.ROUTE_SUBSCRIPTION
     assert subscription.model == "claude-opus-5"
 
     # No gateway probe ran for the subscription model name.

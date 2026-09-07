@@ -318,6 +318,11 @@ class ResolvedPersona:
     model_alias: str
     models: list[str]
     agent: str = ""
+    #: 154-US1: how this persona's attempts authenticate, read from the
+    #: registry at snapshot time. Empty means a payload that predates the
+    #: field — `effective_route` answers those from the legacy `agent`
+    #: sentinel, so an old payload still reads as itself.
+    route: str = ""
 
 
 @dataclass
@@ -474,10 +479,15 @@ class AttemptContext:
     #: The US1 detector compares the target repo's tracked-file state at start
     #: and teardown; it is part of the context because it is fixed at dispatch.
     target_repo: str = ""
-    #: The persona's `agent` value resolved at dispatch, used by the adapter to
-    #: decide gateway routing (US2 FR-005). Empty means "use the default path"
-    #: for legacy payloads that predate this field.
+    #: The persona's `agent` value resolved at dispatch — which CLI runs
+    #: (154-US1). Empty means "use the default path" for legacy payloads that
+    #: predate this field.
     agent: str = ""
+    #: 154-US1: how the attempt authenticates, resolved from the persona's
+    #: `route` at dispatch. The adapter reads this field for gateway routing,
+    #: not the `agent` name; empty means a payload that predates the field,
+    #: which `effective_route` answers from the legacy `agent` sentinel.
+    route: str = ""
 
 
 @dataclass(frozen=True)

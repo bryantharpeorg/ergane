@@ -181,12 +181,35 @@ def derive_agent_and_route(agent: str) -> tuple[str, str]:
     """The (agent, route) pair a legacy `agent:` value means.
 
     Pure and total (FR-003): a function of the text passed in, defined for
-    every value the field accepts, no clock, no environment, no probe of
-    anything outside the registry. The frozen snapshot a running epic holds
-    (`workflow._read_registry`) makes this load-bearing — a worker restarted
-    mid-epic must re-read an unedited registry into an identical pair.
+    every string the field could carry — a value the table does not name is a
+    CLI the gateway route serves, which is what such a value reads as today.
+    No clock, no environment, no probe of anything outside the registry. The
+    frozen snapshot a running epic holds (`workflow._read_registry`) makes
+    this load-bearing — a worker restarted mid-epic must re-read an unedited
+    registry into an identical pair.
     """
-    return _AGENT_DERIVATION[agent]
+    if agent in _AGENT_DERIVATION:
+        return _AGENT_DERIVATION[agent]
+    return (agent, ROUTE_GATEWAY)
+
+
+def effective_route(route: str | None, agent: str | None) -> str:
+    """The route a dispatch payload carries — the field when it has one.
+
+    Payloads (`ResolvedPersona`, `AttemptContext`, `IssueKeyInput`) written
+    before 154-US1 carry no `route` and read an empty one; their legacy
+    `agent` sentinel is the only signal they hold, so it answers for them.
+    The field is the source of truth the moment it is present; this fallback
+    exists so an old payload reads as itself, not as a second derivation
+    standing beside the field (trap 3).
+    """
+    if route:
+        return route
+    if agent == SUBSCRIPTION_AGENT:
+        return ROUTE_SUBSCRIPTION
+    if agent == DETERMINISTIC_AGENT:
+        return ROUTE_NONE
+    return ROUTE_GATEWAY
 
 _REQUIRED_FIELDS = ("agent", "model", "write_scope", "needs_worktree")
 _OPTIONAL_FIELDS = ("fallback", "skills", "timeout", "context_window", "route")
@@ -233,10 +256,16 @@ class Persona:
     #: means undeclared; the adapter emits no variable (FR-010).
     context_window: int | None = None
     #: How attempts of this persona authenticate — the credential route, which
-    #: the CLI (`agent`) no longer names (154-US1). `None` until the loader
-    #: derives or reads it; a `Persona` constructed directly carries whatever
-    #: the caller supplied, and every predicate below reads this field.
+    #: the CLI (`agent`) no longer names (154-US1). `None` means "derive from
+    #: `agent`", which `__post_init__` does the moment the instance exists, so
+    #: a caller that constructs a `Persona` directly gets the same pair the
+    #: loader would have derived (FR-003: the derivation is total).
     route: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.route is None:
+            _, route = derive_agent_and_route(self.agent)
+            object.__setattr__(self, "route", route)
 
     @property
     def is_llm(self) -> bool:

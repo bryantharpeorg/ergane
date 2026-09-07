@@ -74,7 +74,11 @@ from temporalio.exceptions import ApplicationError, CancelledError
 from factory.activities.usage_activities import open_client
 from factory.activities.notify_activities import ferry_read_answer, ferry_send_question
 from factory.config import ConfigError, Persona, load_personas
-from factory.config import SUBSCRIPTION_AGENT
+from factory.config import (
+    ROUTE_SUBSCRIPTION,
+    SUBSCRIPTION_AGENT,
+    effective_route,
+)
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
@@ -595,7 +599,9 @@ def _classify_subscription_auth_failure(
     """
     if result.termination != Termination.AGENT_ERROR:
         return result
-    if context.agent != SUBSCRIPTION_AGENT:
+    # 154-US1 (FR-006): the route axis decides; a payload that predates the
+    # field is answered from the legacy `agent` sentinel.
+    if effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION:
         return result
     if not result.transcript_path:
         return result
