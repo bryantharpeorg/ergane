@@ -1,82 +1,98 @@
-# Attempt 1 — US1: The housekeeping report stops overwriting the cause
+# 130-US1 attempt report: a read-only-looking verb does not write
 
 ## What changed
 
-Six commits, tests first — T001–T004 committed observed-red, then T005/T006
-(the suite made able to reach the code it changes, also committed red on the
-missing field), then the implementation, then the evidence:
+Two commits, tests first:
 
-- `tests/test_127_us1_reason_survives_housekeeping.py` (new) — the four rows of
-  the spec's truth table, pinned over both overwrite paths: the real-git
-  refusal (T001, record half observed while the page is open), the
-  `_escalate_ref_conflict` control (T002, trap 1 — the path the findings file
-  does not name), the empty-report control (T003, trap 4), the never-promote
-  control through `_close_out` (T004), and the same control with the *real*
-  archive activity against a real bare origin.
-- `tests/test_interpreter.py` — the archive stub can return a non-empty,
-  per-node-scripted report (`script_archive_report`), and a test drives one
-  through the ladder-exhaustion kill (T005, trap 2). Before this the stub
-  answered `[]` unconditionally, so `if report:` had never been true under the
-  whole interpreter suite and neither overwrite site had ever executed there.
-- `tests/test_126_us2_kill_archives_remote.py` — the committed assertions that
-  read the branch name and pushed sha out of `terminal_reason` are repointed at
-  the new field (T006, trap 3: they were the defect written down and made
-  green), and the empty-report comment is extended, not rewritten — it was
-  true and stays true, and now names what both fields do in that case.
-- `factory/workgraph/models.py` — `NodeRecord.housekeeping_report`, documented
-  in the style of the sibling `attempt_note`: the docstring is the deliverable,
-  recording why it is not `terminal_reason` (T007).
-- `factory/workgraph/workflow.py` — `NodeStatus.housekeeping_report` beside its
-  `terminal_reason`, populated from the record in the `epic_status` answer
-  (T008); both overwrite sites — `_close_out` and
-  `_archive_and_clear_remote_branch` — write the report to the new field with
-  the `if report:` guard untouched, and the store of git's diagnosis at the
-  ref-conflict site is untouched (T009).
-- `docs/127-us1-kill-record-evidence.md` — T010: the terminal record from a
-  real kill on a scratch remote, pasted. Real clone, real bare origin, real
-  non-fast-forward refusal, the factory's own `ensure`/`push_branch`/
-  `_failure_detail`/`archive_and_clear_remote_branch` doing the work; git's
-  refusal visible in `terminal_reason` and the archive report beside it.
+- `tests/test_130_us1_derive_json_does_not_write.py` (new, T001–T005) — the
+  five boundary tests over `ergane spec derive`. T001 seeds a differing
+  artifact (`target_repo` naming another repo, the harm the ledger row
+  records) and asserts bytes **and mtime** survive a `--json` run with no
+  output path; observed red. T002 and T003 are the write controls (explicit
+  `-o`, and no `--json`). T004 asserts the printed document carries no
+  artifact path; observed red. T005 asserts `build ship --json` still reaches
+  its summary, written so it fails against a guard keyed on `--json` alone.
+- `factory/workgraph/cli.py` (T006) — the write at `derive_command` is now
+  gated on `args.output is not None or not as_json`: an explicit output path
+  is a request to persist, a call without `--json` writes exactly as today,
+  and a `--json` call with no path prints and persists nothing. The document
+  names the artifact only when one was written.
+- `factory/cli/nouns/build.py` (T006) — `ship_command` passes a copy of its
+  namespace to derive with `output` filled in, because ship requires the
+  artifact on disk at stage 3 and its own `--json` is a presentation flag.
+- `tests/test_ergane_spec.py` — 019-US2's committed control asserted the
+  `artifact` key; under FR-003 the key is absent with no output path, so the
+  assertion is inverted in place, with a comment naming 130-US1.
 
-## How the scenarios are covered
+## The red runs
 
-- **US1-S1 (T001)** — a node whose push git refused non-fast-forward, whose
-  remote branch was then archived and cleared: `terminal_reason` carries git's
-  diagnosis (asserted against the real rejection line git wrote), the report is
-  readable from `housekeeping_report` on the same record, and the final
-  `epic_status` answer carries both. The record half is additionally observed
-  mid-flight — the cause is on the record before any housekeeping ran, which is
-  the fact the overwrite used to destroy.
-- **US1-S2 (T003)** — a node ended with an empty housekeeping report:
-  `terminal_reason` is unchanged from today's value (git's refusal, intact) and
-  the new field is empty. Most nodes are this node; the guard that protects
-  them is untouched.
-- **US1-S3 (T004, T005)** — a node ended with a housekeeping report and no
-  terminal reason: `terminal_reason` stays `None` and the report is in the new
-  field — asserted through `_close_out` with a scripted report, through the
-  interpreter with the newly-scriptable stub, and with the real activity
-  against a real origin. A report is not a cause and is never promoted into
-  one.
-- **US1-S4 (T002)** — the kill path inside `_escalate_ref_conflict`, which
-  reaches `_archive_and_clear_remote_branch` and never `_close_out`: the same
-  separation holds, with a non-empty report, proving both overwrite sites were
-  repaired and not just the one the finding names.
+T001 and T004 against the tree as received:
 
-## Field name
+```
+$ uv run python -m pytest tests/test_130_us1_derive_json_does_not_write.py -q
+FAILED tests/test_130_us1_derive_json_does_not_write.py::test_derive_json_without_output_path_leaves_seeded_bytes_on_disk
+FAILED tests/test_130_us1_derive_json_does_not_write.py::test_derive_json_document_carries_no_artifact_path
+2 failed, 3 passed, 1 warning in 1.03s
+```
 
-`housekeeping_report`. The spec and tasks say only "the new field", so the name
-was chosen to match the sibling it was modelled on: `attempt_note`, which
-records what an attempt *was* beside the reason a node *ended*. The same name
-is carried on `NodeRecord`, `NodeStatus` and the query population, and used by
-US2's renderer work when it lands.
+T005 discriminates a naive guard. With the write keyed on `--json` alone
+(the shape trap 3 warns about), ship's stage-3 check raises and the suite
+catches it:
 
-## Diff budget
+```
+$ uv run python -m pytest tests/test_130_us1_derive_json_does_not_write.py -q
+FAILED tests/test_130_us1_derive_json_does_not_write.py::test_derive_json_with_output_path_writes_there
+FAILED tests/test_130_us1_derive_json_does_not_write.py::test_ship_with_json_still_resolves_the_artifact_and_reaches_its_summary
+2 failed, 3 passed, 1 warning in 0.27s
+```
 
-The story's diff is code + tests + one pasted-evidence document, all trimmed to
-what carries the answer; no gate tail is pasted. Well under the 64 KiB bound.
+## The sha256sum pairs (T007)
 
-## Gates
+The fixture is `tests/fixtures/workgraph/valid_epic` copied to a temp path
+with a sentinel-free plan.md and tasks.md added, its `workgraph.json` seeded
+with `target_repo: /srv/factory/targets/some-other-repo` — bytes no invocation
+from that directory would derive. Run with the real console script
+(`uv run --project <worktree> ergane spec derive spec --target-repo "$PWD"
+--json`) from the temp directory, so the derivation's own `target_repo` is the
+temp path and cannot equal the seed.
 
-`uv run pytest -q` (the one declared gate): 5700 passed, 58 skipped, green
-after the tests, green again on the final state. The red states were committed
-at `fd0e4ce` and `b05c4b2` before the implementation landed at `c0d9e1f`.
+**Before T006 — the sums differ, which is the defect** (the seeded bytes were
+rewritten from `edc445…` to `94d39e…`):
+
+```
+$ cd /tmp/e130-before
+$ printf '{"epic_id": "valid_epic", ... "target_repo": "/srv/factory/targets/some-other-repo", ...}\n' > spec/workgraph.json
+$ sha256sum spec/workgraph.json
+edc4453493627a7188c2350eece4ca7211a57593533ebb57f8a11f6524b4e4d2  spec/workgraph.json
+$ uv run --project <worktree> ergane spec derive spec --target-repo "$PWD" --json
+$ sha256sum spec/workgraph.json
+94d39e2f4639bc9f869010ec087f787936191b0df8599413f5a8649e0dccde4e  spec/workgraph.json
+```
+
+**After T006 — the sums match** (the seeded bytes survived the same command):
+
+```
+$ cd /tmp/e130-after
+$ sha256sum spec/workgraph.json
+edc4453493627a7188c2350eece4ca7211a57593533ebb57f8a11f6524b4e4d2  spec/workgraph.json
+$ uv run --project <worktree> ergane spec derive spec --target-repo "$PWD" --json
+$ sha256sum spec/workgraph.json
+edc4453493627a7188c2350eece4ca7211a57593533ebb57f8a11f6524b4e4d2  spec/workgraph.json
+$ python -c "import json; d=json.load(open('stdout.json')); print(sorted(d))"
+['graph']
+```
+
+The printed document's only key is `graph` — no `artifact` (FR-003).
+
+## Green gates on the declared command
+
+```
+$ uv run pytest -q
+5732 passed, 58 skipped, 11 warnings in 500.77s (0:08:20)
+```
+
+Baseline before the change measured 5727 passed on the same command (the five
+new tests are the difference). One further consumer surfaced in the full run:
+`tests/test_colliding_slices_are_ordered.py:276` ran `spec derive --json` and
+read the artifact back off disk; it now passes `-o` and its docstring names
+why, per FR-002.

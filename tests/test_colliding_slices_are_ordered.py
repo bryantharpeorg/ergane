@@ -270,13 +270,19 @@ def test_the_reason_survives_into_the_compiled_artifact(tmp_path: Path) -> None:
     """US2-S3, at the surface an operator reads: the compiled artifact.
 
     Provenance that lived only in memory would satisfy the dataclass alone.
+
+    The assertion reads the file back off disk, and 130-US1 FR-001 makes
+    `derive --json` with no output path a verb that persists nothing — so the
+    artifact is requested by path, which FR-002 defines as a request to
+    persist, and the same file the document names is the one read back.
     """
     epic = _epic_dir(tmp_path, tasks_text=tasks({"US1": [SHARED], "US3": [SHARED]}))
+    out = tmp_path / "compiled.json"
 
-    code = main(_argv("derive", epic))
+    code = main(_argv("derive", epic) + ["-o", str(out)])
     assert code == 0
 
-    artifact = json.loads((epic / "workgraph.json").read_text(encoding="utf-8"))
+    artifact = json.loads(out.read_text(encoding="utf-8"))
     (edge,) = artifact["inferred_edges"]
     assert edge["node_id"] == "us3"
     assert edge["depends_on_merged"] == "us1"

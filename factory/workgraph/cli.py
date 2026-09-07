@@ -380,15 +380,28 @@ def derive_command(args: argparse.Namespace) -> int:
             raise _OperatorError(f"{spec_path}: {error}") from error
 
     destination = Path(args.output) if args.output else spec_dir / ARTIFACT_NAME
-    try:
-        destination.write_text(
-            json.dumps(asdict(graph), indent=2) + "\n", encoding="utf-8"
-        )
-    except OSError as error:
-        raise _OperatorError(f"cannot write {destination}: {error}") from error
+    # A `--json` call with no output path asked to *print*, nothing more
+    # (130-US1 FR-001): the write used to sit unconditionally ahead of the
+    # `--json` check, so the verb rewrote `<spec-dir>/workgraph.json` with a
+    # graph whose `target_repo` was whatever this checkout resolved — how 064's
+    # and 073's committed graphs were poisoned from an operator checkout.
+    # The one caller that needs the file on disk after a `--json` run is
+    # `build ship`, and FR-002 already makes an explicit output path a request
+    # to persist — so ship asks by path (FR-011) instead of this guard guessing
+    # a caller from a flag.
+    wants_artifact = args.output is not None or not getattr(args, "as_json", False)
+    if wants_artifact:
+        try:
+            destination.write_text(
+                json.dumps(asdict(graph), indent=2) + "\n", encoding="utf-8"
+            )
+        except OSError as error:
+            raise _OperatorError(f"cannot write {destination}: {error}") from error
 
     if getattr(args, "as_json", False):
-        document: dict[str, Any] = {"artifact": str(destination), "graph": asdict(graph)}
+        document: dict[str, Any] = {"graph": asdict(graph)}
+        if wants_artifact:
+            document["artifact"] = str(destination)
         if args.delta and "result" in locals():
             document["provenance"] = result.provenance
         print(json.dumps(document, indent=2))
