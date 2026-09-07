@@ -1,7 +1,32 @@
 ---
-state: ready
+state: draft
 fixes:
   - feedback/pr-8-spec-validate-has-no-library-form-and-its-composition-is-the-policy
+# HELD AT DRAFT 2026-09-07 (operator): US2 IS OVERSIZED FOR THE JUDGE, AND A
+# RE-DISPATCH AS WRITTEN CANNOT PASS. US1 landed first attempt (0c2cb23). US2 then
+# failed attempt 1 on `judge input: abridged, 72750 bytes against a 65536-byte
+# limit (7214 bytes over)`, and the epic was killed during attempt 2 rather than
+# spend a second hour reaching the same wall. Nothing was lost: US1 is landed and
+# US2's branch is archived at
+# `archive/factory/133-.../us2/d9fbb0f69eac`.
+#
+# WHY IT IS STRUCTURAL, not bad luck. T015 moves the validate checkers out of
+# `factory/cli/nouns/spec.py` into `factory/spec/`, and a move double-counts in a
+# diff — every line lands as a deletion AND an addition. `DIFF_INPUT_LIMIT`
+# (factory/verify/diffbounds.py:47) is an attention budget, and its own comment
+# records the precedent: "a story no attempt could pass at 74,465 bytes, four
+# gates green and the judge never reached." US2 measured 72,750.
+#
+# WHAT REFINEMENT MUST DO BEFORE THIS GOES BACK TO `ready`: split US2 so each
+# story's diff clears the budget — the natural seam is one checker family per
+# story rather than one move of all of them — and check US3-US6 for the same
+# shape, since a refactor spec's later stories are moves too. Raising the budget
+# is the wrong lever; that constant is deliberate.
+#
+# The anchor drift is NOT a defect and needs no refresh: tasks.md pins every
+# coordinate to the 602a92c tree and directs the implementer to locate by symbol
+# name. Measured after US1 landed, 106 of 128 anchors had shifted (mostly by -6);
+# that is the plan working as designed, not rot.
 # DRAFTED 2026-09-03 by the operator session, against ergane-buildout at 238b494.
 # Every `file:line` in spec.md and plan.md was read from that commit and verified
 # to resolve to the symbol named, not recalled.

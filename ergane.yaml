@@ -137,14 +137,31 @@ ladder:
 # the id is a `workflow.uuid4()` per node — and a concurrent pair was run and landed
 # on 2026-08-29 to prove it before this line was written.
 #
-# `max_concurrent_epics` STAYS AT 1 and the reason is the worker, not the agents.
-# A landing that changes any type crossing the workflow boundary wedges every
-# RUNNING workflow, because `workflow.unsafe.imports_passed_through()` resolves
-# those types against the worker's boot-time modules; the fix is a worker restart,
-# and a restart is illegal while an attempt is in flight. One epic at a time means
-# one such blast radius at a time. That defect wedged this roadmap for fifty
-# minutes on 2026-08-30 and is filed as
+# `max_concurrent_epics` HELD AT 1 UNTIL 2026-09-07, and the reason was the worker,
+# not the agents. A landing that changes any type crossing the workflow boundary
+# wedges every RUNNING workflow, because `workflow.unsafe.imports_passed_through()`
+# resolves those types against the worker's boot-time modules; the fix is a worker
+# restart, and a restart is illegal while an attempt is in flight. One epic at a time
+# meant one such blast radius at a time, and it guaranteed a between-epics window in
+# which a restart was legal. That defect wedged this roadmap for fifty minutes on
+# 2026-08-30 and is filed, open and critical at three occurrences, as
 # `interpreter/a-fresh-epic-on-a-stale-worker-wedges-in-workflow-task-retry`.
+#
+# RAISED TO 2 ON 2026-09-07 (Bryan, with that risk named and accepted). What forced
+# it: 133 is depth 6 across 6 nodes — a pure serial chain — so `max_concurrent_nodes`
+# can never engage on a spec shaped like that, and the floor ran a whole day at half
+# its configured capacity. That dial is READY NODES PER CHILD EPIC; when the current
+# spec is a chain, this one is the only dial that puts a second agent to work. They
+# multiply: 2 epics x 2 nodes is four agents, not two.
+#
+# The guard is `156-a-dispatch-refuses-a-worker-running-different-code`, which
+# declares `fixes:` that finding and refuses a dispatch into a skewed worker instead
+# of wedging in it. At 2 it dispatches alongside 154 on a fresh run's first pass, so
+# the exposure is one shift rather than one week. Until it lands, the obligation this
+# dial used to discharge falls on the operator AT LANDING TIME: before landing
+# anything that changes a type crossing the workflow boundary, pause dispatch and
+# drain to a quiet floor, because at 2 the between-epics window may never open by
+# itself.
 #
 # NEITHER DIAL REACHES A RUNNING EPIC. Both are compiled into a child's `EpicInput`
 # at its own dispatch (`factory/cli/roadmap.py` says so where the operator is
@@ -152,5 +169,5 @@ ladder:
 # up, never on the one already building.
 roadmap:
   cadence_s: 300
-  max_concurrent_epics: 1
+  max_concurrent_epics: 2
   max_concurrent_nodes: 2
