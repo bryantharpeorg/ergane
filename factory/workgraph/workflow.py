@@ -251,7 +251,12 @@ with workflow.unsafe.imports_passed_through():
         route_of,
     )
     from factory.workgraph.adapter import home_path
-    from factory.config import Persona, SUBSCRIPTION_AGENT
+    from factory.config import (
+        Persona,
+        ROUTE_SUBSCRIPTION,
+        SUBSCRIPTION_AGENT,
+        effective_route,
+    )
     from factory.workgraph.models import (
         AdapterResult,
         AttemptContext,
@@ -1276,6 +1281,10 @@ class EpicWorkflow:
                 model_alias=item.model_alias,
                 models=list(item.models),
                 agent=self._agent_of(registry, item.node.persona),
+                # 154-US1: the route travels beside the agent, read from the
+                # same frozen registry read — a mid-epic worker restart
+                # re-derives the identical pair (FR-003).
+                route=self._route_of(registry, item.node.persona),
             )
             for item in resolved
         }
@@ -1294,6 +1303,7 @@ class EpicWorkflow:
                 model_alias=entry.model,
                 models=[alias for alias in (entry.model, entry.fallback) if alias],
                 agent=entry.agent,
+                route=entry.route,
             )
         return resolved
 
@@ -1323,6 +1333,14 @@ class EpicWorkflow:
         """
         entry = registry.get(persona_name)
         return entry.agent if entry is not None else ""
+
+    @staticmethod
+    def _route_of(registry: dict[str, Persona], persona_name: str) -> str:
+        """The `route` a persona carries (154-US1), or empty when the registry
+        lacks it — empty meaning the same unresolvable entry `_agent_of` reads
+        empty, answered by `effective_route` from the legacy sentinel."""
+        entry = registry.get(persona_name)
+        return entry.route if entry is not None else ""
 
     @staticmethod
     def _rung_selection(
@@ -1423,9 +1441,16 @@ class EpicWorkflow:
         The registry snapshot is filled during `_resolve`; an unknown persona is
         treated as non-subscription so a routing misconfiguration fails the node
         on its own terms rather than being silently counted here.
+
+        154-US1 (FR-006): reads the route axis, not the agent name — a
+        snapshot entry resolved before the route field existed is answered by
+        `effective_route` from the legacy sentinel, so a pre-field payload
+        still reads as itself.
         """
         persona = self._personas.get(persona_name)
-        return persona is not None and persona.agent == SUBSCRIPTION_AGENT
+        return persona is not None and (
+            effective_route(persona.route, persona.agent) == ROUTE_SUBSCRIPTION
+        )
 
     def _subscription_nodes_in_flight(
         self, in_flight: dict[str, asyncio.Task[None]]
@@ -1818,6 +1843,9 @@ class EpicWorkflow:
             record.model_alias = self._recorded_model_alias(persona)
             routing = self._routing_for(persona, rung=rung)
             agent = routing.agent
+            # 154-US1: the route rides the same snapshot entry the agent and
+            # alias do — the key, the CLI and the credential are one decision.
+            route = routing.route
 
             record.attempt += 1
             # 118 US3 (FR-008): the attempt's standards text is resolved here,
@@ -1878,6 +1906,7 @@ class EpicWorkflow:
                     spec_ref=node.spec_ref,
                     models=list(routing.models),
                     agent=agent,
+                    route=route,
                 ),
                 start_to_close_timeout=_PROXY["start_to_close_timeout"],
                 retry_policy=_ISSUE_KEY_RETRIES,
@@ -1906,6 +1935,7 @@ class EpicWorkflow:
                         context_window=resolved.context_window,
                         target_repo=graph.target_repo,
                         agent=agent,
+                        route=route,
                     ),
                 )
                 # `None` is the attempt the kill cancelled: the adapter re-raises on
@@ -2695,7 +2725,11 @@ class EpicWorkflow:
             model_alias=(
                 routing.model_alias if routing is not None else UNKNOWN_BUILDER
             ),
-            route=route_of(routing.agent) if routing is not None else UNKNOWN_BUILDER,
+            route=(
+                route_of(effective_route(routing.route, routing.agent))
+                if routing is not None
+                else UNKNOWN_BUILDER
+            ),
         )
         if provenance is not None:
             result = replace(result, provenance=provenance)
@@ -3996,6 +4030,9 @@ class EpicWorkflow:
         record.model_alias = self._recorded_model_alias(persona)
         routing = self._routing_for(persona, rung=rung)
         recovery_agent = routing.agent
+        # 154-US1: the recovery's route, from the same one snapshot entry —
+        # the credential travels with the CLI it authenticates.
+        recovery_route = routing.route
 
         lease = await workflow.execute_activity(
             issue_attempt_key,
@@ -4007,6 +4044,7 @@ class EpicWorkflow:
                 spec_ref=node.spec_ref,
                 models=list(routing.models),
                 agent=recovery_agent,
+                route=recovery_route,
             ),
             start_to_close_timeout=_PROXY["start_to_close_timeout"],
             retry_policy=_ISSUE_KEY_RETRIES,
@@ -4032,6 +4070,7 @@ class EpicWorkflow:
                     context_window=resolved.context_window,
                     target_repo=graph.target_repo,
                     agent=recovery_agent,
+                    route=recovery_route,
                 ),
             )
             if adapter_result is None or self._kill_requested:

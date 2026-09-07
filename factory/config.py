@@ -148,8 +148,71 @@ DETERMINISTIC_AGENT = "none"
 #: through the CLI's own credential instead of the LiteLLM proxy.
 SUBSCRIPTION_AGENT = "subscription"
 
+# The route vocabulary (154-US1, FR-001) ---------------------------------------
+
+#: How an attempt authenticates: through the LiteLLM proxy under a
+#: model-constrained virtual key.
+ROUTE_GATEWAY = "gateway"
+#: Through the operator's own CLI credential — still an LLM, no key minted.
+ROUTE_SUBSCRIPTION = "subscription"
+#: A persona that runs no LLM at all.
+ROUTE_DETERMINISTIC = "deterministic"
+#: The no-LLM case a legacy `agent: none` entry reads as (spec §4.1 table).
+ROUTE_NONE = "none"
+
+#: Every value an explicit `route:` field may declare. Closed by construction:
+#: anything outside it is refused at the load that reads it (FR-001).
+ROUTE_VALUES = frozenset(
+    {ROUTE_GATEWAY, ROUTE_SUBSCRIPTION, ROUTE_DETERMINISTIC, ROUTE_NONE}
+)
+
+#: The derivation table (154-US1 FR-002, plan step 3): what a legacy `agent:`
+#: value means as the (agent, route) pair. The split's whole point —
+#: `claude-code` names a CLI, `subscription` names a credential route, and the
+#: legacy value meant both at once.
+_AGENT_DERIVATION: dict[str, tuple[str, str]] = {
+    "claude-code": ("claude-code", ROUTE_GATEWAY),
+    SUBSCRIPTION_AGENT: ("claude-code", ROUTE_SUBSCRIPTION),
+    DETERMINISTIC_AGENT: (DETERMINISTIC_AGENT, ROUTE_NONE),
+}
+
+
+def derive_agent_and_route(agent: str) -> tuple[str, str]:
+    """The (agent, route) pair a legacy `agent:` value means.
+
+    Pure and total (FR-003): a function of the text passed in, defined for
+    every string the field could carry — a value the table does not name is a
+    CLI the gateway route serves, which is what such a value reads as today.
+    No clock, no environment, no probe of anything outside the registry. The
+    frozen snapshot a running epic holds (`workflow._read_registry`) makes
+    this load-bearing — a worker restarted mid-epic must re-read an unedited
+    registry into an identical pair.
+    """
+    if agent in _AGENT_DERIVATION:
+        return _AGENT_DERIVATION[agent]
+    return (agent, ROUTE_GATEWAY)
+
+
+def effective_route(route: str | None, agent: str | None) -> str:
+    """The route a dispatch payload carries — the field when it has one.
+
+    Payloads (`ResolvedPersona`, `AttemptContext`, `IssueKeyInput`) written
+    before 154-US1 carry no `route` and read an empty one; their legacy
+    `agent` sentinel is the only signal they hold, so it answers for them.
+    The field is the source of truth the moment it is present; this fallback
+    exists so an old payload reads as itself, not as a second derivation
+    standing beside the field (trap 3).
+    """
+    if route:
+        return route
+    if agent == SUBSCRIPTION_AGENT:
+        return ROUTE_SUBSCRIPTION
+    if agent == DETERMINISTIC_AGENT:
+        return ROUTE_NONE
+    return ROUTE_GATEWAY
+
 _REQUIRED_FIELDS = ("agent", "model", "write_scope", "needs_worktree")
-_OPTIONAL_FIELDS = ("fallback", "skills", "timeout", "context_window")
+_OPTIONAL_FIELDS = ("fallback", "skills", "timeout", "context_window", "route")
 
 
 class ConfigError(Exception):
@@ -192,28 +255,41 @@ class Persona:
     #: Model context-window tokens, declared by the operator per persona. None
     #: means undeclared; the adapter emits no variable (FR-010).
     context_window: int | None = None
+    #: How attempts of this persona authenticate — the credential route, which
+    #: the CLI (`agent`) no longer names (154-US1). `None` means "derive from
+    #: `agent`", which `__post_init__` does the moment the instance exists, so
+    #: a caller that constructs a `Persona` directly gets the same pair the
+    #: loader would have derived (FR-003: the derivation is total).
+    route: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.route is None:
+            _, route = derive_agent_and_route(self.agent)
+            object.__setattr__(self, "route", route)
 
     @property
     def is_llm(self) -> bool:
-        """Whether this persona spends tokens: deterministic personas do not;
-        gateway and subscription personas both do."""
+        """Whether this persona spends tokens. Reads the CLI axis alone
+        (FR-006): `none` runs no agent; every other value does, gateway and
+        subscription routes alike."""
         return self.agent != DETERMINISTIC_AGENT
 
     @property
     def routes_through_gateway(self) -> bool:
         """Whether this persona's model aliases must resolve on the gateway and
         whether its attempts should be preflight-checked against the proxy's
-        served-alias list. Deterministic and subscription personas do not route
-        through the gateway (US2 FR-016)."""
-        return self.agent not in (DETERMINISTIC_AGENT, SUBSCRIPTION_AGENT)
+        served-alias list. Reads the route axis alone (FR-006): the CLI named
+        in `agent` does not decide this."""
+        return self.route == ROUTE_GATEWAY
 
     @property
     def needs_virtual_key(self) -> bool:
         """Whether this persona's attempts need a model-constrained virtual key
-        minted at dispatch. Only gateway personas do; deterministic personas run
-        no agent, and subscription personas authenticate through the operator's
-        own credential (US2 FR-006)."""
-        return self.agent == "claude-code"
+        minted at dispatch. Reads the same axis as `routes_through_gateway`
+        (FR-006) — only a gateway persona has a key minted; a subscription
+        persona authenticates through the operator's own credential (US2
+        FR-006)."""
+        return self.route == ROUTE_GATEWAY
 
 
 def load_personas(path: Path | str | None = None) -> dict[str, Persona]:
@@ -268,6 +344,21 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
     agent = entry["agent"]
     if not isinstance(agent, str) or not agent:
         raise fail(f"field 'agent' must be a non-empty string, got {agent!r}")
+
+    # 154-US1 (FR-001/FR-002): the route is read when declared and derived
+    # when absent. The derivation is a default, never an override (trap 1) —
+    # an explicit `route:` wins in every case — and a declared value outside
+    # the vocabulary is refused at this load rather than re-routed silently.
+    if "route" in entry:
+        route = entry["route"]
+        if not isinstance(route, str) or route not in ROUTE_VALUES:
+            allowed = ", ".join(sorted(ROUTE_VALUES))
+            raise fail(
+                f"field 'route' must be one of {allowed} when present, "
+                f"got {route!r}"
+            )
+    else:
+        agent, route = derive_agent_and_route(agent)
 
     model = _optional_alias(entry["model"], "model", fail)
     fallback = _optional_alias(entry.get("fallback"), "fallback", fail)
@@ -324,6 +415,7 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
         needs_worktree=needs_worktree,
         timeout_s=timeout_s,
         context_window=context_window,
+        route=route,
     )
 
 

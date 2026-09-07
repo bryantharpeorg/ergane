@@ -127,6 +127,10 @@ class IssueKeyInput:
     #: subscription. Empty means "look it up from the registry" for backward
     #: compatibility with payloads that predate this field.
     agent: str = ""
+    #: 154-US1: the persona's credential route, resolved at dispatch. Read for
+    #: the subscription decision (FR-006); empty means a payload that predates
+    #: the field, answered from the `agent` sentinel, then the registry.
+    route: str = ""
 
 
 @dataclass(frozen=True)
@@ -174,13 +178,18 @@ def _is_subscription_persona(request: IssueKeyInput) -> bool:
     the gateway (US2 FR-005).
 
     The dispatch now carries the resolved `agent` value, so key issuance does not
-    need to reload the persona registry. When the field is empty (legacy payloads),
-    fall back to the file registry for backward compatibility.
+    need to reload the persona registry. 154-US1 (FR-006): the route axis
+    decides — `effective_route` reads the dispatch's `route` field when it has
+    one and answers a pre-field payload from the legacy `agent` sentinel. When
+    neither is present (legacy payloads), fall back to the file registry for
+    backward compatibility.
     """
-    from factory.config import load_personas, SUBSCRIPTION_AGENT
+    from factory.config import ROUTE_SUBSCRIPTION, load_personas
 
-    if request.agent:
-        return request.agent == SUBSCRIPTION_AGENT
+    if request.route or request.agent:
+        from factory.config import effective_route
+
+        return effective_route(request.route, request.agent) == ROUTE_SUBSCRIPTION
 
     try:
         registry = load_personas()
@@ -189,7 +198,7 @@ def _is_subscription_persona(request: IssueKeyInput) -> bool:
     entry = registry.get(request.persona)
     if entry is None:
         return False
-    return entry.agent == SUBSCRIPTION_AGENT
+    return entry.route == ROUTE_SUBSCRIPTION
 
 
 def _is_direct_mode() -> bool:

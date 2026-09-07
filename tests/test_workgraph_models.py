@@ -588,6 +588,10 @@ def test_the_attempt_context_carries_exactly_the_adapters_inputs() -> None:
         "context_window",
         "target_repo",
         "agent",
+        # 154-US1 (FR-006): how the attempt authenticates, beside which CLI
+        # runs — the adapter reads the route axis for gateway routing, not the
+        # agent name.
+        "route",
     }
 
 
