@@ -672,7 +672,10 @@ def test_derive_json_is_parseable_document(run: Callable[..., Run], tmp_path: Pa
     assert result.code == 0
     doc = result.json
     assert isinstance(doc, dict)
-    assert doc.get("artifact")
+    # 130-US1 FR-003: with no output path nothing is written, so the document
+    # no longer names an artifact it did not write. With `-o`, it still does.
+    assert "artifact" not in doc
+    assert "graph" in doc
 
 
 def test_landed_json_is_parseable_document(

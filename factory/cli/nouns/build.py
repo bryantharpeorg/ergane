@@ -1079,7 +1079,16 @@ def ship_command(args: argparse.Namespace) -> int:
 
     # Stage 2: derive.  Stream the full labeled output and stop on failure.
     print(f"ship: deriving {spec_dir / ARTIFACT_NAME}")
-    derive_code = derive_spec_command(args)
+    # Ship requires the artifact on disk at stage 3, and derive no longer
+    # writes one for a `--json` call with no output path (130-US1 FR-001).
+    # Ship's own `--json` is a presentation flag and says nothing about where
+    # the graph goes, so ship asks for the write the way FR-002 defines a
+    # request: by path, on a copy of the namespace — the flag the operator
+    # passed must not decide whether the file ship needs exists.
+    derive_args = argparse.Namespace(**vars(args))
+    if derive_args.output is None:
+        derive_args.output = str(spec_dir / ARTIFACT_NAME)
+    derive_code = derive_spec_command(derive_args)
     if derive_code != EXIT_OK:
         return derive_code
 
