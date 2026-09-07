@@ -303,6 +303,11 @@ def context(
             "session_id": SESSION_ID,
             "timeout_s": TIMEOUT_S,
             "target_repo": str(repo),
+            # 154-US3: the persona's agent, as the workflow freezes it onto the
+            # context at dispatch. The dispatch seam reads this field — an
+            # attempt without one refuses at the seam (constitution IX) rather
+            # than falling back to an adapter nobody chose.
+            "agent": "claude-code",
         }
         return AttemptContext(**(fields | overrides))
 
@@ -1625,3 +1630,146 @@ async def test_second_execution_preserves_first_stdout_log_seam_capture(
     names = {p.name for p in archive.iterdir()}
     assert STDOUT_LOG_NAME in names
     assert f"stdout-{derived}.log" in names
+
+
+# --- 154-US3: dispatch selects the adapter the persona named ------------------
+
+
+async def test_the_adapter_the_persona_names_is_the_adapter_dispatch_runs(
+    env: ActivityEnvironment,
+    context: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    worker_host: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3-S1/S2/S3, control-and-mutation in one test (FR-005).
+
+    The defect this story closes: the one dispatch call site passed a constant,
+    so every persona — whatever its registry entry named — minted a key and ran
+    Claude Code. A green suite that never varies the persona proves the constant
+    still works, not that selection does, so both halves run here, in one test,
+    and are compared (US3-S3):
+
+    - **Control** (US3-S2): an attempt whose context carries the persona's
+      `claude-code` runs `ClaudeCodeAdapter` — proven by the launch the stub
+      `claude` recorded, the same evidence shape the mutation half reads.
+    - **Mutation** (US3-S1): the same attempt, differing *only* in the persona's
+      `agent` value, runs the second adapter — a real class registered in the
+      real `_ADAPTERS` registry (trap 6), whose `run_attempt` records its
+      invocation for the test to read. Selection is proven by what the stub
+      recorded, not by a suite that stayed green.
+
+    A diff that hardcodes either adapter — the constant under either of its
+    names — fails exactly one half.
+    """
+    from factory.activities import agent_activities
+    from factory.usage.models import Termination
+    from factory.workgraph.adapter import _ADAPTERS, transcript_dir
+
+    # The second adapter: a real class in the real registry, whose run_attempt
+    # is the record the test reads. It registers the invocation and ends the
+    # attempt the way any adapter would — an archive path, a termination.
+    codex_invocations: list[AttemptContext] = []
+
+    class CodexAdapter:
+        name = "codex"
+        #: The `host_launch` autouse fixture sets `_backend` from this attribute
+        #: on whatever `adapter_for` returns; the mutation half runs on the host
+        #: like the control half does, and never launches anything.
+        executable = "claude"
+
+        async def run_attempt(
+            self, attempt_context: AttemptContext, **kwargs: Any
+        ) -> Any:
+            codex_invocations.append(attempt_context)
+            return AdapterResult(
+                termination=Termination.COMPLETED,
+                transcript_path=str(
+                    transcript_dir(
+                        factory_root,
+                        attempt_context.epic_id,
+                        attempt_context.node_id,
+                        attempt_context.attempt,
+                    )
+                ),
+            )
+
+    monkeypatch.setitem(_ADAPTERS, CodexAdapter.name, CodexAdapter)
+
+    # Control: the persona named `claude-code`. Runs the real adapter against
+    # the stub `claude` on PATH, and the launch it records is the evidence.
+    write_control(home_path(factory_root, EPIC, NODE), stdout="the control ran")
+    control_context = context(agent="claude-code", route="gateway")
+    control_result = await env.run(run_agent_attempt, control_context)
+    assert control_result.termination == Termination.COMPLETED
+    control_launch = last_invocation(worktree)
+    assert Path(control_launch.argv[0]).name == "claude"
+    assert not codex_invocations, (
+        "the control half reached the second adapter: selection is not by "
+        "the persona's value"
+    )
+
+    # Mutation: the same attempt, differing only in the agent the persona named.
+    write_control(home_path(factory_root, EPIC, NODE), stdout="the mutation ran")
+    mutation_context = context(agent="codex", route="gateway")
+    mutation_result = await env.run(run_agent_attempt, mutation_context)
+    assert mutation_result.termination == Termination.COMPLETED
+
+    # US3-S1, by the record and not by a passing suite: the second adapter ran,
+    # and the attempt context it was handed is the one dispatch was given.
+    assert len(codex_invocations) == 1
+    assert codex_invocations[0] == mutation_context
+
+    # US3-S3: the two recorded invocations — the stub `claude`'s launch and the
+    # second adapter's — were produced by dispatches identical except for the
+    # adapter the persona named. Asserted over the contexts, the one thing the
+    # call site may read selection from; a dispatch that hardcoded either
+    # adapter fails one of the two halves above.
+    differing = {
+        field
+        for field in AttemptContext.__dataclass_fields__
+        if getattr(control_context, field) != getattr(mutation_context, field)
+    }
+    assert differing == {"agent"}, (
+        f"the two dispatches differ in {sorted(differing)}, not only in the "
+        "agent the persona named"
+    )
+
+    # The control half launched exactly one `claude`; the mutation half
+    # launched no CLI at all — the second adapter's record is the only record
+    # of it.
+    from tests.stub_agent import invocations as all_invocations
+
+    assert len(all_invocations(worktree)) == 1
+
+
+def test_the_dispatch_constant_is_gone_from_the_source() -> None:
+    """US3-S4 / FR-005: the call site passes the persona's `agent`, and the
+    stale comment that justified the constant is gone.
+
+    Read from the source rather than from a behaviour the constant could
+    masquerade in: `adapter_for` is called with the attempt context's `agent`
+    field (models.py:320 — the value the workflow froze from the persona at
+    dispatch), `DEFAULT_AGENT` names nothing in the module any more, and the
+    comment block that claimed `AttemptContext` carries no `agent` field — the
+    false claim that kept the sever invisible — is gone with it.
+    """
+    import inspect
+
+    from factory.activities import agent_activities
+
+    source = inspect.getsource(agent_activities.run_agent_attempt)
+    assert "adapter_for(context.agent)" in source, (
+        "the dispatch call site does not pass the persona's agent: "
+        "adapter_for must be called with the attempt context's agent field"
+    )
+    assert "DEFAULT_AGENT" not in source
+    assert not hasattr(agent_activities, "DEFAULT_AGENT"), (
+        "DEFAULT_AGENT still exists: the constant and the false comment above "
+        "it must leave the module with the change to the call site, or the "
+        "next reader inherits the claim that hid the defect"
+    )
+    module_source = inspect.getsource(agent_activities)
+    assert "carries no `agent` field" not in module_source
