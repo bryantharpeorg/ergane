@@ -35,6 +35,7 @@ import subprocess
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -100,6 +101,11 @@ from factory.notify.service import (
     TEMPORAL_ADDRESS_ENV,
     TEMPORAL_NAMESPACE_ENV,
 )
+# 127-US3 (FR-009): the gate tail is clipped through the escalation pages' own
+# clipper rather than a second one. The clipper is promoted to this public name
+# in that module, behaviour and bound unchanged; before this story no production
+# module imported a private name from `factory.notify.messages`.
+from factory.notify.messages import EVIDENCE_TAIL_LINES, tail
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import UsageSnapshot
 from factory.verify.models import (
@@ -122,6 +128,7 @@ from factory.verify.store import (
     external_completion_count,
     get_escalation,
     get_question,
+    node_history,
     pending_escalations,
     pending_questions,
 )
@@ -129,6 +136,7 @@ from factory.activities.agent_activities import (
     DEFAULT_FACTORY_ROOT as DEFAULT_FACTORY_ROOT_PATH,
     FACTORY_ROOT_ENV,
 )
+from factory.workgraph.adapter import transcript_dir
 from factory.workgraph.worktree import resolve_factory_root
 from factory.workgraph.models import (
     NodeState,
@@ -1484,6 +1492,290 @@ def _judge_input_token(check: OutputCheck) -> str:
     )
 
 
+# --- why: one verb assembles the causal chain (127-US3, FR-009) ---------------
+
+
+def why_command(args: argparse.Namespace) -> int:
+    """Assemble the causal chain behind a dead node — one command, two sources.
+
+    The evidence is spread across two places, and nothing joined them: the
+    verification store holds the verdicts, the gate results and the judge's
+    feedback and outlives the workflow; the ending — the terminal reason, the
+    landing's queue outcomes and their rejection cause — is in workflow memory
+    and reaches a reader only through the `epic_status` query. Answering "why
+    did this die" was a filesystem walk and a `journalctl` read, which is the
+    cost this verb exists to end.
+
+    The store half is read the way `attempts_command` reads it, with no Temporal
+    client — the transcript path is composed, never opened, because the walk is
+    the work being removed (127 plan trap 11). The query half is read the way
+    `_query_status` reads it, and on `NOT_FOUND` this verb refuses in exactly
+    the shape that verb refuses in: the epic is not there for this verb either,
+    and the two-way "no such epic vs. the execution aged out" discrimination is
+    127-US5's, not this story's (127 plan trap 16).
+    """
+    path = _verification_store_path()
+    try:
+        conn = verify_connect_readonly(path)
+    except sqlite3.Error as error:
+        raise OperatorError(
+            f"cannot read verification evidence from {path}: {error}",
+            EXIT_TRANSPORT,
+        ) from error
+    try:
+        if args.node_id is not None:
+            history = node_history(conn, args.epic_id, args.node_id)
+        else:
+            history = epic_history(conn, args.epic_id)
+    except sqlite3.Error as error:
+        raise OperatorError(
+            f"cannot read verification evidence from {path}: {error}",
+            EXIT_TRANSPORT,
+        ) from error
+    finally:
+        conn.close()
+
+    document = _query_why_document(args.epic_id)
+
+    print(render_why(args.epic_id, args.node_id, history, document, path))
+    return EXIT_OK
+
+
+def _query_why_document(epic_id: str) -> Mapping[str, Any] | None:
+    """The `epic_status` answer, or None when nothing is running under the id.
+
+    NOT_FOUND is refused in the shape `_query_status` refuses in — one
+    `OperatorError` line naming what was looked for, no traceback. A query the
+    workflow will not answer is a degraded reading, not a failed command: the
+    store half of the chain is still real, and the ending is reported as
+    unavailable rather than as absent.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_query_why(epic_id))
+    finally:
+        loop.close()
+
+
+async def _query_why(epic_id: str) -> Mapping[str, Any] | None:
+    """The async half of `why_command`'s query read."""
+    client = await _connect()
+    handle = client.get_workflow_handle(workflow_id(epic_id))
+    try:
+        return await handle.query("epic_status")
+    except QUERY_REFUSED:
+        # The epic exists but will not describe itself. The store half of the
+        # chain is still real; the ending is what is unavailable.
+        return None
+    except TRANSPORT_FAILED as error:
+        if error.status is RPCStatusCode.NOT_FOUND:
+            raise OperatorError(
+                f"no epic '{epic_id}' is running here "
+                f"({looked_for(epic_id)})"
+            ) from error
+        raise OperatorError(
+            f"cannot read epic '{epic_id}': {error}", EXIT_TRANSPORT
+        ) from error
+
+
+#: How a landing's queue outcome reaches the chain line — the `_value` shape
+#: the escalation renderer uses, inlined for one enum read off a query answer.
+def _queue_outcome_token(outcome: Any) -> str:
+    return outcome.value if isinstance(outcome, Enum) else str(outcome)
+
+
+def _why_queue_lines(status: Mapping[str, Any]) -> list[str]:
+    """The landing's queue history, oldest first, with the rejection cause."""
+    history = status.get("landing_history") or ()
+    lines: list[str] = []
+    for entry in history:
+        if isinstance(entry, Mapping):
+            outcome = _queue_outcome_token(entry.get("outcome"))
+            at = entry.get("at") or ""
+        else:
+            outcome = _queue_outcome_token(getattr(entry, "outcome", entry))
+            at = getattr(entry, "at", "")
+        lines.append(f"  queue: {outcome}" + (f" at {at}" if at else ""))
+    rejection = status.get("rejection_cause")
+    if rejection:
+        lines.append(f"  rejection cause: {_queue_outcome_token(rejection)}")
+    return lines
+
+
+def _why_failing_gate(result: VerificationResult) -> list[str]:
+    """The failing gate and a bounded tail of its output.
+
+    Clipped through the escalation pages' own clipper, promoted to a public
+    name for this import (FR-009): `output_tail` is up to 32 KiB, and one
+    unclipped print of it is half this story's diff bound (127 plan trap 15).
+    A gate that passed is named without its output, the way the escalation
+    pages already print one.
+    """
+    lines: list[str] = []
+    for gate in result.gate_results:
+        status = gate.status.value if isinstance(gate.status, Enum) else str(gate.status)
+        suffix = "" if status == GateStatus.PASS.value else f" — exit {gate.exit_code}"
+        lines.append(f"  gate {gate.name}: {status}{suffix}")
+        if status != GateStatus.PASS.value and gate.output_tail:
+            lines.append(f"    gate output (last {EVIDENCE_TAIL_LINES} lines):")
+            for tail_line in tail(gate.output_tail).splitlines():
+                lines.append(f"      {tail_line}")
+    return lines
+
+
+def _why_attempt_lines(result: VerificationResult) -> list[str]:
+    """One attempt's half of the chain: verdict, gates, judge."""
+    lines = [
+        f"  attempt {result.attempt}: {result.verdict.value} "
+        f"({result.form.value}, verified at {result.finished_at})"
+    ]
+    lines += [f"    {line}" for line in _why_failing_gate(result)]
+    if result.judge is not None:
+        lines.append(f"    judge: {result.judge.outcome.value}")
+        if result.judge.feedback:
+            lines.append("    judge feedback:")
+            for tail_line in tail(result.judge.feedback).splitlines():
+                lines.append(f"      {tail_line}")
+    return lines
+
+
+def _why_ending_for_node(node: Mapping[str, Any]) -> list[str]:
+    """One node's ending, read off its `NodeStatus` document."""
+    lines: list[str] = []
+    reason = node.get("terminal_reason")
+    if reason:
+        lines.append(f"  ending: {reason}")
+    housekeeping = node.get("housekeeping_report")
+    if housekeeping:
+        lines.append(f"  housekeeping: {housekeeping}")
+    lines += _why_queue_lines(node)
+    return lines
+
+
+def render_why(
+    epic_id: str,
+    node_id: str | None,
+    history: Sequence[VerificationResult],
+    document: Mapping[str, Any] | None,
+    store_path: Path,
+) -> str:
+    """The human view of the chain: per node, latest attempt first.
+
+    A renderer, so it reads no store and no clock: the caller holds the rows
+    and the query answer. The transcript directory is *composed* from the
+    factory root this process already resolves through `resolve_env_path` —
+    the declared root, never the working directory (constitution IX) — and
+    printed without being opened, listed or tailed (127 plan trap 11).
+
+    What counts as a failure worth explaining is the node's own state read off
+    the query answer — KILLED, FAILED, or a landing that did not end MERGED —
+    not whether a node argument was passed: US3-S3 names a passed node
+    explicitly and must still be told it has no failure to explain rather than
+    be shown an empty chain. A node the query knows nothing about (no rows yet,
+    a store half only) falls back to its verification record alone.
+    """
+    factory_root = resolve_env_path(
+        ERGANE_ROOT_ENV, FACTORY_ROOT_ENV, DEFAULT_FACTORY_ROOT_PATH
+    )
+
+    statuses: Mapping[str, Mapping[str, Any]] = (
+        {} if document is None else document.get("nodes", {})
+    )
+    if node_id is not None and document is not None and node_id not in statuses:
+        raise OperatorError(
+            f"epic '{epic_id}' is running but holds no node '{node_id}' "
+            f"(nodes: {', '.join(statuses) or 'none'})"
+        )
+
+    # The node ids this run is asked about: the one named, or every node
+    # either source holds, store order first.
+    all_ids: list[str] = []
+    for result in history:
+        if result.node_id not in all_ids:
+            all_ids.append(result.node_id)
+    for id_of_node in statuses:
+        if id_of_node not in all_ids:
+            all_ids.append(id_of_node)
+    if node_id is not None:
+        all_ids = [node_id]
+
+    by_node: dict[str, list[VerificationResult]] = {}
+    for result in history:
+        by_node.setdefault(result.node_id, []).append(result)
+
+    lines = [f"epic {epic_id} — why"]
+    for id_of_node in all_ids:
+        if node_id is not None and id_of_node != node_id:
+            continue
+        node_status = statuses.get(id_of_node)
+        results = by_node.get(id_of_node, [])
+        if not _is_failure_to_explain(node_status, results):
+            # US3-S3, the control: a node that passed and landed has no
+            # failure to explain. Say so, once, rather than print an empty
+            # chain for it.
+            lines.append(f"{id_of_node}: no failure to explain")
+            continue
+        lines.append(f"{id_of_node}:")
+        for result in reversed(results):
+            lines += _why_attempt_lines(result)
+        if results:
+            latest = results[-1]
+            transcript = transcript_dir(
+                factory_root, epic_id, id_of_node, latest.attempt
+            )
+            lines.append(f"  transcript: {transcript}")
+        elif node_status is not None:
+            transcript = transcript_dir(
+                factory_root, epic_id, id_of_node,
+                int(node_status.get("attempt") or 1),
+            )
+            lines.append(f"  transcript: {transcript}")
+        if node_status is not None:
+            lines += _why_ending_for_node(node_status)
+        elif document is None:
+            # The query was refused (the epic is there but would not answer):
+            # the store half above is real, and its absence is said rather
+            # than left to be inferred from what did not print.
+            lines.append(
+                "  ending: unavailable — the epic is running but would not "
+                "answer the epic_status query"
+            )
+        else:
+            lines.append(
+                f"  ending: unavailable — the epic_status query holds no node "
+                f"{id_of_node} and the store holds no verdict"
+            )
+
+    return "\n".join(lines)
+
+
+def _is_failure_to_explain(
+    status: Mapping[str, Any] | None,
+    results: Sequence[VerificationResult],
+) -> bool:
+    """Whether a node's chain has anything to explain (US3-S3).
+
+    A node the query holds is read by its own state: terminal-and-failed or a
+    landing that ended anywhere but MERGED is a failure; MERGED or still
+    running is not. A node the query knows nothing about falls back to its
+    verification record — a FAIL verdict is a failure wherever the execution
+    went afterwards.
+    """
+    if status is not None:
+        state = status.get("state")
+        if state in ("KILLED", "FAILED"):
+            return True
+        landing_state = status.get("landing_state")
+        if landing_state is not None and landing_state != "MERGED":
+            return True
+        if state == "MERGED":
+            return False
+        # Still running: nothing terminal yet, so nothing to explain — the
+        # operator asked why a node died, and this one has not.
+        return False
+    return any(result.verdict.value == "FAIL" for result in results)
+
+
 def _print_external_completion_count(result: ExternalCompletionCount, as_json: bool) -> None:
     """Render the count, total and per-spec, with the target stated."""
     if as_json:
@@ -2321,6 +2613,30 @@ def add_parser(subparsers: Any) -> None:
     )
     attempts.add_argument("epic_id", help="the epic id (the spec directory's name)")
     attempts.set_defaults(run=attempts_command)
+
+    why = commands.add_parser(
+        "why",
+        help="assemble the causal chain behind a node's death",
+        description=(
+            "Read-only. For one node — or every terminal node of the epic — "
+            "print the last verdict, the failing gate with a bounded tail of "
+            "its output, the judge's feedback where one exists, the queue "
+            "outcomes the landing recorded, the transcript directory of the "
+            "latest attempt (composed, never read), and the terminal reason. "
+            "Joins the verification store with the live epic_status query; the "
+            "ending is available only while the execution is."
+        ),
+    )
+    why.add_argument("epic_id", help="the epic id (the spec directory's name)")
+    why.add_argument(
+        "node_id",
+        nargs="?",
+        help=(
+            "the node to explain; omit to report every terminal node of "
+            "the epic"
+        ),
+    )
+    why.set_defaults(run=why_command)
 
     complete_node_externally = commands.add_parser(
         "complete-node-externally",

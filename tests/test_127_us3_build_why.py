@@ -105,7 +105,7 @@ class _FakeWorkflowHandle:
             raise RPCError("workflow not found", RPCStatusCode.NOT_FOUND, b"")
         return SimpleNamespace(
             id=self.id,
-            status=SimpleNamespace(name=self._client.workflows[self.id].status_name),
+            status=SimpleNamespace(name="RUNNING"),
             raw_description=SimpleNamespace(pending_activities=[]),
         )
 
@@ -113,7 +113,7 @@ class _FakeWorkflowHandle:
         self.queried.append(name)
         if self.id not in self._client.workflows:
             raise RPCError("workflow not found", RPCStatusCode.NOT_FOUND, b"")
-        document = self._client.workflows[self.id].document
+        document = self._client.workflows[self.id]
         if isinstance(document, BaseException):
             raise document
         return document
@@ -279,6 +279,29 @@ def why_document(**kwargs: Any) -> dict[str, Any]:
             ),
         ),
         rejection_cause=kwargs.get("rejection_cause", "NODE_CODE"),
+        nodes=kwargs.get(
+            "nodes",
+            {
+                DEAD_NODE: {
+                    "state": "KILLED",
+                    "attempt": 1,
+                    "branch": f"factory/{EPIC_ID}/{DEAD_NODE}",
+                    "verified": False,
+                    "landing_state": None,
+                    "landing_history": [
+                        {"at": "2026-09-06T10:05:00Z", "outcome": "CHECKS_FAILED"},
+                        {"at": "2026-09-06T10:40:00Z", "outcome": "CONFLICT"},
+                    ],
+                    "recovery_cycles": 0,
+                    "terminal_reason": (
+                        "push to origin/factory/127-a-killed-node-says-why-it-died/us1 "
+                        "refused: non-fast-forward"
+                    ),
+                    "rejection_cause": "NODE_CODE",
+                    "housekeeping_report": None,
+                }
+            },
+        ),
     )
 
 
@@ -318,9 +341,8 @@ def test_a_failed_node_gets_its_whole_chain(
     assert "non-fast-forward" in out
     # The transcript directory of the latest attempt, composed with the
     # declared factory root (trap 11) — and never opened.
-    assert f"attempt-1" in out
+    assert "attempt-1" in out
     assert str(factory_root / "transcripts" / EPIC_ID / DEAD_NODE) in out
-    assert client.workflows[f"epic-{EPIC_ID}"].document is not None
 
 
 def test_the_judge_feedback_prints_where_one_exists(
@@ -375,7 +397,10 @@ def test_the_gate_output_is_clipped_not_printed_whole(
     patch_client(
         monkeypatch, _FakeWhyClient(workflows={f"epic-{EPIC_ID}": why_document()})
     )
-    noisy = "\n".join(f"noise line {n}" for n in range(200)) + "\nTHE ANSWER LINE\n"
+    noise_lines = 200
+    noisy = (
+        "\n".join(f"noise line {n}" for n in range(noise_lines)) + "\nTHE ANSWER LINE\n"
+    )
     conn = sqlite3.connect(seeded_store)
     upsert_result(
         conn,
@@ -404,11 +429,11 @@ def test_the_gate_output_is_clipped_not_printed_whole(
     assert "THE ANSWER LINE" in out
     # The head was dropped, and the drop is named with its count.
     assert "noise line 0" not in out
-    dropped = 200 - EVIDENCE_TAIL_LINES
+    dropped = noise_lines + 1 - EVIDENCE_TAIL_LINES
     assert str(dropped) in out
     assert "truncated" in out
     # Kept lines are the LAST ones, not the first.
-    assert "noise line 199" in out
+    assert f"noise line {noise_lines - 1}" in out
 
 
 def test_the_transcript_directory_is_composed_and_never_opened(
@@ -434,15 +459,15 @@ def test_the_transcript_directory_is_composed_and_never_opened(
     run = invoke("build", "why", EPIC_ID, DEAD_NODE)
 
     assert run.code == 0, run.stderr
-    expected = (
-        factory_root / "transcripts" / EPIC_ID / DEAD_NODE / "attempt-2"
-    )
+    expected = factory_root / "transcripts" / EPIC_ID / DEAD_NODE / "attempt-2"
     assert str(expected) in run.stdout
-    assert "attempt-1" not in run.stdout.split(expected[0] or run.stdout)[0]
+    # The latest attempt's transcript is the one printed — attempt-1 is not.
+    assert "attempt-1" not in run.stdout
 
 
 def test_the_transcript_path_resolves_the_declared_root_not_the_cwd(
     seeded_store: Path,
+    factory_root: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -480,6 +505,7 @@ def test_without_a_node_argument_every_terminal_node_is_reported(
         _FakeWhyClient(
             workflows={
                 f"epic-{EPIC_ID}": status_document(
+                    terminal_reason="push refused: non-fast-forward",
                     nodes={
                         DEAD_NODE: {
                             "state": "KILLED",
@@ -537,6 +563,7 @@ def test_a_passed_node_says_it_has_no_failure_to_explain(
         _FakeWhyClient(
             workflows={
                 f"epic-{EPIC_ID}": status_document(
+                    terminal_reason=None,
                     nodes={
                         PASSED_NODE: {
                             "state": "MERGED",
@@ -551,7 +578,7 @@ def test_a_passed_node_says_it_has_no_failure_to_explain(
                             "terminal_reason": None,
                             "rejection_cause": None,
                         }
-                    }
+                    },
                 )
             }
         ),
@@ -602,3 +629,29 @@ def test_not_found_refuses_in_the_status_verb_shape(
     assert "no epic" in run.stderr
     assert f"epic-{EPIC_ID}" in run.stderr
     assert "Traceback" not in run.stderr
+
+
+def test_a_refused_query_degrades_to_the_store_half(
+    seeded_store: Path,
+    factory_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A query the workflow will not answer is a degraded reading, not a
+    failed command: the store half of the chain is still real, and the ending
+    is said to be unavailable rather than silently missing."""
+    from temporalio.client import WorkflowQueryFailedError
+
+    patch_client(
+        monkeypatch,
+        _FakeWhyClient(
+            workflows={f"epic-{EPIC_ID}": WorkflowQueryFailedError("refused")}
+        ),
+    )
+
+    run = invoke("build", "why", EPIC_ID, DEAD_NODE)
+
+    assert run.code == 0, run.stderr
+    out = run.stdout
+    assert "E   assert 1 == 2" in out, "the store half survives the refusal"
+    assert "ending: unavailable" in out
+    assert "epic_status" in out

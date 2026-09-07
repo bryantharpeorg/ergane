@@ -536,7 +536,7 @@ def _render_attempt(result: VerificationResult) -> str:
         if _value(gate.status) != GateStatus.PASS.value and gate.output_tail:
             # Only a gate that failed gets its output quoted: nobody was paged
             # over a passing suite's log, and the message has a length budget.
-            blocks.append(f"── {gate.name} output ──\n{_tail(gate.output_tail)}")
+            blocks.append(f"── {gate.name} output ──\n{tail(gate.output_tail)}")
 
     if not result.output_check.passed:
         lines.append(_output_check_line(result.output_check))
@@ -544,7 +544,7 @@ def _render_attempt(result: VerificationResult) -> str:
     if result.judge is not None:
         lines.append(f"  judge: {_value(result.judge.outcome)}")
         if result.judge.feedback:
-            blocks.append(f"── judge feedback ──\n{_tail(result.judge.feedback)}")
+            blocks.append(f"── judge feedback ──\n{tail(result.judge.feedback)}")
             blocks += _remediation_blocks(result.judge.feedback)
 
     return "\n".join([*lines, *blocks])
@@ -568,12 +568,12 @@ def _remediation_blocks(feedback: str) -> list[str]:
     if screened.proposals:
         blocks.append(
             "── judge proposed changing a criterion (withheld from the retry) ──\n"
-            + _tail("\n".join(screened.proposals))
+            + tail("\n".join(screened.proposals))
         )
     if screened.unsatisfiable_reports:
         blocks.append(
             "── judge reports a criterion cannot be satisfied ──\n"
-            + _tail("\n".join(screened.unsatisfiable_reports))
+            + tail("\n".join(screened.unsatisfiable_reports))
         )
     return blocks
 
@@ -638,8 +638,16 @@ def _output_check_line(check: OutputCheck) -> str:
     return "  output check: FAILED"
 
 
-def _tail(text: str) -> str:
-    """The last `EVIDENCE_TAIL_LINES` lines, verbatim, with what was dropped named."""
+def tail(text: str) -> str:
+    """The last `EVIDENCE_TAIL_LINES` lines, verbatim, with what was dropped named.
+
+    Public since 127-US3 (FR-009): `ergane build why` clips a gate's
+    `output_tail` through this same clipper rather than writing a second one —
+    `GateResult.output_tail` is up to 32 KiB, and one print of it whole is half
+    a story's diff budget. Every production importer of this module took public
+    names before that story, so the name it was promoted from had no importer
+    to keep; the behaviour and the bound are unchanged.
+    """
     lines = text.splitlines()
     if len(lines) <= EVIDENCE_TAIL_LINES:
         return text
@@ -647,6 +655,11 @@ def _tail(text: str) -> str:
     dropped = len(lines) - EVIDENCE_TAIL_LINES
     marker = _TRUNCATION_MARKER.format(dropped=dropped)
     return "\n".join([marker, *lines[-EVIDENCE_TAIL_LINES:]])
+
+
+#: The private spelling this was promoted from, kept so the four call sites
+#: below this line and any test reaching for `_tail` read the same function.
+_tail = tail
 
 
 def _header(title: str, record: EscalationRecord) -> str:

@@ -328,6 +328,10 @@ LIVE_EPIC_VERBS = (
     # it still answers once the execution has aged out — but the handle an
     # operator holds is the same epic id, which is what this family is about.
     "attempts",
+    # 127-US3: joins the same verification rows with the live `epic_status`
+    # query to explain a node's death. The epic id is the handle the operator
+    # arrives holding, which is what this family is about.
+    "why",
     "pause",
     "resume",
     "kill",
