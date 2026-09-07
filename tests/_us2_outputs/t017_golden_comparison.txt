@@ -1,0 +1,62 @@
+# T017 (133-US2) — the comparison against US1's six golden artifacts
+
+The task: "Paste, as committed evidence, the comparison of the verb's stdout,
+its stderr and its `--json` output over both fixture trios against US1's six
+golden artifacts — it must be empty on all three streams."
+
+**The standing guard that keeps it empty** is the golden test US1 committed in
+T006: `tests/test_133_us1_typed_report_and_golden_captures.py` (specifically
+`test_the_trio_matches_its_three_golden_artifacts`, parametrised over both
+trios, comparing stdout, stderr and the `--json` document byte for byte with
+the repository root normalised on both sides — plan trap 11). Re-run it with:
+
+    uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
+
+which reads `2 passed` for the comparison (9 passed for the file), and the
+file below for the same comparison expressed as a unified diff against the
+committed artifacts, run from this tree after the move landed.
+
+Command that produced this output (run from the worktree root, after US2's
+commits):
+
+    uv run python (in-process, driving `factory.cli.main.main` the same way
+    `tests/test_133_us1_typed_report_and_golden_captures.py::_run_validate`
+    does — stdout and stderr captured apart, plan trap 19)
+
+---
+
+[clean/stdout] diff lines vs US1 golden: 0
+[clean/stderr] diff lines vs US1 golden: 0
+[clean/json] diff lines vs US1 golden: 0  (stderr empty: True)
+[defective/stdout] diff lines vs US1 golden: 0
+[defective/stderr] diff lines vs US1 golden: 0
+[defective/json] diff lines vs US1 golden: 0  (stderr empty: True)
+
+ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
+
+---
+
+The verb's exit codes, unchanged: clean trio 0, defective trio 1.
+
+## git diff --stat for this story (0c2cb23..HEAD, the base being US1's merge)
+
+ factory/cli/nouns/spec.py                          | 444 +------------------
+ factory/spec/__init__.py                           |  43 +-
+ factory/spec/anchors.py                            | 473 +++++++++++++++++
+ ...t_133_us2_anchor_layers_leave_the_cli_module.py | 382 +++++++++++++++++
+ 4 files changed, 910 insertions(+), 432 deletions(-)
+
+Production half of the story diff (`git diff 0c2cb23..HEAD -- factory/`):
+42,781 bytes. Test half (`-- tests/`): 17,885 bytes. Assembled diff against
+the attempt's base: 60,666 bytes — inside `DIFF_REFUSAL_THRESHOLD` (65,536,
+`factory/verify/diffbounds.py:66`) with 4,870 bytes of headroom.
+
+## Byte-identity proof for the moved source
+
+Extraction of the three spans from `git show 0c2cb23:factory/cli/nouns/spec.py`
+against the same markers in `factory/spec/anchors.py`:
+
+    spanA (symbol family) byte-identical: True 7566
+    spanB (citation family) byte-identical: True 10275
+    regex block byte-identical: True 243
+    TOTAL source bytes moved: 18084 (plan measured 18,098 incl. trailing blanks)

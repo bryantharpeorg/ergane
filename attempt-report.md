@@ -1,3 +1,146 @@
+# 133-US2 attempt report: the anchor and symbol layers leave the CLI module
+
+## What changed
+
+Four commits, tests first:
+
+- `tests/test_133_us2_anchor_layers_leave_the_cli_module.py` (T012, T013,
+  T014) — committed observed-red, 10 failed / 1 passed. T012 reads the CLI
+  module's *source* for a `def` or an assignment of each of the eleven names
+  US2-S1 lists (an attribute check would also pass on the import back) and
+  asserts both halves of the definition/binding distinction: nothing defined
+  here, everything still bound, because the CLI still composes. T013 compares
+  the CLI's binding to `factory.spec`'s object by identity and `__module__`,
+  so a re-declaration cannot pass as a move. T014 drives
+  `_check_symbol_anchors` and `_check_anchor_resolution` over tmp trees
+  asserting the parameter contract and the caller-owned `findings`, `skipped`
+  and `checked` appends, and carries one test per `checked` exit of
+  `_check_anchor_resolution` (plan trap 5): no documents, no citations, only
+  unanchorable bare refs, and the normal end — none merged into one append.
+- `factory/spec/anchors.py` (T015) — the anchor family moved byte-for-byte:
+  `_check_anchor_resolution` and `_check_symbol_anchors` with
+  `_read_citation_files`, `_spec_state`, `_severity_for_state`,
+  `_symbol_spans`, `_line_hits_symbol`, and the grammars they alone read —
+  `_ANCHOR_RE` and `_BARE_LINE_RE` with their `#:` comments from above the
+  span, `_SYMBOL_ANCHOR_RE` and `_DISPATCHABLE_STATES` from inside it (plan
+  trap 17). 18,084 bytes of source, proven byte-identical to the spans
+  `0c2cb23` held (see the evidence file). The four `checked` appends stay
+  four separate exits; no string changed; nothing in `factory/spec/` imports
+  from `factory.cli.nouns.spec`.
+- `factory/cli/nouns/spec.py` (T016) — the three spans deleted; the eleven
+  names import back from `factory.spec` under their old private spellings and
+  `_validate_command` calls them exactly as it did. `_check_frontmatter`
+  stays for US5. The CLI still composes; US3 ends that.
+- `tests/_us2_outputs/t017_golden_comparison.txt` (T017) — the committed
+  evidence: the comparison against US1's six golden artifacts, empty on all
+  three streams for both trios, plus the story's `git diff --stat` line and
+  the byte-identity proof.
+
+## The red run
+
+```
+$ uv run pytest tests/test_133_us2_anchor_layers_leave_the_cli_module.py -q --no-header
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::test_the_cli_module_no_longer_defines_the_anchor_family
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::test_the_cli_module_calls_the_anchor_checkers_defined_in_factory_spec
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::test_factory_spec_defines_the_moved_names
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::test_the_moved_checkers_keep_their_parameters_and_append_into_caller_owned_lists
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::test_the_signatures_are_unchanged
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::TestAnchorResolutionCheckedAppends::test_exit_1_no_documents
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::TestAnchorResolutionCheckedAppends::test_exit_2_no_citations_found
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::TestAnchorResolutionCheckedAppends::test_exit_3_citations_but_no_paths_cited
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::TestAnchorResolutionCheckedAppends::test_exit_4_the_normal_end
+FAILED tests/test_133_us2_anchor_layers_leave_the_cli_module.py::TestAnchorResolutionCheckedAppends::test_exit_4_reports_stale_anchors_before_appending
+10 failed, 1 passed in 0.18s
+```
+
+The one that passed red is T012's binding half — true before the move and
+after it, which is what makes the definition/binding distinction real rather
+than decorative. T014's driven half is red because `factory.spec.anchors` did
+not exist yet; a rewrite would have kept it red.
+
+## T017 — the pasted evidence
+
+The comparison of this story's output against US1's six golden artifacts —
+`tests/test_133_us1_typed_report_and_golden_captures.py::test_the_trio_matches_its_three_golden_artifacts`
+is the standing guard, and it reads 9 passed here:
+
+```
+$ uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
+9 passed in 0.99s
+```
+
+The same comparison as a unified diff, both trios, all three streams
+(`tests/_us2_outputs/t017_golden_comparison.txt` carries it too):
+
+```
+[clean/stdout] diff lines vs US1 golden: 0
+[clean/stderr] diff lines vs US1 golden: 0
+[clean/json] diff lines vs US1 golden: 0  (stderr empty: True)
+[defective/stdout] diff lines vs US1 golden: 0
+[defective/stderr] diff lines vs US1 golden: 0
+[defective/json] diff lines vs US1 golden: 0  (stderr empty: True)
+
+ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
+```
+
+The verb's exit codes, unchanged: clean trio 0, defective trio 1.
+
+**The story's `git diff --stat` line** (T017 asks for it by name; base is
+US1's merge, `0c2cb23`):
+
+```
+ git diff 0c2cb23..HEAD --stat
+ factory/cli/nouns/spec.py                          | 444 +------------------
+ factory/spec/__init__.py                           |  43 +-
+ factory/spec/anchors.py                            | 473 +++++++++++++++++
+ ...t_133_us2_anchor_layers_leave_the_cli_module.py | 382 +++++++++++++++++
+ 4 files changed, 910 insertions(+), 432 deletions(-)
+```
+
+Assembled diff against the base: 60,666 bytes — inside
+`DIFF_REFUSAL_THRESHOLD` (65,536, `factory/verify/diffbounds.py:66`) with
+4,870 bytes of headroom. The production half alone is 42,781 bytes.
+
+## Byte-identity proof for the moved source
+
+Extraction of the three spans from
+`git show 0c2cb23:factory/cli/nouns/spec.py` against the same markers in
+`factory/spec/anchors.py`:
+
+```
+spanA (symbol family) byte-identical: True 7566
+spanB (citation family) byte-identical: True 10275
+regex block byte-identical: True 243
+TOTAL source bytes moved: 18084 (plan measured 18,098 incl. trailing blanks)
+```
+
+## Green gates on the declared command
+
+```
+$ uv run pytest -q
+5785 passed, 58 skipped, 11 warnings in 505.27s (0:08:25)
+```
+
+5,785 against the base run's 5,774: the story's eleven new tests, nothing
+else moved. The 58 skips and the warning set match the baseline. The
+"9 of 12 checks failed" line a full-suite transcript shows between progress
+dots is captured stdout printed by the passing seam-capture test
+`tests/test_ergane_install_closing_step.py::test_closing_step_seam_capture_transcript`
+(witnessed at the base commit too, `git worktree add` at `0c2cb23`, same
+line, same single pass) — install's readiness report describing a
+demonstration repository without a Temporal server or an
+`ERGANE_LLM_MASTER_KEY`, described and never deciding.
+
+## What was not done, on purpose
+
+`_check_frontmatter` stays in the CLI module (US5's). No refusal string
+changed; no parameter changed; the four `checked` appends were not merged;
+`factory/spec/` imports nothing from `factory.cli.nouns.spec`. The verb's
+stdout, stderr, `--json` document, `checked` order and every rendered prefix
+are byte-identical to what they were — the six artifacts are the proof.
+
+---
+
 # 133-US1 attempt report: a typed report exists, and today's output is captured
 
 ## What changed
