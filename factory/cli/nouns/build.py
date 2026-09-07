@@ -503,6 +503,7 @@ def render_status(
             f"attempt {node['attempt']}  {node['branch']}"
             f"{_routing_token(node)}{_base_token(node, landing_head)}"
             f"{spend_token}{external_token}{_reason_token(node)}"
+            f"{_housekeeping_token(node)}"
         )
         lines.extend(_attempt_note_lines(node))
     return "\n".join(lines)
@@ -733,6 +734,34 @@ def _reason_token(node: Mapping[str, Any]) -> str:
     if not reason:
         return ""
     return "  reason: " + " ".join(str(reason).split())
+
+
+def _housekeeping_token(node: Mapping[str, Any]) -> str:
+    """What the factory tidied up after the node ended (127-US2 FR-007).
+
+    The sibling `_reason_token` wanted: US1 split the terminal record's one
+    overloaded field in two — why the node *ended*, and what the archive-and-
+    clear did *after* it ended — and the overwrite happened because the second
+    was printed as the first. The two therefore reach the operator as two
+    labelled tokens on the same line, `reason:` and `housekeeping:`, and a line
+    that reads one for the other is as wrong as the overwrite was.
+
+    A sibling rather than a second flattener (trap 6): whitespace is flattened
+    exactly the way `_reason_token` flattens it, for the same reason — the line
+    is the unit an operator reads, and a multi-line git report is still one
+    status line. The text is never truncated for the same reason too: the half
+    that names what was kept is usually at the end.
+
+    Absent for nearly every node: a report exists only when the archive-and-
+    clear activity had something to say, and most endings have nothing to
+    tidy. A node with a report and no cause prints the report alone, which is
+    the truth US1's truth table row two already kept — neither token may claim
+    the other's fact.
+    """
+    report = node.get("housekeeping_report")
+    if not report:
+        return ""
+    return "  housekeeping: " + " ".join(str(report).split())
 
 
 def _attempt_note_lines(node: Mapping[str, Any]) -> list[str]:
