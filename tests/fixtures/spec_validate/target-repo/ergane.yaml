@@ -1,0 +1,4 @@
+version: 2
+runtime: bwrap
+gates:
+  smoke: "bash gates/smoke.sh"
