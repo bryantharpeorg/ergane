@@ -358,6 +358,9 @@ def context(factory_root: Path) -> Callable[..., AttemptContext]:
             "model_alias": MODEL_ALIAS,
             "session_id": SESSION_ID,
             "timeout_s": TIMEOUT_S,
+            # 154-US3: the dispatch seam reads the persona's agent; an attempt
+            # without one refuses at the seam rather than falling back.
+            "agent": "claude-code",
         }
         return AttemptContext(**(fields | overrides))
 

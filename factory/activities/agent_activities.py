@@ -93,7 +93,6 @@ from factory.workgraph.adapter import (
     STDOUT_LOG_NAME,
     SUBSCRIPTION_REFUSAL_MARKER,
     AdapterError,
-    ClaudeCodeAdapter,
     adapter_for,
     transcript_dir,
 )
@@ -174,12 +173,6 @@ ERGANE_ROOT_ENV = ERGANE_ROOT_ENV  # re-export for tests and callers
 #: test can shrink it without waiting out a production-sized interval, and read
 #: at call time so shrinking it works at all.
 HEARTBEAT_INTERVAL_S = DEFAULT_HEARTBEAT_INTERVAL_S
-
-#: The adapter every producing persona in the shipped registry names (D-018).
-#: `AttemptContext` carries no `agent` field, so the seam is exercised here
-#: rather than per attempt; a second agent adds a class and a lookup, not an
-#: orchestration change.
-DEFAULT_AGENT = ClaudeCodeAdapter.name
 
 #: The epic's authored text, under `<specs_root>/<feature>/`. `spec.md` is the
 #: system of record for intent (D-023); the other two are the clarified context
@@ -522,7 +515,14 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         # boundary no dispatch could reach. Tests that need the host launch
         # declare `runtime: host` in their fixture manifest and get it through
         # the same resolution production uses.
-        adapter = adapter_for(DEFAULT_AGENT)
+        #
+        # 154-US3 (FR-005): the adapter is the one the persona's registry entry
+        # named — frozen onto this attempt as `agent` at dispatch (154-US1) and
+        # validated against the adapter registry at load (154-US2). No default
+        # here: an attempt whose payload predates the field refuses at the seam
+        # (constitution IX), as the AGENT_LAUNCH_FAILED the `except` below
+        # already speaks, rather than silently running an agent nobody chose.
+        adapter = adapter_for(context.agent)
         result = await adapter.run_attempt(
             context,
             factory_root=root,
