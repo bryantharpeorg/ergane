@@ -256,10 +256,13 @@ async def test_unarchived_remote_tip_is_kept_and_reported(
     assert states(status)[NODE] == NodeState.KILLED
     # The remote tip is still there because no archive ref holds it.
     assert repo.remote_tip() == pushed
-    # And the terminal record reports the kept ref.
-    assert status.nodes[NODE].terminal_reason is not None
-    assert BRANCH in status.nodes[NODE].terminal_reason
-    assert pushed[:12] in status.nodes[NODE].terminal_reason
+    # And the terminal record reports the kept ref — in the housekeeping
+    # field, beside the cause, not over it (127-US1 FR-005). These assertions
+    # read the report out of `terminal_reason` before 127-US1, which was the
+    # defect written down and made green.
+    assert status.nodes[NODE].housekeeping_report is not None
+    assert BRANCH in status.nodes[NODE].housekeeping_report
+    assert pushed[:12] in status.nodes[NODE].housekeeping_report
 
 
 # --- T015 / US2-S3 / FR-009: an unreachable remote completes and reports
@@ -281,9 +284,11 @@ async def test_unreachable_remote_completes_kill_and_reports_surviving_ref(
     status = await run_epic(env, script, graph=graph(repo.repo))
 
     assert states(status)[NODE] == NodeState.KILLED
-    # Local archive happened; remote could not be cleared.
-    assert status.nodes[NODE].terminal_reason is not None
-    assert "origin" in status.nodes[NODE].terminal_reason
+    # Local archive happened; remote could not be cleared. The reachability
+    # report is housekeeping, not a cause (127-US1 FR-005), so it is read from
+    # the field 127-US1 added rather than from `terminal_reason`.
+    assert status.nodes[NODE].housekeeping_report is not None
+    assert "origin" in status.nodes[NODE].housekeeping_report
 
 
 # --- T016 / US2-S4 / FR-010: a second kill is idempotent and never overwrites
@@ -317,4 +322,8 @@ async def test_second_kill_is_idempotent_and_preserves_archive(
     assert repo.archive_refs() == archive
     # A true no-op second run returns an empty report; the workflow records
     # that as no terminal_reason, which is the right shape for idempotency.
+    # Since 127-US1 the empty report also leaves `housekeeping_report` empty —
+    # there was nothing to tidy, so neither field has anything to say, and a
+    # non-empty report goes to `housekeeping_report` without ever being
+    # promoted into `terminal_reason`.
     assert report == []
