@@ -385,6 +385,19 @@ class NodeRecord:
     #: only be answered with choices nobody offered it. The text is surfaced in
     #: `ergane build status` for the KILLED node.
     terminal_reason: str | None = None
+    #: 127-US1: the archive-and-clear housekeeping report — what the factory
+    #: tidied up when the node ended, joined from the activity's report lines
+    #: and written *beside* the cause, never over it. Distinct from
+    #: `terminal_reason`, which answers why a node *ended*: a report of what
+    #: was archived and cleared after the ending is bookkeeping, and promoting
+    #: it into the cause slot once cost an operator git's whole diagnosis of
+    #: the refusal that killed the node. Empty when there was nothing to tidy,
+    #: which is most nodes, and `None` whenever no archive ran; both mean the
+    #: field says nothing, and neither is ever read as a cause. Unconditional
+    #: on a terminal path — the `if report:` guard that keeps `terminal_reason`
+    #: honest keeps this field quiet the same way, so an empty report never
+    #: reads as a report of nothing.
+    housekeeping_report: str | None = None
     #: US2: provenance for externally-completed work, surfaced in status and PR.
     provenance: str | None = None
     #: 095-US1: what the node's *latest* attempt was, when what it was is not

@@ -639,6 +639,12 @@ class NodeStatus:
     #: US1: the reason a node ended KILLED when the ladder did not produce it.
     #: Set only when a node coroutine crashed; otherwise None.
     terminal_reason: str | None = None
+    #: 127-US1: the archive-and-clear housekeeping report, beside the cause and
+    #: never over it. Populated from the record's field of the same name, so
+    #: the report an operator reads on the status surface is the one the
+    #: workflow recorded — a field that stopped at `NodeRecord` would reach no
+    #: renderer, which is the overwrite defect in a new slot.
+    housekeeping_report: str | None = None
     #: US2: external-completion provenance, or None for agent-built work.
     provenance: str | None = None
     #: 095-US1: what the node's latest attempt was, when its verdict does not say
@@ -880,6 +886,7 @@ class EpicWorkflow:
                     if record.landing is not None
                     else 0,
                     terminal_reason=record.terminal_reason,
+                    housekeeping_report=record.housekeeping_report,
                     attempt_note=record.attempt_note,
                     provenance=record.provenance,
                     persona=record.persona,
@@ -3138,7 +3145,9 @@ class EpicWorkflow:
             # Terminal (non-parked) path: archive the branch and clear the live
             # remote ref, so a later dispatch cannot collide with stale refs
             # (US2 FR-007). Report lines live on the terminal record so the
-            # operator can see why a ref was kept.
+            # operator can see why a ref was kept — beside the cause, never
+            # over it (127-US1 FR-002): a report is what the factory tidied up
+            # after the ending, not why the node ended.
             report = await workflow.execute_activity(
                 archive_and_clear_remote_branch,
                 ArchiveAndClearRemoteBranchInput(
@@ -3149,7 +3158,7 @@ class EpicWorkflow:
                 **_GIT,
             )
             if report:
-                record.terminal_reason = "; ".join(report)
+                record.housekeeping_report = "; ".join(report)
 
     # --- the landing phase (US1) -------------------------------------------
 
@@ -3597,8 +3606,11 @@ class EpicWorkflow:
         """Archive the node's branch and clear its live remote ref (US2 FR-007).
 
         Called on terminal (non-parked, non-merged) paths after the worktree is
-        gone. Report lines live on the terminal record so the operator can see why
-        a ref was kept.
+        gone. Report lines live on the terminal record so the operator can see
+        why a ref was kept — beside the cause in `terminal_reason`, never over
+        it (127-US1 FR-002). This site is reached by `_escalate_ref_conflict`'s
+        kill path directly, which never passes through `_close_out`, so a fix
+        applied only there would leave the push-refusal kill overwriting still.
         """
         report = await workflow.execute_activity(
             archive_and_clear_remote_branch,
@@ -3610,7 +3622,7 @@ class EpicWorkflow:
             **_GIT,
         )
         if report:
-            record.terminal_reason = "; ".join(report)
+            record.housekeeping_report = "; ".join(report)
 
     # --- the landing-recovery routing (US2, FR-005/006/007/008) ---------------
 
