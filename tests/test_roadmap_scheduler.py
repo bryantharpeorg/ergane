@@ -25,7 +25,7 @@ precedes T013): until it lands, every test here fails.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -69,6 +69,15 @@ SECRET = "sk-roadmap-canary-9d7f2a1b4c8e-master"
 
 TARGET_REPO = "/srv/factory/targets/library"
 PROXY_URL = "http://litellm.test"
+
+#: The boot revision the harness's workers advertise, and the tree revision the
+#: world's tree seam answers — the same string, so an unconfigured world is the
+#: aligned case and every pre-156 test behaves exactly as it did. A test that
+#: wants skew overrides one side (`run_roadmap(worker_revision=...)` for the
+#: boot stamp, `RoadmapWorld(tree_revision=...)` for the tree), never both.
+#: Fixed rather than read from git so the harness cannot depend on the checkout
+#: it happens to run in (the gate's sandbox is not this worktree).
+HARNESS_REVISION = "feedc0d"
 
 
 # --- intercepting child-workflow starts (T011 child-policy) --------------------
@@ -134,6 +143,34 @@ class _Outbound(WorkflowOutboundInterceptor):
             )
         )
         return await self.next.start_child_workflow(input)
+
+
+class _BootRevisionInterceptor(Interceptor):
+    """Stamps the harness's boot revision onto every `RoadmapInput`.
+
+    The test-workground twin of `factory/worker.py`'s `_WorkerRevisionInterceptor`
+    for the roadmap half: same by-name match (the sandbox re-imports, so identity
+    never matches — 156 plan trap 2), same `None` guard, same replace-with-tuple
+    shape. Without it the tests would have to construct `RoadmapInput` by hand
+    per revision, and the boot value would stop being a property of the serving
+    worker — which is the fact under test.
+    """
+
+    def __init__(self, revision: str | None) -> None:
+        self._revision = revision
+
+    def workflow_interceptor_class(self, _input):
+        revision = self._revision
+
+        class _Inbound(WorkflowInboundInterceptor):
+            async def execute_workflow(self, input):
+                if getattr(input.type, "__name__", "") == "RoadmapWorkflow" and input.args:
+                    original = input.args[0]
+                    if getattr(original, "worker_revision", None) is None:
+                        input.args = (replace(original, worker_revision=revision),)
+                return await self.next.execute_workflow(input)
+
+        return _Inbound
 
 
 # --- the corpus a roadmap reads ---------------------------------------------
@@ -365,6 +402,7 @@ class RoadmapWorld:
         open_epics: Callable[[], set[str]] | None = None,
         derive_runner: Callable[..., Any] | None = None,
         drift_runner: Callable[..., bool] | None = None,
+        tree_revision: str | None = HARNESS_REVISION,
     ) -> None:
         self.clone_ok = clone_ok
         # 090-US2: what the refresh refused with, if anything. A refusal is not
@@ -383,6 +421,13 @@ class RoadmapWorld:
         # tests have no real clone, so default to no-drift unless a test scripts
         # a runner (US4-S5 exercises the real git-backed path directly).
         self.drift_runner = drift_runner or (lambda request: False)
+        # 156-US2: what the tree-revision activity answers — the revision the
+        # tree the worker imports was loaded from. Defaulted to the harness
+        # revision so an unconfigured world is the aligned case.
+        self.tree_revision = tree_revision
+        # What the tree seam was asked — one read per `_dispatch` that reaches
+        # the skew check, the count FR-004's aligned-case behavior rests on.
+        self.tree_calls: list[str] = []
         # What the clone seam was asked to refresh — the scheduler dispatches a
         # fresh clone per spec (FR-006), so the count is the dispatch count.
         self.clone_calls: list[str] = []
@@ -415,11 +460,13 @@ class RoadmapWorld:
             getattr(roadmap_activities, "_read_loop_config_runner", None),
             getattr(roadmap_activities, "check_aliases", None),
             preflight_mod.check_aliases,
+            getattr(roadmap_activities, "_tree_revision_runner", None),
         )
         roadmap_activities._clone_runner = self._clone
         if self.derive_runner is not None:
             roadmap_activities._derive_runner = self.derive_runner
         roadmap_activities._drift_runner = self.drift_runner
+        roadmap_activities._tree_revision_runner = self._tree_revision
         roadmap_activities._preflight_registry = lambda: {}
         roadmap_activities._preflight_client = lambda proxy_url: None
         roadmap_activities._onboard = self._onboard
@@ -453,7 +500,15 @@ class RoadmapWorld:
             saved_read_loop_config,
             saved_check,
             saved_preflight_check,
+            saved_tree_revision,
         ) = self._saved
+        if saved_tree_revision is not None:
+            roadmap_activities._tree_revision_runner = saved_tree_revision
+        else:
+            try:
+                delattr(roadmap_activities, "_tree_revision_runner")
+            except AttributeError:
+                pass
         if saved_read_loop_config is not None:
             roadmap_activities._read_loop_config_runner = saved_read_loop_config
         else:
@@ -496,6 +551,15 @@ class RoadmapWorld:
         from factory.verify.models import VerificationConfig
 
         return ReadLoopConfigResult(config=VerificationConfig(), verify_order=("gates", "diff_check", "judge"))
+
+    def _tree_revision(self, target_repo: str) -> str | None:
+        """The tree seam's scripted answer: what the worker's tree was loaded from.
+
+        Returns `self.tree_revision` and records the ask, so a test can assert
+        the aligned case consults the seam rather than skipping the check.
+        """
+        self.tree_calls.append(target_repo)
+        return self.tree_revision
 
     def _derive_full(self, request) -> Any:
         """Default derive seam: the full pre-delta graph, no git baseline."""
@@ -550,6 +614,7 @@ async def run_roadmap(
     child_starts: list[ChildStartRecord] | None = None,
     extra_workflows: list = (),
     interceptors: list[Interceptor] | None = None,
+    worker_revision: str | None = HARNESS_REVISION,
 ) -> AsyncIterator[Any]:
     """Start the roadmap and hold the worker open while the test steers it.
 
@@ -558,6 +623,13 @@ async def run_roadmap(
     applied. The roadmap's own activities (clone/derive/preflight/onboard/
     capacity/corpus-read/spec-read) are all registered whole so the worker
     accepts the call shapes; the seams decide what they return.
+
+    `worker_revision` is what the worker advertises at boot (156-US2): the
+    harness carries it on an interceptor and stamps every `RoadmapInput` the
+    way `factory/worker.py`'s does, so the skew check's boot value is scripted
+    without the test constructing the input by hand. Defaulted to the harness
+    revision — the same string the tree seam answers — so an unconfigured run
+    is the aligned case and every pre-156 test is unaffected.
     """
     # Steer the single module-level scripted epic for this run.
     _SCRIPT.statuses = dict(statuses or {})
@@ -603,6 +675,10 @@ async def run_roadmap(
     interceptors = (
         [_RecordingInterceptor(child_starts)] if child_starts is not None else list(interceptors or [])
     )
+    # The boot stamp rides the same chain, ahead of the recorder: every
+    # `RoadmapInput` the harness starts is stamped unless the test mints one
+    # with the field already set.
+    interceptors.insert(0, _BootRevisionInterceptor(worker_revision))
     try:
         async with Worker(
             env.client,
@@ -1797,3 +1873,176 @@ async def test_preflight_client_seam_constructs_the_real_client(monkeypatch):
         assert client.base_url == "http://proxy.invalid"
     finally:
         await client.aclose()
+
+
+# ============================================================================
+# 156-US2 — a roadmap tick parks the spec under worker skew (T006–T008)
+# ============================================================================
+
+
+def _parked_of(status: RoadmapStatus, spec_dir: str) -> Any:
+    """The park entry for one spec dir, or a loud absence."""
+    for finding in status.parked:
+        if finding.spec_dir == spec_dir:
+            return finding
+    raise AssertionError(f"{spec_dir} is not parked in {status.parked!r}")
+
+
+async def test_a_skewed_worker_parks_the_spec_and_the_tick_proceeds(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """156-US2-S1 / FR-004: boot revision != tree revision parks, never dispatches.
+
+    The worker advertises `HARNESS_REVISION` at boot (the interceptor stamp)
+    while the tree-revision seam answers a different string — the roadmap's
+    own code has moved past what the worker loaded (occurrence 3's shape). The
+    tick must park the spec with `check: "dispatch"` and both revisions in the
+    detail, start no child, and reach the next dispatchable spec — one wedge
+    candidate never stalls the line (the same grammar every park has).
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    # Same boot stamp as every other run (the worker's advertisement); the
+    # tree seam answers a different revision — the two sides of the comparison.
+    tree = RoadmapWorld(tree_revision="deadf00")
+    starts: list[ChildStartRecord] = []
+
+    async with run_roadmap(
+        env, tree, str(specs_root), child_starts=starts
+    ) as handle:
+        status = await handle.result()
+
+    # Both revisions are named — the operator can see which code each side
+    # runs and the cure is the same restart the CLI refusal names.
+    park = _parked_of(status, "001-alpha")
+    assert park.check == "dispatch", park
+    assert HARNESS_REVISION in park.detail, park
+    assert "deadf00" in park.detail, park
+    assert "restart" in park.detail.lower(), park
+    # bravo is parked for the same cause (one comparison, every spec), and the
+    # tick was not wedged by the refusal — the roadmap ran to its status.
+    assert _parked_of(status, "002-bravo").check == "dispatch"
+    # And nothing was dispatched: a parked spec never became a child.
+    assert starts == []
+    assert status.running == []
+    assert _status_of(status, "001-alpha").landed is False
+
+
+async def test_an_aligned_worker_dispatches_and_the_tree_seam_is_the_answer(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """156-US2-S1's control / FR-006 shape: aligned revisions dispatch as before.
+
+    The boot stamp equals the tree seam's answer — the default harness — so
+    the refusal composes nothing: the child starts, lands, and the tree seam
+    is the value the comparison actually read. An aligned tick must not
+    degrade dispatch into a park, which is the one failure mode worse than
+    the skew.
+    """
+    specs_root = build_corpus(
+        tmp_path, {"001-alpha": dict(state=SpecState.READY)}
+    )
+    world = RoadmapWorld()
+    starts: list[ChildStartRecord] = []
+
+    async with run_roadmap(env, world, str(specs_root), child_starts=starts) as handle:
+        status = await handle.result()
+
+    assert status.parked == [], status.parked
+    assert [record.id for record in starts] == ["epic-001-alpha"], starts
+    assert _status_of(status, "001-alpha").landed is True
+    # The comparison read the seam's answer, not a default: the check ran and
+    # let the dispatch through on the values it returned.
+    assert world.tree_calls, "the aligned case must consult the tree seam"
+
+
+async def test_the_park_spends_through_the_existing_unpark_signal(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """156-US2-S3: park under skew, restart (clear the skew), unpark, dispatch.
+
+    The park is spent exactly as every other park is — `unpark_spec`, the
+    existing grammar, no new surface. The operator's restart is represented
+    by a fresh run whose tree seam now answers the worker's boot revision:
+    the next tick dispatches the unparked spec.
+    """
+    specs_root = build_corpus(
+        tmp_path, {"001-alpha": dict(state=SpecState.READY)}
+    )
+    starts: list[ChildStartRecord] = []
+
+    skewed = RoadmapWorld(tree_revision="deadf00")
+    async with run_roadmap(
+        env, skewed, str(specs_root), child_starts=starts
+    ) as handle:
+        park = await _await_park(handle, "001-alpha")
+        assert park.check == "dispatch"
+        await handle.signal("unpark_spec", "001-alpha")
+        status = await handle.result()
+
+    assert status.parked == [], "the unpark must spend the skew park"
+    assert starts == [], "still skewed through this run: nothing may dispatch"
+
+    # The worker restarted onto the tree's revision: aligned now. A fresh run
+    # re-reads the world; the unparked spec dispatches on its first tick.
+    aligned = RoadmapWorld()  # tree seam answers the boot revision again
+    aligned_starts: list[ChildStartRecord] = []
+    async with run_roadmap(
+        env, aligned, str(specs_root), child_starts=aligned_starts
+    ) as handle:
+        final = await handle.result()
+
+    assert [record.id for record in aligned_starts] == ["epic-001-alpha"]
+    assert _status_of(final, "001-alpha").landed is True
+
+
+async def _await_park(handle: Any, spec_dir: str) -> Any:
+    """Poll `roadmap_status` until `spec_dir` is parked, and hand back its finding."""
+    import asyncio as _asyncio
+
+    async def poll() -> Any:
+        while True:
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            for finding in status.parked:
+                if finding.spec_dir == spec_dir:
+                    return finding
+            await _asyncio.sleep(0.01)
+
+    return await asyncio.wait_for(poll(), timeout=30)
+
+
+async def test_a_worker_of_unknown_revision_parks_with_the_unknown_wording(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """156-US2-S4 / FR-003's conservative direction: boot revision `None` parks.
+
+    A pre-053 worker stamps nothing, so the boot revision arrives as `None`.
+    An unknown revision cannot be compared, so the tick parks with the
+    "worker revision is unknown" wording — the same wording the CLI refusal
+    uses for the same fact (one vocabulary, two seams).
+    """
+    specs_root = build_corpus(
+        tmp_path, {"001-alpha": dict(state=SpecState.READY)}
+    )
+    world = RoadmapWorld()
+    starts: list[ChildStartRecord] = []
+
+    async with run_roadmap(
+        env,
+        world,
+        str(specs_root),
+        child_starts=starts,
+        worker_revision=None,
+    ) as handle:
+        status = await handle.result()
+
+    park = _parked_of(status, "001-alpha")
+    assert park.check == "dispatch", park
+    assert "worker revision is unknown" in park.detail, park
+    assert starts == []
+    assert status.running == []
