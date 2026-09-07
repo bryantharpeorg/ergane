@@ -977,6 +977,12 @@ class ScriptedWorld:
         self.records: list[VerificationResult] = []
         self.salvages: list[SalvageWorktreeInput] = []
         self.removals: list[RemoveWorktreeInput] = []
+        #: 127-US1: the archive-and-clear activity's requests, in call order,
+        #: and the per-node report a test has scripted for it. The stub
+        #: answered `[]` unconditionally before this story, which left `if
+        #: report:` never true under the whole interpreter suite (trap 2).
+        self.archive_requests: list[ArchiveAndClearRemoteBranchInput] = []
+        self.archive_reports: dict[str, list[str]] = {}
         self.escalation_requests: list[SendEscalationInput] = []
         self.escalation_ids: list[str] = []
         self.expirations: list[str] = []
@@ -1225,6 +1231,16 @@ class ScriptedWorld:
     ) -> None:
         """Script one node's `compare_trees` answer (US3)."""
         self.tree_comparisons[node_id] = identical
+
+    def script_archive_report(self, node_id: str, *lines: str) -> None:
+        """Script one node's `archive_and_clear_remote_branch` report (127-US1).
+
+        The default is the empty report most nodes produce — nothing to tidy —
+        so every test that predates this story reads the archive as silence.
+        A non-empty report is what makes `if report:` genuinely taken on an
+        interpreter path, which nothing here had ever done.
+        """
+        self.archive_reports[node_id] = list(lines)
 
     # --- the fakes ----------------------------------------------------------
 
@@ -1565,7 +1581,14 @@ class ScriptedWorld:
             request: ArchiveAndClearRemoteBranchInput,
         ) -> list[str]:
             script._log("archive_and_clear_remote_branch", request.node_id)
-            return []
+            script.archive_requests.append(request)
+            # 127-US1 (trap 2): a stub that answered `[]` unconditionally left
+            # `if report:` never true anywhere in this suite, so neither
+            # overwrite site had ever executed under it. The answer is the
+            # per-node scripted report, defaulting to the empty report most
+            # nodes produce; a test scripts a non-empty one with
+            # `script_archive_report` to drive the overwrite sites with news.
+            return list(script.archive_reports.get(request.node_id, []))
 
         @activity.defn(name="ref_conflict_facts")
         async def ref_conflict_facts(request: RefConflictFactsInput) -> Any:
@@ -2279,6 +2302,41 @@ async def test_a_killed_nodes_dependents_never_dispatch(
     }
     assert attempt_counts(status)["us2"] == 0
     assert status.epic_state == EpicState.COMPLETED
+
+
+async def test_a_non_empty_archive_report_reaches_its_own_field(
+    env: WorkflowEnvironment,
+) -> None:
+    """127-US1 / trap 2: the overwrite site executes under this suite at last.
+
+    The archive stub answered `[]` unconditionally, so `if report:` had never
+    been true anywhere in this file — neither overwrite site had ever executed
+    under it, and a suite that cannot reach the code it changes can verify
+    nothing about it. With a non-empty report scripted, the ordinary
+    ladder-exhaustion kill drives the report through `_close_out`'s site: the
+    causeless node keeps `terminal_reason` empty and the report lands in its
+    own field, never promoted into a cause (FR-004, FR-005).
+    """
+    script = exhausted("KILL", env.client)
+    script.script_archive_report(
+        "us1",
+        "archived branch",
+        f"deleted origin branch {branch_name(EPIC_ID, 'us1')} at abcdef123456 "
+        "(kept as refs/heads/archive/…, here and on origin)",
+    )
+
+    status = await run_epic(env, script)
+
+    assert states(status)["us1"] == NodeState.KILLED
+    # The archive really ran, with the report this test scripted.
+    assert len(script.archive_requests) == 1
+    assert script.archive_requests[0].node_id == "us1"
+    node = status.nodes["us1"]
+    # The report is not a cause: the KILL press ended this node, and no
+    # housekeeping may claim otherwise (FR-004).
+    assert node.terminal_reason is None
+    assert "deleted origin branch" in (node.housekeeping_report or "")
+    assert "archived branch" in (node.housekeeping_report or "")
 
     assert script.dispatched == ["us1", "us1", "us1", "us1", "us3"]
     assert script.sequence("us2") == []
