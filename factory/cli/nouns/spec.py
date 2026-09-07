@@ -36,6 +36,7 @@ from factory.roadmap.cli import (
     render_command,
 )
 from factory.roadmap.models import RoadmapError, SpecState, _split_frontmatter, compute_readiness, read_roadmap
+from factory.spec import SpecFinding as _ValidateFinding
 from factory.verify.criteria import mask_fences, parse_spec
 from factory.verify.diffbounds import DIFF_INPUT_LIMIT
 from factory.verify.factory_yaml import (
@@ -478,13 +479,6 @@ def _scan_sentinels_in_trio(spec_dir: Path) -> list[tuple[str, int, str]]:
         for line_no, line_text in scan_sentinels(text):
             results.append((name, line_no, line_text))
     return results
-
-
-class _ValidateFinding:
-    def __init__(self, layer: str, message: str, *, severity: str = "refusal") -> None:
-        self.layer = layer
-        self.message = message
-        self.severity = severity
 
 
 def _validate_command(args: argparse.Namespace) -> int:

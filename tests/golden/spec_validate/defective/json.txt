@@ -1,0 +1,63 @@
+{
+  "spec_dir": "<REPO_ROOT>/tests/fixtures/spec_validate/defective-specs/002-defective-trio",
+  "checked": [
+    "frontmatter",
+    "workgraph_derivation",
+    "persona_registry",
+    "scenario_coverage",
+    "prompt_assembly",
+    "slice_coverage",
+    "slice_contention",
+    "sentinels",
+    "symbol_anchors",
+    "evidence"
+  ],
+  "skipped": [
+    {
+      "layer": "anchor_resolution",
+      "reason": "none of the cited paths exist under target repository <REPO_ROOT>/tests/fixtures/spec_validate/target-repo"
+    }
+  ],
+  "findings": [
+    {
+      "layer": "scenario_coverage",
+      "message": "acceptance scenarios with no task reference: US1-S1",
+      "severity": "advisory"
+    },
+    {
+      "layer": "evidence",
+      "message": "US1-S1: \"the page renders correctly in the browser.\" asserts an outcome only a running system shows (\"in the browser\", \"renders correctly\"); the judge is shown the diff and the results of the gates this repository declares (smoke), and the clause names neither \u2014 no declared gate, and nothing the diff itself carries. To make it provable: name a declared gate (smoke) whose result will reach the judge with the diff, or restate the clause as something the diff carries \u2014 e.g. \"\u2026 \u2014 proven by a committed test\"",
+      "severity": "refusal"
+    }
+  ],
+  "information": [
+    {
+      "layer": "sentinel",
+      "message": "tasks.md:5: - [ ] T001 draw the page. ERGANE-TODO: this phase names no acceptance \u2014 not ready to derive"
+    }
+  ],
+  "judge_evidence": {
+    "diff": {
+      "abridged_above_bytes": 65536,
+      "refused_above_bytes": 65536
+    },
+    "criteria": [
+      {
+        "story": "US1",
+        "title": "The page is drawn",
+        "scenarios": [
+          "US1-S1"
+        ]
+      }
+    ],
+    "gates": {
+      "manifest": "<REPO_ROOT>/tests/fixtures/spec_validate/target-repo/ergane.yaml",
+      "declared": [
+        "smoke"
+      ],
+      "reason": ""
+    },
+    "warnings": [],
+    "all_provable": false
+  }
+}
