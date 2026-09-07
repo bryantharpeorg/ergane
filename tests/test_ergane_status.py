@@ -1527,6 +1527,10 @@ EXPECTED_GUARDS: dict[str, dict[str, set[tuple[str, ...]]]] = {
         "_run_preflight": set(),
         "_live_spend": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",), ("Exception",)},
         "_query_status": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
+        # 127-US3: `why` reads the same `epic_status` query, under the same
+        # pair of guards — a refused query is a degraded reading, a transport
+        # failure with NOT_FOUND is the refusal US5 will split in two.
+        "_query_why": {("TRANSPORT_FAILED",), ("QUERY_REFUSED",)},
         "_send_signal": {("RPCError",)},
         "_send_signal_with_args": {("RPCError",)},
         "_answer": {("RPCError",)},
@@ -1843,6 +1847,7 @@ def test_no_temporal_call_site_catches_the_transport_failure_alone(
         ("factory/cli/nouns/build.py", "_answer"),
         ("factory/cli/nouns/build.py", "_live_spend"),
         ("factory/cli/nouns/build.py", "_query_status"),
+        ("factory/cli/nouns/build.py", "_query_why"),
         ("factory/cli/nouns/build.py", "_reset_epic"),
         ("factory/cli/nouns/build.py", "_resolve"),
         ("factory/cli/nouns/build.py", "_send_signal"),
