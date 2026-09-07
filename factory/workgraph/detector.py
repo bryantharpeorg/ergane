@@ -299,15 +299,16 @@ def _content_sha(repo: Path, path: str, committed_sha: str | None) -> str:
 
     ``git hash-object`` hashes the file as it lies on disk and records nothing
     in the object store (no ``-w``), so it is read-only with respect to the
-    repository (FR-002).  ``committed_sha`` is the fallback for a read that
-    failed — usually a type change (directory, fifo) that ``hash-object``
-    refuses — where the committed sha stands in rather than the snapshot
-    guessing.
+    repository (FR-002).  A read that fails — usually a type change (directory,
+    fifo) that ``hash-object`` refuses — yields ``""``: the module's standing
+    convention for content it cannot read (the untracked loop does the same),
+    so both ends of the comparison agree on what unknown means rather than one
+    end silently standing in committed content for working-tree content.
     """
     try:
         return _git(repo, "hash-object", path).strip()
     except DetectorError:
-        return committed_sha or ""
+        return ""
 
 
 def _head_sha(repo: Path) -> str | None:
