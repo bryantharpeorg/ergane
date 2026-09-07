@@ -1,8 +1,12 @@
 ---
-state: ready
+state: landed
 fixes:
   - interpreter/the-ref-clearing-report-overwrites-the-terminal-reason-that-explains-why-a-node-died
   - verify/a-landing-recovery-escalation-names-no-exhausted-bound
+# Attested landed 2026-09-07. US1 3e59bbb2153b (#435), US2 228822b0fe08 (#436),
+# US3 08e220fbe8f2 (#438), US4 0fbc86aee72c (#437), US5 b891e753cec0 (#439) —
+# all five observed on ergane-buildout by content, all five on the first attempt,
+# with no retry, no judge failure and no escalation on any node.
 # DRAFTED 2026-09-03 by the operator session, against ergane-buildout at 238b494.
 # Every `file:line` in spec.md and plan.md was read from that commit and verified
 # to resolve to the symbol named, not recalled. 072's lesson, applied.
