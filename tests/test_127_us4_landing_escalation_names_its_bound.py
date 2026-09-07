@@ -82,9 +82,11 @@ SENTENCE_SHAPE = "ladder exhausted: max_recovery_cycles = {value} — {note}"
 
 #: The wording the note carries for the landing dial. Asserted so the operator
 #: reads a landing diagnosis, not a ladder one, and spelled once here beside the
-#: paste so the two cannot drift apart silently.
+#: paste so the two cannot drift apart silently. "Allowance" rather than
+#: "budget": the word the enforcement-vocabulary guard reserves for spec 004 is
+#: the wrong word here anyway — a dial an operator grants past is not a cap.
 SPENT_NOTE = (
-    "the landing's recovery budget is spent: the recovery cycle ran and the "
+    "the landing's recovery allowance is spent: the recovery cycle ran and the "
     "queue rejected it again. Another cycle buys another rejection of the same "
     "tree — grant one only to see it fail again"
 )
