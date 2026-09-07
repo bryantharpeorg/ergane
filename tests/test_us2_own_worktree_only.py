@@ -34,11 +34,14 @@ The overrides this story makes deliberately, and where each is recorded:
 
 from __future__ import annotations
 
+import ast
+import shutil
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
+from factory.doctor.models import Severity
 from factory.workgraph.detector import capture_start, compare_and_report
 from factory.workgraph.models import AttemptContext
 
@@ -148,3 +151,129 @@ def test_sibling_worktree_written_to_files_no_finding(
         )
 
     assert attempt(sibling_writes) is None
+
+
+# --- T010 / US2-S3: a genuine escape still files, with its evidence unchanged (control) ---
+
+
+def test_genuine_escape_files_critical_and_names_no_sibling(
+    runtime_root: Path,
+    repo: Path,
+    sibling: Path,
+    attempt: Callable[[Callable[[], None]], object],
+) -> None:
+    """US2-S3 / FR-009 (control): the tracked half files exactly as it did.
+
+    A tracked path is modified in the target repository *and* the sibling
+    worktree is removed — ordinary housekeeping — during the same attempt.  The
+    finding must be the tracked half alone: critical, naming the tracked path,
+    with no ``runtime:`` ref, because a sibling worktree is not evidence.
+    """
+    target = repo / "src" / "calc.py"
+    original = target.read_text(encoding="utf-8")
+
+    def escape_and_housekeeping() -> None:
+        target.write_text(
+            original + "\n# modified outside the worktree\n", encoding="utf-8"
+        )
+        shutil.rmtree(sibling)
+
+    finding = attempt(escape_and_housekeeping)
+
+    assert finding is not None, "a tracked path changed in the target repo is a finding"
+    assert finding.severity is Severity.CRITICAL
+    assert "target:src/calc.py" in finding.refs
+    assert finding.notes is not None
+    assert "Tracked paths changed in target repository:" in finding.notes
+    # The sibling's removal is in neither half of the finding.
+    assert not [ref for ref in finding.refs if ref.startswith("runtime:")]
+    assert SIBLING_NODE not in finding.summary
+    # The detector is read-only: it reports the escape, it does not undo it.
+    assert target.read_text(encoding="utf-8") != original
+
+
+def test_genuine_escape_store_truncation_files_critical(
+    runtime_root: Path,
+    sibling: Path,
+    attempt: Callable[[Callable[[], None]], object],
+) -> None:
+    """US2-S3 / FR-009 (control): the store half files exactly as it did."""
+    sibling_present = sibling.exists()
+
+    def truncate_stores() -> None:
+        for name in STORE_NAMES:
+            (runtime_root / name).write_text("", encoding="utf-8")
+
+    finding = attempt(truncate_stores)
+
+    assert finding is not None, "truncating an evidence store must still be a finding"
+    assert finding.severity is Severity.CRITICAL
+    for name in STORE_NAMES:
+        assert name in finding.summary or any(name in ref for ref in finding.refs)
+    assert sibling_present
+
+
+# --- T011 / US2-S4: the report stays advisory (control) ---
+
+
+def test_compare_and_report_return_gates_nothing_at_both_call_sites() -> None:
+    """US2-S4 / FR-010 (control): no call site consumes the detector's return.
+
+    Both call sites in ``run_attempt`` discard ``compare_and_report``'s return
+    today — the finding is an advisory channel, and FR-010 forbids this story
+    from making it enforcing.  Asserted structurally over the module's AST: each
+    call must be a bare expression statement, not an assignment and not a
+    condition, so no branch on it can hide.  Green before this story; its job is
+    to stay green through the walk change.
+    """
+    adapter_path = Path(__file__).resolve().parents[1] / "factory" / "workgraph" / "adapter.py"
+    tree = ast.parse(adapter_path.read_text(encoding="utf-8"))
+
+    call_sites: list[ast.stmt] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Expr):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        if not isinstance(call.func, ast.Name) or call.func.id != "compare_and_report":
+            continue
+        call_sites.append(node)
+
+    assert len(call_sites) == 2, (
+        "expected exactly two compare_and_report call sites in run_attempt, "
+        f"found {len(call_sites)} — a third would be a new consumer of the "
+        "return value and needs FR-010's answer before it lands"
+    )
+
+
+# --- T012 / US2-S5: the worst case still files (control) ---
+
+
+def test_deleted_runtime_root_still_files_naming_the_stores(
+    runtime_root: Path,
+    repo: Path,
+    sibling: Path,
+    own_worktree: Path,
+    context: AttemptContext,
+) -> None:
+    """US2-S5 / FR-009 (control): deleting the root outright is still loud.
+
+    The 2026-08-14 destruction.  The start snapshot lives outside the runtime
+    root, so the comparison survives the deletion; after US2 the snapshot holds
+    the three stores and no sibling paths, so the finding names exactly what was
+    lost — the stores — and charges no sibling.  Mirrors
+    ``tests/test_us1_detector.py::test_detector_reports_even_when_runtime_root_is_deleted``
+    at the detector surface, which passes unedited.
+    """
+    capture_start(runtime_root, repo, context)
+    shutil.rmtree(runtime_root)
+
+    finding = compare_and_report(runtime_root, repo, context)
+
+    assert finding is not None, "a deleted runtime root must still file"
+    assert finding.severity is Severity.CRITICAL
+    for name in STORE_NAMES:
+        assert name in finding.summary or any(name in ref for ref in finding.refs)
+    # The sibling worktree went with the root, but no sibling path is charged.
+    assert not [ref for ref in finding.refs if SIBLING_NODE in ref]
