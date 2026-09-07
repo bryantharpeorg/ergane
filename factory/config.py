@@ -345,6 +345,27 @@ def _build_persona(registry_path: Path, name: object, entry: object) -> Persona:
     if not isinstance(agent, str) or not agent:
         raise fail(f"field 'agent' must be a non-empty string, got {agent!r}")
 
+    # 154-US2 (FR-004): a persona naming an agent the factory cannot run is
+    # refused at the load that reads it, not in an attempt that dispatches the
+    # wrong CLI. The check validates the *derived* agent — a legacy
+    # `subscription` names no adapter and reads as Claude Code — and exempts
+    # the deterministic sentinel, which runs no CLI at all. The derivation's
+    # agent axis is a function of the `agent` text alone (the explicit
+    # `route:` below decides only the route axis), so deriving here is the
+    # same pair the loader assigns below. The known set is read from the
+    # adapter registry (trap 6): a second list here would be a second source
+    # of truth for "what the factory can run", disagreeing silently the day a
+    # second adapter registers (constitution IX).
+    from factory.workgraph.adapter import _ADAPTERS
+
+    derived_agent, _ = derive_agent_and_route(agent)
+    if derived_agent != DETERMINISTIC_AGENT and derived_agent not in _ADAPTERS:
+        known = ", ".join(sorted(_ADAPTERS)) or "<none>"
+        raise fail(
+            f"field 'agent' names an agent the factory cannot run: '{agent}' "
+            f"(known agents: {known})"
+        )
+
     # 154-US1 (FR-001/FR-002): the route is read when declared and derived
     # when absent. The derivation is a default, never an override (trap 1) —
     # an explicit `route:` wins in every case — and a declared value outside

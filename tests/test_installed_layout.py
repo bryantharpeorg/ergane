@@ -72,17 +72,24 @@ print(f"OK {len(registry)} personas from {cfg.DEFAULT_REGISTRY_PATH}")
 def _installed_layout(root: Path, *, with_registry: bool) -> Path:
     """Build `<root>/site-packages/factory/` the way a wheel install does.
 
-    Only the modules `factory.config` actually needs are copied — it imports
-    ``factory.env`` for path-variable resolution, so that module travels too.
-    The point of the layout is what it *omits*: there is no
-    `site-packages/personas.yaml`, because no wheel has ever installed one.
+    The package copies whole, as a wheel installs it: since 154-US2 the loader
+    reads the adapter registry (`factory.workgraph.adapter`) to refuse an
+    unknown `agent:` at load, so `factory.config`'s import closure reaches
+    beyond the `env.py` it needed before. The point of the layout is what it
+    *omits*: there is no `site-packages/personas.yaml`, because no wheel has
+    ever installed one — the registry a real wheel serves travels inside the
+    package via the force-include reproduced below.
     """
     site = root / "site-packages"
     package = site / "factory"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
-    shutil.copy(FACTORY_DIR / "config.py", package / "config.py")
-    shutil.copy(FACTORY_DIR / "env.py", package / "env.py")
+    shutil.copytree(
+        FACTORY_DIR,
+        package,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     if with_registry:
         # What `[tool.hatch.build.targets.wheel.force-include]` does at build time.
         shutil.copy(REGISTRY, package / "personas.yaml")
