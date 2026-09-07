@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import os
 import signal
@@ -67,7 +68,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 import pytest
 from temporalio.converter import DataConverter
@@ -76,8 +77,11 @@ from factory.usage.models import Termination, UsageSnapshot
 from factory.workgraph.adapter import (
     STDOUT_LOG_NAME,
     AdapterError,
+    AgentAdapter,
     ClaudeCodeAdapter,
     HostAgentBackend,
+    SharedAttemptPolicy,
+    _ADAPTERS,
     adapter_for,
     attempt_env,
     home_path,
@@ -404,12 +408,47 @@ def test_the_registrys_agent_field_names_the_adapter() -> None:
     assert resolved.name == "claude-code"
 
 
-def test_an_unknown_agent_names_itself_in_the_error() -> None:
-    """A second agent is a second class (D-018) — until then, say which is missing."""
-    with pytest.raises(AdapterError) as raised:
-        adapter_for("opencode")
+# --- the conformance suite (154-US4-S3) ------------------------------------------
+#
+# The lesson of `ci/the-adapter-conformance-suite-is-a-hardcoded-list-of-one`:
+# a suite that enumerates its own subjects cannot notice a new subject breaking
+# the seam. These read `_ADAPTERS` at collection time, so the second adapter is
+# swept the moment it is registered — and a conformance assertion that fails for
+# `claude-code` fails for every adapter, not just the one the suite was written
+# against.
 
-    assert "opencode" in str(raised.value)
+
+def registered_agents() -> list[str]:
+    """Every shipped agent, read off the registry rather than written down."""
+    return sorted(_ADAPTERS)
+
+
+CONFORMANCE_AGENTS = registered_agents()
+
+
+@pytest.mark.parametrize("agent_name", CONFORMANCE_AGENTS)
+def test_every_registered_adapter_resolves_by_its_own_name(agent_name: str) -> None:
+    """The name the persona registry writes is the name that resolves."""
+    resolved = adapter_for(agent_name)
+
+    assert resolved.name == agent_name
+
+
+@pytest.mark.parametrize("agent_name", CONFORMANCE_AGENTS)
+def test_every_registered_adapter_keeps_the_one_method_protocol(agent_name: str) -> None:
+    """US4-S2, swept: no adapter resurrects the five-method protocol — the outer
+    surface is `run_attempt` and nothing else, whatever the inner seam does."""
+    resolved = adapter_for(agent_name)
+
+    methods = {
+        name
+        for name, value in vars(type(resolved)).items()
+        if not name.startswith("_") and callable(value)
+    }
+    assert methods == {"run_attempt"}, (
+        f"{type(resolved).__name__} exposes {sorted(methods)}; the outer protocol "
+        "is one method (D-018, US4-S2) — the per-CLI seam is private"
+    )
 
 
 # --- launch: environment (US2-S1) ---------------------------------------------
@@ -1830,3 +1869,309 @@ async def test_the_archived_transcript_survives_the_home_directorys_removal(
 
     assert archive_copy.is_file()
     assert archive_copy.read_bytes() == before
+
+
+# --- US4: the shared attempt policy, one implementation (FR-007) ----------------
+#
+# `ClaudeCodeAdapter.run_attempt` is mostly not about Claude. Pid file, orphan
+# reap, archive directory, monitor loop, wall-clock deadline, operator-question
+# ferry — none of that names a CLI, and a second adapter must not copy it. The
+# hoist moves that policy into one implementation every adapter calls; what
+# remains per-CLI is the narrow inner seam: argv, prompt delivery, provider env,
+# home seeding, credential discovery, the turn-happened probe, refusal markers.
+#
+# The proof shape is the Independent Test: define a second adapter class that
+# implements only the per-CLI concerns, run an attempt through it, and read
+# which parts of attempt policy it did not write. The stub `claude` serves as
+# the second CLI: its transcript convention already matches, so the per-CLI
+# surface it needs is exactly the surface the seam exposes.
+
+
+class SecondCliAdapter:
+    """A second adapter implementing ONLY the per-CLI concerns (US4-S1).
+
+    It holds no monitor, no reap, no pid file, no ferry, no deadline — none of
+    the policy. Its class body is the proof: the assertions below read this
+    source and fail if any shared policy appears in it.
+    """
+
+    name = "second-cli"
+
+    def __init__(self) -> None:
+        self.executable = str(STUB_AGENT_PATH)
+        self.grace_s = TEST_GRACE_S
+        self._backend: Any = HostAgentBackend(executable=str(STUB_AGENT_PATH))
+
+    async def run_attempt(
+        self,
+        context: AttemptContext,
+        *,
+        factory_root: Path | str,
+        **kwargs: Any,
+    ) -> AdapterResult:
+        """Delegate to the shared policy — the one implementation."""
+        return await SharedAttemptPolicy(self).run_attempt(
+            context,
+            factory_root=factory_root,
+            **kwargs,
+        )
+
+    # -- the per-CLI surface, and nothing else --------------------------------
+
+    def argv(self, context: AttemptContext) -> list[str]:
+        return [self.executable, "--session-id", context.session_id]
+
+    def provider_env(self, env: dict[str, str], context: AttemptContext) -> dict[str, str]:
+        """The CLI's own variables on top of the attempt's, nothing inherited."""
+        env["SECOND_CLI_CONTROL"] = "on"
+        return env
+
+    async def deliver_prompt(self, process: Any, prompt: str) -> None:
+        await _feed_prompt(process, prompt)
+
+    def credential(self, context: AttemptContext) -> CredentialStage:
+        """Gateway persona: no subscription credential to discover."""
+        return CredentialStage(gateway=True)
+
+    def turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
+        """The structural tell, as this CLI writes it."""
+        return _second_cli_wrote_transcript(context, worktree, env)
+
+    def refusal_markers(self) -> tuple[str, ...]:
+        return ("SECOND-CLI REFUSED",)
+
+
+def _second_cli_wrote_transcript(
+    context: AttemptContext, worktree: Path, env: Mapping[str, str]
+) -> bool:
+    """The turn probe for the second CLI: same convention the stub honours."""
+    home = env.get("HOME")
+    if not home:
+        return True
+    transcript = (
+        Path(home) / ".claude" / "projects" / _second_cli_dir_name(worktree)
+        / f"{context.session_id}.jsonl"
+    )
+    return transcript.is_file()
+
+
+def _second_cli_dir_name(cwd: Path) -> str:
+    import re
+
+    return re.sub(r"[^a-zA-Z0-9]", "-", str(Path(cwd).resolve()))
+
+
+@pytest.fixture
+def second_adapter() -> SecondCliAdapter:
+    """The second adapter, pointed at the same stub the first one uses."""
+    return SecondCliAdapter()
+
+
+@pytest.fixture
+def second_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Register the second adapter, the way spec 155's will be."""
+    monkeypatch.setitem(_ADAPTERS, SecondCliAdapter.name, SecondCliAdapter)
+
+
+# The shared policy must exist and be shared — a name the tests can import and
+# both classes call. Written before the implementation (constitution II); the
+# import at the top of this file fails on the tree as received.
+
+
+def test_the_outer_protocol_is_one_method_still() -> None:
+    """US4-S2: the hoist does not resurrect the five-method protocol that
+    specs/005-workgraph-interpreter/contracts/adapter.md sketched and the
+    implementation deliberately collapsed. `AgentAdapter` declares one method —
+    `run_attempt` — and the inner seam the hoist introduces is private to the
+    module, not a widening of what orchestration sees."""
+    protocol_methods = {
+        name
+        for name, value in vars(AgentAdapter).items()
+        if not name.startswith("_") and callable(value)
+    }
+    assert protocol_methods == set(), (
+        f"the AgentAdapter protocol grew {sorted(protocol_methods)}; the outer "
+        "protocol stays one concrete method (US4-S2)"
+    )
+    # The hoist's seam is the per-CLI surface, carried by a separate private
+    # collaboration — never by the protocol orchestration resolves through.
+    assert not hasattr(AgentAdapter, "argv")
+    assert not hasattr(AgentAdapter, "deliver_prompt")
+    assert not hasattr(AgentAdapter, "provider_env")
+    assert not hasattr(AgentAdapter, "credential")
+    assert not hasattr(AgentAdapter, "turn_happened")
+    assert not hasattr(AgentAdapter, "refusal_markers")
+
+
+async def test_the_second_adapter_runs_the_shared_policy_end_to_end(
+    second_adapter: SecondCliAdapter,
+    second_registered: None,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """US4-S1: an attempt through the second adapter gets the whole shared
+    policy — pid file written and cleared, archive populated, deadline ended,
+    orphan reaped — from the one implementation, and the second class wrote
+    none of it."""
+    write_control(stub_home_dir)
+
+    result = await second_adapter.run_attempt(
+        attempt(agent="second-cli"), factory_root=factory_root
+    )
+
+    # The archive is the shared policy's (FR-007): stdout.log beside the
+    # session transcript, in the attempt directory the shared naming derives.
+    assert result.termination == Termination.COMPLETED
+    archive = archive_dir(factory_root)
+    assert (archive / STDOUT_LOG_NAME).is_file()
+    assert (archive / f"{SESSION_ID}.jsonl").is_file()
+    # The pid file was written for this attempt's group and cleared on exit.
+    assert not pid_file(factory_root, EPIC, NODE).exists()
+    # The env the child received is the shared construction: HOME is the
+    # factory's per-node home, ATTEMPT_ARCHIVE names the archive directory,
+    # and the per-CLI provider variables ride on top.
+    invocation = last_invocation(worktree)
+    assert invocation.env["HOME"] == str(stub_home_dir)
+    assert invocation.env[ATTEMPT_ARCHIVE_ENV] == str(archive)
+    assert invocation.env["SECOND_CLI_CONTROL"] == "on"
+
+
+async def test_the_second_adapter_ends_its_process_tree_at_the_deadline(
+    second_adapter: SecondCliAdapter,
+    second_registered: None,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """US4-S1, the deadline half: the second adapter inherits the wall-clock
+    deadline and the process-group termination — TERM to the group, KILL past
+    the grace — without writing any of it."""
+    write_control(stub_home_dir, ignore_sigterm=True)
+
+    result = await second_adapter.run_attempt(
+        attempt(agent="second-cli", timeout_s=DEADLINE_S),
+        factory_root=factory_root,
+    )
+
+    assert result.termination == Termination.TIMEOUT
+    signals = last_invocation(worktree).signals
+    assert "TERM" in signals, f"the group was never TERM'd: {signals}"
+    assert "KILL" in signals, "a run that ignored TERM must be ended by KILL"
+
+
+async def test_the_second_adapter_reaps_a_previous_runs_orphan(
+    second_adapter: SecondCliAdapter,
+    second_registered: None,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+    spawn_orphan: Callable[[], subprocess.Popen[bytes]],
+) -> None:
+    """US4-S1, the reap half: the orphan a dead worker left behind is ended
+    before the second adapter's own launch — the same shared precaution."""
+    orphan = spawn_orphan()
+    plant_pid_file(factory_root, f"{orphan.pid}\n")
+    write_control(stub_home_dir, sleep_s=2.0)
+
+    run = asyncio.create_task(
+        second_adapter.run_attempt(
+            attempt(agent="second-cli"), factory_root=factory_root
+        )
+    )
+    try:
+        await wait_until(lambda: stub_is_up(worktree), what="the second CLI to launch")
+        assert orphan.poll() is not None, "the orphan was still alive at relaunch"
+    finally:
+        result = await run
+
+    assert result.termination == Termination.COMPLETED
+    assert orphan.wait(timeout=PATIENCE_S) in (-signal.SIGTERM, -signal.SIGKILL)
+
+
+async def test_the_second_adapter_ferries_an_operator_question(
+    second_adapter: SecondCliAdapter,
+    second_registered: None,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    fake_home: Path,
+    stub_home_dir: Path,
+) -> None:
+    """US4-S1, the ferry half: the monitor loop that watches the archive
+    directory, ships the question up and the answer down is the shared one —
+    the second adapter wired none of it."""
+    write_control(stub_home_dir, ferry_question=FERRY_QUESTION, ferry_window_s=3.0)
+    shipped: list[str] = []
+
+    async def send_ferry_question(text: str) -> str:
+        shipped.append(text)
+        return "q-ferried"
+
+    run = asyncio.create_task(
+        second_adapter.run_attempt(
+            attempt(agent="second-cli"),
+            factory_root=factory_root,
+            send_ferry_question=send_ferry_question,
+        )
+    )
+    await _wait_for_question(factory_root)
+    _write_answer(factory_root, FERRY_ANSWER)
+    result = await run
+
+    assert shipped == [FERRY_QUESTION], f"the question shipped {len(shipped)} times"
+    assert result.termination == Termination.COMPLETED
+
+
+def test_the_second_class_contains_none_of_the_shared_policy() -> None:
+    """US4-S1, read off the class itself: the second adapter's source names no
+    pid file, no orphan reap, no archive step, no monitor loop, no deadline, no
+    ferry. The shared policy is the one implementation both call, and this is
+    the 'proven by the second class containing none of it' half."""
+    source = inspect.getsource(SecondCliAdapter)
+    lowered = source.lower()
+    for spelled in (
+        "pid_file",
+        "pidfile",
+        "reap",
+        "killpg",
+        "signal_group",
+        "archive_session",
+        "stdout_log_name",
+        "monitor",
+        "ferry",
+        "grace",
+        "timeout",
+        "transcript_dir",
+        "preserve_previous_stdout",
+    ):
+        assert spelled not in lowered, (
+            f"the second adapter spells {spelled!r}; that is the shared policy, "
+            "and a second copy of it is the defect US4 exists to prevent"
+        )
+
+
+def test_the_per_cli_surface_is_all_the_shared_policy_takes() -> None:
+    """FR-007's seam, spelled as names: the per-CLI surface an adapter supplies
+    is argv, prompt delivery, provider env, home seeding, credential discovery,
+    the turn-happened probe, and refusal markers — and nothing wider."""
+    surface = {
+        name
+        for name, value in vars(SecondCliAdapter).items()
+        if not name.startswith("__") and callable(value)
+    }
+    assert surface == {
+        "run_attempt",
+        "argv",
+        "provider_env",
+        "deliver_prompt",
+        "credential",
+        "turn_happened",
+        "refusal_markers",
+    }, f"the per-CLI seam grew {sorted(surface - {'run_attempt'})} or shrank"
