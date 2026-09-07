@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - feedback/pr-8-spec-validate-has-no-library-form-and-its-composition-is-the-policy
 # HELD AT DRAFT 2026-09-07 (operator): US2 IS OVERSIZED FOR THE JUDGE, AND A
