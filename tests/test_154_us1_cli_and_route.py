@@ -43,6 +43,7 @@ DERIVED_ROUTES = {
 
 def _write_registry(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "personas.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
 
