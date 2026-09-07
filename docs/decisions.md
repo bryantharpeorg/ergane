@@ -1334,3 +1334,34 @@ did not move for install.
 
 This narrows nothing and supersedes nothing: install behaves exactly as decision 7 left
 it, and the new spend lives only where an operator exported a key to reach it.
+
+## D-054 · A test asserts on the difference a run made, never on ambient host state (decided)
+
+Decided 2026-09-07, after the defect recurred. `verify/the-closing-step-residue-test-fails-inside-the-operator-gates-own-scratch-worktree`
+stands at two occurrences, twenty days apart, and both were the same mechanism:
+`tests/test_ergane_install_closing_step.py` globs the whole of `tempfile.gettempdir()`
+for directories whose name contains `ergane`, and asserts none of them holds a `specs/`
+subdirectory. Any checkout of this repository holds one.
+
+1. **The rule.** A test asserts on what the run under test did. Where it must prove a
+   run left no residue, it captures the matching state *before* the run and asserts on
+   the set difference. Principle II carries this now, so every dispatched attempt is
+   held to it.
+2. **The first fix was a dodge, and that is why this entry exists.** `023df4c` (PR #357)
+   closed the 2026-08-25 sighting by renaming `gate-commit`'s own scratch directory from
+   `/tmp/ergane-gate-XXXXXX` to `/tmp/factory-gate-XXXXXX`. That moved the gate out of
+   the scan and left the assertion intact, so the finding correctly stayed open. On
+   2026-09-07 an operator scratch worktree at `/tmp/ergane-push-133` — created to
+   cherry-pick a commit onto origin without rebasing under two live epics, which is the
+   procedure this repository documents — failed the gate on a commit touching only
+   `specs/`. Renaming the namespace does not fix a test that reads the namespace.
+3. **The test's own comment already said the right thing.** It reads: "the stronger
+   check is that no *new* directory survives." The code never implemented it. A comment
+   describing the correct assertion is not the correct assertion.
+4. **Why this is constitutional rather than a finding.** A host-dependent test does not
+   fail where it is written; it fails in somebody else's unrelated gate run, and the
+   diff that failed explains nothing. That cost is paid by whoever is holding the floor,
+   which is the shape of defect the constitution exists to prevent.
+
+This supersedes nothing. It narrows Principle II, which previously said only that a
+feature without tests is not done and was silent on what a test may read.

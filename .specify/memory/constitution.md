@@ -24,6 +24,15 @@ begins. No component starts while its predecessor lacks passing tests.
 Every component gets tests before we move on; test-first development is the default for
 all implementation work. A feature without tests is not done.
 
+A test asserts on what the run under test did, never on ambient host state. Scanning a
+shared location — `/tmp`, a home directory, a global registry — and asserting on
+everything found there makes the suite a function of the machine it runs on: it fails
+for reasons no diff explains, and it passes only while nothing else on the host happens
+to collide. Where a test must prove a run left no residue, it captures the state before
+the run and asserts on the **difference**. Renaming whatever collided is not a fix; the
+next thing to occupy that namespace will collide again. A test that cannot pass on a
+host doing unrelated work is not measuring the code.
+
 ### III. Ask Before Adding Dependencies
 
 No new dependency — package, service, or tool — is added without explicit operator
@@ -154,7 +163,10 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.6.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-08-24 (2.6.0 —
+**Version**: 2.7.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-09-07 (2.7.0 —
+D-054: Principle II narrowed; a test asserts on the difference a run made, never on
+ambient host state, and where it must prove a run left no residue it captures the
+matching state before the run and asserts on the set difference. 2.6.0 —
 D-051: Principle IX added; a value that governs where work goes is read from the
 declaration that owns it, never inferred from a checked-out branch, a working directory
 or an inherited environment, and an absent declaration is refused rather than defaulted.
