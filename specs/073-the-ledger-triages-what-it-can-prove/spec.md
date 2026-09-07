@@ -56,6 +56,20 @@ fixes:
 # (critical), filed the same morning from the same read.
 #
 # DO NOT FLIP READY without a pre-dispatch review.
+#
+# --- OVERRIDE, 2026-09-07, by epic 130 US2 (FR-005) ---
+# specs/130-the-boundary-detector-charges-an-attempt-only-for-what-it-wrote
+# deliberately reverses US4 scenario 2 — "a sibling worktree is removed during
+# the attempt ... a finding is filed naming it ... the behaviour that must
+# survive". 073 did not know that the factory itself removes sibling worktrees
+# as ordinary housekeeping: `factory/workgraph/workflow.py` `_remove_worktree`
+# is called from four sites in the workflow, so this scenario's committed
+# control (`tests/test_detector_reports_removals_only.py`, now
+# `test_sibling_worktree_removed_files_no_finding`) fired on the factory's own
+# normal operation and charged it to whichever attempt happened to be tearing
+# down. The inversion lives in that test's docstring; the scenario text, story
+# titles, work-graph block and FR bodies here are fingerprint input and are
+# untouched by the override.
 ---
 
 # Feature Specification: the ledger triages what it can prove
