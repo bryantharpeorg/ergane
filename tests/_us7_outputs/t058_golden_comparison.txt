@@ -1,0 +1,69 @@
+# T058 (133-US7) — the comparison against US1's six golden artifacts
+
+The task: "Paste, as committed evidence, the comparison of the verb's stdout,
+its stderr and its `--json` output over both fixture trios against US1's six
+golden artifacts — it must be empty on all three streams."
+
+**The standing guard that keeps it empty** is the golden test US1 committed in
+T006: `tests/test_133_us1_typed_report_and_golden_captures.py` (the
+`test_the_trio_matches_its_three_golden_artifacts` comparisons, stdout and
+stderr and the `--json` document byte for byte with the repository root
+normalised on both sides — plan trap 11). Re-run with:
+
+    uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
+
+The same comparison is reproduced below as a line count against the committed
+artifacts, run from this tree after the move landed, driving
+`factory.cli.main.main` in-process the way `_run_validate` does (plan trap 19:
+both streams captured apart).
+
+---
+
+
+[clean/stdout] exit=0 diff lines vs US1 golden: 0
+[clean/stderr] exit=0 diff lines vs US1 golden: 0
+[clean/json] exit=0 diff lines vs US1 golden: 0
+[defective/stdout] exit=1 diff lines vs US1 golden: 0
+[defective/stderr] exit=1 diff lines vs US1 golden: 0
+[defective/json] exit=1 diff lines vs US1 golden: 0
+
+ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
+
+The verb's exit codes, unchanged: clean trio 0, defective trio 1.
+
+## git diff --stat for this story (3ffa33c..HEAD, the base being this attempt's start)
+
+```
+ factory/cli/nouns/spec.py                          | 209 +----------
+ factory/spec/anchors.py                            | 208 +++++++++++
+ tests/_us7_outputs/README.md                       |  10 +
+ tests/_us7_outputs/t058_golden_comparison.txt      |  62 +
+ tests/test_133_us7_anchor_resolution_relocation.py | 398 +++++++++++++++++++++
+ 5 files changed, 619 insertions(+), 208 deletions(-)
+```
+
+Production half of the story diff (`git diff 3ffa33c..HEAD -- factory/`): 19,478 bytes.
+Test half (`-- tests/`): 19,266 bytes (the story's tests plus this evidence file).
+Assembled diff (`git diff 3ffa33c..HEAD | wc -c`, final, this file committed):
+**42,364 bytes** — inside the 52,400-byte working ceiling (80% of
+DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`), with 10,036 bytes
+of headroom. The task's warning held: this is the tightest story in the chain,
+and the number above is the final one with this evidence file committed.
+
+## Byte-identity proof for the moved source
+
+Extraction of the one span from
+`git show 3ffa33c:factory/cli/nouns/spec.py` against the same marker in
+`factory/spec/anchors.py`:
+
+```
+    _check_anchor_resolution: byte-identical=True 9800
+    TOTAL source bytes moved: 9800 (plan measured 9,795 at 57bf698)
+```
+
+Extraction method: the span from `def _check_anchor_resolution(` to
+`def _check_fixes(` in the pre-move module, rstrip'd of its trailing blank
+separator lines; against the span from `def _check_anchor_resolution(` to
+end-of-file in the module that received it, rstrip'd the same way. The four
+`checked.append("anchor_resolution")` exits, the six parameters and every
+refusal string travelled inside that span unchanged (plan traps 5 and 7).
