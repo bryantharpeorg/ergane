@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from factory.cli.nouns import build as build_cli
-from factory.cli.nouns import spec as spec_noun
 from factory.config import Persona, WriteScope, load_personas
+from factory.spec import layers
 from factory.workgraph import cli as workgraph_cli
 from factory.workgraph.models import WorkGraph, WorkNode
 
@@ -45,13 +45,22 @@ def test_skills_field_is_documented_as_reserved_and_construction_sites_are_expla
     ), "Persona docstring must say skills is unused"
 
     # The three construction sites must explain the empty tuple rather than
-    # passing it silently.
-    for module in (workgraph_cli, build_cli, spec_noun):
+    # passing it silently. The spec noun's registry builder is `_vacuous_registry`,
+    # which 133-US5 relocated to `factory/spec/layers.py` with the layer bodies
+    # it serves — the construction site is asserted there rather than in the CLI
+    # module it left.
+    for module in (workgraph_cli, build_cli):
         source = Path(module.__file__).read_text(encoding="utf-8")
         assert "skills=()" in source, f"{module.__name__} no longer constructs personas with skills=()"
         assert "reserved" in source.lower(), (
             f"{module.__name__} does not explain why skills=() is passed"
         )
+
+    layers_source = Path(layers.__file__).read_text(encoding="utf-8")
+    assert "skills=()" in layers_source, f"{layers.__name__} no longer constructs personas with skills=()"
+    assert "reserved" in layers_source.lower(), (
+        f"{layers.__name__} does not explain why skills=() is passed"
+    )
 
 
 # --- T022 [P] [US3] (spec US3-S2) ---------------------------------------------
@@ -143,5 +152,5 @@ def test_vacuous_personas_remain_structurally_valid() -> None:
     registry_build = build_cli._persona_registry(graph)
     assert registry_build["placeholder"].skills == ()
 
-    registry_spec = spec_noun._vacuous_registry(graph)
+    registry_spec = layers._vacuous_registry(graph)
     assert registry_spec["placeholder"].skills == ()

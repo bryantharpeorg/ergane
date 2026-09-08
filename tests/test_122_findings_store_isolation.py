@@ -28,9 +28,11 @@ from pathlib import Path
 import pytest
 
 import factory.doctor.cli as _doctor_cli
-from factory.cli.nouns.spec import _check_fixes
 from factory.doctor.models import Finding, Severity, Status
 from factory.doctor.store import connect, report
+# 133-US5 relocated `_check_fixes` to `factory/spec/layers.py`; the import is
+# at module scope, so the new home is named here at module scope too.
+from factory.spec.layers import _check_fixes
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 

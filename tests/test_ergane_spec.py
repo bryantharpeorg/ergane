@@ -393,10 +393,15 @@ def test_validate_reports_frontmatter_derivation_and_persona_errors(
     _git(repo, "add", "-A", env=env)
     _commit(repo, "fixture skeleton", env=env)
 
-    # Make the registry unserved for every import of the spec noun.
+    # Make the registry unserved for the persona layer's loader. 133-US5 moved
+    # `_check_personas` to `factory.spec.layers`, which binds `load_personas` at
+    # module scope — patching `factory.config` alone would disable nothing the
+    # verb reads, and the control would pass vacuously (plan trap 23's shape).
     import factory.config
+    import factory.spec.layers as spec_layers
 
     monkeypatch.setattr(factory.config, "load_personas", lambda path=None: {})
+    monkeypatch.setattr(spec_layers, "load_personas", lambda path=None: {})
     # Also provide a tasks.md so scenario coverage does not add a fourth finding.
     (specs_dir / "tasks.md").write_text("- [ ] T001 [US1-S1] task\n", encoding="utf-8")
     _git(repo, "add", "-A", env=env)

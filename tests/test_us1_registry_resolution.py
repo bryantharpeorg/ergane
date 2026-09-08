@@ -18,8 +18,9 @@ import yaml
 
 from factory import config as config_module
 from factory.activities import agent_activities, roadmap_activities
-from factory.cli.nouns import build, spec as spec_noun
+from factory.cli.nouns import build
 from factory.config import ConfigError, REGISTRY_FILENAME, load_personas
+from factory.spec import layers as spec_layers
 from factory.workgraph import cli as workgraph_cli
 
 
@@ -156,7 +157,9 @@ def _call_site_load_function(site_name: str):
         "build_cli": build._preflight_registry,
         "agent_activities_resolve_graph": agent_activities.resolve_graph,
         "agent_activities_resolve_persona": agent_activities.resolve_persona,
-        "spec_validate": spec_noun._check_personas,
+        # 133-US5 moved `_check_personas` to `factory.spec.layers`; the
+        # call site is asserted there rather than in the CLI module it left.
+        "spec_validate": spec_layers._check_personas,
     }[site_name]
 
 
