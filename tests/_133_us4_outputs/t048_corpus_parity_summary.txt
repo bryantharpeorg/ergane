@@ -1,0 +1,72 @@
+# T048 (133-US4) — the parity run over the full corpus, and the red-first guards
+
+The task: "Paste the parity test's summary line over the full corpus, naming
+the number of specs compared, together with its pasted wall-clock time."
+
+---
+
+## The green run (T048)
+
+`uv run pytest tests/test_133_us4_corpus_parity.py -q --no-header -s`,
+in this worktree, on the landed tree (US1…US9 all landed before this story
+began). The `-s` run is where the count line is visible; the wall clock below
+is from the same command without it, whose captured stdout the summary line
+names:
+
+    specs compared: 147
+    4 passed, 5 warnings in 78.14s (0:01:18)
+
+The count line comes from the parity test itself
+(`tests/test_133_us4_corpus_parity.py::test_both_faces_agree_over_every_corpus_spec`),
+printed after it enumerates `specs/` by globbing at call time: 147 spec
+directories, each driven through the library face (`validate_spec`) and the
+CLI face (`factory.cli.main.main`, in process, stdout captured), compared on
+the verdict, the per-layer findings with severities and messages, `checked`,
+`skipped`, `information` and `judge_evidence`. Zero disagreements — one
+assertion failure would have ended the run red, not a count of them.
+
+Wall clock, 78.14 s for all four tests, is trap 15's whole argument made
+measurable: the CLI face runs in this process. The same sweep spawning one
+subprocess per spec doubles that at best, and the plan's step 7 names the
+number as the tell.
+
+## The red-first guards
+
+The corpus agrees on the landed tree — that is the state this story commits,
+and since US9 the two faces share one composition, so agreement on a healthy
+tree is by construction. What makes the guarantee real is that each guard can
+fail. Each was demonstrated red against the wrong implementation it exists to
+guard against, driven through the real test functions in one scratch process
+(never committed):
+
+    RED T043+T044 parity (library face flips every refusal): AssertionError: 001-usage-tracking: verdict: the verb exited 1, the library report's verdict is 'pass' (exit 0); findings: the verb printed [{'layer': 'workgraph', 'message': 'the `## Work Graph` section does not compile (1 declaration rejected):', 'severity': 'refusal'}, ...
+
+    RED control (comparator always returns []): AssertionError: the comparator accepted a corrupted report
+
+    RED T045 (corpus enumerated by a literal list): AssertionError: a spec minted after this story landed was not enumerated; the corpus list has stopped being a glob
+
+    RED T046 (CLI face driven by subprocess.run): AssertionError: subprocess.run spawned during the CLI drive
+
+The first line is truncated here, not in the run: the failure names both the
+verdict flip (US4-S1) and the findings difference with severities (US4-S2) on
+the first spec compared. The four sabotage shapes, and why each is the wrong
+implementation its guard exists to catch:
+
+1. **The library face drifts from the verb** — `factory.spec.validate_spec`
+   patched to flip every refusal to an advisory and clear the refusal channel,
+   while the verb keeps rendering the honest composition. Red on the first
+   spec that carries a refusal, on both the verdict and the findings: the
+   severity drift US4-S2 names is caught, not just the pass/fail flip.
+2. **A comparator that cannot fail** — `_comparisons` patched to return `[]`
+   always. The control test goes red with "the comparator accepted a
+   corrupted report", which is the whole point of committing that control:
+   since US9 the corpus run agrees by construction, so a vacuous comparator
+   would pass forever without it.
+3. **A literal corpus list** — `_corpus_spec_dirs` patched to return the
+   globbed list minus the freshly minted spec. The minted-spec half of T045
+   goes red; the enumeration has stopped covering new specs.
+4. **A subprocess per spec** — `_drive_verb` patched to shell out. The spawn
+   spy fires; trap 15's wall-clock failure mode is caught at the seam, not in
+   the suite's duration.
+
+The green run above is the landed tree with none of these sabotages applied.
