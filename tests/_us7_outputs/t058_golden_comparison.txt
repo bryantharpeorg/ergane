@@ -43,12 +43,14 @@ The verb's exit codes, unchanged: clean trio 0, defective trio 1.
 ```
 
 Production half of the story diff (`git diff 3ffa33c..HEAD -- factory/`): 19,478 bytes.
-Test half (`-- tests/`): 19,266 bytes (the story's tests plus this evidence file).
+Test half (`-- tests/`): 23,648 bytes (the story's tests plus this evidence file).
 Assembled diff (`git diff 3ffa33c..HEAD | wc -c`, final, this file committed):
-**42,364 bytes** — inside the 52,400-byte working ceiling (80% of
-DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`), with 10,036 bytes
+**43,126 bytes** — inside the 52,400-byte working ceiling (80% of
+DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`), with 9,274 bytes
 of headroom. The task's warning held: this is the tightest story in the chain,
-and the number above is the final one with this evidence file committed.
+and the number above is the final one with this evidence file committed. (The
+42,364 measured before this file was committed excluded it; the number that
+binds is the final one.)
 
 ## Byte-identity proof for the moved source
 
