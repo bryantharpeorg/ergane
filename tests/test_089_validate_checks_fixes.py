@@ -300,11 +300,18 @@ def _omits_fixes(spec_path: Path) -> bool:
 def _validate_without_fixes_layer(
     run: Callable[..., Run], spec_dir: Path, repo_root: Path, specs_root: Path
 ) -> tuple[int, Any]:
-    """Run validate with the new `_check_fixes` layer monkeypatched to a no-op."""
-    import factory.cli.nouns.spec as _spec_module
+    """Run validate with the `fixes` layer monkeypatched to a no-op.
 
-    original = _spec_module._check_fixes
-    _spec_module._check_fixes = lambda *args, **kwargs: None
+    The rebinding lands on the module the composition reads (133-US9, FR-015):
+    `factory.cli.nouns.spec` re-executes on every `main()` call, so a rebinding
+    there was lost before the very call it wrapped — the control passed
+    vacuously for its whole life. `factory.spec.composition` is cached, so the
+    verb's renderer reaches the patched object and the disable is real.
+    """
+    import factory.spec.composition as _composition
+
+    original = _composition._check_fixes
+    _composition._check_fixes = lambda *args, **kwargs: None
     try:
         result = run(
             "spec",
@@ -318,7 +325,7 @@ def _validate_without_fixes_layer(
         )
         return result.code, result.json
     finally:
-        _spec_module._check_fixes = original
+        _composition._check_fixes = original
 
 
 def test_validate_fixes_less_specs_in_real_corpus_unchanged(
