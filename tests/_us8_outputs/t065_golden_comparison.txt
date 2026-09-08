@@ -1,0 +1,84 @@
+# T065 (133-US8) — the comparison against US1's six golden artifacts
+
+The task: "Paste, as committed evidence, the comparison of the verb's stdout,
+its stderr and its `--json` output over both fixture trios against US1's six
+golden artifacts — it must be empty on all three streams — and the output of
+`git diff <base>..HEAD | wc -c`."
+
+**The standing guard that keeps it empty** is the golden test US1 committed in
+T006: `tests/test_133_us1_typed_report_and_golden_captures.py` (the
+`test_the_trio_matches_its_three_golden_artifacts` comparisons, stdout and
+stderr and the `--json` document byte for byte with the repository root
+normalised on both sides — plan trap 11). Re-run with:
+
+    uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
+
+Reproduced below as a diff-line count against the committed artifacts, run from
+this tree after the move landed, driving `factory.cli.main.main` in-process the
+way `_run_validate` does (plan trap 19: both streams captured apart).
+
+---
+
+[clean/stdout] exit=0 diff lines vs US1 golden: EMPTY
+[clean/stderr] exit=0 diff lines vs US1 golden: EMPTY
+[clean/json] exit=0 diff lines vs US1 golden: EMPTY
+    keys=['spec_dir', 'checked', 'skipped', 'findings', 'information', 'judge_evidence']
+    judge_evidence keys=['diff', 'criteria', 'gates', 'warnings', 'all_provable']
+[defective/stdout] exit=1 diff lines vs US1 golden: EMPTY
+[defective/stderr] exit=1 diff lines vs US1 golden: EMPTY
+[defective/json] exit=1 diff lines vs US1 golden: EMPTY
+    keys=['spec_dir', 'checked', 'skipped', 'findings', 'information', 'judge_evidence']
+    judge_evidence keys=['diff', 'criteria', 'gates', 'warnings', 'all_provable']
+
+ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
+
+Exit codes unchanged: clean 0, defective 1. Key order in both documents is as
+US1 committed it (trap 21): serialised in the dict's order, `judge_evidence`
+present only when a report was made.
+
+## git diff --stat for this story (be1f006..HEAD, this attempt's base)
+
+```
+ factory/cli/nouns/spec.py                           | 255 +---------------
+ factory/spec/evidence.py                            | 270 ++++++++++++++-
+ tests/test_133_us6_evidence_vocabulary_relocation.py |  49 +-
+ tests/test_133_us7_anchor_resolution_relocation.py   |  16 +-
+ tests/test_133_us8_evidence_report_relocation.py     | 330 +++++++++++++++
+ 5 files changed, 623 insertions(+), 297 deletions(-)
+```
+
+Production half (`-- factory/`): 23,773 bytes. Test half (`-- tests/`): 22,875
+bytes before this artifact. Assembled (`git diff be1f006..HEAD | wc -c`, final,
+this file committed): **51,963 bytes** — inside the 52,400-byte working ceiling
+(80% of DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`), with
+437 bytes of headroom. The count is taken with this artifact's final bytes in
+the tree, so it is self-consistent.
+
+## Byte-identity proof for the moved source
+
+Extraction of the one span from `git show be1f006:factory/cli/nouns/spec.py`
+against the same marker in `factory/spec/evidence.py`:
+
+```
+    report family: byte-identical=True 9528
+    TOTAL source bytes moved: 9528 (plan measured 9,530 at 57bf698)
+```
+
+Extraction method: the span from the `# --- what the judge will be shown
+(102-US2)` banner comment to end-of-file in the pre-move module, against the
+span from the same marker to end-of-file in the module that received it. The
+banner comment, the three frozen dataclasses, `as_dict()`, `lines()`,
+`_borderline_warning`, `_story_criteria` and `_check_evidence` travelled inside
+that span unchanged — every string verbatim (trap 9), the skip and checked
+append sites exactly as they were, and the checker's accumulate-and-return
+shape intact (trap 7): it appends into the caller-owned
+`findings`/`skipped`/`checked` lists *and* returns the report, which
+`_validate_command` binds at the same call site, prints through and serialises
+under the `judge_evidence` key as before.
+
+The six imports whose only readers moved with them leave the CLI module's
+import block (asdict, Sequence, parse_spec, DIFF_INPUT_LIMIT, Requirement,
+RequirementKind); the moved body constructs findings through the
+`_ValidateFinding` alias, so that import joins the moved module, binding
+`factory.spec.SpecFinding` — the object US1 planted — under the name it was
+written against.

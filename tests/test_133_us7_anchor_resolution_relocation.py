@@ -68,15 +68,13 @@ VOCABULARY = (
     "_BARE_LINE_RE",
 )
 
-#: The checkers US6 still owns. Defined in the CLI module when this story
-#: lands — their presence is the "nothing else moved" half of T067. The
-#: checkers US5 owns left with that story (its T018 asserts them gone), so
-#: they are deliberately absent from this tuple: at the time of the edit only
-#: the evidence family remained in the CLI module of everything US7 left
-#: behind.
-STILL_HERE = (
-    "_check_evidence",
-)
+#: The checkers US6 still owned when this story landed — their presence was
+#: the "nothing else moved" half of T067. The checkers US5 owns left with that
+#: story (its T018 asserts them gone), and US8 has since moved the whole
+#: evidence family US6 left behind (its T062 asserts the sixteen names gone),
+#: so at the time of the edit nothing this story left behind remains defined
+#: in the CLI module.
+STILL_HERE: tuple[str, ...] = ()
 
 
 def _module_bindings(source: str) -> set[str]:

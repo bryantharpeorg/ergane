@@ -84,16 +84,12 @@ VOCABULARY_FAMILY = (
     "_evidence_refusal",
 )
 
-#: The names Phase 6 (US8) still owns — asserted to still be defined in the CLI
-#: module, which is the "nothing else moved" half of T026.
-STILL_HERE = (
-    "_check_evidence",
-    "_JudgeEvidenceReport",
-    "_StoryCriteria",
-    "_BorderlineClause",
-    "_borderline_warning",
-    "_story_criteria",
-)
+#: The names Phase 6 (US8) still owned when this story landed — asserted to
+#: still be defined in the CLI module, which was the "nothing else moved" half
+#: of T026. US8 has since moved all six, so the tuple is empty: nothing this
+#: story left behind remains defined in the CLI module, and US8's T062 asserts
+#: the whole sixteen-name family gone from it.
+STILL_HERE: tuple[str, ...] = ()
 
 
 def _module_bindings(source: str) -> set[str]:
@@ -137,8 +133,9 @@ def test_the_cli_module_no_longer_defines_the_vocabulary_family() -> None:
     splitting those two strands a constant of this layer in the CLI module, or
     worse, carrying it away a story early. Leaving any of the ten behind makes a
     moved body reach back into the module it just left, which cannot import
-    (trap 17). The six report-half names are asserted to still be defined here —
-    nothing else moved.
+    (trap 17). The six report-half names were asserted to still be defined here
+    when this story landed; US8 has since moved them, and the empty STILL_HERE
+    tuple is what that edit left of the nothing-else-moved half.
     """
     source = CLI_PATH.read_text(encoding="utf-8")
     bindings = _module_bindings(source)
@@ -188,14 +185,15 @@ def test_the_moved_module_imports_nothing_from_the_cli_module() -> None:
 def test_the_surviving_checker_reads_the_moved_objects_and_still_produces_its_report() -> None:
     """T027, US6-S2. The import-back control, both halves, then the drive.
 
-    `_check_evidence` has not moved yet and reads most of what this story
-    moves. First half: every moved name still resolves as an attribute of
-    `factory.cli.nouns.spec`, is the very object `factory.spec.evidence`
-    defines, and carries `__module__` under `factory.spec` — a second copy
-    left behind passes the name assertion and fails the pair. Second half: the
-    surviving checker is driven end to end and still produces its report. The
-    report type itself is asserted to still be defined in the CLI module, so
-    this cannot pass by US8 having already run.
+    `_check_evidence` read most of what this story moves, and when this story
+    landed the first half asserted every moved name still resolved as an
+    attribute of `factory.cli.nouns.spec`, the very object
+    `factory.spec.evidence` defines, carrying `__module__` under
+    `factory.spec` — a second copy left behind passes the name assertion and
+    fails the pair. US8 has since moved the checker and the report type it
+    returns, so the pair is asserted at the moved module alone and the drive
+    goes through the CLI module's import-back binding, which is still what
+    `_validate_command` reaches.
     """
     import factory.cli.nouns.spec as spec_noun
     import factory.spec.evidence as evidence
@@ -208,10 +206,6 @@ def test_the_surviving_checker_reads_the_moved_objects_and_still_produces_its_re
     assert evidence._evidence_refusal.__module__.startswith("factory.spec")
     assert evidence._declared_gates.__module__.startswith("factory.spec")
     assert evidence._Declarations.__module__.startswith("factory.spec")
-
-    assert "_check_evidence" in _module_bindings(CLI_PATH.read_text(encoding="utf-8")), (
-        "_check_evidence is not defined in the CLI module — US8 has already moved it"
-    )
 
     spec_text = (
         "---\nstate: draft\n---\n\n## Requirements *(mandatory)*\n\n"
@@ -236,9 +230,10 @@ def test_the_surviving_checker_reads_the_moved_objects_and_still_produces_its_re
     document = report.as_dict()
     assert document["gates"]["declared"] == ["smoke"]
     assert document["all_provable"] is True
-    assert report.__class__.__module__.startswith("factory.cli.nouns.spec"), (
-        "the report type must still be defined in the CLI module — US8's scope"
-    )
+    # US8 moved the report type; the object the CLI module binds is still the
+    # one this module defines, reached through the import-back.
+    assert report.__class__ is evidence._JudgeEvidenceReport
+    assert report.__class__.__module__.startswith("factory.spec")
 
 
 # --- US6-S4 / FR-012 / traps 7, 9 and 19: the golden refusal string ------------
