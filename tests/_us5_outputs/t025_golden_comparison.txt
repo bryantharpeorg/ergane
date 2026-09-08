@@ -1,0 +1,96 @@
+# T025 (133-US5) — the comparison against US1's six golden artifacts
+
+The task: "Paste, as committed evidence, the comparison of the verb's stdout, its stderr and its `--json` output over both fixture trios against US1's six golden artifacts — it must be empty on all three streams — and the transcript of the four `_check_fixes` early-return cases showing what each appended."
+
+**The standing guard that keeps it empty** is the golden test US1 committed in T006: `tests/test_133_us1_typed_report_and_golden_captures.py` (the `test_the_trio_matches_its_three_golden_artifacts` comparisons, stdout and stderr and the `--json` document byte for byte with the repository root normalised on both sides — plan trap 11). Re-run with:
+
+    uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
+
+Reproduced below as a diff-line count against the committed artifacts, run from this tree after the move landed, driving `factory.cli.main.main` in-process the way `_run_validate` does (plan trap 19: both streams captured apart).
+
+---
+
+[clean/stdout] exit=0 diff lines vs US1 golden: 0
+[clean/stderr] exit=0 diff lines vs US1 golden: 0
+[clean/json] exit=0 diff lines vs US1 golden: 0
+[defective/stdout] exit=1 diff lines vs US1 golden: 0
+[defective/stderr] exit=1 diff lines vs US1 golden: 0
+[defective/json] exit=1 diff lines vs US1 golden: 0
+
+ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
+
+The verb's exit codes, unchanged: clean trio 0, defective trio 1.
+
+## The four `_check_fixes` early-return cases, and what each appended
+
+Driven through `factory.spec.layers._check_fixes` with caller-owned lists; the store resolution pins (`ERGANE_ROOT` and the legacy candidate) point at a scratch tree, so no host shape can change the outcome.
+
+EXIT 1 — unreadable spec.md (factory/cli/nouns/spec.py:1244 pre-move): silent return, no list touched
+    findings:   []
+    information: []
+    skipped:    []
+    checked:    []
+
+EXIT 2 — no `fixes:` key (:1255): silent return, neither checked nor skipped
+    findings:   []
+    information: []
+    skipped:    []
+    checked:    []
+
+EXIT 3 — absent store (:1267): one `skipped` entry, `fixes` not checked
+    findings:   []
+    information: []
+    skipped:    [{'layer': 'fixes', 'reason': 'no findings store at /tmp/tmpy28p92um/rt-c/doctor.db'}]
+    checked:    []
+
+EXIT 4 — unopenable store (:1279): a different `skipped` entry, `fixes` not checked
+    findings:   []
+    information: []
+    skipped:    [{'layer': 'fixes', 'reason': 'cannot read findings store at /tmp/tmpy28p92um/rt-d/doctor.db: unable to open database file'}]
+    checked:    []
+
+SUCCESS PATH (:1301): the only exit that appends `fixes` to `checked`
+    findings:   []
+    information: [('fixes', 'verified 1 finding key(s) against /tmp/tmpy28p92um/rt-e/doctor.db')]
+    skipped:    []
+    checked:    ['fixes']
+
+## Byte counts for this story
+
+```
+factory/cli/nouns/spec.py | 278 ++--------------------------------------
+ factory/spec/layers.py    | 318 ++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 331 insertions(+), 265 deletions(-)
+```
+
+Production half of the story diff (`git diff 943b028..HEAD -- factory/`): 22405 bytes.
+Test half (`-- tests/`): 37827 bytes.
+Assembled diff (`git diff 943b028..HEAD | wc -c`): 60232 bytes, before this evidence file is committed; the number that binds is the final one with this file committed, printed below.
+
+
+**Final assembled diff, with this evidence file committed** (the number that
+binds against the 52,400-byte working ceiling — 80% of DIFF_INPUT_LIMIT,
+65,536, `factory/verify/diffbounds.py:47`): measured after committing this
+file; see the last line below.
+
+## Byte-identity proof for the moved source
+
+Extraction of the three spans from
+`git show 943b028:factory/cli/nouns/spec.py` against their markers in
+`factory/spec/layers.py`:
+
+```
+    span A (grammar + _STRUCTURAL_TIMEOUT_S + _vacuous_registry): byte-identical=True 1064
+    span B (_scan_sentinels_in_trio):                             byte-identical=True 826
+    span C (_tasks_text .. _check_scenario_coverage):             byte-identical=True 7056
+    TOTAL source bytes moved: 8946 (plan measured 8,649 at 57bf698 and 8,937
+    in the task list; the delta is US2/US7's re-anchoring of the file the
+    spans were counted in, not new code)
+```
+
+Extraction method: each span from its first marker line to the start of the
+next top-level definition in the pre-move module, rstrip'd of its trailing
+blank separator lines; against the same span in `factory/spec/layers.py`,
+rstrip'd the same way. The four `_check_fixes` early returns, every signature,
+and every refusal string travelled inside those spans unchanged (plan traps 4,
+5, 7 and 9).
