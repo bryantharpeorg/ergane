@@ -1688,13 +1688,12 @@ class ClaudeCodeAdapter:
 # The second adapter (155-US1, D-018's promise kept) ----------------------------
 
 
-#: The env var that carries the attempt's virtual key into a Codex launch. The
-#: generated `config.toml` names it as the gateway provider's `env_key`, so the
-#: key never appears in the file on disk and the CLI reads it from its own env
-#: (measured 2026-09-08: unset, the CLI refuses `ERROR: Missing environment
-#: variable: \`CODEX_GATEWAY_KEY\`.`). Every new env name goes on the standing
-#: boundary's `--setenv` contract — under bwrap that is the whole of the env
-#: after `--clearenv` — so a name that skips that list never reaches the child.
+#: The env var that carries the attempt's virtual key into a Codex launch: the
+#: generated `config.toml` names it as the gateway provider's `env_key`, so
+#: the key never lands on disk and the CLI reads it from its own env (measured
+#: 2026-09-08: unset, the CLI refuses naming it). Every new env name goes on
+#: the standing boundary's `--setenv` contract — under bwrap that is the whole
+#: env after `--clearenv` — or it never reaches the child.
 CODEX_GATEWAY_KEY = "CODEX_GATEWAY_KEY"
 
 #: The env var naming the per-node CODEX_HOME the adapter seeds. The CLI reads
@@ -1711,21 +1710,19 @@ CODEX_GATEWAY_PROVIDER = "ergane-gateway"
 #: named once so the generated file has one spelling.
 CODEX_GATEWAY_PROVIDER_NAME = "Ergane LiteLLM gateway"
 
-#: The wire format Codex speaks to the gateway (plan trap 5, default): P1 proved
-#: the proxy serves `/v1/responses` for the ladder aliases, and the US1 probe
-#: then proved the CLI end-to-end on this setting (2026-09-08, HTTP 200 with
-#: real usage through `@openai/codex@0.153.4`). `chat` acceptance is unresolved;
-#: probe before relying on it.
+#: The wire format Codex speaks to the gateway (plan trap 5): P1 proved the
+#: proxy serves `/v1/responses`, and the US1 probe then proved the CLI
+#: end-to-end on it (2026-09-08, real usage through 0.153.4). `chat`
+#: acceptance is unresolved; probe before relying on it.
 CODEX_WIRE_API = "responses"
 
-#: The stdout marker that means a Codex run refused the credential — the
-#: measured analogue of `SUBSCRIPTION_REFUSAL_MARKER` (155-US2; measured
-#: 2026-09-08). Codex prints its refusals on **stderr** with exit 1 — the
-#: inverse of Claude Code — and the substring below is the stable part across
-#: all three measured shapes (no credential, invalid gateway key, gateway key
-#: unset yields a different line, `ERROR: Missing environment variable:`, which
-#: the key-mint path prevents by construction). The adapter's own log stream is
-#: stdout+stderr interleaved, so the marker is matched on that combined stream.
+#: The marker that means a Codex run refused the credential — the measured
+#: analogue of `SUBSCRIPTION_REFUSAL_MARKER` (155-US2; measured 2026-09-08).
+#: Codex prints its refusals on **stderr** with exit 1 — the inverse of Claude
+#: Code — and this substring is the stable part across the measured shapes
+#: (no credential, invalid gateway key; an unset key yields a different line
+#: the key-mint path prevents by construction). The adapter's log is
+#: stdout+stderr interleaved, so the marker matches that combined stream.
 CODEX_REFUSAL_MARKER = "unexpected status 401 Unauthorized"
 
 #: The argv flag that disables Codex's own sandbox and approval prompts. The
@@ -1735,11 +1732,10 @@ CODEX_REFUSAL_MARKER = "unexpected status 401 Unauthorized"
 #: externally sandboxed" — this is that environment.
 CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox"
 
-#: Codex refuses to run outside a git repository (or a trusted directory)
-#: without this flag (measured: `Not inside a trusted directory and
-#: --skip-git-repo-check was not specified.`, exit 1, stderr). A node worktree
-#: is a real git worktree, but a test's worktree fixture is a plain directory;
-#: the launch does not depend on which one it is handed.
+#: Codex refuses to run outside a git repository without this flag (measured:
+#: "Not inside a trusted directory…", exit 1, stderr). A node worktree is a
+#: real git worktree, but a test's fixture is a plain directory; the launch
+#: does not depend on which one it is handed.
 CODEX_SKIP_GIT_CHECK_FLAG = "--skip-git-repo-check"
 
 
@@ -1748,26 +1744,20 @@ class CodexAdapter:
     --skip-git-repo-check --cd <worktree> -`, prompt on stdin.
 
     The second CLI behind 154's seam, and the first non-Claude value the
-    persona registry's `agent` axis takes. Everything agent-agnostic — pid
-    file, reap, archive, monitor, deadline, ferry, backend, standards — is the
-    shared policy's; this class supplies only the per-CLI surface, and the
-    dispatch path selects it by the persona's `agent: codex` (154-US3).
+    registry's `agent` axis takes. Everything agent-agnostic is the shared
+    policy's; this class supplies only the per-CLI surface, selected by the
+    persona's `agent: codex` (154-US3).
 
-    Three measured facts shape it (US1's probe, 2026-09-08, 0.153.4):
-
-    - **Prompt on stdin via `-`.** The trailing `-` argument is what tells
-      `codex exec` to read its instructions from stdin — the same delivery
-      Claude's `-p` uses, and the same `_feed_prompt` closes the pipe.
-    - **Provider routing lives in a generated `config.toml`**, written into the
-      per-node `CODEX_HOME` (FR-003, D-048: no `[[llm.persona]]`-style
-      control-plane config). The file declares the gateway as a custom
-      provider parameterised by the attempt's proxy URL, and names
-      `CODEX_GATEWAY_KEY` as its `env_key` — the key travels in the
-      environment, never on disk.
-    - **There is no `--session-id` analogue** (trap 4, measured). Codex
-      generates its own session id; the workflow's id names the archive
-      directory and nothing the CLI receives. The turn probe is therefore the
-      rollout tree's existence, not one known filename.
+    Three measured facts shape it (US1's probe, 2026-09-08, 0.153.4): the
+    trailing `-` puts the prompt on stdin (the same delivery Claude's `-p`
+    uses, closed by the same `_feed_prompt`); provider routing lives in a
+    generated `config.toml` in the per-node `CODEX_HOME` (FR-003, D-048 — no
+    control-plane config), declaring the gateway parameterised by the attempt's
+    proxy URL with `CODEX_GATEWAY_KEY` as its `env_key`, so the key travels in
+    the environment, never on disk; and there is no `--session-id` analogue
+    (trap 4, measured) — Codex generates its own id, the workflow's id names
+    the archive and nothing the CLI receives, and the turn probe is the
+    rollout tree's existence, not one known filename.
     """
 
     name = "codex"
@@ -1818,11 +1808,10 @@ class CodexAdapter:
     def _argv(self, context: AttemptContext) -> list[str]:
         """The invocation, as the child receives it (FR-004).
 
-        `exec` for non-interactive, `-` for stdin prompt, `--model` for the
-        alias the persona named, the bypass flag because the factory's boundary
-        is the confinement, `--skip-git-repo-check` because refusing on
-        repository shape is not the factory's contract, and `--cd` to pin the
-        working root to the node worktree."""
+        `exec` for non-interactive, `-` for the stdin prompt, `--model` for
+        the persona's alias, the bypass flag because the factory's boundary is
+        the confinement, `--skip-git-repo-check` because repository shape is
+        not the factory's contract, and `--cd` for the node worktree."""
         return [
             self.executable,
             "exec",
@@ -1838,13 +1827,12 @@ class CodexAdapter:
     def _provider_env(self, env: dict[str, str], context: AttemptContext) -> dict[str, str]:
         """The CLI's own variable names, on top of the constructed environment.
 
-        The gateway key `attempt_env` already built (as the Anthropic-shaped
-        bearer token) is *renamed* here, not re-read from the context: the
-        credential's one assembly site stays `attempt_env`, and this seam only
-        re-spells it the way the generated `config.toml` names it — the same
-        move Claude's own spelling of the context window makes. `CODEX_HOME`
-        points at the seeded per-node home; Claude's variables are dropped, a
-        Codex child has no use for a credential pair its config never consults.
+        The gateway key `attempt_env` already built is *renamed* here, not
+        re-read from the context: the credential's one assembly site stays
+        `attempt_env`, and this seam only re-spells it the way the generated
+        `config.toml` names it. `CODEX_HOME` points at the seeded per-node
+        home; Claude's variables are dropped — a Codex child has no use for a
+        credential pair its config never consults.
         """
         key = env.pop("ANTHROPIC_AUTH_TOKEN", None)
         if key is not None:
@@ -1862,10 +1850,10 @@ class CodexAdapter:
         """Discover this CLI's credential for the attempt's route.
 
         Gateway personas need nothing discovered — the attempt's virtual key is
-        the credential (constitution V), and it travels in the env the
-        generated config names. The subscription route is US3's (FR-006); until
-        its discovery is measured and built, a subscription-routed Codex
-        persona refuses by name rather than falling back to anything."""
+        the credential (constitution V), travelling in the env the generated
+        config names. The subscription route is US3's (FR-006); until that
+        discovery lands, a subscription-routed Codex persona refuses by name
+        rather than falling back to anything."""
         if effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION:
             return CredentialStage(gateway=True)
         raise AdapterError(
@@ -1879,10 +1867,9 @@ class CodexAdapter:
     ) -> None:
         """Seed the per-node home: git identity plus the generated config.
 
-        The git identity is shared policy's concern seeded the same way Claude's
-        is (FR-005); the `config.toml` is Codex's own (FR-003), generated from
-        the attempt context's routing — parameterised by the proxy URL, with
-        the key left to the `env_key` the file names."""
+        The git identity is seeded the way Claude's is (FR-005); the
+        `config.toml` is Codex's own (FR-003), generated from the attempt's
+        routing — parameterised by the proxy URL, the key left to `env_key`."""
         _seed_node_home(home, credential_path)
         if context is not None:
             _seed_codex_config(codex_home_path(home), context)
@@ -1892,10 +1879,9 @@ class CodexAdapter:
     ) -> list[Path]:
         """The session files this CLI writes, as this CLI spells the location.
 
-        Codex names its rollout files after ids it generated itself (trap 4,
-        measured — there is no `--session-id` analogue to name one with), under
-        a date-keyed tree in `CODEX_HOME`. The archive copies every rollout
-        beside the log, and the turn probe asks whether any exists."""
+        Codex names its rollouts after ids it generated itself (trap 4,
+        measured), under a date-keyed tree in `CODEX_HOME`. The archive copies
+        every rollout beside the log; the turn probe asks whether any exists."""
         return _codex_rollouts(env)
 
     def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
@@ -1905,7 +1891,7 @@ class CodexAdapter:
         writes one (with `task_complete` carrying the error), so this is "the
         CLI got far enough to attempt a turn", the same token-existence
         semantics Claude's probe has. Naming *why* it failed is the refusal
-        marker's job, never this probe's (FR-012)."""
+        marker's job (FR-012)."""
         return any(path.is_file() for path in self._transcripts(context, worktree, env))
 
     def _refusal_markers(self) -> tuple[str, ...]:

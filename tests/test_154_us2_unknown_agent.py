@@ -12,12 +12,11 @@ Written before the implementation (constitution II): on the tree as received,
 the unknown-agent tests fail — today's load mints the key and dispatches the
 wrong CLI, and no `ConfigError` ever names the unknown value.
 
-155 note: this file's examples once read `agent: codex`, which was then the
-unknown the registry could not run. 155-US1 registered `CodexAdapter`, so the
-examples moved to `opencode` — a name that is genuinely unknown again (the
-operator's settled order is Codex, then pi.dev, then OpenCode). The scenarios
-are unchanged: the refusal is of whatever the registry cannot run, and reading
-it against a fixed example is what would have quietly kept it green.
+155 note: this file's examples once read `agent: codex`, then the unknown the
+registry could not run; 155-US1 registered it, so the examples moved to
+`opencode` — genuinely unknown again (the settled order is Codex, then
+pi.dev, then OpenCode). The scenarios are unchanged: the refusal is of
+whatever the registry cannot run.
 
 The scenarios, entry for entry:
 

@@ -2,43 +2,31 @@
 """An executable standing in for the Codex CLI, and the helpers that drive it.
 
 `tests/stub_agent.py` stands in for `claude`; this one stands in for `codex`.
-The adapter is the one place the factory touches an agent (D-018), and what a
-second adapter asserts about its own launches is only observable from inside
-the child — the argv it was handed, the environment it inherited, what arrived
-on stdin — so the stand-in is a real program the adapter really launches, not a
-fake process object.
-
-It records the same five facts `stub_agent.py` records (argv, env, cwd, stdin,
-process ids) into `.stub-codex/<n>/` under the worktree, and honours a
-control file at `$HOME/stub-codex-control.json` — the claimed per-node `HOME`
-is again the one test-controlled location in the child env — with a shape the
-Codex probe measured (2026-09-08, `@openai/codex@0.153.4`):
-
-- **The refusal is on stderr with exit 1** — the exact inverse of the Claude
-  stub, whose refusal is on stdout. `stderr` is therefore a control field.
-- **A turn leaves a rollout file** under `$CODEX_HOME/sessions/`, named after
-  the id the CLI generated. The control file's `session_id` field stands in
-  for the id Codex generates itself; the adapter finds the file without ever
-  having supplied the id, which is the measured shape (no `--session-id`
-  analogue exists).
-- **`--config`-free**: the stub reads no `config.toml` (the real CLI does; the
-  *adapter* writes it, and the test reads the file the adapter wrote rather
-  than what a stub read back). The stub asserts nothing about provider
-  routing — the config.toml tests read the generated file directly.
+What a second adapter asserts about its own launches is only observable from
+inside the child — the argv, the env, what arrived on stdin — so the stand-in
+is a real program the adapter really launches. It records the same five facts
+`stub_agent.py` records into `.stub-codex/<n>/` under the worktree, and honours
+a control file at `$HOME/stub-codex-control.json` (the claimed per-node `HOME`
+is again the one test-controlled location in the child env), with the shape
+the Codex probe measured (2026-09-08, `@openai/codex@0.153.4`): the refusal is
+on stderr with exit 1 — the inverse of the Claude stub, so `stderr` is a
+control field; a turn leaves a rollout file under `$CODEX_HOME/sessions/`
+named after an id the CLI generated itself, which the adapter finds without
+ever having supplied one; and the stub reads no `config.toml` — the *adapter*
+writes it, and the config tests read the generated file directly.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 #: This file, as the adapter's `codex` binary.
 STUB_CODEX_PATH = Path(__file__).resolve()
@@ -48,8 +36,8 @@ STUB_CODEX_PATH = Path(__file__).resolve()
 CONTROL_FILENAME = "stub-codex-control.json"
 
 #: One directory per launch beneath the worktree, numbered from 1. Never
-#: `.stub-agent/`: the two stubs may record into the same worktree in tests
-#: that run both adapters, and the sequence must not collide.
+#: `.stub-agent/`: the two stubs may record into one worktree, and the
+#: sequences must not collide.
 RECORD_DIRNAME = ".stub-codex"
 
 ARGV_FILE = "argv.json"
@@ -58,9 +46,8 @@ CWD_FILE = "cwd.txt"
 STDIN_FILE = "stdin.txt"
 PROCESS_FILE = "process.json"
 
-#: The env var that carries the gateway key into a Codex attempt. Named in the
-#: generated `config.toml` as `env_key`; named here so the test and the adapter
-#: never disagree about the spelling.
+#: The gateway key's env name, re-exported so test and adapter cannot
+#: disagree about the spelling.
 CODEX_GATEWAY_KEY = "CODEX_GATEWAY_KEY"
 
 #: The env var naming the per-node CODEX_HOME the adapter seeds. The CLI reads
@@ -78,8 +65,6 @@ BANNER = "stub-codex: launched"
 #: control file scripts a refusal, so the classifier tests replay the shape
 #: rather than the exact bytes of a live proxy error.
 REFUSAL_MARKER = "unexpected status 401 Unauthorized"
-
-_NON_ALNUM = re.compile(r"[^a-zA-Z0-9]")
 
 
 @dataclass(frozen=True)
@@ -131,10 +116,10 @@ def codex_home(home_path: Path | str) -> Path:
 def rollout_path(codex_home: Path | str, session_id: str) -> Path:
     """Where a turn's rollout file lands, as the measured CLI writes it.
 
-    `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-<mangled timestamp>-<id>.jsonl`.
-    The adapter must find this file without having supplied the id — the probe
-    is the tree's existence, not one name — but the test wants the exact file
-    it scripted, so the id is spelled out here.
+    `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-…-<id>.jsonl`. The adapter
+    must find the tree without having supplied an id (the probe is the tree,
+    not one name); the test wants the exact file it scripted, so the id is
+    spelled out here.
     """
     return (
         Path(codex_home)
@@ -144,12 +129,6 @@ def rollout_path(codex_home: Path | str, session_id: str) -> Path:
         / "08"
         / f"rollout-2026-09-08T00-00-00-{session_id}.jsonl"
     )
-
-
-def codex_home_of_env(env: Mapping[str, str] | None) -> Path:
-    """The CODEX_HOME a launch's environment carried, or the empty Path."""
-    source = os.environ if env is None else env
-    return Path(source.get(CODEX_HOME_ENV) or "")
 
 
 def flag_value(argv: list[str], name: str) -> str | None:
@@ -179,15 +158,6 @@ def last_invocation(cwd: Path | str) -> dict[str, Any]:
         "pid": process["pid"],
         "pgid": process["pgid"],
     }
-
-
-def project_dir_name(cwd: Path | str) -> str:
-    """The munged-cwd form, kept for symmetry with `stub_agent.project_dir_name`.
-
-    The Codex rollout tree is keyed by date, not by cwd — measured. Carried
-    anyway so a future test that wants the munged form has one spelling.
-    """
-    return _NON_ALNUM.sub("-", str(Path(cwd).resolve()))
 
 
 # --- the program itself -------------------------------------------------------
@@ -237,10 +207,9 @@ def main(argv: list[str]) -> int:
     if control.stderr:
         print(control.stderr, file=sys.stderr, flush=True)
 
-    # A turn happened: write the rollout file under the CODEX_HOME the adapter
-    # seeded — not under `$HOME/.codex`, which is the distinction the probe
-    # measured (CODEX_HOME wins when set) and the thing the adapter's turn
-    # probe reads.
+    # A turn happened: write the rollout file under the CODEX_HOME the
+    # adapter seeded (measured: CODEX_HOME wins over $HOME/.codex) — the
+    # tree the adapter's turn probe reads.
     codex_home_env = os.environ.get(CODEX_HOME_ENV)
     if control.write_rollout and codex_home_env:
         session_id = flag_value(argv, "--session-id") or ""

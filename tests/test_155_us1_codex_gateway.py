@@ -5,27 +5,13 @@ against the same LiteLLM aliases the ladder already uses, spend attributed to
 the attempt's virtual key exactly as Claude's is. Like `test_adapter.py`, these
 tests launch a real child — `tests/stub_codex.py` standing in for the CLI — and
 read back what it recorded, because what a second adapter does is only
-observable from inside the child.
-
-The scenarios, entry for entry:
-
-- **US1-S1** (FR-001, FR-004): the launched process is `codex exec` with the
-  prompt on stdin — `codex exec -` plus the model alias and the sandbox/cd
-  flags — and a persona naming `agent: codex` resolves the registered adapter.
-- **US1-S2** (FR-002): the spend is read from the proxy on the attempt's
-  virtual key, exactly as a Claude gateway attempt's is — the same
-  `read_usage` seam, wired to the same key the context carries. Token
-  accounting is NOT a reason to add `--json`.
-- **US1-S3** (FR-003): the adapter seeds a per-node `CODEX_HOME` whose
-  generated `config.toml` declares the gateway as a custom provider
-  (`model_provider`, `[model_providers.ergane-gateway]` with `base_url`,
-  `env_key`, `wire_api`) parameterised by the attempt's proxy URL and virtual
-  key — the analogue of `_seed_node_home`, not a copy.
-- **US1-S4** (FR-007, trap 1): reasoning-model chain-of-thought returned in
-  cleartext (P1 measured) does not misclassify the run — the turn probe and
-  the classification read structural facts (files, exit status), never the
-  text the model produced, so reasoning text near the output satisfies and
-  defeats nothing.
+observable from inside the child. Scenarios: US1-S1/FR-001/FR-004 (the launch
+is `codex exec` with the prompt on stdin); US1-S2/FR-002 (spend on the
+attempt's virtual key — token accounting is NOT a reason to add `--json`);
+US1-S3/FR-003 (a per-node `CODEX_HOME` whose generated `config.toml` declares
+the gateway as a custom provider — the analogue of `_seed_node_home`, not a
+copy); US1-S4/FR-007/trap 1 (cleartext reasoning CoT misclassifies nothing —
+the probe and classification read files and exit status, never model text).
 
 Written before `CodexAdapter` exists (constitution II): on the tree as
 received, every test here fails — there is no `codex` entry in `_ADAPTERS`
@@ -52,7 +38,7 @@ from factory.workgraph.adapter import (
     home_path,
     transcript_dir,
 )
-from factory.workgraph.models import AdapterResult, AttemptContext
+from factory.workgraph.models import AttemptContext
 from tests.stub_codex import (
     BANNER,
     CODEX_GATEWAY_KEY,
@@ -61,7 +47,6 @@ from tests.stub_codex import (
     codex_home,
     install_as,
     last_invocation,
-    rollout_path,
     write_control,
 )
 
@@ -96,12 +81,8 @@ GENEROUS_TIMEOUT_S = 60
 
 @pytest.fixture
 def codex_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """`tests/stub_codex.py` where `codex` would be found (R6).
-
-    Nothing configures the agent binary in production — the persona's `agent`
-    field selects a class, and that class runs `codex` off the passed-through
-    `PATH` — so the tests do not configure it either.
-    """
+    """`tests/stub_codex.py` where `codex` would be found (R6); nothing
+    configures the binary in production, so the tests do not either."""
     bin_dir = tmp_path / "bin"
     install_as(bin_dir, "codex")
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
@@ -119,19 +100,19 @@ def worktree(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def factory_root(tmp_path: Path) -> Path:
-    """The worker host's state directory: transcripts, pid files."""
+    """The worker host's state directory."""
     return tmp_path / ".factory"
 
 
 @pytest.fixture
 def node_home(factory_root: Path) -> Path:
-    """The factory's per-node home — the parent of the seeded CODEX_HOME."""
+    """The per-node home — the parent of the seeded CODEX_HOME."""
     return home_path(factory_root, EPIC, NODE)
 
 
 @pytest.fixture
 def attempt(worktree: Path, node_home: Path) -> Callable[..., AttemptContext]:
-    """Build the attempt's context; `attempt(attempt=3)` overrides one field."""
+    """Build the context; `attempt(attempt=3)` overrides one field."""
 
     def build(**overrides: Any) -> AttemptContext:
         fields: dict[str, Any] = {
@@ -156,12 +137,9 @@ def attempt(worktree: Path, node_home: Path) -> Callable[..., AttemptContext]:
 
 @pytest.fixture
 def adapter(codex_bin: Path, node_home: Path) -> Any:
-    """The Codex adapter, pointed at the stub shim instead of `codex`.
-
-    The shim is `tests/stub_codex.py` where `codex` would be found (R6) — the
-    class itself names no path (production resolves `codex` off the child's
-    `PATH`), and the stub records what it was handed for the tests to read.
-    """
+    """The Codex adapter; the shim is `tests/stub_codex.py` where `codex`
+    would be found (R6) — the class names no path, production resolves
+    `codex` off the child's `PATH`."""
     from factory.workgraph.adapter import CodexAdapter
 
     return CodexAdapter(
@@ -173,11 +151,8 @@ def adapter(codex_bin: Path, node_home: Path) -> Any:
 
 @pytest.fixture(autouse=True)
 def worker_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A worker host's environment: credentials, locale, ordinary clutter.
-
-    The credentials are planted for every test: the allowlist's promise is
-    that no launch anywhere can carry them.
-    """
+    """A worker host's environment: credentials planted for every test — the
+    allowlist's promise is that no launch anywhere can carry them."""
     monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-must-never-reach-an-agent")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567:telegram-bot-token-must-never-reach-an-agent")
     monkeypatch.setenv("LANG", "en_US.UTF-8")
@@ -211,9 +186,8 @@ async def test_the_launch_is_codex_exec_with_the_prompt_on_stdin(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """US1-S1 / FR-004: `codex exec -` — prompt on stdin, not argv — with the
-    model alias, the sandbox bypass and the worktree cd in argv, running in the
-    node worktree."""
+    """US1-S1 / FR-004: `codex exec -` — prompt on stdin — with the model
+    alias, sandbox bypass and worktree cd in argv, cwd the worktree."""
     write_control(node_home)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -223,9 +197,8 @@ async def test_the_launch_is_codex_exec_with_the_prompt_on_stdin(
     argv = launch["argv"]
     assert Path(argv[0]).name == "codex"
     assert "exec" in argv
-    # The trailing `-` is what puts the prompt on stdin (measured: without it,
-    # or with empty stdin, the CLI refuses with "No prompt provided via
-    # stdin.").
+    # The trailing `-` puts the prompt on stdin (measured: empty stdin
+    # refuses with "No prompt provided via stdin.").
     assert argv[-1] == "-"
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == MODEL_ALIAS
@@ -241,8 +214,7 @@ async def test_the_launch_is_codex_exec_with_the_prompt_on_stdin(
     assert PROMPT not in " ".join(argv)
     # No session-id flag exists for Codex (trap 4, measured): the workflow's
     # id must not be smuggled onto argv.
-    assert "--session-id" not in argv
-    assert SESSION_ID not in " ".join(argv)
+    assert "--session-id" not in argv and SESSION_ID not in " ".join(argv)
 
 
 async def test_the_child_environment_is_the_built_allowlist_plus_codex_names(
@@ -252,9 +224,9 @@ async def test_the_child_environment_is_the_built_allowlist_plus_codex_names(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """FR-002: the gateway env points at the attempt's virtual key via the
-    `env_key` the generated config names, and the home is the seeded per-node
-    CODEX_HOME. The allowlist is still closed: no master key, no bot token."""
+    """FR-002: the key arrives under the `env_key` the generated config names
+    and the home is the seeded per-node CODEX_HOME; the allowlist stays closed
+    — no master key, no bot token, no Claude variable."""
     write_control(node_home)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -279,7 +251,7 @@ async def test_no_worker_credential_reaches_the_codex_agent(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """US2-S1's promise, held for the second adapter too: by omission, not
+    """The allowlist's promise for the second adapter: by omission, not
     redaction — the values are checked, not just their names."""
     write_control(node_home)
 
@@ -306,9 +278,9 @@ async def test_the_spend_is_read_on_the_attempts_virtual_key(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """US1-S2 / FR-002: spend rides the adapter's `read_usage` seam, and the
-    snapshot it returns rides home on the result. Token accounting is NOT a
-    reason to add `--json` — the launched argv carries none."""
+    """US1-S2 / FR-002: spend rides the `read_usage` seam and the snapshot
+    rides home on the result. Token accounting is NOT a reason to add
+    `--json`."""
     write_control(node_home, sleep_s=0.4)
     keys_read: list[str | None] = []
 
@@ -339,9 +311,9 @@ async def test_the_spends_snapshot_rides_home_on_the_result(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """FR-002, the other half: the newest reading the monitor carries is the
-    result's `last_snapshot` — the same channel a Claude gateway attempt uses,
-    so the ledger row is attributable to the same key either way."""
+    """FR-002, the other half: the newest reading rides home as
+    `last_snapshot` — the same channel a Claude gateway attempt uses, so the
+    ledger row is attributable either way."""
     from factory.usage.models import UsageSnapshot
 
     write_control(node_home, sleep_s=0.4)
@@ -376,8 +348,8 @@ async def test_the_seeded_codex_home_declares_the_gateway_provider(
     node_home: Path,
 ) -> None:
     """US1-S3 / FR-003: a generated `config.toml` in the per-node CODEX_HOME
-    declares the gateway as a custom provider, parameterised by the attempt's
-    proxy URL and key — the analogue of `_seed_node_home`, not a copy."""
+    declares the gateway provider, parameterised by the attempt's proxy URL
+    and key — the analogue of `_seed_node_home`, not a copy."""
     write_control(node_home)
 
     await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -402,8 +374,8 @@ async def test_the_seeded_config_is_per_node_and_survives_a_second_attempt(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """FR-003: per-node, not per-attempt — a retry re-seeds the same home, and
-    the file it finds is complete (no half-written config from a killed run)."""
+    """FR-003: a retry re-seeds the same home and the file it finds is
+    complete."""
     write_control(node_home)
     first = await adapter.run_attempt(attempt(attempt=1), factory_root=factory_root)
     assert first.termination == Termination.COMPLETED
@@ -426,9 +398,8 @@ async def test_the_seeded_home_keeps_the_factory_git_identity(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """The per-node home still carries the git identity the salvage path
-    attributes commits to (FR-005) — a Codex node's commits are the factory's,
-    not the operator's."""
+    """The per-node home still carries the git identity salvage attributes
+    commits to (FR-005) — a Codex node's commits are the factory's."""
     from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 
     write_control(node_home)
@@ -450,11 +421,10 @@ async def test_cleartext_reasoning_near_the_output_does_not_misclassify(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """US1-S4 / FR-007 / trap 1: the ollama upstream returns chain-of-thought in
-    cleartext (P1 measured; re-measured 2026-09-08 — interleaved into the plain
-    exec stream on stderr). A successful run whose output carries reasoning
-    text is COMPLETED; reasoning text alone is neither a success signal the
-    classifier reads nor a refusal marker it can match."""
+    """US1-S4 / FR-007 / trap 1: the upstream returns chain-of-thought in
+    cleartext (P1 measured; re-measured 2026-09-08 — interleaved into the
+    plain exec stream). A successful run carrying reasoning text is COMPLETED;
+    reasoning text alone is neither a success signal nor a refusal marker."""
     reasoning_line = (
         'The user just wants the word "ok". No tool calls needed. '
         'Final answer: "ok".'
@@ -473,9 +443,9 @@ async def test_a_refusal_is_never_read_from_reasoning_text(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """US1-S4, the refusal half: reasoning text that *resembles* an error or a
-    refusal must not defeat the structural classification — a non-zero exit
-    with a turn behind it is AGENT_ERROR whatever the model mused about."""
+    """US1-S4, the refusal half: reasoning text that *resembles* an error must
+    not defeat the structural classification — a non-zero exit with a turn
+    behind it is AGENT_ERROR whatever the model mused about."""
     write_control(
         node_home,
         exit_code=1,
@@ -495,13 +465,11 @@ async def test_reasoning_on_a_completed_gateway_run_satisfies_no_refusal_marker(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """US1-S4, the scan-surface half: a *successful* Codex gateway run whose
-    output carries the reasoning model's cleartext chain-of-thought leaves the
-    attempt COMPLETED, even though the reasoning text streams beside the agent
-    message in the same combined log the refusal scanner reads (P1 measured:
-    reasoning and message are interleaved on stderr in plain-text mode). The
-    structural classification is exit status plus the rollout file — reasoning
-    text satisfies neither and defeats neither."""
+    """US1-S4, the scan-surface half: a *successful* run carrying cleartext
+    chain-of-thought stays COMPLETED even though reasoning streams beside the
+    agent message in the combined log the refusal scanner reads (P1 measured).
+    The classification is exit status plus the rollout file — reasoning text
+    satisfies neither and defeats neither."""
     write_control(
         node_home,
         stdout='The user asked for "ok". Reasoning about it: '
@@ -552,10 +520,9 @@ async def test_a_codex_run_that_wrote_its_rollout_took_a_turn(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """The turn-happened probe, as Codex writes it: a rollout file under the
-    seeded CODEX_HOME — which the CLI finds there without the factory having
-    supplied an id (trap 4, measured). A failed run with a rollout behind it is
-    the story's failure (AGENT_ERROR), not the environment's."""
+    """The turn probe as Codex writes it: a rollout file under the seeded
+    CODEX_HOME, found without the factory supplying an id (trap 4). A failed
+    run with a rollout behind it is AGENT_ERROR, not the environment's."""
     write_control(node_home, exit_code=1, write_rollout=True)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -570,7 +537,7 @@ async def test_a_codex_run_that_wrote_no_rollout_is_pre_agent(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """A non-zero exit with no rollout file behind it produced no token — the
+    """A non-zero exit with no rollout behind it produced no token — the
     pre-agent class (095-US1), now for Codex."""
     write_control(node_home, exit_code=1, write_rollout=False)
 
@@ -590,7 +557,7 @@ async def test_the_attempt_directory_holds_the_log_and_the_rollout(
     node_home: Path,
 ) -> None:
     """Evidence survives the completed path for Codex as for Claude: the
-    streamed log, and the rollout file the CLI wrote under CODEX_HOME."""
+    streamed log and the rollout file written under CODEX_HOME."""
     write_control(node_home)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -610,8 +577,8 @@ async def test_the_rollout_never_lands_inside_the_worktree(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """FR-007 for Codex: the archive lives under the worker host's `.factory/`,
-    never inside the tree salvage would commit."""
+    """FR-007: the archive lives under the worker host's `.factory/`, never
+    inside the tree salvage would commit."""
     write_control(node_home)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -630,10 +597,9 @@ async def test_a_refused_codex_run_is_visible_in_the_archived_log(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """FR-004's plain-text promise, for the second CLI: the measured refusal —
+    """FR-004's plain-text promise for the second CLI: the measured refusal —
     stderr, exit 1 (070's lesson inverted) — lands in the combined `stdout.log`
-    the scanner reads, so the classifier can see it on the same stream either
-    way. No `--json` is passed (US1-S2's other half already pins argv)."""
+    the scanner reads. No `--json` is passed (US1-S2's other half pins argv)."""
     write_control(node_home, exit_code=1, stderr=REFUSAL_MARKER)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -643,9 +609,8 @@ async def test_a_refused_codex_run_is_visible_in_the_archived_log(
 
 
 async def test_an_unresolvable_codex_agent_is_refused_at_the_seam() -> None:
-    """Constitution IX at the registry: a name that is not in `_ADAPTERS`
-    still refuses, naming the known list — registering codex does not loosen
-    the seam."""
+    """Constitution IX at the registry: a name outside `_ADAPTERS` still
+    refuses naming the known list — registering codex loosens nothing."""
     with pytest.raises(AdapterError) as excinfo:
         adapter_for("opencode")
     assert "opencode" in str(excinfo.value)
@@ -659,10 +624,9 @@ def test_attempt_env_carries_the_gateway_names_for_a_codex_context(
     attempt: Callable[..., AttemptContext],
     node_home: Path,
 ) -> None:
-    """`attempt_env` builds the shared base — proxy URL and key for a gateway
-    route under the Claude names — and the Codex adapter's `_provider_env` is
-    what renames the credential pair for its CLI. The Codex names arrive via
-    the seam; the Claude variable is not in the child env a Codex launch gets."""
+    """`attempt_env` builds the shared base under the Claude names, and the
+    Codex adapter's `_provider_env` is what re-spells the credential pair for
+    its CLI — the seam is where the Codex names arrive."""
     env = attempt_env(attempt())
     assert env["ANTHROPIC_BASE_URL"] == PROXY_URL
     assert env["ANTHROPIC_AUTH_TOKEN"] == VIRTUAL_KEY
