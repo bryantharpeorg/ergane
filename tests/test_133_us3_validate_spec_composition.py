@@ -566,8 +566,13 @@ def test_the_fixes_and_evidence_layers_run_but_land_out_of_run_order(
 #: this branch's content. A digest is decidable from the diff alone, which is
 #: what constitution VIII asks of a control, and it fails exactly when the CLI
 #: module changes by a single byte.
+#:
+#: US9 has since made the verb a renderer over `validate_spec`, which is the
+#: deletion of the duplication this control was keeping the tree from doing
+#: early; the pin moved with it (`git show 4c2f093:factory/cli/nouns/spec.py |
+#: sha256sum`, verified before being re-pinned here).
 _CLI_MODULE_DIGEST_AT_BASE = (
-    "88acd311a027d91d9f846b0dd44603d657eab3afa46be0e40b8ec33355b1cd0e"
+    "5bd755cf07e25250dd75d6facc5d72fd956563909a824eaf110cdd1a4083c7b5"
 )
 
 
