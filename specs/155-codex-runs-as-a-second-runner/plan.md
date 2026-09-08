@@ -135,16 +135,61 @@ is P3 and conditional on the operator's sandbox-boundary decision.
 
 ## Traps (consolidated — meet them as declared scope, not as failure)
 
-1. Reasoning CoT returns in cleartext (P1 measured); never match markers or
-   success against reasoning text.
-2. Codex's refusal text/stream/exit is UNMEASURED until US2's probe step runs
-   it; 070's lesson is that a refusal on the wrong stream reads as silent
-   success.
-3. `auth.json` location and rotation are UNMEASURED; inherited hazard.
-4. No documented up-front session-id flag; capture `thread.started` for
-   attempt identity. Do not assume a `--session-id` analogue.
+1. Reasoning CoT returns in cleartext (P1 measured; **re-measured by US1's
+   probe on 0.153.4**: the reasoning summary text is interleaved into plain
+   `codex exec` stderr output, and appears as its own `reasoning` item under
+   `--json` — never as the agent message). Never match markers or success
+   against reasoning text.
+2. **MEASURED 2026-09-08 on `@openai/codex@0.153.4` (US1's probe task): every
+   refusal is on STDERR, not stdout, with exit status 1 — the exact inverse of
+   Claude Code, whose refusal is on stdout.** Stdout carries nothing on a
+   refused run. The refusal shapes:
+   - No credential at all (route to `api.openai.com`): repeated
+     `ERROR: unexpected status 401 Unauthorized: Missing bearer or basic
+     authentication in header` after websocket/HTTPS retries; stable marker
+     `unexpected status 401 Unauthorized` (it also appears in gateway-mode
+     401s, so it is route-independent).
+   - Gateway mode with `env_key` var unset:
+     `ERROR: Missing environment variable: \`CODEX_GATEWAY_KEY\`.` — names the
+     configured `env_key`, not a literal.
+   - Gateway mode with an invalid key: `unexpected status 401 Unauthorized:
+     Authentication Error, Invalid proxy server token passed…` (again the
+     stable `unexpected status 401 Unauthorized` substring).
+   - Outside a git repo without `--skip-git-repo-check`:
+     `Not inside a trusted directory and --skip-git-repo-check was not
+     specified.` (exit 1, stderr) — the reason every launch passes
+     `--skip-git-repo-check` in addition to `--cd`.
+   070's lesson inverts here: the watcher must read stderr (the adapter already
+   archives stdout+stderr interleaved into one `stdout.log`, so the combined
+   stream is what every scan reads, and the marker is matched on that).
+   A refused run still writes a session rollout file under
+   `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` containing only
+   `session_meta` and error events — its existence is NOT evidence a turn ran.
+3. **MEASURED 2026-09-08: `codex login` writes `$CODEX_HOME/auth.json`**
+   (default `~/.codex/auth.json`), format `{"auth_mode":"apikey",
+   "OPENAI_API_KEY":"sk-…"}` for API-key logins (ChatGPT logins add token
+   fields). Re-login overwrites the key in place; `codex logout` removes the
+   file. A gateway-routed attempt (env_key carries the key) writes **no**
+   `auth.json` at all — its credential is the env var, not a file. Rotation on
+   use is still UNMEASURED for ChatGPT-mode tokens (no ChatGPT account to probe
+   with) — the hazard is inherited from Claude's
+   `factory/workgraph/adapter.py:847` docstring, unmeasured, and US3 names it.
+4. **MEASURED 2026-09-08: there is no session-id flag on `codex exec`** (full
+   `--help` read; nothing accepts a caller-supplied id; `codex exec resume` is
+   a resumption flag, not a set-one flag). Identity facts as measured:
+   `codex exec` prints `session id: <uuid>` in its stderr banner (a v7-shaped
+   UUID codex generates), and under `--json` the first event is
+   `{"type":"thread.started","thread_id":"<uuid>"}` carrying the same value.
+   The session rollout file is named after it:
+   `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-<RFC3339 mangled>-<id>.jsonl`
+   — the `<id>` suffix is the adapter's probe target: turn-happened = a rollout
+   file whose name carries a codex-generated id exists under the per-node
+   `$CODEX_HOME/sessions` tree for this attempt's day. The banner id and the
+   filename id agree (probe: banner `01a07e5e-9c24…`, file
+   `rollout-2026-09-08T00-15-24-01a07e5e-9c24….jsonl`).
 5. `wire_api = "chat"` acceptance unresolved; default to `responses` (P1 proved
-   the proxy serves it), probe before relying on `chat`.
+   the proxy serves it, and the US1 probe then proved the CLI end-to-end on
+   it); probe before relying on `chat`.
 6. Do not over-invest in bwrap; the operator is weighing moving away from it.
 7. A repeating 429 naming a `cooldown_list` is a dead upstream credential, not
    a rate limit; read up to the first 401.
