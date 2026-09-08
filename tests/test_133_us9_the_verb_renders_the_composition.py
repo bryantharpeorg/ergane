@@ -298,9 +298,8 @@ def test_the_re_pointed_controls_still_disable_something(
     )
     from tests.test_102_unprovable_criteria import _validate_without_evidence_layer
 
-    # The 089 fixture's own pins, applied by hand: the resolved runtime root
-    # holds the seeded store, the legacy candidate names a directory never
-    # created, so no host ledger can answer instead (trap 6).
+    # The 089 fixture's own pins, applied by hand, so no host ledger answers
+    # instead (trap 6).
     import factory.doctor.cli as _doctor_cli
 
     root = tmp_path / "runtime"
@@ -315,10 +314,9 @@ def test_the_re_pointed_controls_still_disable_something(
     fixes_dir = _sound_spec_dir(
         specs_root, "001-fixes-refusal", "state: draft\nfixes:\n  - absent/key\n"
     )
-    with_layer = run(
-        "spec", "validate", "--json", "--target-repo", str(REPO_ROOT),
-        "--specs-root", str(specs_root), str(fixes_dir),
-    )
+    argv = ("spec", "validate", "--json", "--target-repo", str(REPO_ROOT),
+            "--specs-root", str(specs_root), str(fixes_dir))
+    with_layer = run(*argv)
     assert [f["layer"] for f in with_layer.json["findings"]] == ["fixes"], (
         "the fixture must carry a fixes refusal, or the comparison below is vacuous"
     )

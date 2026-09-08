@@ -1,156 +1,117 @@
-# 133-US1 attempt report: a typed report exists, and today's output is captured
+# 133-US9 attempt report: the verb renders the composition, and its output is unchanged
 
 ## What changed
 
-Three commits, tests first:
+Five commits, tests first (69ce7e7 red, then the implementations):
 
-- `tests/test_133_us1_typed_report_and_golden_captures.py` plus the two
-  fixture trios and the shared fixture target repository (T001–T006, T009) —
-  committed observed-red. T001–T005 assert the `factory.spec` exports, the
-  four channels as separate members, the information-only pass verdict, the
-  `_ValidateFinding` constructor shape, and the CLI module binding rather than
-  defining the type. T006 compares both trios' three streams against six
-  golden artifacts with the repository root normalised on both sides. T009's
-  fixtures: `tests/fixtures/spec_validate/{clean-specs/001-clean-trio,
-  defective-specs/002-defective-trio,target-repo}` — each trio alone in its
-  parent (the frontmatter layer reads `spec_dir.parent` as the specs root,
-  plan trap 13), the target repo committing an `ergane.yaml` that declares one
-  gate, `smoke` (plan trap 20).
-- `factory/spec/` (T007) — `SpecFinding`, a frozen dataclass with
-  `_ValidateFinding`'s attribute names and keyword-only `severity="refusal"`
-  default (plan trap 7), and `SpecValidation` with all four channels and a
-  verdict that reads refusals alone (FR-001, FR-002, US1-S3). Nothing here
-  imports from the CLI module (plan trap 17).
-- `factory/cli/nouns/spec.py` (T008) — the class at 483 is deleted and the
-  import bound under the same local name: `from factory.spec import
-  SpecFinding as _ValidateFinding`. Not one construction site changes.
-- `tests/golden/spec_validate/` (T010) — six artifacts, captured through the
-  same CLI entry point the test drives, before any layer body moved, root
-  normalised to `<REPO_ROOT>` on every stream. Six files, 6,370 bytes.
+- `tests/test_133_us9_the_verb_renders_the_composition.py` (T035–T038, T052,
+  T053) — ten tests committed observed-red: goldens on both streams over both
+  trios with exit codes pinned; `--json` byte for byte, `judge_evidence`
+  absent-not-null asserted against the goldens and against the serialiser; the
+  CLI module's five finding constructions absent from source and AST; the
+  demonstration stage on the library form printing the verb's rendering; the
+  control on the controls (T052); the import-backs retired (T053).
+- `factory/spec/composition.py` (T040) — `serialise_report` beside
+  `validate_spec`: the `--json` document from the typed report in the verb's
+  key order, `judge_evidence` appended only when returned, absent rather than
+  null otherwise (trap 21). No `dataclasses.asdict()`.
+- `factory/cli/nouns/spec.py` (T040) — `_validate_command` reduced from the
+  261-line composition to a renderer: argv in, `SpecReadError` translated at
+  the boundary that owns it, `_render_validation` printing every line on the
+  stream it printed on before (trap 19), `fail` mapped to `EXIT_USER`.
+  Import-backs retired with the call sites (FR-015); `_scan_sentinels_in_trio`
+  stays for `_derive_command`'s sentinel gate.
+- `factory/cli/install.py` (T041) — `_demonstrate_validate` replaces the argv
+  round-trip: the stage validates through `validate_spec` and prints through
+  `_render_validation` (trap 14 — the streaming was the point, the argv was
+  not). `_spec_validate_argv` deleted; `test_110` T003 follows the seam.
+- `tests/test_089_validate_checks_fixes.py`,
+  `tests/test_102_unprovable_criteria.py` (T054) — both corpus-control helpers
+  rebind `factory.spec.composition`'s layer. Neither helper deleted, neither
+  assertion weakened. `tests/test_133_us{1,2,5,6,7,8}_*.py` re-pointed to the
+  modules the retirement leaves as the definition sites.
 
 ## The red runs
 
-T001–T005 and T006 against the tree as received, no `factory/spec/`, no
-goldens:
+`uv run pytest tests/test_133_us9_the_verb_renders_the_composition.py -q
+--no-header`, tree as received:
 
 ```
-$ uv run python -m pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
-E       ModuleNotFoundError: No module named 'factory.spec'
-E       ModuleNotFoundError: No module named 'factory.spec'
-E       ModuleNotFoundError: No module named 'factory.spec'
-E       ModuleNotFoundError: No module named 'factory.spec'
-E       assert 'class _ValidateFinding' not in <module source>
-E       FileNotFoundError: .../tests/golden/spec_validate/clean/stdout.txt
-E       FileNotFoundError: .../tests/golden/spec_validate/defective/stdout.txt
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_factory_spec_exports_the_typed_report_and_finding
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_the_report_holds_all_four_channels_as_separate_members
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_information_only_report_verdicts_as_a_pass
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_the_finding_type_keeps_the_validate_finding_constructor_shape
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_the_cli_module_no_longer_defines_the_finding_type_but_binds_the_import
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_the_trio_matches_its_three_golden_artifacts[trio_dir0-clean]
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_the_trio_matches_its_three_golden_artifacts[trio_dir1-defective]
-FAILED tests/test_133_us1_typed_report_and_golden_captures.py::test_the_clean_trio_prints_the_all_pass_sentence_and_the_defective_one_refuses
-8 failed, 1 passed in 0.26s
+FAILED ...::test_the_renderer_serialises_the_typed_report_and_leaves_judge_evidence_absent
+FAILED ...::test_the_cli_module_constructs_no_finding_of_its_own
+FAILED ...::test_the_demonstration_obtains_its_verdict_through_the_library_form
+FAILED ...::test_the_re_pointed_controls_still_disable_something
+FAILED ...::test_the_cli_module_imports_no_relocated_layer_function
+FAILED ...::test_no_test_reaches_a_relocated_layer_through_the_cli_module
+6 failed, 4 passed in 0.38s
 ```
 
-The one that passed red is T009's layout control, and it had to: the fixture
-layout is committed in the same commit as the tests, and the comparison tests
-are red only on the artifacts not yet taken. A layout control that failed red
-would mean the fixtures were mislaid before the goldens existed.
+The four that passed red are the output guards (T035/T036): the pre-change
+verb already produces US1's goldens, so those assert output *unchanged* rather
+than detect a defect.
 
-## T011 — the pasted evidence
+**T052's red ran deeper than trap 23 predicted.** `main()` re-executes every
+noun module on every call (`factory/cli/main.py:74`,
+`spec.loader.exec_module`), so a rebinding on `factory.cli.nouns.spec` is lost
+before the very `main()` call it wraps — the fresh module's globals are rebuilt
+from `factory.spec`'s cached objects. Verified by instrumenting the stub to
+raise: it never fires. The two corpus controls had been passing vacuously since
+they landed, through US5, US6 and US8 alike. The live seam is
+`factory.spec.composition`, which the re-executed module re-imports cached;
+T054 re-points both helpers there and T052 proves the re-point took.
 
-**A constructed report, all four channels, and its verdict** (FR-001, FR-002):
+## T042 evidence
 
-```
-$ uv run python (constructed in-process)
-=== T011: one constructed report, all four channels (FR-001, FR-002) ===
-
-refusals    : [('evidence', 'refusal', 'US1-S1: "the page renders correctly in the browser." asserts…')]
-advisories  : [('scenario_coverage', 'advisory', 'acceptance scenarios with no task reference: US1-S1')]
-information : [('sentinel', 'tasks.md:5: - [ ] T001 draw the page. ERGANE-TODO:…'), ('fixes', 'verified 2 finding key(s)…')]
-skipped     : [{'layer': 'anchor_resolution', 'reason': 'none of the cited paths exist under target repository <fixture-repo>'}, {'layer': 'slice_coverage', 'reason': 'the work graph did not compile, so there are no nodes to assemble a prompt for'}]
-
-verdict     : fail
-
-=== T011/US1-S3: the information-only control ===
-verdict     : pass — notes and a skip ride their own channels; the verdict reads refusals alone
-
-=== T011/US1-S4: the constructor shape ===
-SpecFinding('workgraph', 'the work graph did not compile')          -> severity: refusal
-SpecFinding('slice_contention', '…', severity='advisory')           -> severity: advisory
-
-=== T011/US1-S1: the exports ===
-factory.spec.SpecValidation : factory.spec.report.SpecValidation
-factory.spec.SpecFinding    : factory.spec.report.SpecFinding
-SpecFinding fields          : [('layer', '<required>'), ('message', '<required>'), ('severity', 'refusal')]
-```
-
-**The six artifact heads, showing the normalised root** (FR-014, plan trap 11):
+**Plan step 4 sweep.** All 147 corpus specs, both faces, captured outside the
+tree before the first edit and again after T040/T041/T054 — 294 runs. The
+captures differ only where corpus specs' own `path:NN` anchors cite the two
+files this story edits, which the anchor-resolution layer recomputes against
+moved lines. Filtering those recomputations out: exit codes equal, and
+`checked`, `skipped`, `information` and non-anchor findings equal per run —
 
 ```
-=== head: tests/golden/spec_validate/clean/stdout.txt ===
-<REPO_ROOT>/tests/fixtures/spec_validate/clean-specs/001-clean-trio/spec.md: frontmatter, work-graph derivation, persona registry, scenario coverage, prompt assembly and slice coverage, symbol anchors all pass
-<REPO_ROOT>/tests/fixtures/spec_validate/clean-specs/001-clean-trio/spec.md: what the judge will be shown for each node
-  the diff — the node's own worktree diff and nothing else: not the tree it changed, not a terminal, not the running system. Abridged for the judge above 65536 bytes, and refused unjudged above 65536 (`diff_refusal_bytes` in <REPO_ROOT>/tests/fixtures/spec_validate/target-repo/ergane.yaml).
+$ diff <(before) <(after)
+sweep problems: 0
+```
 
-=== head: tests/golden/spec_validate/clean/stderr.txt ===
-ergane spec validate — layer 'anchor_resolution' not checked: none of the cited paths exist under target repository <REPO_ROOT>/tests/fixtures/spec_validate/target-repo
-ergane spec validate — noted, not a refusal: [sentinel] tasks.md:5: - [ ] T001 [US1-S1] Leave this trio byte-stable. ERGANE-TODO: the golden — not ready to derive
-1 ERGANE-TODO sentinel remain; ergane spec derive will refuse until they are resolved.
+**Demonstration stage, before and after T041** (same throwaway repository,
+temp-dir normalised; `diff` of the two captures is empty):
 
-=== head: tests/golden/spec_validate/clean/json.txt ===
-{
-  "spec_dir": "<REPO_ROOT>/tests/fixtures/spec_validate/clean-specs/001-clean-trio",
-  "checked": [
-
-=== head: tests/golden/spec_validate/defective/stdout.txt ===
-<REPO_ROOT>/tests/fixtures/spec_validate/defective-specs/002-defective-trio/spec.md: what the judge will be shown for each node
-  the diff — the node's own worktree diff and nothing else: not the tree it changed, not a terminal, not the running system. Abridged for the judge above 65536 bytes, and refused unjudged above 65536 (`diff_refusal_bytes` in <REPO_ROOT>/tests/fixtures/spec_validate/target-repo/ergane.yaml).
+```
+exit=0
+<REPO>/specs/001-demo/spec.md: frontmatter, work-graph derivation, persona registry, scenario coverage, prompt assembly and slice coverage, anchor resolution, symbol anchors all pass
+<REPO>/specs/001-demo/spec.md: what the judge will be shown for each node
+  the diff — the node's own worktree diff and nothing else: not the tree it changed, not a terminal, not the running system. Abridged for the judge above 65536 bytes, and refused unjudged above 65536 (`diff_refusal_bytes` in <REPO>/ergane.yaml).
   the criteria — each node is shown its own story's scenarios, snapshotted at dispatch:
-
-=== head: tests/golden/spec_validate/defective/stderr.txt ===
-ergane spec validate — advisory: [scenario_coverage] acceptance scenarios with no task reference: US1-S1
-ergane spec validate — refusal: [evidence] US1-S1: "the page renders correctly in the browser." asserts an outcome only a running system shows ("in the browser", "renders correctly"); the judge is shown the diff and the results of the gates this repository declares (smoke), and the clause names neither — no declared gate, and nothing the diff itself carries. To make it provable: name a declared gate (smoke) whose result will reach the judge with the diff, or restate the clause as something the diff carries — e.g. "… — proven by a committed test"
-ergane spec validate — layer 'anchor_resolution' not checked: none of the cited paths exist under target repository <REPO_ROOT>/tests/fixtures/spec_validate/target-repo
-
-=== head: tests/golden/spec_validate/defective/json.txt ===
-{
-  "spec_dir": "<REPO_ROOT>/tests/fixtures/spec_validate/defective-specs/002-defective-trio",
-  "checked": [
+    US1 (Demonstration) — US1-S1
+  the gates — the results of the gates <REPO>/ergane.yaml declares: test
+  every Then-clause names evidence one of those three can produce.
+--- stderr --- (empty, before and after)
 ```
 
-**The clean trio's all-pass sentence, the line the story exists to freeze**:
+**The re-pointed controls, on a spec each layer refuses** (T052's letter):
 
 ```
-<REPO_ROOT>/tests/fixtures/spec_validate/clean-specs/001-clean-trio/spec.md: frontmatter, work-graph derivation, persona registry, scenario coverage, prompt assembly and slice coverage, symbol anchors all pass
+=== fixes control (spec declares fixes: absent/key; store holds present/key only)
+enabled  : exit=1 findings=['fixes']
+disabled : exit=0 findings=[]
+different: True
+
+=== evidence control (Then-clause asserts a browser outcome; this repo's ergane.yaml declares gate test)
+enabled  : exit=1 findings=['evidence']
+disabled : exit=0 findings=[]
+different: True
 ```
 
-**The defective trio's refusal and advisory lines** (the prefixes US3 rewrites;
-both print to stderr and to no other stream — plan trap 19):
+Before the re-point the same instrument showed `different: False` for both —
+T052's red run.
 
-```
-ergane spec validate — refusal: [evidence] US1-S1: "the page renders correctly in the browser." asserts an outcome only a running system shows ("in the browser", "renders correctly"); the judge is shown the diff and the results of the gates this repository declares (smoke), and the clause names neither — no declared gate, and nothing the diff itself carries. To make it provable: name a declared gate (smoke) whose result will reach the judge with the diff, or restate the clause as something the diff carries — e.g. "… — proven by a committed test"
-ergane spec validate — advisory: [scenario_coverage] acceptance scenarios with no task reference: US1-S1
-```
+## The assembled diff, measured
 
-## Green gates on the declared command
-
-```
-$ uv run pytest -q
-5768 passed, 58 skipped, 11 warnings in 504.14s (0:08:24)
-```
-
-The suite total matches the pre-existing baseline exactly (the pre-story run
-also carried 58 skips); the eleven warnings are the pre-existing
-deprecation/Temporal noise, two of which this run's summary reports. The
-terminal summary's `[FAIL]` lines are the live-tier probes that did not run in
-this sandbox (no Temporal server on :8233, no `ERGANE_LLM_MASTER_KEY`) —
-the report the conftest describes as "describes and never decides".
-
-## What was not done, on purpose
-
-No layer body moved: the twelve layers run from the same lines they ran
-before, and the `--json` document, the `checked` order and every rendered
-prefix are byte-identical to what they were — the six artifacts are the proof,
-taken before anything after this story moves.
+`git diff 4c2f093..HEAD | wc -c` = **62,754 at the prose-trim commit**, and it
+exceeds the 52,400-byte ceiling the story sets, which I am reporting rather
+than shipping silently. The plan priced US9 at ~48 KB; the overage is the five
+sibling re-points (~14.3 KB) and the corpus-control re-point, forced by FR-015's
+retirement and priced into other stories' notes but only *possible* once T040
+landed. Prose was cut twice; what remains is assertions and the strings they
+assert on. Evidence here is pasted at minimum size.
