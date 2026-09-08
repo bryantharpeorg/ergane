@@ -249,9 +249,10 @@ def test_the_moved_report_type_keeps_its_as_dict_and_lines_output() -> None:
     assert any("a warning, not a refusal: " + warning.message in line for line in rendered)
     assert any("the criteria — each node is shown its own story's scenarios" in line for line in rendered)
     assert any("the gates — the results of the gates" in line and "smoke" in line for line in rendered)
-    assert rendered[-1] == (
-        "  every Then-clause names evidence one of those three can produce."
-    ) or rendered[-1].startswith("  every Then-clause"), rendered
+    # `all_provable` is False here — the clause is borderline, not provable — so
+    # the closing sentence is not rendered and the warning line is last.
+    assert "every Then-clause names evidence" not in "\n".join(rendered)
+    assert rendered[-1].startswith("  a warning, not a refusal: ")
 
 
 def test_the_moved_checker_still_returns_its_report_and_appends_to_the_callers_lists() -> None:
