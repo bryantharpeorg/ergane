@@ -19,7 +19,7 @@ from factory.controlplane.verify import _inspect_host
 from factory.registry import resolve_state_home
 from factory.supervision.container_project import derived_environment_names
 from factory.supervision.units import supervision_home
-from factory.verify.toolchain import GIT, NODE, UV
+from factory.verify.toolchain import CODEX_RUNNER, GIT, NODE, UV
 from factory.workgraph.adapter import DEFAULT_EXECUTABLE
 
 
@@ -59,13 +59,13 @@ def _required_container_binaries() -> set[str]:
 
     Sources:
     - `_inspect_host` probes bwrap, git, gh.
-    - `BwrapBackend._toolchain` resolves the agent runner, uv, node, git.
+    - `BwrapBackend._toolchain` resolves the agent runners, uv, node, git.
     - FR-010 also requires python.
-    The runner's name is `DEFAULT_EXECUTABLE`; git appears in both lists and is
-    kept once.
+    The runners' names are `DEFAULT_EXECUTABLE` and `CODEX_RUNNER` (155-US4);
+    git appears in both lists and is kept once.
     """
     host_probe = set(_inspect_host().keys())
-    toolchain = {DEFAULT_EXECUTABLE, UV, NODE, GIT}
+    toolchain = {DEFAULT_EXECUTABLE, CODEX_RUNNER, UV, NODE, GIT}
     return host_probe | toolchain | {"python"}
 
 

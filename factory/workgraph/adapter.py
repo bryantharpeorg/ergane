@@ -81,12 +81,14 @@ from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import FactoryConfigError, MANIFEST_NAME, load_factory_config, resolve_manifest_path
 from factory.verify.gates import BwrapGateExecutor, ordered_binds
 from factory.verify.toolchain import (
+    CODEX_RUNNER,
     GIT,
     NODE,
     UV,
     ResolvedTool,
     ToolchainError,
     container_path,
+    npm_install_root,
     resolve_toolchain,
     system_tree_argv,
 )
@@ -339,6 +341,19 @@ class AgentBackend(Protocol):
 BWRAP_BACKEND_BINARY = Path("/usr/bin/bwrap")
 
 
+def _inside_system_tree(path: Path, system_root: Path) -> bool:
+    """Whether the system-tree bind already carries `path`.
+
+    `system_tree_argv` ro-binds `<root>/usr` wholesale, so anything under it
+    needs no entry of its own — and a `--symlink` at a path the bound tree
+    already carries makes bwrap refuse to start (measured for claude in the
+    demo container, 2026-08-26; the gate executor keeps the same rule in
+    `_toolchain_binds`). `system_root` is the seam tests supply a fake tree
+    through.
+    """
+    return str(path).startswith(str(system_root / "usr") + "/")
+
+
 class HostAgentBackend:
     """Today's direct host launch, now one implementation behind the seam.
 
@@ -454,7 +469,7 @@ class BwrapBackend:
     def _toolchain_binds(
         self, tools: Sequence[ResolvedTool] | None = None
     ) -> list[tuple[str, str, str]]:
-        """Read-only leaf binds for the agent's toolchain (trap 13).
+        """Read-only binds for the agent's toolchain (trap 13).
 
         Each tuple is (bwrap flag, host source, container destination). Source
         and destination differ where the tool is a symlink: the agent runner is
@@ -462,9 +477,47 @@ class BwrapBackend:
         binding the *resolved* file at the *link's* path is what keeps it from
         dangling inside the boundary while the container's `PATH` still finds
         it where it expects to.
+
+        The second runner breaks that shape in one way (155-US4, measured on
+        the real 0.153.4 tarball): an npm-installed `codex` is a JS launcher
+        whose payload lives *beside it in the package tree*, which it resolves
+        through `node_modules` at run time. Binding the lone launcher leaf
+        leaves every payload lookup outside the namespace, and the node dies
+        before writing anything — the diffless-start failure shape. The npm
+        case therefore binds the whole `node_modules` tree the resolution
+        walks and recreates the launcher inside it as the symlink `PATH`
+        names, rather than flattening the link into a leaf.
+
+        A runner that lives inside the system tree gets *nothing* here —
+        `/usr` is already bound whole, launcher, payload and link included,
+        and any entry at that path makes bwrap refuse to start (measured for
+        claude in the demo container, 2026-08-26).
         """
         resolved = self._toolchain() if tools is None else tools
-        return [("--ro-bind", source, dest) for source, dest in (tool.bind for tool in resolved)]
+        binds: list[tuple[str, str, str]] = []
+        for tool in resolved:
+            if tool.name == CODEX_RUNNER:
+                if _inside_system_tree(tool.found_at, self.system_root):
+                    # npm installed it under /usr, which `system_tree_argv`
+                    # binds whole: launcher, payload and PATH symlink are all
+                    # already inside the namespace. Any entry at that path —
+                    # above all a `--symlink` where the bound tree already
+                    # carries one — makes bwrap refuse to start. Emit nothing.
+                    continue
+                root = npm_install_root(tool)
+                if root is None:
+                    # Not npm-packaged (a wrapper script, a lone binary): the
+                    # leaf bind is the whole truth about that layout, so the
+                    # general rule applies unchanged.
+                    binds.append(("--ro-bind", *tool.bind))
+                    continue
+                binds.append(("--ro-bind", str(root), str(root)))
+                launcher_real = tool.real_path
+                if tool.found_at != launcher_real:
+                    binds.append(("--symlink", str(launcher_real), str(tool.found_at)))
+                continue
+            binds.append(("--ro-bind", *tool.bind))
+        return binds
 
     def _build_argv(self, invocation: AgentInvocation) -> list[str]:
         """Assemble the bwrap command from the proven mount set."""
@@ -1730,6 +1783,16 @@ CODEX_REFUSAL_MARKER = "unexpected status 401 Unauthorized"
 #: to enforce its read-only default inside it would refuse every write the
 #: story needs. "Intended solely for running in environments that are
 #: externally sandboxed" — this is that environment.
+#:
+#: UNANSWERED HAZARD (155-US4-S3, tied to the operator's sandbox-boundary
+#: decision, recorded 2026-09-06): whether Codex's own Landlock/seccomp
+#: sandbox nests inside the factory's bwrap jail is neither assumed to work
+#: nor assumed to fail — deliberately unprobed, because the operator is
+#: weighing moving away from bwrap entirely and P4 was deferred rather than
+#: answered. What this story relies on is only the outer confinement plus the
+#: bypass flag; if the operator replaces bwrap, this record moves with the
+#: boundary that supersedes it, and the nesting question must be re-opened
+#: there, not silently closed.
 CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox"
 
 #: Codex refuses to run outside a git repository without this flag (measured:

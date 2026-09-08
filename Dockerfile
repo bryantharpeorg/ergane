@@ -37,8 +37,11 @@ RUN /tmp/uv-install.sh \
     && install -m 755 "$HOME/.local/bin/uv" /usr/local/bin/uv \
     && rm /tmp/uv-install.sh
 
-# The agent runner named by factory.workgraph.adapter.DEFAULT_EXECUTABLE.
-RUN npm install -g @anthropic-ai/claude-code
+# The agent runners. The first is named by
+# factory.workgraph.adapter.DEFAULT_EXECUTABLE; the second (155-US4) is
+# factory.verify.toolchain.CODEX_RUNNER, pinned by CODEX_RUNNER_VERSION — the
+# container drift test keeps this line in step with those constants.
+RUN npm install -g @anthropic-ai/claude-code @openai/codex@0.153.4
 
 # The factory's own distribution (ergane-cli).
 COPY . /opt/ergane
