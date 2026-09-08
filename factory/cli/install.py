@@ -36,6 +36,7 @@ import dataclasses
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
@@ -1025,7 +1026,7 @@ def _closing_demonstration(
 
         print("")
         print("demonstration spec validate")
-        _run_cli(_spec_validate_argv(spec_dir, repo_root))
+        _demonstrate_validate(spec_dir, repo_root)
         print("")
         print("demonstration spec derive")
         _run_cli(_spec_derive_argv(spec_dir, repo_root))
@@ -1075,11 +1076,28 @@ def _run_cli(argv: list[str]) -> int:
     return main(argv)
 
 
-def _spec_validate_argv(spec_dir: Path, repo_root: Path) -> list[str]:
-    """Build argv for the demonstration's validate stage."""
-    noun = "spec"
-    verb = "validate"
-    return [noun, verb, str(spec_dir), "--target-repo", str(repo_root)]
+def _demonstrate_validate(spec_dir: Path, repo_root: Path) -> int:
+    """Run the demonstration's validate stage through the library form (FR-013).
+
+    This stage once built an argv list and streamed it back through the CLI
+    entry point. The composition now lives in `factory.spec.validate_spec`, and
+    the verdict a stranger watching `ergane install` is waiting for reaches the
+    terminal by the same road the verb prints it: the report is validated
+    through the library form and handed to the verb's own renderer, so the
+    lines printed here are the lines `ergane spec validate` prints — byte for
+    byte, both streams included, rather than a second, diverging rendering.
+    """
+    from factory.cli.nouns.spec import _render_validation
+    from factory.spec import SpecReadError, validate_spec
+
+    try:
+        report = validate_spec(
+            spec_dir, target_repo=str(repo_root), specs_root=str(repo_root / "specs")
+        )
+    except SpecReadError as error:
+        print(f"ergane: {error}", file=sys.stderr)
+        return EXIT_USER
+    return _render_validation(report, spec_dir, as_json=False)
 
 
 def _spec_derive_argv(spec_dir: Path, repo_root: Path) -> list[str]:
