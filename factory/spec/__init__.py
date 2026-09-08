@@ -12,6 +12,17 @@ that name moves here instead.
 
 from __future__ import annotations
 
+# The report import is first, deliberately: every relocated module binds its
+# finding type with `from factory.spec import SpecFinding`, and the eager
+# composition import below pulls those modules in while this package is still
+# initialising — `SpecFinding` must already be bound here when they ask.
 from factory.spec.report import SpecFinding, SpecValidation
 
-__all__ = ["SpecFinding", "SpecValidation"]
+from factory.spec.composition import SpecReadError, validate_spec
+
+__all__ = [
+    "SpecFinding",
+    "SpecValidation",
+    "SpecReadError",
+    "validate_spec",
+]

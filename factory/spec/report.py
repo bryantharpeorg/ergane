@@ -12,6 +12,10 @@ verdict (FR-002, US1-S3).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from factory.spec.evidence import _JudgeEvidenceReport
 
 #: The severity a finding carries when its constructor is given none. Refusal is
 #: the default today and stays the default here: a checker that means to advise
@@ -51,6 +55,23 @@ class SpecValidation:
     advisories: list[SpecFinding] = field(default_factory=list)
     information: list[SpecFinding] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
+    #: The layers that ran, in the order the verb emits them — the seeded four
+    #: followed by the appends, which is not the order the layers run in (plan
+    #: trap 3). FR-005 names this sequence as part of what must be unchanged,
+    #: and T034's control asserts it.
+    checked: list[str] = field(default_factory=list)
+    #: The run-order findings list, in the order the layers appended them. The
+    #: `refusals`/`advisories` split above is the four-channel shape FR-002
+    #: asks for, but it does not carry the interleaving: a run can produce a
+    #: refusal, then an advisory, then another refusal, and the verb renders
+    #: them in that order on stderr. The renderer keeps the whole list and
+    #: splits nothing; the split members stay for the consumers that want one
+    #: channel. Empty by default so the US1 constructor calls stay valid.
+    findings: list[SpecFinding] = field(default_factory=list)
+    #: The judge-evidence report the evidence layer returns, or None when that
+    #: layer did not run — absent rather than empty (trap 21), the same
+    #: deliberate shape the `--json` document's key carries.
+    judge_evidence: "Any | None" = None
 
     @property
     def verdict(self) -> str:
