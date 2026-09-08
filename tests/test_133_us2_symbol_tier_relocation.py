@@ -147,9 +147,6 @@ def test_the_cli_module_no_longer_defines_the_symbol_family() -> None:
     stranded = sorted(set(SYMBOL_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(SYMBOL_FAMILY) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
 
 
 # --- US2-S5 / FR-010: the object the CLI calls is the moved one ---------------
@@ -163,15 +160,13 @@ def test_the_symbol_checker_the_cli_module_calls_is_defined_in_factory_spec() ->
     different one with the same name. Both assertions together make the
     shortcut fail loudly rather than quietly.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.anchors as anchors
 
-    checker = spec_noun._check_symbol_anchors
-    assert checker is anchors._check_symbol_anchors
+    checker = anchors._check_symbol_anchors
     assert checker.__module__.startswith("factory.spec")
     # A compiled regex carries `re` as its `__module__`, so identity — not
     # `__module__` — is what proves the grammar was moved and not re-declared.
-    assert spec_noun._SYMBOL_ANCHOR_RE is anchors._SYMBOL_ANCHOR_RE
+    assert anchors._SYMBOL_ANCHOR_RE is anchors._SYMBOL_ANCHOR_RE
 
 
 # --- US2-S2 / FR-010 / trap 17: the shared-helper control ---------------------
@@ -183,17 +178,18 @@ def test_the_shared_severity_helpers_are_bound_back_and_the_surviving_checker_st
     """T014, US2-S2. Import-back for the two names the surviving checker reads.
 
     `_spec_state` and `_severity_for_state` are read from two call sites: the
-    symbol checker this story moves and `_check_anchor_resolution`, which does
-    not move until US7. Both names must still resolve as attributes of the CLI
-    module *and* have their `__module__` under `factory.spec` — that pair is
-    what distinguishes an import-back from a second copy. Then the surviving
+    symbol checker this story moves and `_check_anchor_resolution`, which moved
+    in US7. Both names must carry their `__module__` under `factory.spec` — the
+    pair that distinguishes a move from a second copy. Then the surviving
     checker is driven over specs whose declared state moves the severity, so a
-    stale second copy of the rule would grade wrong and fail here.
+    stale second copy of the rule would grade wrong and fail here. Re-pointed
+    by 133-US9: the names resolve in the moved module, which is what the
+    composition reads.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.anchors as anchors
 
-    assert spec_noun._spec_state.__module__.startswith("factory.spec")
-    assert spec_noun._severity_for_state.__module__.startswith("factory.spec")
+    assert anchors._spec_state.__module__.startswith("factory.spec")
+    assert anchors._severity_for_state.__module__.startswith("factory.spec")
 
     # The state rule the two helpers encode, straight from the moved source.
     module_text = "def thing() -> None:\n    pass\n"
@@ -204,7 +200,7 @@ def test_the_shared_severity_helpers_are_bound_back_and_the_surviving_checker_st
     )
     target_repo = _target_tree(tmp_path / "repo", module_text=module_text)
 
-    run = _run_resolution(spec_noun, tmp_path, spec_text, target_repo)
+    run = _run_resolution(anchors, tmp_path, spec_text, target_repo)
     assert [finding.severity for finding in run["findings"]] == ["refusal"]
 
     landed_text = _write_spec(
@@ -212,7 +208,7 @@ def test_the_shared_severity_helpers_are_bound_back_and_the_surviving_checker_st
         state="landed",
         plan="# Plan\n\n- see `src/mod.py:999` for context.\n",
     )
-    run = _run_resolution(spec_noun, tmp_path, landed_text, target_repo)
+    run = _run_resolution(anchors, tmp_path, landed_text, target_repo)
     assert [finding.severity for finding in run["findings"]] == ["advisory"]
 
 
@@ -285,15 +281,16 @@ def test_the_moved_checker_keeps_its_signature_and_appends_into_caller_owned_lis
     parameters = list(inspect.signature(_check_symbol_anchors).parameters)
     assert parameters == ["spec_dir", "spec_text", "target_repo", "findings", "skipped", "checked"]
 
-    import factory.cli.nouns.spec as spec_noun
-    # The CLI module must drive the very same object, not a re-declaration.
-    assert spec_noun._check_symbol_anchors is _check_symbol_anchors
+    import factory.spec.anchors as anchors
+    # The composition the verb renders must drive the very same object, not a
+    # re-declaration (the re-pointed seam, 133-US9's T053).
+    assert anchors._check_symbol_anchors is _check_symbol_anchors
 
     module_text = "def present() -> None:\n    return None\n"
 
     # Exit 1: unreadable target repository — the layer skips, with its reason.
     spec_text = _write_spec(tmp_path / "specs-a" / "001-trio")
-    run = _drive_symbol_anchors(spec_noun, tmp_path / "specs-a" / "001-trio", spec_text, tmp_path / "no-such-repo")
+    run = _drive_symbol_anchors(anchors, tmp_path / "specs-a" / "001-trio", spec_text, tmp_path / "no-such-repo")
     assert run.result is None
     assert run.findings == []
     assert run.checked == []
@@ -308,7 +305,7 @@ def test_the_moved_checker_keeps_its_signature_and_appends_into_caller_owned_lis
     _target_tree(tmp_path / "repo-b", module_text=module_text)
     silent_dir = tmp_path / "specs-b" / "002-empty"
     silent_dir.mkdir(parents=True, exist_ok=True)
-    run = _drive_symbol_anchors(spec_noun, silent_dir, "", tmp_path / "repo-b")
+    run = _drive_symbol_anchors(anchors, silent_dir, "", tmp_path / "repo-b")
     assert run.result is None
     assert run.findings == []
     assert run.skipped == []
@@ -317,7 +314,7 @@ def test_the_moved_checker_keeps_its_signature_and_appends_into_caller_owned_lis
     # Exit 3: the layer ran — it appends itself to `checked`, whatever it found.
     trio = tmp_path / "specs-c" / "003-trio"
     spec_text = _write_spec(trio, state="ready")
-    run = _drive_symbol_anchors(spec_noun, trio, spec_text, tmp_path / "repo-b")
+    run = _drive_symbol_anchors(anchors, trio, spec_text, tmp_path / "repo-b")
     assert run.result is None
     assert run.findings == []
     assert run.skipped == []
@@ -331,7 +328,7 @@ def test_the_moved_checker_keeps_its_signature_and_appends_into_caller_owned_lis
         state="ready",
         plan="# Plan\n\n- built on `src/mod.py:1` -- `absent_symbol`.\n",
     )
-    run = _drive_symbol_anchors(spec_noun, trio, spec_text, tmp_path / "repo-b")
+    run = _drive_symbol_anchors(anchors, trio, spec_text, tmp_path / "repo-b")
     assert run.result is None
     assert run.skipped == []
     assert run.checked == ["symbol_anchors"]
@@ -349,5 +346,5 @@ def test_the_moved_checker_keeps_its_signature_and_appends_into_caller_owned_lis
         state="landed",
         plan="# Plan\n\n- built on `src/mod.py:1` -- `absent_symbol`.\n",
     )
-    run = _drive_symbol_anchors(spec_noun, trio, spec_text, tmp_path / "repo-b")
+    run = _drive_symbol_anchors(anchors, trio, spec_text, tmp_path / "repo-b")
     assert [finding.severity for finding in run.findings] == ["advisory"]

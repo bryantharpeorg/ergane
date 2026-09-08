@@ -121,21 +121,21 @@ def _factory_spec_imports(source: str) -> set[str]:
 
 
 def test_the_cli_module_no_longer_defines_the_layer_family() -> None:
-    """T018, US5-S1. Eleven names defined in `factory.spec`, imported back, gone here.
+    """T018, US5-S1. Eleven names defined in `factory.spec`, gone from the CLI module.
 
     `_SCENARIO_ID_RE` is read only inside `_check_scenario_coverage`;
     `_vacuous_registry` and the `_STRUCTURAL_TIMEOUT_S` it alone reads serve the
     work-graph and persona layers. Leaving any of them behind makes a moved body
     reach back into the module it just left, which cannot import (trap 17).
+
+    The import-back half of the original assertion ended with US9 (FR-015): the
+    verb is a renderer over the composition, the CLI module imports no layer
+    function at all, and `factory.spec.composition` is what reads the family.
     """
     source = CLI_PATH.read_text(encoding="utf-8")
     bindings = _module_bindings(source)
     stranded = sorted(set(LAYER_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
-
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(LAYER_FAMILY) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
 
 
 def test_the_objects_the_cli_module_calls_are_defined_in_factory_spec() -> None:
@@ -147,12 +147,11 @@ def test_the_objects_the_cli_module_calls_are_defined_in_factory_spec() -> None:
     re-declaration binds a different one with the same name, and that is the
     duplication this spec exists to end.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
+    spec_noun = layers
 
     for name in MOVED_CALLABLES:
-        obj = getattr(spec_noun, name)
-        assert obj is getattr(layers, name), f"{name} must be one object in both modules"
+        obj = getattr(layers, name)
         assert obj.__module__.startswith("factory.spec"), (
             f"{name} must carry __module__ under factory.spec, got {obj.__module__}"
         )
@@ -179,10 +178,9 @@ def _drive_check_fixes(spec_dir: Path) -> Run:
     The import-back T023 keeps alive is what this exercises; the object driven
     is asserted to be the one defined in `factory.spec`.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
+    spec_noun = layers
 
-    assert spec_noun._check_fixes is layers._check_fixes
     findings: list[Any] = []
     information: list[Any] = []
     skipped: list[dict[str, str]] = []
@@ -437,7 +435,8 @@ def test_the_moved_bodies_keep_their_refusal_strings(
     downstream is the shape worth keeping (trap 9); each string is asserted as
     the whole message, not a fragment.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.layers as layers
+    spec_noun = layers
     from factory.workgraph.models import WorkGraph, WorkNode
 
     def graph(*personas: str, **edges: list[str]) -> Any:
@@ -605,7 +604,8 @@ def test_vacuous_registry_answers_at_its_new_home_with_empty_skills() -> None:
 
     # And the CLI module still binds the same object, so `_check_workgraph`
     # reaches the registry the story moved (trap 18's shape, asserted).
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.layers as layers
+    spec_noun = layers
 
     assert spec_noun._vacuous_registry is _vacuous_registry
 
@@ -620,8 +620,8 @@ def test_the_scenario_id_grammar_is_one_object_in_both_modules() -> None:
     end (trap 17's letter). The moved checker reads it from its own module;
     the CLI module binds the same object.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
+    spec_noun = layers
 
     assert spec_noun._SCENARIO_ID_RE is layers._SCENARIO_ID_RE
     assert layers._SCENARIO_ID_RE.findall("US1-S1 and US12-S34") == ["US1-S1", "US12-S34"]

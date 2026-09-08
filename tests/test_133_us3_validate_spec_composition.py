@@ -42,6 +42,7 @@ golden comparisons are the standing guard this story must not disturb.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 import inspect
@@ -566,24 +567,44 @@ def test_the_fixes_and_evidence_layers_run_but_land_out_of_run_order(
 #: this branch's content. A digest is decidable from the diff alone, which is
 #: what constitution VIII asks of a control, and it fails exactly when the CLI
 #: module changes by a single byte.
+#:
+#: US9 has since landed and made the verb a renderer over this composition,
+#: which is the rewrite this story's pin held the line against — the pin's job
+#: was to prove *US3* stayed additive, and the golden artifacts below prove the
+#: rewrite stayed byte-identical. What survives here is the standing control
+#: the pin left behind: the composition must never import from the CLI module
+#: (trap 17), asserted on its source.
 _CLI_MODULE_DIGEST_AT_BASE = (
     "88acd311a027d91d9f846b0dd44603d657eab3afa46be0e40b8ec33355b1cd0e"
 )
 
 
 def test_the_verb_is_byte_for_byte_unchanged_by_this_story() -> None:
-    """T070, US3-S4. `_validate_command` is the one thing this story may not edit.
+    """T070, US3-S4. The composition and the verb are two modules, one direction.
 
-    Compared through the digest of the whole CLI module, pinned from the
-    attempt's base commit: this story puts a second, tested composition beside
-    the verb, and US9 is what deletes the duplication. A story that starts
-    rewriting the renderer here is rebuilding the diff that made this split
-    necessary.
+    The digest pin held while this story ran; US9's renderer has since replaced
+    the duplicated body it guarded, and the golden comparisons at the bottom of
+    this file are the proof the replacement moved no printed byte. What must
+    stay true for the life of the composition is the import direction: the
+    module US3 added reads nothing from `factory.cli` — an import back re-enters
+    a half-initialised module before its names exist (plan trap 17).
     """
-    after = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
-    assert after == _CLI_MODULE_DIGEST_AT_BASE, (
-        "the CLI module changed — this story is additive and must not touch it"
-    )
+    source = composition_module_path().read_text(encoding="utf-8")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith("factory.cli"), (
+                f"the composition imports from {node.module} (trap 17)"
+            )
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("factory.cli"), (
+                    f"the composition imports {alias.name} (trap 17)"
+                )
+
+
+def composition_module_path() -> Path:
+    """The composition module's path, beside the CLI module's."""
+    return CLI_PATH.parent.parent.parent / "spec" / "composition.py"
 
 
 def test_us1_goldens_still_match_with_this_story_having_done_nothing() -> None:

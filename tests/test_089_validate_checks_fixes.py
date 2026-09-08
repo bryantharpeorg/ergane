@@ -300,11 +300,20 @@ def _omits_fixes(spec_path: Path) -> bool:
 def _validate_without_fixes_layer(
     run: Callable[..., Run], spec_dir: Path, repo_root: Path, specs_root: Path
 ) -> tuple[int, Any]:
-    """Run validate with the new `_check_fixes` layer monkeypatched to a no-op."""
-    import factory.cli.nouns.spec as _spec_module
+    """Run validate with the `_check_fixes` layer monkeypatched to a no-op.
 
-    original = _spec_module._check_fixes
-    _spec_module._check_fixes = lambda *args, **kwargs: None
+    Patched on `factory.spec.composition` — the module the verb's composition
+    reads — and not on `factory.cli.nouns.spec`, where the name was only ever
+    an import binding. Since US9 the verb is a renderer over `validate_spec`,
+    so a rebinding on the CLI module lands on a name nothing calls and both
+    runs become the same run (133-US9's T052 is the assertion that proves the
+    re-point took); patching the composition's own global is what still
+    disables the layer.
+    """
+    import factory.spec.composition as _composition_module
+
+    original = _composition_module._check_fixes
+    _composition_module._check_fixes = lambda *args, **kwargs: None
     try:
         result = run(
             "spec",
@@ -318,7 +327,7 @@ def _validate_without_fixes_layer(
         )
         return result.code, result.json
     finally:
-        _spec_module._check_fixes = original
+        _composition_module._check_fixes = original
 
 
 def test_validate_fixes_less_specs_in_real_corpus_unchanged(

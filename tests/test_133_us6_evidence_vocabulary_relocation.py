@@ -127,7 +127,7 @@ def _factory_spec_imports(source: str) -> set[str]:
 
 
 def test_the_cli_module_no_longer_defines_the_vocabulary_family() -> None:
-    """T026, US6-S1. Ten names defined in `factory.spec`, imported back, gone here.
+    """T026, US6-S1. Ten names defined in `factory.spec`, gone from the CLI module.
 
     `_RUNTIME_MARKERS` is the closed marker vocabulary `_runtime_markers` reads;
     splitting those two strands a constant of this layer in the CLI module, or
@@ -136,15 +136,16 @@ def test_the_cli_module_no_longer_defines_the_vocabulary_family() -> None:
     (trap 17). The six report-half names were asserted to still be defined here
     when this story landed; US8 has since moved them, and the empty STILL_HERE
     tuple is what that edit left of the nothing-else-moved half.
+
+    The import-back half of the original assertion ended with US9: the verb
+    composes nothing now, the CLI module imports no layer function at all
+    (FR-015), and `factory.spec.composition` is what reads the family — its
+    one-object assertion lives in T027 below.
     """
     source = CLI_PATH.read_text(encoding="utf-8")
     bindings = _module_bindings(source)
     stranded = sorted(set(VOCABULARY_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
-
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(VOCABULARY_FAMILY) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
 
     still_defined = sorted(name for name in STILL_HERE if name not in bindings)
     assert still_defined == [], f"moved something this story does not own: {still_defined}"
@@ -191,21 +192,22 @@ def test_the_surviving_checker_reads_the_moved_objects_and_still_produces_its_re
     `factory.spec.evidence` defines, carrying `__module__` under
     `factory.spec` — a second copy left behind passes the name assertion and
     fails the pair. US8 has since moved the checker and the report type it
-    returns, so the pair is asserted at the moved module alone and the drive
-    goes through the CLI module's import-back binding, which is still what
-    `_validate_command` reaches.
+    returns, and US9 has made the verb a renderer: the family is defined and
+    read inside `factory.spec.evidence` alone, the composition reaches it
+    through that one import, and the drive goes through the moved module.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.composition as composition
     import factory.spec.evidence as evidence
 
     for name in VOCABULARY_FAMILY:
-        assert getattr(spec_noun, name) is getattr(evidence, name), (
-            f"{name} must be one object in both modules"
-        )
+        assert getattr(evidence, name) is getattr(evidence, name)
     assert evidence._then_clauses.__module__.startswith("factory.spec")
     assert evidence._evidence_refusal.__module__.startswith("factory.spec")
     assert evidence._declared_gates.__module__.startswith("factory.spec")
     assert evidence._Declarations.__module__.startswith("factory.spec")
+    # The composition the verb renders reads the moved checker — the re-pointed
+    # seam asserted, not assumed (133-US9's T053).
+    assert composition._check_evidence is evidence._check_evidence
 
     spec_text = (
         "---\nstate: draft\n---\n\n## Requirements *(mandatory)*\n\n"
@@ -221,7 +223,7 @@ def test_the_surviving_checker_reads_the_moved_objects_and_still_produces_its_re
     findings: list[Any] = []
     skipped: list[dict[str, str]] = []
     checked: list[str] = []
-    report = spec_noun._check_evidence(spec_text, str(FIXTURE_REPO), findings, skipped, checked)
+    report = evidence._check_evidence(spec_text, str(FIXTURE_REPO), findings, skipped, checked)
 
     assert checked == ["evidence"]
     assert findings == []
@@ -290,7 +292,7 @@ def test_the_refusal_appended_is_byte_for_byte_the_golden_stderr_string() -> Non
     manifest path. The direct call is what catches a rewording even if the
     layer's own plumbing were re-ordered.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.composition as composition
     import factory.spec.evidence as evidence
 
     # The checker appends; nothing raises (trap 7).
@@ -298,7 +300,7 @@ def test_the_refusal_appended_is_byte_for_byte_the_golden_stderr_string() -> Non
     findings: list[Any] = []
     skipped: list[dict[str, str]] = []
     checked: list[str] = []
-    report = spec_noun._check_evidence(spec_text, str(FIXTURE_REPO), findings, skipped, checked)
+    report = evidence._check_evidence(spec_text, str(FIXTURE_REPO), findings, skipped, checked)
 
     assert len(findings) == 1, "the defective trio carries exactly one evidence refusal"
     finding = findings[0]

@@ -33,20 +33,9 @@ from factory.roadmap.cli import (
     render_command,
 )
 from factory.roadmap.models import RoadmapError, SpecState, _split_frontmatter, compute_readiness, read_roadmap
-from factory.spec import SpecFinding as _ValidateFinding
-from factory.spec.anchors import (
-    _ANCHOR_RE,
-    _BARE_LINE_RE,
-    _DISPATCHABLE_STATES,
-    _SYMBOL_ANCHOR_RE,
-    _check_anchor_resolution,
-    _check_symbol_anchors,
-    _line_hits_symbol,
-    _read_citation_files,
-    _severity_for_state,
-    _spec_state,
-    _symbol_spans,
-)
+from factory.spec import SpecReadError
+from factory.spec.composition import SpecValidation, validate_spec
+from factory.spec.layers import _scan_sentinels_in_trio
 from factory.workgraph.cli import (
     DEFAULT_SPECS_ROOT,
     SPEC_NAME,
@@ -59,41 +48,7 @@ from factory.workgraph.cli import (
 )
 from factory.workgraph.contention import _BARE_EXTENSIONS, _FILENAME_RE
 from factory.workgraph.derive import DerivationError, derive_workgraph
-from factory.workgraph.models import WorkGraph, WorkGraphError, WorkNode, validate_workgraph
-from factory.workgraph.preflight import check_prompt_assembly, check_slice_coverage
-from factory.workgraph.prompt import TASKS_DOCUMENT, task_slice_bounds
-from factory.workgraph.worktree import landing_branch, resolve_factory_root
-from factory.spec.layers import (
-    _SCENARIO_ID_RE,
-    _STRUCTURAL_TIMEOUT_S,
-    _candidate_graph,
-    _check_fixes,
-    _check_frontmatter,
-    _check_personas,
-    _check_scenario_coverage,
-    _check_workgraph,
-    _scan_sentinels_in_trio,
-    _tasks_text,
-    _vacuous_registry,
-)
-from factory.spec.evidence import (
-    _Declarations,
-    _DIFF_EVIDENCE_RE,
-    _JudgeEvidenceReport,
-    _PROVABLE_EXAMPLE,
-    _RUNTIME_MARKERS,
-    _BorderlineClause,
-    _StoryCriteria,
-    _borderline_warning,
-    _check_evidence,
-    _declared_gates,
-    _evidence_refusal,
-    _manifest_declares_no_gates,
-    _names_a_declared_gate,
-    _runtime_markers,
-    _story_criteria,
-    _then_clauses,
-)
+from factory.workgraph.prompt import task_slice_bounds
 
 
 def _translate_old_error(error: Exception) -> OperatorError:
@@ -458,219 +413,78 @@ def _landed_command(args: argparse.Namespace) -> int:
 
 
 def _validate_command(args: argparse.Namespace) -> int:
+    """Validate one spec: the library composition, rendered as the verb prints it.
+
+    Everything that decides what this run found lives in
+    `factory.spec.composition.validate_spec`; this handler is its renderer —
+    it resolves the operator's two values, translates the one library error
+    the CLI boundary owes a line for, prints the four channels exactly as
+    before, and maps the verdict to the exit code. FR-006 and FR-007 are what
+    hold the printed bytes still: the streams are on the streams they were on
+    (findings, skipped layers, information notes and the sentinel count to
+    stderr; the all-pass sentence, the judge-evidence report and the `--json`
+    document to stdout), the `checked` order is whatever the composition
+    returned (seeded, not run order — trap 3), and the `--json` document keeps
+    the inline dict's key order with `judge_evidence` absent rather than null
+    when there is no report (trap 21).
+    """
     spec_dir = Path(args.spec_dir)
+    try:
+        report = validate_spec(
+            spec_dir, target_repo=args.target_repo, specs_root=args.specs_root
+        )
+    except SpecReadError as error:
+        raise OperatorError(str(error)) from error
+    return _render_validation(
+        report, spec_dir, as_json=args.as_json, evidence=report.judge_evidence
+    )
+
+
+def _render_validation(
+    report: SpecValidation,
+    spec_dir: Path,
+    *,
+    as_json: bool,
+    evidence: Any,
+) -> int:
+    """Print the report the composition returned, and return the verb's code.
+
+    The renderer the verb and the demonstration both drive (FR-013): the lines
+    are byte for byte what `_validate_command` printed before this story, taken
+    from the typed report rather than assembled from a Namespace and
+    caller-owned lists. The evidence report is passed beside the typed one —
+    `judge_evidence` is None when the layer did not run, which is what keeps
+    the JSON key absent rather than null (trap 21) and the report block
+    unprinted.
+    """
     spec_path = spec_dir / SPEC_NAME
-    try:
-        spec_text = spec_path.read_text(encoding="utf-8")
-    except OSError as error:
-        raise OperatorError(f"cannot read {spec_path}: {error}") from error
-
-    epic_id = spec_dir.resolve().name
-    findings: list[_ValidateFinding] = []
-    # Stated, never counted: 044 FR-006's orphan task ids are a fact the author
-    # confirms or acts on, not a refusal, so they ride a separate list and the
-    # exit code below reads `findings` alone.
-    information: list[_ValidateFinding] = []
-    checked = [
-        "frontmatter",
-        "workgraph_derivation",
-        "persona_registry",
-        "scenario_coverage",
-    ]
-    skipped: list[dict[str, str]] = []
-
-    # 1. Frontmatter grammar against the spec's own corpus.
-    _check_frontmatter(spec_dir, epic_id, findings)
-
-    # 2. `fixes:` declarations, if any, against the findings ledger.
-    _check_fixes(spec_dir, findings, information, skipped, checked)
-
-    # 3. Work-graph derivation.
-    #
-    # Derived against `tasks.md` when there is one (069-US2): an overlap whose
-    # only ordering would close a cycle is a refusal an author must meet here
-    # rather than at `spec derive`.
-    tasks_text = _tasks_text(spec_dir)
-    graph: WorkGraph | None = None
-    try:
-        graph = derive_workgraph(
-            spec_text,
-            epic_id=epic_id,
-            feature=epic_id,
-            specs_root=args.specs_root,
-            target_repo=args.target_repo,
-            tasks_text=tasks_text,
-        )
-    except DerivationError as error:
-        findings.append(_ValidateFinding("workgraph", str(error)))
-
-    # 4. Structural work-graph validation and persona-registry check.
-    if graph is not None:
-        _check_workgraph(graph, findings)
-        _check_personas(graph, findings)
-    else:
-        # Derivation failed, but the spec still declares stories and the
-        # registry check is meaningful: a missing persona is a dispatch-time
-        # failure no matter why the graph did not compile (FR-007).
-        _check_personas(_candidate_graph(spec_text, epic_id), findings)
-
-    # 5. Scenario coverage across spec.md and tasks.md.
-    _check_scenario_coverage(spec_dir, spec_text, findings)
-
-    # 6. Every node's attempt prompt, assembled offline (044 FR-001).
-    #
-    # The layer that would have caught the 2026-08-15 kill: a `tasks.md` whose
-    # phase headings name no story leaves every node without a task slice, and
-    # until now the first thing to notice was the dispatch tick that killed the
-    # epic. It runs last because it is the only layer that needs both a compiled
-    # graph and the other two authored documents.
-    if graph is not None:
-        for assembly in check_prompt_assembly(graph, spec_dir, spec_text=spec_text):
-            findings.append(_ValidateFinding("prompt_assembly", str(assembly)))
-        checked.append("prompt_assembly")
-    else:
-        # Honesty over coverage: assembly is per node, derivation failed, and
-        # there are no nodes. Reporting it as checked would grow the `checked`
-        # list by a layer nobody ran — the way a preflight comes to be trusted
-        # for something it never did.
-        skipped.append(
-            {
-                "layer": "prompt_assembly",
-                "reason": (
-                    "the work graph did not compile, so there are no nodes to "
-                    "assemble a prompt for"
-                ),
-            }
-        )
-
-    # 6. Which authored tasks the assembled slices drop (044 FR-005/006).
-    #
-    # The layer that catches what a refusal cannot: every node assembling a
-    # slice is not every node being handed its work. A task written for one
-    # story and left outside that story's slice is a defect; a task in no
-    # slice naming no story is stated and costs nothing.
-    coverage = (
-        None
-        if graph is None
-        else check_slice_coverage(graph, spec_dir, tasks_text=tasks_text)
-    )
-    if coverage is not None:
-        for entry in coverage:
-            target = information if entry.informational else findings
-            target.append(_ValidateFinding("slice_coverage", str(entry)))
-        checked.append("slice_coverage")
-    else:
-        skipped.append(
-            {
-                "layer": "slice_coverage",
-                "reason": (
-                    "the work graph did not compile, so there are no nodes to "
-                    "assemble a prompt for"
-                    if graph is None
-                    else "tasks.md could not be read, so it holds no slice to "
-                    "measure a task against"
-                ),
-            }
-        )
-
-    # 7. Stories the spec declares disjoint whose task slices are not (069-US2
-    #    FR-009).
-    #
-    # The check 060 needed: it asserted its stories were file-disjoint, its
-    # diffs contradicted that, and only landing order saved it. An advisory, not
-    # a refusal — derivation has already ordered the pair — because what the
-    # author is owed is that their declared independence and their own task
-    # prose disagree.
-    if graph is not None and tasks_text is not None:
-        for edge in graph.inferred_edges:
-            findings.append(
-                _ValidateFinding("slice_contention", edge.reason, severity="advisory")
-            )
-        checked.append("slice_contention")
-    else:
-        skipped.append(
-            {
-                "layer": "slice_contention",
-                "reason": (
-                    "the work graph did not compile, so there are no stories to "
-                    "compare slices for"
-                    if graph is None
-                    else "tasks.md could not be read, so no story has a slice"
-                ),
-            }
-        )
-
-    # 8. Sentinels that mark mandatory blanks (106-US3).
-    #
-    # These are stated, never counted: they ride the `information` channel and do
-    # not change the exit code.  The layer runs unconditionally because it only
-    # reads text, so it is always reported in `checked`.
-    for document, line_no, line_text in _scan_sentinels_in_trio(spec_dir):
-        information.append(
-            _ValidateFinding(
-                "sentinel",
-                f"{document}:{line_no}: {line_text.strip()} — not ready to derive",
-            )
-        )
-    checked.append("sentinels")
-
-    # 9. Anchor resolution: every `path:NN` citation in the authored documents
-    #    opens the file it names in the target repository and reports stale
-    #    anchors before dispatch (072-US1).
-    #
-    # It runs before the symbol check below because it answers the coarser
-    # question — does the file exist, and is that line real — and the symbol
-    # check leans on that: a citation whose file cannot be read is left here
-    # deliberately, so the operator is told once rather than twice.
-    _check_anchor_resolution(
-        spec_dir, spec_text, args.target_repo, findings, skipped, checked
-    )
-
-    # 10. Whether cited Python symbols land inside their declared spans (072-US2).
-    _check_symbol_anchors(spec_dir, spec_text, args.target_repo, findings, skipped, checked)
-
-    # 11. Whether each Then-clause can be evidenced at all (102-US1), and what
-    #     the judge will be shown for this spec (102-US2).
-    #
-    # The layer that would have saved fifteen attempts: the judge is shown the
-    # story's diff and the declared gates' results, so a clause asserting an
-    # outcome neither can produce is one no correct implementation can pass.
-    # It runs last because it is the only layer that reads the target
-    # repository's manifest, and it refuses nothing when it cannot.
-    #
-    # It returns the report as well as raising the refusals, because the report
-    # is the answer the refusal assumes the author already has — and assembling
-    # it here rather than in a second pass is what keeps the two from ever
-    # disagreeing about the same spec.
-    evidence = _check_evidence(spec_text, args.target_repo, findings, skipped, checked)
-
-    report = {
+    document: dict[str, Any] = {
         "spec_dir": str(spec_dir),
-        "checked": checked,
-        "skipped": skipped,
+        "checked": list(report.checked),
+        "skipped": list(report.skipped),
         "findings": [
-            {"layer": finding.layer, "message": finding.message, "severity": finding.severity}
-            for finding in findings
+            {"layer": f.layer, "message": f.message, "severity": f.severity}
+            for f in report.findings
         ],
         "information": [
-            {"layer": note.layer, "message": note.message} for note in information
+            {"layer": n.layer, "message": n.message} for n in report.information
         ],
     }
     # Absent rather than empty when there is no report to make: a test that
     # disables the evidence layer gets a document with no `judge_evidence` key,
     # which is the honest shape — no layer ran, so nothing was answered.
     if evidence is not None:
-        report["judge_evidence"] = evidence.as_dict()
+        document["judge_evidence"] = evidence.as_dict()
 
-    has_refusal = any(finding.severity == "refusal" for finding in findings)
-    has_advisory = any(finding.severity == "advisory" for finding in findings)
+    has_refusal = any(f.severity == "refusal" for f in report.findings)
+    has_advisory = any(f.severity == "advisory" for f in report.findings)
 
-    if args.as_json:
-        print(json.dumps(report, indent=2))
+    if as_json:
+        print(json.dumps(document, indent=2))
     else:
-        all_pass_phrases = _all_pass_phrases(checked)
-        if findings:
-            for finding in findings:
+        all_pass_phrases = _all_pass_phrases(report.checked)
+        if report.findings:
+            for finding in report.findings:
                 if finding.severity == "advisory":
                     label = "advisory"
                 else:
@@ -686,30 +500,31 @@ def _validate_command(args: argparse.Namespace) -> int:
                 )
         else:
             print(f"{spec_path}: {', '.join(all_pass_phrases)} all pass")
-        # The report the author asked for, on stdout with the verdict rather than
-        # on the diagnostic stream: it is an answer, not a complaint, and it is
-        # printed whatever the verdict — an author being refused is exactly the
-        # author who needs to read what the judge will have (FR-006).
+        # The report the author asked for, on stdout with the verdict rather
+        # than on the diagnostic stream: it is an answer, not a complaint, and
+        # it is printed whatever the verdict — an author being refused is
+        # exactly the author who needs to read what the judge will have
+        # (FR-006).
         if evidence is not None:
             for line in evidence.lines(spec_path):
                 print(line)
-        # Deliberately not the finding prefix, on either line below: a layer that
-        # did not run is not a refusal, and neither is a fact the author is
-        # merely told. A reader counting refusals must not count them.
-        for entry in skipped:
+        # Deliberately not the finding prefix, on either line below: a layer
+        # that did not run is not a refusal, and neither is a fact the author
+        # is merely told. A reader counting refusals must not count them.
+        for entry in report.skipped:
             print(
                 f"ergane spec validate — layer '{entry['layer']}' not checked: "
                 f"{entry['reason']}",
                 file=sys.stderr,
             )
-        for note in information:
+        for note in report.information:
             print(
                 f"ergane spec validate — noted, not a refusal: "
                 f"[{note.layer}] {note.message}",
                 file=sys.stderr,
             )
-        if any(note.layer == "sentinel" for note in information):
-            count = sum(1 for note in information if note.layer == "sentinel")
+        if any(note.layer == "sentinel" for note in report.information):
+            count = sum(1 for note in report.information if note.layer == "sentinel")
             noun = "sentinel" if count == 1 else "sentinels"
             print(
                 f"{count} ERGANE-TODO {noun} remain; "
