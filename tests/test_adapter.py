@@ -1935,13 +1935,30 @@ class SecondCliAdapter:
         """Gateway persona: no subscription credential to discover."""
         return CredentialStage(gateway=True)
 
-    def _seed_home(self, home: Path, credential_path: Path | None) -> None:
-        """The second CLI starts from a bare home: nothing to seed."""
+    def _seed_home(
+        self, home: Path, credential_path: Path | None, context: AttemptContext | None = None
+    ) -> None:
+        """The second CLI starts from a bare home: nothing to seed.
+
+        The context arrived with 155 (FR-003): a CLI whose generated
+        configuration is parameterised by the attempt's routing seeds from it;
+        this one seeds from nothing and takes it anyway."""
         return None
 
     def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
         """The structural tell, as this CLI writes it."""
         return _second_cli_wrote_transcript(context, worktree, env)
+
+    def _transcripts(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> list[Path]:
+        """The session files this CLI writes — the location is per-CLI (155)."""
+        home = env.get("HOME")
+        if not home:
+            return []
+        transcript = (
+            Path(home) / ".claude" / "projects" / _second_cli_dir_name(worktree)
+            / f"{context.session_id}.jsonl"
+        )
+        return [transcript]
 
     def _refusal_markers(self) -> tuple[str, ...]:
         return ("SECOND-CLI REFUSED",)
@@ -2198,5 +2215,6 @@ def test_the_per_cli_surface_is_all_the_shared_policy_takes() -> None:
         "_credential",
         "_seed_home",
         "_turn_happened",
+        "_transcripts",
         "_refusal_markers",
     }, f"the per-CLI seam grew {sorted(surface - {'run_attempt'})} or shrank"

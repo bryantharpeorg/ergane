@@ -607,6 +607,13 @@ class BwrapBackend:
             "ANTHROPIC_AUTH_TOKEN",
             CLAUDE_CODE_OAUTH_TOKEN,
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS",
+            # 155-US1 (FR-003): Codex's two names — the key the generated
+            # config.toml names as its env_key, and the per-node CODEX_HOME the
+            # adapter seeds. Added to this list only because `--clearenv` makes
+            # it the whole of the child env; a name absent here never reaches a
+            # sandboxed Codex child (trap 6: only what the launch requires).
+            CODEX_GATEWAY_KEY,
+            CODEX_HOME_ENV,
             ATTEMPT_ARCHIVE_ENV,
             # Git identity and configuration are intentionally suppressed in the
             # allowlist, but the seeded `.gitconfig` in the per-node home is not
@@ -1126,7 +1133,11 @@ class SharedAttemptPolicy:
                     transcript_path=str(archive),
                     detail=stage.failure,
                 )
-        self._cli._seed_home(home, credential_path)
+        # 155-US1 (FR-003): the seed is per-CLI and may need the whole context —
+        # Codex's generated `config.toml` is parameterised by the attempt's
+        # proxy URL, which only the context carries. The two-argument call is
+        # the seam; a CLI that seeds from the credential alone ignores it.
+        self._cli._seed_home(home, credential_path, context)
         await self._reap(pids)
 
         worktree = Path(context.worktree_path).resolve()
@@ -1493,12 +1504,18 @@ class SharedAttemptPolicy:
         still evidence — and neither is a copy that fails: losing the archive
         step to an unwritable disk would cost a finished attempt its
         classification and buy a re-run of the agent.
+
+        Where the transcript lives is per-CLI (`_transcripts`): Claude names one
+        file after the session id it was given; Codex names its rollouts after
+        ids it generated itself, under a date-keyed tree in `CODEX_HOME` — so
+        the archive copies every file the adapter's list names, and invents
+        none.
         """
-        source = session_transcript(context, worktree, env)
-        if source is None or not source.is_file():
-            return
-        with contextlib.suppress(OSError):
-            shutil.copy2(source, archive / source.name)
+        for source in self._cli._transcripts(context, worktree, env):
+            if not source.is_file():
+                continue
+            with contextlib.suppress(OSError):
+                shutil.copy2(source, archive / source.name)
 
 
 # The first adapter (R6) ------------------------------------------------------
@@ -1639,9 +1656,21 @@ class ClaudeCodeAdapter:
             ) if expires_at is not None else None,
         )
 
-    def _seed_home(self, home: Path, credential_path: Path | None) -> None:
-        """Seed the per-node home with what this CLI needs to start (US3 FR-007)."""
+    def _seed_home(self, home: Path, credential_path: Path | None, context: AttemptContext | None = None) -> None:
+        """Seed the per-node home with what this CLI needs to start (US3 FR-007).
+
+        The context is part of the seam since 155 (FR-003): a CLI whose
+        configuration is generated from the attempt's routing needs it; Claude's
+        seeding needs only the credential and takes none.
+        """
         _seed_node_home(home, credential_path)
+
+    def _transcripts(
+        self, context: AttemptContext, worktree: Path, env: Mapping[str, str]
+    ) -> list[Path]:
+        """The session files this CLI writes, as this CLI spells the location."""
+        transcript = session_transcript(context, worktree, env)
+        return [transcript] if transcript is not None else []
 
     def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
         """The structural tell that a turn ran (095-US1), as this CLI writes it."""
@@ -1656,7 +1685,277 @@ class ClaudeCodeAdapter:
         return (SUBSCRIPTION_REFUSAL_MARKER, SESSION_ID_REFUSAL_MARKER)
 
 
-_ADAPTERS: dict[str, type[Any]] = {ClaudeCodeAdapter.name: ClaudeCodeAdapter}
+# The second adapter (155-US1, D-018's promise kept) ----------------------------
+
+
+#: The env var that carries the attempt's virtual key into a Codex launch: the
+#: generated `config.toml` names it as the gateway provider's `env_key`, so
+#: the key never lands on disk and the CLI reads it from its own env (measured
+#: 2026-09-08: unset, the CLI refuses naming it). Every new env name goes on
+#: the standing boundary's `--setenv` contract — under bwrap that is the whole
+#: env after `--clearenv` — or it never reaches the child.
+CODEX_GATEWAY_KEY = "CODEX_GATEWAY_KEY"
+
+#: The env var naming the per-node CODEX_HOME the adapter seeds. The CLI reads
+#: it directly (measured: with it set, session files land under it and NOT
+#: under `$HOME/.codex`), which is what keeps concurrent nodes' session trees
+#: isolated per node the way per-node `HOME`s already are.
+CODEX_HOME_ENV = "CODEX_HOME"
+
+#: The provider id the generated `config.toml` declares. A stable local name —
+#: the persona's alias names the model, this names the route.
+CODEX_GATEWAY_PROVIDER = "ergane-gateway"
+
+#: The provider label the generated `config.toml` carries. Cosmetic to the CLI;
+#: named once so the generated file has one spelling.
+CODEX_GATEWAY_PROVIDER_NAME = "Ergane LiteLLM gateway"
+
+#: The wire format Codex speaks to the gateway (plan trap 5): P1 proved the
+#: proxy serves `/v1/responses`, and the US1 probe then proved the CLI
+#: end-to-end on it (2026-09-08, real usage through 0.153.4). `chat`
+#: acceptance is unresolved; probe before relying on it.
+CODEX_WIRE_API = "responses"
+
+#: The marker that means a Codex run refused the credential — the measured
+#: analogue of `SUBSCRIPTION_REFUSAL_MARKER` (155-US2; measured 2026-09-08).
+#: Codex prints its refusals on **stderr** with exit 1 — the inverse of Claude
+#: Code — and this substring is the stable part across the measured shapes
+#: (no credential, invalid gateway key; an unset key yields a different line
+#: the key-mint path prevents by construction). The adapter's log is
+#: stdout+stderr interleaved, so the marker matches that combined stream.
+CODEX_REFUSAL_MARKER = "unexpected status 401 Unauthorized"
+
+#: The argv flag that disables Codex's own sandbox and approval prompts. The
+#: factory's boundary (bwrap, US4) is what confines the node; a Codex CLI told
+#: to enforce its read-only default inside it would refuse every write the
+#: story needs. "Intended solely for running in environments that are
+#: externally sandboxed" — this is that environment.
+CODEX_BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox"
+
+#: Codex refuses to run outside a git repository without this flag (measured:
+#: "Not inside a trusted directory…", exit 1, stderr). A node worktree is a
+#: real git worktree, but a test's fixture is a plain directory; the launch
+#: does not depend on which one it is handed.
+CODEX_SKIP_GIT_CHECK_FLAG = "--skip-git-repo-check"
+
+
+class CodexAdapter:
+    """`codex exec --model <alias> --dangerously-bypass-approvals-and-sandbox
+    --skip-git-repo-check --cd <worktree> -`, prompt on stdin.
+
+    The second CLI behind 154's seam, and the first non-Claude value the
+    registry's `agent` axis takes. Everything agent-agnostic is the shared
+    policy's; this class supplies only the per-CLI surface, selected by the
+    persona's `agent: codex` (154-US3).
+
+    Three measured facts shape it (US1's probe, 2026-09-08, 0.153.4): the
+    trailing `-` puts the prompt on stdin (the same delivery Claude's `-p`
+    uses, closed by the same `_feed_prompt`); provider routing lives in a
+    generated `config.toml` in the per-node `CODEX_HOME` (FR-003, D-048 — no
+    control-plane config), declaring the gateway parameterised by the attempt's
+    proxy URL with `CODEX_GATEWAY_KEY` as its `env_key`, so the key travels in
+    the environment, never on disk; and there is no `--session-id` analogue
+    (trap 4, measured) — Codex generates its own id, the workflow's id names
+    the archive and nothing the CLI receives, and the turn probe is the
+    rollout tree's existence, not one known filename.
+    """
+
+    name = "codex"
+
+    def __init__(
+        self,
+        *,
+        executable: str = "codex",
+        grace_s: float = DEFAULT_GRACE_S,
+        backend: AgentBackend | None = None,
+    ) -> None:
+        self.executable = executable
+        self.grace_s = grace_s
+        self._backend = backend
+
+    async def run_attempt(
+        self,
+        context: AttemptContext,
+        *,
+        factory_root: Path | str,
+        heartbeat: Callable[[UsageSnapshot | None], Awaitable[None] | None] | None = None,
+        heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
+        read_usage: Callable[[], Awaitable[UsageSnapshot]] | None = None,
+        poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+        send_ferry_question: Callable[[str], Awaitable[str]] | None = None,
+        read_ferry_answer: Callable[[str], Awaitable[str | None]] | None = None,
+        ferry_interval_s: float = DEFAULT_FERRY_INTERVAL_S,
+    ) -> AdapterResult:
+        """Run one attempt to its end, whatever that end is.
+
+        The whole body is the shared policy (FR-007): this delegate supplies
+        the per-CLI surface to it and answers for nothing else.
+        """
+        return await SharedAttemptPolicy(self).run_attempt(
+            context,
+            factory_root=factory_root,
+            heartbeat=heartbeat,
+            heartbeat_interval_s=heartbeat_interval_s,
+            read_usage=read_usage,
+            poll_interval_s=poll_interval_s,
+            send_ferry_question=send_ferry_question,
+            read_ferry_answer=read_ferry_answer,
+            ferry_interval_s=ferry_interval_s,
+        )
+
+    # -- the per-CLI surface (FR-007) -----------------------------------------
+
+    def _argv(self, context: AttemptContext) -> list[str]:
+        """The invocation, as the child receives it (FR-004).
+
+        `exec` for non-interactive, `-` for the stdin prompt, `--model` for
+        the persona's alias, the bypass flag because the factory's boundary is
+        the confinement, `--skip-git-repo-check` because repository shape is
+        not the factory's contract, and `--cd` for the node worktree."""
+        return [
+            self.executable,
+            "exec",
+            "--model",
+            context.model_alias,
+            CODEX_BYPASS_FLAG,
+            CODEX_SKIP_GIT_CHECK_FLAG,
+            "--cd",
+            str(Path(context.worktree_path).resolve()),
+            "-",
+        ]
+
+    def _provider_env(self, env: dict[str, str], context: AttemptContext) -> dict[str, str]:
+        """The CLI's own variable names, on top of the constructed environment.
+
+        The gateway key `attempt_env` already built is *renamed* here, not
+        re-read from the context: the credential's one assembly site stays
+        `attempt_env`, and this seam only re-spells it the way the generated
+        `config.toml` names it. `CODEX_HOME` points at the seeded per-node
+        home; Claude's variables are dropped — a Codex child has no use for a
+        credential pair its config never consults.
+        """
+        key = env.pop("ANTHROPIC_AUTH_TOKEN", None)
+        if key is not None:
+            env[CODEX_GATEWAY_KEY] = key
+        env.pop("ANTHROPIC_BASE_URL", None)
+        env.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
+        env[CODEX_HOME_ENV] = str(codex_home_path(context.home_path))
+        return env
+
+    async def _deliver_prompt(self, process: asyncio.subprocess.Process, prompt: str) -> None:
+        """`codex exec -` reads its prompt on stdin: write it and close the pipe."""
+        await _feed_prompt(process, prompt)
+
+    def _credential(self, context: AttemptContext) -> CredentialStage:
+        """Discover this CLI's credential for the attempt's route.
+
+        Gateway personas need nothing discovered — the attempt's virtual key is
+        the credential (constitution V), travelling in the env the generated
+        config names. The subscription route is US3's (FR-006); until that
+        discovery lands, a subscription-routed Codex persona refuses by name
+        rather than falling back to anything."""
+        if effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION:
+            return CredentialStage(gateway=True)
+        raise AdapterError(
+            "codex subscription route is not implemented yet: the credential "
+            "discovery for it is spec 155's US3, which has not landed — "
+            "route this persona through the gateway instead"
+        )
+
+    def _seed_home(
+        self, home: Path, credential_path: Path | None, context: AttemptContext | None = None
+    ) -> None:
+        """Seed the per-node home: git identity plus the generated config.
+
+        The git identity is seeded the way Claude's is (FR-005); the
+        `config.toml` is Codex's own (FR-003), generated from the attempt's
+        routing — parameterised by the proxy URL, the key left to `env_key`."""
+        _seed_node_home(home, credential_path)
+        if context is not None:
+            _seed_codex_config(codex_home_path(home), context)
+
+    def _transcripts(
+        self, context: AttemptContext, worktree: Path, env: Mapping[str, str]
+    ) -> list[Path]:
+        """The session files this CLI writes, as this CLI spells the location.
+
+        Codex names its rollouts after ids it generated itself (trap 4,
+        measured), under a date-keyed tree in `CODEX_HOME`. The archive copies
+        every rollout beside the log; the turn probe asks whether any exists."""
+        return _codex_rollouts(env)
+
+    def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
+        """The structural tell that a turn ran (095-US1), as Codex writes it.
+
+        The rollout file's existence is the tell — measured: even a refused run
+        writes one (with `task_complete` carrying the error), so this is "the
+        CLI got far enough to attempt a turn", the same token-existence
+        semantics Claude's probe has. Naming *why* it failed is the refusal
+        marker's job (FR-012)."""
+        return any(path.is_file() for path in self._transcripts(context, worktree, env))
+
+    def _refusal_markers(self) -> tuple[str, ...]:
+        """Markers that mean this CLI refused rather than merely failed.
+
+        Measured on stderr with exit 1 (the inverse of Claude Code); the
+        adapter's log is stdout+stderr interleaved, so the marker is matched on
+        the combined stream. See `CODEX_REFUSAL_MARKER`."""
+        return (CODEX_REFUSAL_MARKER,)
+
+
+def codex_home_path(home_path: Path | str) -> Path:
+    """The per-node CODEX_HOME: `<node home>/.codex` (FR-003)."""
+    return Path(home_path) / ".codex"
+
+
+def _seed_codex_config(codex_home: Path, context: AttemptContext) -> None:
+    """Write the generated `config.toml` declaring the gateway (FR-003).
+
+    Provider routing belongs in this file — never in any `[[llm.persona]]`-style
+    control-plane config (D-048) — and it is parameterised by the attempt's
+    proxy URL alone: the key is named by `env_key` and travels in the
+    environment, so no credential is written to disk twice.
+    """
+    codex_home.mkdir(parents=True, exist_ok=True)
+    config = (
+        f'model_provider = "{CODEX_GATEWAY_PROVIDER}"\n'
+        "\n"
+        f"[model_providers.{CODEX_GATEWAY_PROVIDER}]\n"
+        f'name = "{CODEX_GATEWAY_PROVIDER_NAME}"\n'
+        f'base_url = "{context.proxy_url}/v1"\n'
+        f'env_key = "{CODEX_GATEWAY_KEY}"\n'
+        f'wire_api = "{CODEX_WIRE_API}"\n'
+    )
+    (codex_home / "config.toml").write_text(config, encoding="utf-8")
+
+
+def _codex_rollouts(env: Mapping[str, str]) -> list[Path]:
+    """Every rollout file this attempt's CODEX_HOME could hold.
+
+    The tree is date-keyed (`sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl`) and
+    the file names carry ids Codex generated itself, so the probe is the tree,
+    not one known name. Sorted for a deterministic archive order.
+    """
+    codex_home = env.get(CODEX_HOME_ENV)
+    if not codex_home:
+        return []
+    sessions = Path(codex_home) / "sessions"
+    if not sessions.is_dir():
+        return []
+    try:
+        return sorted(sessions.rglob("rollout-*.jsonl"))
+    except OSError:
+        # An unreadable tree answers "nothing found": the archive step then
+        # copies nothing (the log is still evidence) and the turn probe
+        # answers no — an unreadable CODEX_HOME means the launch itself failed
+        # to write anything, which is the fact being reported.
+        return []
+
+
+_ADAPTERS: dict[str, type[Any]] = {
+    ClaudeCodeAdapter.name: ClaudeCodeAdapter,
+    CodexAdapter.name: CodexAdapter,
+}
 
 # the pre-agent failure, classified structurally (095-US1) ---------------------
 
@@ -1664,12 +1963,13 @@ _ADAPTERS: dict[str, type[Any]] = {ClaudeCodeAdapter.name: ClaudeCodeAdapter}
 def session_transcript(
     context: AttemptContext, worktree: Path, env: Mapping[str, str]
 ) -> Path | None:
-    """Where this attempt's session transcript is, or `None` if it can't be.
+    """Where Claude Code writes this attempt's session transcript, or `None`.
 
-    One definition, two readers: the archive step copies this file, and the
-    classifier asks whether it exists. A second spelling of the same path is a
-    second thing that can drift, and the drift would be silent in the worst
-    direction — the classifier would call every failing attempt tokenless.
+    One definition, two readers (the archive step copies it, the classifier
+    asks whether it exists). Since 155 this is one CLI's convention among
+    several: where a session transcript lives is per-CLI (`CodexAdapter` names
+    its own through `_transcripts`), and the shared policy never spells a
+    per-CLI path itself.
     """
     home = env.get("HOME")
     if not home:
