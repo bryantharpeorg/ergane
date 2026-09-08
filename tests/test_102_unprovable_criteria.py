@@ -428,12 +428,10 @@ def _validate_without_evidence_layer(
     """Run validate with the `_check_evidence` layer monkeypatched to a no-op.
 
     Patched on `factory.spec.composition` — the module the verb's composition
-    reads — and not on `factory.cli.nouns.spec`, where the name was only ever
-    an import binding. Since US9 the verb is a renderer over `validate_spec`,
-    so a rebinding on the CLI module lands on a name nothing calls and both
-    runs become the same run (133-US9's T052 is the assertion that proves the
-    re-point took); patching the composition's own global is what still
-    disables the layer.
+    reads. The old patch site, `factory.cli.nouns.spec`, held only an import
+    binding: since US9 nothing there calls the layer, and noun discovery
+    re-executes the CLI noun module on every `main()` call, so the rebinding
+    landed on a stale object (133-US9's T052 proves the re-point took).
     """
     import factory.spec.composition as _composition_module
 

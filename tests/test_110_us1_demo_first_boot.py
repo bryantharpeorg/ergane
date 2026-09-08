@@ -417,10 +417,8 @@ def test_prepared_repository_validates_and_derives(
 ) -> None:
     """`spec validate` and `spec derive` both return 0 and compile a workgraph.
 
-    The validate stage reaches the library form through the demonstration's
-    own seam since 133-US9 (FR-013): `_demo_validate` calls `validate_spec` and
-    renders through the verb's renderer, and the assertion that the stage
-    returns 0 stays exactly what it was.
+    The validate stage reaches the library form through `_demo_validate` since
+    133-US9 (FR-013); the assertion that the stage returns 0 stays what it was.
     """
     from factory.cli.install import _demo_validate, _run_cli, _spec_derive_argv
 

@@ -417,16 +417,13 @@ def _validate_command(args: argparse.Namespace) -> int:
 
     Everything that decides what this run found lives in
     `factory.spec.composition.validate_spec`; this handler is its renderer —
-    it resolves the operator's two values, translates the one library error
-    the CLI boundary owes a line for, prints the four channels exactly as
-    before, and maps the verdict to the exit code. FR-006 and FR-007 are what
-    hold the printed bytes still: the streams are on the streams they were on
-    (findings, skipped layers, information notes and the sentinel count to
-    stderr; the all-pass sentence, the judge-evidence report and the `--json`
-    document to stdout), the `checked` order is whatever the composition
-    returned (seeded, not run order — trap 3), and the `--json` document keeps
-    the inline dict's key order with `judge_evidence` absent rather than null
-    when there is no report (trap 21).
+    it translates the one library error the CLI boundary owes a line for, and
+    maps the verdict to the exit code. FR-006 and FR-007 hold the printed
+    bytes still: the streams are the streams they were on, the `checked`
+    order is whatever the composition returned (seeded, not run order — trap
+    3), and the `--json` document keeps the inline dict's key order with
+    `judge_evidence` absent rather than null when there is no report (trap
+    21).
     """
     spec_dir = Path(args.spec_dir)
     try:
@@ -449,13 +446,11 @@ def _render_validation(
 ) -> int:
     """Print the report the composition returned, and return the verb's code.
 
-    The renderer the verb and the demonstration both drive (FR-013): the lines
-    are byte for byte what `_validate_command` printed before this story, taken
-    from the typed report rather than assembled from a Namespace and
-    caller-owned lists. The evidence report is passed beside the typed one —
-    `judge_evidence` is None when the layer did not run, which is what keeps
-    the JSON key absent rather than null (trap 21) and the report block
-    unprinted.
+    The renderer the verb and the demonstration both drive (FR-013): byte for
+    byte what `_validate_command` printed before this story, read from the
+    typed report. The evidence report is passed beside the typed one —
+    `judge_evidence` is None when the layer did not run, which keeps the JSON
+    key absent rather than null (trap 21) and the report block unprinted.
     """
     spec_path = spec_dir / SPEC_NAME
     document: dict[str, Any] = {

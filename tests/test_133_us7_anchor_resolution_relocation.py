@@ -151,10 +151,9 @@ def _drive(
     spec_text: str,
     target_repo: Path,
 ) -> Run:
-    """Drive the checker with caller-owned lists, through the moved module's
-    own object. US9 has since made the verb a renderer over the composition,
-    so the CLI module binds no layer function any more (FR-015); the drive
-    goes through `factory.spec.anchors`, which is what defines and reads it.
+    """Drive the checker with caller-owned lists, through the CLI module's
+    attribute exactly as `_validate_command` reaches it — the binding T057
+    keeps alive is what this exercises.
     """
     findings: list[Any] = []
     skipped: list[dict[str, str]] = []
@@ -169,18 +168,13 @@ def _drive(
 
 
 def test_the_cli_module_no_longer_defines_the_resolution_checker() -> None:
-    """T067, US7-S1. Defined in `factory.spec`, gone from the CLI module.
+    """T067, US7-S1. Defined in `factory.spec`, imported back, gone here.
 
     `_read_citation_files`, `_ANCHOR_RE` and `_BARE_LINE_RE` left with US2 and
     are asserted there (T012); a test here that re-asserts them is testing
-    US2's landing, not this one. The checkers US5 and US6 own were asserted to
-    still be defined here when this story landed, which was the "nothing else
-    moved" half of the scenario.
-
-    The import-back half of the original assertion ended with US9 (FR-015):
-    the verb is a renderer over the composition, the CLI module imports no
-    layer function at all, and `factory.spec.composition` is what reads the
-    checker — asserted at T069's re-pointed identity comparison.
+    US2's landing, not this one. The checkers US5 and US6 own are asserted to
+    still be defined here, which is the "nothing else moved" half of the
+    scenario.
     """
     source = CLI_PATH.read_text(encoding="utf-8")
     bindings = _module_bindings(source)
@@ -240,14 +234,15 @@ def test_the_vocabulary_the_moved_checker_reads_is_one_object_in_both_modules() 
     objects from there.
     """
     import factory.spec.anchors as anchors
+    spec_noun = anchors
 
     assert "_check_anchor_resolution" in _module_bindings(ANCHORS_PATH.read_text(encoding="utf-8")), (
         "the checker is not defined in factory.spec.anchors — it has not moved"
     )
 
     for name in VOCABULARY:
-        assert getattr(anchors, name) is getattr(anchors, name), (
-            f"{name} must be defined in the moved module"
+        assert getattr(spec_noun, name) is getattr(anchors, name), (
+            f"{name} must be one object in both modules"
         )
     assert anchors._spec_state.__module__.startswith("factory.spec")
     assert anchors._severity_for_state.__module__.startswith("factory.spec")
@@ -256,15 +251,14 @@ def test_the_vocabulary_the_moved_checker_reads_is_one_object_in_both_modules() 
 # --- US7-S5 / FR-016: the object the CLI calls is the moved one ---------------
 
 
-def test_the_resolution_checker_the_composition_calls_is_defined_in_factory_spec() -> None:
+def test_the_resolution_checker_the_cli_module_calls_is_defined_in_factory_spec() -> None:
     """T069, US7-S5. Compare identity and `__module__`, so a re-declaration
-    cannot pass as a move (T013's assertion, one tier later). Renamed by
-    133-US9: the composition calls the checker now, not the CLI module.
+    cannot pass as a move (T013's assertion, one tier later).
     """
     import factory.spec.anchors as anchors
-    import factory.spec.composition as composition
+    spec_noun = anchors
 
-    checker = composition._check_anchor_resolution
+    checker = spec_noun._check_anchor_resolution
     assert checker is anchors._check_anchor_resolution
     assert checker.__module__.startswith("factory.spec")
 
@@ -298,10 +292,9 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
         "checked",
     ]
 
-    import factory.spec.anchors as anchors
-    # The composition the verb renders must drive the very same object, not a
-    # re-declaration (the re-pointed seam, 133-US9's T053).
-    assert anchors._check_anchor_resolution is _check_anchor_resolution
+    import factory.spec.anchors as spec_noun
+    # The CLI module must drive the very same object, not a re-declaration.
+    assert spec_noun._check_anchor_resolution is _check_anchor_resolution
 
     module_text = "def present() -> None:\n    return None\n"
     _target_tree(tmp_path / "repo", module_text=module_text)
@@ -311,7 +304,7 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
     # unreadable and the spec body is empty, so `docs` stays empty.
     silent_dir = tmp_path / "specs-a" / "001-empty"
     silent_dir.mkdir(parents=True, exist_ok=True)
-    run = _drive(anchors, silent_dir, "", tmp_path / "repo")
+    run = _drive(spec_noun, silent_dir, "", tmp_path / "repo")
     assert run.result is None
     assert run.findings == []
     assert run.skipped == []
@@ -321,7 +314,7 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
     # the layer ran and checked itself, with nothing to open a file for.
     trio = tmp_path / "specs-b" / "002-no-citations"
     spec_text = _write_trio(trio, plan="# Plan\n\nPlain prose, no citations.\n")
-    run = _drive(anchors, trio, spec_text, tmp_path / "repo")
+    run = _drive(spec_noun, trio, spec_text, tmp_path / "repo")
     assert run.result is None
     assert run.findings == []
     assert run.skipped == []
@@ -333,7 +326,7 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
     spec_text = _write_trio(
         trio, plan="# Plan\n\n- see `:99` for the shape of the citation.\n"
     )
-    run = _drive(anchors, trio, spec_text, tmp_path / "repo")
+    run = _drive(spec_noun, trio, spec_text, tmp_path / "repo")
     assert run.result is None
     assert run.skipped == []
     assert run.checked == ["anchor_resolution"]
@@ -351,7 +344,7 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
     spec_text = _write_trio(
         trio, plan="# Plan\n\n- see `src/mod.py:999` for context.\n"
     )
-    run = _drive(anchors, trio, spec_text, tmp_path / "repo")
+    run = _drive(spec_noun, trio, spec_text, tmp_path / "repo")
     assert run.result is None
     assert run.skipped == []
     assert run.checked == ["anchor_resolution"]
@@ -370,7 +363,7 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
         state="landed",
         plan="# Plan\n\n- see `src/mod.py:999` for context.\n",
     )
-    run = _drive(anchors, trio, landed_text, tmp_path / "repo")
+    run = _drive(spec_noun, trio, landed_text, tmp_path / "repo")
     assert run.checked == ["anchor_resolution"]
     assert [finding.severity for finding in run.findings] == ["advisory"]
 
@@ -381,7 +374,7 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
     spec_text = _write_trio(
         trio, plan="# Plan\n\n- see `src/mod.py:999` for context.\n"
     )
-    run = _drive(anchors, trio, spec_text, tmp_path / "no-such-repo")
+    run = _drive(spec_noun, trio, spec_text, tmp_path / "no-such-repo")
     assert run.result is None
     assert run.findings == []
     assert run.checked == []

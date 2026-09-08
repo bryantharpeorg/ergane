@@ -1,0 +1,50 @@
+# T042 (133-US9) — the corpus sweep, pre-change beside post-change
+
+The task: the diff between the pre-change and post-change output sweep of
+`plan.md` step 4, captured on both streams — it must be empty on each.
+
+Driven in-process from a pinned environment (both findings-store candidates
+under a scratch root, the way `tests/test_089_validate_checks_fixes.py:32`
+pins them), the verb over every spec directory of `specs/`, text and `--json`.
+The pre-change capture was taken at the attempt's base (8f771b9) with the verb
+still composing its own layers; the post-change capture after T040's rewrite.
+
+## Totals
+
+    specs compared: 147
+    exit codes changed: 0
+    finding messages changed: 974
+
+## The classification of every changed finding message
+
+The corpus cites line and symbol anchors inside the two files this story
+edits; the rewrite moves those lines, so 974 anchor findings go stale — the
+drift the plan declares for any story touching this module, not an output
+change (FR-006's prefixes, severities, channels and verdicts are untouched).
+Every changed message was checked to cite only those two files:
+
+    messages not citing this story's two files: 0
+    exit-code changes: []
+
+## The sweep diff, with the expected anchor drift removed
+
+Removing every finding line that cites one of the two edited files, and
+comparing the documents' remaining parts (`spec_dir`, `checked`, `skipped`,
+`information`, `judge_evidence`) and both text streams line-wise:
+
+    diffs after removing the expected drift: 0
+
+## One sample, verbatim (022-validate-calibration, stderr)
+
+The one class of change the sweep contains — a stale line anchor re-pointed
+by the rewrite, same prefix, same severity, same stream:
+
+    --- pre
+    +++ post
+    @@ -2,6 +2,7 @@
+     ergane spec validate — advisory: [anchor_resolution] tasks.md:18: `:445` is unanchorable: no path was cited before it in the same section
+     ergane spec validate — advisory: [anchor_resolution] tasks.md:24: `:500` is unanchorable: no path was cited before it in the same section
+     ergane spec validate — advisory: [anchor_resolution] tasks.md:30: `:473` is unanchorable: no path was cited before it in the same section
+    +ergane spec validate — advisory: [anchor_resolution] plan.md:16: `factory/cli/nouns/spec.py:250-257` line 250 is blank in `factory/cli/nouns/spec.py`
+     ergane spec validate — advisory: [anchor_resolution] plan.md:16: `spec.py:234` points at absent file `spec.py`
+

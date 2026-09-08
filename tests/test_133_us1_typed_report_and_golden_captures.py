@@ -233,12 +233,10 @@ def test_the_cli_module_no_longer_defines_the_finding_type_but_binds_the_import(
     Read the module source for `class _ValidateFinding` — a module-level
     attribute check would also pass on an import — and assert the object bound
     under the old local name reports its `__module__` under `factory.spec`.
-    Binding the import under the same local name is what kept the module's
-    twenty-odd construction sites out of US1's diff (plan T008). Updated for
-    US9: the verb is a renderer now, its construction sites are gone, and with
-    them the binding — the finding type is reached through `factory.spec`
-    alone, which the composition imports. What survives here is the class
-    statement's absence, asserted on the module source as before.
+    Binding the import under the same local name kept the module's
+    twenty-odd construction sites out of US1's diff (plan T008); US9's
+    renderer removed the construction sites and the binding with them, and
+    what survives here is the class statement's absence, as before.
     """
     import factory.cli.nouns.spec as spec_noun
 

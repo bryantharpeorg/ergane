@@ -1078,12 +1078,11 @@ def _run_cli(argv: list[str]) -> int:
 def _demo_validate(spec_dir: Path, repo_root: Path) -> int:
     """Run the demonstration's validate stage through the library form.
 
-    The stage exists so a stranger watching `ergane install` sees the real
-    verdict a dispatch would be gated on (plan trap 14): `_run_cli` streamed
-    labeled output on purpose, and this replaces the argv detour — building a
-    list to re-enter the package's own CLI from inside it — with a direct
-    `validate_spec` call rendered by the same renderer the verb prints through
-    (FR-013). The lines printed are the verb's lines, byte for byte.
+    The stage exists so a stranger watching `ergane install` sees the verdict a
+    dispatch would be gated on (plan trap 14). Replaces the argv detour —
+    building a list to re-enter the package's own CLI from inside it — with a
+    `validate_spec` call rendered by the verb's renderer (FR-013); the lines
+    printed are the verb's lines, byte for byte.
     """
     from factory.cli.nouns.spec import _render_validation
     from factory.spec import validate_spec
