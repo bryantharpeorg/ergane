@@ -940,6 +940,52 @@ def discover_subscription_credential(
     return None
 
 
+def discover_codex_credential(
+    *,
+    operator_home: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Find the operator's Codex subscription credential on this host.
+
+    The location is MEASURED, not assumed (155 trap 3, 2026-09-08 on
+    `codex-cli 0.153.4`): `codex login` writes `auth.json` under the CLI's
+    home — `$CODEX_HOME` when the host declares one, else `~/.codex/` — and
+    `codex doctor` reads the same file back as `auth storage mode: File`,
+    mode 0600. The search is therefore the CLI's own resolution, in order:
+
+    1. ``$CODEX_HOME/auth.json`` — relocation moves the whole tree (measured),
+       so a worker host that declares it keeps its credential there
+    2. ``~/.codex/auth.json`` — the default, the path the 2026-09-08 probe
+       found the operator's ChatGPT sign-in at
+
+    Returns ``None`` when neither exists; the caller owns the refusal, the way
+    Claude's discovery's caller does.
+
+    INHERITED HAZARD (155-US3-S3), UNMEASURED FOR CODEX: a subscription
+    credential that rotates on use would rotate the operator's own sign-in,
+    not this node's copy. The per-node copy prevents concurrent nodes from
+    invalidating each other the way Claude's copy does, but it cannot say
+    whether the first node's use refreshes — and invalidates — the operator's
+    host login. That behaviour is measured for neither CLI (Claude's
+    `discover_subscription_credential` carries the same caveat, and this route
+    inherits it rather than claiming a measurement Codex never had).
+    """
+    if operator_home is None:
+        operator_home = _operator_home()
+    source = os.environ if environ is None else environ
+
+    candidates: list[Path] = []
+    codex_home = source.get(CODEX_HOME_ENV)
+    if codex_home:
+        candidates.append(Path(codex_home) / "auth.json")
+    candidates.append(operator_home / ".codex" / "auth.json")
+
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
 def _credential_expiry(path: Path) -> datetime | None:
     """The recorded expiry of a copied credential, or `None` when it cannot be read.
 
@@ -1045,8 +1091,15 @@ def attempt_env(
         # longest-lived credential. Carry the token only in the subscription
         # branch; adding it to PASSTHROUGH_ENV would hand it to gateway personas
         # too (trap 1).
+        #
+        # 155-US3: the branch serves both adapters now, and the token is
+        # Claude's credential. Codex subscription personas authenticate through
+        # the `auth.json` their home seeding copied, so a Codex child receives
+        # neither the token nor any gateway variable — the CLI would read a
+        # Claude token as its own and the credential's provenance would read
+        # wrong in the evidence.
         oauth_token = source.get(CLAUDE_CODE_OAUTH_TOKEN)
-        if oauth_token:
+        if oauth_token and context.agent != CodexAdapter.name:
             env[CLAUDE_CODE_OAUTH_TOKEN] = oauth_token
     if context.context_window is not None:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(context.context_window)
@@ -1100,6 +1153,13 @@ class CredentialStage:
     #: Whether the discovered credential is still valid, as the CLI's own
     #: format records validity. The policy refuses an expired one.
     expired: bool = False
+    #: Where the credential came from, as the adapter's record states it
+    #: (155-US3-S2). Free text by design — "which file" is a per-CLI fact, and
+    #: Claude's precedence names a channel while Codex's names a path — so the
+    #: policy records what the discovery declared instead of re-deriving it
+    #: from a variable name only one CLI uses. `None` for a gateway attempt,
+    #: whose credential is the attempt's virtual key (constitution V).
+    source: str | None = None
 
 
 class SharedAttemptPolicy:
@@ -1211,13 +1271,12 @@ class SharedAttemptPolicy:
         # US1: decide which credential source this subscription-routed attempt
         # will use, so the record can state the precedence rather than leaving it
         # to be inferred (FR-005, trap 10). Gateway personas have no credential
-        # source to record here.
+        # source to record here. 155-US3-S2: which strings name a source is the
+        # adapter's declaration, made on the `CredentialStage` its `_credential`
+        # returned — a gateway attempt discovers nothing and carries none.
         credential_source: str | None = None
         if not routes_through_gateway:
-            if env.get(CLAUDE_CODE_OAUTH_TOKEN):
-                credential_source = CREDENTIAL_SOURCE_OAUTH_TOKEN
-            else:
-                credential_source = CREDENTIAL_SOURCE_COPIED_CREDENTIALS
+            credential_source = stage.source
 
         # US1: capture the target repository's tracked-file state before the agent runs.
         if target_repo is not None:
@@ -1696,10 +1755,19 @@ class ClaudeCodeAdapter:
             and expires_at <= datetime.now(timezone.utc)
             and not os.environ.get(CLAUDE_CODE_OAUTH_TOKEN)
         )
+        # The precedence the env carries is the source the record names:
+        # `attempt_env` delivers the token when the worker has one (US1
+        # FR-005), else the copy this stage seeds (US3 FR-007).
+        token_configured = os.environ.get(CLAUDE_CODE_OAUTH_TOKEN) is not None
         return CredentialStage(
             gateway=False,
             path=credential_path,
             expired=expired,
+            source=(
+                CREDENTIAL_SOURCE_OAUTH_TOKEN
+                if token_configured
+                else CREDENTIAL_SOURCE_COPIED_CREDENTIALS
+            ),
             failure=(
                 f"subscription credential expired at {expires_at.isoformat()}: "
                 "the copied interactive credential is no longer valid. "
@@ -1914,28 +1982,67 @@ class CodexAdapter:
 
         Gateway personas need nothing discovered — the attempt's virtual key is
         the credential (constitution V), travelling in the env the generated
-        config names. The subscription route is US3's (FR-006); until that
-        discovery lands, a subscription-routed Codex persona refuses by name
-        rather than falling back to anything."""
+        config names. A subscription persona runs on the operator's own ChatGPT
+        sign-in (155-US3, FR-006): `auth.json` at the location the CLI itself
+        resolves (measured, trap 3), discovered by
+        `discover_codex_credential` and missing-credential refused by name —
+        the seam Claude's discovery refuses at, never a fallback to the
+        gateway no persona asked for."""
         if effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION:
             return CredentialStage(gateway=True)
-        raise AdapterError(
-            "codex subscription route is not implemented yet: the credential "
-            "discovery for it is spec 155's US3, which has not landed — "
-            "route this persona through the gateway instead"
+        credential_path = discover_codex_credential()
+        if credential_path is None:
+            operator_home = _operator_home()
+            return CredentialStage(
+                gateway=False,
+                path=None,
+                error=(
+                    "codex subscription credential not found: no auth.json under "
+                    f"{codex_home_path(operator_home)} or $CODEX_HOME. "
+                    "Run `codex login` on the worker host."
+                ),
+            )
+        # 155-US3-S3: no expiry is read and no rotation is measured — auth.json
+        # carries no expiry field the CLI honours (measured shape, trap 3), and
+        # the rotation hazard is inherited, not solved. See the discovery's
+        # docstring for the hazard this stage carries unmeasured.
+        return CredentialStage(
+            gateway=False,
+            path=credential_path,
+            # The source names the file it came from (US3-S2): a subscription
+            # run is distinguishable from a gateway run in the evidence, and a
+            # relocated CODEX_HOME is legible in the record.
+            source=str(credential_path),
         )
 
     def _seed_home(
         self, home: Path, credential_path: Path | None, context: AttemptContext | None = None
     ) -> None:
-        """Seed the per-node home: git identity plus the generated config.
+        """Seed the per-node home: git identity plus the route's own config.
 
-        The git identity is seeded the way Claude's is (FR-005); the
-        `config.toml` is Codex's own (FR-003), generated from the attempt's
-        routing — parameterised by the proxy URL, the key left to `env_key`."""
-        _seed_node_home(home, credential_path)
-        if context is not None:
+        The git identity is seeded the way Claude's is (FR-005). The route
+        decides the rest (FR-003 vs FR-006): a gateway attempt gets the
+        generated `config.toml` declaring the gateway provider, parameterised
+        by the proxy URL with the key left to `env_key`; a subscription attempt
+        gets the discovered `auth.json` copied into the per-node CODEX_HOME and
+        no provider config at all — the CLI's own default provider reads that
+        file, and a gateway declaration whose `env_key` names a variable the
+        subscription never sets would refuse the launch (measured, US2
+        evidence shape 2)."""
+        # The git identity is seeded on both routes (FR-005): salvage owns
+        # every Codex commit, whichever credential produced it. `None` for the
+        # credential — `_seed_node_home`'s copy is Claude's placement, and an
+        # auth.json under `.claude/` is a file no Codex CLI reads.
+        _seed_node_home(home, None)
+        if context is not None and (
+            effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION
+        ):
             _seed_codex_config(codex_home_path(home), context)
+        elif credential_path is not None:
+            target = codex_home_path(home) / "auth.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(credential_path, target)
+            target.chmod(0o600)
 
     def _transcripts(
         self, context: AttemptContext, worktree: Path, env: Mapping[str, str]
