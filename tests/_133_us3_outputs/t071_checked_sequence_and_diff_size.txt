@@ -1,0 +1,72 @@
+# T071 (133-US3) — the checked sequence beside the verb's, and the diff size
+
+The task: "Paste, as committed evidence, the `checked` sequence `validate_spec`
+returns for one real spec beside the sequence the verb prints for the same spec
+— they must be identical and in the seeded-then-appended order, not the run
+order — and the output of `git diff <base>..HEAD | wc -c`."
+
+**The standing guard that keeps them identical** is the composition itself:
+`validate_spec` (`factory/spec/composition.py`) is the verb's own composition
+carried verbatim, seeded `checked` included (plan trap 3), and the corpus sweep
+below is the proof at scale.
+
+---
+
+## The checked sequence, one real spec (specs/133-…), both faces
+
+Driven in-process from one Python session: `validate_spec(spec_dir,
+target_repo=<fixture repo>, specs_root="specs")` for the library face; the
+`--json` document of `ergane spec validate` (driven through
+`factory.cli.main.main` with the streams captured) for the verb. The findings
+store was seeded under `ERGANE_ROOT` with this spec's own declared key so the
+`fixes` layer actually runs — with no store the layer skips and the name is
+absent from `checked`, which is its own honest answer but not the sequence with
+all twelve in it.
+
+    LIBRARY checked: ["frontmatter", "workgraph_derivation", "persona_registry", "scenario_coverage", "fixes", "prompt_assembly", "slice_coverage", "slice_contention", "sentinels", "anchor_resolution", "symbol_anchors", "evidence"]
+    VERB     checked: ["frontmatter", "workgraph_derivation", "persona_registry", "scenario_coverage", "fixes", "prompt_assembly", "slice_coverage", "slice_contention", "sentinels", "anchor_resolution", "symbol_anchors", "evidence"]
+    IDENTICAL: True
+    fixes at index 4 | sentinels at 8 | evidence at 11
+
+Twelve names, identical, in the seeded-then-appended order: `fixes` runs second
+and lands fifth; `sentinels` runs eighth and lands ninth; `evidence` runs last.
+Not the run order — the seed at `factory/cli/nouns/spec.py` (`checked = [
+"frontmatter", "workgraph_derivation", "persona_registry", "scenario_coverage" ]`)
+followed by each layer's append as it finishes.
+
+## The corpus sweep, both faces over all of specs/
+
+`validate_spec` beside the verb (`--json`) over every spec directory in
+`specs/`, enumerated by globbing, comparing exit verdict, per-layer findings
+with severities and messages, `checked`, `skipped`, `information` and the
+presence of `judge_evidence`:
+
+    specs compared: 147, diffs: 0
+
+Zero disagreement on all 147 — the composition the library runs and the one the
+verb runs are the same composition, on the corpus this spec will land against.
+(US4 commits the standing test for this; the sweep above is this story's
+evidence that US3's composition arrived equivalent.)
+
+## The diff size
+
+Assembled diff against this attempt's base (d63ad49), measured with this
+artifact's final bytes in the tree (self-consistent), against the 52,400-byte
+working ceiling (80% of DIFF_INPUT_LIMIT, 65,536 — plan trap 6):
+
+    git diff d63ad49..HEAD | wc -c
+    45633 bytes — inside the ceiling with 6,767 bytes of headroom (87% of it).
+    The plan estimated ~36 KB; the difference is US3-S2's five defective trios
+    built at test time, which the estimate priced at one coverage's worth. A
+    first pass committed the attempt report in the tree at 53,348 bytes and
+    was cut before shipping: the report stays out of the diff (US8's pattern —
+    evidence under `tests/_us3_outputs/`, the report read at gate time), and
+    the red-first transcript in the test file's docstring was trimmed to the
+    observed run.
+
+    Final, this artifact committed: 46221 bytes — 6,179 bytes of headroom.
+    (The count moved once more after the first pin: the findings-store env
+    pin moved from bare `os.environ` to `monkeypatch`, which the full-suite
+    run demanded — `test_split_state_follows_populated_legacy_ledger` read
+    this story's env after teardown. The lesson is constitution II's, and it
+    is recorded in the commit that fixed it.)
