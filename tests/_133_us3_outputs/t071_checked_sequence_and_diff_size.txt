@@ -64,9 +64,15 @@ working ceiling (80% of DIFF_INPUT_LIMIT, 65,536 — plan trap 6):
     the red-first transcript in the test file's docstring was trimmed to the
     observed run.
 
-    Final, this artifact committed: 46221 bytes — 6,179 bytes of headroom.
-    (The count moved once more after the first pin: the findings-store env
+    Final, this artifact committed: 46956 bytes — 5,444 bytes of headroom.
+    (The count moved twice after the first pin. First, the findings-store env
     pin moved from bare `os.environ` to `monkeypatch`, which the full-suite
     run demanded — `test_split_state_follows_populated_legacy_ledger` read
-    this story's env after teardown. The lesson is constitution II's, and it
-    is recorded in the commit that fixed it.)
+    this story's env after teardown; the lesson is constitution II's, and it
+    is recorded in the commit that fixed it. Second, after the merge queue
+    refused the branch, the T070 control's `git show d63ad49:…` subprocess —
+    exit 128 on CI's depth-1 checkout — was replaced by the digest of the CLI
+    module pinned from the base object, verified before being committed; the
+    constant block and the `hashlib` import cost what the subprocess call and
+    import cost, and the pinned count above held at 46221 until this
+    final-form edit.)
