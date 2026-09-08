@@ -64,7 +64,7 @@ working ceiling (80% of DIFF_INPUT_LIMIT, 65,536 — plan trap 6):
     the red-first transcript in the test file's docstring was trimmed to the
     observed run.
 
-    Final, this artifact committed: 47401 bytes — 4,999 bytes of headroom.
+    Final, this artifact committed: 47420 bytes — 4,980 bytes of headroom.
     (The count moved after each fix, and once for this artifact itself, which
     sits inside the diff it reports. First, the findings-store env pin moved
     from bare `os.environ` to `monkeypatch`, which the full-suite run
