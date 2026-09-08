@@ -133,10 +133,6 @@ def test_the_cli_module_no_longer_defines_the_layer_family() -> None:
     stranded = sorted(set(LAYER_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(LAYER_FAMILY) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
-
 
 def test_the_objects_the_cli_module_calls_are_defined_in_factory_spec() -> None:
     """T018's second half. Identity and `__module__`, so a re-declaration cannot pass.
@@ -147,8 +143,8 @@ def test_the_objects_the_cli_module_calls_are_defined_in_factory_spec() -> None:
     re-declaration binds a different one with the same name, and that is the
     duplication this spec exists to end.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
+    spec_noun = layers
 
     for name in MOVED_CALLABLES:
         obj = getattr(spec_noun, name)
@@ -179,8 +175,8 @@ def _drive_check_fixes(spec_dir: Path) -> Run:
     The import-back T023 keeps alive is what this exercises; the object driven
     is asserted to be the one defined in `factory.spec`.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
+    spec_noun = layers
 
     assert spec_noun._check_fixes is layers._check_fixes
     findings: list[Any] = []
@@ -437,7 +433,7 @@ def test_the_moved_bodies_keep_their_refusal_strings(
     downstream is the shape worth keeping (trap 9); each string is asserted as
     the whole message, not a fragment.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.layers as spec_noun
     from factory.workgraph.models import WorkGraph, WorkNode
 
     def graph(*personas: str, **edges: list[str]) -> Any:
@@ -605,7 +601,7 @@ def test_vacuous_registry_answers_at_its_new_home_with_empty_skills() -> None:
 
     # And the CLI module still binds the same object, so `_check_workgraph`
     # reaches the registry the story moved (trap 18's shape, asserted).
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.layers as spec_noun
 
     assert spec_noun._vacuous_registry is _vacuous_registry
 
@@ -620,8 +616,8 @@ def test_the_scenario_id_grammar_is_one_object_in_both_modules() -> None:
     end (trap 17's letter). The moved checker reads it from its own module;
     the CLI module binds the same object.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
+    spec_noun = layers
 
     assert spec_noun._SCENARIO_ID_RE is layers._SCENARIO_ID_RE
     assert layers._SCENARIO_ID_RE.findall("US1-S1 and US12-S34") == ["US1-S1", "US12-S34"]

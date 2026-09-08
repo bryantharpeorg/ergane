@@ -1,0 +1,26 @@
+# T042 (133-US9) — the demonstration's validate stage, before beside after
+
+The task: the demonstration's validate stage output before and after T041.
+
+Driven with the stage's own sequence — throwaway repo, scaffold, readiness
+report, `scaffold_spec(demonstration=True)` — and only the validate stage run:
+the pre-T041 seam `_run_cli(_spec_validate_argv(...))` for the before capture,
+the post-T041 seam `_demo_validate(...)` for the after. The throwaway
+repository's tmp path differs per run and is shown as <TMP>; no other byte
+differs:
+
+    $ diff <(before, paths normalised) <(after, paths normalised)
+    DEMO TRANSCRIPT IDENTICAL (paths normalised)
+
+## The stage's lines, from the after capture (identical in before)
+
+    demonstration spec validate
+    <TMP>/repo/specs/001-demo/spec.md: frontmatter, work-graph derivation, persona registry, scenario coverage, prompt assembly and slice coverage, anchor resolution, symbol anchors all pass
+    <TMP>/repo/specs/001-demo/spec.md: what the judge will be shown for each node
+      the diff — the node's own worktree diff and nothing else: not the tree it changed, not a terminal, not the running system. Abridged for the judge above 65536 bytes, and refused unjudged above 65536 (`diff_refusal_bytes` in <TMP>/repo/ergane.yaml).
+      the criteria — each node is shown its own story's scenarios, snapshotted at dispatch:
+        US1 (Demonstration) — US1-S1
+      the gates — the results of the gates <TMP>/repo/ergane.yaml declares: test
+      every Then-clause names evidence one of those three can produce.
+    [stage exit: 0]
+

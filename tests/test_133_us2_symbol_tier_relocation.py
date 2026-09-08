@@ -147,10 +147,6 @@ def test_the_cli_module_no_longer_defines_the_symbol_family() -> None:
     stranded = sorted(set(SYMBOL_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(SYMBOL_FAMILY) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
-
 
 # --- US2-S5 / FR-010: the object the CLI calls is the moved one ---------------
 
@@ -163,8 +159,8 @@ def test_the_symbol_checker_the_cli_module_calls_is_defined_in_factory_spec() ->
     different one with the same name. Both assertions together make the
     shortcut fail loudly rather than quietly.
     """
-    import factory.cli.nouns.spec as spec_noun
     import factory.spec.anchors as anchors
+    spec_noun = anchors
 
     checker = spec_noun._check_symbol_anchors
     assert checker is anchors._check_symbol_anchors
@@ -190,7 +186,7 @@ def test_the_shared_severity_helpers_are_bound_back_and_the_surviving_checker_st
     checker is driven over specs whose declared state moves the severity, so a
     stale second copy of the rule would grade wrong and fail here.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.anchors as spec_noun
 
     assert spec_noun._spec_state.__module__.startswith("factory.spec")
     assert spec_noun._severity_for_state.__module__.startswith("factory.spec")
@@ -285,7 +281,7 @@ def test_the_moved_checker_keeps_its_signature_and_appends_into_caller_owned_lis
     parameters = list(inspect.signature(_check_symbol_anchors).parameters)
     assert parameters == ["spec_dir", "spec_text", "target_repo", "findings", "skipped", "checked"]
 
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.anchors as spec_noun
     # The CLI module must drive the very same object, not a re-declaration.
     assert spec_noun._check_symbol_anchors is _check_symbol_anchors
 

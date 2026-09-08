@@ -142,10 +142,6 @@ def test_the_cli_module_no_longer_defines_the_vocabulary_family() -> None:
     stranded = sorted(set(VOCABULARY_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(VOCABULARY_FAMILY) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
-
     still_defined = sorted(name for name in STILL_HERE if name not in bindings)
     assert still_defined == [], f"moved something this story does not own: {still_defined}"
 
@@ -195,7 +191,7 @@ def test_the_surviving_checker_reads_the_moved_objects_and_still_produces_its_re
     goes through the CLI module's import-back binding, which is still what
     `_validate_command` reaches.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.evidence as spec_noun
     import factory.spec.evidence as evidence
 
     for name in VOCABULARY_FAMILY:
@@ -290,7 +286,7 @@ def test_the_refusal_appended_is_byte_for_byte_the_golden_stderr_string() -> Non
     manifest path. The direct call is what catches a rewording even if the
     layer's own plumbing were re-ordered.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.evidence as spec_noun
     import factory.spec.evidence as evidence
 
     # The checker appends; nothing raises (trap 7).

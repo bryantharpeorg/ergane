@@ -425,11 +425,18 @@ def test_an_unreadable_manifest_is_not_checked_never_refused(
 def _validate_without_evidence_layer(
     run: Callable[..., Run], spec_dir: Path, specs_root: Path
 ) -> tuple[int, Any]:
-    """Run validate with the new `_check_evidence` layer monkeypatched to a no-op."""
-    import factory.cli.nouns.spec as _spec_module
+    """Run validate with the `_check_evidence` layer monkeypatched to a no-op.
 
-    original = _spec_module._check_evidence
-    _spec_module._check_evidence = lambda *args, **kwargs: None
+    Patched on `factory.spec.composition` — the module the verb's composition
+    reads. The old patch site, `factory.cli.nouns.spec`, held only an import
+    binding: since US9 nothing there calls the layer, and noun discovery
+    re-executes the CLI noun module on every `main()` call, so the rebinding
+    landed on a stale object (133-US9's T052 proves the re-point took).
+    """
+    import factory.spec.composition as _composition_module
+
+    original = _composition_module._check_evidence
+    _composition_module._check_evidence = lambda *args, **kwargs: None
     try:
         result = run(
             "spec",
@@ -443,7 +450,7 @@ def _validate_without_evidence_layer(
         )
         return result.code, result.json
     finally:
-        _spec_module._check_evidence = original
+        _composition_module._check_evidence = original
 
 
 def test_the_real_corpus_verdict_is_unchanged(run: Callable[..., Run]) -> None:

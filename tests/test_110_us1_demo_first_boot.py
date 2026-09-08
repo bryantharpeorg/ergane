@@ -415,14 +415,18 @@ def test_prepare_phase_writes_config_repo_spec_and_one_identified_commit(
 def test_prepared_repository_validates_and_derives(
     driver_mod, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`spec validate` and `spec derive` both return 0 and compile a workgraph."""
-    from factory.cli.install import _run_cli, _spec_derive_argv, _spec_validate_argv
+    """`spec validate` and `spec derive` both return 0 and compile a workgraph.
+
+    The validate stage reaches the library form through `_demo_validate` since
+    133-US9 (FR-013); the assertion that the stage returns 0 stays what it was.
+    """
+    from factory.cli.install import _demo_validate, _run_cli, _spec_derive_argv
 
     paths = _isolate(monkeypatch, tmp_path)
     assert _prepare_for_real(driver_mod, paths, ScriptedProbe(driver_mod, ok=True)) == 0
 
     spec_dir = paths.repo / "specs" / "001-demo"
-    assert _run_cli(_spec_validate_argv(spec_dir, paths.repo)) == 0
+    assert _demo_validate(spec_dir, paths.repo) == 0
     assert _run_cli(_spec_derive_argv(spec_dir, paths.repo)) == 0
 
     artifact = spec_dir / "workgraph.json"

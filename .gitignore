@@ -33,3 +33,4 @@ __pycache__/
 *.enc.env
 *.pem
 *.key
+/.factory-tmp/
