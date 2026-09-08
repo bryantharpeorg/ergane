@@ -13,11 +13,9 @@ normalised on both sides — plan trap 11). Re-run with:
 
     uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
 
-which reads 9 passed for the file, the two golden comparisons among them. The
-same comparison is reproduced below as a diff-line count against the committed
-artifacts, run from this tree after the move landed, driving
-`factory.cli.main.main` in-process the way `_run_validate` does (plan trap 19:
-both streams captured apart).
+Reproduced below as a diff-line count against the committed artifacts, run from
+this tree after the move landed, driving `factory.cli.main.main` in-process the
+way `_run_validate` does (plan trap 19: both streams captured apart).
 
 ---
 
@@ -34,32 +32,27 @@ both streams captured apart).
 
 ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
 
-The verb's exit codes, unchanged: clean trio 0, defective trio 1. The
-`--json` document's key order and the `judge_evidence` sub-document's key
-order are as US1 committed them (plan trap 21): serialised in the dict's
-order, present only when a report was made.
+Exit codes unchanged: clean 0, defective 1. Key order in both documents is as
+US1 committed it (trap 21): serialised in the dict's order, `judge_evidence`
+present only when a report was made.
 
-## git diff --stat for this story (be1f006..HEAD, the base being this attempt's start)
+## git diff --stat for this story (be1f006..HEAD, this attempt's base)
 
 ```
- factory/cli/nouns/spec.py                          | 255 +---------------
- factory/spec/evidence.py                           | 270 ++++++++++++++++-
+ factory/cli/nouns/spec.py                           | 255 +---------------
+ factory/spec/evidence.py                            | 270 ++++++++++++++-
  tests/test_133_us6_evidence_vocabulary_relocation.py |  49 +-
  tests/test_133_us7_anchor_resolution_relocation.py   |  16 +-
  tests/test_133_us8_evidence_report_relocation.py     | 330 +++++++++++++++
  5 files changed, 623 insertions(+), 297 deletions(-)
 ```
 
-Production half of the story diff (`git diff be1f006..HEAD -- factory/`): 23,773 bytes.
-Test half (`-- tests/`): 22,875 bytes (the story's tests plus this evidence file
-and its README).
-Assembled diff (`git diff be1f006..HEAD | wc -c`, final, this file committed):
-**51,581 bytes** — inside the 52,400-byte working ceiling (80% of
-DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`), with 819 bytes of
-headroom. The count below is taken with this artifact's final bytes in the
-tree, so it is self-consistent; had it measured past the ceiling, the pasted
-evidence would have been cut before the coverage and the story escalated
-instead of shipped.
+Production half (`-- factory/`): 23,773 bytes. Test half (`-- tests/`): 22,875
+bytes before this artifact. Assembled (`git diff be1f006..HEAD | wc -c`, final,
+this file committed): **50,635 bytes** — inside the 52,400-byte working ceiling
+(80% of DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`), with
+1,765 bytes of headroom. The count is taken with this artifact's final bytes in
+the tree, so it is self-consistent.
 
 ## Byte-identity proof for the moved source
 
@@ -73,15 +66,15 @@ against the same marker in `factory/spec/evidence.py`:
 
 Extraction method: the span from the `# --- what the judge will be shown
 (102-US2)` banner comment to end-of-file in the pre-move module, against the
-span from the same banner marker to end-of-file in the module that received
-it. The banner comment, the three frozen dataclasses, `as_dict()`, `lines()`,
-`_borderline_warning`, `_story_criteria` and `_check_evidence` travelled
-inside that span unchanged — every string verbatim (plan trap 9), the four
-`skipped`/`checked` append sites exactly as they were, and the checker's
-accumulate-and-return shape intact (plan trap 7): it appends into the
-caller-owned `findings`/`skipped`/`checked` lists *and* returns the report,
-which `_validate_command` binds at the same call site, prints through and
-serialises under the `judge_evidence` key as before.
+span from the same marker to end-of-file in the module that received it. The
+banner comment, the three frozen dataclasses, `as_dict()`, `lines()`,
+`_borderline_warning`, `_story_criteria` and `_check_evidence` travelled inside
+that span unchanged — every string verbatim (trap 9), the skip and checked
+append sites exactly as they were, and the checker's accumulate-and-return
+shape intact (trap 7): it appends into the caller-owned
+`findings`/`skipped`/`checked` lists *and* returns the report, which
+`_validate_command` binds at the same call site, prints through and serialises
+under the `judge_evidence` key as before.
 
 The six imports whose only readers moved with them leave the CLI module's
 import block (asdict, Sequence, parse_spec, DIFF_INPUT_LIMIT, Requirement,
