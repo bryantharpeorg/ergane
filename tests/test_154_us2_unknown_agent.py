@@ -3,21 +3,28 @@
 The adapter seam already refuses an unknown name — `adapter_for` raises
 `AdapterError` naming it and listing the known agents — but the guard is
 unreachable from production: the one dispatch call site passes a constant, so a
-persona declaring `agent: codex` minted a key and dispatched Claude Code anyway.
-That was the defect. This story moves the refusal to the load that reads the
-registry: `load_personas` validates the (derived) `agent` against the adapter
+persona declaring an unregistered agent minted a key and dispatched Claude Code
+anyway. That was the defect. This story moves the refusal to the load that reads
+the registry: `load_personas` validates the (derived) `agent` against the adapter
 registry, and a typo fails loudly there.
 
 Written before the implementation (constitution II): on the tree as received,
 the unknown-agent tests fail — today's load mints the key and dispatches the
-wrong CLI, and no `ConfigError` ever names `codex`.
+wrong CLI, and no `ConfigError` ever names the unknown value.
+
+155 note: this file's examples once read `agent: codex`, which was then the
+unknown the registry could not run. 155-US1 registered `CodexAdapter`, so the
+examples moved to `opencode` — a name that is genuinely unknown again (the
+operator's settled order is Codex, then pi.dev, then OpenCode). The scenarios
+are unchanged: the refusal is of whatever the registry cannot run, and reading
+it against a fixed example is what would have quietly kept it green.
 
 The scenarios, entry for entry:
 
-- US2-S1: `agent: codex` raises `ConfigError` naming `codex` and listing the
+- US2-S1: an unknown agent raises `ConfigError` naming it and listing the
   agents the factory can run.
-- US2-S2 (control): `agent: claude-code` loads against the one-adapter
-  registry — the refusal is of the unknown, not of the field.
+- US2-S2 (control): `agent: claude-code` loads against the registry — the
+  refusal is of the unknown, not of the field.
 - US2-S3: the error text carries the full known-agent list, so an operator
   learns every valid value in one message rather than one typo at a time.
 - US2-S4: `agent: none` is NOT refused — a deterministic persona runs no CLI
@@ -38,6 +45,11 @@ import pytest
 from factory.config import ConfigError, load_personas
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: A name no registered adapter answers to. It was `codex` until 155-US1
+#: registered that one; this constant is the one place to change again when
+#: the roster grows past it.
+UNKNOWN_AGENT = "opencode"
 
 
 def _write_registry(tmp_path: Path, text: str) -> Path:
@@ -67,28 +79,29 @@ def _entry(agent: str, **overrides: Any) -> str:
 
 
 def test_an_unknown_agent_is_refused_at_load_naming_the_value(tmp_path: Path) -> None:
-    """US2-S1: `agent: codex` with no registered adapter of that name raises
-    `ConfigError` naming `codex` — the load that reads the registry refuses,
+    """US2-S1: an agent with no registered adapter of that name raises
+    `ConfigError` naming it — the load that reads the registry refuses,
     rather than minting a key and dispatching Claude Code."""
-    path = _write_registry(tmp_path, _entry("codex"))
+    path = _write_registry(tmp_path, _entry(UNKNOWN_AGENT))
 
     with pytest.raises(ConfigError) as excinfo:
         load_personas(path)
 
-    assert "codex" in str(excinfo.value)
+    assert UNKNOWN_AGENT in str(excinfo.value)
 
 
 def test_the_refusal_lists_the_known_agents_in_one_message(tmp_path: Path) -> None:
     """US2-S3: the error text is the known-agent list. One message names every
     value the factory can run, so an operator reading it never discovers them
     one typo at a time."""
-    path = _write_registry(tmp_path, _entry("codex"))
+    path = _write_registry(tmp_path, _entry(UNKNOWN_AGENT))
 
     with pytest.raises(ConfigError) as excinfo:
         load_personas(path)
 
     message = str(excinfo.value)
     assert "claude-code" in message
+    assert "codex" in message
 
 
 def test_the_deterministic_agent_is_not_refused(tmp_path: Path) -> None:
@@ -119,19 +132,24 @@ def test_the_known_agent_list_is_read_from_the_adapter_registry(
     """Trap 6 / mutation half: the known-agent list is `_ADAPTERS`, read at
     load. Registering a second adapter in the registry admits an entry naming
     it the moment the registry holds it — a second list in `config.py` would
-    still refuse, and that disagreement is the defect this test pins shut."""
+    still refuse, and that disagreement is the defect this test pins shut.
+
+    155 note: the registered example was this suite's own local class until
+    155-US1 registered the real `CodexAdapter`; a locally-defined stand-in keeps
+    the half honest either way — what it proves is that the load reads the
+    registry, not that any particular adapter exists."""
     from factory.workgraph import adapter as adapter_module
 
-    class CodexAdapter:
-        name = "codex"
+    class SecondRunner:
+        name = "second-runner"
 
-    monkeypatch.setitem(adapter_module._ADAPTERS, "codex", CodexAdapter)
+    monkeypatch.setitem(adapter_module._ADAPTERS, SecondRunner.name, SecondRunner)
 
-    path = _write_registry(tmp_path, _entry("codex"))
+    path = _write_registry(tmp_path, _entry(SecondRunner.name))
 
     persona = load_personas(path)["implementer"]
 
-    assert persona.agent == "codex"
+    assert persona.agent == "second-runner"
 
 
 # --- T009 (US2-S2, FR-004): the control ---------------------------------------

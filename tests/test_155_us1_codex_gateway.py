@@ -58,7 +58,6 @@ from tests.stub_codex import (
     CODEX_GATEWAY_KEY,
     CODEX_HOME_ENV,
     REFUSAL_MARKER,
-    STUB_CODEX_PATH,
     codex_home,
     install_as,
     last_invocation,
@@ -156,20 +155,19 @@ def attempt(worktree: Path, node_home: Path) -> Callable[..., AttemptContext]:
 
 
 @pytest.fixture
-def adapter(node_home: Path) -> Any:
-    """The Codex adapter, pointed at the stub instead of `codex`.
+def adapter(codex_bin: Path, node_home: Path) -> Any:
+    """The Codex adapter, pointed at the stub shim instead of `codex`.
 
-    Registered in the real `_ADAPTERS` under its own name (FR-001) and resolved
-    through `adapter_for` — selection by persona value is 154's contract, and
-    this suite would not notice the registry entry being bypassed if it built
-    the class by hand.
+    The shim is `tests/stub_codex.py` where `codex` would be found (R6) — the
+    class itself names no path (production resolves `codex` off the child's
+    `PATH`), and the stub records what it was handed for the tests to read.
     """
     from factory.workgraph.adapter import CodexAdapter
 
     return CodexAdapter(
-        executable=str(STUB_CODEX_PATH),
+        executable="codex",
         grace_s=0.4,
-        backend=HostAgentBackend(executable=str(STUB_CODEX_PATH)),
+        backend=HostAgentBackend(executable="codex"),
     )
 
 
@@ -311,7 +309,7 @@ async def test_the_spend_is_read_on_the_attempts_virtual_key(
     """US1-S2 / FR-002: spend rides the adapter's `read_usage` seam, and the
     snapshot it returns rides home on the result. Token accounting is NOT a
     reason to add `--json` — the launched argv carries none."""
-    write_control(node_home)
+    write_control(node_home, sleep_s=0.4)
     keys_read: list[str | None] = []
 
     async def read_usage() -> Any:
@@ -319,7 +317,11 @@ async def test_the_spend_is_read_on_the_attempts_virtual_key(
         return None
 
     result = await adapter.run_attempt(
-        attempt(), factory_root=factory_root, read_usage=read_usage
+        attempt(),
+        factory_root=factory_root,
+        read_usage=read_usage,
+        heartbeat_interval_s=0.02,
+        poll_interval_s=0.05,
     )
 
     assert result.termination == Termination.COMPLETED
@@ -342,7 +344,7 @@ async def test_the_spends_snapshot_rides_home_on_the_result(
     so the ledger row is attributable to the same key either way."""
     from factory.usage.models import UsageSnapshot
 
-    write_control(node_home)
+    write_control(node_home, sleep_s=0.4)
     snapshot = UsageSnapshot(spend_usd=0.42, captured_at="2026-09-08T00:00:00Z")
     calls: list[int] = []
 
@@ -351,7 +353,11 @@ async def test_the_spends_snapshot_rides_home_on_the_result(
         return snapshot
 
     result = await adapter.run_attempt(
-        attempt(), factory_root=factory_root, read_usage=read_usage
+        attempt(),
+        factory_root=factory_root,
+        read_usage=read_usage,
+        heartbeat_interval_s=0.02,
+        poll_interval_s=0.05,
     )
 
     assert result.termination == Termination.COMPLETED
