@@ -343,9 +343,11 @@ async def test_present_but_refused_credential_is_auth_failure(
 
     # The adapter itself classifies by exit status only (FR-012).
     assert adapter_result.termination == Termination.AGENT_ERROR
-    # The activity layer reclassifies the specific subscription refusal marker.
-    from factory.activities.agent_activities import _classify_subscription_auth_failure
-    result = _classify_subscription_auth_failure(context, adapter_result)
+    # The activity layer reclassifies the declared refusal marker — which
+    # markers mean a refusal is the adapter's declaration (`_refusal_markers`,
+    # 155-US2), and interpreting them is the activity's.
+    from factory.activities.agent_activities import _classify_auth_failure
+    result = _classify_auth_failure(adapter, adapter_result)
     assert result.termination == Termination.AUTH_FAILURE
     log = (factory_root / "transcripts" / EPIC / NODE / f"attempt-{ATTEMPT}" / STDOUT_LOG_NAME).read_text(encoding="utf-8")
     assert SUBSCRIPTION_REFUSAL in log
