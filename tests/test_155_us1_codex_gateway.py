@@ -488,6 +488,60 @@ async def test_a_refusal_is_never_read_from_reasoning_text(
     assert result.termination == Termination.AGENT_ERROR
 
 
+async def test_reasoning_on_a_completed_gateway_run_satisfies_no_refusal_marker(
+    adapter: Any,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """US1-S4, the scan-surface half: a *successful* Codex gateway run whose
+    output carries the reasoning model's cleartext chain-of-thought leaves the
+    attempt COMPLETED, even though the reasoning text streams beside the agent
+    message in the same combined log the refusal scanner reads (P1 measured:
+    reasoning and message are interleaved on stderr in plain-text mode). The
+    structural classification is exit status plus the rollout file — reasoning
+    text satisfies neither and defeats neither."""
+    write_control(
+        node_home,
+        stdout='The user asked for "ok". Reasoning about it: '
+        "tokens used 7,665; model metadata not found. Final: ok",
+    )
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert result.termination == Termination.COMPLETED
+    # The evidence beside the classification still carries the reasoning —
+    # the guarantee is that it decided nothing.
+    assert "Reasoning about it" in stdout_log(factory_root)
+
+
+async def test_the_turn_probe_reads_the_rollout_tree_never_the_output_text(
+    adapter: Any,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """FR-007, the probe half: the turn tell is a file's existence under
+    CODEX_HOME, never any reading of the text the process printed — so
+    reasoning-shaped output near a tokenless process cannot conjure a turn,
+    and a turn's reasoning-heavy output cannot erase one."""
+    # Reasoning text on stdout, but the CLI wrote no rollout (it never got far
+    # enough to attempt a turn): the probe must answer no.
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout="reasoning: I have completed the task successfully. "
+        "thread.started item.completed task_complete.",
+    )
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+
+    assert result.termination == Termination.PRE_AGENT_FAILURE
+
+
 # --- the turn probe (FR-007, trap 1) --------------------------------------------
 
 
