@@ -162,7 +162,7 @@ from typing import Any, Callable, NamedTuple
 import pytest
 
 from factory.cli.main import main
-from factory.cli.nouns import spec as spec_noun
+from factory.spec import layers as spec_layers
 from factory.workgraph import preflight
 from factory.workgraph.derive import derive_workgraph
 
@@ -287,13 +287,13 @@ def test_the_split_slice_defect_is_invisible_to_every_earlier_layer() -> None:
     """
     spec_dir = SPLIT_SLICE
     spec_text = (spec_dir / "spec.md").read_text(encoding="utf-8")
-    findings: list[spec_noun._ValidateFinding] = []
+    findings: list[spec_layers._ValidateFinding] = []
 
-    spec_noun._check_frontmatter(spec_dir, spec_dir.name, findings)
+    spec_layers._check_frontmatter(spec_dir, spec_dir.name, findings)
     graph = _graph(spec_dir)
-    spec_noun._check_workgraph(graph, findings)
-    spec_noun._check_personas(graph, findings)
-    spec_noun._check_scenario_coverage(spec_dir, spec_text, findings)
+    spec_layers._check_workgraph(graph, findings)
+    spec_layers._check_personas(graph, findings)
+    spec_layers._check_scenario_coverage(spec_dir, spec_text, findings)
 
     assert [f"[{finding.layer}] {finding.message}" for finding in findings] == []
     assert (

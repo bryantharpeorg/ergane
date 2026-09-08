@@ -87,8 +87,9 @@ from typing import Any, Callable, NamedTuple
 import pytest
 
 from factory.cli.main import main
-from factory.cli.nouns import build as build_noun, spec as spec_noun
+from factory.cli.nouns import build as build_noun
 from factory.doctor.scaffold import ERGANE_TODO, scan_sentinels
+from factory.spec import layers as spec_layers
 from factory.workgraph import preflight
 from factory.workgraph.derive import derive_workgraph
 from factory.workgraph.models import WorkGraph, WorkNode
@@ -356,9 +357,12 @@ def test_the_layer_carries_no_second_copy_of_the_story_grammar() -> None:
     section-scanning helpers, and the shared module must name the public
     assembler the dispatch path calls.
     """
+    # The validate-side layer bodies moved to `factory.spec.layers` (133-US5),
+    # so the guard reads the module that holds them now — a guard left on the
+    # CLI module would start guarding a file that no longer holds the layer.
     layer_sources = {
         module.__name__: Path(module.__file__ or "").read_text(encoding="utf-8")
-        for module in (preflight, spec_noun)
+        for module in (preflight, spec_layers)
     }
 
     for name, source in layer_sources.items():
@@ -384,9 +388,9 @@ def test_the_fixture_defects_pass_all_four_pre_existing_layers(spec_dir: Path) -
     """
     spec_text = (spec_dir / "spec.md").read_text(encoding="utf-8")
     epic_id = spec_dir.name
-    findings: list[spec_noun._ValidateFinding] = []
+    findings: list[spec_layers._ValidateFinding] = []
 
-    spec_noun._check_frontmatter(spec_dir, epic_id, findings)
+    spec_layers._check_frontmatter(spec_dir, epic_id, findings)
     graph = derive_workgraph(
         spec_text,
         epic_id=epic_id,
@@ -394,9 +398,9 @@ def test_the_fixture_defects_pass_all_four_pre_existing_layers(spec_dir: Path) -
         specs_root=str(FIXTURES),
         target_repo=TARGET_REPO,
     )
-    spec_noun._check_workgraph(graph, findings)
-    spec_noun._check_personas(graph, findings)
-    spec_noun._check_scenario_coverage(spec_dir, spec_text, findings)
+    spec_layers._check_workgraph(graph, findings)
+    spec_layers._check_personas(graph, findings)
+    spec_layers._check_scenario_coverage(spec_dir, spec_text, findings)
 
     assert [f"[{finding.layer}] {finding.message}" for finding in findings] == []
 

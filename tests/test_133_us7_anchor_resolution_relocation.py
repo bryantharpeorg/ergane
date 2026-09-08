@@ -68,17 +68,14 @@ VOCABULARY = (
     "_BARE_LINE_RE",
 )
 
-#: The checkers US5 and US6 still own. Defined in the CLI module when this
-#: story lands — their presence is the "nothing else moved" half of T067.
+#: The checkers US6 still owns. Defined in the CLI module when this story
+#: lands — their presence is the "nothing else moved" half of T067. The
+#: checkers US5 owns left with that story (its T018 asserts them gone), so
+#: they are deliberately absent from this tuple: at the time of the edit only
+#: the evidence family remained in the CLI module of everything US7 left
+#: behind.
 STILL_HERE = (
-    "_check_frontmatter",
-    "_check_fixes",
-    "_check_workgraph",
-    "_check_personas",
-    "_check_scenario_coverage",
     "_check_evidence",
-    "_scan_sentinels_in_trio",
-    "_vacuous_registry",
 )
 
 
