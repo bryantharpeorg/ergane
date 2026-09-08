@@ -1,16 +1,15 @@
 # T052 (133-US9) — the two re-pointed corpus controls still disable something
 
-The task: the transcript of the two re-pointed corpus controls of T054 showing a
-**differing** verdict on the spec each layer refuses, which is what proves they are
+The task: the transcript of the two re-pointed corpus controls of T054 showing
+a **differing** verdict on the spec each layer refuses — the proof they are
 still disabling something.
 
-Both helpers are imported as their corpus tests import them and driven over a
-spec the layer refuses, with the verb run twice — layer enabled, layer disabled
-(the helper's monkeypatch) — and the two findings lists printed. The re-point is
-T054's: the patch lands on `factory.spec.composition`, the module the verb's
-composition reads, not on `factory.cli.nouns.spec`, where the name was only an
-import binding and — noun discovery re-executing the CLI noun module on every
-`main()` call — not even the module object the verb's code ran from.
+Each helper is driven over a spec the layer refuses, the verb run twice —
+layer enabled, layer disabled (the helper's monkeypatch) — findings printed.
+The re-point is T054's: the patch lands on `factory.spec.composition`, the
+module the composition reads, not on `factory.cli.nouns.spec`, where the name
+was only an import binding — and, noun discovery re-executing the CLI noun
+module on every `main()` call, not even the module object the verb ran from.
 
 ## `tests/test_089_validate_checks_fixes.py` — `_validate_without_fixes_layer`
 
@@ -25,4 +24,3 @@ import binding and — noun discovery re-executing the CLI noun module on every
       message: US1-S1: "the page renders correctly in the browser." asserts an outcome only a running system shows ("in the b
     disabled exit=0 findings with layer 'evidence': 0
     findings lists differ: True
-
