@@ -121,6 +121,17 @@ GIT = "git"
 #: module never assumes which one, it is passed in.
 DEFAULT_AGENT_RUNNER = "claude"
 
+#: The second agent runner (155-US4). Like `DEFAULT_AGENT_RUNNER`, its *name*
+#: is what the boundaries resolve; the adapter registry owns the class.
+CODEX_RUNNER = "codex"
+
+#: The npm distribution the second runner installs as, and the version the
+#: image pins. Named once: the container drift test keeps the Dockerfile in
+#: step with these two constants, and a pin that lived only in the Dockerfile
+#: would be the version-number rot this module exists to refuse.
+CODEX_RUNNER_PACKAGE = "@openai/codex"
+CODEX_RUNNER_VERSION = "0.153.4"
+
 #: Directories appended to `PATH` when searching, after it and in this order.
 #: `/bin` is not listed: on every host this factory targets it is a symlink to
 #: `/usr/bin`, and a duplicate would only lengthen the refusal message.
@@ -434,6 +445,31 @@ def install_root(tool: ResolvedTool) -> Path:
     if tool.real_path.parent.name == "versions":
         return tool.real_path.parent.parent
     return tool.real_path
+
+
+def npm_install_root(tool: ResolvedTool) -> Path | None:
+    """The package tree an npm-installed tool resolves its payload through.
+
+    `@openai/codex` installs as an npm package: `bin/codex` on `PATH` is a
+    symlink to `bin/codex.js`, and that launcher resolves its platform payload
+    *beside itself* — `realpathSync(__dirname/..)` for the package root, then
+    `require.resolve("@openai/codex-<platform>/package.json")`, which Node
+    answers by walking up through `node_modules` to the sibling platform
+    package (measured on the real 0.153.4 tarball, 2026-09-08). A sandbox that
+    binds the lone launcher file therefore starts nothing: the launcher's
+    every payload lookup falls outside the namespace.
+
+    The installation is consequently the `node_modules` directory the real
+    path sits under — it carries the launcher's own package and every sibling
+    the resolution walk may reach — and `None` for a tool that is not
+    npm-packaged, which is every other tool the boundaries carry. Derived by
+    walking the resolved path, never declared: a host whose npm prefix is
+    anywhere at all gets its own tree bound.
+    """
+    for ancestor in tool.real_path.parents:
+        if ancestor.name == "node_modules":
+            return ancestor
+    return None
 
 
 def find_install_root(

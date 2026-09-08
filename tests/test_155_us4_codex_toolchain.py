@@ -167,7 +167,7 @@ def test_the_agent_boundary_binds_the_codex_package_tree_not_a_lone_leaf(
     package tree must be mounted at its own path and the launcher recreated
     inside it at the PATH location.
     """
-    host = PlantedHost(tmp_path)
+    host = PlantedHost(tmp_path / "host")
     prefix = tmp_path / "npm-prefix"
     package, entry = _plant_npm_codex(prefix)
     for name in ("uv", "node", "git", "claude"):
@@ -181,17 +181,17 @@ def test_the_agent_boundary_binds_the_codex_package_tree_not_a_lone_leaf(
     links = _symlinks(argv)
 
     node_modules = prefix / "lib" / "node_modules"
-    assert ("--ro-bind", str(node_modules), str(node_modules)) in pairs, (
+    assert (str(node_modules), str(node_modules)) in pairs, (
         f"the boundary must carry the npm package tree the launcher resolves "
         f"its payload through; binds were {pairs}"
     )
     launcher_real = package / "bin" / "codex.js"
-    assert ("--symlink", str(launcher_real), str(entry)) in links, (
+    assert (str(launcher_real), str(entry)) in links, (
         f"the launcher must be recreated as the symlink PATH names, never "
         f"bound as a leaf that lost its ancestry; symlinks were {links}"
     )
     # And the leaf-bind of the launcher alone must be gone: it is the defect.
-    assert ("--ro-bind", str(launcher_real), str(entry)) not in pairs, (
+    assert (str(launcher_real), str(entry)) not in pairs, (
         "binding the launcher file at the link's path is the lone-leaf shape "
         "that leaves the payload unresolvable inside the namespace"
     )
@@ -233,13 +233,13 @@ def test_the_agent_boundary_emits_nothing_for_a_system_tree_codex() -> None:
 # --- US4-S2: the launch under the standing boundary -----------------------------
 
 
-def _codex_invocation(host: PlantedHost, codex_bin: Path) -> Any:
+def _codex_invocation(host: PlantedHost, codex_bin: Path, log: Any = None) -> Any:
     """A codex-shaped invocation, built only from planted paths."""
     from factory.workgraph.adapter import AgentInvocation
 
     home = host.root / "factory" / "homes" / "155-codex-runs-as-a-second-runner" / "us4"
     home.mkdir(parents=True, exist_ok=True)
-    search = os.pathsep.join(str(host.bin_dir), str(codex_bin))
+    search = os.pathsep.join((str(host.bin_dir), str(codex_bin)))
     return AgentInvocation(
         argv=[
             "codex",
@@ -255,7 +255,7 @@ def _codex_invocation(host: PlantedHost, codex_bin: Path) -> Any:
         prompt="write the marker",
         worktree=host.worktree,
         env={"PATH": search, "HOME": str(home)},
-        log=None,
+        log=log,
         standards_path=None,
         model_alias="ollama-cloud/glm-5.3-flash",
     )
@@ -275,7 +275,7 @@ async def test_a_codex_node_launches_under_the_standing_boundary_and_writes_its_
     its own sandbox inside it refuses every write the story needs), and the
     payload's write must land in the worktree.
     """
-    host = PlantedHost(tmp_path)
+    host = PlantedHost(tmp_path / "host")
     prefix = tmp_path / "npm-prefix"
     _package, entry = _plant_npm_codex(prefix)
     for name in ("uv", "node", "git", "claude"):
@@ -283,9 +283,8 @@ async def test_a_codex_node_launches_under_the_standing_boundary_and_writes_its_
     host.activate(monkeypatch, host.bin_dir, entry.parent)
 
     log_path = host.root / "stdout.log"
-    invocation = _codex_invocation(host, entry.parent)
     with log_path.open("wb") as log:
-        invocation.log = log
+        invocation = _codex_invocation(host, entry.parent, log=log)
         process = await BwrapBackend(executable="codex").launch(invocation)
         if process.stdin is not None:
             process.stdin.close()
@@ -326,13 +325,21 @@ def test_the_bwrap_nesting_hazard_is_recorded_open_not_answered() -> None:
     from factory.workgraph import adapter as adapter_module
 
     source = Path(adapter_module.__file__).read_text(encoding="utf-8")
+    # The record lives in a wrapped `#:` comment, so the fragments are matched
+    # the way a reader sees the sentence: comment markers dropped, the
+    # sentence's own wrapping undone, whitespace collapsed.
+    unmarked = "\n".join(
+        line.split("#:", 1)[1] if line.lstrip().startswith("#:") else line
+        for line in source.splitlines()
+    )
+    normalized = " ".join(unmarked.split())
     for fragment in (
         "UNANSWERED HAZARD",
         "Landlock/seccomp",
         "the operator's sandbox-boundary decision",
         "neither assumed to work nor assumed to fail",
     ):
-        assert fragment in source, (
+        assert fragment in normalized, (
             f"the open-hazard record must name {fragment!r} beside the "
             f"bypass flag it qualifies"
         )
