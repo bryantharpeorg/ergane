@@ -64,15 +64,15 @@ working ceiling (80% of DIFF_INPUT_LIMIT, 65,536 — plan trap 6):
     the red-first transcript in the test file's docstring was trimmed to the
     observed run.
 
-    Final, this artifact committed: 46956 bytes — 5,444 bytes of headroom.
-    (The count moved twice after the first pin. First, the findings-store env
-    pin moved from bare `os.environ` to `monkeypatch`, which the full-suite
-    run demanded — `test_split_state_follows_populated_legacy_ledger` read
-    this story's env after teardown; the lesson is constitution II's, and it
-    is recorded in the commit that fixed it. Second, after the merge queue
-    refused the branch, the T070 control's `git show d63ad49:…` subprocess —
-    exit 128 on CI's depth-1 checkout — was replaced by the digest of the CLI
-    module pinned from the base object, verified before being committed; the
-    constant block and the `hashlib` import cost what the subprocess call and
-    import cost, and the pinned count above held at 46221 until this
-    final-form edit.)
+    Final, this artifact committed: 47401 bytes — 4,999 bytes of headroom.
+    (The count moved after each fix, and once for this artifact itself, which
+    sits inside the diff it reports. First, the findings-store env pin moved
+    from bare `os.environ` to `monkeypatch`, which the full-suite run
+    demanded — `test_split_state_follows_populated_legacy_ledger` read this
+    story's env after teardown; the lesson is constitution II's, recorded in
+    the commit that fixed it. Second, the merge queue refused the branch over
+    the T070 control's `git show d63ad49:…` subprocess — exit 128 on CI's
+    depth-1 checkout — replaced by the CLI module's digest pinned from the
+    base object and verified against it before being committed. Each rewrite
+    of this artifact then moved the count once more; the pin above is the
+    fixed point the last edit converged to.)
