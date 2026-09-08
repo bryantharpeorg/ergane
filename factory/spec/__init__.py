@@ -18,11 +18,12 @@ from __future__ import annotations
 # initialising — `SpecFinding` must already be bound here when they ask.
 from factory.spec.report import SpecFinding, SpecValidation
 
-from factory.spec.composition import SpecReadError, validate_spec
+from factory.spec.composition import SpecReadError, serialise_report, validate_spec
 
 __all__ = [
     "SpecFinding",
     "SpecValidation",
     "SpecReadError",
+    "serialise_report",
     "validate_spec",
 ]

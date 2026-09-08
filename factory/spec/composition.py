@@ -29,6 +29,7 @@ name means that name moves here instead.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from factory.workgraph.cli import SPEC_NAME
 from factory.workgraph.derive import DerivationError, derive_workgraph
@@ -275,3 +276,40 @@ def validate_spec(
     )
 
     return report
+
+
+def serialise_report(report: SpecValidation, spec_dir: str) -> dict[str, Any]:
+    """The `--json` document, built from the typed report in the verb's key order.
+
+    US9 took this dict out of `_validate_command`'s body: the key order —
+    `spec_dir`, `checked`, `skipped`, `findings`, `information`, with
+    `judge_evidence` appended only when there is a report — and the deliberate
+    absence of that key when the evidence layer produced nothing are load-bearing
+    (plan trap 21), so the serialiser walks the report field by field rather than
+    delegating to a `dataclasses.asdict()`, which would emit every field in
+    declaration order and `judge_evidence: null`.
+
+    `spec_dir` is an argument: the report does not carry it — the verb knows the
+    path it was given, and the library form's report describes the run, not the
+    directory it ran over — so the one key the report cannot answer is this
+    serialiser's second parameter.
+    """
+
+    document: dict[str, Any] = {
+        "spec_dir": spec_dir,
+        "checked": list(report.checked),
+        "skipped": [dict(entry) for entry in report.skipped],
+        "findings": [
+            {"layer": finding.layer, "message": finding.message, "severity": finding.severity}
+            for finding in report.findings
+        ],
+        "information": [
+            {"layer": note.layer, "message": note.message} for note in report.information
+        ],
+    }
+    # Absent rather than empty when there is no report to make: a test that
+    # disables the evidence layer gets a document with no `judge_evidence` key,
+    # which is the honest shape — no layer ran, so nothing was answered.
+    if report.judge_evidence is not None:
+        document["judge_evidence"] = report.judge_evidence.as_dict()
+    return document
