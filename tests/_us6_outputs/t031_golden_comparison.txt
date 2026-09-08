@@ -1,0 +1,48 @@
+# T031 (133-US6) — the comparison against US1's six golden artifacts
+
+The task: "Paste, as committed evidence, the comparison of the verb's stdout,
+its stderr and its `--json` output over both fixture trios against US1's six
+golden artifacts — it must be empty on all three streams — and the output of
+`git diff <base>..HEAD | wc -c`."
+
+**The standing guard that keeps it empty** is the golden test US1 committed in
+T006: `tests/test_133_us1_typed_report_and_golden_captures.py` (the
+`test_the_trio_matches_its_three_golden_artifacts` comparisons — stdout, stderr
+and the `--json` document byte for byte, with the repository root normalised on
+both sides, plan trap 11). Re-run with:
+
+    uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
+
+Reproduced below as a diff-line count against the committed artifacts, run from
+this tree after the move landed, driving `factory.cli.main.main` in-process the
+way `_run_validate` does (plan trap 19: both streams captured apart).
+
+---
+
+[clean/stdout] exit=0 diff lines vs US1 golden: EMPTY
+[clean/stderr] exit=0 diff lines vs US1 golden: EMPTY
+[clean/json] exit=0 diff lines vs US1 golden: EMPTY
+    keys=['spec_dir', 'checked', 'skipped', 'findings', 'information', 'judge_evidence']
+[defective/stdout] exit=1 diff lines vs US1 golden: EMPTY
+[defective/stderr] exit=1 diff lines vs US1 golden: EMPTY
+[defective/json] exit=1 diff lines vs US1 golden: EMPTY
+    keys=['spec_dir', 'checked', 'skipped', 'findings', 'information', 'judge_evidence']
+
+ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
+
+## The diff-size reading
+
+Assembled-diff size against the base the attempt started from
+(`git diff <base>..HEAD | wc -c`), at the time this artifact was taken, with
+all three commits in: **40830 bytes** — T026/T027/T028's test file (16,460 B),
+the production move in `factory/` (21,830 B: the deleted 8,861-byte region, the
+new `factory/spec/evidence.py`, the import-back, and the five orphaned-import
+removals), and this artifact (1,233 B) — the ceiling being 52,400 (80% of the
+65,536-byte bound, plan trap 6). The count is below taken with the artifact's
+final bytes in the tree, so it is self-consistent:
+
+```
+$ git diff b888813..HEAD | wc -c
+40830
+```
+
