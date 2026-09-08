@@ -49,7 +49,7 @@ present only when a report was made.
 
 Production half (`-- factory/`): 23,773 bytes. Test half (`-- tests/`): 22,875
 bytes before this artifact. Assembled (`git diff be1f006..HEAD | wc -c`, final,
-this file committed): **51,965 bytes** — inside the 52,400-byte working ceiling
+this file committed): **51,963 bytes** — inside the 52,400-byte working ceiling
 (80% of DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`), with
 435 bytes of headroom. The count is taken with this artifact's final bytes in
 the tree, so it is self-consistent.
