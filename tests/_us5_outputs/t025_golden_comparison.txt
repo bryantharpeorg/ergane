@@ -64,14 +64,18 @@ factory/cli/nouns/spec.py | 278 ++--------------------------------------
 ```
 
 Production half of the story diff (`git diff 943b028..HEAD -- factory/`): 22405 bytes.
-Test half (`-- tests/`): 37827 bytes.
-Assembled diff (`git diff 943b028..HEAD | wc -c`): 60232 bytes, before this evidence file is committed; the number that binds is the final one with this file committed, printed below.
-
-
-**Final assembled diff, with this evidence file committed** (the number that
-binds against the 52,400-byte working ceiling — 80% of DIFF_INPUT_LIMIT,
-65,536, `factory/verify/diffbounds.py:47`): measured after committing this
-file; see the last line below.
+Test half (`-- tests/`): 42482 bytes — the story's seven-control test file, the five
+in-tree re-points the task list prices at "call it 2 KB" (measured 10.4 KB, one
+sixth file the declared gate caught), and this evidence file.
+**Final assembled diff** (`git diff 943b028..HEAD | wc -c`, with this evidence file
+committed): **64,887 bytes** — inside the 65,536-byte DIFF_INPUT_LIMIT
+(`factory/verify/diffbounds.py:47`), 12,487 over the plan's 52,400-byte working
+ceiling. The overshoot is test mass, not moved source: 8,946 bytes moved (inside
+the ~10,000 implied-source budget), production diff 22,405 = 2.5x on the 2.36x
+model. Unbudgeted: the five re-points at 10.4 KB (the task list priced 2 KB) and
+this story's own controls at 27.2 KB against the 20 KB relocation budget. Coverage
+was not cut to close the gap: T019's four cases and T020's whole-message
+assertions are the story's core controls (trap 9).
 
 ## Byte-identity proof for the moved source
 

@@ -2,15 +2,14 @@
 
 The third relocation, and the one that moves the most *named* things: nine
 functions, one compiled grammar and one constant, with the persona registry
-they construct riding along. Every acceptance scenario has a control:
+they construct riding along. One control per acceptance-scenario concern:
 
 - **US5-S1 (T018)**: the CLI module no longer *defines* any of the eleven names
   — asserted from the module's AST, not by importing, because the import-back
   T023 binds the same names in the CLI module's namespace and an attribute
-  check cannot tell a definition from an import (the helper US2 and US7 use).
-  The three module-level names are the easily-stranded ones: `_SCENARIO_ID_RE`
-  and `_vacuous_registry`/`_STRUCTURAL_TIMEOUT_S` sit at the top of the module
-  a thousand lines from the bodies that read them.
+  check cannot tell a definition from an import (the helper US2 and US7 use);
+  identity and `__module__` are asserted second, so a re-declaration cannot
+  pass as a move.
 - **US5-S2 (T019)**: `_check_fixes` keeps its four early returns (trap 4),
   driven over each — the silent unreadable-`spec.md` return, the no-`fixes:`
   key return, the absent-store skip, and the unopenable-store skip — with only
@@ -18,11 +17,10 @@ they construct riding along. Every acceptance scenario has a control:
   one a relocation "normalises" into a skip, because it has no output to
   preserve, and normalising it double-reports the exact input the frontmatter
   layer already refuses.
-- **US5-S4 (T020)**: every refusal string is unchanged and the moved
-  `_check_fixes` still calls `resolve_factory_root()` rather than resolving
-  the path itself — draft 129 will change what the resolver returns and says
-  it will not edit its callers (trap 16), so a caller that resolves the path
-  itself goes stale the day 129 lands.
+- **US5-S4 (T020)**: the moved `_check_fixes` still calls `resolve_factory_root()`
+  rather than resolving the path itself — draft 129 changes what the resolver
+  returns and says it will not edit its callers (trap 16) — and every refusal
+  string is unchanged, asserted as whole messages (trap 9).
 - **US5-S5 (T021)**: `_vacuous_registry` is reachable at its new home and
   still answers every persona the graph names with empty `skills` — the
   assertion `tests/test_062_us3_skills.py` makes today through the CLI module
@@ -49,7 +47,7 @@ from __future__ import annotations
 
 import ast
 import inspect
-import sqlite3
+import os
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -72,6 +70,19 @@ LAYER_FAMILY = (
     "_SCENARIO_ID_RE",
     "_vacuous_registry",
     "_STRUCTURAL_TIMEOUT_S",
+)
+
+#: The callables, asserted by identity and `__module__` (T018's second half).
+MOVED_CALLABLES = (
+    "_check_frontmatter",
+    "_check_fixes",
+    "_check_workgraph",
+    "_check_personas",
+    "_candidate_graph",
+    "_check_scenario_coverage",
+    "_scan_sentinels_in_trio",
+    "_tasks_text",
+    "_vacuous_registry",
 )
 
 
@@ -112,12 +123,10 @@ def _factory_spec_imports(source: str) -> set[str]:
 def test_the_cli_module_no_longer_defines_the_layer_family() -> None:
     """T018, US5-S1. Eleven names defined in `factory.spec`, imported back, gone here.
 
-    `_SCENARIO_ID_RE` is read only inside `_check_scenario_coverage`
-    (`factory/cli/nouns/spec.py:1407` in the plan's tree); `_vacuous_registry`
-    and the `_STRUCTURAL_TIMEOUT_S` it alone reads are read from `_check_fixes`'
-    neighbours `_check_workgraph` and `_validate_command`'s persona branch.
-    Leaving any of them behind makes a moved body reach back into the module it
-    just left, which cannot import (trap 17).
+    `_SCENARIO_ID_RE` is read only inside `_check_scenario_coverage`;
+    `_vacuous_registry` and the `_STRUCTURAL_TIMEOUT_S` it alone reads serve the
+    work-graph and persona layers. Leaving any of them behind makes a moved body
+    reach back into the module it just left, which cannot import (trap 17).
     """
     source = CLI_PATH.read_text(encoding="utf-8")
     bindings = _module_bindings(source)
@@ -141,17 +150,14 @@ def test_the_objects_the_cli_module_calls_are_defined_in_factory_spec() -> None:
     import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
 
-    for name in ("_check_frontmatter", "_check_fixes", "_check_workgraph", "_check_personas",
-                 "_candidate_graph", "_check_scenario_coverage", "_scan_sentinels_in_trio",
-                 "_tasks_text", "_vacuous_registry"):
+    for name in MOVED_CALLABLES:
         obj = getattr(spec_noun, name)
         assert obj is getattr(layers, name), f"{name} must be one object in both modules"
         assert obj.__module__.startswith("factory.spec"), (
             f"{name} must carry __module__ under factory.spec, got {obj.__module__}"
         )
     assert spec_noun._SCENARIO_ID_RE is layers._SCENARIO_ID_RE
-    assert spec_noun._STRUCTURAL_TIMEOUT_S == layers._STRUCTURAL_TIMEOUT_S
-    assert layers._STRUCTURAL_TIMEOUT_S == 1
+    assert spec_noun._STRUCTURAL_TIMEOUT_S == layers._STRUCTURAL_TIMEOUT_S == 1
 
 
 # --- US5-S2 / FR-011 / trap 4: the four early returns of _check_fixes ---------
@@ -168,12 +174,10 @@ class Run(NamedTuple):
 
 
 def _drive_check_fixes(spec_dir: Path) -> Run:
-    """Drive the moved checker with caller-owned lists, through the CLI module.
+    """Drive the moved checker through the CLI module, as `_validate_command` does.
 
-    Reached as an attribute of `factory.cli.nouns.spec` exactly as
-    `_validate_command` calls it — the import-back T023 keeps alive is what
-    this exercises, and the object driven is asserted to be the one defined in
-    `factory.spec`.
+    The import-back T023 keeps alive is what this exercises; the object driven
+    is asserted to be the one defined in `factory.spec`.
     """
     import factory.cli.nouns.spec as spec_noun
     import factory.spec.layers as layers
@@ -214,15 +218,17 @@ def _write_trio(
     spec_dir: Path,
     *,
     frontmatter: str = "state: draft\nfixes:\n  - a/one\n",
-    tasks: str = "# Tasks\n\n## Phase 1: User Story 1 - The thing happens\n\n- [ ] T001 [US1-S1] prove it\n",
 ) -> Path:
-    """A trio whose frontmatter is the only variable, and its tasks.md."""
+    """A trio whose frontmatter is the only variable."""
     spec_dir.mkdir(parents=True, exist_ok=True)
     (spec_dir / "spec.md").write_text(
         f"---\n{frontmatter}---\n{_SOUND_BODY}", encoding="utf-8"
     )
     (spec_dir / "plan.md").write_text("# Plan\n\nOne reader.\n", encoding="utf-8")
-    (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
+    (spec_dir / "tasks.md").write_text(
+        "# Tasks\n\n## Phase 1: User Story 1 - The thing happens\n\n- [ ] T001 [US1-S1] prove it\n",
+        encoding="utf-8",
+    )
     return spec_dir
 
 
@@ -256,12 +262,11 @@ def _seed_store(db_path: Path, keys: list[str]) -> None:
     conn = connect(db_path)
     try:
         for key in keys:
-            category, _, slug = key.partition("/")
             report(
                 conn,
                 Finding(
                     key=key,
-                    category=category,
+                    category=key.partition("/")[0],
                     severity=Severity.INFO,
                     status=Status.OPEN,
                     summary=f"Summary for {key}",
@@ -281,16 +286,25 @@ def _seed_store(db_path: Path, keys: list[str]) -> None:
         conn.close()
 
 
+def _unopenable(db_path: Path) -> None:
+    """Make an existing store file unopenable (chmod-000 zero-byte file).
+
+    That shape raises `sqlite3.OperationalError` from `connect_readonly` — the
+    branch the relocation must not normalise. The caller restores the mode.
+    """
+    db_path.write_text("", encoding="utf-8")
+    os.chmod(db_path, 0o000)
+
+
 def test_check_fixes_keeps_its_four_early_returns_and_one_appending_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """T019, US5-S2. Four early returns, one appending exit, each driven.
 
-    The four exits are trap 4's list, and the signature is asserted from
-    `inspect` so a "convenient" reshuffle cannot slip through. The silent
-    OSError return appends to *no* list — the frontmatter layer already
-    reports a missing spec.md, and normalising this into a skip double-reports
-    the exact input that already refuses.
+    The signature is asserted from `inspect` so a "convenient" reshuffle
+    cannot slip through. The silent OSError return appends to *no* list —
+    normalising it into a skip double-reports the exact input that already
+    refuses (trap 4).
     """
     from factory.spec.layers import _check_fixes
 
@@ -302,15 +316,13 @@ def test_check_fixes_keeps_its_four_early_returns_and_one_appending_exit(
     _seed_store(runtime / "doctor.db", ["a/one"])
     silent_dir = tmp_path / "specs-silent" / "001-unreadable"
     silent_dir.mkdir(parents=True)
-    os_unreadable = silent_dir / "spec.md"
-    os_unreadable.write_text("---\nstate: draft\nfixes:\n  - a/one\n---\n", encoding="utf-8")
-    import os as _os
-
-    _os.chmod(os_unreadable, 0o000)
+    unreadable = silent_dir / "spec.md"
+    unreadable.write_text("---\nstate: draft\nfixes:\n  - a/one\n---\n", encoding="utf-8")
+    os.chmod(unreadable, 0o000)
     try:
         run = _drive_check_fixes(silent_dir)
     finally:
-        _os.chmod(os_unreadable, 0o644)
+        os.chmod(unreadable, 0o644)
     assert run.result is None
     assert run.findings == [] and run.information == [] and run.skipped == [] and run.checked == [], (
         "an unreadable spec.md must return silently and add nothing to any list"
@@ -340,15 +352,12 @@ def test_check_fixes_keeps_its_four_early_returns_and_one_appending_exit(
     # Exit 4: unopenable store — a *different* `skipped` entry only.
     runtime = _own_store_pins(monkeypatch, tmp_path, runtime="runtime-d")
     unopenable = runtime / "doctor.db"
-    unopenable.write_text("", encoding="utf-8")
-    import os as _os
-
-    _os.chmod(unopenable, 0o000)
+    _unopenable(unopenable)
     trio = _write_trio(tmp_path / "specs-badstore" / "004-bad-store")
     try:
         run = _drive_check_fixes(trio)
     finally:
-        _os.chmod(unopenable, 0o644)
+        os.chmod(unopenable, 0o644)
     assert run.result is None
     assert run.findings == [] and run.information == [] and run.checked == []
     assert [entry["layer"] for entry in run.skipped] == ["fixes"]
@@ -368,7 +377,9 @@ def test_check_fixes_keeps_its_four_early_returns_and_one_appending_exit(
     assert run.checked == ["fixes"]
     assert run.skipped == []
 
-    unknown = _write_trio(tmp_path / "specs-unknown" / "006-unknown", frontmatter="state: draft\nfixes:\n  - absent/key\n")
+    unknown = _write_trio(
+        tmp_path / "specs-unknown" / "006-unknown", frontmatter="state: draft\nfixes:\n  - absent/key\n"
+    )
     run = _drive_check_fixes(unknown)
     assert run.checked == ["fixes"]
     assert len(run.findings) == 1
@@ -383,12 +394,9 @@ def test_check_fixes_keeps_its_four_early_returns_and_one_appending_exit(
 def test_the_moved_fixes_checker_still_resolves_the_store_through_resolve_factory_root() -> None:
     """T020, US5-S4. The call is carried verbatim, not inlined (trap 16).
 
-    Draft 129 changes what `resolve_factory_root()` returns and states it will
-    not edit its roughly fifteen callers, so the moved body must still call it
-    and hand the result to `_resolve_store_path` — not resolve or absolutise
-    the path itself. Asserted from the moved module's AST: the call expression
-    `resolve_factory_root()` appears, and `_resolve_store_path` is reached with
-    the root it returned.
+    Draft 129 changes what `resolve_factory_root()` returns and says it will
+    not edit its callers, so the moved body must still call it and hand the
+    result to `_resolve_store_path`. Asserted from the moved module's AST.
     """
     source = LAYERS_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -420,15 +428,39 @@ def test_the_moved_fixes_checker_still_resolves_the_store_through_resolve_factor
     )
 
 
-def test_the_moved_bodies_keep_their_refusal_strings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_moved_bodies_keep_their_refusal_strings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """T020's second half, US5-S4. Every refusal string, character for character.
 
-    `spec validate`'s refusals are read closely by operators and quoted in
-    specs; 072's lesson is that naming the line, the rule and what the refusal
-    costs downstream is the shape worth keeping (trap 9). Each string is
-    asserted as the whole message, not a fragment.
+    072's lesson is that naming the line, the rule and what the refusal costs
+    downstream is the shape worth keeping (trap 9); each string is asserted as
+    the whole message, not a fragment.
     """
     import factory.cli.nouns.spec as spec_noun
+    from factory.workgraph.models import WorkGraph, WorkNode
+
+    def graph(*personas: str, **edges: list[str]) -> Any:
+        """A minimal valid graph, one node per persona given."""
+        return WorkGraph(
+            epic_id="e",
+            feature="e",
+            specs_root="s",
+            target_repo="r",
+            nodes=[
+                WorkNode(
+                    id=f"us{i + 1}",
+                    story_key=f"US{i + 1}",
+                    persona=persona,
+                    spec_ref=f"e:US{i + 1}",
+                    requirement_keys=[f"US{i + 1}"],
+                    depends_on=edges.get(f"us{i + 1}", []),
+                    depends_on_merged=[],
+                    timeout_override_s=None,
+                )
+                for i, persona in enumerate(personas)
+            ],
+        )
 
     runtime = _own_store_pins(monkeypatch, tmp_path)
 
@@ -448,55 +480,32 @@ def test_the_moved_bodies_keep_their_refusal_strings(tmp_path: Path, monkeypatch
     spec_dir_ok.mkdir()
     (spec_dir_ok / "spec.md").write_text("---\nstate: draft\n---\n# F\n", encoding="utf-8")
     findings = []
-    import os as _os
-
-    _os.chmod(specs_root, 0o000)
+    os.chmod(specs_root, 0o000)
     try:
         spec_noun._check_frontmatter(spec_dir_ok, "002-ok", findings)
     finally:
-        _os.chmod(specs_root, 0o755)
+        os.chmod(specs_root, 0o755)
     assert [f.message for f in findings] == [
         f"cannot read specs root {specs_root}: [Errno 13] Permission denied: '{specs_root}'"
     ]
     assert all(f.layer == "frontmatter" and f.severity == "refusal" for f in findings)
 
     # workgraph: the structural refusal rides WorkGraphError's own string.
-    from factory.workgraph.models import WorkGraph, WorkNode
-
-    graph = WorkGraph(
-        epic_id="e",
-        feature="e",
-        specs_root="s",
-        target_repo="r",
-        nodes=[
-            WorkNode(id="us1", story_key="US1", persona="p", spec_ref="e:US1",
-                     requirement_keys=["US1"], depends_on=["us2"], depends_on_merged=[], timeout_override_s=None),
-            WorkNode(id="us2", story_key="US2", persona="p", spec_ref="e:US2", requirement_keys=["US2"],
-                     depends_on=["us1"], depends_on_merged=[], timeout_override_s=None),
-        ],
-    )
+    cyclic = graph("p", "p", us1=["us2"], us2=["us1"])
     findings = []
-    spec_noun._check_workgraph(graph, findings)
+    spec_noun._check_workgraph(cyclic, findings)
     assert [f.message for f in findings] == [
         "workgraph 'e': dependency cycle: us1 -> us2 -> us1"
     ]
 
-    # persona_registry: both the ConfigError branch and the unknown-persona one.
-    from factory.config import Persona, WriteScope
+    # persona_registry: both the unknown-persona branch and the ConfigError one.
     import factory.config as config_module
+    import factory.spec.layers as layers
+    from factory.config import Persona
 
-    graph = WorkGraph(
-        epic_id="e",
-        feature="e",
-        specs_root="s",
-        target_repo="r",
-        nodes=[
-            WorkNode(id="us1", story_key="US1", persona="ghost", spec_ref="e:US1",
-                     requirement_keys=["US1"], depends_on=[], depends_on_merged=[], timeout_override_s=None),
-        ],
-    )
+    ghost = graph("ghost")
     findings = []
-    spec_noun._check_personas(graph, findings)
+    spec_noun._check_personas(ghost, findings)
     known = ", ".join(sorted(config_module.load_personas()))
     assert [f.message for f in findings] == [
         f"node 'us1': persona 'ghost' is not in the persona registry (known: {known})"
@@ -505,15 +514,13 @@ def test_the_moved_bodies_keep_their_refusal_strings(tmp_path: Path, monkeypatch
     def _broken_loader() -> dict[str, Persona]:
         raise config_module.ConfigError("registry is broken on purpose")
 
-    import factory.spec.layers as layers
-
     # Patched on the module the moved body reads — the body binds
     # `load_personas` at module scope, so the seam moved with it.
     original = layers.load_personas
     layers.load_personas = _broken_loader  # type: ignore[assignment]
     try:
         findings = []
-        spec_noun._check_personas(graph, findings)
+        spec_noun._check_personas(ghost, findings)
     finally:
         layers.load_personas = original  # type: ignore[assignment]
     assert [f.message for f in findings] == ["registry is broken on purpose"]
@@ -543,26 +550,20 @@ def test_the_moved_bodies_keep_their_refusal_strings(tmp_path: Path, monkeypatch
         ("advisory", "acceptance scenarios with no task reference: US1-S1")
     ]
 
-    # fixes: the unknown-key refusal (already asserted whole in T019's success
-    # block) and the two skipped strings, the second carrying the sqlite error.
-    runtime = _own_store_pins(monkeypatch, tmp_path, runtime="runtime-f")
-    unopenable = runtime / "doctor.db"
-    unopenable.write_text("", encoding="utf-8")
-    import os as _os
-
-    _os.chmod(unopenable, 0o000)
-    trio = _write_trio(tmp_path / "specs-badstore2" / "004-bad-store")
+    # fixes: the unopenable-store skipped string, the second of the two, with
+    # the sqlite error carried after the path (the unknown-key refusal and the
+    # success note are asserted whole in T019's blocks above).
+    runtime_f = _own_store_pins(monkeypatch, tmp_path, runtime="runtime-f")
+    unopenable = runtime_f / "doctor.db"
+    _unopenable(unopenable)
+    bad = _write_trio(tmp_path / "specs-badstore2" / "004-bad-store")
     try:
-        run = _drive_check_fixes(trio)
+        run = _drive_check_fixes(bad)
     finally:
-        _os.chmod(unopenable, 0o644)
+        os.chmod(unopenable, 0o644)
     assert len(run.skipped) == 1
-    reason = run.skipped[0]["reason"]
-    assert reason.startswith(f"cannot read findings store at {unopenable}: ")
-
-    # The fixes success-path information note is host-dependent only in the
-    # store path it embeds — the note's wording is asserted whole in T019.
     assert run.skipped[0]["layer"] == "fixes"
+    assert run.skipped[0]["reason"].startswith(f"cannot read findings store at {unopenable}: ")
 
 
 # --- US5-S5 / FR-011 / trap 18: the vacuous registry at its new home ----------
@@ -571,14 +572,13 @@ def test_the_moved_bodies_keep_their_refusal_strings(tmp_path: Path, monkeypatch
 def test_vacuous_registry_answers_at_its_new_home_with_empty_skills() -> None:
     """T021, US5-S5. The assertion `tests/test_062_us3_skills.py` makes today.
 
-    The registry answers for every persona the graph names — `_vacuous_registry`
-    exists so `validate_workgraph` checks only structural rules, not persona
-    resolution — and `skills` stays empty for each (062-US3 FR-009's standing
-    proof), reached at the new home rather than through the CLI module.
+    The registry answers every persona the graph names so `validate_workgraph`
+    checks structural rules only, and `skills` stays empty for each (062-US3
+    FR-009's standing proof), reached at the new home (trap 18).
     """
     from factory.config import WriteScope
     from factory.spec.layers import _vacuous_registry
-    from factory.workgraph.models import WorkGraph, WorkNode
+    from factory.workgraph.models import WorkGraph, WorkNode, validate_workgraph
 
     graph = WorkGraph(
         epic_id="e",
@@ -601,8 +601,6 @@ def test_vacuous_registry_answers_at_its_new_home_with_empty_skills() -> None:
         assert persona.needs_worktree is True
 
     # The structural check the registry exists to satisfy still passes with it.
-    from factory.workgraph.models import validate_workgraph
-
     validate_workgraph(graph, registry)
 
     # And the CLI module still binds the same object, so `_check_workgraph`
