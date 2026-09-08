@@ -142,15 +142,8 @@ def test_the_cli_module_no_longer_defines_the_vocabulary_family() -> None:
     stranded = sorted(set(VOCABULARY_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    # The import-back each relocation story left behind is retired as of US9
-    # (133 FR-015): the verb is a renderer over `validate_spec` and imports
-    # none of the relocated layers, so the family is asserted absent from the
-    # CLI module outright — defined in `factory.spec.evidence`.
-    present = sorted(
-        name
-        for name in VOCABULARY_FAMILY
-        if name not in _module_bindings(VOCABULARY_PATH.read_text(encoding="utf-8"))
-    )
+    # US9 retired the import-backs (FR-015): the family is asserted absent from the CLI module.
+    present = sorted(set(VOCABULARY_FAMILY) - _module_bindings(VOCABULARY_PATH.read_text(encoding="utf-8")))
     assert present == [], f"not defined in factory.spec.evidence: {present}"
 
     still_defined = sorted(name for name in STILL_HERE if name not in bindings)

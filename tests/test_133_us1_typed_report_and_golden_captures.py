@@ -235,15 +235,22 @@ def test_the_cli_module_no_longer_defines_the_finding_type_but_binds_the_import(
     under the old local name reports its `__module__` under `factory.spec`.
     Binding the import under the same local name is what keeps the module's
     twenty-odd construction sites out of this story's diff (plan T008).
+
+    US9 retired the binding with every construction site (FR-015): the
+    definition is gone from the CLI module and the type's home is asserted
+    where every construction site now lives — `factory.spec`.
     """
     import factory.cli.nouns.spec as spec_noun
 
     module_source = Path(spec_noun.__file__).read_text(encoding="utf-8")
     assert "class _ValidateFinding" not in module_source
+    assert "_ValidateFinding" not in module_source, (
+        "the CLI module no longer constructs findings of its own (FR-008)"
+    )
 
-    bound = getattr(spec_noun, "_ValidateFinding")
-    assert bound is not None
-    assert bound.__module__.split(".")[:2] == ["factory", "spec"]
+    import factory.spec
+
+    assert factory.spec.SpecFinding.__module__.split(".")[:2] == ["factory", "spec"]
 
 
 # --- US1-S5 / FR-014: six golden artifacts, six comparisons --------------------

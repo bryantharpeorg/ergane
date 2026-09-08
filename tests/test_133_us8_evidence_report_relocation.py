@@ -154,15 +154,8 @@ def test_the_cli_module_no_longer_defines_the_report_family() -> None:
     stranded = sorted(set(REPORT_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    # The import-back each relocation story left behind is retired as of US9
-    # (133 FR-015): the verb is a renderer over `validate_spec` and imports
-    # none of the relocated layers, so the family is asserted absent from the
-    # CLI module outright — defined in `factory.spec.evidence`.
-    present = sorted(
-        name
-        for name in REPORT_FAMILY
-        if name not in _module_bindings(REPORT_PATH.read_text(encoding="utf-8"))
-    )
+    # US9 retired the import-backs (FR-015): the family is asserted absent from the CLI module.
+    present = sorted(set(REPORT_FAMILY) - _module_bindings(REPORT_PATH.read_text(encoding="utf-8")))
     assert present == [], f"not defined in factory.spec.evidence: {present}"
 
 
@@ -332,9 +325,5 @@ def test_no_name_of_the_evidence_family_is_defined_in_the_cli_module() -> None:
     stranded = sorted(set(whole_family) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    present = sorted(
-        name
-        for name in whole_family
-        if name not in _module_bindings(REPORT_PATH.read_text(encoding="utf-8"))
-    )
+    present = sorted(set(whole_family) - _module_bindings(REPORT_PATH.read_text(encoding="utf-8")))
     assert present == [], f"not defined in factory.spec.evidence: {present}"

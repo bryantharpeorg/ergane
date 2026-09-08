@@ -147,13 +147,9 @@ def test_the_cli_module_no_longer_defines_the_symbol_family() -> None:
     stranded = sorted(set(SYMBOL_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    # The import-back each relocation story left behind is retired as of US9
-    # (133 FR-015): the verb is a renderer over `validate_spec` and imports
-    # none of the relocated layers, so the family is asserted absent from the
-    # CLI module outright — defined here, and reached from `factory.spec`.
-    present = sorted(name for name in SYMBOL_FAMILY if name not in _module_bindings(
-        (REPO_ROOT / "factory" / "spec" / "anchors.py").read_text(encoding="utf-8")
-    ))
+    # US9 retired the import-backs (FR-015): the family is asserted absent from the CLI module.
+    anchors_src = (REPO_ROOT / "factory" / "spec" / "anchors.py").read_text(encoding="utf-8")
+    present = sorted(set(SYMBOL_FAMILY) - _module_bindings(anchors_src))
     assert present == [], f"not defined in factory.spec.anchors: {present}"
 
 
