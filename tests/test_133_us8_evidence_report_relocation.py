@@ -154,9 +154,16 @@ def test_the_cli_module_no_longer_defines_the_report_family() -> None:
     stranded = sorted(set(REPORT_FAMILY) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(REPORT_FAMILY) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
+    # The import-back each relocation story left behind is retired as of US9
+    # (133 FR-015): the verb is a renderer over `validate_spec` and imports
+    # none of the relocated layers, so the family is asserted absent from the
+    # CLI module outright — defined in `factory.spec.evidence`.
+    present = sorted(
+        name
+        for name in REPORT_FAMILY
+        if name not in _module_bindings(REPORT_PATH.read_text(encoding="utf-8"))
+    )
+    assert present == [], f"not defined in factory.spec.evidence: {present}"
 
 
 def test_the_moved_module_imports_nothing_from_the_cli_module() -> None:
@@ -206,7 +213,7 @@ def test_the_moved_report_type_keeps_its_as_dict_and_lines_output() -> None:
     because a report's `as_dict()` answers with what a manifest declares, not
     with a shape this test invents.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.evidence as spec_noun
     import factory.spec.evidence as evidence
 
     report_type = spec_noun._JudgeEvidenceReport
@@ -267,7 +274,7 @@ def test_the_moved_checker_still_returns_its_report_and_appends_to_the_callers_l
     freeze. Driven over the defective fixture trio, whose single unevidenceable
     clause is the one refusal the family composes.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.evidence as spec_noun
     import factory.spec.evidence as evidence
 
     assert spec_noun._check_evidence is evidence._check_evidence
@@ -314,10 +321,10 @@ def test_no_name_of_the_evidence_family_is_defined_in_the_cli_module() -> None:
     arrives whole: US6 moved the vocabulary half, this story the report half.
     T059's AST read covers the six names this story moves; this test covers
     the sixteen together — the vocabulary names as well, asserted absent from
-    the CLI module's bindings and present as import-backs, so a story that
-    restored one of them could not pass by the others staying gone. The
-    import-back side is asserted for every name: FR-017's letter is that the
-    CLI module *imports* the family from `factory.spec`.
+    the CLI module's bindings, so a story that restored one of them could not
+    pass by the others staying gone. US9 retired the import-backs (133 FR-015):
+    the verb imports none of the family, so the arrival-whole half reads the
+    moved module's bindings — every name defined in `factory.spec.evidence`.
     """
     source = CLI_PATH.read_text(encoding="utf-8")
     bindings = _module_bindings(source)
@@ -325,6 +332,9 @@ def test_no_name_of_the_evidence_family_is_defined_in_the_cli_module() -> None:
     stranded = sorted(set(whole_family) & bindings)
     assert stranded == [], f"still defined in the CLI module: {stranded}"
 
-    imported = _factory_spec_imports(source)
-    unbacked = sorted(set(whole_family) - imported)
-    assert unbacked == [], f"not imported back from factory.spec: {unbacked}"
+    present = sorted(
+        name
+        for name in whole_family
+        if name not in _module_bindings(REPORT_PATH.read_text(encoding="utf-8"))
+    )
+    assert present == [], f"not defined in factory.spec.evidence: {present}"

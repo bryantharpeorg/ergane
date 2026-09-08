@@ -168,13 +168,15 @@ def _drive(
 
 
 def test_the_cli_module_no_longer_defines_the_resolution_checker() -> None:
-    """T067, US7-S1. Defined in `factory.spec`, imported back, gone here.
+    """T067, US7-S1. Defined in `factory.spec`, gone from the CLI module.
 
     `_read_citation_files`, `_ANCHOR_RE` and `_BARE_LINE_RE` left with US2 and
     are asserted there (T012); a test here that re-asserts them is testing
     US2's landing, not this one. The checkers US5 and US6 own are asserted to
     still be defined here, which is the "nothing else moved" half of the
-    scenario.
+    scenario. US9 retired the import-back (133 FR-015): the verb imports none
+    of the relocated layers, so the name is asserted absent from the CLI
+    module outright and present where the moved body is defined.
     """
     source = CLI_PATH.read_text(encoding="utf-8")
     bindings = _module_bindings(source)
@@ -182,10 +184,9 @@ def test_the_cli_module_no_longer_defines_the_resolution_checker() -> None:
         "the resolution checker is still defined in the CLI module"
     )
 
-    imported = _factory_spec_imports(source)
-    assert "_check_anchor_resolution" in imported, (
-        "the checker is not imported back from factory.spec"
-    )
+    assert "_check_anchor_resolution" in _module_bindings(
+        ANCHORS_PATH.read_text(encoding="utf-8")
+    ), "the checker is not defined in factory.spec.anchors"
 
     still_defined = sorted(name for name in STILL_HERE if name not in bindings)
     assert still_defined == [], f"moved something this story does not own: {still_defined}"
@@ -238,7 +239,7 @@ def test_the_vocabulary_the_moved_checker_reads_is_one_object_in_both_modules() 
     defined in the moved module before its body can be shown to read these
     objects from there.
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.anchors as spec_noun
     import factory.spec.anchors as anchors
 
     assert "_check_anchor_resolution" in _module_bindings(ANCHORS_PATH.read_text(encoding="utf-8")), (
@@ -260,7 +261,7 @@ def test_the_resolution_checker_the_cli_module_calls_is_defined_in_factory_spec(
     """T069, US7-S5. Compare identity and `__module__`, so a re-declaration
     cannot pass as a move (T013's assertion, one tier later).
     """
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.anchors as spec_noun
     import factory.spec.anchors as anchors
 
     checker = spec_noun._check_anchor_resolution
@@ -297,7 +298,7 @@ def test_the_moved_checker_keeps_its_parameters_and_appends_checked_at_each_of_i
         "checked",
     ]
 
-    import factory.cli.nouns.spec as spec_noun
+    import factory.spec.anchors as spec_noun
     # The CLI module must drive the very same object, not a re-declaration.
     assert spec_noun._check_anchor_resolution is _check_anchor_resolution
 
