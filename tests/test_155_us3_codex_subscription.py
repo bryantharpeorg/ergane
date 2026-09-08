@@ -334,11 +334,14 @@ async def test_a_gateway_run_records_no_credential_source(
 
 
 def test_discovery_finds_the_measured_default_under_the_operator_home(
-    operator_home: Path,
+    operator_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """FR-006 / trap 3: the measured default is `~/.codex/auth.json` — the
     operator's real home, resolved the way Claude's discovery resolves it,
-    never this process's (per-node) HOME."""
+    never this process's (per-node) HOME. `CODEX_HOME` is cleared because the
+    relocated-home case is the next test's: a host that happens to export one
+    must not decide this answer."""
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     credential = _write_auth_json(operator_home)
     assert discover_codex_credential() == credential
 
