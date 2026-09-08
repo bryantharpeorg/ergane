@@ -43,10 +43,10 @@ golden comparisons are the standing guard this story must not disturb.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import inspect
 import io
 import json
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -556,21 +556,32 @@ def test_the_fixes_and_evidence_layers_run_but_land_out_of_run_order(
 # --- US3-S4 / FR-003 / trap 9: the story stays additive ------------------------
 
 
+#: The SHA-256 of `factory/cli/nouns/spec.py` as this story's base commit has
+#: it (`git show d63ad49:factory/cli/nouns/spec.py | sha256sum`, verified
+#: against the base object before being pinned here). Pinning the digest rather
+#: than shelling out to `git show <base>:…` at test time is deliberate: CI
+#: checks the merge ref out with `actions/checkout@v4` at depth 1, so the base
+#: commit is not an object the runner has and the subprocess form failed the
+#: merge-queue gate with exit 128 — a failure of the checkout's history, not of
+#: this branch's content. A digest is decidable from the diff alone, which is
+#: what constitution VIII asks of a control, and it fails exactly when the CLI
+#: module changes by a single byte.
+_CLI_MODULE_DIGEST_AT_BASE = (
+    "88acd311a027d91d9f846b0dd44603d657eab3afa46be0e40b8ec33355b1cd0e"
+)
+
+
 def test_the_verb_is_byte_for_byte_unchanged_by_this_story() -> None:
     """T070, US3-S4. `_validate_command` is the one thing this story may not edit.
 
-    Read from the attempt's base commit and compared whole: this story puts a
-    second, tested composition beside the verb, and US9 is what deletes the
-    duplication. A story that starts rewriting the renderer here is rebuilding
-    the diff that made this split necessary.
+    Compared through the digest of the whole CLI module, pinned from the
+    attempt's base commit: this story puts a second, tested composition beside
+    the verb, and US9 is what deletes the duplication. A story that starts
+    rewriting the renderer here is rebuilding the diff that made this split
+    necessary.
     """
-    base = "d63ad49"
-    before = subprocess.run(
-        ["git", "show", f"{base}:factory/cli/nouns/spec.py"],
-        capture_output=True, text=True, check=True, cwd=REPO_ROOT,
-    ).stdout
-    after = CLI_PATH.read_text(encoding="utf-8")
-    assert before == after, (
+    after = hashlib.sha256(CLI_PATH.read_bytes()).hexdigest()
+    assert after == _CLI_MODULE_DIGEST_AT_BASE, (
         "the CLI module changed — this story is additive and must not touch it"
     )
 
