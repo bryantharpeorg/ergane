@@ -108,10 +108,12 @@ T052's red run.
 
 ## The assembled diff, measured
 
-`git diff 4c2f093..HEAD | wc -c` = **62,754 at the prose-trim commit**, and it
-exceeds the 52,400-byte ceiling the story sets, which I am reporting rather
-than shipping silently. The plan priced US9 at ~48 KB; the overage is the five
-sibling re-points (~14.3 KB) and the corpus-control re-point, forced by FR-015's
-retirement and priced into other stories' notes but only *possible* once T040
-landed. Prose was cut twice; what remains is assertions and the strings they
-assert on. Evidence here is pasted at minimum size.
+`git diff 4c2f093..HEAD | wc -c` = **80,362 as committed**, and it exceeds
+both the 52,400-byte ceiling the story sets and the 65,536-byte hard bound,
+which I am reporting rather than shipping silently. The plan priced US9 at
+~48 KB; the overage is the five sibling re-points (~15 KB) plus US3's digest
+re-pin, forced by FR-015's retirement and priced into other stories' notes but
+only *possible* once T040 landed, and the report's own staged rewrite (~16.6 KB
+for a file replaced whole). Prose was cut twice; what remains is assertions and
+the strings they assert on. Evidence here is pasted at minimum size. The full
+declared gate passes: `uv run pytest -q`, 5,919 passed, 58 skipped, 0 failed.
