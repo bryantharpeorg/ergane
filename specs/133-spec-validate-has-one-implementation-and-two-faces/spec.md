@@ -1,7 +1,45 @@
 ---
-state: ready
+state: landed
 fixes:
   - feedback/pr-8-spec-validate-has-no-library-form-and-its-composition-is-the-policy
+# Attested landed 2026-09-08. US1 0c2cb23b078e, US2 3ffa33c9d950, US3 4c2f093ca425,
+# US4 266a35c0d67f, US5 b888813b9b42, US6 be1f006eddcb, US7 943b02891ced,
+# US8 d63ad4957e47, US9 e223c89b32fe — all nine observed on ergane-buildout by
+# content. Eight landed on the first attempt; US3 took two, its first attempt
+# failing CI (not the gate) on a test that pinned a base commit sha and could not
+# resolve it in a depth-1 checkout — filed as
+# `ci/a-test-that-pins-a-base-commit-sha-passes-the-gate-and-fails-the-shallow-ci-checkout`.
+#
+# THE MEASURABLE RESULT. `factory/cli/nouns/spec.py` went from 1865 lines to 556,
+# and `factory/spec/` now holds 1652 lines across report, anchors, layers,
+# evidence and composition. Every one of the twelve symbols the relocation
+# stories named — the symbol tier, the anchor family, the anchor-resolution
+# checker, the frontmatter/ledger/graph/persona/scenario/sentinel layers, the
+# judge-evidence vocabulary and its checker — is absent from the CLI module's
+# top level, checked by parsing the module's AST rather than by grepping.
+#
+# US9 IS THE ONE WORTH CHECKING, AND IT HOLDS. `_validate_command` is now 24
+# lines: it calls `validate_spec` and hands the report to `_render_validation`.
+# It computes nothing. So "the two forms agree" (US4) is no longer a property a
+# test has to defend — there is one implementation and the verb cannot disagree
+# with it, because it no longer decides anything. US4's and US9's committed
+# tests were run for corroboration: 16 passed.
+#
+# A NOTE ON HOW THIS WAS VERIFIED, BECAUSE IT NEARLY WENT WRONG TWICE. My first
+# read said US9 had not landed — `_validate_command` was 262 lines and never
+# called `validate_spec`. That was a stale operator checkout: HEAD sat at 8f771b9
+# while US9 and US4 had landed at e223c89 and 266a35c. Fast-forwarding first is
+# not optional when attesting. I also twice guessed the exit-code contract
+# (findings > 0, then refusals > 0) and was wrong both times; the mapping lives
+# in `_render_validation` and the honest way to learn it was to read those lines,
+# not to assert a shape and call the disagreement a defect.
+#
+# THE SLICING COST, STATED PLAINLY. Three of nine stories pressed the judge's
+# 65,536-byte bound: US5 cleared it by 127 bytes, US9 by 1,483, and US2's first
+# attempt was refused unjudged at 72,750. US9 was killed by the operator on a
+# ruling that it could not fit, then re-dispatched by the roadmap onto a moved
+# base and landed first attempt at 64,053 bytes — so that ruling's reasoning was
+# wrong, and the epic recovered despite it rather than because of it.
 # HELD AT DRAFT 2026-09-07 (operator): US2 IS OVERSIZED FOR THE JUDGE, AND A
 # RE-DISPATCH AS WRITTEN CANNOT PASS. US1 landed first attempt (0c2cb23). US2 then
 # failed attempt 1 on `judge input: abridged, 72750 bytes against a 65536-byte

@@ -1,7 +1,47 @@
 ---
-state: ready
+state: landed
 fixes:
   - interpreter/an-unknown-agent-silently-runs-claude-code
+# Attested landed 2026-09-08. US1 f3075b077227, US2 833cc4636f22,
+# US3 e5a38620057a, US4 6b4b8378cb3e — all four observed on ergane-buildout by
+# content. US1, US2 and US4 landed first attempt; US3 took four, of which three
+# were lost to a network outage that timed out the test gate at exactly 600.0s
+# with byte-identical pytest output across unrelated worktrees, not to anything
+# the story got wrong.
+#
+# VERIFIED BY RUNNING IT, NOT BY READING THE DIFF. US1's five scenarios were
+# exercised live against the landed loader: a persona declaring `agent:
+# claude-code` + `route: gateway` carries both and answers `routes_through_gateway`
+# true; the legacy `agent: subscription` with no `route:` derives the pair
+# ('claude-code', 'subscription') rather than erroring; an explicit `route:`
+# beats the legacy agent's implied one; and both shipped manifests
+# (`personas.example.yaml`, `container/personas.demo.yaml`) contain no `route:`
+# key at all yet derive a route for every persona, so the derivation is total.
+# Purity was checked by loading the same file twice and comparing.
+#
+# US2's refusal was provoked rather than assumed. A persona naming an
+# unregistered agent now fails the load with `field 'agent' names an agent the
+# factory cannot run: 'no-such-cli' (known agents: claude-code, codex)` — the
+# offender named and the full valid set listed in one message (S1 and S3
+# together). `agent: none` still loads, so the refusal is of the unknown and not
+# of the field.
+#
+# US3's call site reads `adapter = adapter_for(context.agent)` — the persona's
+# value, with no `DEFAULT_AGENT` remaining at any call site — and
+# `AttemptContext` now carries an `agent` field, which retires the stale comment
+# S4 named.
+#
+# US4 is the one worth stating carefully, because "shared, not copied" is easy
+# to claim and easy to fake. `SharedAttemptPolicy` exposes exactly one method;
+# both `ClaudeCodeAdapter` and `CodexAdapter` delegate to it; and neither class
+# defines a method implementing any of the shared concerns (pid file, orphan
+# reap, archive, deadline, ferry). The outer protocol is still one method, so
+# the five-method protocol 005 sketched stays rejected.
+#
+# NOTE FOR WHOEVER READS THIS NEXT: `codex` is a registered adapter as of
+# 155-US1, so `agent: codex` is now a legal persona value here. My first pass at
+# verifying US2 used `codex` as the unknown agent and the load correctly
+# succeeded — the test premise was stale, not the code.
 # DRAFTED 2026-09-06 by an operator session from docs/codex-adapter-plan.md,
 # against ergane-buildout at 8e8b3a1. Every `file:line` in spec.md and plan.md
 # was read from the working tree with `sed -n`/`grep -n` on 2026-09-06 and
