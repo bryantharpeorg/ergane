@@ -1,0 +1,62 @@
+# T017 (133-US2) — the comparison against US1's six golden artifacts
+
+The task: "Paste, as committed evidence, the comparison of the verb's stdout,
+its stderr and its `--json` output over both fixture trios against US1's six
+golden artifacts — it must be empty on all three streams."
+
+**The standing guard that keeps it empty** is the golden test US1 committed in
+T006: `tests/test_133_us1_typed_report_and_golden_captures.py` (the
+`test_the_trio_matches_its_three_golden_artifacts` comparisons, stdout and
+stderr and the `--json` document byte for byte with the repository root
+normalised on both sides — plan trap 11). Re-run with:
+
+    uv run pytest tests/test_133_us1_typed_report_and_golden_captures.py -q --no-header
+
+which reads 9 passed for the file, the two golden comparisons among them. The
+same comparison is reproduced below as a line count against the committed
+artifacts, run from this tree after the move landed, driving
+`factory.cli.main.main` in-process the way `_run_validate` does (plan trap 19:
+both streams captured apart).
+
+---
+
+
+[clean/stdout] exit=0 diff lines vs US1 golden: 0
+[clean/stderr] exit=0 diff lines vs US1 golden: 0
+[clean/json] exit=0 diff lines vs US1 golden: 0
+[defective/stdout] exit=1 diff lines vs US1 golden: 0
+[defective/stderr] exit=1 diff lines vs US1 golden: 0
+[defective/json] exit=1 diff lines vs US1 golden: 0
+
+ALL THREE STREAMS, BOTH TRIOS: EMPTY — the move changed nothing
+
+The verb's exit codes, unchanged: clean trio 0, defective trio 1.
+
+## git diff --stat for this story (6b4b837..HEAD, the base being this attempt's start)
+
+```
+ factory/cli/nouns/spec.py                    | 236 +-----------------
+ factory/spec/anchors.py                      | 252 +++++++++++++++++++
+ tests/test_133_us2_symbol_tier_relocation.py | 353 +++++++++++++++++++++++++++
+ 3 files changed, 617 insertions(+), 224 deletions(-)
+```
+
+Production half of the story diff (`git diff 6b4b8378cb3eb9074fba3bab20b63c3d347040a6..HEAD -- factory/`): 20,105 bytes.
+Test half (`-- tests/`): 19,782 bytes (the story's tests plus this evidence file).
+Assembled diff (`git diff 6b4b8378cb3eb9074fba3bab20b63c3d347040a6..HEAD | wc -c`,
+final, this file committed): **40,066 bytes** — inside the 52,400-byte working
+ceiling (80% of DIFF_INPUT_LIMIT, 65,536, `factory/verify/diffbounds.py:47`),
+with 12,334 bytes of headroom. (The 36,035 measured at T015/T016 excluded this
+evidence file; the number that binds is the final one.)
+
+## Byte-identity proof for the moved source
+
+Extraction of the three spans from `git show 6b4b8378cb3eb9074fba3bab20b63c3d347040a6:factory/cli/nouns/spec.py`
+against the same markers in `factory/spec/anchors.py`:
+
+```
+    regex block (_ANCHOR_RE/_BARE_LINE_RE): byte-identical=True 242
+    symbol family: byte-identical=True 7565
+    _read_citation_files: byte-identical=True 477
+    TOTAL source bytes moved: 8284 (plan measured 7,901)
+```
