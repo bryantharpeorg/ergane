@@ -171,9 +171,20 @@ is P3 and conditional on the operator's sandbox-boundary decision.
    fields). Re-login overwrites the key in place; `codex logout` removes the
    file. A gateway-routed attempt (env_key carries the key) writes **no**
    `auth.json` at all — its credential is the env var, not a file. Rotation on
-   use is still UNMEASURED for ChatGPT-mode tokens (no ChatGPT account to probe
-   with) — the hazard is inherited from Claude's
-   `factory/workgraph/adapter.py:847` docstring, unmeasured, and US3 names it.
+   use is still UNMEASURED for ChatGPT-mode tokens — the hazard is inherited from
+   Claude's `factory/workgraph/adapter.py:847` docstring, and US3 names it.
+   **The "no ChatGPT account to probe with" blocker was lifted 2026-09-07**:
+   the operator installed and signed in to `codex-cli 0.153.4` on the worker
+   host, and `codex doctor` now reports `auth storage mode: File`,
+   `stored auth mode: chatgpt`, `stored API key: false`,
+   `stored ChatGPT tokens: true` at `~/.codex/auth.json` (mode 0600). So the
+   ChatGPT-mode shape is available to probe by hand, and `codex doctor` reads
+   it without parsing the file. `CODEX_HOME` relocates the whole tree, which is
+   what makes US3's per-node seeding work.
+   **OPERATOR RULING 2026-09-08: Codex runs on the ChatGPT subscription, not
+   the gateway.** US1's gateway path stays as a route, not a mandate; US3 is
+   the one that matters, and its `credential_source` evidence is what
+   distinguishes the two.
 4. **MEASURED 2026-09-08: there is no session-id flag on `codex exec`** (full
    `--help` read; nothing accepts a caller-supplied id; `codex exec resume` is
    a resumption flag, not a set-one flag). Identity facts as measured:
@@ -193,6 +204,18 @@ is P3 and conditional on the operator's sandbox-boundary decision.
 6. Do not over-invest in bwrap; the operator is weighing moving away from it.
 7. A repeating 429 naming a `cooldown_list` is a dead upstream credential, not
    a rate limit; read up to the first 401.
+8. **The host install is STANDALONE, not npm — MEASURED 2026-09-07.**
+   `~/.local/bin/codex` symlinks to
+   `~/.codex/packages/standalone/releases/0.153.4-aarch64-unknown-linux-musl/bin/codex`
+   and `codex doctor` reports `managed by npm: no · bun: no · pnpm: no`. US4
+   landed a `Dockerfile` installing `@openai/codex@0.153.4` via npm, so the
+   image and the operator host exercise **different branches** of
+   `_toolchain_binds`. Measured under real bwrap: a lone leaf `--ro-bind` of
+   the standalone binary *does* launch (`codex-cli 0.153.4`), but `codex
+   doctor` then degrades `runtime` from `standalone` to `other` and falls back
+   from its **bundled** ripgrep to the system `rg`. On a host with `/usr` bound
+   that is invisible; in a slim image without ripgrep, search dies with no
+   launch-time error.
 
 ## Verification
 
