@@ -66,7 +66,7 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError, CancelledError
@@ -74,11 +74,6 @@ from temporalio.exceptions import ApplicationError, CancelledError
 from factory.activities.usage_activities import open_client
 from factory.activities.notify_activities import ferry_read_answer, ferry_send_question
 from factory.config import ConfigError, Persona, load_personas
-from factory.config import (
-    ROUTE_SUBSCRIPTION,
-    SUBSCRIPTION_AGENT,
-    effective_route,
-)
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
@@ -91,7 +86,6 @@ from factory.workgraph.adapter import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
     SESSION_ID_REFUSAL_MARKER,
     STDOUT_LOG_NAME,
-    SUBSCRIPTION_REFUSAL_MARKER,
     AdapterError,
     adapter_for,
     transcript_dir,
@@ -541,20 +535,24 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
             send_ferry_question=_ferry_sender(context),
             read_ferry_answer=ferry_read_answer,
         )
-        # US3 FR-013: the adapter classifies only by process outcome (FR-012).
-        # A subscription-routed attempt whose credential is present but refused by
-        # the CLI prints the measured refusal on stdout and exits 1. Reclassify
-        # that specific marker as an authentication failure so it is recorded as
-        # a named auth failure instead of a diffless AGENT_ERROR.
-        result = _classify_subscription_auth_failure(context, result)
         # 107 FR-014: a launch the runner refused because the identifier was
         # already in use arrives as an ordinary AGENT_ERROR with the refusal on
         # stdout. Classify that marker as a named launch refusal — the existing
         # non-retryable launch-failure error type, quoting the runner's own line
         # — never as a missing transcript, and never as a new `Termination`
-        # member (plan R13). The subscription classifier *returns* a reclassified
-        # result; this one *raises*.
+        # member (plan R13). The auth classifier below *returns* a reclassified
+        # result; this one *raises*. Raised first because the launch-refusal
+        # marker is also on Claude's declared tuple: a classification that ran
+        # ahead would reclassify the attempt AUTH_FAILURE and this non-retryable
+        # raise would never fire.
         _raise_if_launch_refused(context, result)
+        # 155-US2 (FR-005): the CLI refused its credential. Which strings read
+        # as that refusal is the adapter's declaration (`_refusal_markers`,
+        # 154's per-CLI seam — Claude's two measured stdout markers, Codex's
+        # measured stderr 401); interpreting them is this activity's (FR-012).
+        # The reclassification is what keeps a refused run from reading as a
+        # silent diffless success — 070's lesson, second runner over.
+        result = _classify_auth_failure(adapter, result)
         # 095-US1 FR-001: an attempt the adapter classified structurally as
         # pre-agent gets the dying process's own line attached to it, for the
         # operator and for nothing else. Enrichment, strictly after
@@ -585,23 +583,24 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         ) from exc
 
 
-def _classify_subscription_auth_failure(
-    context: AttemptContext, result: AdapterResult
-) -> AdapterResult:
-    """Reclassify a subscription AGENT_ERROR that carried the CLI auth refusal.
+def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult:
+    """Reclassify an AGENT_ERROR whose log carries the CLI's refusal marker.
 
-    The adapter itself classifies only by exit status (FR-012). The CLI's
-    subscription auth failure is the one exception: it exits 1 and prints the
-    refusal on stdout (measured 2026-08-19), which a caller watching stderr
-    would read as a silent success. Detecting that specific marker here, in the
-    activity that owns interpreting the adapter's output, turns the attempt into
-    a named authentication failure (US3-S5/FR-013) instead of a diffless error.
+    The adapter itself classifies only by exit status (FR-012). The one
+    exception is the credential refusal: the CLI exits 1 and prints its refusal
+    — Claude Code on stdout (measured 2026-08-19), Codex on stderr (measured
+    2026-09-08, the inverse) — which a caller watching the other stream reads
+    as a silent success. Which strings read as a refusal is the adapter's
+    declaration (`_refusal_markers`, 154's per-CLI seam); interpreting them is
+    this activity's. Both CLIs write the combined `stdout.log`, so the scan
+    reads that stream whatever the CLI's own stream was.
+
+    No route gate: the refusal is a fact about the CLI's credential, and the
+    measured Codex marker appears on every route's 401 (plan trap 2). The
+    adapter that ran declared the markers — a CLI whose refusal shape differs
+    declares its own; nothing here knows a stream by name.
     """
     if result.termination != Termination.AGENT_ERROR:
-        return result
-    # 154-US1 (FR-006): the route axis decides; a payload that predates the
-    # field is answered from the legacy `agent` sentinel.
-    if effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION:
         return result
     if not result.transcript_path:
         return result
@@ -611,7 +610,8 @@ def _classify_subscription_auth_failure(
         log_text = log_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return result
-    if SUBSCRIPTION_REFUSAL_MARKER not in log_text:
+    markers = _declared_refusal_markers(adapter)
+    if not any(marker in log_text for marker in markers):
         return result
 
     return AdapterResult(
@@ -619,6 +619,21 @@ def _classify_subscription_auth_failure(
         transcript_path=result.transcript_path,
         last_snapshot=result.last_snapshot,
     )
+
+
+def _declared_refusal_markers(adapter: Any) -> tuple[str, ...]:
+    """The refusal markers the adapter that ran declared, empty when it names none.
+
+    The per-CLI surface is an inner seam (154-US4): an object outside it — a
+    stub, a test double — has no `_refusal_markers` to call, and an absent
+    declaration answers "no markers", never a default set. The seam exists so
+    this activity never hardcodes a CLI's refusal shape (FR-005); a fallback
+    here would quietly restore the coupling the seam removed.
+    """
+    declared = getattr(adapter, "_refusal_markers", None)
+    if declared is None:
+        return ()
+    return tuple(declared())
 
 
 def _raise_if_launch_refused(context: AttemptContext, result: AdapterResult) -> None:
