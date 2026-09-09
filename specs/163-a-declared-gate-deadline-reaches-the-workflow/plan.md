@@ -44,6 +44,9 @@ commands, activities, or payload fields.
    timer defect; report an unrelated gate failure instead of skipping it.
 9. Keep the complete diff below 64 KiB. Small behavioral tests are the primary
    evidence; do not paste the entire suite log into the story diff.
+10. `_GATES` also carries an independent two-hour total activity deadline.
+    Preserve it; this repair concerns the heartbeat deadline for the requested
+    900-second gate, not arbitrary suites exceeding that existing ceiling.
 
 ## Verification
 

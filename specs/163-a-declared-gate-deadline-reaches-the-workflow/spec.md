@@ -16,8 +16,11 @@ lose its activity before its declared time expires.
 This is the narrow prerequisite to restarting the Codex-primary migration.
 Keep `timeouts` as the sole declaration. Do not introduce another ladder dial,
 change defaults globally, bypass gates, or alter already-running epic inputs.
+The existing two-hour total activity ceiling is unchanged: this story repairs
+the heartbeat watchdog, not support for arbitrarily long complete suites. The
+requested single 900-second gate fits within that independent ceiling.
 
-### User Story 1 - Both dispatch paths pin a watchdog that admits every declared gate (Priority: P1)
+### User Story 1 - Both dispatch paths pin the manifest-derived watchdog (Priority: P1)
 
 As an operator, declaring a gate deadline gives that gate its full execution
 window, whether I start an epic directly or through the roadmap.
