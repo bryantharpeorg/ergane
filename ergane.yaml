@@ -33,6 +33,11 @@ runtime: bwrap
 gates:
   test: "uv run pytest -q"
 
+# The suite measured ~599 seconds on 157/US1; leave headroom for normal host
+# contention instead of treating the 600-second default as a code failure.
+timeouts:
+  test: 900
+
 # The document every agent attempt in this repo is told to read and obey (005
 # FR-006, research R11) — path relative to the repo root, checked for existence
 # at dispatch in `prepare_worktree`. Ergane's standards are its constitution:
