@@ -21,6 +21,7 @@ exactly the second policy channel this story exists to prevent.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import stat
@@ -355,6 +356,29 @@ def test_the_parser_actually_reads_the_records() -> None:
     """A missing record fails, not passes: the sweep's vacuity control."""
     with pytest.raises(AssertionError):
         _record("codex", "shape-that-was-never-recorded")
+
+
+def test_every_record_pins_the_canonical_bytes_it_claims() -> None:
+    """Each record's sha prefix is the tracked `AGENTS.md`'s actual sha256.
+
+    The fixture README states this field "pins the canonical orientation
+    bytes"; a pointer to a test symbol instead of a hash would make that a
+    claim nothing enforces, which is the shape a piece of evidence rots in.
+    The pinned prefix is the 16-hex prefix of the file's sha256, so an edit
+    to `AGENTS.md` without a matching evidence update is detectable here —
+    and a re-record after a legitimate edit fails loudly instead of
+    silently describing stale bytes.
+    """
+    canonical = hashlib.sha256(AGENTS_MD.read_bytes()).hexdigest()
+    for client in CLIENTS:
+        for shape in SHAPES:
+            record = _record(client, shape)
+            assert record["canonical_sha256_prefix"] == canonical[:16], (
+                f"{client}-{shape} pins {record['canonical_sha256_prefix']!r} "
+                "but the tracked AGENTS.md hashes to "
+                f"{canonical[:16]} — the discovery evidence and the canonical "
+                "file have drifted; re-record or revert"
+            )
 
 
 # --- the observation boundary is semantic, not nominal (US1-S3, FR-005) --------

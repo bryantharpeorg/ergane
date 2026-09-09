@@ -12,7 +12,7 @@
     "canonical_named": "AGENTS.md",
     "canonical_occurrences": 1,
     "resolved_bytes_equal_canonical": true,
-    "recorded_as": "# AGENTS.md instructions for <REPO>/docs\\n\\n<INSTRUCTIONS>\\n\u2026canonical orientation bytes\u2026\\n</INSTRUCTIONS>",
+    "recorded_as": "# AGENTS.md instructions for <REPO>/docs\\n\\n<INSTRUCTIONS>\\n…canonical orientation bytes…\\n</INSTRUCTIONS>",
     "note": "measured with a scratch fixture where a nearer AGENTS.md existed too: files from the cwd up to the repository root are concatenated in one block, nearest last, and the nearest wins for a reader; the repository as it ships has only the root file, so the block carries the canonical orientation once"
   },
   "transcript": [
@@ -31,8 +31,8 @@
   ],
   "dispatched_node_facts": {
     "assembled_prompt_standards_line": "Read .specify/memory/constitution.md in this worktree before you write code, and obey it.",
-    "standards_source_line": "Standards source: `landing-branch` \u2014 resolved from the landing branch at this attempt's preparation, so the text quoted below is the version now in force.",
+    "standards_source_line": "Standards source: `landing-branch` — resolved from the landing branch at this attempt's preparation, so the text quoted below is the version now in force.",
     "precedence": "declared standards outrank auto-discovered orientation; the orientation is context, never a second standards channel"
   },
-  "canonical_sha256_prefix": "SEE tests/test_operator_instructions.py::CANONICAL_SHA \u2014 pinned to the tracked AGENTS.md"
+  "canonical_sha256_prefix": "646c1242e5be3bc1"
 }

@@ -10,9 +10,12 @@ drove the CLI's own non-interactive surfaces, not a signed-in account.
 
 `AGENTS.md` content in these records is the real canonical orientation
 (`markers` below were planted only in *scratch* fixtures during measurement;
-the repo's own file was never modified). `canonical_sha` pins the canonical
-orientation bytes each record's client actually received, so a drift between
-the file and the evidence is detectable.
+the repo's own file was never modified). `canonical_sha256_prefix` is the
+16-hex sha256 prefix of the tracked `AGENTS.md` each record was taken
+against — the worktree record's client received none of it (a worktree root
+is a discovery stop), which its own observation records — so an edit to the
+file without re-recording the evidence fails
+`test_every_record_pins_the_canonical_bytes_it_claims`.
 
 | file | client | session shape | what it proves |
 | --- | --- | --- | --- |

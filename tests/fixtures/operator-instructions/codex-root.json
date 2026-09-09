@@ -22,5 +22,5 @@
     "standards_source_line": "Standards source: `landing-branch` — resolved from the landing branch at this attempt's preparation, so the text quoted below is the version now in force.",
     "precedence": "declared standards outrank auto-discovered orientation; the orientation is context, never a second standards channel"
   },
-  "canonical_sha256_prefix": "SEE tests/test_operator_instructions.py::CANONICAL_SHA — pinned to the tracked AGENTS.md"
+  "canonical_sha256_prefix": "646c1242e5be3bc1"
 }
