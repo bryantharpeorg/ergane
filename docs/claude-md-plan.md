@@ -3,7 +3,10 @@
 **Status**: written. Produced 2026-08-08 from a grilling session with the operator, and
 built the same day as `CLAUDE.md` (108 lines) plus `tests/test_claude_md.py`. Kept as the
 ADR-shaped record of *why* the file looks the way it does — the reasoning below is not
-repeated in the file itself, which states its conclusions and moves on.
+repeated in the file itself, which states its conclusions and moves on. Superseded in part
+by 157 (2026-09-09): the orientation moved to a canonical `AGENTS.md`, with `CLAUDE.md` a
+tracked symlink to it, and the filename-specific sweep became
+`tests/test_operator_instructions.py`.
 
 **Goal**: an agent waking into this repo should learn, without being told, what Ergane is,
 what it can do, and where its own leverage is.

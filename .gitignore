@@ -34,3 +34,5 @@ __pycache__/
 *.pem
 *.key
 /.factory-tmp/
+# Toolchains installed into the worktree so a fresh-HOME gate run still finds them (US1 qualification).
+/.cache/
