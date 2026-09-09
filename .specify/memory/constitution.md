@@ -123,6 +123,41 @@ it wanted**. It does not fall back to ambient state and proceed. A refusal at th
 where the value is read costs one clear error message; a fallback costs a full build,
 and spends it before it tells anyone.
 
+### X. A Citation Is Resolved By Its Symbol
+
+A spec, plan or task cites the tree in the form `path/to/file.py:NN` — `symbol`.
+**The symbol governs. The line number is a hint that was true when it was written.**
+
+An agent that meets a citation whose line no longer holds the symbol it names works from
+the symbol, and says so in its pull request body. It does not edit whatever happens to
+occupy that line, and it does not silently hunt for what the author might have meant.
+Where the symbol cannot be found in the named file at all, the agent **refuses and names
+the citation it could not resolve** — the same refusal Principle IX requires of an absent
+declaration, for the same reason.
+
+This is not a courtesy to sloppy authorship. Line numbers in this repository rot by
+construction: the factory lands into the files its own specs cite, so a spec refined on
+Tuesday is dispatched against a Wednesday tree. On 2026-09-08 a single merge added 111
+lines to `factory/roadmap/workflow.py` and moved **all 128** of one spec's citations of
+that file; `ergane spec validate` went from zero refusals to forty-five on a document
+nobody had edited. Earlier the same day an AST sweep of four specs found **52 citations
+naming a symbol they fell outside of**, every one of which the validator had just passed —
+its symbol check binds only when the path and the symbol sit on the same line, and
+markdown wraps. The worst named `_query_status` and pointed a hundred and twenty lines
+away, at an unrelated function's definition. A refinement pass over spec 057 found fifteen
+of sixteen citations had moved, and the validator refused exactly one.
+
+So an agent cannot be told to trust the numbers, and tooling cannot be relied on to have
+checked them. What can be relied on is the name: a symbol that has been renamed or deleted
+is a fact worth stopping for, and a symbol that has merely moved is one the agent can
+find. Reading the citation the other way round — number first — turns every landing into a
+silent hazard for every spec beneath it, and the cost lands on an implementer who had no
+way to know.
+
+For whoever writes the citation: this is what makes the `— symbol` suffix load-bearing
+rather than decorative. A bare `path:NN` carries no name to fall back on, and is therefore
+a citation nobody but its author can repair.
+
 ## Environment Constraints
 
 - **Intent layer**: Spec Kit feature specs (`specs/<feature>/spec.md`) are the system
@@ -163,7 +198,10 @@ conflicts with a principle must either conform or carry an explicit, approved
 amendment. Complexity beyond what a principle allows must be justified in writing in
 the relevant spec's Assumptions section.
 
-**Version**: 2.7.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-09-07 (2.7.0 —
+**Version**: 2.8.0 | **Ratified**: 2026-07-24 | **Last Amended**: 2026-09-08 (2.8.0 —
+D-055: Principle X added; a citation is resolved by the symbol it names, the line number
+is a hint, and a symbol that cannot be found in the named file is refused rather than
+guessed at. 2.7.0 —
 D-054: Principle II narrowed; a test asserts on the difference a run made, never on
 ambient host state, and where it must prove a run left no residue it captures the
 matching state before the run and asserts on the set difference. 2.6.0 —

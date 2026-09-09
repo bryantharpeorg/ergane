@@ -1335,6 +1335,54 @@ did not move for install.
 This narrows nothing and supersedes nothing: install behaves exactly as decision 7 left
 it, and the new spend lives only where an operator exported a key to reach it.
 
+## D-053 · A persona names its CLI and its credential route as two fields (decided)
+
+Decided 2026-09-06, alongside spec 154 (`an-agent-names-its-cli-and-its-route-separately`).
+D-018 promised the coding-agent CLI is swappable — a second agent is a class and a
+lookup, not an orchestration change. The machinery for that promise was written and never
+connected: `adapter_for` is a real registry lookup that raises on an unknown name, and a
+single production call site passed it a constant. Connecting it surfaced that the field
+being looked up, `agent:`, was carrying two meanings at once. This entry records why the
+field was split rather than extended, and supersedes D-018 without editing it — the log
+is immutable by construction.
+
+1. **`agent:` meant a CLI and a credential route simultaneously.** Its live values were
+   `claude-code` (a CLI), `subscription` (a credential route), and `none` (neither). Every
+   predicate that read it — `is_llm`, `routes_through_gateway`, `needs_virtual_key`, the
+   gateway-env and credential-seeding branches, the usage-expected check, the evidence
+   route column — tested a superset of what it meant, and each new CLI would have forced
+   another sentinel into the same grammar. Adding Codex on two credential routes
+   (gateway and a ChatGPT sign-in) is the change that could no longer be expressed by one
+   axis.
+
+2. **The split, not a fourth sentinel.** `agent:` now names the CLI; `route:` names the
+   credential path (`gateway` / `subscription` / `none`). Predicates collapse to
+   single-axis comparisons and stop growing with the number of CLIs. A `route:` of
+   `codex` on `gateway` and a `route:` of `codex` on `subscription` are two registries
+   entries that differ in one field, not two new sentinels the predicates must each learn.
+
+3. **Legacy registries keep loading.** `route:` is optional; when absent it is derived
+   from `agent:` — `claude-code`→(`claude-code`,`gateway`),
+   `subscription`→(`claude-code`,`subscription`), `none`→(`none`,`none`) — and an explicit
+   `route:` always wins. The derivation is pure and total because a running epic froze its
+   persona snapshot at dispatch and a worker restarted mid-epic must re-read an unedited
+   registry into an identical persona. `personas.example.yaml` and every installed copy in
+   the wild are the legacy manifests this is for.
+
+4. **The unknown agent is refused at load, not silently run.** Before this entry a persona
+   declaring `agent: codex` loaded cleanly, was treated as gateway-routed, had a virtual
+   key minted, and ran Claude Code — the `adapter_for` guard existed but was unreachable
+   from production because the persona's value never reached it. That is finding
+   `interpreter/an-unknown-agent-silently-runs-claude-code` (critical). Spec 154 closes it:
+   the load validates the named agent against the adapter registry, and the dispatch path
+   passes the persona's own value to the lookup.
+
+This narrows nothing that was promised and widens one list: Principle VII's persona
+resolution gains `route`. Environment Constraints' agent seam, which read "Claude Code
+first; pi.dev/OpenCode later," now reads in the operator's settled priority order —
+Codex, then pi.dev, then OpenCode, with Copilot last, deferred because its GitHub-token
+credential shape is the outlier the abstraction should not be designed around.
+
 ## D-054 · A test asserts on the difference a run made, never on ambient host state (decided)
 
 Decided 2026-09-07, after the defect recurred. `verify/the-closing-step-residue-test-fails-inside-the-operator-gates-own-scratch-worktree`
@@ -1365,3 +1413,40 @@ subdirectory. Any checkout of this repository holds one.
 
 This supersedes nothing. It narrows Principle II, which previously said only that a
 feature without tests is not done and was silent on what a test may read.
+
+## D-055 · A citation is resolved by its symbol; the line number is a hint (decided)
+
+Decided 2026-09-08, after `refinement/a-landing-silently-invalidates-every-spec-anchor-below-it`
+reached four occurrences. The sibling row
+`refinement/the-symbol-anchor-tier-only-fires-on-a-prose-convention-the-existing-corpus-does-not-use`
+stands at two, and the two are one mechanism seen from opposite ends.
+
+1. **The rot is structural, not editorial.** This factory lands into the files its own
+   specs cite. A spec is refined against one tree and dispatched against another, and
+   nothing between those two moments tells the operator the coordinates have moved.
+   Measured 2026-09-08: one merge of 111 lines into `factory/roadmap/workflow.py` moved
+   all 128 of spec 131's citations of that file and took it from zero validate refusals
+   to forty-five, with no edit to the document.
+
+2. **Tooling cannot close it, and appearing to close it is worse.** 072's symbol check is
+   real but binds only when the path and the symbol share a line; markdown wraps at eighty
+   columns, so the common case goes unchecked. Four specs reporting **zero refusals**
+   carried 52 citations pointing outside the symbol they named — the worst of them naming
+   `_query_status` while pointing at an unrelated function's definition a hundred and
+   twenty lines away. A green `ergane spec validate` is a check on the paths, not on the
+   anchors, and an operator who reads it as the latter ships a spec that will send an
+   agent hunting at full price.
+
+3. **The rule is therefore about reading, not writing.** Authors will keep producing stale
+   numbers however careful they are, because the staleness is created after they finish.
+   What can be made reliable is how a number is *read*: symbol first, line as a hint,
+   refusal when the symbol is gone.
+
+4. **What this does not do.** It does not excuse an author from re-anchoring before
+   dispatch. That remains the refinement duty, and re-validating immediately before a flip
+   rather than at the end of a pass is the operator practice this entry assumes. It
+   changes what an agent does when the duty was imperfectly discharged — which, on the
+   evidence, is always.
+
+Supersedes nothing. Widens Principle IX's refusal-over-fallback rule from values a program
+reads to coordinates an agent reads.
