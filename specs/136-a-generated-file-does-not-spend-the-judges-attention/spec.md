@@ -271,13 +271,17 @@ lockfile is generated, in the file that governs how my repository is built, and
 the factory carries that declaration to the place a verdict is formed.
 
 **Why this priority**: P1 and it depends on nothing. Without a declaration there
-is nothing for either measurement to consult, and the pin is where the story's
-one real hazard lives — a value that decides a verdict must not be readable from
-the worktree of the node being judged.
+is nothing for either measurement to consult. This story is the declaration and
+nothing else: parsing it, refusing a malformed one, keeping it out of v1, and
+proving this repository does not spend the key. Carrying it to the epic — and the
+one real hazard in that, a value that decides a verdict being readable from the
+worktree of the node being judged — is US4, split out of this story on 2026-09-08
+because the pair was thirteen tasks, and no story above eleven has landed on this
+floor.
 
 **Independent Test**: Load a manifest declaring the key and read the parsed
-configuration; load the same body under v1 and read the refusal; start an epic
-from a repository declaring the key and read the patterns off the pinned input.
+configuration; load the same body under v1 and read the refusal; load three
+malformed values and read the three messages.
 
 **Acceptance Scenarios**:
 
@@ -285,6 +289,7 @@ from a repository declaring the key and read the patterns off the pinned input.
    `generated_paths: ["package-lock.json", "**/*.lock"]`, **When** the manifest
    is loaded, **Then** it parses and the parsed configuration carries both
    patterns in declaration order, asserted by a committed test.
+
 2. **Given** one manifest body declaring the key, loaded twice — once under
    `version: 2` and once under `version: 1` — **When** each is loaded, **Then**
    the v2 load parses and carries the patterns while the v1 load is refused as
@@ -296,35 +301,13 @@ from a repository declaring the key and read the patterns off the pinned input.
    `ladder` and `verify` — the v2-only keys `ergane init` carries without asking
    — because registering the key changes what that list contains and nothing
    else.
+
 3. **Given** manifests declaring `generated_paths: [""]`, `generated_paths: [7]`
    and `generated_paths: "package-lock.json"`, **When** each is loaded, **Then**
    each is refused with a message naming the offending value and the rule, and a
    committed test asserts all three messages.
-4. **Given** a diff containing one section whose path matches a declared pattern
-   and one that matches none, **When** the sections are built and the file
-   listing is assembled, **Then** the matching section is classified generated
-   and its listing line carries its real added and removed counts plus an
-   explicit marker, while the other line is byte-identical to today's. **And
-   Given** the same diff with no pattern declared, **Then** the whole listing is
-   byte-identical to the string it produces today — a committed test asserts the
-   pair, so a diff that marked every file could not pass.
-5. **Given** a target repository whose committed manifest declares patterns and
-   whose node worktree carries a *different* manifest declaring others, **When**
-   an epic is started from it, **Then** the `EpicInput` the epic is started with
-   carries the committed clone's patterns and not the worktree's — asserted on
-   **both** dispatch paths by committed tests, the roadmap's own child start as
-   well as the hand-started CLI's, because the roadmap is what the schedule
-   fires and a route wired only through `factory/cli/nouns/build.py:951` would
-   leave every scheduled epic carrying the empty default — which is the half-done
-   wiring this scenario exists to catch. Reading the patterns back off
-   `factory/verify/factory_yaml.py:1134` — `load_loop_config` or off
-   `factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult` does
-   not satisfy this scenario: both sit upstream of the fork, and the fork is
-   where the wiring can be half-done. The models are
-   `tests/test_023_us2_dispatch_pin.py:756` — `test_roadmap_dispatch_reads_config_per_child`,
-   which captures the child `EpicInput` the roadmap dispatched, and
-   `tests/test_023_us2_dispatch_pin.py:389` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`.
-6. **Given** this repository's own `ergane.yaml`, **When** a committed test
+
+4. **Given** this repository's own `ergane.yaml`, **When** a committed test
    parses it, **Then** it declares no `generated_paths` and resolves to the empty
    declaration — the mirror of
    `tests/test_forge_manifest.py:339` — `test_this_repositorys_own_manifest_does_not_spend_the_key`,
@@ -335,20 +318,6 @@ from a repository declaring the key and read the patterns off the pinned input.
    the way its model says of itself at `tests/test_forge_manifest.py:340`, so the
    committed test states its own mutation: declare the key in `ergane.yaml` and
    this test fails.
-7. **Given** the three modules that classify, render and measure a section —
-   `factory/verify/diffbounds.py`, `factory/verify/judge.py` and
-   `factory/verify/diffcheck.py` — **When** a committed test greps them for
-   lockfile filenames and package-manager names, **Then** none appears, so the
-   declaration is the only source of the answer. The scope is part of the
-   assertion and the test says why: `npm` is already written fifteen times
-   elsewhere in `factory/` — counted at 602a92c across four files — in a cache
-   example at `factory/verify/factory_yaml.py:804`, in
-   the stack packs at `factory/stack_packs.py:45` and in gate prose at
-   `factory/verify/gates.py:834`, and none of those is a classification rule. A
-   grep of all of `factory/` fails today, before any change, and this scoped one
-   passes today, so the committed test carries its own mutation in the shape
-   `tests/test_forge_manifest.py:330-331` uses: hard-code `package-lock.json` in
-   the matcher and this test fails.
 
 ### User Story 2 - The judge's attention is not spent on a generated file (Priority: P2)
 
@@ -496,6 +465,69 @@ read the verdict and the record, both in memory and after a store round trip.
    `total_bytes` and "states more bytes than its own total" would catch nothing
    here (plan trap 16).
 
+### User Story 4 - The declaration reaches the epic that will be judged (Priority: P1)
+
+As an operator whose manifest names a lockfile, the value I committed is the
+value the verdict is formed against — not one a node could rewrite on its way to
+being judged — and the file listing says which files it applied to.
+
+**Why this priority**: P1, and it is the second half of US1, split out on
+2026-09-08 for size. It carries the one real hazard in this spec: a value that
+decides a verdict must not be readable from the worktree of the node being
+judged, and there are **two** paths that start an epic, so a route wired through
+only one leaves every scheduled epic carrying the empty default. It runs after
+US1 because there is nothing to carry until the manifest parses, and before US2
+because `prepare_diff` has nothing to elide until a section knows whether it is
+generated.
+
+**Independent Test**: Start an epic from a repository whose committed manifest
+and whose node worktree declare *different* patterns, on each dispatch path, and
+read the patterns off the `EpicInput` each was started with; build the sections
+and the file listing from a diff and read the marker.
+
+**Acceptance Scenarios**:
+
+1. **Given** a diff containing one section whose path matches a declared pattern
+   and one that matches none, **When** the sections are built and the file
+   listing is assembled, **Then** the matching section is classified generated
+   and its listing line carries its real added and removed counts plus an
+   explicit marker, while the other line is byte-identical to today's. **And
+   Given** the same diff with no pattern declared, **Then** the whole listing is
+   byte-identical to the string it produces today — a committed test asserts the
+   pair, so a diff that marked every file could not pass.
+
+2. **Given** a target repository whose committed manifest declares patterns and
+   whose node worktree carries a *different* manifest declaring others, **When**
+   an epic is started from it, **Then** the `EpicInput` the epic is started with
+   carries the committed clone's patterns and not the worktree's — asserted on
+   **both** dispatch paths by committed tests, the roadmap's own child start as
+   well as the hand-started CLI's, because the roadmap is what the schedule
+   fires and a route wired only through `factory/cli/nouns/build.py:951` would
+   leave every scheduled epic carrying the empty default — which is the half-done
+   wiring this scenario exists to catch. Reading the patterns back off
+   `factory/verify/factory_yaml.py:1134` — `load_loop_config` or off
+   `factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult` does
+   not satisfy this scenario: both sit upstream of the fork, and the fork is
+   where the wiring can be half-done. The models are
+   `tests/test_023_us2_dispatch_pin.py:756` — `test_roadmap_dispatch_reads_config_per_child`,
+   which captures the child `EpicInput` the roadmap dispatched, and
+   `tests/test_023_us2_dispatch_pin.py:389` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`.
+
+3. **Given** the three modules that classify, render and measure a section —
+   `factory/verify/diffbounds.py`, `factory/verify/judge.py` and
+   `factory/verify/diffcheck.py` — **When** a committed test greps them for
+   lockfile filenames and package-manager names, **Then** none appears, so the
+   declaration is the only source of the answer. The scope is part of the
+   assertion and the test says why: `npm` is already written fifteen times
+   elsewhere in `factory/` — counted at 602a92c across four files — in a cache
+   example at `factory/verify/factory_yaml.py:804`, in
+   the stack packs at `factory/stack_packs.py:45` and in gate prose at
+   `factory/verify/gates.py:834`, and none of those is a classification rule. A
+   grep of all of `factory/` fails today, before any change, and this scoped one
+   passes today, so the committed test carries its own mutation in the shape
+   `tests/test_forge_manifest.py:330-331` uses: hard-code `package-lock.json` in
+   the matcher and this test fails.
+
 ## Functional Requirements
 
 - **FR-001**: The v2 manifest MUST accept a top-level `generated_paths:` list of
@@ -505,10 +537,9 @@ read the verdict and the record, both in memory and after a store round trip.
   not a non-empty string, MUST be refused with a message naming the offending
   value and the rule, in the shape the manifest's other typed keys are refused.
 - **FR-003**: A manifest declaring no `generated_paths` MUST parse to an empty
-  declaration, and the sections and file listing built from any diff MUST be
-  byte-identical to today's. The same byte-identity further downstream is owned
-  by the stories that can prove it: FR-008 for the judge's prompt, FR-013 for the
-  measurement.
+  declaration. The byte-identity that follows from an empty declaration is owned
+  by the stories that can prove it: FR-015 for the sections and the file listing,
+  FR-008 for the judge's prompt, FR-013 for the measurement.
 - **FR-004**: The declared patterns MUST be pinned at dispatch by the same read
   that pins the ladder and the refusal threshold
   (`factory/verify/factory_yaml.py:1134` — `load_loop_config`) and carried onto
@@ -580,15 +611,24 @@ read the verdict and the record, both in memory and after a store round trip.
   and a v2 manifest declaring a `verify:` list without `diff_check` MUST still be
   refused by `factory/verify/factory_yaml.py:958-963`.
 
+- **FR-015**: With no `generated_paths` declared, the diff sections and the file
+  listing built from any diff MUST be byte-identical to the ones today's code
+  builds. This is the empty-declaration control for the classification FR-005
+  adds, and it is US4's to prove because US4 is where the classification lands.
+
 ## Work Graph
 
 ```yaml
 US1:
   depends_on: []
-  implements: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-006]
-US2:
+  implements: [FR-001, FR-002, FR-003, FR-006]
+US4:
   depends_on: []
   depends_on_merged: [US1]
+  implements: [FR-004, FR-005, FR-015]
+US2:
+  depends_on: []
+  depends_on_merged: [US4]
   implements: [FR-007, FR-008, FR-009, FR-010]
 US3:
   depends_on: []
@@ -596,11 +636,17 @@ US3:
   implements: [FR-011, FR-012, FR-013, FR-014]
 ```
 
-Two `depends_on_merged` edges, declared rather than left inferred (069-US2
-FR-007), and both are ordering rather than contention relief.
+Three `depends_on_merged` edges, declared rather than left inferred (069-US2
+FR-007), and all three are ordering rather than contention relief. **US4 is
+numbered last and runs second**: it was split out of US1 on 2026-09-08 because the
+pair ran to thirteen tasks and no story above eleven has landed on this floor. The
+number is a label; the edges are the order, and they read US1 -> US4 -> US2 -> US3.
 
-US2 reads a classification and a pinned value US1 adds, so it cannot be written
-against a tree where US1 has not landed: `prepare_diff` has nothing to elide
+US4 cannot be written against a tree where US1 has not landed, because there is no
+parsed declaration to carry or to classify against.
+
+US2 reads a classification and a pinned value US4 adds, so it cannot be written
+against a tree where US4 has not landed: `prepare_diff` has nothing to elide
 until a section knows whether it is generated, and nothing to be given until the
 epic input carries the patterns.
 

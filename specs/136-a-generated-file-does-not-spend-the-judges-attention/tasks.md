@@ -60,32 +60,7 @@ without it touch a region an earlier task in the same phase is already editing.
       Model the refusal shape on
       `factory/verify/factory_yaml.py:699` — `_read_diff_refusal_bytes` and the
       list handling on `factory/verify/factory_yaml.py:760` — `_read_caches`.
-- [ ] T004 [P] [US1] (spec US1-S4, FR-003, FR-005, trap 4) Given a diff with one
-      section matching a declared pattern and one matching none, assert the
-      matching section is classified generated, its listing line carries its
-      **real** added and removed counts plus an explicit marker, and the other
-      line is byte-identical to today's. **And** assert that with no pattern
-      declared the whole listing is byte-identical to today's string. The counts
-      must come from `factory/verify/diffbounds.py:112` — `count_changes` over
-      the full section text; a fixture whose generated section has known hunk
-      counts is what makes a `+0 -0` regression fail here.
-- [ ] T005 [US1] (spec US1-S5, FR-004, trap 10) Given a target repository whose
-      committed manifest declares one set of patterns and whose node worktree
-      carries a manifest declaring a different set, assert the patterns on the
-      `EpicInput` the epic is actually started with are the committed clone's —
-      on **both** dispatch paths, the roadmap's child start and the hand-started
-      CLI's. Copy
-      `tests/test_023_us2_dispatch_pin.py:756` — `test_roadmap_dispatch_reads_config_per_child`
-      for the first and
-      `tests/test_023_us2_dispatch_pin.py:389` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`
-      for the second; both capture the epic input rather than the read that fed
-      it. Asserting over
-      `factory/verify/factory_yaml.py:1134` — `load_loop_config`'s return or over
-      `factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult`
-      does **not** satisfy US1-S5: both sit upstream of the fork, and the fork is
-      where T012 can be half-done. Not `[P]`: it builds two manifests and drives
-      dispatch over both.
-- [ ] T006 [P] [US1] (spec US1-S6, FR-006, trap 6) **Guard — passes before this
+- [ ] T006 [P] [US1] (spec US1-S4, FR-006, trap 6) **Guard — passes before this
       diff too, and says so in its own docstring.** Assert this repository's own
       `ergane.yaml` declares no `generated_paths` and resolves to the empty
       declaration. Mirror
@@ -97,21 +72,6 @@ without it touch a region an earlier task in the same phase is already editing.
       every attempt. State the mutation in the docstring — declare the key in
       `ergane.yaml` and this test fails — so a reader can tell a control from a
       vacuous assertion.
-- [ ] T007 [P] [US1] (spec US1-S7, FR-005) **Guard — passes before this diff
-      too.** Assert that a grep of the three modules that classify, render and
-      measure a section — `factory/verify/diffbounds.py`,
-      `factory/verify/judge.py` and `factory/verify/diffcheck.py` — finds no
-      lockfile filename and no package-manager name, so the declaration is the
-      only source of the answer. Scope it to those three files and say why in the
-      test: a grep of all of `factory/` **fails today**, before any change — `npm`
-      is written fifteen times elsewhere, counted at 602a92c across four files,
-      at `factory/verify/factory_yaml.py:804` (a cache example),
-      `factory/stack_packs.py:45` (the stack packs) and
-      `factory/verify/gates.py:834` (gate prose) among them, and none of those is
-      a classification rule. Keep the search list short and named in the test, not
-      derived, and state the mutation in the docstring the way
-      `tests/test_forge_manifest.py:330-331` does: hard-code `package-lock.json`
-      in the matcher and this test fails.
 
 ### Implementation for this story
 
@@ -147,7 +107,65 @@ without it touch a region an earlier task in the same phase is already editing.
       empty tuple so FR-003 holds by construction. Do not reach for
       `factory/verify/models.py:275` — `_default_diff_refusal_bytes`'s deferred
       import: an empty tuple needs no module to own it.
-- [ ] T011 [US1] (FR-005, trap 4) Add the classification to
+
+### Verification for this story
+
+- [ ] T013 [US1] Paste, as committed evidence, the refusal text for each of the
+      three malformed declarations in T003, the v1 refusal from T002, and the
+      rendered file listing for one diff with a pattern declared and the same
+      diff without — the pair being the proof that FR-003 holds.
+
+## Phase 2: User Story 4 — The declaration reaches the epic that will be judged
+
+The story split out of US1 on 2026-09-08. It runs second and merges before
+US2; the number is a label, the Work Graph edges are the order.
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T004 [P] [US4] (spec US4-S1, FR-015, FR-005, trap 4) Given a diff with one
+      section matching a declared pattern and one matching none, assert the
+      matching section is classified generated, its listing line carries its
+      **real** added and removed counts plus an explicit marker, and the other
+      line is byte-identical to today's. **And** assert that with no pattern
+      declared the whole listing is byte-identical to today's string. The counts
+      must come from `factory/verify/diffbounds.py:112` — `count_changes` over
+      the full section text; a fixture whose generated section has known hunk
+      counts is what makes a `+0 -0` regression fail here.
+- [ ] T005 [US4] (spec US4-S2, FR-004, trap 10) Given a target repository whose
+      committed manifest declares one set of patterns and whose node worktree
+      carries a manifest declaring a different set, assert the patterns on the
+      `EpicInput` the epic is actually started with are the committed clone's —
+      on **both** dispatch paths, the roadmap's child start and the hand-started
+      CLI's. Copy
+      `tests/test_023_us2_dispatch_pin.py:756` — `test_roadmap_dispatch_reads_config_per_child`
+      for the first and
+      `tests/test_023_us2_dispatch_pin.py:389` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`
+      for the second; both capture the epic input rather than the read that fed
+      it. Asserting over
+      `factory/verify/factory_yaml.py:1134` — `load_loop_config`'s return or over
+      `factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult`
+      does **not** satisfy US1-S5: both sit upstream of the fork, and the fork is
+      where T012 can be half-done. Not `[P]`: it builds two manifests and drives
+      dispatch over both.
+- [ ] T007 [P] [US4] (spec US4-S3, FR-005) **Guard — passes before this diff
+      too.** Assert that a grep of the three modules that classify, render and
+      measure a section — `factory/verify/diffbounds.py`,
+      `factory/verify/judge.py` and `factory/verify/diffcheck.py` — finds no
+      lockfile filename and no package-manager name, so the declaration is the
+      only source of the answer. Scope it to those three files and say why in the
+      test: a grep of all of `factory/` **fails today**, before any change — `npm`
+      is written fifteen times elsewhere, counted at 602a92c across four files,
+      at `factory/verify/factory_yaml.py:804` (a cache example),
+      `factory/stack_packs.py:45` (the stack packs) and
+      `factory/verify/gates.py:834` (gate prose) among them, and none of those is
+      a classification rule. Keep the search list short and named in the test, not
+      derived, and state the mutation in the docstring the way
+      `tests/test_forge_manifest.py:330-331` does: hard-code `package-lock.json`
+      in the matcher and this test fails.
+
+### Implementation for this story
+
+- [ ] T011 [US4] (FR-005, trap 4) Add the classification to
       `factory/verify/diffbounds.py:80` — `DiffSection` and set it in
       `factory/verify/diffbounds.py:93` — `split_sections` from a matcher over
       the declared patterns, **after**
@@ -156,7 +174,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `factory/verify/diffbounds.py:125` — `file_listing`, keeping its real
       counts. Default the pattern list to empty everywhere so an unclassified
       call renders today's string byte for byte.
-- [ ] T012 [US1] (FR-004, trap 10) Carry the patterns on
+- [ ] T012 [US4] (FR-004, trap 10) Carry the patterns on
       `factory/verify/factory_yaml.py:1134` — `load_loop_config`'s return
       (`factory/verify/factory_yaml.py:1086`, and the signature at
       `factory/verify/factory_yaml.py:1070`), then along the route
@@ -189,12 +207,13 @@ without it touch a region an earlier task in the same phase is already editing.
 
 ### Verification for this story
 
-- [ ] T013 [US1] Paste, as committed evidence, the refusal text for each of the
-      three malformed declarations in T003, the v1 refusal from T002, and the
-      rendered file listing for one diff with a pattern declared and the same
-      diff without — the pair being the proof that FR-003 holds.
+- [ ] T037 [US4] Paste, as committed evidence, the rendered file listing for
+      one diff with a pattern declared and the same diff without — the pair
+      being the proof that FR-015 holds — and the `EpicInput` captured on each
+      of the two dispatch paths, showing the committed clone's patterns rather
+      than the worktree's.
 
-## Phase 2: User Story 2 — The judge's attention is not spent on a generated file
+## Phase 3: User Story 2 — The judge's attention is not spent on a generated file
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -298,7 +317,7 @@ without it touch a region an earlier task in the same phase is already editing.
       and the US2-S1 Then must say the same thing; if they disagree, the Then is
       wrong and trap 17 says why.
 
-## Phase 3: User Story 3 — The refusal stops counting bytes the judge will never read
+## Phase 4: User Story 3 — The refusal stops counting bytes the judge will never read
 
 ### Tests for this story (write FIRST, must fail)
 

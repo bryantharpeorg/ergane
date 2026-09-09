@@ -407,11 +407,14 @@ choke point, so there is one place to guard and a new caller cannot miss it.
 
 **Why this priority**: P1 and it depends on nothing. US2 has nothing to harden
 until the choke point exists, and the unguarded sites are the surface every other
-story's incident came through.
+story's incident came through. This story is the choke point alone — building it,
+making it refuse, declaring its seam. **Migrating the four callers onto it is
+US7**, split out on 2026-09-08 because the pair ran to sixteen tasks and no story
+above eleven has landed on this floor.
 
 **Independent Test**: Ask the choke point for a client with `PYTEST_CURRENT_TEST`
-set and read the refusal; drive each of the four migrated CLI callers with the
-choke point's seam bound to a fake and read what they do.
+set and read the refusal; bind the declared seam by the name the refusal prints
+and read what comes back.
 
 **Acceptance Scenarios**:
 
@@ -420,78 +423,27 @@ choke point's seam bound to a fake and read what they do.
    namespace and the seam the test should bind instead — proven by a committed
    test asserting all three strings, modelled on
    `factory/roadmap/schedule.py:156-162`.
-2. **Given** the four callers `factory/workgraph/cli.py:977` — `_connect`,
-   `factory/cli/nouns/__init__.py:54` — `_open_client`,
-   `factory/cli/roadmap.py:205` — `_connect` and `factory/cli/repo.py:85` —
-   `_open_client`, **When** each needs a client, **Then** each obtains it from the
-   choke point and none of the four contains `Client.connect` — proven by a
-   committed test per caller that binds the choke point's seam to a fake and
-   asserts the caller's own error translation is unchanged.
-3. **Given** a refusal from the choke point and a refusal from an unrelated
+
+2. **Given** a refusal from the choke point and a refusal from an unrelated
    precondition on the same call path, **When** a test asserts on the refusal
    text, **Then** the two messages are distinguishable by a substring unique to
    each — proven by a committed test asserting both messages and asserting that
    neither unique substring occurs in the other. This is FR-005 and it exists
    because M8 passed against "runtime root", a substring two different refusals
    shared.
-4. **Given** the landed test `tests/test_runtime_root.py:124` —
+
+3. **Given** the landed test `tests/test_runtime_root.py:124` —
    `test_running_epic_ids_default_factory_raises_transport_not_nameerror`, which
    enters the real client factory on purpose, **When** the choke point starts
    refusing under pytest, **Then** that test is carried forward rather than
    deleted: the diff shows it still entering the default seam and now asserting
    the choke point's refusal, and the diff contains no deletion of a test
    function — proven by the committed test file itself.
-5. **Given** the choke point's module, **When** the diff is read, **Then** the
+
+4. **Given** the choke point's module, **When** the diff is read, **Then** the
    seam a test binds is declared beside it and named in the refusal of scenario 1
    — proven by a committed test that binds the seam by the name the refusal
    prints.
-6. **Given** the landed guard `tests/test_declared_temporal.py:423` —
-   `test_every_connect_site_reaches_the_one_resolver`, which walks ten named
-   modules and requires each to import `resolve_temporal_target` or
-   `temporal_target_for` from `factory.controlplane.resolve`, **When** the four
-   callers are migrated, **Then** each still calls its own resolver and hands the
-   resolved address and namespace to the choke point, and
-   `tests/test_declared_temporal.py` is unchanged — proven by the committed diff,
-   in which every migrated caller keeps its resolver import and its resolver call
-   and that file carries no edit. In all four, the resolver's only caller is the
-   connect site being moved, so deleting the call along with the connect deletes
-   the import the guard asserts on and reddens the declared `test` gate.
-7. **Given** the five landed test modules that bind the Temporal floor at
-   `temporalio.client.Client.connect` and then drive one of this story's four
-   callers — `tests/test_ergane_status.py:485` — `fake_temporal`,
-   `tests/test_roadmap_schedule_discovery.py:311` — `fake_temporal`,
-   `tests/test_roadmap_wedge_visibility.py:219` — `fake_temporal`,
-   `tests/test_teardown_owns_the_ordering.py:213` — `_host` (with its sibling at
-   `tests/test_teardown_owns_the_ordering.py:600` —
-   `test_roadmap_pause_command_still_pauses_the_schedule`) and
-   `tests/test_ergane_spec.py:448` — `test_validate_opens_no_socket`, **When**
-   the four callers are migrated, **Then** every one of those fakes is rebound to
-   the seam the choke point declares, no test function in those modules is
-   deleted or turned into a skip, and
-   `tests/test_teardown_owns_the_ordering.py:631` —
-   `test_roadmap_py_is_not_edited_by_this_story` — which today requires
-   `factory/cli/roadmap.py` to contain the literal `Client.connect` exactly once
-   — asserts instead that the module reaches the choke point — proven by the
-   committed diff to those four files together with the test module of scenario
-   2, in which each rebound caller returns the fake it was given. The refusal of
-   scenario 1 fires before `Client.connect` is reached, so a fake left there is
-   never consulted and its test goes red rather than loose.
-8. **Given** the landed CLI guard sweep `tests/test_ergane_status.py:1716` —
-   `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal`, which
-   derives its module set from every file under `factory/cli/` that awaits and
-   mentions Temporal (`tests/test_ergane_status.py:1600` —
-   `_cli_python_modules`) and then compares it, function by function and `except`
-   clause by `except` clause, against the table at
-   `tests/test_ergane_status.py:1516`, **When** the choke point is written and
-   the four callers are migrated, **Then** the choke point's module is not under
-   `factory/cli/`, each migrated function still awaits and still carries exactly
-   the clause tuple that table pins for it, and neither the table nor the sweep
-   carries an edit — proven by the committed diff, in which the new module's path
-   is outside `factory/cli/` and each migrated `try`/`except` is unchanged, and
-   by a committed test in this story's own module asserting the pinned tuples for
-   `factory/cli/nouns/__init__.py:54` — `_open_client`,
-   `factory/cli/repo.py:85` — `_open_client` and
-   `factory/cli/roadmap.py:205` — `_connect`.
 
 ---
 
@@ -552,7 +504,10 @@ because a credential happened to be in the environment or in the session stash
 
 **Why this priority**: P1 and it depends on nothing. It is the whole of the
 Telegram paging incident and half of the namespace leak, and it is independent of
-the client work.
+the client work. This story builds the opt-in and proves its four behaviours;
+**moving the six existing tiers onto it is US8**, split out on 2026-09-08 because
+the pair ran to seventeen tasks and no story above eleven has landed on this
+floor.
 
 **Independent Test**: Run a scratch session with both Telegram credentials present
 and no tier named, and read the skip; name a tier with its credentials absent and
@@ -566,34 +521,22 @@ read the failure.
    committed test that asserts the skip and asserts the bot constructor was never
    called. Setting the credentials is not enough to reach the stash at
    `tests/conftest.py:521`.
+
 2. **Given** a tier is opted into by name but its credentials are absent, **When**
    the suite runs, **Then** the test **fails** naming the missing credential
    rather than skipping — proven by a committed test asserting a failure outcome
    and the credential's name in its message. Asking for a live run and silently
    not getting one is how a tier rots unnoticed.
+
 3. **Given** a tier is opted into by name with its credentials present, **When**
    the suite runs, **Then** that tier's tests are selected — proven by a committed
    test that asserts selection, not by running the live tier itself.
+
 4. **Given** the opt-in names one tier, **When** the suite runs, **Then** the other
    five tiers still skip — proven by a committed test enumerating all six
    registered `live_*` markers. One name arms one tier.
-5. **Given** every live-tier test module in `tests/`, **When** the suite is
-   searched, **Then** each one's skip condition is the opt-in and not the presence
-   of a credential — proven by a committed test that enumerates them from the
-   registered markers, asserts the enumerated set is not empty and contains at
-   least `tests/test_live_notify.py` and `tests/test_live_capacity.py` by name,
-   and fails naming any module that decides on a credential alone. Without the
-   non-empty assertion a marker-to-module walk that resolves nothing passes
-   forever — the vacuity `tests/test_ergane_status.py:1747` —
-   `test_the_discovered_module_set_contains_status_and_build` exists to close for
-   the sweep beside it.
-6. **Given** the six marker registrations at `pyproject.toml:89-96`, **When** they
-   are rewritten to describe the opt-in, **Then** each still contains the literal
-   `auto-skips unless ` and what follows it names the opt-in rather than a
-   credential — proven by the committed diff keeping
-   `tests/test_114_us3_live_tier_summary.py:165` — `registered_live_tiers` green,
-   which asserts that phrase is present in every `live_*` registration.
-7. **Given** the opt-in of FR-010, **When** a module in `factory/` reads it with
+
+5. **Given** the opt-in of FR-010, **When** a module in `factory/` reads it with
    no pytest plugin loaded and no conftest imported, **Then** it yields the tiers
    that were named — proven by a committed test that reads the opt-in through the
    same shape `factory/verify/store.py:378-381` — `connect` uses for its own
@@ -718,6 +661,12 @@ As an operator, no module outside the choke point constructs a Temporal client,
 and a test proves it against the tree rather than against a list somebody wrote
 down.
 
+**Split note (2026-09-08)**: this story ran to fifteen tasks and no story above
+eleven has landed on this floor. The worker's own entry point and the closing
+"no module but the choke point" assertion moved to **US9**, which merges after
+this one. What is left here is the six library callers and the two landed guards
+that keep them there.
+
 **Why this priority**: P1, and it waits only for US1 to merge. FR-003's test
 cannot pass until the last site is migrated, so it lands with the last site. It
 is a separate node because US1 plus eleven migrations plus their tests is over
@@ -729,14 +678,7 @@ outside pytest.
 
 **Acceptance Scenarios**:
 
-1. **Given** the factory package, **When** it is walked, **Then** exactly one
-   module constructs a client — proven by a committed test that walks
-   `factory/**/*.py` from the package root, decides on parsed code rather than on
-   raw text so that the literal inside the comment at
-   `factory/controlplane/verify.py:732` — `gather` survives and is not counted, and
-   fails naming any other file. Read the tree, never a hardcoded list: this spec
-   was drafted with a list of nine and the tree already held eleven.
-2. **Given** the seven callers `factory/doctor/probes.py:491` — `_gather_async`,
+1. **Given** the seven callers `factory/doctor/probes.py:491` — `_gather_async`,
    `factory/doctor/probes.py:603` — `_closed_epics_from_temporal`,
    `factory/controlplane/verify.py:193` — `_temporal_client_factory`,
    `factory/notify/service.py:1048` — `main`, `factory/worker.py:351` — `main`,
@@ -750,15 +692,8 @@ outside pytest.
    from there only once a mutation has removed the first — proven by a committed
    test asserting that module still refuses under `PYTEST_CURRENT_TEST` with its
    own message.
-3. **Given** the worker entrypoint `factory/worker.py:351` — `main`, **When** it
-   runs with `PYTEST_CURRENT_TEST` unset, **Then** it connects exactly as it does
-   today — proven by a committed test that binds the seam and asserts the
-   entrypoint is not refused. The worker is production; the guard is about the
-   test process, not about this caller.
-4. **Given** a test that merely imports `factory/worker.py`, **When** it runs,
-   **Then** no connection is attempted — proven by a committed test asserting the
-   choke point's seam was never called on import.
-5. **Given** the landed guard `tests/test_declared_temporal.py:423` —
+
+2. **Given** the landed guard `tests/test_declared_temporal.py:423` —
    `test_every_connect_site_reaches_the_one_resolver` and the module list it
    walks at `tests/test_declared_temporal.py:392` (the tuple `_RESOLVER_SITES`,
    built from `tests/test_declared_temporal.py:332`), **When** the seven callers
@@ -772,7 +707,8 @@ outside pytest.
    `test_every_connect_site_reaches_the_one_resolver` itself carries no edit —
    proven by the committed diff, in which each caller's resolver call survives
    beside the migrated connect and that test is untouched.
-6. **Given** the two landed test modules that bind the floor at
+
+3. **Given** the two landed test modules that bind the floor at
    `temporalio.client.Client.connect` and drive a caller this story migrates —
    `tests/test_doctor_probes.py:295` — `fake_temporal`, which drives both probe
    sites, and `tests/test_declared_temporal.py:269` — `dialed`, which serves
@@ -792,6 +728,160 @@ outside pytest.
    `test_every_connect_site_reaches_the_one_resolver` are unchanged and no test
    function is removed — proven by the committed diff to that file, which touches
    the fixture and those two tests and nothing else.
+
+---
+
+### User Story 7 - The four callers reach the choke point (Priority: P1)
+
+As an operator, no caller in the factory constructs its own Temporal client, so
+the guard US1 built is the only door and the landed tests that bound the old door
+are carried onto the new one rather than deleted.
+
+**Why this priority**: P1, and it is the second half of US1, split out on
+2026-09-08 for size. It runs after US1 because there is nothing to migrate onto
+until the choke point exists, and everything that waited for US1's whole scope
+now waits for this story instead. Most of its weight is not the migration — four
+small edits — but the four landed guards it must carry forward without deleting a
+test: the resolver guard, the floor-fakes, the CLI guard sweep and its table.
+
+**Independent Test**: Drive each of the four migrated CLI callers with the choke
+point's seam bound to a fake and read what each does; run the landed guards
+unchanged.
+
+**Acceptance Scenarios**:
+
+1. **Given** the four callers `factory/workgraph/cli.py:977` — `_connect`,
+   `factory/cli/nouns/__init__.py:54` — `_open_client`,
+   `factory/cli/roadmap.py:205` — `_connect` and `factory/cli/repo.py:85` —
+   `_open_client`, **When** each needs a client, **Then** each obtains it from the
+   choke point and none of the four contains `Client.connect` — proven by a
+   committed test per caller that binds the choke point's seam to a fake and
+   asserts the caller's own error translation is unchanged.
+
+2. **Given** the landed guard `tests/test_declared_temporal.py:423` —
+   `test_every_connect_site_reaches_the_one_resolver`, which walks ten named
+   modules and requires each to import `resolve_temporal_target` or
+   `temporal_target_for` from `factory.controlplane.resolve`, **When** the four
+   callers are migrated, **Then** each still calls its own resolver and hands the
+   resolved address and namespace to the choke point, and
+   `tests/test_declared_temporal.py` is unchanged — proven by the committed diff,
+   in which every migrated caller keeps its resolver import and its resolver call
+   and that file carries no edit. In all four, the resolver's only caller is the
+   connect site being moved, so deleting the call along with the connect deletes
+   the import the guard asserts on and reddens the declared `test` gate.
+
+3. **Given** the five landed test modules that bind the Temporal floor at
+   `temporalio.client.Client.connect` and then drive one of this story's four
+   callers — `tests/test_ergane_status.py:485` — `fake_temporal`,
+   `tests/test_roadmap_schedule_discovery.py:311` — `fake_temporal`,
+   `tests/test_roadmap_wedge_visibility.py:219` — `fake_temporal`,
+   `tests/test_teardown_owns_the_ordering.py:213` — `_host` (with its sibling at
+   `tests/test_teardown_owns_the_ordering.py:600` —
+   `test_roadmap_pause_command_still_pauses_the_schedule`) and
+   `tests/test_ergane_spec.py:448` — `test_validate_opens_no_socket`, **When**
+   the four callers are migrated, **Then** every one of those fakes is rebound to
+   the seam the choke point declares, no test function in those modules is
+   deleted or turned into a skip, and
+   `tests/test_teardown_owns_the_ordering.py:631` —
+   `test_roadmap_py_is_not_edited_by_this_story` — which today requires
+   `factory/cli/roadmap.py` to contain the literal `Client.connect` exactly once
+   — asserts instead that the module reaches the choke point — proven by the
+   committed diff to those four files together with the test module of scenario
+   2, in which each rebound caller returns the fake it was given. The refusal of
+   scenario 1 fires before `Client.connect` is reached, so a fake left there is
+   never consulted and its test goes red rather than loose.
+
+4. **Given** the landed CLI guard sweep `tests/test_ergane_status.py:1716` —
+   `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal`, which
+   derives its module set from every file under `factory/cli/` that awaits and
+   mentions Temporal (`tests/test_ergane_status.py:1600` —
+   `_cli_python_modules`) and then compares it, function by function and `except`
+   clause by `except` clause, against the table at
+   `tests/test_ergane_status.py:1516`, **When** the choke point is written and
+   the four callers are migrated, **Then** the choke point's module is not under
+   `factory/cli/`, each migrated function still awaits and still carries exactly
+   the clause tuple that table pins for it, and neither the table nor the sweep
+   carries an edit — proven by the committed diff, in which the new module's path
+   is outside `factory/cli/` and each migrated `try`/`except` is unchanged, and
+   by a committed test in this story's own module asserting the pinned tuples for
+   `factory/cli/nouns/__init__.py:54` — `_open_client`,
+   `factory/cli/repo.py:85` — `_open_client` and
+   `factory/cli/roadmap.py:205` — `_connect`.
+
+---
+
+### User Story 8 - Every live tier moves onto the opt-in (Priority: P1)
+
+As an operator, no live-tier test anywhere in the suite decides on a credential
+any more, and the marker registrations say so, so the rule US3 built is the rule
+the whole corpus obeys.
+
+**Why this priority**: P1, and it is the second half of US3, split out on
+2026-09-08 for size. It runs after US3 because there is no opt-in to convert onto
+until US3 lands. Its weight is the six conversions plus the enumerating test that
+keeps a seventh tier from being added the old way — and that test is the one with
+the vacuity hazard, so it carries its own non-empty assertion.
+
+**Independent Test**: Enumerate the registered `live_*` markers, resolve each to
+its module, and assert none decides on a credential alone; read the six rewritten
+registrations.
+
+**Acceptance Scenarios**:
+
+1. **Given** every live-tier test module in `tests/`, **When** the suite is
+   searched, **Then** each one's skip condition is the opt-in and not the presence
+   of a credential — proven by a committed test that enumerates them from the
+   registered markers, asserts the enumerated set is not empty and contains at
+   least `tests/test_live_notify.py` and `tests/test_live_capacity.py` by name,
+   and fails naming any module that decides on a credential alone. Without the
+   non-empty assertion a marker-to-module walk that resolves nothing passes
+   forever — the vacuity `tests/test_ergane_status.py:1747` —
+   `test_the_discovered_module_set_contains_status_and_build` exists to close for
+   the sweep beside it.
+
+2. **Given** the six marker registrations at `pyproject.toml:89-96`, **When** they
+   are rewritten to describe the opt-in, **Then** each still contains the literal
+   `auto-skips unless ` and what follows it names the opt-in rather than a
+   credential — proven by the committed diff keeping
+   `tests/test_114_us3_live_tier_summary.py:165` — `registered_live_tiers` green,
+   which asserts that phrase is present in every `live_*` registration.
+### User Story 9 - The worker's own entry, and the door that is now the only door (Priority: P1)
+
+As an operator, the worker process itself reaches the same choke point every
+other caller does, importing it costs no connection, and a committed test proves
+no module in the tree builds a client any other way.
+
+**Why this priority**: P1, and it is the tail of US6, split out on 2026-09-08 for
+size. It runs last of the client work because its closing assertion — that no
+module but the choke point constructs a client — is only true once every
+migration has landed. The worker's entry point travels with it because the two
+scenarios that pin the worker's behaviour are the tests for that migration, and
+splitting a test from the change it covers is how a story ships green and wrong.
+
+**Independent Test**: Import the worker module and assert no connection is
+attempted; run the tree-wide walk and read what it names.
+
+**Acceptance Scenarios**:
+
+1. **Given** the factory package, **When** it is walked, **Then** exactly one
+   module constructs a client — proven by a committed test that walks
+   `factory/**/*.py` from the package root, decides on parsed code rather than on
+   raw text so that the literal inside the comment at
+   `factory/controlplane/verify.py:732` — `gather` survives and is not counted, and
+   fails naming any other file. Read the tree, never a hardcoded list: this spec
+   was drafted with a list of nine and the tree already held eleven.
+
+2. **Given** the worker entrypoint `factory/worker.py:351` — `main`, **When** it
+   runs with `PYTEST_CURRENT_TEST` unset, **Then** it connects exactly as it does
+   today — proven by a committed test that binds the seam and asserts the
+   entrypoint is not refused. The worker is production; the guard is about the
+   test process, not about this caller.
+
+3. **Given** a test that merely imports `factory/worker.py`, **When** it runs,
+   **Then** no connection is attempted — proven by a committed test asserting the
+   choke point's seam was never called on import.
+
+---
 
 ## Functional Requirements
 
@@ -998,30 +1088,60 @@ outside pytest.
 ```yaml
 US1:
   depends_on: []
-  implements: [FR-001, FR-002, FR-004, FR-005, FR-022, FR-027, FR-029]
+  implements: [FR-001, FR-004, FR-005, FR-022]
+US7:
+  depends_on: []
+  depends_on_merged: [US1]
+  implements: [FR-002, FR-027, FR-029]
 US2:
   depends_on: []
-  depends_on_merged: [US1, US3]
+  depends_on_merged: [US7, US3]
   implements: [FR-007, FR-008, FR-009, FR-030]
 US3:
   depends_on: []
-  implements: [FR-010, FR-011, FR-012, FR-013, FR-014, FR-025]
+  implements: [FR-010, FR-011, FR-012, FR-013]
+US8:
+  depends_on: []
+  depends_on_merged: [US3]
+  implements: [FR-014, FR-025]
 US4:
   depends_on: []
   implements: [FR-005, FR-015, FR-016, FR-017, FR-018]
 US5:
   depends_on: []
-  depends_on_merged: [US3]
+  depends_on_merged: [US8]
   concurrent_with: [US4]
   implements: [FR-019, FR-020, FR-021, FR-024, FR-026]
 US6:
   depends_on: []
-  depends_on_merged: [US1]
+  depends_on_merged: [US7]
   concurrent_with: [US2]
-  implements: [FR-003, FR-006, FR-023, FR-027, FR-028]
+  implements: [FR-023, FR-027, FR-028]
+US9:
+  depends_on: []
+  depends_on_merged: [US6]
+  implements: [FR-003, FR-006]
 ```
 
-FR-027 is carried by US1 and US6 both, for the same reason and by the same
+**The 2026-09-08 split, and how to read the numbers.** Three stories ran above
+eleven tasks, which is larger than anything that has landed on this floor, so each
+was cut in two: US1 -> US1 + **US7**, US3 -> US3 + **US8**, US6 -> US6 + **US9**.
+The new numbers are labels appended at the end, not positions — the edges are the
+order, and they read:
+
+    US1 -> US7 -> {US2, US6} , US6 -> US9
+    US3 -> US8 -> US5
+    US4 alone
+
+Everything that previously waited for the whole of US1 now waits for US7, and
+everything that waited for the whole of US3 now waits for US8, so the ordering the
+original graph expressed is unchanged. Story count goes from 6 to 9 and chain
+depth from 2 to 4, the longest chain being US1 -> US7 -> US6 -> US9. That is two
+extra rounds of wall-clock bought to keep every story inside the size that has
+actually landed here; the largest is now eleven tasks, against sixteen and
+seventeen before.
+
+FR-027 is carried by US7 and US6 both, for the same reason and by the same
 mechanism as FR-005 below: it is one rule about a class — a landed fake bound at
 `Client.connect` is rebound by whoever moves the caller it drives — and both
 stories move callers such fakes drive. A node is handed its own FRs and no

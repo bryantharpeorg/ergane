@@ -12,12 +12,9 @@
       "requirement_keys": [
         "US1",
         "FR-001",
-        "FR-002",
         "FR-004",
         "FR-005",
-        "FR-022",
-        "FR-027",
-        "FR-029"
+        "FR-022"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -37,7 +34,7 @@
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us1",
+        "us7",
         "us3"
       ],
       "timeout_override_s": null
@@ -52,9 +49,7 @@
         "FR-010",
         "FR-011",
         "FR-012",
-        "FR-013",
-        "FR-014",
-        "FR-025"
+        "FR-013"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -92,7 +87,7 @@
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us3"
+        "us8"
       ],
       "timeout_override_s": null
     },
@@ -103,15 +98,62 @@
       "spec_ref": "074-a-test-cannot-reach-the-operators-floor:US6",
       "requirement_keys": [
         "US6",
-        "FR-003",
-        "FR-006",
         "FR-023",
         "FR-027",
         "FR-028"
       ],
       "depends_on": [],
       "depends_on_merged": [
+        "us7"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us7",
+      "story_key": "US7",
+      "persona": "implementer",
+      "spec_ref": "074-a-test-cannot-reach-the-operators-floor:US7",
+      "requirement_keys": [
+        "US7",
+        "FR-002",
+        "FR-027",
+        "FR-029"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
         "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us8",
+      "story_key": "US8",
+      "persona": "implementer",
+      "spec_ref": "074-a-test-cannot-reach-the-operators-floor:US8",
+      "requirement_keys": [
+        "US8",
+        "FR-014",
+        "FR-025"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us3"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us9",
+      "story_key": "US9",
+      "persona": "implementer",
+      "spec_ref": "074-a-test-cannot-reach-the-operators-floor:US9",
+      "requirement_keys": [
+        "US9",
+        "FR-003",
+        "FR-006"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us6"
       ],
       "timeout_override_s": null
     }

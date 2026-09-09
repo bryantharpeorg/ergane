@@ -589,6 +589,16 @@ an over-limit diff to demonstrate the rule, because a `uv.lock`-shaped file in a
 
 ## Sizing
 
+**Re-sliced 2026-09-08.** US1 ran to thirteen tasks and no story above eleven has
+landed on this floor in the current window — the largest landed diff was 64,887
+bytes against a 65,536 refusal, clearing by 649. US1 was cut in two: the
+declaration stays in US1 (parse it, refuse a malformed one, keep it out of v1,
+prove this repository does not spend the key) and the carriage became **US4** (the
+dispatch pin on both paths, the section classification, the listing marker). US4
+is numbered last and merges second, between US1 and US2. The paragraph below was
+written for the undivided story, so read it as covering US1 and US4 together.
+
+
 US1 touches `factory/verify/factory_yaml.py` (one tuple entry, one reader, one
 line in `parse_factory_config`, one element on `load_loop_config`'s return),
 `factory/verify/models.py` (one field on `FactoryConfig`),

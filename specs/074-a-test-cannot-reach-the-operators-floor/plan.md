@@ -735,6 +735,19 @@ occurrence; do not edit the frontmatter to claim it.
 
 ## Sizing
 
+**Re-sliced 2026-09-08.** US1, US3 and US6 ran to sixteen, seventeen and fifteen
+tasks. Thirty stories landed on `ergane-buildout` in the current window and every
+one of them had **fewer than twelve**; the largest landed diff was 64,887 bytes
+against a 65,536 refusal, clearing by 649. Three stories were therefore cut in
+two — US1/US7, US3/US8, US6/US9 — and the largest story here is now eleven tasks.
+The paragraphs below were written for the pre-split stories, so read each one
+against the Work Graph rather than as a per-story budget: US1's paragraph now
+covers US1 **and** US7 together, US3's covers US3 and US8, US6's covers US6 and
+US9. The split does not reduce the total diff; it divides it, which is the point,
+because a story refused for size is not retried smaller — it burns the attempt
+and the epic re-slices around it anyway, at full price.
+
+
 **US1** — one new module in `factory/controlplane/` (~80 lines with its
 docstring), four call-site edits of roughly three lines each, one new test file,
 the carry-forward edit to `tests/test_runtime_root.py`, and the five landed
