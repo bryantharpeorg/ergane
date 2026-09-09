@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - hardening/a-worker-restart-orphans-the-in-flight-agent-activity-for-the-full-heartbeat-timeout
 # DRAFTED 2026-09-04 by the refinement workflow (refinement-2026-09-04-tail) from

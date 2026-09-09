@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 fixes:
   - status/parked-is-reported-as-a-bare-count-so-the-operator-cannot-tell-which-spec-is-parked
   - operator/a-completed-epic-goes-unattested-in-silence-while-status-keeps-calling-it-dispatchable
